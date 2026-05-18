@@ -1,0 +1,159 @@
+# ════════════════════════════════════════════════════════════════════
+# NUC_phase1 · Mapping Configuration · DRAFT
+# ════════════════════════════════════════════════════════════════════
+# 
+# 这是 NUC_1 (大象 Nucare 第 1 期) 的 mapping 草案，作为试点 onboarding 示范
+# 实际 onboarding 时由策略 lead 确认所有字段
+# 
+# 见 CURRENT_STATE.md 任务 #2
+# ════════════════════════════════════════════════════════════════════
+
+version: 1.0
+
+project_id: NUC_phase1
+brand: 大象集团
+product: Nucare 全营养液体
+category: 保健品
+platform: xiaohongshu
+schema_family: B
+start_date: 2025-11-03
+end_date: null  # 待填
+
+# ── 字段映射 ──
+field_mapping:
+  素人编号: note_id_suffix
+  发布时间: publish_time
+  发布笔记: _intent_raw
+  是否发布: _published_status
+  方向: _direction_raw
+  关键词: target_blue_keywords
+  反馈链接: publish_url
+  文案: raw_content
+  状态: _status_raw
+  曝光量: impressions
+  阅读量: reads
+  互动量: interactions
+  蓝词记录: hit_blue_keywords
+  爆帖置顶评论: pinned_comment
+  随贴评论: _comment_text
+  随贴评论素人: _comment_text_persona
+
+intent_mapping:
+  流量帖: traffic
+  直给笔记: conversion
+  科普贴: educational
+
+# ── 方向拆解 ──
+# 注意：NUC_1 的方向相对简单（4 个，全是用户场景维度）
+direction_decomposition:
+  
+  "营养保健代餐相关":
+    content_format: 场景植入
+    target_audience: ["中老年", "病患家属"]
+    user_pain_point: 营养摄入不足
+    product_focus: null
+  
+  "任何手术后恢复相关":
+    content_format: 场景植入
+    target_audience: ["病患家属", "宝妈"]
+    user_pain_point: 术后营养
+    product_focus: null
+  
+  "糖尿病相关":
+    content_format: 认知重构
+    target_audience: ["银发族", "中年男性", "中年女性"]
+    user_pain_point: 血糖管理
+    product_focus: null
+  
+  "抗癌放化疗相关":
+    content_format: 场景植入
+    target_audience: ["病患家属"]
+    user_pain_point: 化疗副作用与营养
+    product_focus: null
+
+# ── Tier 抽取 ──
+tier_extraction:
+  source: 状态字段
+  rules:
+    - match_contains: ["大爆"]
+      tier: 大爆
+    - match_contains: ["爆贴预备"]
+      tier: 预备
+    - match_contains: ["爆贴"]
+      tier: 爆
+    - match_contains: ["风控"]
+      tier: 风控
+    - match_contains: ["无水花"]
+      tier: 趴
+    - match_contains: ["评估中"]
+      tier: 未知
+    - default: null
+
+# ── Tier 数值阈值 ──
+# 基于 NUC_1 现有数据分布（互动数）
+tier_thresholds:
+  爆: 100
+  大爆: 800
+
+# ── 合规 ──
+compliance:
+  base_template: 保健品
+  custom_red_flags:
+    - "禁止宣称疗效"
+    - "禁止'治疗'、'治愈'、'康复'等绝对化表达"
+    - "禁止替代医疗"
+    - "禁止暗示可以治疗特定疾病"
+    - "宣称需满足《广告法》《保健食品广告管理办法》要求"
+  blue_keyword_strategy:
+    primary: ["特医全营养食品", "流质营养餐"]
+    secondary: []
+    avoid: ["治疗", "替代", "根治"]
+
+# ── B 家族关键缺失：粉丝数 ──
+data_supplement_needed:
+  - field: account_followers
+    method: 通过 publish_url 调小红书 API 或人工补录
+    estimated_rows: 1102
+
+# ── 项目专属字段进 raw_extra ──
+project_specific_fields_to_raw_extra:
+  - 父记录 2
+  - 父记录 3
+  - 父记录 4
+  - 临时-评论修改对比
+  - 临时用—爆帖tag添加
+  - 项目阶段
+  - 打款金额
+  - 是否留存
+  - 理论金额结算
+  - 数据汇总
+  - 观众分析
+
+# ── Sync ──
+sync_config:
+  source_type: manual_xlsx
+  source_table_token: null
+  sync_interval: on_demand
+
+# ── Onboarding 元数据 ──
+onboarding_meta:
+  onboarded_at: null   # 待填
+  onboarded_by: 待填
+  strategy_lead: Ziao
+  notes: |
+    NUC_1 是 Truth Vault 第一个试点 onboarding 项目，选择理由:
+    - 数据最干净: 657 条带 tier，114 爆 / 553 趴
+    - 数据回收率 59%（B 家族中最高）
+    - 方向相对简单（4 个用户场景）
+    - 保健品合规相对清晰（不像处方药复杂）
+    
+    试点目标:
+    1. 验证 onboarding SOP 在真实项目上的可行性
+    2. 跑通 essence 标注 pipeline
+    3. 测试 LLM audience 推断的质量
+    4. 输出"试点报告"——记录流程盲点和优化建议
+    
+    待澄清问题:
+    - Q: 方向"营养保健代餐相关"的 target_audience，"中老年"是否需要细分？
+    - Q: tier_thresholds 的"大爆 800"是否合理？需要看 NUC_1 实际 interactions 分布
+    - Q: 客户合同里是否允许使用蒲公英观众数据？

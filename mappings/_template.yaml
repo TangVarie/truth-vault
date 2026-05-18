@@ -1,0 +1,238 @@
+# ════════════════════════════════════════════════════════════════════
+# Truth Vault · Project Mapping Template
+# ════════════════════════════════════════════════════════════════════
+#
+# 复制这个模板到 mappings/<project_id>.yaml 然后填写。
+# 见 docs/04-onboarding-sop.md 的 7 步 SOP。
+#
+# 必填字段标 [REQUIRED]，可选字段标 [OPTIONAL]
+# ════════════════════════════════════════════════════════════════════
+
+version: 1.0
+
+# ── 项目元数据 [REQUIRED] ──
+project_id: PROJECT_PHASE      # 形式: 品牌缩写_phase号，如 NUC_phase1, NRT_phase3
+brand: 品牌中文全名
+product: 具体产品名
+category: 保健品                # 处方药/保健品/美妆/酒类/FMCG/母婴/教育/其他
+platform: xiaohongshu          # xiaohongshu / douyin
+schema_family: B               # A / B / C (见 docs/03-mapping-protocol.md)
+start_date: 2025-XX-XX
+end_date: 2026-XX-XX            # 可填预估或留空
+
+# ════════════════════════════════════════════════════════════════════
+# 字段映射 [REQUIRED]
+# ════════════════════════════════════════════════════════════════════
+# 
+# 左边: 飞书表里的原始列名（精确匹配）
+# 右边: 映射到 schema 的字段
+# 
+# - 以 _ 开头的是中间变量，进入二次处理
+# - 其他直接映射到 notes 表的对应字段
+# - 飞书表里未列出的字段会自动进 raw_extra（除非进 project_specific_fields_to_raw_extra 显式列）
+
+field_mapping:
+  # ── 标识 ──
+  素人编号: note_id_suffix
+  
+  # ── 内容 ──
+  文案: raw_content
+  发布时间: publish_time
+  反馈链接: publish_url
+  
+  # ── A/B 家族通用 ──
+  状态: _status_raw                    # 走 tier_extraction
+  方向: _direction_raw                  # 走 direction_decomposition
+  
+  # ── 数据回收（按家族字段命名）──
+  # A 家族:
+  # 曝光数: impressions
+  # 阅读数: reads
+  # 互动数: interactions
+  # B 家族:
+  曝光量: impressions
+  阅读量: reads
+  互动量: interactions
+  
+  # ── 蓝词 ──
+  关键词: target_blue_keywords          # 目标蓝词（投放前定）
+  蓝词记录: hit_blue_keywords           # 实际命中（事后回收）
+  
+  # ── 评论 ──
+  爆帖置顶评论: pinned_comment
+  随贴评论: _comment_text                # 进 comments 表
+  随贴评论素人: _comment_text_persona    # 进 comments 表
+  
+  # ── 账号信息 ──
+  帐号昵称: account_name
+  粉丝数: account_followers              # B/C 家族这里没有，需后续补录
+  
+  # ── 意图 ──
+  发布笔记: _intent_raw                  # 走 intent_mapping
+  
+  # ── 数据健康度（仅 A 家族）──
+  数据回收情况: data_quality_status
+
+# ════════════════════════════════════════════════════════════════════
+# Intent 映射 [REQUIRED if has _intent_raw]
+# ════════════════════════════════════════════════════════════════════
+# 
+# 飞书原值 → schema enum
+# 飞书原值可能多种，需要逐一列出
+
+intent_mapping:
+  流量帖: traffic
+  钓鱼帖: traffic
+  直给笔记: conversion
+  小红书下单: conversion
+  淘宝下单: conversion
+  科普贴: educational
+  截图: other
+  大字报: other
+
+# ════════════════════════════════════════════════════════════════════
+# 方向拆解 [REQUIRED]
+# ════════════════════════════════════════════════════════════════════
+# 
+# 飞书「方向」字段的每个不同取值，映射到多个标准维度
+# 这是 onboarding 最关键的部分 —— 必须策略 lead 决定
+# 
+# 详见 docs/04-onboarding-sop.md Step 3
+
+direction_decomposition:
+  
+  "方向取值1":
+    content_format: 情感叙事            # [REQUIRED] 见 docs/05-controlled-vocab.md
+    intent_override: null               # [OPTIONAL] 覆盖项目级 intent
+    target_audience: ["中年女性"]       # [REQUIRED] 多选，受控词表
+    user_pain_point: 衰老焦虑            # [OPTIONAL] 自由文本
+    product_focus: null                 # [OPTIONAL] 项目专属（如 NRT 的"咀嚼胶"）
+    tier_threshold_override: null       # [OPTIONAL] 方向级别覆盖项目阈值
+  
+  "方向取值2":
+    content_format: 直给推荐
+    target_audience: ["通用"]
+    user_pain_point: null
+
+  # NRT 风格组合标签示例
+  "为爱助戒, 咀嚼胶":
+    content_format: 情感叙事
+    target_audience: ["伴侣家人"]
+    user_pain_point: 为伴侣戒烟
+    product_focus: 咀嚼胶
+
+# ════════════════════════════════════════════════════════════════════
+# Tier 抽取规则 [REQUIRED]
+# ════════════════════════════════════════════════════════════════════
+# 
+# A/B 家族通常用 "状态字段"
+# C 家族用 "备注字段"
+
+tier_extraction:
+  source: 状态字段                       # 状态字段 / 备注字段
+  
+  # A/B 家族标准规则（见 docs/03-mapping-protocol.md）
+  rules:
+    - match_contains: ["大爆"]
+      tier: 大爆
+    - match_contains: ["爆贴预备"]
+      tier: 预备
+    - match_contains: ["爆贴"]
+      tier: 爆
+    - match_contains: ["风控"]
+      tier: 风控
+    - match_contains: ["无水花"]
+      tier: 趴
+    - match_contains: ["评估中"]
+      tier: 未知
+    - default: null
+  
+  # C 家族示例（TGV_1）:
+  # rules:
+  #   - match_exact: ["新爆", " 新爆"]
+  #     tier: 爆
+  #   - match_exact: ["淘汰"]
+  #     tier: 趴
+  #   - match_contains: ["删0", "他自己删了"]
+  #     tier: 删除
+  #   - default: null
+
+# ════════════════════════════════════════════════════════════════════
+# Tier 数值阈值 [REQUIRED]
+# ════════════════════════════════════════════════════════════════════
+# 
+# 用于"数值推断"兜底（人工 tier 缺失时按互动数判定）
+# 数值参考: 见 docs/04-onboarding-sop.md Step 5
+
+tier_thresholds:
+  爆: 100         # interactions ≥ 100 视为爆
+  大爆: 1000      # interactions ≥ 1000 视为大爆
+
+# ════════════════════════════════════════════════════════════════════
+# 合规配置 [OPTIONAL but recommended]
+# ════════════════════════════════════════════════════════════════════
+
+compliance:
+  base_template: null                   # 处方药/保健品/美妆/null
+  custom_red_flags:
+    - "项目专属红线 1"
+    - "项目专属红线 2"
+  
+  blue_keyword_strategy:
+    primary: []                          # 主推蓝词
+    secondary: []                        # 次推
+    avoid: []                            # 禁词
+
+# ════════════════════════════════════════════════════════════════════
+# 项目专属字段（进 raw_extra）[OPTIONAL]
+# ════════════════════════════════════════════════════════════════════
+# 
+# 飞书表里的项目独有字段，全部列在这里
+# 这些字段不丢，永远存在 notes.raw_extra JSONB 里
+# 即使当时不知道有什么用，将来可能发现价值
+
+project_specific_fields_to_raw_extra:
+  - 父记录 2
+  - 父记录 3
+  - 父记录 4
+  - 临时-评论修改对比
+  - 临时用—爆帖tag添加
+  - 项目阶段
+  - 打款金额
+  - 是否留存
+  - 理论金额结算
+  - 数据汇总
+  - 观众分析
+  - 巡查状态
+  - 最近检查时间
+
+# ════════════════════════════════════════════════════════════════════
+# 数据补录需求 [OPTIONAL]
+# ════════════════════════════════════════════════════════════════════
+# 
+# 这个项目缺失但需要后续补录的字段
+
+data_supplement_needed:
+  - field: account_followers
+    method: 通过 publish_url 调小红书 API 或人工补录
+    estimated_rows: 0
+
+# ════════════════════════════════════════════════════════════════════
+# Sync 配置 [OPTIONAL]
+# ════════════════════════════════════════════════════════════════════
+
+sync_config:
+  source_type: manual_xlsx              # manual_xlsx / feishu_api
+  source_table_token: null              # 如果是 feishu_api，填飞书表 token
+  sync_interval: weekly                  # weekly / daily / on_demand
+  
+# ════════════════════════════════════════════════════════════════════
+# Onboarding 元数据 [REQUIRED]
+# ════════════════════════════════════════════════════════════════════
+
+onboarding_meta:
+  onboarded_at: 2026-XX-XX
+  onboarded_by: 项目经理姓名
+  strategy_lead: Ziao / 周哥
+  notes: |
+    Onboarding 过程中的备忘 / 边界情况说明 / 待澄清问题
