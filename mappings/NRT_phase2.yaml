@@ -1,0 +1,318 @@
+# ════════════════════════════════════════════════════════════════════
+# NRT_phase2 · 力克雷第 2 期 Mapping Configuration · DRAFT v1
+# ════════════════════════════════════════════════════════════════════
+#
+# 基于 NRT_2 真实数据 1056 行，21 种方向取值
+# NRT_2 比 NRT_3 多 1 个内容方向维度："隐形烟渍"（NRT_2 独有）
+# 大部分方向逻辑复用 NRT_phase3.yaml
+# ════════════════════════════════════════════════════════════════════
+
+version: 1.0
+project_id: NRT_phase2
+brand: 力克雷
+product: NRT 系列戒烟产品（咀嚼胶/喷雾/戒烟贴）
+category: 处方药
+platform: xiaohongshu
+schema_family: B
+start_date: null
+end_date: null
+
+# ── 字段映射 ──
+field_mapping:
+  素人编号: note_id_suffix
+  发布时间: publish_time
+  发布笔记: _intent_raw
+  方向: _direction_raw
+  关键词: target_blue_keywords
+  反馈链接: publish_url
+  文案: raw_content
+  状态: _status_raw
+  曝光量: impressions
+  阅读量: reads
+  互动量: interactions
+  蓝词记录: hit_blue_keywords
+  爆帖置顶评论: pinned_comment
+  随贴评论: _comment_text
+  随贴评论素人: _comment_text_persona
+
+# NRT_2 intent 字段命名和 NRT_3 不同：
+# - NRT_2 用"钓鱼帖"（NRT_3 用"流量帖"），但语义一致 = traffic
+intent_mapping:
+  钓鱼帖: traffic   # NRT_2 用语
+  流量帖: traffic   # 兼容
+  直给笔记: conversion
+
+# ════════════════════════════════════════════════════════════════════
+# 方向拆解 · NRT_phase2
+# ════════════════════════════════════════════════════════════════════
+
+direction_decomposition:
+
+  # ──────────────────────────────────────
+  # 单标 · 身份维度
+  # ──────────────────────────────────────
+
+  "女性自发":  # 16 条
+    content_format: 情感叙事
+    intent_override: traffic
+    target_audience: ["年轻女性"]
+    user_pain_point: 形象焦虑/健康警示驱动的个人戒烟
+    product_focus: null
+
+  "男性自发":  # 2 条
+    content_format: 情感叙事
+    intent_override: traffic
+    target_audience: ["中年男性", "年轻男性"]
+    user_pain_point: 健康警示/家庭责任驱动
+    product_focus: null
+
+  "为爱助戒":  # 25 条
+    content_format: 情感叙事
+    intent_override: traffic
+    target_audience: ["伴侣家人"]
+    user_pain_point: 为伴侣/孩子戒烟、二手烟担忧
+    product_focus: null
+
+  # ──────────────────────────────────────
+  # 单标 · 产品形式维度
+  # ──────────────────────────────────────
+
+  "咀嚼胶":  # 57 条（53 直给 + 4 钓鱼）—— NRT_2 出现少量钓鱼帖型咀嚼胶内容
+    content_format: 直给推荐
+    intent_override: conversion
+    target_audience: ["通用"]
+    user_pain_point: 戒断替代需求
+    product_focus: 咀嚼胶
+
+  "喷雾":  # 32 条（29 直给 + 3 钓鱼）
+    content_format: 直给推荐
+    intent_override: conversion
+    target_audience: ["通用"]
+    user_pain_point: 戒断替代需求
+    product_focus: 喷雾
+
+  "戒烟贴":  # 15 条 - 全部直给
+    content_format: 直给推荐
+    intent_override: conversion
+    target_audience: ["通用"]
+    user_pain_point: 戒断替代需求
+    product_focus: 戒烟贴
+
+  # ──────────────────────────────────────
+  # 单标 · 内容方向维度
+  # ──────────────────────────────────────
+
+  "NRT疗法引导":  # 30 条 - 全部钓鱼帖
+    content_format: 认知重构
+    intent_override: traffic
+    target_audience: ["通用"]
+    user_pain_point: 不了解 NRT 疗法
+    product_focus: null
+
+  "品牌本身":  # 18 条（16 钓鱼 + 2 直给）
+    content_format: 直给推荐
+    intent_override: traffic   # NRT_2 数据显示多数是钓鱼帖型，所以 intent 是 traffic
+    target_audience: ["通用"]
+    user_pain_point: 品牌信任
+    product_focus: null
+
+  "隐形烟渍":  # 7 条 ⭐ NRT_2 独有方向
+    content_format: 场景植入
+    intent_override: traffic   # 借助场景撬动流量，不是直接植入产品
+    target_audience: ["宝妈", "中年女性"]
+    user_pain_point: 三手烟/烟渍对家庭和孩子的隐性危害
+    product_focus: null
+
+  # ──────────────────────────────────────
+  # 组合标签 · 身份 + 产品形式
+  # ──────────────────────────────────────
+
+  "为爱助戒, 咀嚼胶":  # 10 条
+    content_format: 情感叙事
+    intent_override: traffic
+    target_audience: ["伴侣家人"]
+    user_pain_point: 为伴侣戒烟 + 推荐具体产品形式
+    product_focus: 咀嚼胶
+
+  "为爱助戒, 喷雾":  # 10 条
+    content_format: 情感叙事
+    intent_override: traffic
+    target_audience: ["伴侣家人"]
+    user_pain_point: 为伴侣戒烟 + 推荐具体产品形式
+    product_focus: 喷雾
+
+  "为爱助戒, 戒烟贴":  # 4 条
+    content_format: 情感叙事
+    intent_override: traffic
+    target_audience: ["伴侣家人"]
+    user_pain_point: 为伴侣戒烟 + 推荐具体产品形式
+    product_focus: 戒烟贴
+
+  "男性自发, 喷雾":  # 3 条
+    content_format: 情感叙事
+    intent_override: traffic
+    target_audience: ["中年男性", "年轻男性"]
+    user_pain_point: 个人戒烟挣扎
+    product_focus: 喷雾
+
+  "男性自发, 咀嚼胶":  # 1 条
+    content_format: 情感叙事
+    intent_override: traffic
+    target_audience: ["中年男性", "年轻男性"]
+    user_pain_point: 个人戒烟挣扎
+    product_focus: 咀嚼胶
+
+  "女性自发, 喷雾":  # 2 条
+    content_format: 情感叙事
+    intent_override: traffic
+    target_audience: ["年轻女性"]
+    user_pain_point: 个人戒烟挣扎
+    product_focus: 喷雾
+
+  "女性自发, 戒烟贴":  # 1 条
+    content_format: 情感叙事
+    intent_override: traffic
+    target_audience: ["年轻女性"]
+    user_pain_point: 个人戒烟挣扎
+    product_focus: 戒烟贴
+
+  # ──────────────────────────────────────
+  # 组合标签 · 身份 + 内容方向
+  # ──────────────────────────────────────
+
+  "为爱助戒, 品牌本身":  # 1 条
+    content_format: 情感叙事
+    intent_override: traffic
+    target_audience: ["伴侣家人"]
+    user_pain_point: 为伴侣戒烟 + 品牌信任
+    product_focus: null
+
+  "男性自发, 品牌本身":  # 8 条
+    content_format: 情感叙事
+    intent_override: traffic
+    target_audience: ["中年男性", "年轻男性"]
+    user_pain_point: 个人戒烟 + 品牌信任
+    product_focus: null
+
+  "隐形烟渍, 品牌本身":  # 4 条
+    content_format: 场景植入
+    intent_override: traffic
+    target_audience: ["宝妈", "中年女性"]
+    user_pain_point: 三手烟危害 + 品牌信任
+    product_focus: null
+
+  # ──────────────────────────────────────
+  # 组合标签 · 产品形式之间
+  # ──────────────────────────────────────
+
+  "咀嚼胶, 喷雾":  # 1 条
+    content_format: 横评对比
+    intent_override: conversion
+    target_audience: ["通用"]
+    user_pain_point: 多产品形式对比
+    product_focus: 咀嚼胶+喷雾
+
+# ════════════════════════════════════════════════════════════════════
+# 数据异常方向
+# ════════════════════════════════════════════════════════════════════
+
+excluded_directions:
+  - direction: "女性自发, 男性自发"  # NRT_2 只 1 条
+    count: 1
+    reason: 飞书表标注错误
+    handling: tier_source="数据异常"，不进训练数据
+
+# ════════════════════════════════════════════════════════════════════
+# Tier 抽取规则
+# ════════════════════════════════════════════════════════════════════
+
+tier_extraction:
+  source: 状态字段
+  rules:
+    - match_contains: ["大爆"]
+      tier: 大爆
+    - match_contains: ["爆贴预备"]
+      tier: 预备
+    - match_contains: ["爆贴"]
+      tier: 爆
+    - match_contains: ["风控"]
+      tier: 风控
+    - match_contains: ["无水花"]
+      tier: 趴
+    - match_contains: ["评估中"]
+      tier: 未知
+    - default: null
+
+# ── Tier 数值阈值 ──
+tier_thresholds:
+  爆: 200
+  大爆: 1500
+
+# ════════════════════════════════════════════════════════════════════
+# 合规
+# ════════════════════════════════════════════════════════════════════
+
+compliance:
+  base_template: 处方药
+  custom_red_flags:
+    - "禁止任何'治疗'字样"
+    - "禁止剂量数字（mg/g）"
+    - "禁止与症状直接关联"
+    - "禁止'根治''治愈'等绝对化表达"
+    - "禁止暗示替代医疗"
+  blue_keyword_strategy:
+    primary: ["力克雷", "NRT 疗法", "尼古丁替代疗法"]
+    secondary: ["戒烟科学方法", "尼古丁戒断"]
+    avoid: ["处方药", "治疗", "治愈"]
+
+# ════════════════════════════════════════════════════════════════════
+# 数据补录
+# ════════════════════════════════════════════════════════════════════
+
+data_supplement_needed:
+  - field: account_followers
+    method: B 家族缺粉丝数
+    estimated_rows: 1056
+
+# ════════════════════════════════════════════════════════════════════
+# 项目专属字段进 raw_extra
+# ════════════════════════════════════════════════════════════════════
+
+project_specific_fields_to_raw_extra:
+  - 父记录 2
+  - 父记录 3
+  - 父记录 4
+  - 临时-评论修改对比
+  - 临时用—爆帖tag添加
+  - 项目阶段
+  - 打款金额
+  - 是否留存
+  - 理论金额结算
+  - 数据整理
+
+# ════════════════════════════════════════════════════════════════════
+# Sync
+# ════════════════════════════════════════════════════════════════════
+
+sync_config:
+  source_type: manual_xlsx
+  source_table_token: null
+  sync_interval: on_demand
+
+# ════════════════════════════════════════════════════════════════════
+# Onboarding 元数据
+# ════════════════════════════════════════════════════════════════════
+
+onboarding_meta:
+  onboarded_at: 2026-05-18
+  onboarded_by: Ziao + Claude (Session #3)
+  strategy_lead: Ziao
+  notes: |
+    Session #3 同时完成 NRT_2 和 NRT_3 方向拆解。
+    NRT_2 比 NRT_3 独有"隐形烟渍"方向（11 条总，含组合）。
+    
+    关键发现:
+    - NRT_2 用"钓鱼帖"，NRT_3 用"流量帖"，语义相同 → intent=traffic
+    - "隐形烟渍" = 场景植入借助场景撬动流量，target_audience 是宝妈/中年女性（家庭主妇视角）
+    - NRT_2 数据样本（孕期闻味、冰箱串味、孩子来玩咳嗽）全是家庭主妇/育儿期视角
+    - NRT_2 直给笔记主要来自咀嚼胶（53 条），戒烟贴（15 条），喷雾（29 条）

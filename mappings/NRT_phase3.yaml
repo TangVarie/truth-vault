@@ -1,0 +1,320 @@
+# ════════════════════════════════════════════════════════════════════
+# NRT_phase3 · 力克雷第 3 期 Mapping Configuration · DRAFT v1
+# ════════════════════════════════════════════════════════════════════
+#
+# 在 Session #3 中由 Ziao 拍方向拆解策略，基于 NRT_3 真实数据 1162 行的分布
+# 17 种方向取值，3 个独立维度（身份/产品形式/内容方向）
+# 实际数据已验证 intent 与方向类型的对应关系
+#
+# 见 docs/04-onboarding-sop.md · DECISIONS D-009 (词表 v0.2) · D-010 (target_audience 实际意图原则)
+# ════════════════════════════════════════════════════════════════════
+
+version: 1.0
+project_id: NRT_phase3
+brand: 力克雷
+product: NRT 系列戒烟产品（咀嚼胶/喷雾/戒烟贴）
+category: 处方药
+platform: xiaohongshu
+schema_family: B
+start_date: null  # 待项目经理补
+end_date: null    # 待项目经理补
+
+# ── 字段映射 ──
+field_mapping:
+  素人编号: note_id_suffix
+  发布时间: publish_time
+  发布笔记: _intent_raw
+  方向: _direction_raw
+  关键词: target_blue_keywords
+  反馈链接: publish_url
+  文案: raw_content
+  状态: _status_raw
+  曝光量: impressions
+  阅读量: reads
+  互动量: interactions
+  蓝词记录: hit_blue_keywords
+  爆帖置顶评论: pinned_comment
+  随贴评论: _comment_text
+  随贴评论素人: _comment_text_persona
+  评论数: _comment_count
+
+intent_mapping:
+  流量帖: traffic
+  直给笔记: conversion
+  # NRT_3 实际只有这两个取值（564 行未发布 + 512 流量帖 + 86 直给）
+
+# ════════════════════════════════════════════════════════════════════
+# 方向拆解 · NRT_phase3 核心策略表
+# ════════════════════════════════════════════════════════════════════
+#
+# 数据观察：
+# - 总爆款样本: 23（大爆 17 + 爆 8）* 实际从交叉表统计
+# - 爆款几乎全部集中在身份导向方向（女性自发 + 男性自发 + 为爱助戒 = 19 爆款样本）
+# - 单标产品形式（咀嚼胶/喷雾/戒烟贴）0 爆款 —— 是直给笔记，本身不是爆款逻辑
+# - intent 与方向类型 100% 对齐：身份/内容方向类 → 流量；产品形式单标 → 直给
+#
+# 关键设计决策：
+# - target_audience 反映"该期实际策略意图"，不是理论可能性集合（DECISIONS D-010）
+# - 实际看爆款样本，"女性自发"全是年轻女性 angle → 标 ["年轻女性"]
+# - "男性自发"标注混杂（含女性视角错标）→ 粗集合 ["中年男性", "年轻男性"]，留 LLM 校准
+
+direction_decomposition:
+
+  # ──────────────────────────────────────
+  # 单标 · 身份维度（NRT_3 爆款主力）
+  # ──────────────────────────────────────
+
+  "女性自发":  # 211 条 · 11 爆款（8 大爆 + 3 爆）⭐ 主爆款源
+    content_format: 情感叙事
+    intent_override: traffic
+    target_audience: ["年轻女性"]
+    user_pain_point: 形象焦虑/健康警示驱动的个人戒烟
+    product_focus: null
+
+  "男性自发":  # 147 条 · 4 爆款（3 大爆 + 1 爆）
+    content_format: 情感叙事
+    intent_override: traffic
+    target_audience: ["中年男性", "年轻男性"]  # 粗集合 - 飞书标注本身混杂
+    user_pain_point: 健康警示/家庭责任驱动
+    product_focus: null
+
+  "为爱助戒":  # 114 条 · 8 爆款（5 大爆 + 3 爆）⭐ 第二爆款源
+    content_format: 情感叙事
+    intent_override: traffic
+    target_audience: ["伴侣家人"]
+    user_pain_point: 为伴侣/孩子戒烟、二手烟担忧
+    product_focus: null
+
+  # ──────────────────────────────────────
+  # 单标 · 产品形式维度（直给笔记，0 爆款属正常）
+  # ──────────────────────────────────────
+
+  "咀嚼胶":  # 33 条 · 0 爆款
+    content_format: 直给推荐
+    intent_override: conversion
+    target_audience: ["通用"]
+    user_pain_point: 戒断替代需求
+    product_focus: 咀嚼胶
+
+  "喷雾":  # 26 条 · 0 爆款
+    content_format: 直给推荐
+    intent_override: conversion
+    target_audience: ["通用"]
+    user_pain_point: 戒断替代需求
+    product_focus: 喷雾
+
+  "戒烟贴":  # 26 条 · 0 爆款
+    content_format: 直给推荐
+    intent_override: conversion
+    target_audience: ["通用"]
+    user_pain_point: 戒断替代需求
+    product_focus: 戒烟贴
+
+  # ──────────────────────────────────────
+  # 单标 · 内容方向维度
+  # ──────────────────────────────────────
+
+  "NRT疗法引导":  # 8 条 · 0 爆款
+    content_format: 认知重构
+    intent_override: traffic
+    target_audience: ["通用"]
+    user_pain_point: 不了解 NRT 疗法
+    product_focus: null
+
+  # ──────────────────────────────────────
+  # 组合标签 · 身份 + 内容方向
+  # ──────────────────────────────────────
+
+  "女性自发, NRT疗法引导":  # 7 条
+    content_format: 情感叙事
+    intent_override: traffic
+    target_audience: ["年轻女性"]
+    user_pain_point: 个人戒烟挣扎 + 寻求 NRT 方案
+    product_focus: null
+
+  "女性自发, 品牌本身":  # 7 条 · 1 爆
+    content_format: 情感叙事
+    intent_override: traffic
+    target_audience: ["年轻女性"]
+    user_pain_point: 个人戒烟 + 品牌信任
+    product_focus: null
+
+  "男性自发, NRT疗法引导":  # 5 条
+    content_format: 情感叙事
+    intent_override: traffic
+    target_audience: ["中年男性", "年轻男性"]
+    user_pain_point: 个人戒烟挣扎 + 寻求 NRT 方案
+    product_focus: null
+
+  "男性自发, 品牌本身":  # 2 条
+    content_format: 情感叙事
+    intent_override: traffic
+    target_audience: ["中年男性", "年轻男性"]
+    user_pain_point: 个人戒烟 + 品牌信任
+    product_focus: null
+
+  # ──────────────────────────────────────
+  # 组合标签 · 身份 + 产品形式
+  # ──────────────────────────────────────
+
+  "女性自发, 戒烟贴":  # 2 条
+    content_format: 情感叙事
+    intent_override: traffic
+    target_audience: ["年轻女性"]
+    user_pain_point: 个人戒烟挣扎
+    product_focus: 戒烟贴
+
+  "男性自发, 戒烟贴":  # 2 条
+    content_format: 情感叙事
+    intent_override: traffic
+    target_audience: ["中年男性", "年轻男性"]
+    user_pain_point: 个人戒烟挣扎
+    product_focus: 戒烟贴
+
+  "男性自发, 戒烟贴, 咀嚼胶":  # 1 条
+    content_format: 情感叙事
+    intent_override: traffic
+    target_audience: ["中年男性", "年轻男性"]
+    user_pain_point: 个人戒烟 + 多产品形式对比
+    product_focus: 戒烟贴+咀嚼胶
+
+  # ──────────────────────────────────────
+  # 组合标签 · 内容方向 + 产品形式
+  # ──────────────────────────────────────
+
+  "NRT疗法引导, 戒烟贴":  # 6 条 · 1 大爆
+    content_format: 认知重构
+    intent_override: traffic
+    target_audience: ["通用"]
+    user_pain_point: NRT 科普 + 戒烟贴说明
+    product_focus: 戒烟贴
+
+  "NRT疗法引导, 喷雾":  # 1 条
+    content_format: 认知重构
+    intent_override: traffic
+    target_audience: ["通用"]
+    user_pain_point: NRT 科普 + 喷雾说明
+    product_focus: 喷雾
+
+# ════════════════════════════════════════════════════════════════════
+# 数据异常方向（不参与训练，但保留原始数据）
+# ════════════════════════════════════════════════════════════════════
+
+excluded_directions:
+  - direction: "女性自发, 男性自发"  # NRT_3 只 1 条，明显标注错误（不可能同时男女自发）
+    count: 1
+    reason: 飞书表标注错误，不可能同时是男性和女性自发
+    handling: tier_source="数据异常"，不进训练数据
+
+# ════════════════════════════════════════════════════════════════════
+# Tier 抽取 · A/B 家族标准规则
+# ════════════════════════════════════════════════════════════════════
+
+tier_extraction:
+  source: 状态字段
+  rules:
+    - match_contains: ["大爆"]
+      tier: 大爆
+    - match_contains: ["爆贴预备"]
+      tier: 预备
+    - match_contains: ["爆贴"]
+      tier: 爆
+    - match_contains: ["风控"]
+      tier: 风控
+    - match_contains: ["无水花"]
+      tier: 趴
+    - match_contains: ["评估中"]
+      tier: 未知
+    - default: null
+
+# ── Tier 数值阈值 ──
+# 基于 NRT_3 互动量分布。需 onboarding 时根据实际中位数校准
+tier_thresholds:
+  爆: 200    # 待数据导入后验证
+  大爆: 1500
+
+# ════════════════════════════════════════════════════════════════════
+# 合规
+# ════════════════════════════════════════════════════════════════════
+
+compliance:
+  base_template: 处方药
+  custom_red_flags:
+    - "禁止任何'治疗'字样"
+    - "禁止剂量数字（mg/g）"
+    - "禁止与症状直接关联"
+    - "禁止'根治''治愈'等绝对化表达"
+    - "禁止暗示替代医疗"
+    - "NRT 处方药身份必须合规"
+  blue_keyword_strategy:
+    primary: ["力克雷", "NRT 疗法", "尼古丁替代疗法"]
+    secondary: ["戒烟科学方法", "尼古丁戒断"]
+    avoid: ["处方药", "治疗", "治愈"]
+
+# ════════════════════════════════════════════════════════════════════
+# 数据补录
+# ════════════════════════════════════════════════════════════════════
+
+data_supplement_needed:
+  - field: account_followers
+    method: B 家族缺粉丝数，需通过 publish_url 调小红书 API 补录
+    estimated_rows: 1162
+
+# ════════════════════════════════════════════════════════════════════
+# 项目专属字段进 raw_extra
+# ════════════════════════════════════════════════════════════════════
+
+project_specific_fields_to_raw_extra:
+  - 父记录 2
+  - 父记录 3
+  - 父记录 4
+  - 临时-评论修改对比
+  - 临时用—爆帖tag添加
+  - 项目阶段
+  - 打款金额
+  - 是否留存
+  - 理论金额结算
+  - 数据整理
+  - 评论状态
+  - 相关截图
+  - 蓝词图片
+  - 评论配图
+  - 图片
+  - 前五评论
+  - 曝光副本
+  - 阅读副本
+  - 互动副本
+
+# ════════════════════════════════════════════════════════════════════
+# Sync
+# ════════════════════════════════════════════════════════════════════
+
+sync_config:
+  source_type: manual_xlsx
+  source_table_token: null
+  sync_interval: on_demand
+
+# ════════════════════════════════════════════════════════════════════
+# Onboarding 元数据
+# ════════════════════════════════════════════════════════════════════
+
+onboarding_meta:
+  onboarded_at: 2026-05-18
+  onboarded_by: Ziao + Claude (Session #3)
+  strategy_lead: Ziao
+  notes: |
+    Session #3 完成 NRT_3 方向拆解。基于 NRT_3 真实 1162 行数据归纳。
+    
+    关键策略决策:
+    1. 单标产品形式（咀嚼胶/喷雾/戒烟贴）→ 直给推荐 + conversion
+    2. 身份导向方向（女性/男性自发/为爱助戒）→ 情感叙事 + traffic
+    3. 内容方向（NRT疗法引导）→ 认知重构 + traffic
+    4. 数据 100% 验证：身份/内容方向类 = 流量帖；产品形式单标 = 直给笔记
+    5. target_audience 标本期实际意图：女性自发 = 年轻女性（飞书数据全是年轻 angle）
+    6. 男性自发飞书标注混杂（含女性视角错标），target_audience 留粗集合让 LLM 校准
+    7. "女性自发, 男性自发"（1 条）作为数据异常 quarantine
+    
+    待澄清:
+    - tier 阈值 200/1500 基于估算，需要数据导入后看实际互动量中位数校准
+    - 男性自发的具体年龄分布需要更多样本验证（爆款只 4 条）
+    - start_date / end_date 需项目经理补填

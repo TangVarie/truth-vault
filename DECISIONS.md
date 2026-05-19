@@ -185,6 +185,14 @@ TGV_1 从 archive only 升级到 notes 主表（数值字段允许为 null）。
 - 训练数据池从 ~3,000 增加到 ~3,400 条（增量 13%）
 - 增加 47 个爆款样本（总爆款样本池 ~328 → ~328 个，14% 增量）
 
+**2026-05-18 补充澄清（Session #3）**:
+`tier=删除` 语义明确为**主动删除**（内容质量不达预期、运营决定删了重新发新的），不等同于 `tier=风控`。风控是平台限流行为，有独立标注。
+
+训练时 `tier=删除` 的处理：
+- 视为**强负样本**（运营主动判断不好到要删，比"无水花"更明确的失败信号）
+- 但样本量小（TGV_1 64 条）不适合独立 label，建议合并到"趴"做二分类训练
+- 训练时可加大权重（如 weight=1.5）以反映其更明确的负样本性质
+
 ---
 
 ## D-008 · Schema v1 必须包含 audience 层
@@ -281,6 +289,157 @@ trend_dependencies 关键重构（三级时间分层）：
 - CURRENT_STATE 任务 #1 阻塞解除，可启动 NUC_1 pilot
 
 **未变更字段**: intent / content_format / emotional_valence / emotional_intensity / tier
+
+---
+
+## D-010 · target_audience 反映项目+方向的实际策略意图
+
+**日期**: 2026-05-18
+
+**What**: `target_audience` 字段（onboarding 时定义）的含义明确为"**该项目+该方向的实际策略意图人群**"，而不是"理论可能性集合"。
+
+具体规则：
+- 如果该方向**这一期实际只打了某个人群**（如 NRT_3 女性自发全部是年轻女性 angle）→ 标具体人群 `["年轻女性"]`
+- 如果飞书表本身**标注存在混杂或错误**（如 NRT_3 男性自发既有真男性也有女性视角误标）→ 保留粗集合 `["中年男性", "年轻男性"]`，让 LLM 在 essence 标注阶段通过 inferred_audience_profile.age_band 校准
+- 不强制要求"集合越大越保险"——刻意标更大集合会损失策略意图信号
+
+**Why**:
+- Ziao 在 Session #3 review NRT 方向拆解时提出"target_audience 需要按年龄段分"
+- 实际数据验证：NRT_3 女性自发 211 条全部是年轻女性 angle（健身房 / 医美 / 护肤），如果一律标 `["年轻女性", "中年女性"]` 会丢失"这期实际打的就是年轻"这个策略信号
+- target_audience 是策略层信号，inferred_audience_profile.age_band 是文案层信号，两者对照是数据飞轮的校准点
+
+**Rejected**:
+- "target_audience 永远标理论可能性集合" —— 拒绝，丢失策略意图
+- "target_audience 必须 per-note 由 LLM 自动标" —— 拒绝，onboarding 时由策略 lead 定的"该期实际意图"是必要的人工监督信号
+- "target_audience 和 inferred_audience_profile.age_band 二选一" —— 拒绝，两个字段语义不同：前者是策略意图，后者是文案推断
+
+**Implications**:
+- direction_decomposition 的 target_audience 字段含义在 [docs/04-onboarding-sop.md](docs/04-onboarding-sop.md) Step 3 需更新说明
+- LLM essence 标注 prompt 应该接收 target_audience（候选信号）但不强制限制 inferred_audience_profile 必须在该集合内
+- 飞书标注 vs LLM 推断 disagreement 成为数据质量监控指标
+- NRT_phase3 / NRT_phase2 mapping yaml 按此原则标注（女性自发=["年轻女性"]，男性自发=粗集合）
+
+---
+
+## D-011 · 借助场景撬动流量是 content_format + intent 的特殊组合
+
+**日期**: 2026-05-18
+
+**What**: NRT 项目"隐形烟渍"方向揭示了一个策略模式：**用具体场景作为内容钩子，但目标不是直接植入产品而是引流**。这种模式的 schema 表达是：
+- `content_format: 场景植入`（描述内容的表面形式）
+- `intent_override: traffic`（覆盖默认的产品转化意图）
+
+并且建议在分析阶段（不是 schema 层）识别"场景植入 + traffic"的组合作为一种独立策略类型。
+
+**Why**:
+- Ziao 在 review 隐形烟渍方向时指出："偏向场景植入，但是本质应该是借助场景来撬动流量，而不是直接植入"
+- 单独看 content_format（场景植入）会让人误以为是产品转化（直接植入产品到场景）
+- 单独看 intent（traffic）会丢失"用什么形式做流量"的信息
+- 两者组合识别才是完整的策略类型
+
+**Rejected**:
+- "新增 content_format='场景钩子'" —— 拒绝，会和"场景植入"语义冲突
+- "在 intent 里增加 'scene_traffic' 值" —— 拒绝，intent 和 content_format 是独立维度
+
+**Implications**:
+- mapping yaml 的 direction_decomposition 允许 `intent_override` 字段
+- 分析层面识别 "场景植入 + traffic" 组合作为独立策略，统计其爆款率
+- NRT_phase2 隐形烟渍方向按此组合标注
+- 未来其他项目如发现类似"用场景做流量"的方向（如美妆"医美场景描述"），按相同模式标注
+
+---
+
+## D-012 · 按 intent 分轨训练和优化（traffic vs conversion 走不同管道）⭐ 核心架构原则
+
+**日期**: 2026-05-18
+
+**What**: 阶段 2 训练分类器和阶段 3 的语义检索时，**按 intent 分别训练 / 评估 / 优化**，不混在一个模型里。具体：
+
+- **intent=traffic（流量向内容）管道**:
+  - 模型: `predict_explosion_likelihood`
+  - 评估指标: P(爆)、P(大爆)
+  - 训练正样本: tier ∈ {爆, 大爆}
+  - 训练负样本: tier ∈ {趴, 删除}
+  - 特征侧重: essence 层（emotional_lever、human_truth_archetype）+ surface 钩子
+
+- **intent=conversion（产品向内容）管道**:
+  - 模型: `predict_conversion_effectiveness`
+  - 评估指标: 蓝词命中率、互动率、（将来）转化率
+  - 训练正样本: hit_blue_keywords 命中目标蓝词 + interaction_rate 高
+  - 训练负样本: 完全无效果的直推
+  - 特征侧重: surface 层（产品描述清晰度、卖点呈现）+ content_format 类型
+
+- **intent=educational / mixed / other**: 阶段 1 不单独建模，归入 traffic 管道但降权
+
+**生产时调用方式**:
+- sanshengliubu / autowriter 生产内容前先确定 intent
+- 按 intent 调用对应预测 API
+- 评分对比时**只与同 intent 的历史数据对照**
+
+**Why**:
+- Ziao 原话："产品直推本来就是很少爆款，不管是什么产品都是，有爆款才是应该重点关注的稀罕事"
+- NRT_3 数据验证：单标产品形式（咀嚼胶/喷雾/戒烟贴）85 条 0 爆款，是 intent=conversion 的天然结果，不是"内容不好"
+- 把直推数据和流量帖混在一起训练 → 模型会学到错误信号"产品向 = 一定不爆"，污染对身份导向内容的判断
+- Ziao 原话："不同产品不同目的应该需要做不同的匹配或者预测或者优化"
+- Ziao 原话："应该是预留接口的"——架构上必须从一开始就支持分轨
+
+**Rejected**:
+- "用一个统一模型，把 intent 作为特征传入" —— 拒绝。intent 是核心 confounder，单一模型会学到错误信号
+- "只训练流量向模型，产品向不预测" —— 拒绝。产品向也需要优化（比如蓝词命中率提升），只是评估指标不同
+- "等数据多了再分轨" —— 拒绝。架构决策必须从一开始就预留接口
+
+**Implications**:
+- Schema 层面：intent 字段已存在，不需改 schema
+- API 层面：预留两套独立 endpoint
+  ```
+  POST /v1/predict/explosion   # for intent=traffic
+  POST /v1/predict/conversion  # for intent=conversion
+  ```
+- 阶段 1 anchor 报告必须先确定 intent，再调用对应统计
+- 阶段 2 训练管道按 intent 分组
+- 评估时不再统一报告 "P(爆)"——按 intent 单独看
+- [docs/08-evolution-roadmap.md](docs/08-evolution-roadmap.md) 阶段 2 描述需要更新
+
+**为什么这个决策极重要**: 这是架构层面的"分而治之"原则。如果阶段 2 训练一个统一模型，6 个月后会发现模型在产品向内容上预测全是"不会爆"——但实际上产品向天然爆款少，模型给出的不是错误信号，而是无信息信号。这种情况下整个数据飞轮的下游价值会被稀释。
+
+---
+
+## D-013 · Ingest 阶段 LLM-based sanity check 机制（数据质量监控）
+
+**日期**: 2026-05-18
+
+**What**: 笔记 ingest 入库后，跑 LLM essence 标注产出 inferred_audience_profile。系统**自动对照飞书人工标注的 target_audience**，disagreement 高的笔记 flag for review。
+
+具体机制：
+
+1. **Ingest 阶段**（笔记入库后）→ LLM essence 标注
+2. **Disagreement 检测**:
+   - 比较 `target_audience`（来自飞书方向，onboarding 定义的策略意图）vs `inferred_audience_profile.demographic`（LLM 推断）
+   - 关键维度: age_band 是否 overlap、gender_skew 是否一致
+3. **Flag 阈值**:
+   - gender 不一致（如方向标男性，LLM 推断 female）→ **high flag**（人工 review）
+   - age_band 不 overlap（如方向 ["年轻女性"]，LLM 推断 ["50+"]）→ **medium flag**
+   - 部分重叠 → 不 flag
+4. **存储**: 新增字段 `data_quality_flags JSONB` 在 notes 表，记录 flag 类型和 disagreement 详情
+5. **Review queue**: high flag 笔记进入人工 review queue，运营定期处理
+
+**Why**:
+- Ziao 原话："人工总是有可能出错的，不仅仅是这里"
+- 真实案例: NRT_3 男性自发 4 条爆款里 2 条实际是女性视角（"为了买包戒烟的姐妹"、"半年戒烟买 Chanel"）
+- 如果不监控，错误的 target_audience 会污染下游训练
+- LLM 在 audience 推断上是独立信号源，可以作为人工标注的交叉验证
+
+**Rejected**:
+- "强制 LLM 推断结果覆盖飞书标注" —— 拒绝。LLM 也会出错，需要人工 review 做最终判断
+- "ingest 时阻断（disagreement 高的不入库）" —— 拒绝。会损失数据，应该入库 + flag
+- "只看 audience，不监控其他字段" —— 拒绝。intent 也会标错，将来扩展监控范围
+
+**Implications**:
+- Schema 微调: notes 表新增 `data_quality_flags JSONB` 字段（schema v1.1，加 migration）
+- 工程: ingest 流程加入 LLM 推断 + disagreement 检测步骤
+- 文档: [docs/06-essence-annotation.md](docs/06-essence-annotation.md) 末尾追加"数据质量监控"章节
+- 监控面板: Streamlit 内部 UI 增加 review queue
+- 长期: 累积 disagreement 数据可以训练"自动校正"模型（哪种方向标注容易出错）
 
 ---
 

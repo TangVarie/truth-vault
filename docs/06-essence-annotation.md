@@ -325,6 +325,114 @@ for note in notes_with_dashboard_data:
 
 ---
 
+## 数据质量监控（D-013 ingest sanity check）
+
+LLM 的 audience 推断有第二个用途：**对照飞书人工标注的 target_audience，检测人工标注错误**。
+
+### 为什么需要
+
+NRT_3 男性自发 4 条爆款里 2 条实际是女性视角（"为了买包戒烟的姐妹"被错标成"男性自发"）。**人工标注总有出错可能**。LLM 独立推断 audience 可以作为人工标注的交叉验证。
+
+### 监控逻辑
+
+Ingest 流程：
+
+```python
+async def ingest_note(note_data):
+    # 1. 字段映射 + tier 抽取（按 mapping yaml）
+    note = translate(note_data, project_config)
+    insert_into_notes(note)
+    
+    # 2. LLM essence 标注（生产 inferred_audience_profile）
+    annotation = await run_essence_annotator(note)
+    update_note_with_annotation(note.note_id, annotation)
+    
+    # 3. Sanity check: 飞书 target_audience vs LLM inferred audience
+    flags = check_disagreement(
+        target_audience=note.target_audience,
+        inferred_demographic=annotation['audience']['demographic']
+    )
+    
+    if flags:
+        save_quality_flags(note.note_id, flags)
+        if flags.severity == 'high':
+            add_to_review_queue(note.note_id)
+```
+
+### Disagreement 规则
+
+```python
+def check_disagreement(target_audience, inferred_demographic):
+    flags = []
+    
+    # Gender 检查（最严格）
+    # target_audience 含 "年轻女性"/"中年女性"/"宝妈" → expected female
+    # target_audience 含 "年轻男性"/"中年男性" → expected male
+    expected_gender = derive_expected_gender(target_audience)
+    
+    if expected_gender and inferred_demographic['gender_skew'] != 'mixed':
+        if expected_gender != inferred_demographic['gender_skew']:
+            flags.append({
+                'type': 'gender_mismatch',
+                'severity': 'high',
+                'expected': expected_gender,
+                'inferred': inferred_demographic['gender_skew'],
+                'reason': f"target={target_audience}, but LLM inferred audience is {inferred_demographic['gender_skew']}"
+            })
+    
+    # Age band 检查（宽松）
+    expected_age_bands = derive_expected_age_bands(target_audience)
+    if expected_age_bands and inferred_demographic.get('age_band'):
+        overlap = set(expected_age_bands) & set(inferred_demographic['age_band'])
+        if not overlap:
+            flags.append({
+                'type': 'age_no_overlap',
+                'severity': 'medium',
+                'expected': expected_age_bands,
+                'inferred': inferred_demographic['age_band']
+            })
+    
+    return flags
+```
+
+### Schema 微调
+
+notes 表新增字段（schema v1.1，需要 migration）：
+
+```sql
+ALTER TABLE notes ADD COLUMN IF NOT EXISTS data_quality_flags JSONB;
+
+CREATE INDEX IF NOT EXISTS idx_notes_quality_flags 
+ON notes USING GIN(data_quality_flags);
+
+-- 查询所有 high severity flag 的笔记
+SELECT note_id, project_id, data_quality_flags 
+FROM notes 
+WHERE data_quality_flags @> '[{"severity": "high"}]'::jsonb;
+```
+
+### Review queue 工作流
+
+1. high severity flag 笔记自动进入 review queue
+2. 运营每周看 queue
+3. 对每条 flag review:
+   - **真错标**: 修正 target_audience，记录 disagreement 类型用于 prompt 优化
+   - **LLM 错判**: 标记为 false positive，记录用于 prompt 优化
+   - **边界 case**: 保留双标注，作为词表 v0.3 的输入
+4. Review 结果存到 `quality_review_decisions` 表
+
+### 长期价值
+
+累积 disagreement 数据后，可以：
+
+- **训练自动校正模型**: 哪种方向标注容易出错（比如"X自发"系列容易混杂异性视角）
+- **优化 LLM prompt**: 针对高错误率方向加强 prompt
+- **改进 onboarding SOP**: 把高错误率方向标注规则单独说明给项目经理
+
+这个机制不仅是数据质量监控，**本身就是数据飞轮的一部分**——错误的样本变成校准信号。
+
+---
+
 ## 下一步
 
 1. Ziao + 周哥完成 [05-controlled-vocab.md](05-controlled-vocab.md) review
@@ -332,3 +440,4 @@ for note in notes_with_dashboard_data:
 3. 跑 30 条样本 pilot，看输出质量
 4. 跑全量 3,400 条
 5. 抽检 + 优化
+6. **D-013 sanity check 机制工程实现**（阶段 1 工程启动后）
