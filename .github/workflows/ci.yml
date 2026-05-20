@@ -107,6 +107,46 @@ jobs:
           assert a.validate_essence(good) == [], a.validate_essence(good)
           print("vocab validator self-check OK")
           PY
+      - name: Supabase key validation self-check
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          import os, sys
+          import _common
+          # Stub create_client so we exercise validation, not network.
+          captured = []
+          _common.create_client = lambda url, key, opts: captured.append(key) or "fake"
+
+          os.environ['SUPABASE_URL'] = 'https://test.supabase.co'
+          cases = [
+              ("sb_secret_abc123def456", True, "new sb_secret_ format"),
+              ("sb_publishable_abc123", False, "publishable rejected"),
+              ("anon-key-12345", False, "'anon' substring rejected"),
+              ("xx", False, "too short rejected"),
+              ("eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIn0.fake", True,
+               "legacy JWT service_role"),
+              ("eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoiYW5vbiJ9.fake", False,
+               "legacy JWT anon rejected"),
+              ("some_future_opaque_" + "x" * 50, True,
+               "unrecognized-but-long passes fallback"),
+          ]
+          failed = []
+          for key, should_succeed, desc in cases:
+              os.environ['SUPABASE_SERVICE_ROLE_KEY'] = key
+              try:
+                  _common.get_supabase_client()
+                  ok = True
+              except RuntimeError:
+                  ok = False
+              if ok != should_succeed:
+                  failed.append(desc)
+                  print(f"  FAIL {desc}: ok={ok} expected={should_succeed}")
+              else:
+                  print(f"  ok {desc}")
+          if failed:
+              sys.exit(f"{len(failed)} key validation case(s) failed")
+          print(f"\nkey validation: {len(cases)}/{len(cases)} passed")
+          PY
 
   sql:
     name: SQL apply (Postgres 16)
