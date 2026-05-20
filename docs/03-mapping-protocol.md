@@ -63,7 +63,7 @@
 | `publish_url` | 「反馈链接」 | 「反馈链接」 | 「反馈链接」 |
 | `publish_time` | 「发布时间」 | 「发布时间」 | 「发布时间」 |
 
-† 这两个字段映射到下划线前缀的 intermediate（如 `_account_name`），由 sync 脚本落 `raw_extra` JSONB；`truth_vault.notes` 表里没有这两个直接列。未来版本可以把它们写入 `truth_vault.accounts.notes_text` 或 `account_snapshots`，目前不阻塞主链路。
+† 这两个字段映射到下划线前缀的 intermediate（如 `_account_name`），由 sync 脚本落 `raw_extra` JSONB；`truth_vault.notes` 表里没有这两个直接列。未来版本可以把它们写入 `truth_vault.accounts.account_memo`（D-032 重命名前叫 `notes_text`）或 `account_snapshots`，目前不阻塞主链路。
 
 ### 内容
 

@@ -79,6 +79,23 @@ ALTER TABLE truth_vault.projects DROP COLUMN IF EXISTS last_baokuan_sync_to_aw_a
 CREATE INDEX IF NOT EXISTS idx_tv_projects_brand ON truth_vault.projects(brand);
 CREATE INDEX IF NOT EXISTS idx_tv_projects_category ON truth_vault.projects(category);
 
+-- ⚠️ projects.{total_notes, notes_with_data, notes_with_tier,
+-- notes_with_essence, notes_with_actual_audience, last_sync_at}
+-- 也是缓存列，目前无维护任务。聚合统计请用 v_project_tier_summary /
+-- v_data_health / v_flywheel_sync_status。同 R-006。
+COMMENT ON COLUMN truth_vault.projects.total_notes IS
+    'CACHE-ONLY · 未自动维护; 用 v_project_tier_summary.total_notes';
+COMMENT ON COLUMN truth_vault.projects.notes_with_data IS
+    'CACHE-ONLY · 未自动维护';
+COMMENT ON COLUMN truth_vault.projects.notes_with_tier IS
+    'CACHE-ONLY · 未自动维护; 用 v_data_health.tier_coverage_rate';
+COMMENT ON COLUMN truth_vault.projects.notes_with_essence IS
+    'CACHE-ONLY · 未自动维护; 用 v_data_health.essence_coverage_rate';
+COMMENT ON COLUMN truth_vault.projects.notes_with_actual_audience IS
+    'CACHE-ONLY · 未自动维护';
+COMMENT ON COLUMN truth_vault.projects.last_sync_at IS
+    'CACHE-ONLY · 未自动维护; 用 v_flywheel_sync_status.last_baokuan_sync_to_*_at';
+
 
 -- ════════════════════════════════════════════════════════════════════
 -- 2. accounts (D-020)
@@ -106,6 +123,24 @@ CREATE TABLE IF NOT EXISTS truth_vault.accounts (
 );
 
 CREATE INDEX IF NOT EXISTS idx_tv_accounts_bao_rate ON truth_vault.accounts(personal_bao_rate DESC);
+
+-- ⚠️ accounts.{total_notes_count, bao_count, dabao_count, fengkong_count,
+-- deleted_count, personal_bao_rate} 当前是缓存列，没有触发器或后台 job 维护。
+-- 真实的 per-account 聚合统计在 v_top_performing_accounts 里 live-compute
+-- 出来（按 truth_vault.notes 汇总）。在 cache 维护 job 落地之前，请直接读
+-- view；这些列只用于历史快照场景（操作员人工写入备份）。详见 RISKS.md R-006。
+COMMENT ON COLUMN truth_vault.accounts.total_notes_count IS
+    'CACHE-ONLY · 未自动维护; 用 v_top_performing_accounts.total_notes_count';
+COMMENT ON COLUMN truth_vault.accounts.bao_count IS
+    'CACHE-ONLY · 未自动维护; 用 v_top_performing_accounts.total_bao';
+COMMENT ON COLUMN truth_vault.accounts.dabao_count IS
+    'CACHE-ONLY · 未自动维护';
+COMMENT ON COLUMN truth_vault.accounts.fengkong_count IS
+    'CACHE-ONLY · 未自动维护';
+COMMENT ON COLUMN truth_vault.accounts.deleted_count IS
+    'CACHE-ONLY · 未自动维护';
+COMMENT ON COLUMN truth_vault.accounts.personal_bao_rate IS
+    'CACHE-ONLY · 未自动维护; 用 v_top_performing_accounts.personal_bao_rate';
 
 
 CREATE TABLE IF NOT EXISTS truth_vault.account_snapshots (

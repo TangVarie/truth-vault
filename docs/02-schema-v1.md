@@ -68,7 +68,7 @@
 | `notes` | 已发布笔记 | ~3,400 |
 | `metric_snapshots` | 表现历史 | ~10,000-50,000 |
 | `comments` | 评论 | ~2,700+ |
-| `prepublish_evaluations` | evaluator 准确率追踪 | ~5,000-20,000（sync 时反推存入） |
+| `prepublish_evaluations` | evaluator 准确率追踪 | 0 行（schema-ready；Phase 2 启用，目前无 sync 写入） |
 
 被 v1.2 移出本 schema 的表（数据在现存系统）:
 - `prompt_versions` → `public.outputs` (sanshengliubu)
@@ -95,7 +95,9 @@
 
 ### prepublish_evaluations（D-025 简化版）
 
-仅用于追踪 evaluator（persona / critic / human / model）准确率，不复制候选内容/版本/run。autowriter `_select_best_drafts` 的隐式评审在 sync 时反推存入此表。
+仅用于追踪 evaluator（persona / critic / human / model）准确率，不复制候选内容/版本/run。
+
+⚠️ **当前状态（Sprint 0）**：schema-ready，但 **没有任何 sync 脚本写入此表**，view 也保持空。原计划由 autowriter `_select_best_drafts` 在 sync 时反推存入；D-034 把它推迟到 Phase 2 —— 真正实现前不要把 `v_evaluator_calibration` 的空结果当成「evaluator 准确率 = 未知」误读为「evaluator 表现差」。详见 [09-system-integration.md](09-system-integration.md) 的 D-034 段落。
 
 ```sql
 CREATE TABLE truth_vault.prepublish_evaluations (
