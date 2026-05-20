@@ -519,14 +519,42 @@ CREATE TABLE IF NOT EXISTS truth_vault.undeclared_fields_quarantine (
 );
 
 -- 兼容已部署的 schema (无 feishu_record_id / reason 列)
-ALTER TABLE truth_vault.undeclared_fields_quarantine 
+ALTER TABLE truth_vault.undeclared_fields_quarantine
     ADD COLUMN IF NOT EXISTS feishu_record_id TEXT;
-ALTER TABLE truth_vault.undeclared_fields_quarantine 
+ALTER TABLE truth_vault.undeclared_fields_quarantine
     ADD COLUMN IF NOT EXISTS reason TEXT NOT NULL DEFAULT 'undeclared_fields';
 
 CREATE INDEX IF NOT EXISTS idx_tv_quarantine_project ON truth_vault.undeclared_fields_quarantine(project_id);
 CREATE INDEX IF NOT EXISTS idx_tv_quarantine_status ON truth_vault.undeclared_fields_quarantine(status);
 CREATE INDEX IF NOT EXISTS idx_tv_quarantine_feishu ON truth_vault.undeclared_fields_quarantine(feishu_record_id);
+
+-- 幂等性: 同一 (project, feishu_record, reason) 三元组只保留一行。re-sync 一个
+-- 仍带未声明字段的飞书记录不再叠加 quarantine 行。先去重已部署库里的历史
+-- 重复行 (按 quarantined_at 保留最新), 再加 UNIQUE。
+WITH ranked AS (
+    SELECT quarantine_id,
+           ROW_NUMBER() OVER (
+               PARTITION BY project_id, feishu_record_id, reason
+               ORDER BY quarantined_at DESC, quarantine_id DESC
+           ) AS rn
+    FROM truth_vault.undeclared_fields_quarantine
+    WHERE feishu_record_id IS NOT NULL
+)
+DELETE FROM truth_vault.undeclared_fields_quarantine
+WHERE quarantine_id IN (SELECT quarantine_id FROM ranked WHERE rn > 1);
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'truth_vault.undeclared_fields_quarantine'::regclass
+          AND conname  = 'uq_quarantine_project_record_reason'
+    ) THEN
+        ALTER TABLE truth_vault.undeclared_fields_quarantine
+            ADD CONSTRAINT uq_quarantine_project_record_reason
+            UNIQUE (project_id, feishu_record_id, reason);
+    END IF;
+END $$;
 
 
 -- ════════════════════════════════════════════════════════════════════

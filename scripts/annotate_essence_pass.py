@@ -368,9 +368,14 @@ def write_essence_back(sb, note_id: str, model: str, parsed: dict, dry_run: bool
 # ─────────────────────────────────────────────────────────────────────────
 
 def _annotate_with_retry(prompt: str, model: str
-                         ) -> tuple[Optional[dict], list[str], str]:
+                         ) -> tuple[Optional[dict], list[str], str, bool]:
     """Run Mode A once; if validation fails, retry once with a correction
-    prompt. Returns (parsed_or_None, last_errors, last_raw_response).
+    prompt. Returns (parsed_or_None, last_errors, last_raw_response, used_retry).
+
+    used_retry is True iff the function had to make a second API call (either
+    because the first response failed JSON parse or vocab validation). The
+    caller uses it to distinguish first-shot wins from second-shot wins in
+    stats, which surfaces "is the prompt getting worse over time" trends.
 
     Failures that propagate as exceptions (API error, JSON parse error on
     the retry, retry validation still fails) all return parsed=None with
@@ -379,7 +384,7 @@ def _annotate_with_retry(prompt: str, model: str
     try:
         raw = call_claude(prompt, model)
     except Exception as exc:
-        return None, [f"api_error: {exc!r}"], ""
+        return None, [f"api_error: {exc!r}"], "", False
 
     parsed = parse_claude_json(raw)
     if parsed is None:
@@ -390,32 +395,32 @@ def _annotate_with_retry(prompt: str, model: str
         try:
             raw2 = call_claude(retry_prompt, model)
         except Exception as exc:
-            return None, [f"retry_api_error: {exc!r}"], raw
+            return None, [f"retry_api_error: {exc!r}"], raw, True
         parsed2 = parse_claude_json(raw2)
         if parsed2 is None:
-            return None, ["json_parse_failed_after_retry"], raw2
+            return None, ["json_parse_failed_after_retry"], raw2, True
         errors2 = validate_essence(parsed2)
         if errors2:
-            return None, errors2, raw2
-        return parsed2, [], raw2
+            return None, errors2, raw2, True
+        return parsed2, [], raw2, True
 
     errors = validate_essence(parsed)
     if not errors:
-        return parsed, [], raw
+        return parsed, [], raw, False
 
     # Validation failed on first attempt — retry with correction prompt
     retry_prompt = build_retry_prompt(prompt, raw, errors)
     try:
         raw2 = call_claude(retry_prompt, model)
     except Exception as exc:
-        return None, [f"retry_api_error: {exc!r}"], raw
+        return None, [f"retry_api_error: {exc!r}"], raw, True
     parsed2 = parse_claude_json(raw2)
     if parsed2 is None:
-        return None, ["retry_json_parse_failed"], raw2
+        return None, ["retry_json_parse_failed"], raw2, True
     errors2 = validate_essence(parsed2)
     if errors2:
-        return None, errors2, raw2
-    return parsed2, [], raw2
+        return None, errors2, raw2, True
+    return parsed2, [], raw2, True
 
 
 def main() -> int:
@@ -475,7 +480,7 @@ def main() -> int:
             continue
 
         # Try once + retry-with-correction if first attempt fails validation
-        parsed, errors, last_raw = _annotate_with_retry(prompt, model)
+        parsed, errors, last_raw, used_retry = _annotate_with_retry(prompt, model)
         if parsed is None:
             logger.warning("Failed after retry for %s: %s", note["note_id"], errors)
             stats["failed_after_retry"] += 1
@@ -485,19 +490,14 @@ def main() -> int:
             continue
 
         write_essence_back(sb, note["note_id"], model, parsed, dry_run=False)
-        # If `last_raw` came from the retry path (errors was non-empty
-        # originally), this is an ok_after_retry. We can detect this by
-        # checking whether the first call's prompt got augmented — but
-        # simpler heuristic: _annotate_with_retry made 2 calls if and only
-        # if its work product still parsed cleanly the second time. The
-        # function returns the SECOND parse on retry. We don't have direct
-        # signal here, so log only at i % 10 cadence and trust the failed_queue
-        # for the diagnostic source of truth.
         stats["ok"] += 1
+        if used_retry:
+            stats["ok_after_retry"] += 1
         if i % 10 == 0:
-            logger.info("[%d/%d] %s ok=%d failed=%d",
+            logger.info("[%d/%d] %s ok=%d ok_after_retry=%d failed=%d",
                         i + 1, len(notes), note["note_id"],
-                        stats["ok"], stats["failed_after_retry"])
+                        stats["ok"], stats["ok_after_retry"],
+                        stats["failed_after_retry"])
         time.sleep(sleep_s)
 
     logger.info("Done: %s", json.dumps(stats, ensure_ascii=False))
@@ -506,7 +506,11 @@ def main() -> int:
                     "underlying note + rerun, or feed the file back through "
                     "this script after correcting the prompt/vocab.",
                     failed_queue_path)
-    return 0 if stats["ok"] else 1
+    # Exit 0 unless something actually broke. A no-op run (no unannotated
+    # rows today) is success, not failure — otherwise cron / CI would treat
+    # it as red. Hygiene assertion failures count as real errors because
+    # they indicate prompt/build_project_context drift.
+    return 0 if not (stats["failed_after_retry"] or stats["hygiene_failed"]) else 1
 
 
 def _append_failed_queue(path: Path, note: dict, project_id: str,

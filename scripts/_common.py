@@ -319,22 +319,31 @@ def quarantine_record(
     """Write the entire raw row to truth_vault.undeclared_fields_quarantine
     instead of silently dropping new/unknown fields. See D-021.
 
-    Column names match the schema in notes_v1_2.sql exactly —
-    'undeclared_field_names' (not 'undeclared_fields'), and the optional
-    'feishu_record_id' / 'reason' columns (added to schema for debug value).
-    If you are running against a schema where those two columns are missing,
-    re-run notes_v1_2.sql; it has idempotent ALTER TABLE IF NOT EXISTS lines
-    that add them.
+    Idempotent on (project_id, feishu_record_id, reason) — repeated runs of
+    sync_feishu on a row that still has undeclared fields don't pile up rows
+    in the quarantine table. The schema's UNIQUE constraint (added in
+    notes_v1_2.sql) backs this, and ignore_duplicates=True preserves any
+    reviewer state (status/review_decision/reviewed_by) that an operator
+    has already set on the first-seen quarantine row.
     """
-    client.schema("truth_vault").table("undeclared_fields_quarantine").insert({
-        "project_id": project_id,
-        "feishu_record_id": feishu_record_id,
-        "raw_row": raw_row,
-        "undeclared_field_names": undeclared_fields,
-        "reason": reason,
-        "status": "pending",
-        "quarantined_at": _iso_now(),
-    }).execute()
+    (
+        client.schema("truth_vault")
+        .table("undeclared_fields_quarantine")
+        .upsert(
+            {
+                "project_id": project_id,
+                "feishu_record_id": feishu_record_id,
+                "raw_row": raw_row,
+                "undeclared_field_names": undeclared_fields,
+                "reason": reason,
+                "status": "pending",
+                "quarantined_at": _iso_now(),
+            },
+            on_conflict="project_id,feishu_record_id,reason",
+            ignore_duplicates=True,
+        )
+        .execute()
+    )
 
 
 def ensure_account_exists(
@@ -385,14 +394,23 @@ def ensure_project_exists(client: Client, mapping: dict) -> None:
     would fail with FK violation
     (`notes.project_id REFERENCES projects(project_id)`).
 
-    Strategy: we only fill the columns that the mapping yaml owns
-    (project_id, brand, product, category, platform, schema_family,
-    tier_thresholds, mapping_config snapshot).  Cross-system mapping
-    columns (mapping_to_autowriter_project_id /
-    mapping_to_sanshengliubu_project_id) are NOT touched here — they're
-    maintained manually post-onboarding and must not be clobbered by a
-    re-sync.  ignore_duplicates=True ensures repeat runs don't overwrite
-    those fields once they're set.
+    Update semantics (split mapping-owned vs manually-curated):
+      • mapping-owned fields (brand / product / category / platform /
+        schema_family / tier_thresholds / mapping_config) ARE updated on
+        re-sync. The yaml is the source of truth — if NRT_phase2's category
+        flips from 处方药 to OTC药 (vocab v1 §9), the DB row should reflect
+        that on the next sync.
+      • cross-system mapping columns (mapping_to_autowriter_project_id /
+        mapping_to_sanshengliubu_project_id) are manually maintained post-
+        onboarding and MUST NOT be overwritten. We achieve this by simply
+        not including them in `row` — Supabase upsert only touches columns
+        sent in the payload, so absent keys preserve whatever's in the DB.
+      • derived stats (total_notes / notes_with_data / etc) are likewise
+        never sent here.
+      • start_date / end_date are computed from notes.publish_time via
+        update_project_date_range() called at the end of sync, not from
+        the yaml (the yaml has placeholder strings like
+        'auto_from_publish_time_min' that aren't DATE-castable).
     """
     project_id = mapping.get("project_id")
     if not project_id:
@@ -423,10 +441,56 @@ def ensure_project_exists(client: Client, mapping: dict) -> None:
     # are NOT NULL).  Defaults above cover that, so this is belt-and-suspenders.
     row = {k: v for k, v in row.items() if v is not None}
 
+    # ignore_duplicates omitted → default UPDATE-on-conflict. Updates every
+    # column present in `row`; columns absent from `row` (the cross-system
+    # mapping cols, derived stats, start/end dates, created_at) are preserved.
     (
         client.schema("truth_vault")
         .table("projects")
-        .upsert(row, on_conflict="project_id", ignore_duplicates=True)
+        .upsert(row, on_conflict="project_id")
+        .execute()
+    )
+
+
+def update_project_date_range(client: Client, project_id: str) -> None:
+    """Compute and write projects.start_date / end_date from notes.publish_time.
+
+    The mapping yaml carries `start_date: auto_from_publish_time_min` placeholders
+    that aren't database-castable, so ensure_project_exists() can't fill them.
+    Run this at the END of sync (after all notes are upserted) to keep the
+    project-level date range honest.
+
+    No-op if the project has no notes with publish_time set yet.
+    """
+    earliest = (
+        client.schema("truth_vault").table("notes")
+        .select("publish_time")
+        .eq("project_id", project_id)
+        .not_.is_("publish_time", None)
+        .order("publish_time", desc=False)
+        .limit(1).execute()
+    )
+    latest = (
+        client.schema("truth_vault").table("notes")
+        .select("publish_time")
+        .eq("project_id", project_id)
+        .not_.is_("publish_time", None)
+        .order("publish_time", desc=True)
+        .limit(1).execute()
+    )
+    if not earliest.data or not latest.data:
+        return
+    # publish_time comes back as ISO strings (TIMESTAMP WITHOUT TIME ZONE).
+    # Truncate to date portion for the DATE column.
+    update = {
+        "start_date": str(earliest.data[0]["publish_time"])[:10],
+        "end_date":   str(latest.data[0]["publish_time"])[:10],
+    }
+    (
+        client.schema("truth_vault")
+        .table("projects")
+        .update(update)
+        .eq("project_id", project_id)
         .execute()
     )
 

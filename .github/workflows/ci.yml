@@ -136,25 +136,37 @@ jobs:
                          '"audience":{}}')
 
           a.call_claude = lambda p, m: (calls.append(p), bad_valence if len(calls) == 1 else good_payload)[1]
-          parsed, errs, _ = a._annotate_with_retry("test", "fake")
+          parsed, errs, _, used_retry = a._annotate_with_retry("test", "fake")
           assert parsed is not None and parsed["essence"]["emotional_valence"] == "negative"
           assert len(calls) == 2
+          assert used_retry is True, "used_retry should be True after a retry"
           print("  ✓ retry recovers after first-attempt validation failure")
 
           # 3. Both attempts fail → None
           calls.clear()
           a.call_claude = lambda p, m: (calls.append(p), bad_valence)[1]
-          parsed, errs, _ = a._annotate_with_retry("test", "fake")
+          parsed, errs, _, used_retry = a._annotate_with_retry("test", "fake")
           assert parsed is None
+          assert used_retry is True
           assert any("emotional_lever" in e or "valence" in e for e in errs), errs
           print("  ✓ returns None when both attempts fail")
 
           # 4. First attempt returns non-JSON → JSON parse failure → retry succeeds
           calls.clear()
           a.call_claude = lambda p, m: (calls.append(p), "not json" if len(calls) == 1 else good_payload)[1]
-          parsed, errs, _ = a._annotate_with_retry("test", "fake")
+          parsed, errs, _, used_retry = a._annotate_with_retry("test", "fake")
           assert parsed is not None
+          assert used_retry is True
           print("  ✓ retry recovers from initial JSON parse failure")
+
+          # 4b. First attempt succeeds → used_retry False
+          calls.clear()
+          a.call_claude = lambda p, m: (calls.append(p), good_payload)[1]
+          parsed, errs, _, used_retry = a._annotate_with_retry("test", "fake")
+          assert parsed is not None
+          assert used_retry is False, "used_retry should be False on a first-shot win"
+          assert len(calls) == 1
+          print("  ✓ first-shot success records used_retry=False")
 
           # 5. failed_queue writes valid JSONL
           with tempfile.NamedTemporaryFile(delete=False, suffix=".jsonl", mode="w") as f:
