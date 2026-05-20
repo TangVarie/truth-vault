@@ -163,6 +163,6 @@ python sync_truth_vault_baokuan_to_autowriter_items.py
 
 ## 已知限制
 
-- **`sync_feishu_notes_to_truth_vault.py` 的 direction_decomposition 没有 LLM 调用**：原 spec 用 LLM 子分类 (D-014)，本脚本只是把原始 `_direction_raw` 放进 `raw_extra`，让独立的 essence annotation pass 处理。如果 NUC pilot 需要立即跑 LLM，扩展 `transform_row` 里的 direction 处理。
-- **comments 表的 sync 不在这里**：本脚本只 sync notes + metric_snapshots。评论数据需要独立 sync 路径（暂未实现）。
+- **`sync_feishu_notes_to_truth_vault.py` 不调用 LLM**：sync 脚本只做映射 + 落 `notes` / `metric_snapshots`。对于带 `sub_directions` 的多分支方向（NUC_phase1 的 营养保健代餐 / 术后恢复），sync 仅把 `_direction_raw` 放进 `raw_extra`，由 `annotate_essence_pass.py` 同 pass 内用 LLM 选 sub_direction 并写回 `direction_subtype` + `content_format` / `target_audience` / `user_pain_point` / `product_focus`。单方向配置（糖尿病 / 抗癌放化疗）的 `content_format` 等字段在 sync 时已确定性写入，不依赖 LLM。
+- **comments 评论楼层重建不在这里**：`sync_comments_from_raw_extra.py` 只解析为扁平评论；`parent_comment_id` 层级重建（D-022）是 Sprint 2 LLM 任务。
 - **飞书 API 限速**：本脚本是单进程顺序读取，rate limit 友好但全量首次拉 6000+ 行可能花 5-10 分钟。

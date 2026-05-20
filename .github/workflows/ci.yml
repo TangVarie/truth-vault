@@ -183,6 +183,88 @@ jobs:
           print("  ✓ failed_queue writes valid JSONL")
           print("\nannotate_essence retry + failed_queue: all 5 checks passed")
           PY
+      - name: Essence annotator sub_direction classification self-check
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          import annotate_essence_pass as a
+
+          mapping = {
+              "project_id": "TEST_P",
+              "direction_decomposition": {
+                  "营养保健代餐相关": {
+                      "sub_directions": [
+                          {"name": "营养代餐_健身减脂",
+                           "detection_signal": "健身 / 减脂",
+                           "content_format": "情感叙事",
+                           "target_audience": ["年轻女性"],
+                           "user_pain_point": "蛋白质摄入"},
+                          {"name": "营养代餐_关心父母营养",
+                           "detection_signal": "父母 / 老人饮食",
+                           "content_format": "情感叙事",
+                           "target_audience": ["子女"],
+                           "user_pain_point": "父母饮食单一"},
+                      ]
+                  },
+                  "糖尿病相关": {  # single direction (no sub_directions) → not applicable
+                      "content_format": "情感叙事",
+                      "target_audience": ["病患家属"],
+                  }
+              }
+          }
+
+          # 1. get_sub_directions_for_note returns the right shape
+          note_multi = {"raw_extra": {"_direction_raw": "营养保健代餐相关"}}
+          result = a.get_sub_directions_for_note(mapping, note_multi)
+          assert result is not None, "should detect multi-sub_direction config"
+          raw, subs = result
+          assert raw == "营养保健代餐相关" and len(subs) == 2
+          print("  ✓ get_sub_directions_for_note returns multi-direction config")
+
+          # 2. Single-direction config returns None (deterministic lift done at sync time)
+          note_single = {"raw_extra": {"_direction_raw": "糖尿病相关"}}
+          assert a.get_sub_directions_for_note(mapping, note_single) is None
+          print("  ✓ single-direction config bypasses LLM pass")
+
+          # 3. Unknown direction returns None
+          note_unknown = {"raw_extra": {"_direction_raw": "不存在的方向"}}
+          assert a.get_sub_directions_for_note(mapping, note_unknown) is None
+          print("  ✓ unknown direction bypasses LLM pass")
+
+          # 4. classify_sub_direction validates against allowed set
+          allowed = {"营养代餐_健身减脂", "营养代餐_关心父母营养"}
+          a.call_claude = lambda p, m: '{"sub_direction": "营养代餐_健身减脂", "confidence": 0.9, "reasoning": "test"}'
+          chosen, errs = a.classify_sub_direction("p", "m", allowed)
+          assert chosen == "营养代餐_健身减脂" and errs == [], (chosen, errs)
+          print("  ✓ classify_sub_direction accepts valid name")
+
+          # 5. classify_sub_direction rejects name not in allowed set
+          a.call_claude = lambda p, m: '{"sub_direction": "made_up_name", "confidence": 0.9, "reasoning": "x"}'
+          chosen, errs = a.classify_sub_direction("p", "m", allowed)
+          assert chosen is None
+          assert any("not in allowed" in e for e in errs), errs
+          print("  ✓ classify_sub_direction rejects name not in allowed set")
+
+          # 6. apply_sub_direction_to_update lifts the right fields
+          update = {"emotional_lever": "焦虑撬动"}  # existing essence field, preserved
+          a.apply_sub_direction_to_update(update, subs, "营养代餐_关心父母营养")
+          assert update["direction_subtype"] == "营养代餐_关心父母营养"
+          assert update["target_audience"] == ["子女"]
+          assert update["user_pain_point"] == "父母饮食单一"
+          assert update["emotional_lever"] == "焦虑撬动"  # untouched
+          print("  ✓ apply_sub_direction_to_update lifts the right fields")
+
+          # 7. build_sub_direction_prompt embeds names + detection_signals
+          prompt = a.build_sub_direction_prompt(
+              "营养保健代餐相关", subs,
+              {"title": "T", "body": "测试正文"}
+          )
+          assert "营养代餐_健身减脂" in prompt and "营养代餐_关心父母营养" in prompt
+          assert "健身 / 减脂" in prompt and "父母 / 老人饮食" in prompt
+          print("  ✓ build_sub_direction_prompt embeds all sub_directions")
+
+          print("\nsub_direction classification: all 7 checks passed")
+          PY
       - name: Supabase key validation self-check
         working-directory: scripts
         run: |

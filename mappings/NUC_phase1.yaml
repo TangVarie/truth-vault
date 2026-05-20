@@ -172,26 +172,33 @@ direction_decomposition:
     product_focus: null
 
 # ════════════════════════════════════════════════════════════════════
-# LLM Ingest 阶段子分类 Prompt 模板
+# Sub-direction 分类 Prompt（参考用，运行时由脚本组装）
 # ════════════════════════════════════════════════════════════════════
-# 
-# 该 prompt 在 ingest 时调用，输入: 飞书方向 + 文案；输出: 选定的 sub_direction name
-# 和 essence 标注合并到一次 LLM 调用（节省 token）
+#
+# ⚠️ 设计变更（Sprint 0 修正）:
+#   原计划是在 ingest 时合并 essence + sub_direction 调用，但 D-028 要求
+#   essence Mode A 与 tier/performance 严格隔离，sync_feishu_notes 不调用
+#   LLM。sub_direction 分类现归属 annotation pass（与 essence 同一个 pass，
+#   但分两次 LLM 调用，避免一次失败影响两件事）。
+#   真正运行时使用的 prompt 模板硬编码在
+#   scripts/annotate_essence_pass.py · SUB_DIRECTION_PROMPT_TEMPLATE。
+#   下方 reference_sub_direction_prompt 仅作为文档参考，YAML 里改它不会
+#   影响实际行为；如需调整 prompt，请改脚本里的常量并配套更新这里。
 
-ingest_classification_prompt: |
+reference_sub_direction_prompt: |
   你正在为一条小红书种草笔记分类。
-  
+
   飞书方向: {direction}
-  
+
   该方向有以下子分类（每个有 detection_signal）:
   {sub_directions_with_signals}
-  
+
   笔记文案:
   标题: {title}
   正文（前 500 字）: {body}
-  
+
   根据文案内容和每个子分类的 detection_signal，选出最匹配的子方向。
-  
+
   输出 JSON: {"sub_direction": "<name>", "confidence": 0-1, "reasoning": "<一句话>"}
 
 # ════════════════════════════════════════════════════════════════════
