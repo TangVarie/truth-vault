@@ -90,25 +90,112 @@ Schema 起点决定上限。在 v1 第一版就要包含 essence 层和 audience
 
 参见: [docs/08-evolution-roadmap.md](docs/08-evolution-roadmap.md)
 
-## 文档导航
+## 完整目录结构
+
+```
+truth-vault/
+├── README.md                          ← 本文件 · 项目宪法 (30 秒上手)
+├── CURRENT_STATE.md                   ← 当前进度快照 · Sprint 0 scope
+├── DECISIONS.md                       ← 决策日志 D-001 ~ D-035 (只追加)
+│
+├── docs/                              ← 设计文档
+│   ├── 01-architecture.md             ← Surface/Essence/Audience 三层架构论证
+│   ├── 02-schema-v1.md                ← v1.2 schema 详解 (字段级)
+│   ├── 03-mapping-protocol.md         ← 飞书 → DB 映射 + 3 家族 schema
+│   ├── 04-onboarding-sop.md           ← 新项目 7 步接入 SOP
+│   ├── 05-controlled-vocab.md         ← 词表 v0.2 (lever 12/archetype 19/...)
+│   ├── 06-essence-annotation.md       ← LLM 双模式标注协议 (D-017/D-028)
+│   ├── 07-audience-data.md            ← 蒲公英真实 audience 数据接入
+│   ├── 08-evolution-roadmap.md        ← 4 阶段进化 (描述/判别/语义/因果)
+│   ├── 09-system-integration.md       ⭐ 双通道集成架构 (必读)
+│   └── 99-rejected-ideas.md           ← 走过的弯路存档
+│
+├── schemas/                           ← 可执行 SQL
+│   ├── notes_v1_2.sql                 ← truth_vault schema · 13 张表 + 内部 views
+│   └── notes_v1_2_cross_schema_views.sql ← 跨 schema views (D-029 部署拆分)
+│
+├── mappings/                          ← 每项目映射 yaml
+│   ├── _template.yaml                 ← 新项目复制此模板
+│   ├── NUC_phase1.yaml                ← 大象 Nucare (第一个完整 onboard)
+│   ├── NRT_phase2.yaml                ← 力克雷 phase 2
+│   └── NRT_phase3.yaml                ← 力克雷 phase 3
+│
+├── prompts/                           ← LLM prompt 库
+│   ├── essence_annotator.md           ← Mode A/B 双模式 (D-028 物理隔离)
+│   └── audience_inferrer.md           ← 独立 audience 推断
+│
+├── scripts/                           ← 真实可跑的 Python 脚本 ⭐
+│   ├── README.md                      ← 数据流图 + 部署 + 故障排查
+│   ├── _common.py                     ← 共享工具 (client/mapping/分页/JWT)
+│   ├── .env.example                   ← 环境变量模板
+│   ├── requirements.txt               ← 依赖
+│   │
+│   ├── sync_feishu_notes_to_truth_vault.py            ← [1] 飞书 → TV (每日)
+│   ├── sync_comments_from_raw_extra.py                ← [5] 评论文本 → comments 表
+│   ├── annotate_essence_pass.py                       ← [6] LLM 标注独立 pass (D-028)
+│   ├── sync_truth_vault_baokuan_to_sanshengliubu.py   ← [2] TV → ssll 通道 1
+│   ├── sync_truth_vault_baokuan_to_autowriter_items.py ← [3] TV → autowriter 通道 2
+│   └── extract_negative_examples_from_autowriter.py   ← [4] 负例候选挖掘 (一次性)
+│
+├── sanshengliubu-patches/             ← 通道 1 集成包 (部署到 ssll 仓库)
+│   ├── README.md                      ← 部署顺序 + 回滚
+│   ├── 001_add_source_tv_note_id.sql  ← 必做前置 SQL migration
+│   └── import_truth_vault_baokuan.py  ← 可选 helper (列名 + quality_score)
+│
+├── autowriter-migrations/             ← 通道 2 集成包 (部署到 autowriter 仓库)
+│   ├── RUNBOOK.md                     ← 场景 A/B 完整步骤 + Auth/RLS
+│   ├── 001_create_autowriter_schema.sql       ← 5 表迁移到 autowriter schema
+│   ├── 002_add_external_source.sql            ← items 加幂等键
+│   └── 003_add_example_label_proposal.sql     ← items 加负例候选列
+│
+└── data-analysis/
+    └── 10-project-audit.md            ← 10 个项目的初始数据审计
+```
+
+## 文档导航（按角色）
+
+### 新会话 Claude / 新工程师 · 30 分钟上手
+
+| 顺序 | 文件 | 用途 |
+|---|---|---|
+| 1 | 本文件 (README.md) | 项目边界、原则、栈、四层架构 |
+| 2 | [CURRENT_STATE.md](CURRENT_STATE.md) | 当前 sprint scope + 已知 gap |
+| 3 | [docs/09-system-integration.md](docs/09-system-integration.md) ⭐ | 双通道集成 (核心) |
+| 4 | [docs/01-architecture.md](docs/01-architecture.md) | 三层架构 (Surface/Essence/Audience) |
+| 5 | [DECISIONS.md](DECISIONS.md) | D-001 ~ D-035 决策考古 |
+
+### 部署 / 实施 · 按需读
 
 | 文件 | 用途 |
 |---|---|
-| [CURRENT_STATE.md](CURRENT_STATE.md) | 当前进度快照（每次会话更新） |
-| [DECISIONS.md](DECISIONS.md) | 决策日志（只追加） |
-| [docs/01-architecture.md](docs/01-architecture.md) | 三层架构完整论证 |
-| [docs/02-schema-v1.md](docs/02-schema-v1.md) | 数据库 schema (v1.2) |
-| [docs/03-mapping-protocol.md](docs/03-mapping-protocol.md) | 飞书表 → 数据库的映射协议 |
-| [docs/04-onboarding-sop.md](docs/04-onboarding-sop.md) | 新项目接入 SOP |
-| [docs/05-controlled-vocab.md](docs/05-controlled-vocab.md) | 受控词表 |
-| [docs/06-essence-annotation.md](docs/06-essence-annotation.md) | LLM 标注协议（含双模式） |
-| [docs/07-audience-data.md](docs/07-audience-data.md) | 蒲公英后台数据接入 |
-| [docs/08-evolution-roadmap.md](docs/08-evolution-roadmap.md) | 四阶段进化路径 |
-| **[docs/09-system-integration.md](docs/09-system-integration.md)** | **⭐ 系统集成架构（必读）** |
-| [docs/99-rejected-ideas.md](docs/99-rejected-ideas.md) | 走过的弯路（重要） |
+| [docs/02-schema-v1.md](docs/02-schema-v1.md) | 数据库 schema 字段级详解 |
+| [schemas/notes_v1_2.sql](schemas/notes_v1_2.sql) | truth_vault schema 可执行 SQL |
+| [schemas/notes_v1_2_cross_schema_views.sql](schemas/notes_v1_2_cross_schema_views.sql) | 跨 schema views (autowriter 就绪后执行) |
+| [sanshengliubu-patches/README.md](sanshengliubu-patches/README.md) | ssll 通道 1 集成 patch |
+| [autowriter-migrations/RUNBOOK.md](autowriter-migrations/RUNBOOK.md) | autowriter 通道 2 + schema 迁移 |
+| [scripts/README.md](scripts/README.md) | 6 个 sync 脚本的部署 + cron + 故障排查 |
+
+### 数据 / 标注 / 内容 · 按主题
+
+| 文件 | 用途 |
+|---|---|
+| [docs/03-mapping-protocol.md](docs/03-mapping-protocol.md) | 飞书 → DB 映射协议 |
+| [docs/04-onboarding-sop.md](docs/04-onboarding-sop.md) | 新项目接入 7 步 SOP |
+| [docs/05-controlled-vocab.md](docs/05-controlled-vocab.md) | 受控词表 v0.2 (essence/audience/category) |
+| [docs/06-essence-annotation.md](docs/06-essence-annotation.md) | LLM 标注双模式协议 |
+| [docs/07-audience-data.md](docs/07-audience-data.md) | 蒲公英真实 audience 数据接入 |
+| [prompts/essence_annotator.md](prompts/essence_annotator.md) | Mode A/B prompt 文本 (v0.3) |
+| [prompts/audience_inferrer.md](prompts/audience_inferrer.md) | Audience 单独推断 prompt |
+| [mappings/_template.yaml](mappings/_template.yaml) | 新项目 mapping 模板 |
+| [mappings/NUC_phase1.yaml](mappings/NUC_phase1.yaml) | NUC_1 完整 onboard 示例 |
+
+### 历史 / 演化 · 参考
+
+| 文件 | 用途 |
+|---|---|
+| [docs/08-evolution-roadmap.md](docs/08-evolution-roadmap.md) | 4 阶段路径 (描述/判别/语义/因果) |
+| [docs/99-rejected-ideas.md](docs/99-rejected-ideas.md) | 走过的弯路 (RAG / 单层 schema / 等) |
 | [data-analysis/10-project-audit.md](data-analysis/10-project-audit.md) | 10 个项目的初始数据审计 |
-| [schemas/notes_v1_2.sql](schemas/notes_v1_2.sql) | 可执行 SQL · 表+内部 views (v1.2) |
-| [schemas/notes_v1_2_cross_schema_views.sql](schemas/notes_v1_2_cross_schema_views.sql) | 跨 schema views（三个 schema 就绪后执行）|
 
 ## 项目维护者
 
@@ -116,13 +203,21 @@ Schema 起点决定上限。在 v1 第一版就要包含 essence 层和 audience
 - **开发**: 待定
 - **AI 协作**: Claude (Anthropic) 通过多个会话窗口持续协作
 
-## 接入指南：新会话 Claude 应该怎么用这个 repo
+## 接入指南：新会话 Claude / 工程师怎么用这个 repo
 
-新窗口的 Claude 接到这个项目时，按以下顺序读：
+按以下顺序读：
 
-1. 本文件（README.md）—— 30 秒，理解项目边界和原则
-2. [CURRENT_STATE.md](CURRENT_STATE.md) —— 1 分钟，理解当前进度和下一步
-3. CURRENT_STATE 里引用的具体 docs 文档 —— 按需读取
-4. **在做任何决策前，先读 [DECISIONS.md](DECISIONS.md)**，确认没有违反已有决策
+1. **本文件 (README.md)** · 30 秒 · 项目边界、原则、目录结构
+2. **[CURRENT_STATE.md](CURRENT_STATE.md)** · 2 分钟 · 当前 Sprint 0 能跑什么 / 不能跑什么
+3. **[docs/09-system-integration.md](docs/09-system-integration.md)** ⭐ · 5 分钟 · 双通道集成 (核心架构)
+4. **[DECISIONS.md](DECISIONS.md)** · 决策考古 D-001 ~ D-035 · 做任何调整前必读
 
-新会话开场协议见 [CURRENT_STATE.md](CURRENT_STATE.md) 文末。
+> 工程实施时再按需读 schema / mappings / scripts 文档（见上方"部署/实施"分组）。
+
+## 当前阶段 (Session #9 后)
+
+✅ **已就绪**: 主链路 6 个 sync 脚本 + truth_vault schema + 双通道集成补丁包 + Mode A/B prompt + 受控词表 v0.2  
+🚧 **Sprint 0 实测中**: 飞书 → TV → 双通道的 dry-run + NUC_1 1102 行 pilot  
+📋 **Sprint 1+ 待启动**: sub_directions LLM 子分类 / autowriter Memory Manager UI / prepublish_evaluations 接通
+
+完整 scope 和 gap 见 [CURRENT_STATE.md](CURRENT_STATE.md) "Sprint 0 实测能跑什么 / 不能跑什么"。
