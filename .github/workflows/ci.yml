@@ -265,6 +265,90 @@ jobs:
 
           print("\nsub_direction classification: all 7 checks passed")
           PY
+      - name: transform_row tier fallback + metric-only stripping self-check
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # Two regressions the new tests defend against:
+          #   1. Item 2 — tier="未知" (mapped from "评估中") + interactions over
+          #      threshold should auto-promote to 爆/大爆, not stay 未知.
+          #   2. Item 3 — metric-only cols (likes/saves/shares/comments_count/
+          #      search_rank/keyword_rank) must NOT end up in the notes payload,
+          #      they only belong in metric_snapshots.
+          import sync_feishu_notes_to_truth_vault as s
+
+          mapping = {
+              "project_id": "TEST_P",
+              "platform": "xiaohongshu",
+              "field_mapping": {
+                  "文案":   "raw_content",
+                  "互动量": "interactions",
+                  "点赞":   "likes",
+                  "收藏":   "saves",
+                  "评论数": "comments_count",
+                  "状态":   "_status_raw",
+              },
+              "tier_thresholds": {"爆": 100, "大爆": 1000},
+              "tier_extraction": {
+                  "source": "状态字段",
+                  "rules": [
+                      {"match_contains": ["大爆"], "tier": "大爆"},
+                      {"match_contains": ["评估中"], "tier": "未知"},
+                  ],
+              },
+          }
+
+          # Case A: 评估中 + interactions=500 (over 爆 threshold) → must promote to 爆.
+          # The old code only fired numeric fallback when tier was None; "评估中"
+          # mapped to "未知" so it stayed there forever.
+          note_a, metric_a, _ = s.transform_row(
+              mapping, "recA",
+              {"文案": "content", "状态": "评估中", "互动量": 500, "点赞": 12, "收藏": 3, "评论数": 7},
+          )
+          assert note_a["tier"] == "爆", f"expected '爆' after numeric fallback, got {note_a.get('tier')!r}"
+          assert note_a["tier_source"] == "数值推断", note_a.get("tier_source")
+          print("  ✓ 评估中 + interactions>=爆 threshold promotes to 爆")
+
+          # Case B: 评估中 + interactions=2000 (over 大爆) → must promote to 大爆
+          note_b, _, _ = s.transform_row(
+              mapping, "recB",
+              {"文案": "c", "状态": "评估中", "互动量": 2000},
+          )
+          assert note_b["tier"] == "大爆", note_b.get("tier")
+          print("  ✓ 评估中 + interactions>=大爆 threshold promotes to 大爆")
+
+          # Case C: 评估中 + interactions=50 (below 爆) → stays 未知
+          note_c, _, _ = s.transform_row(
+              mapping, "recC",
+              {"文案": "c", "状态": "评估中", "互动量": 50},
+          )
+          assert note_c["tier"] == "未知", note_c.get("tier")
+          # tier_source should NOT be overwritten to 数值推断 since no promotion happened
+          assert note_c.get("tier_source") != "数值推断", note_c.get("tier_source")
+          print("  ✓ below-threshold 未知 stays 未知 (no false promotion)")
+
+          # Case D: tier_source for an explicit 大爆 rule fire (not numeric fallback)
+          note_d, _, _ = s.transform_row(
+              mapping, "recD",
+              {"文案": "c", "状态": "大爆", "互动量": 50},
+          )
+          assert note_d["tier"] == "大爆" and note_d["tier_source"] == "状态字段", note_d
+          print("  ✓ explicit 状态字段 rule wins over numeric fallback")
+
+          # Case E: metric-only cols (likes/saves/comments_count) belong in
+          # metric_snapshots but NEVER in the notes payload (notes table has no
+          # such columns; a future direct mapping would crash UPSERT). interactions
+          # IS a valid notes column AND a metric_snapshot column, so it stays.
+          assert "likes" not in note_a, "likes leaked into note payload"
+          assert "saves" not in note_a, "saves leaked into note payload"
+          assert "comments_count" not in note_a, "comments_count leaked into note payload"
+          assert "interactions" in note_a, "interactions is a real notes column, should remain"
+          assert metric_a["likes"] == 12 and metric_a["saves"] == 3 and metric_a["comments_count"] == 7
+          assert metric_a["interactions"] == 500
+          print("  ✓ metric-only cols stripped from note payload, retained in metric snapshot")
+
+          print("\ntransform_row tier+metric: all 5 checks passed")
+          PY
       - name: Supabase key validation self-check
         working-directory: scripts
         run: |
@@ -304,6 +388,39 @@ jobs:
           if failed:
               sys.exit(f"{len(failed)} key validation case(s) failed")
           print(f"\nkey validation: {len(cases)}/{len(cases)} passed")
+          PY
+      - name: Autowriter dup-error detection self-check
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # _is_duplicate_error decides whether to fall into the dedup-recovery
+          # branch in insert_synced_item. Misclassifying any error here would
+          # either (a) hide a real schema problem behind silent dedup, or
+          # (b) crash the sync on a real duplicate. The substring scan is
+          # intentionally permissive because supabase-py wraps PostgREST
+          # errors in several shapes; tests pin down the exact shapes we
+          # rely on.
+          import sync_truth_vault_baokuan_to_autowriter_items as s
+
+          class _E(Exception):
+              def __init__(self, msg, code=None):
+                  super().__init__(msg)
+                  if code: self.code = code
+
+          # Yes-paths (must return True)
+          assert s._is_duplicate_error(_E("duplicate key value violates unique constraint"))
+          assert s._is_duplicate_error(_E("err 23505 something"))
+          assert s._is_duplicate_error(_E("any text", code="23505"))
+          print("  ✓ detects 23505 substring + .code")
+
+          # No-paths (must return False) — important: an FK violation or
+          # permission denied must NOT be silently swallowed as "dedup"
+          assert not s._is_duplicate_error(_E("permission denied"))
+          assert not s._is_duplicate_error(_E("violates foreign key constraint", code="23503"))
+          assert not s._is_duplicate_error(_E("connection refused"))
+          assert not s._is_duplicate_error(_E("the word duplicate appears but not in 23505 context", code="42P01"))
+          print("  ✓ does not false-positive on FK / permission / network errors")
+          print("\nautowriter dup detection: 2/2 groups passed")
           PY
 
   sql:
@@ -382,6 +499,40 @@ jobs:
                   RAISE EXCEPTION 'era_tag wrong: %', et;
               END IF;
               RAISE NOTICE 'era_tag trigger OK';
+          END $$;
+
+          -- quarantine UNIQUE (project_id, feishu_record_id, reason): a second
+          -- insert with the same triple should be rejected. The Python wrapper
+          -- (quarantine_record) uses upsert(ignore_duplicates=True) so reruns
+          -- of sync_feishu on a still-broken record don't accumulate rows.
+          INSERT INTO truth_vault.undeclared_fields_quarantine
+              (project_id, feishu_record_id, raw_row, undeclared_field_names, reason)
+          VALUES ('CI_OK', 'rec_q1', '{}', ARRAY['x'], 'undeclared_fields');
+          DO $$
+          BEGIN
+              BEGIN
+                  INSERT INTO truth_vault.undeclared_fields_quarantine
+                      (project_id, feishu_record_id, raw_row, undeclared_field_names, reason)
+                  VALUES ('CI_OK', 'rec_q1', '{}', ARRAY['y'], 'undeclared_fields');
+                  RAISE EXCEPTION 'quarantine UNIQUE did not reject duplicate';
+              EXCEPTION WHEN unique_violation THEN
+                  RAISE NOTICE 'quarantine UNIQUE OK (rejected duplicate as expected)';
+              END;
+          END $$;
+          -- Different `reason` for the same record IS allowed (one row per
+          -- distinct failure mode)
+          INSERT INTO truth_vault.undeclared_fields_quarantine
+              (project_id, feishu_record_id, raw_row, undeclared_field_names, reason)
+          VALUES ('CI_OK', 'rec_q1', '{}', ARRAY['z'], 'missing_required:raw_content');
+          DO $$
+          DECLARE n INT;
+          BEGIN
+              SELECT COUNT(*) INTO n FROM truth_vault.undeclared_fields_quarantine
+              WHERE project_id='CI_OK' AND feishu_record_id='rec_q1';
+              IF n != 2 THEN
+                  RAISE EXCEPTION 'expected 2 quarantine rows (different reasons), got %', n;
+              END IF;
+              RAISE NOTICE 'quarantine allows distinct reasons (% rows for same record)', n;
           END $$;
 
           -- v_top_performing_accounts threshold + bao_rate
