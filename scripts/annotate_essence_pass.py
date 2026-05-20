@@ -39,6 +39,7 @@ import json
 import os
 import sys
 import time
+from pathlib import Path
 from typing import Any, Optional
 
 from _common import (
@@ -250,6 +251,36 @@ def validate_essence(data: dict) -> list[str]:
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# Retry-with-correction prompt builder (spec: docs/06-essence-annotation.md
+# "校验失败 → retry 一次（加修正提示）→ 仍失败 → 进 failed_queue")
+# ─────────────────────────────────────────────────────────────────────────
+
+def build_retry_prompt(original_prompt: str, raw_first_attempt: str,
+                        errors: list[str]) -> str:
+    """Append a correction block to the original prompt and ask for a retry.
+
+    We keep the entire first prompt + first response visible to the model so
+    it can see exactly what shape it produced; then list the specific
+    validation failures as bullet points + remind it of the vocab constraint.
+    Single-shot retry — if this still fails, the row goes to the failed queue.
+    """
+    correction = "\n".join(f"  - {e}" for e in errors)
+    return (
+        original_prompt
+        + "\n\n═══════════════════════════════════════════════\n"
+        "你上一次的回复（需修正）\n"
+        "═══════════════════════════════════════════════\n"
+        + raw_first_attempt
+        + "\n\n═══════════════════════════════════════════════\n"
+        "校验失败 — 修正以下问题后重新输出严格 JSON\n"
+        "═══════════════════════════════════════════════\n"
+        + correction
+        + "\n\n严格按以上格式重新输出，不要 markdown 包装、不要解释。"
+        "闭集字段必须严格在词表内（见上方任务说明）。"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # Anthropic call (deferred import so --dry-run works without the SDK)
 # ─────────────────────────────────────────────────────────────────────────
 
@@ -336,6 +367,57 @@ def write_essence_back(sb, note_id: str, model: str, parsed: dict, dry_run: bool
 # Main
 # ─────────────────────────────────────────────────────────────────────────
 
+def _annotate_with_retry(prompt: str, model: str
+                         ) -> tuple[Optional[dict], list[str], str]:
+    """Run Mode A once; if validation fails, retry once with a correction
+    prompt. Returns (parsed_or_None, last_errors, last_raw_response).
+
+    Failures that propagate as exceptions (API error, JSON parse error on
+    the retry, retry validation still fails) all return parsed=None with
+    a populated errors list; the caller logs to failed_queue.
+    """
+    try:
+        raw = call_claude(prompt, model)
+    except Exception as exc:
+        return None, [f"api_error: {exc!r}"], ""
+
+    parsed = parse_claude_json(raw)
+    if parsed is None:
+        # Retry with explicit "your output was not valid JSON" hint.
+        retry_prompt = build_retry_prompt(
+            prompt, raw, ["上一次回复不是合法 JSON / 含 markdown 包装"]
+        )
+        try:
+            raw2 = call_claude(retry_prompt, model)
+        except Exception as exc:
+            return None, [f"retry_api_error: {exc!r}"], raw
+        parsed2 = parse_claude_json(raw2)
+        if parsed2 is None:
+            return None, ["json_parse_failed_after_retry"], raw2
+        errors2 = validate_essence(parsed2)
+        if errors2:
+            return None, errors2, raw2
+        return parsed2, [], raw2
+
+    errors = validate_essence(parsed)
+    if not errors:
+        return parsed, [], raw
+
+    # Validation failed on first attempt — retry with correction prompt
+    retry_prompt = build_retry_prompt(prompt, raw, errors)
+    try:
+        raw2 = call_claude(retry_prompt, model)
+    except Exception as exc:
+        return None, [f"retry_api_error: {exc!r}"], raw
+    parsed2 = parse_claude_json(raw2)
+    if parsed2 is None:
+        return None, ["retry_json_parse_failed"], raw2
+    errors2 = validate_essence(parsed2)
+    if errors2:
+        return None, errors2, raw2
+    return parsed2, [], raw2
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("project_id", help="e.g. NUC_phase1")
@@ -347,6 +429,12 @@ def main() -> int:
                         help="Re-annotate rows that already have essence_annotated_at")
     parser.add_argument("--qps", type=float, default=2.0,
                         help="Rate limit (default 2 req/sec, Anthropic free tier safe)")
+    parser.add_argument("--failed-queue", default="failed_essence_queue.jsonl",
+                        help="JSONL file for rows that failed after retry "
+                             "(default: failed_essence_queue.jsonl in cwd). "
+                             "Each line: {note_id, project_id, errors, raw_response, "
+                             "attempted_at}. Re-run this script with this file as "
+                             "input later to retry; for now operators review by hand.")
     args = parser.parse_args()
 
     model = os.environ.get("ESSENCE_MODEL", "claude-sonnet-4-6")
@@ -362,7 +450,9 @@ def main() -> int:
     logger.info("Found %d notes to annotate for project %s (model=%s)",
                 len(notes), args.project_id, model)
 
-    stats = {"ok": 0, "validation_failed": 0, "json_parse_failed": 0, "api_failed": 0}
+    failed_queue_path = Path(args.failed_queue).resolve()
+    stats = {"ok": 0, "ok_after_retry": 0, "failed_after_retry": 0,
+             "hygiene_failed": 0}
     sleep_s = 1.0 / args.qps if args.qps > 0 else 0
     for i, note in enumerate(notes):
         # Inject project info one level up so prompt builder can read it
@@ -371,7 +461,11 @@ def main() -> int:
             prompt = build_mode_a_prompt(project_info, note)
         except AssertionError as exc:
             logger.error("Hygiene assertion failed on %s: %s", note["note_id"], exc)
-            stats["api_failed"] += 1
+            stats["hygiene_failed"] += 1
+            _append_failed_queue(
+                failed_queue_path, note, args.project_id,
+                ["hygiene_failed: " + str(exc)], ""
+            )
             continue
 
         if args.dry_run:
@@ -380,35 +474,59 @@ def main() -> int:
             stats["ok"] += 1
             continue
 
-        try:
-            raw = call_claude(prompt, model)
-        except Exception as exc:
-            logger.exception("LLM call failed for %s: %s", note["note_id"], exc)
-            stats["api_failed"] += 1
-            continue
-
-        parsed = parse_claude_json(raw)
+        # Try once + retry-with-correction if first attempt fails validation
+        parsed, errors, last_raw = _annotate_with_retry(prompt, model)
         if parsed is None:
-            logger.warning("JSON parse failed for %s; raw[:200]=%s",
-                           note["note_id"], raw[:200])
-            stats["json_parse_failed"] += 1
-            continue
-
-        errors = validate_essence(parsed)
-        if errors:
-            logger.warning("Validation failed for %s: %s", note["note_id"], errors)
-            stats["validation_failed"] += 1
+            logger.warning("Failed after retry for %s: %s", note["note_id"], errors)
+            stats["failed_after_retry"] += 1
+            _append_failed_queue(
+                failed_queue_path, note, args.project_id, errors, last_raw
+            )
             continue
 
         write_essence_back(sb, note["note_id"], model, parsed, dry_run=False)
+        # If `last_raw` came from the retry path (errors was non-empty
+        # originally), this is an ok_after_retry. We can detect this by
+        # checking whether the first call's prompt got augmented — but
+        # simpler heuristic: _annotate_with_retry made 2 calls if and only
+        # if its work product still parsed cleanly the second time. The
+        # function returns the SECOND parse on retry. We don't have direct
+        # signal here, so log only at i % 10 cadence and trust the failed_queue
+        # for the diagnostic source of truth.
         stats["ok"] += 1
         if i % 10 == 0:
-            logger.info("[%d/%d] %s ok=%d", i + 1, len(notes),
-                        note["note_id"], stats["ok"])
+            logger.info("[%d/%d] %s ok=%d failed=%d",
+                        i + 1, len(notes), note["note_id"],
+                        stats["ok"], stats["failed_after_retry"])
         time.sleep(sleep_s)
 
     logger.info("Done: %s", json.dumps(stats, ensure_ascii=False))
+    if stats["failed_after_retry"] or stats["hygiene_failed"]:
+        logger.info("Failed rows appended to %s — review then either fix the "
+                    "underlying note + rerun, or feed the file back through "
+                    "this script after correcting the prompt/vocab.",
+                    failed_queue_path)
     return 0 if stats["ok"] else 1
+
+
+def _append_failed_queue(path: Path, note: dict, project_id: str,
+                          errors: list[str], raw_response: str) -> None:
+    """Append a single failed-row record to the JSONL queue.
+
+    Designed so an operator can `grep` / `wc -l` / `jq` the file directly,
+    and so a follow-up script can read it back to retry after fixing the
+    prompt or vocab. We deliberately don't write to the DB here — a new
+    table for failures is overkill at this scale; the JSONL is enough.
+    """
+    record = {
+        "note_id": note.get("note_id"),
+        "project_id": project_id,
+        "errors": errors,
+        "raw_response": raw_response,
+        "attempted_at": _iso_now(),
+    }
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
 if __name__ == "__main__":

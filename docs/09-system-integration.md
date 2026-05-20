@@ -671,11 +671,11 @@ def sync_feishu_notes(project_id, mapping_yaml_path):
     # 4. 触发下游 sync（双通道）
     sync_baokuan_to_sanshengliubu()
     sync_baokuan_to_autowriter()
-    
-    # ⚠️ comments 解析暂未实现（见 scripts/README.md）
-    # 飞书的「随贴评论」「随贴评论素人」字段需要 LLM 拆解楼层结构（D-022 / Q21），
-    # 当前 sync 脚本把这些字段存入 raw_extra，不写 truth_vault.comments 表。
-    # sanshengliubu 通道的 top_comments 暂用空数组兜底。
+
+    # ℹ️ comments 解析: flat extraction 已实现 (sync_comments_from_raw_extra.py)
+    # — 把 raw_extra._comment_text / _comment_text_persona 解析成扁平 comments
+    # 表。LLM 楼层结构重建仍待 Sprint 2 (D-022 / R-005)，当前 parent_comment_id
+    # 全部 NULL。ssll 通道 1 的 top_comments 因此是扁平 list，不抓楼层互动模式。
 ```
 
 ---

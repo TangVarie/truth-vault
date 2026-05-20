@@ -1,0 +1,62 @@
+# ════════════════════════════════════════════════════════════════════
+# Root .gitignore · catch-all for the whole repo
+# ════════════════════════════════════════════════════════════════════
+#
+# scripts/.gitignore covers Python tooling + .env at that level. This
+# file catches things that can land at the repo root or in sibling
+# directories (data exports, build artifacts, IDE state, OS junk).
+#
+# IMPORTANT: never commit a real .env (anywhere). RISKS.md R-003.
+
+# ── Secrets / env ────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ── Python ───────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+venv/
+.venv/
+
+# ── Data exports / client deliverables ───────────────────────────────
+# Operator-exported xlsx / csv from Feishu, autowriter, etc. These can
+# contain PII and shouldn't accidentally be committed. To version-track
+# a sample, place it in data-analysis/ and add a per-file exception.
+*.xlsx
+*.xls
+*.csv
+*.tsv
+*.parquet
+data-exports/
+client-data/
+exports/
+
+# ── LLM annotation byproducts ────────────────────────────────────────
+# annotate_essence_pass.py writes failures here at runtime; reviewable
+# locally, not in the repo. The file format is jsonl with raw LLM
+# responses (potentially long).
+failed_essence_queue.jsonl
+failed_*.jsonl
+
+# ── IDE / OS ─────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── Build / temp ─────────────────────────────────────────────────────
+build/
+dist/
+*.log
+*.tmp
+.cache/

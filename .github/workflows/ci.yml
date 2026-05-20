@@ -107,6 +107,70 @@ jobs:
           assert a.validate_essence(good) == [], a.validate_essence(good)
           print("vocab validator self-check OK")
           PY
+      - name: Essence annotator retry + failed_queue self-check
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          import tempfile, json
+          from pathlib import Path
+          import annotate_essence_pass as a
+
+          # 1. build_retry_prompt embeds errors and the prior raw response
+          orig = "Original prompt"
+          raw = '{"bad": "json"}'
+          retry = a.build_retry_prompt(orig, raw, ["err_a", "err_b"])
+          assert "err_a" in retry and "err_b" in retry and raw in retry
+          print("  ✓ build_retry_prompt embeds context")
+
+          # 2. _annotate_with_retry: validation fails first, succeeds second
+          calls = []
+          good_payload = ('{"essence":{"emotional_lever":"焦虑撬动",'
+                          '"emotional_valence":"negative","emotional_intensity":"high",'
+                          '"human_truth_archetype":["健康焦虑"],'
+                          '"trend_dependencies":["平台话术"],"content_format":"情感叙事"},'
+                          '"audience":{}}')
+          bad_valence = ('{"essence":{"emotional_lever":"焦虑撬动",'
+                         '"emotional_valence":"positive","emotional_intensity":"high",'
+                         '"human_truth_archetype":["健康焦虑"],'
+                         '"trend_dependencies":["平台话术"],"content_format":"情感叙事"},'
+                         '"audience":{}}')
+
+          a.call_claude = lambda p, m: (calls.append(p), bad_valence if len(calls) == 1 else good_payload)[1]
+          parsed, errs, _ = a._annotate_with_retry("test", "fake")
+          assert parsed is not None and parsed["essence"]["emotional_valence"] == "negative"
+          assert len(calls) == 2
+          print("  ✓ retry recovers after first-attempt validation failure")
+
+          # 3. Both attempts fail → None
+          calls.clear()
+          a.call_claude = lambda p, m: (calls.append(p), bad_valence)[1]
+          parsed, errs, _ = a._annotate_with_retry("test", "fake")
+          assert parsed is None
+          assert any("emotional_lever" in e or "valence" in e for e in errs), errs
+          print("  ✓ returns None when both attempts fail")
+
+          # 4. First attempt returns non-JSON → JSON parse failure → retry succeeds
+          calls.clear()
+          a.call_claude = lambda p, m: (calls.append(p), "not json" if len(calls) == 1 else good_payload)[1]
+          parsed, errs, _ = a._annotate_with_retry("test", "fake")
+          assert parsed is not None
+          print("  ✓ retry recovers from initial JSON parse failure")
+
+          # 5. failed_queue writes valid JSONL
+          with tempfile.NamedTemporaryFile(delete=False, suffix=".jsonl", mode="w") as f:
+              p = Path(f.name)
+          try:
+              a._append_failed_queue(p, {"note_id": "N1"}, "P1", ["e1"], "raw")
+              a._append_failed_queue(p, {"note_id": "N2"}, "P1", ["e2"], "raw2")
+              lines = p.read_text(encoding="utf-8").strip().split("\n")
+              assert len(lines) == 2
+              r = json.loads(lines[0])
+              assert r["note_id"] == "N1" and "attempted_at" in r
+          finally:
+              p.unlink(missing_ok=True)
+          print("  ✓ failed_queue writes valid JSONL")
+          print("\nannotate_essence retry + failed_queue: all 5 checks passed")
+          PY
       - name: Supabase key validation self-check
         working-directory: scripts
         run: |
@@ -298,6 +362,57 @@ jobs:
           psql -v ON_ERROR_STOP=1 -f sanshengliubu-patches/001_add_source_tv_note_id.sql
           psql -v ON_ERROR_STOP=1 -f autowriter-migrations/002_add_external_source.sql
           psql -v ON_ERROR_STOP=1 -f autowriter-migrations/003_add_example_label_proposal.sql
+      - name: Apply cross-schema views
+        run: |
+          # Cross-schema views (notes_v1_2_cross_schema_views.sql) require
+          # sanshengliubu's public.outputs / public.pipeline_runs and
+          # autowriter.items / autowriter.versions to exist. We already have
+          # autowriter tables from migration 001 above; add the two missing
+          # ssll stubs so the view file can apply. Catches view-SQL syntax
+          # regressions (column rename, JOIN drift, etc).
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE TABLE IF NOT EXISTS public.pipeline_runs (
+              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+              project_id TEXT,
+              completed_at TIMESTAMP
+          );
+          CREATE TABLE IF NOT EXISTS public.outputs (
+              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+              run_id UUID,
+              version TEXT
+          );
+          -- autowriter.versions / autowriter.items already created by
+          -- migration 001 + 002. Migration 002 adds external_source,
+          -- but the view references ai_engine — add it if missing.
+          ALTER TABLE autowriter.versions
+              ADD COLUMN IF NOT EXISTS item_id UUID,
+              ADD COLUMN IF NOT EXISTS ai_engine TEXT;
+          ALTER TABLE autowriter.items
+              ADD COLUMN IF NOT EXISTS best_version_id UUID;
+          SQL
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_2_cross_schema_views.sql
+          # Idempotency: views use CREATE OR REPLACE so re-apply is safe
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_2_cross_schema_views.sql
+          # Sanity: both views exist and have the expected columns
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          BEGIN
+              IF NOT EXISTS (SELECT 1 FROM information_schema.views
+                             WHERE table_schema = 'truth_vault'
+                             AND table_name = 'v_prompt_performance') THEN
+                  RAISE EXCEPTION 'v_prompt_performance view missing';
+              END IF;
+              IF NOT EXISTS (SELECT 1 FROM information_schema.views
+                             WHERE table_schema = 'truth_vault'
+                             AND table_name = 'v_model_comparison') THEN
+                  RAISE EXCEPTION 'v_model_comparison view missing';
+              END IF;
+              RAISE NOTICE 'cross-schema views applied OK';
+          END $$;
+          -- Verify both views are queryable (catches column drift)
+          SELECT COUNT(*) FROM truth_vault.v_prompt_performance;
+          SELECT COUNT(*) FROM truth_vault.v_model_comparison;
+          SQL
 
   yaml:
     name: Mapping yaml lint

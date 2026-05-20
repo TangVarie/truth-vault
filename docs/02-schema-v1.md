@@ -534,9 +534,14 @@ ALTER TABLE truth_vault.notes
 -- 3. projects 表新增跨系统映射字段（D-024）
 ALTER TABLE truth_vault.projects
     ADD COLUMN IF NOT EXISTS mapping_to_autowriter_project_id UUID,
-    ADD COLUMN IF NOT EXISTS mapping_to_sanshengliubu_project_id UUID,
-    ADD COLUMN IF NOT EXISTS last_baokuan_sync_to_ssll_at TIMESTAMP,
-    ADD COLUMN IF NOT EXISTS last_baokuan_sync_to_aw_at TIMESTAMP;
+    ADD COLUMN IF NOT EXISTS mapping_to_sanshengliubu_project_id UUID;
+
+-- 3.5. (Session #10) 删除从未被写入的项目级 sync 时间戳缓存列。
+-- v_flywheel_sync_status view 改用 MAX(n.synced_to_*_at) 动态计算，
+-- 不再依赖这两列。
+ALTER TABLE truth_vault.projects
+    DROP COLUMN IF EXISTS last_baokuan_sync_to_ssll_at,
+    DROP COLUMN IF EXISTS last_baokuan_sync_to_aw_at;
 
 -- 4. prepublish_evaluations 重建（简化版）
 DROP TABLE IF EXISTS truth_vault.prepublish_evaluations CASCADE;
@@ -577,7 +582,11 @@ DROP VIEW IF EXISTS truth_vault.v_model_comparison;
 
 **projects 表新增跨系统映射字段**:
 - `mapping_to_autowriter_project_id` / `mapping_to_sanshengliubu_project_id`: 手动维护
-- `last_baokuan_sync_to_ssll_at` / `last_baokuan_sync_to_aw_at`: 上次 sync 时间
+
+> 注 (Session #10): 早期版本声明过 `projects.last_baokuan_sync_to_ssll_at` /
+> `_to_aw_at` 缓存列，但没有任何 sync 脚本写入它们。已删除；
+> `v_flywheel_sync_status` view 改用 `MAX(n.synced_to_*_at)` 从 notes 行级
+> 时间戳动态聚合。
 
 **Views 变化**:
 - `v_prompt_performance` / `v_model_comparison`: 改为跨 schema JOIN
