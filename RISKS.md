@@ -46,9 +46,9 @@
   key 进入前端 / 公共 repo / 日志，攻击者能读写所有 schema
 - **后果**: 数据被改写 / 删除 / 外泄，包括 ssll 和 autowriter 用户数据
 - **检测**:
-  - `_common.get_supabase_client()` 启动校验 JWT role
+  - `_common.get_supabase_client()` 启动校验 JWT role (含 sb_secret_ / sb_publishable_ 前缀识别)
   - GitHub Secret scanning (默认开启)
-  - `.gitignore` 含 `.env`
+  - **Root `.gitignore` 含 `.env` / `*.pem` / `*.key` 兜底**（scripts/.gitignore 只覆盖 scripts/ 一层；根目录有自己的 .gitignore 防止 `.env` 落在 repo 根或其它子目录被 commit）
 - **缓解**:
   1. 永远不 commit `.env` (用 `.env.example` 占位)
   2. 生产 cron / Actions 用 GitHub Secrets 注入

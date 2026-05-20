@@ -63,12 +63,18 @@ CREATE TABLE IF NOT EXISTS truth_vault.projects (
     notes_with_essence INT DEFAULT 0,
     notes_with_actual_audience INT DEFAULT 0,
     last_sync_at TIMESTAMP,
-    last_baokuan_sync_to_ssll_at TIMESTAMP,
-    last_baokuan_sync_to_aw_at TIMESTAMP,
-    
+    -- 删除了 last_baokuan_sync_to_ssll_at / last_baokuan_sync_to_aw_at:
+    -- 没有任何 sync 脚本会更新它们 (sync 脚本只动 notes 行级的 synced_to_*_at).
+    -- v_flywheel_sync_status view 改用 MAX(n.synced_to_*_at) 动态计算这两个值,
+    -- 见本文件末尾 view 定义.
+
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
 );
+
+-- 兼容已部署 schema: 老库可能有这两列, 强制清掉避免 view 引用混乱
+ALTER TABLE truth_vault.projects DROP COLUMN IF EXISTS last_baokuan_sync_to_ssll_at;
+ALTER TABLE truth_vault.projects DROP COLUMN IF EXISTS last_baokuan_sync_to_aw_at;
 
 CREATE INDEX IF NOT EXISTS idx_tv_projects_brand ON truth_vault.projects(brand);
 CREATE INDEX IF NOT EXISTS idx_tv_projects_category ON truth_vault.projects(category);
@@ -712,8 +718,10 @@ GROUP BY e.evaluator_type, e.evaluator_id;
 
 
 -- ── 飞轮 sync 状态监控 ──
+-- last_baokuan_sync_to_{ssll,aw}_at 改用 MAX() 动态计算 (从 notes 行级 timestamp 聚合)
+-- 不再依赖 projects 表的冗余缓存列 (那两列从来没被任何 sync 脚本更新).
 CREATE OR REPLACE VIEW truth_vault.v_flywheel_sync_status AS
-SELECT 
+SELECT
     p.project_id, p.brand,
     -- 爆款总数
     SUM(CASE WHEN n.tier IN ('爆', '大爆') THEN 1 ELSE 0 END) AS total_baokuan,
@@ -724,11 +732,12 @@ SELECT
     -- 待 sync
     SUM(CASE WHEN n.tier IN ('爆', '大爆') AND n.synced_to_ssll_at IS NULL THEN 1 ELSE 0 END) AS pending_ssll_sync,
     SUM(CASE WHEN n.tier IN ('爆', '大爆') AND n.synced_to_aw_at IS NULL THEN 1 ELSE 0 END) AS pending_aw_sync,
-    p.last_baokuan_sync_to_ssll_at,
-    p.last_baokuan_sync_to_aw_at
+    -- 最近一次爆款 sync 时间 (从 notes 行级聚合)
+    MAX(n.synced_to_ssll_at) FILTER (WHERE n.tier IN ('爆', '大爆')) AS last_baokuan_sync_to_ssll_at,
+    MAX(n.synced_to_aw_at)   FILTER (WHERE n.tier IN ('爆', '大爆')) AS last_baokuan_sync_to_aw_at
 FROM truth_vault.projects p
 LEFT JOIN truth_vault.notes n ON p.project_id = n.project_id
-GROUP BY p.project_id, p.brand, p.last_baokuan_sync_to_ssll_at, p.last_baokuan_sync_to_aw_at;
+GROUP BY p.project_id, p.brand;
 
 
 -- ════════════════════════════════════════════════════════════════════

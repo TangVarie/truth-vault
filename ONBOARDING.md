@@ -30,6 +30,7 @@
 - [ ] 读 `CURRENT_STATE.md` (10 分钟) — Sprint 0 scope + 已知 gap
 - [ ] 读 `docs/09-system-integration.md` (15 分钟) — 双通道集成核心
 - [ ] 读 `docs/01-architecture.md` (15 分钟) — 三层架构论证
+- [ ] **读 `RISKS.md`** (10 分钟) — 部署前 blocker (R-001~R-004 必须在你拿凭证前知道)
 - [ ] 跳读 `DECISIONS.md` (重点看 D-024 / D-028 / D-034 / D-035)
 - [ ] **反向陈述当前理解给 Ziao 确认**
 
