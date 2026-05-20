@@ -371,8 +371,16 @@ def ensure_project_exists(client: Client, mapping: dict) -> None:
 # ─────────────────────────────────────────────────────────────────────────
 
 def _iso_now() -> str:
-    """UTC ISO timestamp, suitable for PostgREST TIMESTAMP columns."""
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    """UTC ISO timestamp, suitable for PostgREST TIMESTAMP columns.
+
+    The schema uses `TIMESTAMP WITHOUT TIME ZONE` (not TIMESTAMPTZ), so we
+    emit a naive UTC string. If we included the `+00:00` suffix, Postgres
+    would silently strip the timezone on insert and downstream readers
+    would have no way to know the value is UTC. Naive UTC + a project
+    convention ("all timestamps are UTC") is more predictable until/unless
+    the schema migrates to TIMESTAMPTZ.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds")
 
 
 # ─────────────────────────────────────────────────────────────────────────

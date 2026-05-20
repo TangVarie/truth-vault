@@ -199,12 +199,26 @@ def transform_row(
 
     # ── Secondary processing per mapping ──
     consumed_intermediates: set[str] = set()
-    if "_status_raw" in intermediates and "tier_extraction" in mapping:
+
+    # tier_extraction: A/B families map 「状态」→ _status_raw; C family (TGV/QSHG)
+    # maps 「备注」→ _note_for_tier. Pick the intermediate based on the yaml's
+    # `tier_extraction.source` ("状态字段" or "备注字段"). Bug fix: previously
+    # only _status_raw was checked, which silently dropped tier for C-family
+    # projects (TGV_1's 47 「新爆」 records would end up tier=NULL).
+    tier_extraction = mapping.get("tier_extraction") or {}
+    tier_source = tier_extraction.get("source", "状态字段")
+    tier_intermediate_key = (
+        "_note_for_tier" if tier_source == "备注字段" else "_status_raw"
+    )
+    if tier_intermediate_key in intermediates and tier_extraction.get("rules"):
         note["tier"] = extract_tier(
-            intermediates["_status_raw"],
-            mapping["tier_extraction"].get("rules", []),
+            intermediates[tier_intermediate_key],
+            tier_extraction["rules"],
         )
-        consumed_intermediates.add("_status_raw")
+        # Track tier_source so downstream views can distinguish 状态字段 vs 备注字段
+        # vs 数值推断 (the latter still TODO — see numeric fallback).
+        note["tier_source"] = tier_source
+        consumed_intermediates.add(tier_intermediate_key)
     if "_intent_raw" in intermediates and "intent_mapping" in mapping:
         note["intent"] = map_intent(
             intermediates["_intent_raw"],
@@ -212,12 +226,52 @@ def transform_row(
         )
         consumed_intermediates.add("_intent_raw")
     if "_direction_raw" in intermediates:
-        # direction_decomposition typically requires LLM classification (D-014).
-        # We don't run the LLM here — leave the raw direction and let a
-        # separate annotation pass handle it.  Store under raw_extra so it
-        # isn't silently dropped.
-        note.setdefault("raw_extra", {})["_direction_raw"] = intermediates["_direction_raw"]
+        raw_dir = intermediates["_direction_raw"]
+        # Always keep the raw value in raw_extra for traceability/annotation
+        note.setdefault("raw_extra", {})["_direction_raw"] = raw_dir
         consumed_intermediates.add("_direction_raw")
+
+        # Apply the deterministic portion of direction_decomposition. For
+        # single-direction configs (no sub_directions), we can lift
+        # content_format / target_audience / user_pain_point / product_focus
+        # and intent_override straight from the yaml — no LLM needed. Configs
+        # with sub_directions (NUC_phase1's nutritional / surgery branches)
+        # still require LLM sub-classification and are skipped here; the
+        # raw direction stays in raw_extra so an annotation pass can resolve
+        # it. excluded_directions is honored as 'quarantine via tier_source'.
+        decomposition = (mapping.get("direction_decomposition") or {}).get(raw_dir)
+        if decomposition is not None and "sub_directions" not in decomposition:
+            for col in ("content_format", "target_audience",
+                        "user_pain_point", "product_focus"):
+                val = decomposition.get(col)
+                if val is not None and col not in note:
+                    note[col] = val
+            if decomposition.get("intent_override") is not None:
+                note["intent"] = decomposition["intent_override"]
+
+        # Honor excluded_directions (NRT_phase3's "女性自发, 男性自发" anomaly):
+        # mark as data-anomalous so downstream training queries filter it out
+        # without losing the row.
+        for excluded in (mapping.get("excluded_directions") or []):
+            if excluded.get("direction") == raw_dir:
+                note["tier"] = "数据异常"
+                note["tier_source"] = "数据异常"
+                break
+
+    # ── Numeric tier fallback (Gap 1) ──
+    # When no text-based rule fired but the project has tier_thresholds
+    # configured and interactions is present, assign a tier by threshold.
+    # This catches "评估中" / blank-status rows where the operator hasn't
+    # back-filled the status yet but data already shows a clear hit.
+    if note.get("tier") is None and note.get("interactions") is not None:
+        thresholds = mapping.get("tier_thresholds") or {}
+        n_interactions = note["interactions"]
+        if "大爆" in thresholds and n_interactions >= thresholds["大爆"]:
+            note["tier"] = "大爆"
+            note["tier_source"] = "数值推断"
+        elif "爆" in thresholds and n_interactions >= thresholds["爆"]:
+            note["tier"] = "爆"
+            note["tier_source"] = "数值推断"
 
     # Any intermediate that wasn't consumed above (e.g. _account_name,
     # _account_followers, _comment_text, _comment_text_persona) goes to
