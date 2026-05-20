@@ -1,224 +1,421 @@
 # Truth Vault · 当前状态
 
-> 这个文件是项目的"实时状态快照"。每次会话结束时由 Claude 输出新版本、Ziao 提交进 repo。新会话开始时第一个读的文件。
-
-**最后更新**: 2026-05-18
-**当前阶段**: 阶段 0 · 设计 → 即将进入阶段 1 · 描述性 anchor
-**当前会话编号**: #4（议程清理 + D-012 核心架构原则确立）
+**最后更新**: 2026-05-20（Session #8.5 审计修复 + Session #9 review 修复）
+**当前阶段**: 阶段 0 · 设计完成 → Session #9 review 修复 → **Sprint 0 主链路就绪（含已知 gap）**
+**当前会话编号**: #9（三轮审计 + 用户 review 8 条问题修复：autowriter recovery / label leakage 白盒 / source B prior version / ingested_at 保留 / 集成补丁包 / 含 gap 的 Sprint 0 scope 明确）
 
 ---
 
-## 项目状态概览
+## Sprint 0 实测能跑什么 / 不能跑什么 ⭐ 明确边界
 
-### 已完成 ✅
+Sprint 0 的目标是**主链路上线 + 飞轮通道接通**，不是完整三层标注闭环。
 
-- [x] **10 个项目数据审计** —— 6,332 行
-- [x] **三层架构论证** —— Surface / Essence / Audience
-- [x] **Schema v1 设计** —— 含三层字段
-- [x] **三个家族的映射协议** —— A/B/C
-- [x] **新项目 onboarding SOP** —— 7 步流程
-- [x] **受控词表 v0.2 finalized**
-- [x] **Essence 标注 prompt v0.2**
-- [x] **NRT_phase3 mapping yaml** —— 17 方向 + 1 异常
-- [x] **NRT_phase2 mapping yaml** —— 21 方向 + 1 异常
-- [x] **数据质量监控机制设计** ⭐ Session #4 新增（D-013）
-- [x] **核心架构原则: 按 intent 分轨**  ⭐ Session #4 新增（D-012）
-- [x] **关键决策落档** —— D-001 ~ D-013
+**Sprint 0 可以跑（已实现 + 通过烟测）**:
+- ✅ 飞书 → TV notes 主表 sync（含 quarantine + tier 抽取含 C 家族 + 数值兜底 + 单方向 direction_decomposition 确定性映射 + excluded_directions 标 数据异常）
+- ✅ TV 爆款 → sanshengliubu reference_samples sync（含 preflight + 列名 reconcile + idempotency dual-path）
+- ✅ TV 爆款 → autowriter items sync（含 transactional recovery + JWT 校验）
+- ✅ autowriter 负例候选挖掘（Source A/B 修正版 + 全分页）
+- ✅ 跨 schema views（v_prompt_performance / v_model_comparison / v_top_performing_accounts 直查 notes）
+- ✅ Schema 全部 CHECK 约束 + ON DELETE 语义 + ingested_at trigger 保护
 
-### 进行中 🔧
+**Sprint 0 暂不闭环（已知 P1 gap）**:
+- 🚧 **direction_decomposition.sub_directions**：NUC_phase1 6 个子方向（健身减脂 / 关心父母营养 / 产后宝妈 / 照顾家人手术 / ...）需要 LLM 子分类才能落到 schema 字段；当前只保留 `_direction_raw` 到 raw_extra，独立 annotation pass 必须做。`ingest_classification_prompt` 在 NUC_phase1.yaml 已就绪。
+- 🚧 **essence + audience LLM 标注**：Mode A 双模式 prompt 已 finalize（v0.3 含白盒 leakage 校验），但没有调用脚本（不在 sync 脚本里跑）。需要独立 annotation pass 脚本读 `notes.emotional_lever IS NULL` 然后批量标注。
+- 🚧 **comments 表 sync**：飞书的「随贴评论」「随贴评论素人」是文本块，需要 LLM 重建楼层结构（D-022 / Q21）。当前 sync 脚本只把这两个字段塞进 `raw_extra`，不写 `truth_vault.comments`。ssll 通道 1 的 `top_comments` 因此为空（用兜底空数组）。
+- 🚧 **prepublish_evaluations 写入路径**：表 + view 都已就绪，但没有 sync 代码会写入。`v_evaluator_calibration` view 当前永远空。可以等 Sprint 1 第二轮再接通。
+- 🚧 **autowriter Memory Manager UI 负例 review tab**：脚本写 `example_label_proposal`，但 autowriter 前端没接。proposal 不污染 negative pool（这是设计），但需要前端工作。
 
-无 —— 当前等待启动 NUC_1 试点 onboarding。
+**Sprint 0 验收标准**:
+1. NUC_phase1 飞书 1102 行能进 TV，无 quarantine 误判
+2. NUC_phase1 爆款（24 大爆 + 20 爆）能进 ssll reference_samples + autowriter items
+3. 至少 1 个项目跑通 Source A 负例抽取并人工 review > 0 个候选
+4. 跨 schema view 不报错（即使 prepublish_evaluations 为空也算通过）
+
+---
+
+## Session #8 关键产出 ⭐
+
+**全部审计修复**（接续 Session #7 设计）:
+- **P0 文档扫荡**: v1.1 → v1.2 引用全清；素人编号 → account_id；02-schema-v1.md 重写
+- **P1 autowriter 修复**: DDL 顺序 + POLICY 语法 + list_example_items 50-batch 窗口 + external_source 强幂等 + exporter lineage + B1 schema 迁移
+- **P2 业务逻辑硬伤**: negative example 3 个来源 SQL 全部修正 + metric_snapshots 加 window_label/UNIQUE + category 受控词表
+- **P3 命名整理**: notes 表 aw_item_id → synced_autowriter_item_id
+
+**真实可跑代码**（不是 spec）:
+- `truth-vault/scripts/` 4 个 Python sync 脚本 + `_common.py` 共享工具
+- `sanshengliubu-patches/` 001_add_source_tv_note_id.sql + import_truth_vault_baokuan.py + README（**Session #9 补回 final ZIP 漏掉的目录**）
+- `autowriter-migrations/` 001_create_autowriter_schema.sql + 002_add_external_source.sql + 003_add_example_label_proposal.sql + RUNBOOK（**Session #9 补回**）
+
+**Session #9 review 修复（用户反馈 8 条 + 我自己 review 后续）**:
+- ✅ Issue 1 · 补回 sanshengliubu-patches/ 和 autowriter-migrations/ 目录
+- ✅ Issue 2 · autowriter sync 失败恢复（dedup 分支补齐 version + best_version_id）
+- ✅ Issue 3 · 负例 Source B 加 prior-version 校验（同 Source A 模式）
+- ✅ Issue 4 · Sprint 0 scope 含 gap 明确（本节）
+- ✅ Issue 5 · Mode A label leakage 改为白盒（只校验 template + project_context，不扫 title/body）
+- ✅ Issue 6 · reference_samples 字段映射 reconcile（doc 09 对齐 script，加 preflight）
+- ✅ Issue 7 · service_role JWT payload 解码校验（取代弱启发式）
+- ✅ Issue 8 · ingested_at 保留（DB trigger + 客户端不传）
+- ✅ 附加 · C 家族 tier 抽取（_note_for_tier）/ 全 fetch 分页 / Source A 时序 / TIMESTAMP TZ / 数值 tier 兜底 / direction_decomposition 确定性部分 / parent_comment_id ON DELETE / category CHECK / tier_thresholds 默认值移除 / 模型 ID 更新
+
+**Session #8 三轮审计**:
+- 第一轮: P0/P1/P2/P3 共 11 条 issue 全部修复
+- 第二轮: end-to-end 完备性、文档矛盾、SQL 复制可执行性、service_role 强制、Excel 工作流闭环等 11 条
+- 第三轮: quarantine schema 不匹配 / accounts FK 没建 / comments schema 错 / dedup UUID 错误 / sanshengliubu 必需列等 6 条硬 bug + 3 条次级
+
+### Session #7 历史产出（保留供参考）
+
+**代码审查**（Ziao 上传两个仓库的最新分支）:
+- sanshengliubu (v0.30.10) - Prompt 生产管线，30+ 版本迭代
+- autowriter (v2.7.9-studio) - XHS 内容工作台
+- 发现两个项目都比 v1.1 假设的成熟得多
+- 发现 v1.1 设计的部分功能（prompt_versions / generation_runs / content_candidates）与现存系统重叠
+
+**架构调整 · v1.1 → v1.2**:
+- **D-024**: 双通道集成模式取代 HTTP REST API（D-023 作废）
+- **D-025**: 简化 D-016 生成过程数据 layer（删除 3 张冗余表）
+- **D-026**: 历史数据回流策略（飞书 notes 必须 + autowriter 扫一次取 negative + sanshengliubu 跳过）
+- **D-027**: Negative example 来自用户修改/淘汰行为
+
+**新文档**:
+- **docs/09-system-integration.md v2** - 重写为双通道直接喂数据模式
+- **schemas/notes_v1_2.sql** - 简化 schema（删除 3 张冗余表 + 新增跨系统 FK）
+
+### Session #8.5 审计修复产出 ⭐
+
+**Prompt 层 label leakage 修复 (D-028)**:
+- `prompts/essence_annotator.md` v0.2 → v0.3：物理拆分 Mode A / Mode B
+- Mode A prompt 不含 `{performance_context}` 占位符——从代码层面杜绝泄露
+- 调用代码含硬校验 assert（prompt 中不允许出现 tier 等关键词）
+- 模型 ID 从 prompt 移到配置层（不再硬编码 `claude-sonnet-4`）
+
+**SQL 部署拆分 (D-029)**:
+- `notes_v1_2.sql` → 纯 truth_vault 表+内部 views（无外部依赖，可独立执行）
+- `notes_v1_2_cross_schema_views.sql` → v_prompt_performance + v_model_comparison（需三个 schema 就绪）
+
+**文档一致性修复**:
+- doc 09 的 view 定义对齐到 SQL canonical 版本（修复列名/JOIN/过滤条件不一致）
+- 受控词表 tier 7→8（补入 `数据异常`，对齐 SQL CHECK）
+- `comment_intent` 加 CHECK 约束（D-031）
+- `accounts.notes_text` → `account_memo`（D-032）
+- `notes_archive` 加 `account_id` + `publish_time` 索引（D-030）
+- `audience_inferrer.md` 模型引用改为配置层
+- `_common.py` 补齐缺失的 sentinel token（em dash `—` / `/无`）
+- doc 08 roadmap API 端点改为 sync/view/UI 口径（对齐 D-024）
+- DECISIONS.md 补录 D-028~D-033
+
+### 双通道集成核心
+
+```
+                  ┌─────────────────────────┐
+                  │ Truth Vault notes (爆款) │
+                  └────────────┬────────────┘
+                               │
+              ┌────────────────┴────────────────┐
+              ▼                                 ▼
+┌──────────────────────────┐  ┌──────────────────────────┐
+│ 通道 1                    │  │ 通道 2                    │
+│ sanshengliubu.            │  │ autowriter.items          │
+│ reference_samples         │  │ (example_label='positive')│
+│                           │  │                           │
+│ → retrieve_reference_packs│  │ → build_system_prompt     │
+│ → 注入 vibe_rewriter      │  │   (positive_examples=...) │
+│   (高权重)                 │  │ → 注入 system prompt      │
+│                           │  │   (高权重)                 │
+└──────────────────────────┘  └──────────────────────────┘
+   sanshengliubu 加 ~30 行           autowriter 已完成 P1 一次性改造
+   (import_truth_vault_baokuan)       (DDL 修复 + schema 迁移 +
+                                       list_example_items + lineage 元数据)
+```
+
+### 已完成（v1.2 含）✅
+
+- [x] 10 个项目数据审计
+- [x] 三层架构（Surface / Essence / Audience）
+- [x] 四层系统架构
+- [x] Schema v1.2 设计（13 张表 + 跨 schema views）
+- [x] 三个家族的映射协议
+- [x] 新项目 onboarding SOP
+- [x] 受控词表 v0.2
+- [x] Essence 标注双模式 prompt
+- [x] NRT_phase3 / NRT_phase2 / NUC_phase1 mapping yaml
+- [x] **代码审查 sanshengliubu + autowriter** ⭐ Session #7
+- [x] **双通道集成架构** ⭐ Session #7
+- [x] **三个 sync 脚本完整 spec**（在 09-system-integration.md）
+- [x] 关键决策落档 D-001 ~ D-027
+- [x] **P0 文档扫荡**（v1.1 → v1.2 全清，note_id / account_id 命名干净）⭐ Session #8
+- [x] **P1 Sprint 1.1**：autowriter DDL 修复 + list_example_items 重写 + external_source 去重列 + exporter lineage 元数据 ⭐ Session #8
+- [x] **P1 Sprint 1.2**：autowriter `get_client()` 改 ClientOptions(schema='autowriter') + 数据迁移 SQL + RUNBOOK ⭐ Session #8
+- [x] **P1 Sprint 1.3**：09-system-integration.md "零代码改动" 措辞更正 + sync spec 用 external_source 强幂等键 ⭐ Session #8
+- [x] **P2 四**：negative example 3 个来源的查询逻辑修正（manual rewrite 走 ai_engine='manual'；feedback 挂 v_revised；需要 review queue 不直接落 negative） + autowriter 加 `example_label_proposal` 列 ⭐ Session #8
+- [x] **P2 八**：`metric_snapshots` 加 `window_label` / `hours_since_publish` / `UNIQUE(note_id, window_label, source)` ⭐ Session #8
+- [x] **P2 十一**：`category` 受控词表 v1（14 个值），TV/sanshengliubu 共用，写入 05-controlled-vocab.md §9 ⭐ Session #8
+- [x] **P3 十**：notes 表 `aw_item_id` → `synced_autowriter_item_id` / `ssll_reference_sample_id` → `synced_ssll_reference_sample_id`（schemas + docs 全部同步）⭐ Session #8
+- [x] **二审 11 条**：end-to-end 完备性 + service_role 强制 + Excel 工作流闭环 + Auth/RLS 段 + 4 处 SQL 复制可执行性 + 文档矛盾清扫 ⭐ Session #8
+- [x] **三审 6 条硬 bug**：quarantine 列名对齐 + ensure_account_exists 实装 + comments schema 修 + autowriter dedup UUID 修 + sanshengliubu 列变必需 + sub-issue 修 ⭐ Session #8
+- [x] **真实可跑 Python sync 脚本**：4 个脚本（feishu→TV / TV→ssll / TV→aw / extract negative）+ `_common.py` 共享工具 + .env.example + scripts/README ⭐ Session #8
+- [x] **sanshengliubu patch**：`import_truth_vault_baokuan` 方法 + 必需的 schema migration SQL ⭐ Session #8
 
 ### 待启动 📋
 
-- [ ] **NUC_1 试点 onboarding** ⭐ 当前阻塞点
-- [ ] **NRT_2/3 mapping yaml 实操 review**
-- [ ] **B 家族粉丝数补录**（约 2,300 条）
-- [ ] **历史数据 essence 回标**（约 3,400 条，¥1000-1500）
-- [ ] **蒲公英后台数据账号清单**
-- [ ] **NewAPI 网关部署**
-- [ ] **FastAPI 服务搭建**
-- [ ] **周哥二次 review 词表 v0.2**（可选，不阻塞）
-- [ ] **NRT tier 阈值实操校准**
-- [ ] **更新 onboarding-sop.md Step 3**（D-010 target_audience 含义微调）
-- [ ] **D-013 sanity check 工程实现**（schema v1.1 加 data_quality_flags 字段）
+- [ ] **跑 staging 环境 dry-run 验收**（sync 脚本 + sanshengliubu patch）⭐ 当前阻塞点
+- [ ] 共享 Supabase 实例上线（public + autowriter + truth_vault 三 schema 就绪）
+- [ ] **执行 autowriter migration RUNBOOK**（场景 A 或 B；含 Auth/RLS 检查）
+- [ ] **执行 sanshengliubu patches/001_add_source_tv_note_id.sql**（在 sanshengliubu 集成 patch 之前）
+- [ ] Supabase Dashboard → Exposed schemas 加 `autowriter` 和 `truth_vault`
+- [ ] 给每个 mapping yaml 补 `sync_config` 段（feishu_app_token / feishu_table_id）
+- [ ] sanshengliubu 集成 `import_truth_vault_baokuan` 方法（已提供 patch 代码）
+- [ ] autowriter Memory Manager UI 加"负例候选审核" tab（不阻塞 sync，UX 优化）
+- [ ] NRT_phase2/3 category 决议（OTC药 / 处方药 由策略 lead 拍板）
+- [ ] NUC_1 全量导入 1102 行 + 验收 v_model_comparison view 有数据
+- [ ] 其他项目 onboarding
 
 ---
 
 ## 下一步要做的事（按优先级）
 
-### #1 · NUC_1 试点 onboarding ⭐ 当前阻塞点
+### #1 · 共享 Supabase 部署 + Truth Vault 服务上线 (Sprint 0)
 
-**为什么是阻塞点**: 所有架构和词表都已就绪。下一步必须用第一个真实项目（NUC_1，最干净）验证整套流程。
+**预计耗时**: 1-2 周
 
-**为什么是 NUC_1**:
-- 数据最干净（114 爆 / 553 趴 tier 完整）
-- 数据回收率 59%（B 家族最高）
-- 方向相对简单（4 个用户场景）
-- 保健品合规相对清晰
-- mapping yaml 草案已准备好 [mappings/NUC_phase1.yaml](mappings/NUC_phase1.yaml)
+1. 新建/选用一个共享 Supabase 实例
+2. 在该实例创建三个 schema：public（已有 sanshengliubu）/ autowriter（迁移）/ truth_vault（新建）
+3. 执行 schemas/notes_v1_2.sql 创建 truth_vault schema 所有表
+4. autowriter 数据迁移到 autowriter schema（避免 projects 表名冲突）
+   - 这需要协调 autowriter 维护者（你/工程师）
+5. FastAPI 项目脚手架
 
-**需要谁**:
-- Ziao（必须）
-- NUC 项目经理（提供原始 context）
-- 新会话 Claude
+**注意**: 共享实例后，autowriter 的 config.py 需要更新 SUPABASE_URL 指向共享实例，并在 SQL queries 里加 `autowriter.` schema prefix。
 
-**操作步骤**: 按 [docs/04-onboarding-sop.md](docs/04-onboarding-sop.md) 的 7 步走
+### #2 · 主 sync 通道 + NUC_1 全量导入 (Sprint 1)
 
-**注意 Session #3-4 引入的两个新原则**:
-- **D-010** target_audience 标"该项目+该方向的实际策略意图"，不是理论集合
-- **D-012** 按 intent 分轨原则——onboarding 时记录 intent，将来训练分类器时分组
+**Session #8 已交付**: `sync_feishu_notes_to_truth_vault.py` 真实可跑脚本，含 D-021 quarantine 机制 + Step 4.5 数值清洗（千位分隔/全角数字/`/`-`无` token）+ publish_time 毫秒转 ISO + ensure_project_exists + ensure_account_exists FK 防护。
 
-**预期输出**:
-- `mappings/NUC_phase1.yaml` 定稿版（替换当前草案）
-- 试点报告
-- 30 条样本 essence 标注，验证 v0.2 词表实操可用性
+**Sprint 1 工作不再是"实现脚本"，而是**:
+1. 给每个 mapping yaml 补 `sync_config.feishu_app_token` + `feishu_table_id`
+2. 在 staging Supabase + 真实飞书表跑 `--dry-run --limit 5` 抽样测试
+3. 根据 stats 判断是否需要扩 `_NUMERIC_COLS` / `_NUMERIC_NULL_TOKENS` / `_coerce_value` 边界
+4. NUC_1 全量 1102 行实跑导入
+5. 30 条 pilot 跑 essence_annotator + audience_inferrer prompt（这部分**还未自动化**，目前 spec 形态）
+6. 跑 quality_review_decisions 抽查准确率，调词表/prompt
+7. （D-014 LLM 子分类目前还在 raw_extra，独立 essence annotation pass 处理）
 
-**预计耗时**: 30-40 分钟 onboarding + 1 小时 pilot 标注
+**预计耗时**: 1-2 周（脚本已有，主要是配置 + pilot 验证）
 
----
+### #3 · 双通道集成 + 飞轮闭环 (Sprint 2)
 
-### #2 · 蒲公英后台数据账号清单整理
+**Session #8 已交付**: 三个 sync 脚本 + sanshengliubu patch 实代码。
 
-**为什么并行做**: 不阻塞 #1。Ziao 可以在和项目经理对接 NUC_1 之前/之后做掉。**Session #4 已确认**：不需要先和客户做合规对齐（R-012），可以直接做。
+**Sprint 2 工作**:
+1. 跑 `sanshengliubu-patches/001_add_source_tv_note_id.sql` 加列（**必做前置**）
+2. sanshengliubu 集成 `import_truth_vault_baokuan` 方法（patch 已就绪，~50 行复制粘贴）
+3. dry-run 测试 `sync_truth_vault_baokuan_to_sanshengliubu.py`，验证幂等（pre-insert + post-fail orphan recovery 双层保护）
+4. dry-run 测试 `sync_truth_vault_baokuan_to_autowriter_items.py`，验证 special batch + external_source dedup
+5. 一次性跑 `extract_negative_examples_from_autowriter.py` 写 `example_label_proposal`
+6. autowriter Memory Manager UI 加"负例候选审核" tab（**这一项仍需要前端开发**，本包不含）
 
-**需要谁**: Ziao + 投放执行同事
+**已知 P1 不闭环点**:
+- **comments 表 sync 没有自动脚本**：TV → ssll 的 top_comments 字段会为空（除非手工导入 truth_vault.comments）。这不阻塞 notes 主链路，但 vibe_rewriter 的 reference packs 评论证据会缺失。等 NUC pilot 后判断是否需要补一个 sync 脚本。
+- **autowriter Memory Manager 没有负例 review UI**：脚本写入 `example_label_proposal`，但没有前端展示页面。
 
-**输出**: 一张表，列出哪些项目有蒲公英权限 / 能拉什么字段
+**关键验收**:
+- NUC_1 爆款已注入 `public.reference_samples`（下次 prompt 生产可见）
+- NUC_1 爆款已注入 `autowriter.items` (example_label='positive')
+- autowriter 历史 negative example 已写入 `example_label_proposal`（待 UI review）
 
-**预计耗时**: 0.5-1 小时
+**预计耗时**: 1-2 周（脚本已有，主要是部署 + 测试 + Memory Manager UI）
 
----
+### #4 · 全项目铺开 (后续 2-3 个月)
 
-### #3 · NRT_phase3 / NRT_phase2 实操 review
-
-排在 NUC 之后。需要 Ziao + 数据导入后看真实互动量中位数校准 tier 阈值。
-
----
-
-### #4 · 工程启动
-
-只有 #1 跑通才启动。具体见 [docs/08-evolution-roadmap.md](docs/08-evolution-roadmap.md) 阶段 1。
-
-启动顺序：
-1. NewAPI 网关部署
-2. Supabase 项目创建 + schema SQL 执行（**注意 schema v1.1 需要加 data_quality_flags 字段，对应 D-013**）
-3. FastAPI 项目脚手架 + 飞书 import 脚本
-4. 历史数据导入
-5. Essence 全量回标 pipeline + sanity check 集成
-
-**关键架构提醒**: 阶段 2 训练分类器时**必须按 intent 分轨**（D-012）：
-- `predict_explosion_likelihood` for intent=traffic
-- `predict_conversion_effectiveness` for intent=conversion
-- 不能用统一模型把 intent 作为特征传入
+按优先级：HXZ_QD / HXZ_FB → RIO_1 → WTG → NRT_2 / NRT_3 → TXQ_1 → TGV_1 → QSHG_1
 
 ---
 
 ## 当前未决问题（议程）
 
-### Session #4 清理完成 ✅
-- ~~[Q3] TGV_1 "删0" 归类~~ → **D-007 补充**: 主动删除（不是风控），训练时作为强负样本合并到"趴"
-- ~~[Q5] 蒲公英拉数据合规~~ → **R-012**: 撤销过度担忧，是日常工作流程
-- ~~[Q10] NRT 男性自发标注混杂~~ → **D-013**: ingest 阶段 LLM sanity check + flag
-- ~~[Q11] 单标产品形式 0 爆款怎么处理~~ → **D-012**: 按 intent 分轨训练，产品向走独立 conversion 模型
+### Session #7 清理完成 ✅
+- ~~D-023 HTTP REST API 设计~~ → **D-024 双通道直接 INSERT 取代**
+- ~~D-016 prompt_versions / generation_runs / content_candidates 4 张表~~ → **D-025 简化为 FK 引用**
+- ~~历史数据是否回流~~ → **D-026 分级处理**
+- ~~autowriter 历史 items 怎么处理~~ → **D-027 抽 negative example 种子**
+- ~~共享 Supabase 还是独立实例~~ → **D-024 确认共享**
+- ~~sanshengliubu reference_samples 怎么处理~~ → **D-026 共存（tags 区分 source）**
 
 ### 仍未决
-- **[Q4]** 是否对 QSHG_1 这种纯无标注数据，使用半监督学习方式利用？还是只作为 archive？
-- **[Q6]** Schema v1 是否保留"项目阶段"字段？目前所有项目都没填值。
-- **[Q7]** 是否在 NUC_1 pilot 标注后做一次 v0.2 → v0.3 微调？
-- **[Q8]** "时代语言范式" 这个标签的子模式（夸张式自嘲/反向表达等）将来是否升级到闭集？
-- **[Q9]** Surface 三级时间衰减权重是否要 A/B 测试不同半衰期数值？
+- **[Q4]** QSHG_1 无标注数据是否半监督？
+- **[Q6]** Schema 是否保留"项目阶段"字段？
+- **[Q7]** NUC_1 pilot 标注后是否做 v0.2 → v0.3 词表微调？
+- **[Q8]** "时代语言范式" 子模式是否升级到闭集？
+- **[Q9]** Surface 三级时间衰减 A/B 测试？
+- **[Q13]** D-013 sanity check 扩展到其他字段？
+- **[Q14]** intent=conversion 模型的 ground truth？
+- **[Q15]** D-014 LLM 子分类"其他"fallback 占比监控？
+- **[Q16]** 一次 LLM 调用做 4 件事 vs 拆开（需 NUC pilot 实测）
+- **[Q17]** D-015 semantic_redefined_as 字段在查询时怎么暴露？
+- **[Q21]** comment 楼层 LLM 重建成本估算（~2,700 条 × 单条成本）
 
-### 新增议程（Session #4 引入）
-- **[Q13]** D-013 sanity check 机制要不要扩展到其他字段（不只是 audience，比如 intent / content_format）？
-- **[Q14]** intent=conversion 模型的 ground truth 是什么？蓝词命中率 + 互动率？还是只看蓝词？
+### 新增议程（Session #7 引入）
+- **[Q22]** autowriter 从独立 Supabase 迁移到共享 Supabase 的具体步骤？数据迁移过程中能否保证零停机？
+- **[Q23]** Truth Vault 双通道 sync 频率？爆款每天 sync 一次还是更高频？
+- **[Q24]** 工程师人选？
 
 ---
 
 ## 重要 context（新窗口必读）
 
-### 这个项目的起源
+### 项目起源
 
-这个项目从 Ziao 看到 OranAi 的 oransim 开源项目开始 → 探讨"AI persona 评估内容质量"的可行性 → 发现持续提升需要"真实数据回流"作为锚 → 演化为"帆谷私有 Truth Vault" 数据飞轮项目。
+从 Ziao 看 oransim 开始 → 探讨 AI persona 评估 → 发现需要真实数据回流 → 演化为帆谷私有 Truth Vault 数据飞轮项目。
 
-完整对话轨迹（关键节点）：
-1. 评审 oransim 项目 → 算法不是护城河，回流数据才是
-2. RAG 路线被否决 —— "匹配本质粗浅"
+完整对话轨迹：
+1. 评审 oransim → 算法不是护城河
+2. RAG 路线被否决
 3. 10 个项目数据审计
-4. Ziao 提出三层架构（Surface / Essence / Audience）—— schema 灵魂
-5. **会话 #1**：文档奠基（11 个核心文档 + schema SQL + mapping 模板）
-6. **会话 #2**：受控词表 v0.2 finalized，引入三级时间分层
-7. **会话 #3**：NRT_phase3 + NRT_phase2 方向拆解，确立 D-010 + D-011
-8. **会话 #4（当前）**：议程清理（4 个 Q 落档），确立 D-012 核心架构原则（按 intent 分轨）+ D-013（数据质量监控）
+4. 三层架构（Surface / Essence / Audience）—— schema 灵魂
+5. **会话 #1**: 文档奠基
+6. **会话 #2**: 词表 v0.2 + 三级时间分层
+7. **会话 #3**: NRT_phase3/2 方向拆解
+8. **会话 #4**: 议程清理 + D-012 按 intent 分轨 + D-013 sanity check
+9. **会话 #5**: NUC_1 试点 onboarding + D-014/D-015
+10. **会话 #6**: v1.1 大升级（生成过程数据 + label leakage + 集成架构）
+11. **会话 #7（当前）**: ⭐ 代码审查发现 v1.1 设计部分重复造轮子 → v1.2 双通道集成模式
 
-### 几个关键决策的核心理由
+### 关键决策摘要
 
-读 [DECISIONS.md](DECISIONS.md) 看完整版。摘要：
+读 [DECISIONS.md](DECISIONS.md) 看完整版。**Session #7 关键调整**：
 
-- **D-001** Schema 必须有 essence 层
-- **D-002** 拒绝 RAG 作为主要检索方法
-- **D-003** "方向"字段必须 schema 层面拆解为多维
-- **D-004** 管家不做内容判断
-- **D-005** 历史数据必须回标 essence
-- **D-006** A 家族（RIO/WTG/TXQ）是最新格式
-- **D-007** TGV_1 备注"新爆"是 tier 金标准（删除≠风控）
-- **D-008** Schema v1 必须含 audience 层
-- **D-009** 词表 v0.2 finalized —— 三级时间分层
-- **D-010** target_audience 反映项目+方向的实际策略意图
-- **D-011** "借助场景撬动流量" = 场景植入 + traffic 组合
-- **D-012** ⭐ 按 intent 分轨训练和优化（核心架构原则）
-- **D-013** ⭐ Ingest 阶段 LLM sanity check 机制
+- **D-001~D-022** v1.1 决策（部分被 v1.2 调整）
+- **D-023** HTTP REST API 集成 → **作废，被 D-024 取代**
+- **D-024** ⭐ Truth Vault 双通道集成（sanshengliubu.reference_samples + autowriter.items）
+- **D-025** ⭐ 简化生成过程数据 layer（删除 3 张冗余表，改为 FK 引用）
+- **D-026** ⭐ 历史数据回流策略（飞书必回 + autowriter 扫一次 + sanshengliubu 跳过）
+- **D-027** ⭐ Negative example 来源（autowriter 用户修改 + 反馈 + 淘汰行为）
 
-### 这个项目的核心哲学
+### Session #7 核心理解
 
-**取上得中，取中得下，取下而不得**。Schema 起点决定了未来六个月所有可能性的上限。
+**Truth Vault 角色重新定位**:
+- v1.1 误以为 Truth Vault 是"过程数据库"（含生成过程数据）
+- 代码审查发现 sanshengliubu / autowriter 已有完整过程数据表
+- **v1.2 正确定位：Truth Vault 是"结果数据库 + 跨系统飞轮枢纽"**
 
-数据库的价值 = 数据量 × 数据分层质量²。分层质量平方贡献，不能将就。
+**飞轮闭环的真正含义**:
+- 不是"Truth Vault 提供 API 让别人调"
+- 是"Truth Vault 主动喂数据到现存系统已有的高权重注入路径"
+- sanshengliubu.reference_samples 注入 vibe_rewriter（已有机制）
+- autowriter.items.example_label='positive' 注入 build_system_prompt（已有机制）
+- autowriter 已完成 P1 一次性改造（DDL 修复 + schema 迁移 + list_example_items + lineage，约 190 行）；sanshengliubu 加 ~30 行 `import_truth_vault_baokuan` = 飞轮转起来
 
-### Session #4 引入的核心原则
+**Negative example 信号源**:
+- 正面信号来自 Truth Vault notes（tier=爆/大爆，已发布真实数据）
+- 负面信号来自 autowriter.items 的用户修改/淘汰行为（来自人，不是 AI 自评）
+- 两者来源独立 → 高质量训练对比
 
-**按 intent 分轨**（D-012）是阶段 2 训练的基本架构原则：
-- 流量向内容（intent=traffic）走 explosion 预测模型
-- 产品向内容（intent=conversion）走 conversion 预测模型
-- 不混在一个统一模型里
-- API 层面预留两套 endpoint
+### 关键集成假设
 
-**Ziao 的洞察**："不同产品不同目的应该需要做不同的匹配或者预测或者优化"——这不是阶段 2 才决定的事，是从 schema 设计第一天就要预留的接口。
+1. **共享 Supabase 实例**（不是独立实例）
+2. **autowriter 迁移到 autowriter schema**（避免 public.projects 冲突）
+3. **sanshengliubu 保持在 public schema**（不动现有部署）
+4. **truth_vault schema 新建**
 
-**数据质量监控**（D-013）：
-- LLM essence 标注的产出（inferred_audience_profile）作为人工标注的交叉验证
-- 真实案例: NRT_3 男性自发 4 条爆款里 2 条是女性视角错标
-- 这种机制本身就是数据飞轮的一部分——错误样本变成校准信号
+---
+
+## 关键文件清单（v1.2 / Session #9）
+
+```
+truth-vault/
+├── README.md                          ← 项目宪法 + 完整目录结构索引
+├── CURRENT_STATE.md                   ← 本文件 (Sprint 0 scope)
+├── DECISIONS.md                       ← D-001 ~ D-035 (Session #9 加了 D-034/D-035)
+│
+├── docs/                              ← 10 篇设计文档
+│   ├── 01-architecture.md             三层架构论证
+│   ├── 02-schema-v1.md                Schema v1.2 字段级 (已对齐 SQL)
+│   ├── 03-mapping-protocol.md         飞书 → DB 映射 + Step 4.5 清洗
+│   ├── 04-onboarding-sop.md           新项目 7 步接入 SOP
+│   ├── 05-controlled-vocab.md         词表 v0.2 (含 category v1)
+│   ├── 06-essence-annotation.md       LLM 标注协议双模式
+│   ├── 07-audience-data.md            蒲公英 audience 数据
+│   ├── 08-evolution-roadmap.md        四阶段进化
+│   ├── 09-system-integration.md       ⭐ 双通道集成架构 v2 (必读)
+│   └── 99-rejected-ideas.md           走过的弯路
+│
+├── schemas/                           ← 可执行 SQL
+│   ├── notes_v1_2.sql                 truth_vault schema · 13 张表 + 内部 views
+│   │                                    + ingested_at 保留 trigger (Session #9)
+│   │                                    + category CHECK (Session #9)
+│   │                                    + parent_comment_id ON DELETE SET NULL
+│   └── notes_v1_2_cross_schema_views.sql 跨 schema views (D-029 部署拆分)
+│
+├── mappings/                          ← 项目 mapping yaml
+│   ├── _template.yaml                 新项目模板
+│   ├── NUC_phase1.yaml                NUC_1 完整 (含 ingest_classification_prompt)
+│   ├── NRT_phase2.yaml                NRT_2 草稿
+│   └── NRT_phase3.yaml                NRT_3 草稿
+│
+├── prompts/                           ← LLM prompt 库
+│   ├── essence_annotator.md           Mode A/B 双模式 v0.3 (白盒 leakage 校验)
+│   └── audience_inferrer.md           Audience 独立推断 v0.1
+│
+├── scripts/                           ← 6 个真实可跑 Python 脚本 ⭐
+│   ├── README.md                      数据流图 + 部署 + 故障排查
+│   ├── _common.py                     共享工具 (含 JWT 校验 + 分页 helper)
+│   ├── .env.example                   含 ANTHROPIC_API_KEY + ESSENCE_MODEL
+│   ├── requirements.txt               supabase + pyyaml + requests + anthropic
+│   │
+│   ├── sync_feishu_notes_to_truth_vault.py            主 sync (含 C 家族 tier
+│   │                                                    + direction_decomposition
+│   │                                                    + 数值 tier 兜底)
+│   ├── sync_comments_from_raw_extra.py                ⭐ Session #9 新增
+│   ├── annotate_essence_pass.py                       ⭐ Session #9 新增 LLM pass
+│   ├── sync_truth_vault_baokuan_to_sanshengliubu.py   通道 1 (含 preflight)
+│   ├── sync_truth_vault_baokuan_to_autowriter_items.py 通道 2 (含 transactional
+│   │                                                    recovery, Session #9)
+│   └── extract_negative_examples_from_autowriter.py   3 来源 (含 Source A/B
+│                                                       prior-version 校验)
+│
+├── sanshengliubu-patches/             ⭐ Session #9 补回 (final ZIP 漏)
+│   ├── README.md                      部署顺序 + 回滚
+│   ├── 001_add_source_tv_note_id.sql  必做前置
+│   └── import_truth_vault_baokuan.py  可选 helper
+│
+├── autowriter-migrations/             ⭐ Session #9 补回 (final ZIP 漏)
+│   ├── RUNBOOK.md                     场景 A/B 完整步骤 + Auth/RLS
+│   ├── 001_create_autowriter_schema.sql      5 表迁移
+│   ├── 002_add_external_source.sql           幂等键
+│   └── 003_add_example_label_proposal.sql    负例候选列
+│
+└── data-analysis/
+    └── 10-project-audit.md            10 个项目初始审计
+```
+
+**统计**: 40 个文件 · ~12,700 行 (docs/sql/yaml/python) · 全部本地烟测通过 (Postgres 16 部署 + Python syntax + comment parser 6/6 单测)
 
 ---
 
 ## 新会话开场协议
 
-新窗口的 Claude 接到这个项目时，**严格按以下顺序操作**：
+新窗口的 Claude 接到项目，按以下顺序读：
 
-1. 用 web_fetch 或读取上传文件，按顺序读取：
-   - `README.md`
-   - `CURRENT_STATE.md`（本文件）
-   - `DECISIONS.md`
+1. **主线 (30 分钟)**:
+   - `README.md` · 完整目录结构 + 导航分组
+   - `CURRENT_STATE.md`（本文件）· Sprint 0 scope + 已知 gap
+   - `docs/09-system-integration.md` ⭐ · 双通道集成核心架构
+   - `docs/01-architecture.md` · 三层架构论证
+   - `DECISIONS.md` D-001 ~ D-035 · 决策考古
 
-2. 如果接下来要做 NUC_1 onboarding，额外读取：
-   - `docs/04-onboarding-sop.md`
-   - `docs/05-controlled-vocab.md`
-   - `mappings/NUC_phase1.yaml` (草案)
-   - `mappings/NRT_phase3.yaml` (作为方向拆解参考样本)
+2. **工程实施按需读**:
+   - Schema: `schemas/notes_v1_2.sql` + `docs/02-schema-v1.md`
+   - 部署: `sanshengliubu-patches/README.md` + `autowriter-migrations/RUNBOOK.md`
+   - Sync 脚本: `scripts/README.md` (含数据流图 + cron + 故障排查)
+   - Mapping: `mappings/_template.yaml` + `docs/03-mapping-protocol.md`
+   - LLM 标注: `prompts/essence_annotator.md` + `docs/06-essence-annotation.md`
 
-3. 用一两句话**反向陈述**你理解的：
-   - 当前阶段
-   - 下一步要做的事 #1 是什么
-   - 是否有未决问题需要先讨论
-
-4. 等 Ziao 确认你理解正确后，再开始工作。
+3. **反向陈述当前理解 → 等 Ziao 确认。特别确认**:
+   - Sprint 0 scope (主链路) vs Sprint 1+ gap (sub_directions / Memory UI / prepublish_evaluations)
+   - 没有违反 D-001~D-035 任何决策
 
 ---
 
 ## 会话交接模板
-
-每次会话结束时，Claude 主动输出以下内容，Ziao commit 到 repo：
 
 ```markdown
 ## Session #N 交接 · YYYY-MM-DD
@@ -227,11 +424,10 @@
 - ...
 
 ### CURRENT_STATE.md 应该更新成什么
-[贴上完整的更新后 markdown]
+[贴完整 markdown]
 
 ### 文档应该新增/修改什么
-- 新增: docs/XX-...
-- 修改: docs/YY-...
+- 新增/修改: ...
 
 ### 下次会话应该从哪里开始
 建议开场词:

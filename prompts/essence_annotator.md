@@ -1,36 +1,109 @@
-# Essence Annotator · Prompt v0.2
+# Essence Annotator · Prompt v0.3
 
 ## 用途
 
 给一条小红书笔记，输出 essence 层和 audience 层的结构化标注。受控词表见 [docs/05-controlled-vocab.md](../docs/05-controlled-vocab.md)。
 
-**Prompt 版本**: v0.2（对应词表 v0.2）
+**Prompt 版本**: v0.3（对应词表 v0.2）
+**v0.2 → v0.3 变更**: 拆分 Mode A / Mode B 双模式 prompt，彻底消除 label leakage 风险（D-028）。v0.2 单模板把 `{performance_context}` 作为"可选"参数 —— 即使加了"不要被 tier 拉偏"的指令，LLM 仍会被 performance 隐性影响标注。v0.3 在代码层面强制隔离。
 
-## 模型
+## ⚠️ 双模式标注（D-017 + D-028）
 
-- 主标注: Claude Sonnet 4
-- 高分歧重标: Claude Opus 4.7
+**Mode A · `prediction_feature`（用于模型训练特征）**
+- 输入：项目元数据 + 笔记内容
+- **严禁传入** tier / impressions / reads / interactions / 任何 performance 信号
+- 标注结果存入 `notes` 主表的 essence 字段
+- `notes.essence_annotation_mode = 'prediction_feature'`
+- ✅ 可用于训练预测模型
 
-## 调用方式
+**Mode B · `posthoc_explanation`（用于复盘理解）**
+- 输入：项目元数据 + 笔记内容 + **已知表现数据**
+- 标注结果存入独立 `posthoc_analyses` 表
+- ❌ **禁止用于训练**
+
+## 模型配置
+
+模型 ID 写在调用代码的配置层，不硬编码在 prompt 里：
 
 ```python
-response = anthropic.messages.create(
-    model="claude-sonnet-4",
-    max_tokens=2000,
-    messages=[
-        {"role": "user", "content": PROMPT.format(
-            project_context=project_context_block,
-            note_content=note_content_block,
-            performance_context=performance_block  # optional
-        )}
-    ]
-)
+# config.py 或 .env
+ESSENCE_MODEL_PRIMARY = "claude-sonnet-4-6"     # 主标注（性价比最优）
+ESSENCE_MODEL_TIEBREAK = "claude-opus-4-7"      # 高分歧重标（贵 5x，更准）
+# ⚠️ Anthropic 模型 ID 会随版本演化。上线前查
+# https://docs.anthropic.com/en/docs/about-claude/models 核实当前最新。
 ```
 
-## Prompt 全文
+---
+
+## Mode A · prediction_feature（训练特征标注）
+
+### 调用方式
+
+```python
+# Performance-related keywords. We check these only against parts of the
+# prompt we control (template + project_context), NOT against the
+# title/body which is the legitimate content to analyze — a note like
+# "我朋友圈刷到这条大爆款笔记" or "互动很高" would otherwise trigger a
+# false positive and refuse to annotate a perfectly fine post.
+PERFORMANCE_KEYWORDS = [
+    'tier', '大爆', '爆贴', 'impressions', 'reads', 'interactions',
+    '互动数', '阅读数', '曝光', 'performance', '实际表现',
+]
+TEMPLATE_LEAK_PLACEHOLDERS = [
+    '{performance', '{tier', '{interactions', '{reads', '{impressions',
+]
+
+
+def annotate_essence_mode_a(note, project, config):
+    """Mode A: 盲标 — 严禁传入任何 performance 数据。
+
+    结果存入 notes 主表 essence 字段。
+    """
+    # ── D-028 check 1: template integrity ─────────────────────────────
+    # The MODE_A_PROMPT constant must not carry any performance-related
+    # placeholder. This catches an authoring mistake (someone copied
+    # Mode B's template into Mode A).
+    for placeholder in TEMPLATE_LEAK_PLACEHOLDERS:
+        assert placeholder not in MODE_A_PROMPT, (
+            f"Mode A template has a performance placeholder: {placeholder!r}. "
+            f"This breaks D-028 — Mode A must be performance-blind."
+        )
+
+    # ── D-028 check 2: project_context block hygiene ──────────────────
+    # The project_context is rendered separately so we can scan it
+    # without false-positiving on the note's own title/body.
+    project_context = build_project_context(project, note)
+    for kw in PERFORMANCE_KEYWORDS:
+        assert kw not in project_context, (
+            f"project_context leaked performance signal: {kw!r}. "
+            f"Check build_project_context() — Mode A must not pass tier/"
+            f"impressions/reads/interactions through the context block."
+        )
+
+    # title / body / hashtags ARE allowed to contain words like
+    # "大爆款" or "互动" — that's the content under analysis, not signal
+    # about THIS note's performance.
+    prompt = MODE_A_PROMPT.format(
+        project_context=project_context,
+        title=note['title'],
+        body=(note['body'] or '')[:1500] + ('...（截断）' if len(note.get('body','')) > 1500 else ''),
+        hashtags=', '.join(note.get('hashtags') or []) or '无',
+    )
+
+    response = anthropic.messages.create(
+        model=config.ESSENCE_MODEL_PRIMARY,
+        max_tokens=2000,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    result = parse_and_validate(response)
+    result['_annotation_mode'] = 'prediction_feature'
+    return result
+```
+
+### Mode A Prompt 全文
 
 ```
-你是一个内容营销分析师，专精小红书种草笔记的深度分析。你的任务是分析一条小红书笔记，输出严格 JSON 格式的标注。
+你是一个内容营销分析师，专精小红书种草笔记的深度分析。你的任务是分析一条小红书笔记，基于内容本身的特征输出严格 JSON 格式的标注。
 
 ═══════════════════════════════════════════════
 项目上下文
@@ -43,14 +116,6 @@ response = anthropic.messages.create(
 标题: {title}
 正文: {body}
 话题标签: {hashtags}
-
-═══════════════════════════════════════════════
-笔记实际表现（仅供参考，不是标注依据）
-═══════════════════════════════════════════════
-{performance_context}
-
-⚠️ 重要：performance 是参考信息。你的标注应该基于内容本身的特征。
-不要因为这条爆了就硬贴"高强度"标签 —— 评估应该公正。
 
 ═══════════════════════════════════════════════
 你的任务
@@ -112,29 +177,14 @@ human_truth_archetype (最多 2 个): 触动的深层人性原型
     欲望类 (3): 控制感渴望 / 自我提升 / 消费愉悦
 
 trend_dependencies (多选，10 个值): 这条文案依赖的时效性元素
-  - 特定平台事件: 引用具体小红书/抖音热点事件
-  - 特定IP引用: 提到具体明星、综艺、电影、电视剧、网红
-  - 时事热点: 引用当前新闻、社会事件
-  - 季节性事件: 双 11、春节、夏季等
-  - 节日: 节假日相关
-  - 行业事件: 品类内特定事件（如美妆周、戒烟日）
-  - 当代流行词: 具体的流行词汇（"绝绝子"、"yyds"、"真的会谢"）
-  - 时代语言范式: 当代特有的结构性话术模式（夸张式自嘲、反向表达、缩写文化、emoji 文化等）
-  - 平台话术: 强依赖某平台特定语言（小红书"姐妹们"等基础话术）
-  - 通用: 不依赖任何时效性元素，可穿越周期 (排他：选了通用就不能选其他)
+  - 特定平台事件 / 特定IP引用 / 时事热点 / 季节性事件 / 节日
+  - 行业事件 / 当代流行词 / 时代语言范式 / 平台话术
+  - 通用 (排他：选了通用不能选其他)
 
-  ⚠️ 三级时间分层概念：
+  ⚠️ 三级时间分层：
     - 通用 (半衰期 5 年+)
     - 时代语言范式 (半衰期 2-3 年) ← 比具体词更持久的话术结构
     - 当代流行词 (半衰期 6-12 月) ← 具体的当下流行词
-
-  ⚠️ "时代语言范式" 的常见子类型（仅供识别参考）:
-    - 夸张式自嘲: "我废了"、"摆烂中"
-    - 反向表达: 用否定句表达肯定（"真的会谢"）
-    - 缩写+情绪化: "yyds"、"绝绝子" 是这个范式的实例
-    - emoji 配文化: emoji 作为语义载体
-    - 数字+夸张: "99% 的人都不知道"、"血压拉满"
-    - 拟人化语言: 抽象事物当人讲
 
   ⚠️ "通用" 判断要严格：没有任何流行词、没有范式、没有平台话术、没有 IP/事件引用
 
@@ -180,7 +230,6 @@ reasoning (字符串，100-200 字): 简短解释关键标注的理由
 4. human_truth_archetype 选择最主导的 1-2 个，不要贪多。
 5. trend_dependencies 中 "通用" 是排他标签 —— 含通用不能含其他。
 6. 如果某个字段确实判断不清，audience.confidence 调低（< 0.5）。
-7. 标注一定基于内容本身，不要被 performance（tier）拉偏。
 
 输出 JSON 格式示例:
 
@@ -213,50 +262,127 @@ reasoning (字符串，100-200 字): 简短解释关键标注的理由
 }
 ```
 
+---
+
+## Mode B · posthoc_explanation（复盘分析标注）
+
+### 调用方式
+
+```python
+def annotate_essence_mode_b(note, project, config):
+    """Mode B: 含 performance 上下文的复盘标注。
+    
+    结果只进 posthoc_analyses 表，绝不回写 notes 主表。
+    """
+    performance_block = f"""
+- tier: {note['tier']}
+- 互动数: {note.get('interactions') or 'N/A'}
+- 阅读数: {note.get('reads') or 'N/A'}
+- 曝光数: {note.get('impressions') or 'N/A'}
+"""
+    prompt = MODE_B_PROMPT.format(
+        project_context=build_project_context(project, note),
+        title=note['title'],
+        body=(note['body'] or '')[:1500] + ('...（截断）' if len(note.get('body','')) > 1500 else ''),
+        hashtags=', '.join(note.get('hashtags') or []) or '无',
+        performance_context=performance_block,
+    )
+    
+    response = anthropic.messages.create(
+        model=config.ESSENCE_MODEL_PRIMARY,
+        max_tokens=2000,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return parse_posthoc_result(response)
+```
+
+### Mode B Prompt 全文
+
+```
+你是一个内容营销分析师，专精小红书种草笔记的深度分析。你的任务是对一条已发布笔记进行复盘分析。
+
+═══════════════════════════════════════════════
+项目上下文
+═══════════════════════════════════════════════
+{project_context}
+
+═══════════════════════════════════════════════
+笔记内容
+═══════════════════════════════════════════════
+标题: {title}
+正文: {body}
+话题标签: {hashtags}
+
+═══════════════════════════════════════════════
+笔记实际表现
+═══════════════════════════════════════════════
+{performance_context}
+
+═══════════════════════════════════════════════
+你的任务
+═══════════════════════════════════════════════
+
+这条笔记已经有了实际表现数据。请基于结果进行复盘分析：
+
+1. attribution_explanation (字符串，200-300 字): 这条笔记表现好/差的主要归因
+2. contributing_factors (JSON 对象): 分别列出内容因素 / 账号因素 / 时机因素 / 平台因素
+3. counter_factual (字符串): 如果要让这条笔记表现更好，最可能的单一改动是什么？
+
+输出严格 JSON：
+
+{
+  "attribution_explanation": "...",
+  "contributing_factors": {
+    "content": ["..."],
+    "account": ["..."],
+    "timing": ["..."],
+    "platform": ["..."]
+  },
+  "counter_factual": "..."
+}
+```
+
+---
+
 ## 注意事项
 
 ### 1. project_context_block 怎么构造
 
 ```python
-project_context = f"""
+def build_project_context(project, note):
+    return f"""
 - 品牌: {project.brand}
 - 产品: {project.product}
 - 品类: {project.category}
 - 目标蓝词: {', '.join(project.target_blue_keywords)}
-- 项目策略方向（如有）: {note.direction or '(项目未定义方向)'}
-- 内容意图: {note.intent}
-- KOL 等级（如有）: {kol_tier_from_followers(note.account_followers)}
+- 项目策略方向（如有）: {note.get('direction') or '(项目未定义方向)'}
+- 内容意图: {note.get('intent', '未知')}
 """
+# ⚠️ Mode A 不传 KOL 等级（避免账号变量影响 essence 判断）
+# ⚠️ Mode A 不传 tier / impressions / reads / interactions
+# Mode B 可以传 KOL 等级和 performance 数据
 ```
 
-### 2. note_content_block
+### 2. Sync 脚本中的调用顺序（D-028 关键约束）
 
 ```python
-note_content = f"""
-标题: {note.title}
-正文: {note.body[:1500]}{'...（截断）' if len(note.body) > 1500 else ''}
-话题标签: {', '.join(note.hashtags or []) or '无'}
-"""
+# ⚠️ 正确架构: sync 脚本只做数据入库，不调 LLM
+# LLM 标注是独立的 annotation pass（见下方）
+#
+# 飞书 sync 脚本 (sync_feishu_notes_to_truth_vault.py):
+#   Step 1: 字段映射 + 清洗
+#   Step 2: tier 抽取（从飞书状态/备注字段）
+#   Step 3: UPSERT 到 truth_vault.notes（此时 essence 字段为空）
+#
+# Essence annotation pass (独立脚本，sync 之后运行):
+#   Step 1: 查 notes 表中 emotional_lever IS NULL 的行
+#   Step 2: 对每行调用 Mode A prompt（只传内容，不传 tier/performance）
+#   Step 3: UPDATE notes 表的 essence 字段
+#
+# 这样 LLM 永远看不到 tier —— 因为 Mode A prompt 物理上没有 performance 占位符。
 ```
 
-正文超长截断 —— 1500 字符够保留主要信号，节省 token。
-
-### 3. performance_block
-
-如果笔记**已有 tier 标注**才加这个块。新发笔记没有表现数据，省略此块：
-
-```python
-if note.tier:
-    performance = f"""
-- tier: {note.tier}
-- 互动数: {note.interactions or 'N/A'}
-- 阅读数: {note.reads or 'N/A'}
-"""
-else:
-    performance = "(未发布或暂无表现数据)"
-```
-
-### 4. 校验逻辑
+### 3. 校验逻辑
 
 LLM 输出后立刻校验（[docs/06-essence-annotation.md](../docs/06-essence-annotation.md) 详细说明）：
 - JSON 解析
@@ -266,14 +392,14 @@ LLM 输出后立刻校验（[docs/06-essence-annotation.md](../docs/06-essence-a
 
 校验失败 → retry 一次（加修正提示）→ 仍失败 → 进 failed_queue
 
-### 5. 抽检
+### 4. 抽检
 
 每 100 条标注完，随机 10 条人工 review：
 - reasoning 是否合理
 - 标注是否符合直觉
 - 特别关注 v0.2 新增字段的标注：罪恶感/虚荣、宠物/消费愉悦、时代语言范式、病患家属
 
-记录 disagreement 类型，用于优化 prompt v0.3
+记录 disagreement 类型，用于优化 prompt v0.4
 
 ## Prompt 版本历史
 
@@ -281,3 +407,4 @@ LLM 输出后立刻校验（[docs/06-essence-annotation.md](../docs/06-essence-a
 |---|---|---|
 | v0.1 | 2026-05-18 | 初版 |
 | v0.2 | 2026-05-18 | 对齐词表 v0.2：emotional_lever 10→12 (+罪恶感/虚荣)、human_truth 17→19 (+宠物/消费愉悦)、trend_deps 9→10 (拆出时代语言范式)、target_audience +病患家属 |
+| v0.3 | 2026-05-20 | **D-028 label leakage 修复**: 拆为 Mode A / Mode B 独立 prompt；Mode A 物理上不含 performance 占位符；模型 ID 从 prompt 移到配置层 |

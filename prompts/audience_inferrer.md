@@ -8,14 +8,18 @@
 
 ## 模型
 
-- 主推断: Claude Sonnet 4
-- 高分歧重跑: Claude Opus 4.7
+模型 ID 写在调用代码的配置层，不硬编码 prompt 里。当前推荐：
+
+- 主推断: `claude-sonnet-4-6`（默认，性价比最优）
+- 高分歧重跑: `claude-opus-4-7`（更强，但贵 5x）
+
+⚠️ Anthropic 模型 ID 随时间演化，上线前查 https://docs.anthropic.com/en/docs/about-claude/models 核实当前最新。
 
 ## 调用方式
 
 ```python
 response = anthropic.messages.create(
-    model="claude-sonnet-4",
+    model=config.ESSENCE_MODEL_PRIMARY,  # 见 .env / config.py
     max_tokens=1200,
     messages=[
         {"role": "user", "content": PROMPT.format(

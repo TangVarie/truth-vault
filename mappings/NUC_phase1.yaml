@@ -1,27 +1,32 @@
 # ════════════════════════════════════════════════════════════════════
-# NUC_phase1 · Mapping Configuration · DRAFT
+# NUC_phase1 · 大象 Nucare 第一期 Mapping Configuration · FINAL v1
 # ════════════════════════════════════════════════════════════════════
-# 
-# 这是 NUC_1 (大象 Nucare 第 1 期) 的 mapping 草案，作为试点 onboarding 示范
-# 实际 onboarding 时由策略 lead 确认所有字段
-# 
-# 见 CURRENT_STATE.md 任务 #2
+#
+# Session #5 完成 onboarding，基于 NUC_1 真实 1102 行数据
+# 4 个飞书方向，通过 LLM 子分类机制（D-014）细分为 6 个 schema 方向：
+#   - 营养保健代餐相关 → 健身减脂 / 关心父母营养
+#   - 任何手术后恢复相关 → 产后恢复 / 照顾家人手术
+#   - 糖尿病相关 → 单方向（病患家属）
+#   - 抗癌放化疗相关 → 重定义为 "重症慢病家属"（覆盖痛风/透析/化疗等）
+#
+# 见 docs/04-onboarding-sop.md · DECISIONS D-010 D-012 D-013 D-014
 # ════════════════════════════════════════════════════════════════════
 
 version: 1.0
-
 project_id: NUC_phase1
 brand: 大象集团
 product: Nucare 全营养液体
 category: 保健品
 platform: xiaohongshu
 schema_family: B
-start_date: 2025-11-03
-end_date: null  # 待填
+# 项目时间从飞书表"发布时间"字段的 min/max 自动推导
+start_date: auto_from_publish_time_min
+end_date: auto_from_publish_time_max
 
 # ── 字段映射 ──
 field_mapping:
-  素人编号: note_id_suffix
+  # account_id → truth_vault.accounts FK; note_id 由 sync 脚本按 {project_id}_{feishu_record_id} 生成
+  素人编号: account_id
   发布时间: publish_time
   发布笔记: _intent_raw
   是否发布: _published_status
@@ -41,37 +46,158 @@ field_mapping:
 intent_mapping:
   流量帖: traffic
   直给笔记: conversion
-  科普贴: educational
 
-# ── 方向拆解 ──
-# 注意：NUC_1 的方向相对简单（4 个，全是用户场景维度）
+# ════════════════════════════════════════════════════════════════════
+# 方向拆解（含 LLM 子分类机制 · D-014）
+# ════════════════════════════════════════════════════════════════════
+#
+# 数据观察（1102 行总，657 行带方向标）：
+# - 4 个飞书方向，但实际人群混杂
+# - 所有 44 爆款（24 大爆 + 20 爆）100% 是流量帖
+# - 糖尿病爆款率最高（12.8%）
+# - 抗癌放化疗飞书标注有错（含痛风/透析非癌症内容 → 重定义为重症慢病家属）
+#
+# 关键设计：
+# - 飞书原方向粗粒度 → schema 层面通过 LLM 在 ingest 时细分
+# - 子分类基于文案内容（视角/场景/情感钩子）
+# - 同一飞书方向下不同子方向的 target_audience / user_pain_point 可以完全不同
+
 direction_decomposition:
-  
+
+  # ──────────────────────────────────────
+  # 营养保健代餐相关 (345 条 · 17 爆款 · 4.9%)
+  # 子分类：健身减脂 / 关心父母营养
+  # ──────────────────────────────────────
+
   "营养保健代餐相关":
-    content_format: 场景植入
-    target_audience: ["中老年", "病患家属"]
-    user_pain_point: 营养摄入不足
-    product_focus: null
-  
+    sub_directions:
+      
+      - name: 营养代餐_健身减脂
+        detection_signal: |
+          文案中出现以下任一信号 → 归此类:
+          - 健身/减脂/训练相关词（教练、私教、健身房、训练、增肌、减脂、平台期）
+          - 蛋白质摄入计算（"蛋白质 X g"）
+          - 体重/身材话题（"体重不动"、"S 码"、"瘦身"）
+          - 第一人称是健身者自身
+        content_format: 情感叙事
+        target_audience: ["年轻女性"]
+        user_pain_point: 健身减脂期蛋白质摄入不足 / 鸡胸肉吃腻
+        product_focus: null
+      
+      - name: 营养代餐_关心父母营养
+        detection_signal: |
+          文案中出现以下任一信号 → 归此类:
+          - 子女视角描述父母/老人饮食（"爸妈"、"我妈"、"老爸"、"父母"、"独居老人"）
+          - 父母饮食单一/不健康（"泡面"、"煮面"、"剩菜"、"吃得少"）
+          - 子女焦虑情绪（"心疼"、"担心"、"不在父母身边"）
+        content_format: 情感叙事
+        target_audience: ["病患家属"]
+        user_pain_point: 父母独居饮食不规律 / 营养摄入不足
+        product_focus: null
+      
+      - name: 营养代餐_其他
+        # Fallback - 都不匹配时
+        detection_signal: 上述两类都不明确匹配时归此类
+        content_format: 情感叙事
+        target_audience: ["年轻女性", "病患家属"]
+        user_pain_point: 营养摄入需求
+        product_focus: null
+
+  # ──────────────────────────────────────
+  # 任何手术后恢复相关 (186 条 · 13 爆款 · 7.0%)
+  # 子分类：产后恢复 / 照顾家人手术
+  # ──────────────────────────────────────
+
   "任何手术后恢复相关":
-    content_format: 场景植入
-    target_audience: ["病患家属", "宝妈"]
-    user_pain_point: 术后营养
-    product_focus: null
-  
+    sub_directions:
+      
+      - name: 术后恢复_产后宝妈
+        detection_signal: |
+          文案中出现以下任一信号 → 归此类:
+          - 产后相关（"剖腹产"、"顺产"、"产假"、"奶水"、"哺乳"）
+          - 一胎/二胎话题（"二胎"、"一胎"）
+          - 月子相关（"坐月子"、"月子餐"）
+          - 第一人称是产后妈妈自己
+        content_format: 情感叙事
+        target_audience: ["宝妈"]
+        user_pain_point: 产后恢复 / 哺乳期营养
+        product_focus: null
+      
+      - name: 术后恢复_照顾家人手术
+        detection_signal: |
+          文案中出现以下任一信号 → 归此类:
+          - 第一人称是家属（"我妈"、"我爸"、"老公"等）描述病人术后
+          - 具体手术种类（子宫手术、肠道手术、心脏手术等，非剖腹产）
+          - 远程照顾情境（"远嫁"、"请假回家"）
+        content_format: 情感叙事
+        target_audience: ["病患家属"]
+        user_pain_point: 家人术后营养支持
+        product_focus: null
+      
+      - name: 术后恢复_其他
+        detection_signal: 上述两类都不明确匹配时归此类
+        content_format: 情感叙事
+        target_audience: ["宝妈", "病患家属"]
+        user_pain_point: 术后恢复营养
+        product_focus: null
+
+  # ──────────────────────────────────────
+  # 糖尿病相关 (78 条 · 10 爆款 · 12.8% 爆款率最高 ⭐)
+  # 单方向 - 人群高度集中
+  # ──────────────────────────────────────
+
   "糖尿病相关":
-    content_format: 认知重构
-    target_audience: ["银发族", "中年男性", "中年女性"]
-    user_pain_point: 血糖管理
-    product_focus: null
-  
-  "抗癌放化疗相关":
-    content_format: 场景植入
+    # 无 sub_directions - 单一方向
+    content_format: 情感叙事
+    intent_override: null   # per-note 由 _intent_raw 决定
     target_audience: ["病患家属"]
-    user_pain_point: 化疗副作用与营养
+    user_pain_point: 糖尿病饮食限制下的营养补充 / 老人血糖控制和营养的平衡
     product_focus: null
 
-# ── Tier 抽取 ──
+  # ──────────────────────────────────────
+  # 抗癌放化疗相关 → 重定义为"重症慢病家属"
+  # (48 条 · 4 爆款 · 8.3%)
+  # 飞书标注混杂多种重症：化疗、痛风、透析、肾病等
+  # 重定义后语义准确覆盖实际内容
+  # ──────────────────────────────────────
+
+  "抗癌放化疗相关":
+    # 重定义注释：实际内容是"重症慢病家属"，不仅限抗癌
+    # 不分子方向 - 人群统一是病患家属，pain_point 通过 LLM 细化到自由文本
+    semantic_redefined_as: 重症慢病家属
+    content_format: 情感叙事
+    intent_override: null
+    target_audience: ["病患家属"]
+    user_pain_point: 重症/慢病照顾期间的营养支持（化疗副作用 / 痛风饮食 / 透析饮食 / 其他慢病）
+    product_focus: null
+
+# ════════════════════════════════════════════════════════════════════
+# LLM Ingest 阶段子分类 Prompt 模板
+# ════════════════════════════════════════════════════════════════════
+# 
+# 该 prompt 在 ingest 时调用，输入: 飞书方向 + 文案；输出: 选定的 sub_direction name
+# 和 essence 标注合并到一次 LLM 调用（节省 token）
+
+ingest_classification_prompt: |
+  你正在为一条小红书种草笔记分类。
+  
+  飞书方向: {direction}
+  
+  该方向有以下子分类（每个有 detection_signal）:
+  {sub_directions_with_signals}
+  
+  笔记文案:
+  标题: {title}
+  正文（前 500 字）: {body}
+  
+  根据文案内容和每个子分类的 detection_signal，选出最匹配的子方向。
+  
+  输出 JSON: {"sub_direction": "<name>", "confidence": 0-1, "reasoning": "<一句话>"}
+
+# ════════════════════════════════════════════════════════════════════
+# Tier 抽取规则
+# ════════════════════════════════════════════════════════════════════
+
 tier_extraction:
   source: 状态字段
   rules:
@@ -90,32 +216,57 @@ tier_extraction:
     - default: null
 
 # ── Tier 数值阈值 ──
-# 基于 NUC_1 现有数据分布（互动数）
+# 基于 NUC_1 实际互动量分布（爆 min=148, 大爆 min=694 中位=983）
 tier_thresholds:
-  爆: 100
-  大爆: 800
+  爆: 150
+  大爆: 700
 
-# ── 合规 ──
+# ════════════════════════════════════════════════════════════════════
+# 合规
+# ════════════════════════════════════════════════════════════════════
+#
+# Ziao note: NUC_1 实际投放过程中未遇到明显医疗合规问题
+# 主要风险:
+#  - 直接涉及品牌名比较敏感
+#  - 直接的功效承诺会出问题，需要用间接表达
+
 compliance:
   base_template: 保健品
   custom_red_flags:
-    - "禁止宣称疗效"
-    - "禁止'治疗'、'治愈'、'康复'等绝对化表达"
-    - "禁止替代医疗"
-    - "禁止暗示可以治疗特定疾病"
-    - "宣称需满足《广告法》《保健食品广告管理办法》要求"
+    - "禁止直接功效承诺 - 必须用间接表达"
+    - "品牌名直接出现需特别谨慎（历史经验显示直接涉及品牌名容易出问题）"
+    - "禁止'治疗''治愈''根治'等绝对化表达"
+    - "禁止替代医疗的暗示"
+    - "涉及糖尿病时禁止暗示'降血糖'/'控血糖'"
+    - "涉及化疗时禁止暗示'抗癌'/'缓解化疗副作用'"
+    - "涉及术后时禁止暗示'加速恢复'"
+  
   blue_keyword_strategy:
     primary: ["特医全营养食品", "流质营养餐"]
     secondary: []
-    avoid: ["治疗", "替代", "根治"]
+    avoid: ["治疗", "替代", "根治", "降血糖", "控血糖", "抗癌"]
+  
+  expression_style:
+    preference: 间接表达
+    examples:
+      - "✅ 间接: '医生建议加强营养' → 自然引出产品"
+      - "❌ 直接: 'Nucare 帮助控血糖' → 直接功效承诺"
+      - "✅ 间接: '术后医生说要补充蛋白' → 暗示需求"
+      - "❌ 直接: 'Nucare 加速术后恢复' → 直接承诺"
 
-# ── B 家族关键缺失：粉丝数 ──
+# ════════════════════════════════════════════════════════════════════
+# 数据补录
+# ════════════════════════════════════════════════════════════════════
+
 data_supplement_needed:
   - field: account_followers
-    method: 通过 publish_url 调小红书 API 或人工补录
+    method: B 家族缺粉丝数
     estimated_rows: 1102
 
-# ── 项目专属字段进 raw_extra ──
+# ════════════════════════════════════════════════════════════════════
+# 项目专属字段进 raw_extra
+# ════════════════════════════════════════════════════════════════════
+
 project_specific_fields_to_raw_extra:
   - 父记录 2
   - 父记录 3
@@ -127,33 +278,55 @@ project_specific_fields_to_raw_extra:
   - 是否留存
   - 理论金额结算
   - 数据汇总
-  - 观众分析
+  - 观众分析    # 字段存在但实际多数为空
+  - 评论状态
+  - 相关截图
+  - 评论配图
+  - 蓝词图片
+  - 图片
+  - 是否发布
+  - 曝光量副本
+  - 阅读量副本
+  - 互动量副本
 
-# ── Sync ──
+# ════════════════════════════════════════════════════════════════════
+# Sync
+# ════════════════════════════════════════════════════════════════════
+
 sync_config:
-  source_type: manual_xlsx
-  source_table_token: null
+  # 真实 sync 脚本（truth-vault/scripts/sync_feishu_notes_to_truth_vault.py）
+  # 走 feishu_api 路径；manual_xlsx 路径目前没有自动 ingest 脚本，需要人工
+  # 导入或自己写。
+  source_type: feishu_api
+  feishu_app_token: null     # 填飞书表 app_token, 例 bascnXXXXXXXX
+  feishu_table_id: null      # 填飞书表 table_id, 例 tblXXXXXXXX
+  feishu_view_id: null       # 可选, 不填用 default view
   sync_interval: on_demand
 
-# ── Onboarding 元数据 ──
+# ════════════════════════════════════════════════════════════════════
+# Onboarding 元数据
+# ════════════════════════════════════════════════════════════════════
+
 onboarding_meta:
-  onboarded_at: null   # 待填
-  onboarded_by: 待填
+  onboarded_at: 2026-05-18
+  onboarded_by: Ziao + Claude (Session #5)
   strategy_lead: Ziao
+  project_manager: 待补
   notes: |
-    NUC_1 是 Truth Vault 第一个试点 onboarding 项目，选择理由:
-    - 数据最干净: 657 条带 tier，114 爆 / 553 趴
-    - 数据回收率 59%（B 家族中最高）
-    - 方向相对简单（4 个用户场景）
-    - 保健品合规相对清晰（不像处方药复杂）
+    Session #5 完成 NUC_1 试点 onboarding，是 Truth Vault 第一个完整 onboarded 项目。
     
-    试点目标:
-    1. 验证 onboarding SOP 在真实项目上的可行性
-    2. 跑通 essence 标注 pipeline
-    3. 测试 LLM audience 推断的质量
-    4. 输出"试点报告"——记录流程盲点和优化建议
+    关键决策（本次会话产生）:
+    1. 4 个飞书方向 → 6 个 schema 子方向（D-014 LLM 子分类机制）
+    2. 抗癌放化疗 → 语义重定义为重症慢病家属（飞书标注混杂痛风/透析等）
+    3. 糖尿病方向人群最集中（病患家属），爆款率最高（12.8%）
+    4. 所有爆款 100% 是流量帖（再次验证 D-012 按 intent 分轨）
+    5. 合规风险点: 间接表达 + 品牌名谨慎，不是医疗属性问题
     
-    待澄清问题:
-    - Q: 方向"营养保健代餐相关"的 target_audience，"中老年"是否需要细分？
-    - Q: tier_thresholds 的"大爆 800"是否合理？需要看 NUC_1 实际 interactions 分布
-    - Q: 客户合同里是否允许使用蒲公英观众数据？
+    LLM 子分类时机：
+    - Ingest 阶段一次性调用 LLM，同时完成: 子方向分类 + essence 标注 + audience 推断 + D-013 sanity check
+    - 节省 token，逻辑集中
+    
+    待确认/补录:
+    - NUC_1 项目时间从飞书表 publish_time min/max 自动推导
+    - 粉丝数补录（1102 行）
+    - 30 条样本 essence pilot 验证子分类准确率

@@ -1,0 +1,299 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  python:
+    name: Python syntax + unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install scripts dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scripts/requirements.txt
+      - name: Compile all scripts
+        run: |
+          python -m py_compile \
+            scripts/_common.py \
+            scripts/sync_feishu_notes_to_truth_vault.py \
+            scripts/sync_comments_from_raw_extra.py \
+            scripts/annotate_essence_pass.py \
+            scripts/sync_truth_vault_baokuan_to_sanshengliubu.py \
+            scripts/sync_truth_vault_baokuan_to_autowriter_items.py \
+            scripts/extract_negative_examples_from_autowriter.py \
+            sanshengliubu-patches/import_truth_vault_baokuan.py
+      - name: Comment parser unit tests
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          from sync_comments_from_raw_extra import parse_comment_text
+
+          cases = [
+              ("1. 用户A: 第一条\n2. 用户B: 第二条",
+               [("素人", "第一条"), ("素人", "第二条")]),
+              ("贴主: 谢谢姐妹\n素人小红: 好用吗",
+               [("贴主", "谢谢姐妹"), ("素人", "好用吗")]),
+              ("用户A | 第一条\n用户B | 第二条",
+               [("素人", "第一条"), ("素人", "第二条")]),
+              ("好用\n不好用",
+               [("素人", "好用"), ("素人", "不好用")]),
+              ("\n1.\n用户: 内容\n\n",
+               [("素人", "内容")]),
+              ("贴主:感谢",
+               [("贴主", "感谢")]),
+          ]
+          failed = []
+          for i, (text, expected) in enumerate(cases, 1):
+              actual = list(parse_comment_text(text))
+              if actual != expected:
+                  failed.append((i, expected, actual))
+                  print(f"  case {i}: FAIL\n    expected: {expected}\n    got:      {actual}")
+              else:
+                  print(f"  case {i}: ok")
+          if failed:
+              raise SystemExit(f"\n{len(failed)} parser test(s) failed")
+          print(f"\n{len(cases)}/{len(cases)} passed")
+          PY
+      - name: Essence vocab validator self-check
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          import annotate_essence_pass as a
+          # Sanity: vocab sets are non-empty + match expected sizes from
+          # docs/05-controlled-vocab.md v0.2.
+          assert len(a.EMOTIONAL_LEVERS) == 12, f"levers: {len(a.EMOTIONAL_LEVERS)}"
+          assert len(a.HUMAN_TRUTH_ARCHETYPES) == 19, f"archetypes: {len(a.HUMAN_TRUTH_ARCHETYPES)}"
+          assert len(a.TREND_DEPENDENCIES) == 10, f"deps: {len(a.TREND_DEPENDENCIES)}"
+          assert len(a.CONTENT_FORMATS) == 8, f"formats: {len(a.CONTENT_FORMATS)}"
+
+          # Negative case: lever / valence mismatch
+          bad = {"essence": {
+              "emotional_lever": "焦虑撬动", "emotional_valence": "positive",
+              "emotional_intensity": "high",
+              "human_truth_archetype": ["健康焦虑"],
+              "trend_dependencies": ["通用"],
+              "content_format": "情感叙事",
+          }}
+          errs = a.validate_essence(bad)
+          assert any("negative but valence=positive" in e for e in errs), errs
+
+          # Negative case: 通用 must be exclusive
+          bad2 = {"essence": {
+              "emotional_lever": "焦虑撬动", "emotional_valence": "negative",
+              "emotional_intensity": "high",
+              "human_truth_archetype": ["健康焦虑"],
+              "trend_dependencies": ["通用", "当代流行词"],
+              "content_format": "情感叙事",
+          }}
+          errs = a.validate_essence(bad2)
+          assert any("通用" in e for e in errs), errs
+
+          # Positive case: clean valid record
+          good = {"essence": {
+              "emotional_lever": "焦虑撬动", "emotional_valence": "negative",
+              "emotional_intensity": "high",
+              "human_truth_archetype": ["健康焦虑", "育儿焦虑"],
+              "trend_dependencies": ["平台话术"],
+              "content_format": "情感叙事",
+          }}
+          assert a.validate_essence(good) == [], a.validate_essence(good)
+          print("vocab validator self-check OK")
+          PY
+
+  sql:
+    name: SQL apply (Postgres 16)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: tv_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      PGPASSWORD: postgres
+      PGHOST: localhost
+      PGUSER: postgres
+      PGDATABASE: tv_ci
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install psql client
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends postgresql-client
+      - name: Apply truth_vault schema
+        run: psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_2.sql
+      - name: Apply truth_vault schema again (idempotency)
+        run: psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_2.sql
+      - name: Sanity-check triggers + CHECK constraints
+        run: |
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          -- category CHECK rejects unknown values
+          DO $$
+          BEGIN
+              BEGIN
+                  INSERT INTO truth_vault.projects (project_id, brand, product, category)
+                  VALUES ('CI_BAD', 'b', 'p', '医美');
+                  RAISE EXCEPTION 'category CHECK did not reject bad value';
+              EXCEPTION WHEN check_violation THEN
+                  RAISE NOTICE 'category CHECK OK (rejected as expected)';
+              END;
+          END $$;
+
+          -- Insert valid project + note
+          INSERT INTO truth_vault.projects (project_id, brand, product, category)
+          VALUES ('CI_OK', 'b', 'p', '保健品');
+          INSERT INTO truth_vault.notes (note_id, project_id, raw_content)
+          VALUES ('CI_OK_r1', 'CI_OK', 'content');
+
+          -- ingested_at preservation trigger
+          UPDATE truth_vault.notes SET ingested_at = '2000-01-01', body = 'x'
+          WHERE note_id = 'CI_OK_r1';
+          DO $$
+          DECLARE ts TIMESTAMP;
+          BEGIN
+              SELECT ingested_at INTO ts FROM truth_vault.notes WHERE note_id='CI_OK_r1';
+              IF ts < '2025-01-01' THEN
+                  RAISE EXCEPTION 'preserve_ingested_at trigger failed: ts=%', ts;
+              END IF;
+              RAISE NOTICE 'preserve_ingested_at trigger OK';
+          END $$;
+
+          -- era_tag generation
+          INSERT INTO truth_vault.notes (note_id, project_id, raw_content, publish_time)
+          VALUES ('CI_OK_r2', 'CI_OK', 'rc', '2026-04-15');
+          DO $$
+          DECLARE et TEXT;
+          BEGIN
+              SELECT era_tag INTO et FROM truth_vault.notes WHERE note_id='CI_OK_r2';
+              IF et != '2026 Q2' THEN
+                  RAISE EXCEPTION 'era_tag wrong: %', et;
+              END IF;
+              RAISE NOTICE 'era_tag trigger OK';
+          END $$;
+
+          -- v_top_performing_accounts threshold + bao_rate
+          INSERT INTO truth_vault.accounts (account_id) VALUES ('acc_ci');
+          INSERT INTO truth_vault.notes (note_id, project_id, account_id, raw_content, tier) VALUES
+              ('CI_OK_r3', 'CI_OK', 'acc_ci', 'c3', '爆'),
+              ('CI_OK_r4', 'CI_OK', 'acc_ci', 'c4', '大爆'),
+              ('CI_OK_r5', 'CI_OK', 'acc_ci', 'c5', '爆'),
+              ('CI_OK_r6', 'CI_OK', 'acc_ci', 'c6', '趴'),
+              ('CI_OK_r7', 'CI_OK', 'acc_ci', 'c7', '趴');
+          DO $$
+          DECLARE rate FLOAT;
+          BEGIN
+              SELECT personal_bao_rate INTO rate
+              FROM truth_vault.v_top_performing_accounts WHERE account_id='acc_ci';
+              IF rate IS NULL OR ABS(rate - 0.6) > 0.0001 THEN
+                  RAISE EXCEPTION 'v_top_performing_accounts wrong rate: %', rate;
+              END IF;
+              RAISE NOTICE 'v_top_performing_accounts OK (rate=%)', rate;
+          END $$;
+          SQL
+      - name: Apply integration migration packs
+        run: |
+          # Bare-bones stand-ins so the migrations have tables to operate on.
+          # truth_vault.projects already exists from the schema apply above
+          # (different schema, so no name conflict with the to-be-moved
+          # autowriter tables in public).
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE TABLE IF NOT EXISTS public.reference_samples (
+              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+              title TEXT, content TEXT, ai_analysis JSONB
+          );
+          -- All 5 autowriter tables in public, so migration 001 has
+          -- something to move into the autowriter schema. Production has
+          -- richer columns; this is a minimum viable footprint.
+          CREATE TABLE IF NOT EXISTS public.projects (
+              id UUID PRIMARY KEY DEFAULT gen_random_uuid()
+          );
+          CREATE TABLE IF NOT EXISTS public.batches (
+              id UUID PRIMARY KEY, project_id UUID
+          );
+          CREATE TABLE IF NOT EXISTS public.items (
+              id UUID PRIMARY KEY, status TEXT, example_label TEXT
+          );
+          CREATE TABLE IF NOT EXISTS public.versions (
+              id UUID PRIMARY KEY, item_id UUID
+          );
+          CREATE TABLE IF NOT EXISTS public.memories (
+              id UUID PRIMARY KEY
+          );
+          SQL
+          psql -v ON_ERROR_STOP=1 -f sanshengliubu-patches/001_add_source_tv_note_id.sql
+          psql -v ON_ERROR_STOP=1 -f autowriter-migrations/001_create_autowriter_schema.sql
+          psql -v ON_ERROR_STOP=1 -f autowriter-migrations/002_add_external_source.sql
+          psql -v ON_ERROR_STOP=1 -f autowriter-migrations/003_add_example_label_proposal.sql
+          # Verify migration 001 actually moved all 5 tables
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          DECLARE n INT;
+          BEGIN
+              SELECT COUNT(*) INTO n FROM information_schema.tables
+              WHERE table_schema = 'autowriter'
+              AND table_name IN ('projects','batches','items','versions','memories');
+              IF n != 5 THEN
+                  RAISE EXCEPTION 'autowriter migration 001 incomplete: only % of 5 tables moved', n;
+              END IF;
+              RAISE NOTICE 'autowriter schema migration OK (% tables)', n;
+          END $$;
+          SQL
+      - name: Re-run all migrations (idempotency)
+        run: |
+          psql -v ON_ERROR_STOP=1 -f sanshengliubu-patches/001_add_source_tv_note_id.sql
+          psql -v ON_ERROR_STOP=1 -f autowriter-migrations/002_add_external_source.sql
+          psql -v ON_ERROR_STOP=1 -f autowriter-migrations/003_add_example_label_proposal.sql
+
+  yaml:
+    name: Mapping yaml lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pyyaml
+        run: pip install pyyaml
+      - name: Validate every mappings/*.yaml parses + has required keys
+        run: |
+          python - <<'PY'
+          import sys
+          from pathlib import Path
+          import yaml
+
+          REQUIRED = {"project_id", "field_mapping"}
+          rc = 0
+          for f in Path("mappings").glob("*.yaml"):
+              if f.name == "_template.yaml":
+                  continue
+              try:
+                  data = yaml.safe_load(f.read_text(encoding="utf-8"))
+              except yaml.YAMLError as exc:
+                  print(f"{f}: YAML parse error: {exc}")
+                  rc = 1
+                  continue
+              missing = REQUIRED - set(data.keys())
+              if missing:
+                  print(f"{f}: missing required keys: {missing}")
+                  rc = 1
+              if data.get("project_id") != f.stem:
+                  print(f"{f}: project_id={data.get('project_id')!r} doesn't match filename")
+                  rc = 1
+              print(f"{f}: OK")
+          sys.exit(rc)
+          PY

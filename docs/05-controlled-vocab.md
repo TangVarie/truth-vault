@@ -319,7 +319,7 @@ inferred_audience_profile:
 
 ---
 
-## 10. `tier` · 内容表现等级（7 个值）
+## 10. `tier` · 内容表现等级（8 个值）
 
 笔记最终表现的人工标注 label。
 
@@ -332,6 +332,7 @@ inferred_audience_profile:
 | `风控` | 被平台限流或风控 | 状态字段"风控中" |
 | `删除` | 已被删除（人工或平台） | 备注"删0" / "他自己删了" |
 | `未知` | 还在观察 / 数据不足 | 状态字段"评估中" / 完全无数据 |
+| `数据异常` | D-013 sanity check 发现数据自相矛盾 | 自动标注（如 tier_source 与数值严重不符）|
 
 **训练时使用建议**:
 - 二分类（爆 vs 不爆）：`爆 + 大爆` → 正样本；`趴` → 负样本；`预备 / 风控 / 删除 / 未知` → 不用
@@ -406,7 +407,7 @@ SHORT_TERM_DEPS = {
 - intent (5 个值)
 - content_format (8 个值)
 - emotional_valence / emotional_intensity (定义微调)
-- tier (7 个值)
+- tier (8 个值)
 
 ---
 
@@ -421,6 +422,52 @@ v0.2 可投入使用。如果周哥后续 review 提出修改，将升级到 v0.
 
 ---
 
+## 9. `category` · 品类受控词表（P2 十一新增）
+
+**为什么需要**: Truth Vault `projects.category` 和 sanshengliubu `reference_samples.category` 都自由填写。如果两边词不对齐，TV 通道 1 sync 会让 sanshengliubu 退化到 platform-only 检索（"小红书 美妆" 不再细分），不同品类爆文互相污染 vibe_rewriter 的参考样本。
+
+**统一词表 v1**（覆盖帆谷已知项目和未来 12 个月可能新增的品类）:
+
+| Truth Vault category 标准值 | 范围说明 | sanshengliubu category 应填同名 |
+|---|---|---|
+| `处方药` | 需医师处方的药品（含 RX-only） | 处方药 |
+| `OTC药` | 非处方药（含尼古丁戒烟贴/咀嚼片等 OTC 类） | OTC药 |
+| `保健品` | 蓝帽食字号等 | 保健品 |
+| `医疗器械` | 一类/二类/三类医械 | 医疗器械 |
+| `美妆` | 化妆品（含彩妆/护肤/香水） | 美妆 |
+| `个护` | 个人护理（含洗护/口腔/卫生用品） | 个护 |
+| `酒类` | 含酒精饮料 | 酒类 |
+| `食品饮料` | 普通食品+非酒精饮料 | 食品饮料 |
+| `母婴` | 婴幼儿/孕妇专属品 | 母婴 |
+| `3C数码` | （未来） | 3C数码 |
+| `家居家电` | （未来） | 家居家电 |
+| `服饰鞋包` | （未来） | 服饰鞋包 |
+| `教育` | 课程/培训/教辅 | 教育 |
+| `其他` | 兜底 | 其他 |
+
+> ⚠️ **历史 mapping 待 review**: 当前 `mappings/NRT_phase2.yaml` 和 `mappings/NRT_phase3.yaml` 的 `category: 处方药` 在监管口径上可能不准（力克雷品牌的尼古丁贴片/咀嚼片在中国按 OTC 销售）。NRT_2/NRT_3 重新 onboard 进 TV 之前，需由策略 lead（Ziao / 周哥）确认按 `处方药` 还是 `OTC药` 入库；vocab 词表本身不预设这个判断。
+
+**双重归属处理**（如 Sudocrem 既是 `个护` 又涉及 `母婴`）: 主类别取 `category`，次要类别走 `target_audience` 字段标注。不允许在 `category` 字段写复合值（如"个护/母婴"），会破坏 sanshengliubu 的 platform+category 检索。
+
+**Sync 时机的对齐**: Truth Vault 通道 1 sync 脚本写入 `reference_samples.category` 时，必须用 `truth_vault.projects.category` 的原值，不要做任何映射或本地化。这样两边词表始终一致。
+
+**已存 reference_samples 的脏数据**: sanshengliubu `reference_samples` 表里可能已有人工录入的旧 pack，`category` 字段不一定符合本词表。建议 NUC pilot 后跑一次清洗脚本：
+
+```sql
+-- 查不符合标准的 category 值
+SELECT DISTINCT category, count(*) 
+FROM public.reference_samples 
+WHERE category NOT IN (
+    '处方药','OTC药','保健品','医疗器械','美妆','个护','酒类',
+    '食品饮料','母婴','3C数码','家居家电','服饰鞋包','教育','其他'
+)
+GROUP BY category;
+```
+
+人工 review 后批量 UPDATE 映射到标准词表。
+
+---
+
 ## 下一步
 
 v0.2 finalized 后：
@@ -429,5 +476,6 @@ v0.2 finalized 后：
 2. ✅ 更新 [../prompts/essence_annotator.md](../prompts/essence_annotator.md) 内嵌词表
 3. 启动 NUC_1 试点 onboarding（CURRENT_STATE 任务 #2）
 4. 跑 30 条样本 essence pilot 标注，验证 v0.2 词表实操可用性
+5. （P2 新增）跑 reference_samples category 清洗脚本，确保 TV 通道 1 sync 不被脏数据污染
 
 如果 pilot 发现词表问题，调整后发布 v0.3。
