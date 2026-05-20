@@ -34,7 +34,7 @@ import sys
 import uuid
 from typing import Any
 
-from _common import get_supabase_client, setup_logger, _iso_now
+from _common import fetch_all_pages, get_supabase_client, setup_logger, _iso_now
 
 
 logger = setup_logger("sync_tv_baokuan_to_aw")
@@ -45,7 +45,12 @@ SPECIAL_BATCH_AI_ENGINE = "truth_vault_sync"  # versions.ai_engine 用，v_model
 
 
 def fetch_pending_baokuan_with_aw_project(sb, project_filter: str | None = None):
-    """Pull baokuan from TV joined with the aw_project_id mapping."""
+    """Pull baokuan from TV joined with the aw_project_id mapping.
+
+    Paginated explicitly to avoid Supabase's 1000-row default cap silently
+    truncating the candidate set once unsynced 爆款 accumulate across
+    projects.
+    """
     q = (
         sb.schema("truth_vault")
         .table("notes")
@@ -58,7 +63,7 @@ def fetch_pending_baokuan_with_aw_project(sb, project_filter: str | None = None)
     )
     if project_filter:
         q = q.eq("project_id", project_filter)
-    rows = (q.execute()).data or []
+    rows = fetch_all_pages(q)
     # filter out rows where the project hasn't been mapped to autowriter yet
     keepable = []
     skipped_no_mapping = 0

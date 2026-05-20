@@ -29,7 +29,7 @@ import sys
 import uuid
 from typing import Any
 
-from _common import get_supabase_client, setup_logger, _iso_now
+from _common import fetch_all_pages, get_supabase_client, setup_logger, _iso_now
 
 
 logger = setup_logger("sync_tv_baokuan_to_ssll")
@@ -39,7 +39,12 @@ def fetch_pending_baokuan(
     sb,
     project_filter: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Query Truth Vault for baokuan notes not yet synced to sanshengliubu."""
+    """Query Truth Vault for baokuan notes not yet synced to sanshengliubu.
+
+    Paginates explicitly. Supabase's PostgREST defaults to 1000 rows/response;
+    once enough projects onboard, unsynced 爆款 will cross that boundary and
+    silent truncation would leak baokuan from the flywheel.
+    """
     q = (
         sb.schema("truth_vault")
         .table("notes")
@@ -51,7 +56,7 @@ def fetch_pending_baokuan(
     )
     if project_filter:
         q = q.eq("project_id", project_filter)
-    return (q.execute()).data or []
+    return fetch_all_pages(q)
 
 
 def fetch_top_comments(sb, note_id: str, limit: int = 5) -> list[dict[str, Any]]:

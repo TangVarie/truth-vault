@@ -367,6 +367,45 @@ def ensure_project_exists(client: Client, mapping: dict) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# Pagination helper
+# ─────────────────────────────────────────────────────────────────────────
+
+# Supabase PostgREST default response cap. Configurable in Settings → API →
+# Max Rows; production default is 1000 unless changed. If we want to avoid
+# silently truncating large result sets, every "fetch all" path needs to
+# loop until the page is short.
+_DEFAULT_PAGE_SIZE = 1000
+
+
+def fetch_all_pages(query_builder, page_size: int = _DEFAULT_PAGE_SIZE) -> list:
+    """Drain a Supabase PostgREST query across all pages.
+
+    Usage:
+        rows = fetch_all_pages(
+            sb.schema("truth_vault").table("notes")
+              .select("note_id, ...")
+              .in_("tier", ["爆", "大爆"])
+        )
+
+    The query_builder is a chained PostgREST builder *before* .execute().
+    We attach .range(start, end) per page and assemble the full list.
+    A short page (fewer rows than page_size) terminates the loop. If a
+    page comes back exactly page_size, we keep going — the cost of one
+    extra empty fetch is cheap and avoids missed rows at the boundary.
+    """
+    rows: list = []
+    start = 0
+    while True:
+        end = start + page_size - 1
+        res = query_builder.range(start, end).execute()
+        page = res.data or []
+        rows.extend(page)
+        if len(page) < page_size:
+            return rows
+        start += page_size
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # Time helpers
 # ─────────────────────────────────────────────────────────────────────────
 
