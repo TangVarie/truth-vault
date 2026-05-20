@@ -53,6 +53,7 @@ from _common import (
     parse_feishu_date,
     quarantine_record,
     setup_logger,
+    update_project_date_range,
     _iso_now,
 )
 
@@ -263,11 +264,14 @@ def transform_row(
                 break
 
     # ── Numeric tier fallback (Gap 1) ──
-    # When no text-based rule fired but the project has tier_thresholds
-    # configured and interactions is present, assign a tier by threshold.
-    # This catches "评估中" / blank-status rows where the operator hasn't
-    # back-filled the status yet but data already shows a clear hit.
-    if note.get("tier") is None and note.get("interactions") is not None:
+    # When no text-based rule fired (tier is None) OR the status mapped to
+    # the placeholder "未知" (e.g. NUC's "评估中" → "未知"), assign a tier by
+    # threshold if interactions data already shows a clear hit. Without the
+    # "未知" check, an operator-pending row whose data already qualifies for
+    # 爆/大爆 would stay 未知 forever and never reach the flywheel downstream.
+    # tier_source is overwritten to '数值推断' only when we actually promote.
+    existing_tier = note.get("tier")
+    if existing_tier in (None, "未知") and note.get("interactions") is not None:
         thresholds = mapping.get("tier_thresholds") or {}
         n_interactions = note["interactions"]
         if "大爆" in thresholds and n_interactions >= thresholds["大爆"]:
@@ -287,18 +291,28 @@ def transform_row(
         note.setdefault("raw_extra", {}).update(leftover)
 
     # ── metric_snapshot from impressions/reads/interactions ──
+    # Two-tier split: NOTES_AND_METRIC cols are valid on truth_vault.notes AND
+    # also fan out to metric_snapshots. METRIC_ONLY cols (likes/saves/shares/
+    # comments_count/search_rank/keyword_rank) don't exist on truth_vault.notes
+    # — if they ever sneak into the note payload (because a mapping yaml
+    # eventually targets them directly), the notes UPSERT would fail with
+    # "column does not exist". Strip them out of `note` before returning so
+    # the structural boundary is enforced at the transformer, not by hope.
     metric: dict[str, Any] = {}
-    metric_cols = ("impressions", "reads", "interactions",
-                   "likes", "saves", "shares", "comments_count",
-                   "hit_blue_keywords", "search_rank", "keyword_rank")
-    if any(c in note for c in metric_cols):
+    notes_and_metric_cols = ("impressions", "reads", "interactions", "hit_blue_keywords")
+    metric_only_cols = ("likes", "saves", "shares", "comments_count",
+                        "search_rank", "keyword_rank")
+    all_metric_cols = notes_and_metric_cols + metric_only_cols
+    if any(c in note for c in all_metric_cols):
         metric = {
             "note_id": note["note_id"],
             "collected_at": _iso_now(),
             "window_label": "ad_hoc",        # 历史飞书数据没有时间窗信息
             "source": "feishu_import",
-            **{c: note[c] for c in metric_cols if c in note},
+            **{c: note[c] for c in all_metric_cols if c in note},
         }
+    for c in metric_only_cols:
+        note.pop(c, None)
 
     return note, metric, undeclared
 
@@ -524,6 +538,16 @@ def main() -> int:
         except Exception as exc:
             logger.exception("record_id=%s failed: %s", feishu_record_id, exc)
             stats["errors"] += 1
+
+    # Roll up project-level date range from the freshly synced notes. The yaml
+    # placeholders (auto_from_publish_time_min/max) aren't DATE-castable, so
+    # this is the only path that keeps projects.start_date/end_date honest.
+    if not args.dry_run:
+        try:
+            update_project_date_range(sb, mapping["project_id"])
+        except Exception as exc:
+            logger.warning("update_project_date_range failed for %s: %s",
+                           mapping["project_id"], exc)
 
     logger.info("Done: %s", json.dumps(stats, ensure_ascii=False))
     return 0 if stats["errors"] == 0 else 1

@@ -12,8 +12,13 @@ public.reference_samples（sanshengliubu 保持在 public schema，D-024）。
     python sync_truth_vault_baokuan_to_sanshengliubu.py --dry-run
 
 幂等性:
-    public.reference_samples 表里通过
-    ai_analysis->>'_truth_vault_note_id' = notes.note_id 来判断"已 sync"。
+    主键: public.reference_samples.source_truth_vault_note_id（专门加的
+          干净索引列，由 sanshengliubu-patches/001_add_source_tv_note_id.sql
+          创建）。这是判断「已 sync」的正式幂等键，preflight_check 会拒绝
+          没有该列的部署。
+    Fallback: 仅对历史行（migration 之前 insert 的 row）会回退到
+          ai_analysis->>'_truth_vault_note_id'。新写入一律两个都填，未来
+          可以把 fallback 路径删掉。
     重跑只会处理新出现的爆款。
 
 环境变量:

@@ -11,7 +11,12 @@ sync_truth_vault_baokuan_to_autowriter_items.py
 幂等性:
     autowriter.items 有 partial UNIQUE INDEX(external_source, external_source_id)
     WHERE external_source IS NOT NULL（P1 Sprint 1.1 加的强幂等键）。
-    INSERT 用 ON CONFLICT ... DO NOTHING 保证重跑不重复插入。
+    重跑流程是 INSERT → 抓 23505 重复键错误 → SELECT 已有 item.id →
+    继续 _ensure_version_and_link()。这个流程比 ON CONFLICT DO NOTHING
+    更可控的地方在于：dedup 命中时仍然能验证 version + best_version_id
+    链接是否完整（修 Round 2 review 里 P0 的 "phantom items" 问题）。
+    最终结果对调用方是一样的：notes.synced_to_aw_at + synced_autowriter_item_id
+    都会写回，无论本次 INSERT 是新建还是仅恢复孤儿 item。
 
 用法:
     python sync_truth_vault_baokuan_to_autowriter_items.py

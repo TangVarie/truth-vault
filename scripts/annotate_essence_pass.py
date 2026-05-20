@@ -21,10 +21,17 @@ Environment:
     ANTHROPIC_API_KEY               (skipped with --dry-run)
     ESSENCE_MODEL                   (default: claude-sonnet-4-6)
 
-The script also handles direction_decomposition.sub_directions when the
-mapping yaml defines them (NUC_phase1's 6 子方向). In that case the LLM
-output is parsed for both sub_direction (writes notes.direction_subtype +
-content_format / target_audience / etc) AND essence fields.
+Two-pass LLM flow (per note):
+  Pass 1 · sub_direction classification (skipped if mapping has no
+           direction_decomposition with sub_directions for this note's
+           _direction_raw). When present, the LLM picks one name from the
+           allowed set; the chosen sub_direction's config (content_format,
+           target_audience, user_pain_point, product_focus) is lifted into
+           notes alongside direction_subtype = chosen name. Failure here
+           does NOT fail the note — essence still proceeds, the row just
+           lacks direction_subtype.
+  Pass 2 · essence annotation (Mode A, performance-blind). Always runs.
+           Failure routes to failed_essence_queue.jsonl.
 
 Resumability:
     notes.essence_annotated_at + essence_vocab_version are written on
@@ -204,6 +211,133 @@ def build_mode_a_prompt(project: dict, note: dict) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# Sub-direction classification (per-mapping direction_decomposition)
+# ─────────────────────────────────────────────────────────────────────────
+#
+# The mapping yaml declares direction_decomposition: { <raw_direction>:
+# { sub_directions: [ { name, detection_signal, content_format, ... } ] } }.
+# When a note's raw _direction_raw matches a config with sub_directions, this
+# pass asks the LLM to pick one name from the allowed set; the chosen
+# sub_direction's deterministic config (content_format / target_audience /
+# user_pain_point / product_focus) then gets lifted into the note alongside
+# direction_subtype = chosen_name.
+#
+# Single-direction configs (no sub_directions) are handled at sync time by
+# sync_feishu_notes_to_truth_vault.transform_row() — no LLM needed there
+# since everything's deterministic.
+
+SUB_DIRECTION_PROMPT_TEMPLATE = """你为一条小红书种草笔记做子方向分类。基于笔记内容选出最匹配的允许 sub_direction name。
+
+═══════════════════════════════════════════════
+飞书方向
+═══════════════════════════════════════════════
+{direction}
+
+═══════════════════════════════════════════════
+允许的子方向（必须从下列 name 中选一个）
+═══════════════════════════════════════════════
+{sub_directions_block}
+
+═══════════════════════════════════════════════
+笔记内容
+═══════════════════════════════════════════════
+标题: {title}
+正文（前 500 字）: {body}
+
+═══════════════════════════════════════════════
+任务
+═══════════════════════════════════════════════
+根据笔记内容和每个子方向的 detection_signal，选出最匹配的子方向。
+
+输出严格 JSON（无 markdown 包装、无解释）:
+{{"sub_direction": "<必须从允许 name 中选一个>", "confidence": <0-1>, "reasoning": "<一句话>"}}
+"""
+
+
+def get_sub_directions_for_note(mapping: dict, note: dict
+                                 ) -> Optional[tuple[str, list[dict]]]:
+    """Return (raw_direction, sub_directions_list) if this note's _direction_raw
+    has sub_directions defined in mapping.direction_decomposition. Else None.
+
+    Returns None for: missing _direction_raw, unknown direction, or
+    single-direction configs (no sub_directions key) — the deterministic
+    lift for those happens at sync time in transform_row().
+    """
+    raw_dir = (note.get("raw_extra") or {}).get("_direction_raw")
+    if not raw_dir:
+        return None
+    decomp = (mapping.get("direction_decomposition") or {}).get(raw_dir)
+    if decomp is None:
+        return None
+    sub_dirs = decomp.get("sub_directions")
+    if not sub_dirs:
+        return None
+    return raw_dir, sub_dirs
+
+
+def build_sub_direction_prompt(direction: str, sub_dirs: list[dict],
+                                note: dict) -> str:
+    """Render the sub_direction prompt with the allowed names + their
+    detection_signal blocks inline so the LLM has everything it needs to
+    pick a name in one call."""
+    blocks = []
+    for sd in sub_dirs:
+        signal_text = (sd.get("detection_signal") or "").strip()
+        # Indent detection_signal lines so they read as a block under the name
+        signal_indented = "\n      ".join(signal_text.splitlines())
+        blocks.append(
+            f"  - name: {sd['name']}\n"
+            f"    detection_signal:\n      {signal_indented}"
+        )
+    body = note.get("body") or note.get("raw_content") or ""
+    return SUB_DIRECTION_PROMPT_TEMPLATE.format(
+        direction=direction,
+        sub_directions_block="\n\n".join(blocks),
+        title=note.get("title") or body[:60],
+        body=body[:500] + ("...（截断）" if len(body) > 500 else ""),
+    )
+
+
+def classify_sub_direction(prompt: str, model: str, allowed_names: set[str]
+                            ) -> tuple[Optional[str], list[str]]:
+    """One-shot sub_direction classification. No retry — failure routes back
+    to the caller, which logs and proceeds with essence-only annotation
+    (the row gets essence but no direction_subtype). Returns (chosen, errors).
+    """
+    try:
+        raw = call_claude(prompt, model)
+    except Exception as exc:
+        return None, [f"sub_dir_api_error: {exc!r}"]
+    parsed = parse_claude_json(raw)
+    if parsed is None:
+        return None, ["sub_dir_json_parse_failed"]
+    chosen = parsed.get("sub_direction")
+    if chosen not in allowed_names:
+        return None, [
+            f"sub_direction {chosen!r} not in allowed: {sorted(allowed_names)}"
+        ]
+    return chosen, []
+
+
+def apply_sub_direction_to_update(update: dict, sub_dirs: list[dict],
+                                   chosen_name: str) -> None:
+    """Find the chosen sub_direction's config and lift its deterministic
+    columns (content_format, target_audience, user_pain_point, product_focus)
+    into the update dict. Sets direction_subtype = chosen_name. Mutates
+    `update` in place.
+    """
+    chosen_cfg = next((sd for sd in sub_dirs if sd.get("name") == chosen_name), None)
+    if not chosen_cfg:
+        return
+    update["direction_subtype"] = chosen_name
+    for col in ("content_format", "target_audience",
+                "user_pain_point", "product_focus"):
+        val = chosen_cfg.get(col)
+        if val is not None:
+            update[col] = val
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # Validation
 # ─────────────────────────────────────────────────────────────────────────
 
@@ -334,7 +468,22 @@ def fetch_unannotated_notes(sb, project_id: str, reannotate: bool) -> list[dict]
     return fetch_all_pages(q)
 
 
-def write_essence_back(sb, note_id: str, model: str, parsed: dict, dry_run: bool) -> None:
+def write_essence_back(
+    sb,
+    note_id: str,
+    model: str,
+    parsed: dict,
+    sub_dir_result: Optional[tuple[str, list[dict]]],
+    dry_run: bool,
+) -> None:
+    """Write essence + (optional) sub_direction fields back to the note.
+
+    If sub_dir_result is (chosen_name, sub_dirs_list), the chosen config's
+    content_format / target_audience / user_pain_point / product_focus get
+    lifted in alongside direction_subtype. Sub-direction's content_format
+    overrides essence's content_format (the sub_direction config is more
+    specific / project-aware).
+    """
     e = parsed["essence"]
     a = parsed.get("audience") or {}
     update = {
@@ -350,9 +499,14 @@ def write_essence_back(sb, note_id: str, model: str, parsed: dict, dry_run: bool
         "essence_vocab_version": VOCAB_VERSION,
         "essence_annotation_mode": "prediction_feature",
     }
+    if sub_dir_result is not None:
+        chosen_name, sub_dirs = sub_dir_result
+        apply_sub_direction_to_update(update, sub_dirs, chosen_name)
     if dry_run:
+        preview_keys = ("emotional_lever", "content_format",
+                        "direction_subtype", "target_audience")
         logger.info("[dry-run] would update note %s with %s", note_id,
-                    {k: v for k, v in update.items() if k in ("emotional_lever", "content_format")})
+                    {k: v for k, v in update.items() if k in preview_keys})
         return
     (
         sb.schema("truth_vault")
@@ -368,9 +522,14 @@ def write_essence_back(sb, note_id: str, model: str, parsed: dict, dry_run: bool
 # ─────────────────────────────────────────────────────────────────────────
 
 def _annotate_with_retry(prompt: str, model: str
-                         ) -> tuple[Optional[dict], list[str], str]:
+                         ) -> tuple[Optional[dict], list[str], str, bool]:
     """Run Mode A once; if validation fails, retry once with a correction
-    prompt. Returns (parsed_or_None, last_errors, last_raw_response).
+    prompt. Returns (parsed_or_None, last_errors, last_raw_response, used_retry).
+
+    used_retry is True iff the function had to make a second API call (either
+    because the first response failed JSON parse or vocab validation). The
+    caller uses it to distinguish first-shot wins from second-shot wins in
+    stats, which surfaces "is the prompt getting worse over time" trends.
 
     Failures that propagate as exceptions (API error, JSON parse error on
     the retry, retry validation still fails) all return parsed=None with
@@ -379,7 +538,7 @@ def _annotate_with_retry(prompt: str, model: str
     try:
         raw = call_claude(prompt, model)
     except Exception as exc:
-        return None, [f"api_error: {exc!r}"], ""
+        return None, [f"api_error: {exc!r}"], "", False
 
     parsed = parse_claude_json(raw)
     if parsed is None:
@@ -390,32 +549,32 @@ def _annotate_with_retry(prompt: str, model: str
         try:
             raw2 = call_claude(retry_prompt, model)
         except Exception as exc:
-            return None, [f"retry_api_error: {exc!r}"], raw
+            return None, [f"retry_api_error: {exc!r}"], raw, True
         parsed2 = parse_claude_json(raw2)
         if parsed2 is None:
-            return None, ["json_parse_failed_after_retry"], raw2
+            return None, ["json_parse_failed_after_retry"], raw2, True
         errors2 = validate_essence(parsed2)
         if errors2:
-            return None, errors2, raw2
-        return parsed2, [], raw2
+            return None, errors2, raw2, True
+        return parsed2, [], raw2, True
 
     errors = validate_essence(parsed)
     if not errors:
-        return parsed, [], raw
+        return parsed, [], raw, False
 
     # Validation failed on first attempt — retry with correction prompt
     retry_prompt = build_retry_prompt(prompt, raw, errors)
     try:
         raw2 = call_claude(retry_prompt, model)
     except Exception as exc:
-        return None, [f"retry_api_error: {exc!r}"], raw
+        return None, [f"retry_api_error: {exc!r}"], raw, True
     parsed2 = parse_claude_json(raw2)
     if parsed2 is None:
-        return None, ["retry_json_parse_failed"], raw2
+        return None, ["retry_json_parse_failed"], raw2, True
     errors2 = validate_essence(parsed2)
     if errors2:
-        return None, errors2, raw2
-    return parsed2, [], raw2
+        return None, errors2, raw2, True
+    return parsed2, [], raw2, True
 
 
 def main() -> int:
@@ -452,7 +611,8 @@ def main() -> int:
 
     failed_queue_path = Path(args.failed_queue).resolve()
     stats = {"ok": 0, "ok_after_retry": 0, "failed_after_retry": 0,
-             "hygiene_failed": 0}
+             "hygiene_failed": 0,
+             "sub_dir_ok": 0, "sub_dir_failed": 0, "sub_dir_not_applicable": 0}
     sleep_s = 1.0 / args.qps if args.qps > 0 else 0
     for i, note in enumerate(notes):
         # Inject project info one level up so prompt builder can read it
@@ -474,8 +634,37 @@ def main() -> int:
             stats["ok"] += 1
             continue
 
-        # Try once + retry-with-correction if first attempt fails validation
-        parsed, errors, last_raw = _annotate_with_retry(prompt, model)
+        # Pass 1 · sub_direction (skipped when mapping has no
+        # direction_decomposition with sub_directions for this note's
+        # _direction_raw). Failure does NOT abort the note — essence still
+        # runs; the row just lacks direction_subtype until next reannotate.
+        sub_dir_info = get_sub_directions_for_note(mapping, note)
+        sub_dir_result: Optional[tuple[str, list[dict]]] = None
+        if sub_dir_info is None:
+            stats["sub_dir_not_applicable"] += 1
+        else:
+            raw_direction, sub_dirs = sub_dir_info
+            sub_dir_prompt = build_sub_direction_prompt(
+                raw_direction, sub_dirs, note,
+            )
+            allowed = {sd["name"] for sd in sub_dirs}
+            chosen, sub_errors = classify_sub_direction(
+                sub_dir_prompt, model, allowed,
+            )
+            if chosen is None:
+                stats["sub_dir_failed"] += 1
+                logger.warning(
+                    "sub_direction classification failed for %s: %s "
+                    "(continuing with essence-only)",
+                    note["note_id"], sub_errors,
+                )
+            else:
+                sub_dir_result = (chosen, sub_dirs)
+                stats["sub_dir_ok"] += 1
+            time.sleep(sleep_s)  # respect QPS between back-to-back LLM calls
+
+        # Pass 2 · essence (try once + retry-with-correction on failure)
+        parsed, errors, last_raw, used_retry = _annotate_with_retry(prompt, model)
         if parsed is None:
             logger.warning("Failed after retry for %s: %s", note["note_id"], errors)
             stats["failed_after_retry"] += 1
@@ -484,20 +673,20 @@ def main() -> int:
             )
             continue
 
-        write_essence_back(sb, note["note_id"], model, parsed, dry_run=False)
-        # If `last_raw` came from the retry path (errors was non-empty
-        # originally), this is an ok_after_retry. We can detect this by
-        # checking whether the first call's prompt got augmented — but
-        # simpler heuristic: _annotate_with_retry made 2 calls if and only
-        # if its work product still parsed cleanly the second time. The
-        # function returns the SECOND parse on retry. We don't have direct
-        # signal here, so log only at i % 10 cadence and trust the failed_queue
-        # for the diagnostic source of truth.
+        write_essence_back(sb, note["note_id"], model, parsed,
+                            sub_dir_result, dry_run=False)
         stats["ok"] += 1
+        if used_retry:
+            stats["ok_after_retry"] += 1
         if i % 10 == 0:
-            logger.info("[%d/%d] %s ok=%d failed=%d",
-                        i + 1, len(notes), note["note_id"],
-                        stats["ok"], stats["failed_after_retry"])
+            logger.info(
+                "[%d/%d] %s ok=%d ok_after_retry=%d failed=%d "
+                "sub_dir_ok=%d sub_dir_failed=%d",
+                i + 1, len(notes), note["note_id"],
+                stats["ok"], stats["ok_after_retry"],
+                stats["failed_after_retry"],
+                stats["sub_dir_ok"], stats["sub_dir_failed"],
+            )
         time.sleep(sleep_s)
 
     logger.info("Done: %s", json.dumps(stats, ensure_ascii=False))
@@ -506,7 +695,11 @@ def main() -> int:
                     "underlying note + rerun, or feed the file back through "
                     "this script after correcting the prompt/vocab.",
                     failed_queue_path)
-    return 0 if stats["ok"] else 1
+    # Exit 0 unless something actually broke. A no-op run (no unannotated
+    # rows today) is success, not failure — otherwise cron / CI would treat
+    # it as red. Hygiene assertion failures count as real errors because
+    # they indicate prompt/build_project_context drift.
+    return 0 if not (stats["failed_after_retry"] or stats["hygiene_failed"]) else 1
 
 
 def _append_failed_queue(path: Path, note: dict, project_id: str,

@@ -162,6 +162,24 @@
 - Supabase 有自动备份，但没人定义 RPO/RTO。如果 truth_vault schema 被误删，
   恢复多久？多少数据丢失？
 
+### R-016 · projects / accounts 统计缓存列未自动维护
+
+- **是什么**：`projects.{total_notes, notes_with_data, notes_with_tier,
+  notes_with_essence, notes_with_actual_audience, last_sync_at}` 和
+  `accounts.{total_notes_count, bao_count, dabao_count, fengkong_count,
+  deleted_count, personal_bao_rate}` 都是声明在 schema 里的缓存列，但当前
+  没有触发器、后台 job 或 sync 路径去维护它们。
+- **后果**：人或 dashboard 直接 SELECT 这些列会拿到 0 / NULL / 旧值，被
+  误判为「没有数据」或「项目空载」。
+- **检测**：schema 里所有受影响的列已加 COMMENT 'CACHE-ONLY · 未自动维护'，
+  Supabase Studio / pgAdmin 会展示该注释；`v_top_performing_accounts` /
+  `v_project_tier_summary` / `v_data_health` / `v_flywheel_sync_status`
+  是 live-compute 的正确源。
+- **缓解**：短期：所有看板/查询切换到上述 view，不要读裸列；中期（Sprint 1+）
+  二选一 —— (a) 加 AFTER INSERT/UPDATE trigger 同步缓存，或 (b) 跑一个
+  cron 的 refresh job（适合按小时刷新即可的看板）。
+- **Owner**：DB / 数据负责人
+
 ---
 
 ## 已关闭风险 (历史档案)

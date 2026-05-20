@@ -39,6 +39,14 @@ What it does
   - Doesn't handle truncation / mid-line line breaks
   - This is a "minimum viable comments table" so ssll's vibe_rewriter has
     SOME comment evidence to work with. Full reconstruction needs LLM pass.
+  - ⚠️ _comment_text_persona semantic risk: this script currently treats it
+    as additional comment text and concatenates with _comment_text. NUC_phase1
+    sample data confirms this is correct (operator pastes a second comment
+    block under the same column). If a future project uses _comment_text_persona
+    to mean "evaluator/persona-of-commenter labels" instead (a different
+    semantic), those values would land in comments.content and corrupt the
+    flat comments table. Confirm column semantics with the project's onboarding
+    sheet BEFORE running on a new project; for now, NUC_phase1 / NRT_* are OK.
 
 Usage:
     python sync_comments_from_raw_extra.py NUC_phase1
