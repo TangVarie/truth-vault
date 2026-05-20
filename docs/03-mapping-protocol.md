@@ -174,7 +174,8 @@ schema_family: B
 field_mapping:
   素人编号: account_id              # → truth_vault.accounts(account_id)
   发布时间: publish_time
-  发布笔记: intent                  # 流量帖→traffic, 直给笔记→conversion
+  发布笔记: _intent_raw             # 中间变量，走 intent_mapping (不要直接映射到 intent，
+                                    # 否则会把"流量帖"字符串塞进 enum)
   方向: _direction_raw
   关键词: target_blue_keywords
   反馈链接: publish_url
@@ -182,7 +183,7 @@ field_mapping:
   曝光量: impressions
   阅读量: reads
   互动量: interactions
-  状态: tier
+  状态: _status_raw                  # 中间变量，走 tier_extraction
   蓝词记录: hit_blue_keywords
   
 intent_mapping:
@@ -224,7 +225,7 @@ schema_family: C
 field_mapping:
   素人编号: account_id              # → truth_vault.accounts(account_id)
   发布时间: publish_time
-  发布笔记: intent                  # 钓鱼帖→traffic, 直给笔记→conversion
+  发布笔记: _intent_raw             # 钓鱼帖→traffic, 直给笔记→conversion (走 intent_mapping)
   反馈链接: publish_url
   文案: raw_content
   备注: _note_for_tier              # 中间变量，由 tier_extraction 处理

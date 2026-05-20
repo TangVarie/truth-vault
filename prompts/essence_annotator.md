@@ -27,10 +27,10 @@
 
 ```python
 # config.py 或 .env
-ESSENCE_MODEL_PRIMARY = "claude-sonnet-4-20250514"    # 主标注（上线前核实最新 model id）
-ESSENCE_MODEL_TIEBREAK = "claude-opus-4-6-20250610"   # 高分歧重标（上线前核实最新 model id）
-# ⚠️ Anthropic 模型 ID 格式: claude-{tier}-{major}-{minor}-{date}
-# 价格和可用性可能变化，上线前查 https://docs.anthropic.com/en/docs/about-claude/models
+ESSENCE_MODEL_PRIMARY = "claude-sonnet-4-6"     # 主标注（性价比最优）
+ESSENCE_MODEL_TIEBREAK = "claude-opus-4-7"      # 高分歧重标（贵 5x，更准）
+# ⚠️ Anthropic 模型 ID 会随版本演化。上线前查
+# https://docs.anthropic.com/en/docs/about-claude/models 核实当前最新。
 ```
 
 ---

@@ -8,8 +8,12 @@
 
 ## 模型
 
-- 主推断: 配置层指定（默认 claude-sonnet-4-20250514，上线前核实最新 model id）
-- 高分歧重跑: 配置层指定（默认 claude-opus-4-6-20250610，上线前核实最新 model id）
+模型 ID 写在调用代码的配置层，不硬编码 prompt 里。当前推荐：
+
+- 主推断: `claude-sonnet-4-6`（默认，性价比最优）
+- 高分歧重跑: `claude-opus-4-7`（更强，但贵 5x）
+
+⚠️ Anthropic 模型 ID 随时间演化，上线前查 https://docs.anthropic.com/en/docs/about-claude/models 核实当前最新。
 
 ## 调用方式
 

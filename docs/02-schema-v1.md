@@ -154,7 +154,7 @@ CREATE TABLE accounts (
     
     first_seen_at TIMESTAMP,
     last_publish_at TIMESTAMP,
-    notes_text TEXT,                  -- 运营备注
+    account_memo TEXT,                -- 运营备注 (D-032: 原 notes_text，改名避免与 notes 表混淆)
     
     created_at TIMESTAMP,
     updated_at TIMESTAMP

@@ -11,10 +11,13 @@ Centralises:
 
 from __future__ import annotations
 
+import base64
+import json
 import logging
 import os
 import re
 import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -27,6 +30,29 @@ from supabase.client import ClientOptions
 # ─────────────────────────────────────────────────────────────────────────
 # Client creation
 # ─────────────────────────────────────────────────────────────────────────
+
+def _jwt_role_or_none(token: str) -> Optional[str]:
+    """Decode the role claim from a Supabase JWT without verifying signature.
+
+    Supabase issues HS256 JWTs whose payload contains `{"role": "anon"}` or
+    `{"role": "service_role"}` (plus iss/iat/exp). We only need to read the
+    role to refuse anon keys — signature verification belongs on the server
+    side, not in a CLI sync script. base64url decode of payload is enough.
+    Returns None if anything about the token doesn't look like a JWT.
+    """
+    parts = token.split(".")
+    if len(parts) != 3:
+        return None
+    payload_b64 = parts[1]
+    padding = "=" * (-len(payload_b64) % 4)
+    try:
+        payload_bytes = base64.urlsafe_b64decode(payload_b64 + padding)
+        payload = json.loads(payload_bytes)
+    except (ValueError, json.JSONDecodeError):
+        return None
+    role = payload.get("role")
+    return role if isinstance(role, str) else None
+
 
 def get_supabase_client() -> Client:
     """Return a Supabase client using SERVICE_ROLE_KEY (RLS bypass).
@@ -47,15 +73,27 @@ def get_supabase_client() -> Client:
             "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY env vars must be set. "
             "See scripts/.env.example for the full list."
         )
-    if "anon" in key.lower() or len(key) < 100:
-        # service_role JWTs are long; anon keys are short and contain 'anon' in payload.
-        # Heuristic, not bulletproof — Supabase doesn't expose role in key text directly,
-        # but the length check catches the most common mistake (pasting anon).
-        raise RuntimeError(
-            "SUPABASE_SERVICE_ROLE_KEY looks like an anon key. Service role keys "
-            "are ~200+ chars. Check Supabase Dashboard → Settings → API → "
-            "service_role secret."
-        )
+
+    # Primary check: decode the JWT payload (no signature verification —
+    # Supabase rejects forged tokens server-side anyway; we only want to
+    # catch the common mistake of pasting anon-key into the service_role env).
+    role = _jwt_role_or_none(key)
+    if role is not None:
+        if role != "service_role":
+            raise RuntimeError(
+                f"SUPABASE_SERVICE_ROLE_KEY has role={role!r}, expected 'service_role'. "
+                "Sync scripts need service_role to bypass RLS. Check Supabase "
+                "Dashboard → Settings → API → service_role secret."
+            )
+    else:
+        # Fallback heuristic for keys that don't decode (shouldn't happen with
+        # real Supabase keys, but stay defensive).
+        if "anon" in key.lower() or len(key) < 100:
+            raise RuntimeError(
+                "SUPABASE_SERVICE_ROLE_KEY does not look like a service_role JWT "
+                "(unable to decode payload, and key is suspiciously short or "
+                "contains 'anon'). Check Supabase Dashboard → Settings → API."
+            )
     return create_client(url, key, ClientOptions(schema=None))  # no default schema
 
 

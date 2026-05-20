@@ -260,6 +260,18 @@ def main() -> int:
         logger.error("AUTOWRITER_SYNC_USER_ID env var is required (UUID of the "
                      "service account that 'owns' synced items).")
         return 2
+    # Validate the UUID up-front; otherwise the first INSERT 100 baokuan in
+    # would fail with a confusing Postgres cast error.
+    try:
+        uuid.UUID(sync_user_id)
+    except (ValueError, AttributeError):
+        logger.error(
+            "AUTOWRITER_SYNC_USER_ID=%r is not a valid UUID. Expected the UUID "
+            "of a user row in auth.users (the service account that 'owns' "
+            "TV-synced items in autowriter).",
+            sync_user_id,
+        )
+        return 2
 
     sb = get_supabase_client()
     pending = fetch_pending_baokuan_with_aw_project(sb, project_filter=args.project)

@@ -32,15 +32,25 @@ CREATE TABLE IF NOT EXISTS truth_vault.projects (
     project_id TEXT PRIMARY KEY,
     brand TEXT NOT NULL,
     product TEXT NOT NULL,
-    category TEXT NOT NULL,
+    -- category 受控词表 v1 (见 docs/05-controlled-vocab.md §9). 强制 enum
+    -- 以避免 sanshengliubu 通道 1 sync 因品类拼写不一退化到 platform-only
+    -- 检索。新品类需先升级词表再加入 CHECK.
+    category TEXT NOT NULL CHECK (category IN (
+        '处方药', 'OTC药', '保健品', '医疗器械',
+        '美妆', '个护', '酒类', '食品饮料', '母婴',
+        '3C数码', '家居家电', '服饰鞋包', '教育', '其他'
+    )),
     platform TEXT NOT NULL DEFAULT 'xiaohongshu',
     schema_family TEXT CHECK (schema_family IN ('A', 'B', 'C')),
-    
+
     start_date DATE,
     end_date DATE,
-    
+
     mapping_config JSONB,
-    tier_thresholds JSONB DEFAULT '{"爆": 100, "大爆": 1000}'::jsonb,
+    -- tier_thresholds 没有 DEFAULT — yaml 必须显式声明 (NUC_phase1 用
+    -- 150/700, NRT_phase3 用 200/1500). 早期 SQL default 是 100/1000,
+    -- 但 stale defaults 会让没在 yaml 写阈值的项目拿到错的兜底.
+    tier_thresholds JSONB,
     
     -- D-024 跨系统映射（手动维护）
     mapping_to_autowriter_project_id UUID,  -- 对应 autowriter.projects.id
@@ -393,7 +403,11 @@ CREATE TABLE IF NOT EXISTS truth_vault.comments (
     
     content TEXT NOT NULL,
     
-    parent_comment_id TEXT REFERENCES truth_vault.comments(comment_id),
+    -- ON DELETE SET NULL: if a parent comment is purged (e.g. an entire
+    -- thread cascades from a notes delete), keep the child rows in place
+    -- but break the hierarchy link. Default NO ACTION would FK-violate
+    -- and block any bulk delete that touches a thread out-of-order.
+    parent_comment_id TEXT REFERENCES truth_vault.comments(comment_id) ON DELETE SET NULL,
     comment_order INT,
     comment_time TIMESTAMP,
     
