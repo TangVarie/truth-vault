@@ -176,7 +176,11 @@ def transform_row(
         "project_id": mapping["project_id"],
         "platform": mapping.get("platform", "xiaohongshu"),
         "feishu_record_id": feishu_record_id,
-        "ingested_at": _iso_now(),
+        # ingested_at intentionally NOT set here. The schema sets
+        # DEFAULT NOW() on insert, and a BEFORE UPDATE trigger
+        # (preserve_ingested_at) reverts it on every UPSERT-as-update.
+        # Setting it client-side would let the trigger silently overwrite
+        # what we send, which is wasteful and confusing.
     }
     intermediates: dict[str, Any] = {}
     raw_extra: dict[str, Any] = {}

@@ -105,23 +105,59 @@ def query_source_a(sb, aw_project_id: str | None = None) -> Set[str]:
 # 上一版（v_original）是被替换的 AI 输出 = negative candidate.
 
 def query_source_b(sb, aw_project_id: str | None = None) -> Set[str]:
-    """Return item_ids that have at least one revised-by-feedback iteration."""
+    """Return item_ids whose AI output was replaced by a feedback-driven rewrite.
+
+    Correctness note: the doc 09 spec says "feedback 挂在 v_revised, v_original
+    是被替换的 AI 版"—meaning we need both (a) a version with non-empty
+    feedback, NOT 手动精修, ai_engine != 'manual', AND (b) at least one
+    earlier version on the same item (version_num strictly smaller) that
+    is the candidate replaced version.
+
+    The previous version of this query only checked (a). An item with a
+    single feedback-bearing version (e.g. a first-attempt revision that
+    was then approved) would be mis-flagged as negative when nothing
+    was actually replaced.
+    """
+    # Pull ALL versions for items that have at least one feedback-bearing
+    # version. Done as one query rather than per-item N+1.
     q = (
         sb.schema("autowriter")
         .table("versions")
-        .select("item_id, feedback, ai_engine, "
+        .select("item_id, version_num, ai_engine, feedback, "
                 "items!inner(batches!inner(project_id))")
-        .not_.is_("feedback", None)
-        .neq("ai_engine", "manual")
     )
     if aw_project_id:
         q = q.eq("items.batches.project_id", aw_project_id)
     rows = fetch_all_pages(q)
 
-    return {
-        r["item_id"] for r in rows
-        if r.get("item_id") and (r.get("feedback") or "").strip() != "手动精修"
-    }
+    by_item: dict[str, list[tuple[int, str, str | None]]] = {}
+    for r in rows:
+        item_id = r.get("item_id")
+        v_num = r.get("version_num")
+        engine = r.get("ai_engine")
+        feedback = r.get("feedback")
+        if not item_id or v_num is None:
+            continue
+        by_item.setdefault(item_id, []).append((v_num, engine, feedback))
+
+    confirmed: Set[str] = set()
+    for item_id, versions in by_item.items():
+        # find the earliest feedback-bearing revised version that qualifies
+        feedback_revised = [
+            v_num for v_num, engine, fb in versions
+            if engine != "manual"
+            and fb is not None
+            and (fb or "").strip() not in ("", "手动精修")
+        ]
+        if not feedback_revised:
+            continue
+        earliest_revised = min(feedback_revised)
+        # require at least one prior version (any engine) to confirm
+        # that something was actually replaced
+        has_prior = any(v_num < earliest_revised for v_num, _, _ in versions)
+        if has_prior:
+            confirmed.add(item_id)
+    return confirmed
 
 
 # ─────────────────────────────────────────────────────────────────────────

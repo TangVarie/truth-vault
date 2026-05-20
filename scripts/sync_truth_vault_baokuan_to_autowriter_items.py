@@ -132,6 +132,83 @@ def ensure_special_batch(sb, aw_project_id: str, sync_user_id: str,
     return batch_id
 
 
+def _ensure_version_and_link(
+    sb,
+    note: dict,
+    item_id: str,
+) -> str:
+    """Ensure item has at least one version + best_version_id set.
+
+    Idempotent: if a version already exists for this item, return its id
+    (and only update best_version_id if it's not already pointing at it).
+    Used both by the happy path (after creating a fresh item) AND by the
+    dedup-recovery path: a prior run could have inserted the item but
+    crashed before the version insert succeeded — leaving "phantom items"
+    that, on rerun, would just be marked synced without ever getting a
+    version. That used to be the user's #2 P0 issue.
+
+    Returns the version_id that ends up linked as best_version_id.
+    """
+    existing_v = (
+        sb.schema("autowriter")
+        .table("versions")
+        .select("id")
+        .eq("item_id", item_id)
+        .limit(1)
+        .execute()
+    )
+    if existing_v.data:
+        version_id = existing_v.data[0]["id"]
+        # belt-and-suspenders: ensure best_version_id is set
+        sb.schema("autowriter").table("items").update(
+            {"best_version_id": version_id}
+        ).eq("id", item_id).is_("best_version_id", None).execute()
+        return version_id
+
+    version_id = str(uuid.uuid4())
+    (
+        sb.schema("autowriter")
+        .table("versions")
+        .insert({
+            "id": version_id,
+            "item_id": item_id,
+            "version_num": 1,
+            "ai_engine": SPECIAL_BATCH_AI_ENGINE,
+            "title": (note.get("raw_content") or "")[:60],
+            "body": note.get("raw_content"),
+            "keywords": note.get("hit_blue_keywords") or [],
+            "feedback": None,
+            "images": [],
+            "token_usage": {},
+            "created_at": _iso_now(),
+        })
+        .execute()
+    )
+    (
+        sb.schema("autowriter")
+        .table("items")
+        .update({"best_version_id": version_id})
+        .eq("id", item_id)
+        .execute()
+    )
+    return version_id
+
+
+def _is_duplicate_error(exc: Exception) -> bool:
+    """Detect Postgres unique-constraint violations from supabase-py.
+
+    supabase-py wraps PostgREST errors; the SQLSTATE 23505 ends up either
+    in str(exc) or in exc.code. We check both rather than relying on the
+    fragile substring scan the old code used (which was easy to false-
+    positive on words like "duplicate" appearing in unrelated error text).
+    """
+    code = getattr(exc, "code", None) or getattr(exc, "pgcode", None)
+    if code == "23505":
+        return True
+    msg = str(exc)
+    return "23505" in msg or "duplicate key value violates" in msg
+
+
 def insert_synced_item(
     sb,
     note: dict,
@@ -139,24 +216,21 @@ def insert_synced_item(
     sync_user_id: str,
     dry_run: bool = False,
 ) -> tuple[str | None, bool]:
-    """Insert the autowriter.items row + version row.
+    """Insert the autowriter.items row + version row, idempotently.
 
     Returns (item_id, is_new):
-        - (uuid_str, True)   newly inserted
-        - (uuid_str, False)  already existed (dedup hit; we look up the
-                             existing item_id so caller can still write it
-                             into truth_vault.notes.synced_autowriter_item_id
-                             which is a UUID column)
-        - (None, False)      genuine error (re-raised before returning here)
+        - (uuid_str, True)   newly inserted (both item and version)
+        - (uuid_str, False)  item already existed; we still verify that
+                             a version + best_version_id are linked, and
+                             create them if not (orphan recovery).
+        - (None, False)      genuine error (re-raised before returning).
     """
     item_id = str(uuid.uuid4())
-    version_id = str(uuid.uuid4())
 
     if dry_run:
         logger.info(
-            "[dry-run] would insert item %s + version %s for note %s "
-            "(external_source_id=%s)",
-            item_id, version_id, note["note_id"], note["note_id"],
+            "[dry-run] would insert item %s for note %s (external_source_id=%s)",
+            item_id, note["note_id"], note["note_id"],
         )
         return item_id, True
 
@@ -177,59 +251,37 @@ def insert_synced_item(
             })
             .execute()
         )
+        is_new = True
     except Exception as exc:
-        msg = str(exc).lower()
-        if "duplicate" in msg or "unique" in msg or "23505" in msg:
-            # Already synced. Look up the existing item_id so mark_synced
-            # can write a real UUID into truth_vault.notes (audit issue 4).
-            existing = (
-                sb.schema("autowriter")
-                .table("items")
-                .select("id")
-                .eq("external_source", "truth_vault")
-                .eq("external_source_id", note["note_id"])
-                .limit(1)
-                .execute()
-            )
-            if existing.data:
-                existing_id = existing.data[0]["id"]
-                logger.info("Already synced (external_source_id=%s) → %s",
-                            note["note_id"], existing_id)
-                return existing_id, False
+        if not _is_duplicate_error(exc):
+            raise
+        # Dedup hit. Look up the existing item_id so we can:
+        #   1. write a real UUID into truth_vault.notes.synced_autowriter_item_id
+        #   2. verify the version + best_version_id link exist (orphan recovery)
+        existing = (
+            sb.schema("autowriter")
+            .table("items")
+            .select("id, best_version_id")
+            .eq("external_source", "truth_vault")
+            .eq("external_source_id", note["note_id"])
+            .limit(1)
+            .execute()
+        )
+        if not existing.data:
             # Theoretically impossible: insert said dup, but query finds nothing.
             # Re-raise so the operator notices the schema/index drift.
             raise
-        raise
+        item_id = existing.data[0]["id"]
+        logger.info(
+            "Item already exists for note %s → %s (verifying version link)",
+            note["note_id"], item_id,
+        )
+        is_new = False
 
-    # 2. Insert version
-    (
-        sb.schema("autowriter")
-        .table("versions")
-        .insert({
-            "id": version_id,
-            "item_id": item_id,
-            "version_num": 1,
-            "ai_engine": SPECIAL_BATCH_AI_ENGINE,
-            "title": (note.get("raw_content") or "")[:60],
-            "body": note.get("raw_content"),
-            "keywords": note.get("hit_blue_keywords") or [],
-            "feedback": None,
-            "images": [],
-            "token_usage": {},
-            "created_at": _iso_now(),
-        })
-        .execute()
-    )
-
-    # 3. Link best_version_id
-    (
-        sb.schema("autowriter")
-        .table("items")
-        .update({"best_version_id": version_id})
-        .eq("id", item_id)
-        .execute()
-    )
-    return item_id, True
+    # 2 + 3. Ensure version + best_version_id. Idempotent — runs whether
+    #        item was freshly inserted OR we recovered from a prior crash.
+    _ensure_version_and_link(sb, note, item_id)
+    return item_id, is_new
 
 
 def mark_synced(sb, note_id: str, item_id: str, dry_run: bool = False) -> None:

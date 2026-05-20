@@ -576,6 +576,25 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+
+-- ingested_at 语义是"第一次 ingest 时间"——UPSERT 时不应被覆盖。
+-- 客户端 (sync_feishu_notes) 每次 UPSERT 都会带 ingested_at = NOW()，
+-- 这个 BEFORE UPDATE trigger 强制还原成 OLD 值，让 schema 语义独立于
+-- 客户端实现。新插入时 trigger 不触发，DEFAULT NOW() 正常生效。
+CREATE OR REPLACE FUNCTION truth_vault.preserve_ingested_at() RETURNS TRIGGER AS $$
+BEGIN
+    IF OLD.ingested_at IS NOT NULL THEN
+        NEW.ingested_at := OLD.ingested_at;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS tv_notes_preserve_ingested_at ON truth_vault.notes;
+CREATE TRIGGER tv_notes_preserve_ingested_at
+BEFORE UPDATE ON truth_vault.notes
+FOR EACH ROW EXECUTE FUNCTION truth_vault.preserve_ingested_at();
+
 DROP TRIGGER IF EXISTS tv_projects_updated_at ON truth_vault.projects;
 CREATE TRIGGER tv_projects_updated_at 
 BEFORE UPDATE ON truth_vault.projects

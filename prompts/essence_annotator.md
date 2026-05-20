@@ -40,24 +40,56 @@ ESSENCE_MODEL_TIEBREAK = "claude-opus-4-7"      # 高分歧重标（贵 5x，更
 ### 调用方式
 
 ```python
+# Performance-related keywords. We check these only against parts of the
+# prompt we control (template + project_context), NOT against the
+# title/body which is the legitimate content to analyze — a note like
+# "我朋友圈刷到这条大爆款笔记" or "互动很高" would otherwise trigger a
+# false positive and refuse to annotate a perfectly fine post.
+PERFORMANCE_KEYWORDS = [
+    'tier', '大爆', '爆贴', 'impressions', 'reads', 'interactions',
+    '互动数', '阅读数', '曝光', 'performance', '实际表现',
+]
+TEMPLATE_LEAK_PLACEHOLDERS = [
+    '{performance', '{tier', '{interactions', '{reads', '{impressions',
+]
+
+
 def annotate_essence_mode_a(note, project, config):
     """Mode A: 盲标 — 严禁传入任何 performance 数据。
-    
+
     结果存入 notes 主表 essence 字段。
     """
+    # ── D-028 check 1: template integrity ─────────────────────────────
+    # The MODE_A_PROMPT constant must not carry any performance-related
+    # placeholder. This catches an authoring mistake (someone copied
+    # Mode B's template into Mode A).
+    for placeholder in TEMPLATE_LEAK_PLACEHOLDERS:
+        assert placeholder not in MODE_A_PROMPT, (
+            f"Mode A template has a performance placeholder: {placeholder!r}. "
+            f"This breaks D-028 — Mode A must be performance-blind."
+        )
+
+    # ── D-028 check 2: project_context block hygiene ──────────────────
+    # The project_context is rendered separately so we can scan it
+    # without false-positiving on the note's own title/body.
+    project_context = build_project_context(project, note)
+    for kw in PERFORMANCE_KEYWORDS:
+        assert kw not in project_context, (
+            f"project_context leaked performance signal: {kw!r}. "
+            f"Check build_project_context() — Mode A must not pass tier/"
+            f"impressions/reads/interactions through the context block."
+        )
+
+    # title / body / hashtags ARE allowed to contain words like
+    # "大爆款" or "互动" — that's the content under analysis, not signal
+    # about THIS note's performance.
     prompt = MODE_A_PROMPT.format(
-        project_context=build_project_context(project, note),
+        project_context=project_context,
         title=note['title'],
         body=(note['body'] or '')[:1500] + ('...（截断）' if len(note.get('body','')) > 1500 else ''),
         hashtags=', '.join(note.get('hashtags') or []) or '无',
     )
-    
-    # ⚠️ D-028 硬校验: prompt 中不能出现 performance 关键词
-    LEAKED_KEYWORDS = ['tier', '大爆', '爆贴', 'impressions', 'reads', 'interactions',
-                       '互动数', '阅读数', '曝光', 'performance', '表现']
-    for kw in LEAKED_KEYWORDS:
-        assert kw not in prompt, f"Label leakage detected! Mode A prompt contains '{kw}'"
-    
+
     response = anthropic.messages.create(
         model=config.ESSENCE_MODEL_PRIMARY,
         max_tokens=2000,
