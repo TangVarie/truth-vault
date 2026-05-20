@@ -58,15 +58,26 @@ SQL+LLM 标签     LightGBM          BERT+stacking    CATE 估计
 | 飞书导入器 | 手动 xlsx 上传 → 自动 lark-oapi | 启动期手动 |
 | LLM 标注 worker | Python asyncio + Claude API | 离线批量 |
 
-### 核心 API
+### 核心接口（D-024 双通道模式，不对外暴露 HTTP REST API）
+
+阶段 1 不做独立 API 服务。数据通过三个 sync 脚本流转，分析通过内部 views + Streamlit UI：
 
 ```
-POST /v1/projects                  # 新项目接入 (onboarding 完成后)
-POST /v1/notes/import              # 批量导入飞书表
-POST /v1/anchor/query              # 核心：给内容返回 anchor 报告
-GET  /v1/health/{project_id}       # 数据健康度
-POST /v1/audience/sync             # 同步蒲公英数据
+scripts/sync_feishu_notes_to_truth_vault.py        # 飞书 → TV（周期性）
+scripts/sync_truth_vault_baokuan_to_sanshengliubu.py  # TV 爆款 → ssll（周期性）
+scripts/sync_truth_vault_baokuan_to_autowriter_items.py  # TV 爆款 → aw（周期性）
+
+truth_vault.v_project_tier_summary    # 项目 tier 分布
+truth_vault.v_data_health             # 数据健康度
+truth_vault.v_flywheel_sync_status    # 飞轮 sync 状态
+
+Streamlit UI:
+  /health          # 数据健康面板（对应旧 GET /v1/health）
+  /anchor          # Anchor 报告浏览器（对应旧 POST /v1/anchor/query）
+  /quarantine      # 未声明字段 review
 ```
+
+> 阶段 2 启用预测模型后，可能引入 FastAPI 预测端点。但阶段 1 不需要。
 
 ### 时间表（2-3 个月）
 
@@ -77,7 +88,7 @@ POST /v1/audience/sync             # 同步蒲公英数据
 | 4-5 | 历史 3,400 条数据导入 + raw_extra 入库 |
 | 6 | 受控词表 v1.0 finalized |
 | 7-8 | Essence 全量回标（3,400 条）+ 抽检 |
-| 9 | sanshengliubu / autowriter 接入 anchor API |
+| 9 | 双通道 sync 验收 + Streamlit 健康面板 + anchor 报告浏览器 |
 | 10 | 蒲公英数据接入 pilot（NUC_1）|
 | 11-12 | 内部 Web UI 上线 + 数据健康面板 |
 
@@ -85,8 +96,8 @@ POST /v1/audience/sync             # 同步蒲公英数据
 
 - [ ] 至少 5 个项目完成 onboarding
 - [ ] 3,000+ 条笔记入库且带 essence 标注
-- [ ] anchor API 在 sanshengliubu 中接入并跑通
-- [ ] anchor API 在 autowriter 中接入并跑通
+- [ ] 双通道 sync 跑通（爆款自动流入 sanshengliubu.reference_samples + autowriter.items）
+- [ ] Streamlit 健康面板 + anchor 报告浏览器上线
 - [ ] 内部 Web UI 上线，数据健康面板可用
 
 ### ROI
@@ -98,46 +109,118 @@ POST /v1/audience/sync             # 同步蒲公英数据
 
 ---
 
-## 阶段 2 · 判别式分类
+## 阶段 2 · 判别式分类（按 intent 分轨 · D-012）
 
 ### 目标
 
-训练一个能预测"这条内容会爆吗"的分类器。从"描述历史" 升级到 "预测未来"。
+训练**两个独立的预测器**（不是一个统一模型），分别服务流量向和产品向内容。从"描述历史" 升级到 "按目的预测未来"。
 
 ### 数据门槛
 
 - 1k+ 单项目 / 3k+ 跨项目
 - 当前已超过 —— 跨项目 3,400 条
+- 按 intent 分组后样本量分别约 2,500 条 (traffic) + 900 条 (conversion)
 - 但有些品类样本太少（如清森河谷只有 QSHG_1 一期），单项目精度受限
 
-### 算法
+### 为什么必须分轨
 
-**LightGBM 三分类**（趴 / 爆 / 大爆）
-- Features 来自 [02-schema-v1.md](02-schema-v1.md) 三层全部
-- Focal loss 处理类别不平衡（趴 90% / 爆 10%）
-- 项目维度 cross-validation（同项目数据不能同时在 train 和 test）
+D-012 关键论证：
+- 流量向天然爆款率 10-15%，产品向天然爆款率 < 1%
+- 统一模型把 intent 作为 feature 输入 → 学到错误信号"产品向 = 一定不爆"
+- 错误信号污染对身份导向内容的判断
+- 评估指标也不同：traffic 看 P(爆)，conversion 看蓝词命中率
+- 详见 [DECISIONS.md](../DECISIONS.md) D-012
+
+### 算法 · 两套独立模型
+
+**模型 1 · explosion_predictor（for intent=traffic）**:
+- 任务: 三分类（趴 / 爆 / 大爆）
+- 算法: LightGBM
+- 训练正样本: tier ∈ {爆, 大爆}
+- 训练负样本: tier ∈ {趴, 删除}（删除作为强负样本加权）
+- 特征侧重: essence 层 (emotional_lever, human_truth_archetype) + surface 钩子 + audience profile
+- **必须包含**: account_id 作为 categorical feature（D-020 防止账号能力混淆）
+- Focal loss 处理类别不平衡（爆款 10%）
+- 评估指标: AUC / Precision@K
+
+**模型 2 · conversion_predictor（for intent=conversion）**:
+- 任务: 回归（蓝词命中率）+ 分类（高互动 vs 低互动）
+- 算法: LightGBM regression + classification
+- 训练目标: hit_blue_keywords / target_blue_keywords + interaction_rate
+- 特征侧重: surface 层（产品描述清晰度、卖点呈现）+ content_format 类型
+- 评估指标: MAE on 蓝词命中率 / AUC on 互动率
 
 ### 训练管道
 
 - 每周一次 retrain
-- 模型版本管理（ml_models 表）
+- 模型版本管理（ml_models 表，在 schema v1.2 加）
 - 新模型 AUC 没超过旧模型不上线
+- 按 intent 分轨意味着：traffic 模型升级不影响 conversion 模型，反之亦然
 
-### 新增 API
+### 新增 API（两套独立 endpoint）
 
-```
-POST /v1/predict/tier       # 给一段内容 → P(爆 / 中 / 趴)
-POST /v1/predict/compare    # 给两段内容 → P(A 比 B 好)
-                            #   ← autowriter 二选一直接调
+```http
+# 流量向预测
+POST /v1/predict/explosion
+{
+  "candidate": {...},
+  "intent": "traffic",
+  "project_id": "..."
+}
+→ {
+  "p_bao": 0.34,
+  "p_dabao": 0.08,
+  "confidence": 0.71,
+  "features_attribution": {...},
+  "model_version": "explosion_v3"
+}
+
+# 产品向预测
+POST /v1/predict/conversion
+{
+  "candidate": {...},
+  "intent": "conversion",
+  "project_id": "..."
+}
+→ {
+  "p_blue_keyword_hit": 0.62,
+  "predicted_interaction_rate": 0.045,
+  "confidence": 0.68,
+  "model_version": "conversion_v2"
+}
+
+# 候选对比（autowriter 二选一调用）
+POST /v1/predict/compare
+{
+  "candidate_a": {...},
+  "candidate_b": {...},
+  "intent": "traffic" | "conversion",
+  "project_id": "..."
+}
+→ {
+  "winner": "a",
+  "confidence": 0.71,
+  "p_a": 0.34,
+  "p_b": 0.18
+}
 ```
 
 ### 下游接入升级
 
-- **autowriter**: 从 "anchor 报告 + Claude 评委" → "分类器置信度 + Claude 评委"
-  - P(A better) > 0.65 → 直接选 A，跳过 Claude（省 token、提速）
-  - 模糊地带 → 走 Claude 评委
-- **sanshengliubu vibe_critic**: 加入"分类器预测"作为判断 anchor
-- **写手平台**: 提交内容时直接给 P(爆 / 中 / 趴) 分布
+- **autowriter**: 调 explosion 或 conversion 预测器（看候选 intent），不是一刀切的"P(爆)"
+  - traffic 候选: P(爆) > 0.4 → 推荐发布
+  - conversion 候选: P(蓝词命中) > 0.6 → 推荐发布
+  - 不同 intent 的候选不直接对比（评估目标不同）
+- **sanshengliubu vibe_critic**: 加入分类器预测作为 anchor
+- **写手平台**: 提交内容时按 intent 给对应模型预测分布
+
+### 评估时的"分组评估"原则
+
+每周 retrain 后的模型质量评估：
+- traffic 模型: 在 traffic 测试集上看 AUC
+- conversion 模型: 在 conversion 测试集上看 MAE
+- **不混合评估** —— 混合的 AUC 数字误导（traffic 容易看着"高")
+
 
 ### 时间（+3-6 月）
 

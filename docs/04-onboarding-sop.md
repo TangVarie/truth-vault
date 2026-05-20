@@ -111,14 +111,16 @@ direction_decomposition:
 | 反差与破圈 (RIO) | 反差破圈 | 通用 | 意外感 |
 | 提问与红黑榜 (RIO) | 提问求助 | 通用 | 选品困惑 |
 | 产品直给型 (WTG) | 直给推荐 | 通用 | 选品困惑 |
-| 直播切片 (WTG) | 场景植入 | 直播观众 | (依产品) |
-| NRT疗法引导 (NRT) | 认知重构 | 通用戒烟者 | NRT 科普 |
+| 直播切片 (WTG) | 场景植入 | 通用 | (依产品) |
+| NRT疗法引导 (NRT) | 认知重构 | 通用 | NRT 科普 |
 | 女性自发 (NRT) | 情感叙事 | 年轻女性 | 戒烟动机 |
 | 为爱助戒 (NRT) | 情感叙事 | 伴侣家人 | 为伴侣戒烟 |
-| 持妆问题 (HXZ) | 场景植入 | 30-40 女性 | 持妆需求 |
-| 年龄问题 (HXZ) | 场景植入 | 35+ 女性 | 衰老焦虑 |
-| 任何手术后恢复相关 (NUC) | 场景植入 | 病患家属 | 术后营养 |
-| 糖尿病相关 (NUC) | 认知重构 | 中老年慢病 | 血糖管理 |
+| 持妆问题 (HXZ) | 场景植入 | 中年女性 | 持妆需求 |
+| 年龄问题 (HXZ) | 场景植入 | 中年女性 | 衰老焦虑 |
+| 任何手术后恢复相关 (NUC) | 场景植入 | 病患家属, 宝妈 | 术后营养 |
+| 糖尿病相关 (NUC) | 认知重构 | 病患家属 | 血糖管理 |
+
+⚠️ **target_audience 必须从 [docs/05-controlled-vocab.md](05-controlled-vocab.md) 的 11 个闭集值中选**：年轻女性 / 中年女性 / 银发女性 / 年轻男性 / 中年男性 / 银发男性 / 学生党 / 宝妈 / 伴侣家人 / 病患家属 / 通用
 
 **NRT 特殊：组合标签**
 
@@ -228,7 +230,7 @@ end_date: 2026-XX-XX
 
 # 字段映射
 field_mapping:
-  素人编号: note_id_suffix
+  素人编号: account_id              # → truth_vault.accounts(account_id)
   发布时间: publish_time
   发布笔记: _intent_raw
   是否发布: _published_status
@@ -249,23 +251,30 @@ intent_mapping:
   流量帖: traffic
   直给笔记: conversion
 
+# 注意: NUC_1 使用 D-014 LLM 子分类机制，飞书方向粗粒度 → 子方向细化
+# 完整定稿版见 [../mappings/NUC_phase1.yaml](../mappings/NUC_phase1.yaml)
+# 简化版示例（不展示 sub_directions 细节）：
 direction_decomposition:
   "营养保健代餐相关":
-    content_format: 场景植入
-    target_audience: ["中老年", "病患家属"]
-    user_pain_point: 营养摄入不足
+    # 实际有 sub_directions: 健身减脂 / 关心父母营养 / 其他
+    # 此处简化为粗集合 target_audience
+    content_format: 情感叙事
+    target_audience: ["年轻女性", "病患家属"]
+    user_pain_point: 营养摄入需求（健身减脂 + 父母饮食）
   "任何手术后恢复相关":
-    content_format: 场景植入
-    target_audience: ["病患家属", "产后女性"]
-    user_pain_point: 术后营养
+    # 实际有 sub_directions: 产后宝妈 / 照顾家人手术 / 其他
+    content_format: 情感叙事
+    target_audience: ["宝妈", "病患家属"]
+    user_pain_point: 术后/产后营养
   "糖尿病相关":
-    content_format: 认知重构
-    target_audience: ["中老年慢病"]
-    user_pain_point: 血糖管理
-  "抗癌放化疗相关":
-    content_format: 场景植入
+    content_format: 情感叙事
     target_audience: ["病患家属"]
-    user_pain_point: 化疗副作用与营养
+    user_pain_point: 糖尿病饮食与营养平衡
+  "抗癌放化疗相关":
+    # 注: semantic_redefined_as: 重症慢病家属（D-015）
+    content_format: 情感叙事
+    target_audience: ["病患家属"]
+    user_pain_point: 重症/慢病照顾营养支持
 
 tier_extraction:
   source: 状态字段

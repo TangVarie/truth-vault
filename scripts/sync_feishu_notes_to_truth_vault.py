@@ -1,0 +1,475 @@
+"""
+sync_feishu_notes_to_truth_vault.py
+═══════════════════════════════════════════════════════════════════════════
+
+把指定项目的飞书多维表格数据 sync 到 truth_vault.notes。
+
+用法:
+    python sync_feishu_notes_to_truth_vault.py NUC_phase1
+    python sync_feishu_notes_to_truth_vault.py NRT_phase3 --dry-run
+    python sync_feishu_notes_to_truth_vault.py NUC_phase1 --limit 10
+
+环境变量:
+    SUPABASE_URL                    （共享 Supabase 实例 URL）
+    SUPABASE_SERVICE_ROLE_KEY       （service_role，绕过 RLS）
+    FEISHU_APP_ID                   （飞书应用 ID）
+    FEISHU_APP_SECRET               （飞书应用 Secret）
+
+mapping yaml 必须包含 sync_config 段提供飞书表定位:
+    sync_config:
+      feishu_app_token: bascnXXXXXXXXXXXXX
+      feishu_table_id:  tblXXXXXXXXXX
+      feishu_view_id:   vewXXXXXXXXXX   # 可选；不填用 default view
+
+幂等性:
+    note_id 是 PRIMARY KEY (= f"{project_id}_{feishu_record_id}")，
+    使用 UPSERT (insert ... on_conflict='note_id') 重跑安全。
+    指标会重新写一份 metric_snapshot（window_label='ad_hoc'），
+    UNIQUE(note_id, window_label, source='feishu_import') 防重复。
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+from typing import Any, Iterator
+
+import requests
+from supabase import Client
+
+from _common import (
+    ensure_account_exists,
+    ensure_project_exists,
+    extract_tier,
+    get_supabase_client,
+    load_mapping,
+    make_note_id,
+    map_intent,
+    parse_array,
+    parse_numeric,
+    parse_feishu_date,
+    quarantine_record,
+    setup_logger,
+    _iso_now,
+)
+
+
+logger = setup_logger("sync_feishu_notes")
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Feishu Bitable client
+# ═════════════════════════════════════════════════════════════════════════
+
+class FeishuClient:
+    """Minimal Feishu Bitable read-only client.
+
+    Caches tenant_access_token until it expires.  Not thread-safe, single
+    process only.  For higher throughput see Feishu Open API rate limits
+    (default 50 QPS per app for Bitable read).
+    """
+
+    AUTH_URL = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
+    BITABLE_RECORDS_URL = (
+        "https://open.feishu.cn/open-apis/bitable/v1/apps/"
+        "{app_token}/tables/{table_id}/records"
+    )
+
+    def __init__(self, app_id: str, app_secret: str):
+        self.app_id = app_id
+        self.app_secret = app_secret
+        self._token: str | None = None
+        self._token_expires_at: float = 0
+
+    def _ensure_token(self) -> str:
+        if self._token and time.time() < self._token_expires_at - 60:
+            return self._token
+        r = requests.post(
+            self.AUTH_URL,
+            json={"app_id": self.app_id, "app_secret": self.app_secret},
+            timeout=10,
+        )
+        r.raise_for_status()
+        data = r.json()
+        if data.get("code") != 0:
+            raise RuntimeError(f"Feishu auth failed: {data}")
+        self._token = data["tenant_access_token"]
+        self._token_expires_at = time.time() + data.get("expire", 7200)
+        return self._token
+
+    def list_records(
+        self,
+        app_token: str,
+        table_id: str,
+        view_id: str | None = None,
+        page_size: int = 100,
+    ) -> Iterator[dict[str, Any]]:
+        """Yield records from a Feishu Bitable, paginating through all pages.
+
+        Each yielded dict has at least:
+            record_id: str         (飞书自动 ID, used as feishu_record_id)
+            fields: dict           (列名 → 单元格值; 飞书 API 原生格式)
+        """
+        token = self._ensure_token()
+        url = self.BITABLE_RECORDS_URL.format(app_token=app_token, table_id=table_id)
+        headers = {"Authorization": f"Bearer {token}"}
+        params: dict[str, Any] = {"page_size": page_size}
+        if view_id:
+            params["view_id"] = view_id
+
+        while True:
+            r = requests.get(url, headers=headers, params=params, timeout=30)
+            if r.status_code == 401:
+                # token expired mid-pagination; refresh and retry once
+                self._token = None
+                token = self._ensure_token()
+                headers["Authorization"] = f"Bearer {token}"
+                r = requests.get(url, headers=headers, params=params, timeout=30)
+            r.raise_for_status()
+            data = r.json()
+            if data.get("code") != 0:
+                raise RuntimeError(f"Feishu list_records error: {data}")
+
+            for item in data["data"].get("items", []):
+                yield item
+
+            if not data["data"].get("has_more"):
+                break
+            params["page_token"] = data["data"]["page_token"]
+            # gentle rate limit
+            time.sleep(0.1)
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Mapping-driven row transformation
+# ═════════════════════════════════════════════════════════════════════════
+
+def transform_row(
+    mapping: dict,
+    feishu_record_id: str,
+    raw_fields: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    """Transform a Feishu row into:
+        - note_dict: row ready for truth_vault.notes UPSERT
+        - metric_dict: row ready for truth_vault.metric_snapshots INSERT (or None)
+        - undeclared_fields: column names not in field_mapping AND not in
+          project_specific_fields_to_raw_extra; trigger quarantine if non-empty.
+    """
+    field_mapping = mapping["field_mapping"]
+    fields_to_raw_extra = set(mapping.get("project_specific_fields_to_raw_extra", []))
+    declared = set(field_mapping.keys()) | fields_to_raw_extra
+
+    # Allow control fields that are always present in Feishu API responses
+    # but not user-defined columns
+    ignored_meta_keys = {"_record_id", "_created_time", "_last_modified_time"}
+
+    undeclared: list[str] = [
+        col for col in raw_fields.keys()
+        if col not in declared and col not in ignored_meta_keys
+    ]
+
+    note: dict[str, Any] = {
+        "note_id": make_note_id(mapping["project_id"], feishu_record_id),
+        "project_id": mapping["project_id"],
+        "platform": mapping.get("platform", "xiaohongshu"),
+        "feishu_record_id": feishu_record_id,
+        "ingested_at": _iso_now(),
+    }
+    intermediates: dict[str, Any] = {}
+    raw_extra: dict[str, Any] = {}
+
+    for feishu_col, schema_target in field_mapping.items():
+        if feishu_col not in raw_fields:
+            continue
+        value = raw_fields[feishu_col]
+        if schema_target.startswith("_"):
+            intermediates[schema_target] = value
+        else:
+            note[schema_target] = _coerce_value(schema_target, value)
+
+    # Project-specific allowlist → raw_extra
+    for feishu_col in fields_to_raw_extra:
+        if feishu_col in raw_fields:
+            raw_extra[feishu_col] = raw_fields[feishu_col]
+    if raw_extra:
+        note["raw_extra"] = raw_extra
+
+    # ── Secondary processing per mapping ──
+    consumed_intermediates: set[str] = set()
+    if "_status_raw" in intermediates and "tier_extraction" in mapping:
+        note["tier"] = extract_tier(
+            intermediates["_status_raw"],
+            mapping["tier_extraction"].get("rules", []),
+        )
+        consumed_intermediates.add("_status_raw")
+    if "_intent_raw" in intermediates and "intent_mapping" in mapping:
+        note["intent"] = map_intent(
+            intermediates["_intent_raw"],
+            mapping["intent_mapping"],
+        )
+        consumed_intermediates.add("_intent_raw")
+    if "_direction_raw" in intermediates:
+        # direction_decomposition typically requires LLM classification (D-014).
+        # We don't run the LLM here — leave the raw direction and let a
+        # separate annotation pass handle it.  Store under raw_extra so it
+        # isn't silently dropped.
+        note.setdefault("raw_extra", {})["_direction_raw"] = intermediates["_direction_raw"]
+        consumed_intermediates.add("_direction_raw")
+
+    # Any intermediate that wasn't consumed above (e.g. _account_name,
+    # _account_followers, _comment_text, _comment_text_persona) goes to
+    # raw_extra so it doesn't get silently dropped.  Future code can
+    # process them out of intermediates and write to dedicated tables
+    # (e.g. accounts / account_snapshots / comments).
+    leftover = {k: v for k, v in intermediates.items() if k not in consumed_intermediates}
+    if leftover:
+        note.setdefault("raw_extra", {}).update(leftover)
+
+    # ── metric_snapshot from impressions/reads/interactions ──
+    metric: dict[str, Any] = {}
+    metric_cols = ("impressions", "reads", "interactions",
+                   "likes", "saves", "shares", "comments_count",
+                   "hit_blue_keywords", "search_rank", "keyword_rank")
+    if any(c in note for c in metric_cols):
+        metric = {
+            "note_id": note["note_id"],
+            "collected_at": _iso_now(),
+            "window_label": "ad_hoc",        # 历史飞书数据没有时间窗信息
+            "source": "feishu_import",
+            **{c: note[c] for c in metric_cols if c in note},
+        }
+
+    return note, metric, undeclared
+
+
+_NUMERIC_COLS = {
+    "impressions", "reads", "interactions",
+    "likes", "saves", "shares", "comments_count",
+    "search_rank", "keyword_rank",
+}
+
+# Columns whose schema type is TEXT[] — must be parsed as arrays even if
+# Feishu returned a comma-separated string (some Bitable columns are plain
+# text, not multi-select).  parse_array() handles both shapes uniformly.
+# This set should mirror every TEXT[] column in truth_vault.notes so we
+# don't ship a string into a TEXT[] column even if a project's mapping
+# yaml maps directly there (audit round 5 issue #2).
+_ARRAY_COLS = {
+    "hit_blue_keywords", "target_blue_keywords",
+    "hashtags", "tags",
+    "target_audience",
+    "human_truth_archetype",
+    "trend_dependencies",
+}
+
+
+def _coerce_value(target_col: str, value: Any) -> Any:
+    """Cast Feishu cell values to types friendly to Postgres.
+
+    Feishu returns:
+      - Text/Number cells: str/int/float/None
+      - Multi-select / link cells: list of dicts with 'text' key
+      - Date cells: int (milliseconds since epoch)
+    We collapse the obvious cases.  Extend per project as needed.
+
+    For numeric columns we apply parse_numeric (handles Chinese commas,
+    full-width digits, '/' / '-' / '无' sentinel tokens).  For array
+    columns we apply parse_array (handles both list[dict{text}] and
+    delimiter-separated text strings).  For publish_time we apply
+    parse_feishu_date (accepts ms epoch or ISO string).
+    """
+    if value is None:
+        return None
+
+    # Numeric columns — parse robustly, may return None for sentinel values
+    if target_col in _NUMERIC_COLS:
+        n = parse_numeric(value)
+        if n is None:
+            return None
+        # If the column is INT-shaped, cast.  Postgres will round/error
+        # on non-integer values anyway; cast here for clarity.
+        return int(n) if n == int(n) else n
+
+    # Array columns — must be list[str] for TEXT[] target.
+    # Handle both list[dict{text:...}] AND "a, b, c" / "a\nb\nc" strings
+    # (some Bitable columns are plain text, not multi-select).
+    if target_col in _ARRAY_COLS:
+        return parse_array(value)
+
+    # Date column — handle 飞书 ms epoch
+    if target_col == "publish_time":
+        return parse_feishu_date(value)
+
+    # Multi-select / link / attachment cells: list of dicts with 'text'
+    # (for non-array target columns we collapse to a comma-separated string)
+    if isinstance(value, list):
+        if all(isinstance(x, dict) and "text" in x for x in value):
+            return ", ".join(x["text"] for x in value)
+        return value
+
+    # Single-select / user cell: dict with 'text'
+    if isinstance(value, dict) and "text" in value:
+        return value["text"]
+
+    return value
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Upsert into truth_vault
+# ═════════════════════════════════════════════════════════════════════════
+
+def upsert_note(client: Client, note: dict[str, Any], dry_run: bool = False) -> None:
+    if dry_run:
+        logger.info("[dry-run] would upsert note_id=%s", note["note_id"])
+        return
+    (
+        client.schema("truth_vault")
+        .table("notes")
+        .upsert(note, on_conflict="note_id")
+        .execute()
+    )
+
+
+def upsert_metric(client: Client, metric: dict[str, Any], dry_run: bool = False) -> None:
+    if not metric:
+        return
+    if dry_run:
+        logger.info(
+            "[dry-run] would upsert metric_snapshot note_id=%s window=%s",
+            metric["note_id"], metric["window_label"],
+        )
+        return
+    # UNIQUE(note_id, window_label, source) lets us upsert on the composite key
+    (
+        client.schema("truth_vault")
+        .table("metric_snapshots")
+        .upsert(metric, on_conflict="note_id,window_label,source")
+        .execute()
+    )
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Main
+# ═════════════════════════════════════════════════════════════════════════
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("project_id", help="e.g. NUC_phase1")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Print actions without writing to Supabase")
+    parser.add_argument("--limit", type=int, default=0,
+                        help="Stop after N records (debug)")
+    args = parser.parse_args()
+
+    mapping = load_mapping(args.project_id)
+    sync_config = mapping.get("sync_config") or {}
+
+    # source_type discriminator: this script only handles feishu_api.
+    # manual_xlsx ingest is not in scope — would require a different
+    # ingest path (read .xlsx → coerce → upsert).  Fail fast and loud
+    # so the operator doesn't run this script against a manual project.
+    source_type = sync_config.get("source_type", "feishu_api")
+    if source_type != "feishu_api":
+        logger.error(
+            "Mapping yaml has sync_config.source_type=%r. This script only "
+            "handles 'feishu_api'.  For 'manual_xlsx' projects you need a "
+            "separate ingest path (not included in this package).",
+            source_type,
+        )
+        return 2
+
+    app_token = sync_config.get("feishu_app_token") or os.environ.get("FEISHU_APP_TOKEN")
+    table_id  = sync_config.get("feishu_table_id")  or os.environ.get("FEISHU_TABLE_ID")
+    view_id   = sync_config.get("feishu_view_id")
+    if not app_token or not table_id:
+        logger.error(
+            "Missing feishu_app_token / feishu_table_id. Set them in "
+            "mapping yaml's sync_config block, or pass FEISHU_APP_TOKEN / "
+            "FEISHU_TABLE_ID env vars."
+        )
+        return 2
+
+    app_id = os.environ.get("FEISHU_APP_ID")
+    app_secret = os.environ.get("FEISHU_APP_SECRET")
+    if not app_id or not app_secret:
+        logger.error("FEISHU_APP_ID and FEISHU_APP_SECRET env vars must be set.")
+        return 2
+
+    fs = FeishuClient(app_id, app_secret)
+    sb = get_supabase_client()
+
+    # Make sure truth_vault.projects has the row before any notes go in —
+    # `notes.project_id` has a FK to it and would reject every insert
+    # without this (audit issue 2 from session #8 round 4).
+    if not args.dry_run:
+        ensure_project_exists(sb, mapping)
+
+    stats = {"total": 0, "upserted": 0, "quarantined": 0, "errors": 0}
+    for item in fs.list_records(app_token, table_id, view_id):
+        if args.limit and stats["total"] >= args.limit:
+            break
+        stats["total"] += 1
+        feishu_record_id = item.get("record_id", "")
+        raw_fields = item.get("fields", {})
+        try:
+            note, metric, undeclared = transform_row(mapping, feishu_record_id, raw_fields)
+            if undeclared:
+                logger.warning(
+                    "record_id=%s has undeclared fields: %s → quarantine",
+                    feishu_record_id, undeclared,
+                )
+                if not args.dry_run:
+                    quarantine_record(
+                        sb, mapping["project_id"], feishu_record_id,
+                        raw_fields, undeclared, reason="undeclared_fields",
+                    )
+                stats["quarantined"] += 1
+                continue  # Don't upsert; require human review first
+
+            # Required-field check: truth_vault.notes has NOT NULL constraints
+            # on raw_content (the actual note text), and INSERT would crash
+            # mid-batch if a row from Feishu is blank or malformed.  Quarantine
+            # instead so the operator sees the problematic row alongside the
+            # undeclared-fields cases, rather than the whole sync failing.
+            REQUIRED_NOTE_FIELDS = ("raw_content",)
+            missing = [c for c in REQUIRED_NOTE_FIELDS if not note.get(c)]
+            if missing:
+                logger.warning(
+                    "record_id=%s missing required fields: %s → quarantine",
+                    feishu_record_id, missing,
+                )
+                if not args.dry_run:
+                    quarantine_record(
+                        sb, mapping["project_id"], feishu_record_id,
+                        raw_fields, missing,
+                        reason=f"missing_required:{','.join(missing)}",
+                    )
+                stats["quarantined"] += 1
+                continue
+
+            # Ensure the account row exists before inserting the note —
+            # notes.account_id has a FK to accounts.account_id; without
+            # this upsert, the insert below would fail with FK violation
+            # for any new 素人编号 (audit issue 2).
+            if not args.dry_run:
+                ensure_account_exists(
+                    sb,
+                    note.get("account_id"),
+                    platform=note.get("platform", "xiaohongshu"),
+                )
+            upsert_note(sb, note, dry_run=args.dry_run)
+            upsert_metric(sb, metric, dry_run=args.dry_run)
+            stats["upserted"] += 1
+        except Exception as exc:
+            logger.exception("record_id=%s failed: %s", feishu_record_id, exc)
+            stats["errors"] += 1
+
+    logger.info("Done: %s", json.dumps(stats, ensure_ascii=False))
+    return 0 if stats["errors"] == 0 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

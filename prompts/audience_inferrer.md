@@ -8,14 +8,14 @@
 
 ## 模型
 
-- 主推断: Claude Sonnet 4
-- 高分歧重跑: Claude Opus 4.7
+- 主推断: 配置层指定（默认 claude-sonnet-4-20250514，上线前核实最新 model id）
+- 高分歧重跑: 配置层指定（默认 claude-opus-4-6-20250610，上线前核实最新 model id）
 
 ## 调用方式
 
 ```python
 response = anthropic.messages.create(
-    model="claude-sonnet-4",
+    model=config.ESSENCE_MODEL_PRIMARY,  # 见 .env / config.py
     max_tokens=1200,
     messages=[
         {"role": "user", "content": PROMPT.format(

@@ -182,9 +182,9 @@ SELECT
     COUNT(*) as total,
     SUM(CASE WHEN c.age_match THEN 1 ELSE 0 END) as matches,
     SUM(CASE WHEN c.age_match THEN 1 ELSE 0 END)::FLOAT / COUNT(*) as accuracy
-FROM calibration_records c
-JOIN notes n ON c.note_id = n.note_id
-JOIN projects p ON n.project_id = p.project_id
+FROM truth_vault.audience_calibrations c
+JOIN truth_vault.notes n ON c.note_id = n.note_id
+JOIN truth_vault.projects p ON n.project_id = p.project_id
 GROUP BY p.category;
 ```
 

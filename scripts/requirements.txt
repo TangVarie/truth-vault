@@ -1,0 +1,6 @@
+# Truth Vault sync scripts dependencies
+# Tested on Python 3.10+
+
+supabase>=2.4.0,<3.0.0
+pyyaml>=6.0
+requests>=2.31.0

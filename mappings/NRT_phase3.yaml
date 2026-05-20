@@ -21,7 +21,8 @@ end_date: null    # 待项目经理补
 
 # ── 字段映射 ──
 field_mapping:
-  素人编号: note_id_suffix
+  # account_id → truth_vault.accounts FK; note_id 由 sync 脚本按 {project_id}_{feishu_record_id} 生成
+  素人编号: account_id
   发布时间: publish_time
   发布笔记: _intent_raw
   方向: _direction_raw
@@ -290,8 +291,10 @@ project_specific_fields_to_raw_extra:
 # ════════════════════════════════════════════════════════════════════
 
 sync_config:
-  source_type: manual_xlsx
-  source_table_token: null
+  source_type: feishu_api
+  feishu_app_token: null
+  feishu_table_id: null
+  feishu_view_id: null
   sync_interval: on_demand
 
 # ════════════════════════════════════════════════════════════════════

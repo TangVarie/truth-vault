@@ -34,11 +34,19 @@ Truth Vault **永远不会**：
 
 ## 三个绝对不能违反的设计原则
 
-### 原则 1：管家做查询，不做判断
+### 原则 1：管家做查询，不做判断（Layer 1）
 
-智能管家的"智能"只能用在元层 —— 用什么数据、怎么查、怎么对比。**不允许做内容质量判断**。判断权永远留给 persona / critic / 人类写手。
+智能管家的"智能"只能用在元层 —— 用什么数据、怎么查、怎么对比。**Truth Vault Core (Layer 1) 不允许做内容质量判断**。
 
-参见: [docs/01-architecture.md](docs/01-architecture.md)
+注意"管家不做判断"严格指 Layer 1。整个系统四层架构中（[docs/09-system-integration.md](docs/09-system-integration.md)）：
+- **Layer 1 · Truth Vault Core**: 只存数据 / 出 anchor（管家在这里）
+- **Layer 2 · Predictor**: 基于模型输出 P(爆) / 风险分（D-012 按 intent 分轨）
+- **Layer 3 · Persona / Critic / Human**: 最终内容判断
+- **Layer 4 · Optimization**: prompt 方向反推
+
+判断权由 Layer 3 持有，Layer 2 提供结构化预测，Layer 1 提供事实。
+
+参见: [docs/01-architecture.md](docs/01-architecture.md) · [docs/09-system-integration.md](docs/09-system-integration.md) · DECISIONS D-004, D-019
 
 ### 原则 2：三层架构（Surface / Essence / Audience）
 
@@ -89,16 +97,18 @@ Schema 起点决定上限。在 v1 第一版就要包含 essence 层和 audience
 | [CURRENT_STATE.md](CURRENT_STATE.md) | 当前进度快照（每次会话更新） |
 | [DECISIONS.md](DECISIONS.md) | 决策日志（只追加） |
 | [docs/01-architecture.md](docs/01-architecture.md) | 三层架构完整论证 |
-| [docs/02-schema-v1.md](docs/02-schema-v1.md) | 数据库 schema |
+| [docs/02-schema-v1.md](docs/02-schema-v1.md) | 数据库 schema (v1.2) |
 | [docs/03-mapping-protocol.md](docs/03-mapping-protocol.md) | 飞书表 → 数据库的映射协议 |
 | [docs/04-onboarding-sop.md](docs/04-onboarding-sop.md) | 新项目接入 SOP |
 | [docs/05-controlled-vocab.md](docs/05-controlled-vocab.md) | 受控词表 |
-| [docs/06-essence-annotation.md](docs/06-essence-annotation.md) | LLM 标注协议 |
+| [docs/06-essence-annotation.md](docs/06-essence-annotation.md) | LLM 标注协议（含双模式） |
 | [docs/07-audience-data.md](docs/07-audience-data.md) | 蒲公英后台数据接入 |
 | [docs/08-evolution-roadmap.md](docs/08-evolution-roadmap.md) | 四阶段进化路径 |
+| **[docs/09-system-integration.md](docs/09-system-integration.md)** | **⭐ 系统集成架构（必读）** |
 | [docs/99-rejected-ideas.md](docs/99-rejected-ideas.md) | 走过的弯路（重要） |
 | [data-analysis/10-project-audit.md](data-analysis/10-project-audit.md) | 10 个项目的初始数据审计 |
-| [schemas/notes_v1.sql](schemas/notes_v1.sql) | 可执行 SQL |
+| [schemas/notes_v1_2.sql](schemas/notes_v1_2.sql) | 可执行 SQL · 表+内部 views (v1.2) |
+| [schemas/notes_v1_2_cross_schema_views.sql](schemas/notes_v1_2_cross_schema_views.sql) | 跨 schema views（三个 schema 就绪后执行）|
 
 ## 项目维护者
 

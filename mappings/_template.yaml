@@ -29,11 +29,17 @@ end_date: 2026-XX-XX            # 可填预估或留空
 # 
 # - 以 _ 开头的是中间变量，进入二次处理
 # - 其他直接映射到 notes 表的对应字段
-# - 飞书表里未列出的字段会自动进 raw_extra（除非进 project_specific_fields_to_raw_extra 显式列）
+# - 在 field_mapping 和 project_specific_fields_to_raw_extra 中
+#   声明过的字段才会入库。
+# - **未声明的新字段不会静默进 raw_extra**——按 D-021 它们整行进入
+#   `truth_vault.undeclared_fields_quarantine` 等待人工 review。
+#   这样飞书表新加字段时不会被默默吞掉。
 
 field_mapping:
   # ── 标识 ──
-  素人编号: note_id_suffix
+  # account_id → truth_vault.accounts(account_id) FK
+  # note_id 不在这里映射，由 sync 脚本按 f"{project_id}_{feishu_record_id}" 生成
+  素人编号: account_id
   
   # ── 内容 ──
   文案: raw_content
@@ -64,8 +70,14 @@ field_mapping:
   随贴评论素人: _comment_text_persona    # 进 comments 表
   
   # ── 账号信息 ──
-  帐号昵称: account_name
-  粉丝数: account_followers              # B/C 家族这里没有，需后续补录
+  # 注: truth_vault.notes 表没有 account_name / account_followers 直接列，
+  # 这两个字段属于 truth_vault.accounts（账号实体）的属性。
+  # 当前 sync 脚本 v1 不会拆分这两列到 accounts 表（只 upsert account_id），
+  # 所以这里用下划线前缀变量名 → 进 raw_extra 而不是 notes 列，避免插入报错。
+  # 后续版本如果加了 account_name / account_followers 到 truth_vault.accounts，
+  # 改成 _account_name → accounts 表的两步处理。
+  帐号昵称: _account_name                # 进 raw_extra；未来扩展进 accounts
+  粉丝数: _account_followers             # 进 raw_extra；未来扩展进 account_snapshots
   
   # ── 意图 ──
   发布笔记: _intent_raw                  # 走 intent_mapping
@@ -187,9 +199,14 @@ compliance:
 # 项目专属字段（进 raw_extra）[OPTIONAL]
 # ════════════════════════════════════════════════════════════════════
 # 
-# 飞书表里的项目独有字段，全部列在这里
-# 这些字段不丢，永远存在 notes.raw_extra JSONB 里
-# 即使当时不知道有什么用，将来可能发现价值
+# 这是一个 **allowlist** —— 飞书表里的项目独有字段，必须显式列在这里
+# 才会被收入 notes.raw_extra JSONB。
+# 
+# 未列入这里且未在 field_mapping 中映射的字段 → 整行进 quarantine（D-021），
+# 不会静默进库。设计目的：飞书表加新字段时，团队必须显式决定它是入库
+# 还是忽略，而不是默默吞下导致后续 schema 漂移。
+# 
+# 即使当时不知道有什么用，列在这里仍是合理选择（永远存 JSONB，将来可能发现价值）。
 
 project_specific_fields_to_raw_extra:
   - 父记录 2
@@ -222,9 +239,13 @@ data_supplement_needed:
 # ════════════════════════════════════════════════════════════════════
 
 sync_config:
-  source_type: manual_xlsx              # manual_xlsx / feishu_api
-  source_table_token: null              # 如果是 feishu_api，填飞书表 token
-  sync_interval: weekly                  # weekly / daily / on_demand
+  # 真实 sync 脚本（truth-vault/scripts/sync_feishu_notes_to_truth_vault.py）
+  # 走 feishu_api 路径。manual_xlsx 路径不在自动 sync 脚本范围内。
+  source_type: feishu_api               # feishu_api / manual_xlsx
+  feishu_app_token: null                # 飞书表 app_token, 例 bascnXXXXX
+  feishu_table_id: null                 # 飞书表 table_id, 例 tblXXXXX
+  feishu_view_id: null                  # 可选
+  sync_interval: weekly                 # weekly / daily / on_demand
   
 # ════════════════════════════════════════════════════════════════════
 # Onboarding 元数据 [REQUIRED]

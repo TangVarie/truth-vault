@@ -56,11 +56,14 @@
 
 | 标准字段 | 家族 A | 家族 B | 家族 C |
 |---|---|---|---|
-| `note_id` | (生成: `<project_id>_<素人编号>`) | 同 | 同 |
-| `account_name` | 「帐号昵称」 | — | — |
-| `account_followers` | 「粉丝数」 | **缺，需补录** | **缺，需补录** |
+| `note_id` | (生成: `<project_id>_<feishu_record_id>`) | 同 | 同 |
+| `account_id` | 「素人编号」 | 「素人编号」 | 「素人编号」 |
+| (`_account_name`) † | 「帐号昵称」 | — | — |
+| (`_account_followers`) † | 「粉丝数」 | **缺，需补录** | **缺，需补录** |
 | `publish_url` | 「反馈链接」 | 「反馈链接」 | 「反馈链接」 |
 | `publish_time` | 「发布时间」 | 「发布时间」 | 「发布时间」 |
+
+† 这两个字段映射到下划线前缀的 intermediate（如 `_account_name`），由 sync 脚本落 `raw_extra` JSONB；`truth_vault.notes` 表里没有这两个直接列。未来版本可以把它们写入 `truth_vault.accounts.notes_text` 或 `account_snapshots`，目前不阻塞主链路。
 
 ### 内容
 
@@ -127,7 +130,7 @@
 project_id: RIO_phase1
 schema_family: A
 field_mapping:
-  素人编号: note_id_suffix
+  素人编号: account_id              # → truth_vault.accounts(account_id)
   发布时间: publish_time
   发布状态: _publish_status         # 进 raw_extra
   方向: _direction_raw              # 进 raw_extra，由 direction_decomposition 处理
@@ -136,10 +139,13 @@ field_mapping:
   曝光数: impressions
   阅读数: reads
   互动数: interactions
-  状态: tier                        # 走状态解析规则
+  状态: _status_raw                 # 走 tier_extraction 二次处理
   数据回收情况: data_quality_status
-  帐号昵称: account_name
-  粉丝数: account_followers
+  # truth_vault.notes 表无 account_name / account_followers 列，用下划线前缀
+  # 走 intermediates → 由 sync 脚本写入 truth_vault.accounts 的扩展字段，
+  # 或落 raw_extra；不要直接映射到 notes（会因为不存在的列而 INSERT 失败）。
+  帐号昵称: _account_name
+  粉丝数: _account_followers
   主页链接: _account_url
   
 tier_extraction:
@@ -166,7 +172,7 @@ project_specific_fields_to_raw_extra:
 project_id: NUC_phase1
 schema_family: B
 field_mapping:
-  素人编号: note_id_suffix
+  素人编号: account_id              # → truth_vault.accounts(account_id)
   发布时间: publish_time
   发布笔记: intent                  # 流量帖→traffic, 直给笔记→conversion
   方向: _direction_raw
@@ -216,7 +222,7 @@ project_specific_fields_to_raw_extra:
 project_id: TGV_phase1
 schema_family: C
 field_mapping:
-  素人编号: note_id_suffix
+  素人编号: account_id              # → truth_vault.accounts(account_id)
   发布时间: publish_time
   发布笔记: intent                  # 钓鱼帖→traffic, 直给笔记→conversion
   反馈链接: publish_url
@@ -371,6 +377,55 @@ def validate(row: NotesRow, config: ProjectConfig) -> List[str]:
     
     return errors
 ```
+
+### Step 4.5: 数值字段清洗（重要）
+
+⚠️ **在 NUC_1 试导入时发现的坑**：飞书表的数值字段（impressions / reads / interactions / account_followers）有时会用**占位符字符**而非 null 或空：
+
+| 占位符 | 含义 | 出现频率 |
+|---|---|---|
+| `"/"` | 未填 / 无数据 | NUC_1 中很常见（曝光量/阅读量字段） |
+| `"-"` | 同上 | 偶见 |
+| `""` 空字符串 | 未填 | 常见 |
+| `"无"` | 中文表达 | 偶见 |
+| 全角数字（"１２３"） | 输入法误用 | 极少 |
+| `NaN` (pandas) | 真正的 null | 标准 |
+
+**必须做的清洗**（所有项目通用，不需要每个项目单独配置）：
+
+```python
+def clean_numeric(value):
+    """清洗数值字段，把占位符统一为 None"""
+    if value is None:
+        return None
+    if pd.isna(value):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value) if value == int(value) else value
+    
+    # 字符串处理
+    s = str(value).strip()
+    
+    # 占位符黑名单
+    PLACEHOLDERS = {"/", "-", "—", "", "无", "/无", "N/A", "n/a", "null", "NULL"}
+    if s in PLACEHOLDERS:
+        return None
+    
+    # 全角转半角
+    s = s.translate(str.maketrans('０１２３４５６７８９', '0123456789'))
+    
+    # 尝试转 int
+    try:
+        return int(s.replace(',', ''))  # 处理千位逗号
+    except ValueError:
+        # 既不是占位符也不是数字 → 记录但返回 None
+        logger.warning(f"无法解析的数值字段: {value!r}")
+        return None
+```
+
+应用于所有数值字段：impressions / reads / interactions / account_followers / 其他将来添加的数值字段。
+
+**结果**：数据库里看到的 `impressions = NULL` 含义是"无数据"，统一可比。SQL 查询 `WHERE impressions IS NOT NULL` 能可靠过滤。
 
 ### Step 5: 入库
 
