@@ -194,25 +194,19 @@ def existing_ssll_sample_id(sb, note_id: str) -> str | None:
         (source_truth_vault_note_id, also kept in ai_analysis for legacy
         rows).  If we find a row, we skip insert and only run mark_synced.
     """
-    # Path A: clean column (added by sanshengliubu-patches/001_add_source_tv_note_id.sql)
-    res = (
-        sb.schema("public")
-        .table("reference_samples")
-        .select("id")
-        .eq("source_truth_vault_note_id", note_id)
-        .limit(1)
-        .execute()
+    # Single OR query covers both the clean column AND the legacy
+    # ai_analysis->>'_truth_vault_note_id' JSON fallback in one round trip.
+    # Postgres uses the partial index on source_truth_vault_note_id when
+    # the column matches; the JSON probe is the rare fallback path.
+    or_clause = (
+        f"source_truth_vault_note_id.eq.{note_id},"
+        f"ai_analysis->>_truth_vault_note_id.eq.{note_id}"
     )
-    if res.data:
-        return res.data[0]["id"]
-
-    # Path B: fallback for any rows imported before the column was added —
-    # check the JSON-embedded copy of the same key in ai_analysis.
     res = (
         sb.schema("public")
         .table("reference_samples")
         .select("id")
-        .filter("ai_analysis->>_truth_vault_note_id", "eq", note_id)
+        .or_(or_clause)
         .limit(1)
         .execute()
     )

@@ -632,18 +632,34 @@ GROUP BY p.project_id, p.brand;
 
 
 -- ── 跨项目高爆率素人 (D-020) ──
+-- Computes derived stats LIVE from notes rather than depending on the
+-- accounts.total_notes_count / bao_count / personal_bao_rate cache, which
+-- has no maintenance trigger yet. As soon as a backfill job is in place
+-- to keep the cached columns fresh, switch back to reading them directly.
 CREATE OR REPLACE VIEW truth_vault.v_top_performing_accounts AS
-SELECT 
+WITH per_account AS (
+    SELECT
+        n.account_id,
+        COUNT(*)                                                              AS total_notes,
+        SUM(CASE WHEN n.tier = '爆'   THEN 1 ELSE 0 END)                       AS bao_count,
+        SUM(CASE WHEN n.tier = '大爆' THEN 1 ELSE 0 END)                       AS dabao_count,
+        SUM(CASE WHEN n.tier IN ('爆','大爆') THEN 1 ELSE 0 END)::FLOAT
+            / NULLIF(SUM(CASE WHEN n.tier IS NOT NULL THEN 1 ELSE 0 END), 0)   AS personal_bao_rate,
+        array_agg(DISTINCT n.project_id)                                       AS projects_engaged
+    FROM truth_vault.notes n
+    WHERE n.account_id IS NOT NULL
+    GROUP BY n.account_id
+)
+SELECT
     a.account_id,
-    a.total_notes_count,
-    a.bao_count + a.dabao_count as total_bao,
-    a.personal_bao_rate,
-    array_agg(DISTINCT n.project_id) as projects_engaged
+    p.total_notes                       AS total_notes_count,
+    p.bao_count + p.dabao_count         AS total_bao,
+    p.personal_bao_rate,
+    p.projects_engaged
 FROM truth_vault.accounts a
-LEFT JOIN truth_vault.notes n ON a.account_id = n.account_id
-WHERE a.total_notes_count >= 5
-GROUP BY a.account_id, a.total_notes_count, a.bao_count, a.dabao_count, a.personal_bao_rate
-ORDER BY a.personal_bao_rate DESC NULLS LAST;
+JOIN per_account p ON p.account_id = a.account_id
+WHERE p.total_notes >= 5
+ORDER BY p.personal_bao_rate DESC NULLS LAST;
 
 
 -- ════════════════════════════════════════════════════════════════════
