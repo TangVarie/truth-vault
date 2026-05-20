@@ -418,7 +418,10 @@ jobs:
           assert not s._is_duplicate_error(_E("permission denied"))
           assert not s._is_duplicate_error(_E("violates foreign key constraint", code="23503"))
           assert not s._is_duplicate_error(_E("connection refused"))
-          assert not s._is_duplicate_error(_E("the word duplicate appears but not in 23505 context", code="42P01"))
+          # "duplicate" word alone (not in "duplicate key value violates" phrase)
+          # must NOT trigger the dedup path. The 42P01 code is "table does not
+          # exist" — a real failure we'd want to surface, not swallow.
+          assert not s._is_duplicate_error(_E("relation does not exist; duplicate references unsupported", code="42P01"))
           print("  ✓ does not false-positive on FK / permission / network errors")
           print("\nautowriter dup detection: 2/2 groups passed")
           PY
