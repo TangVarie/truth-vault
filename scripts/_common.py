@@ -54,12 +54,25 @@ def _jwt_role_or_none(token: str) -> Optional[str]:
     return role if isinstance(role, str) else None
 
 
+# Supabase 2024+ "API keys" format. The role is encoded in the prefix:
+#   sb_secret_*      → server-only, equivalent to legacy service_role JWT
+#   sb_publishable_* → client-safe, equivalent to legacy anon JWT
+# These are NOT JWTs (no dots, opaque payload), so _jwt_role_or_none returns
+# None for them. We have to recognize the prefix to validate role.
+_SB_SECRET_PREFIX = "sb_secret_"
+_SB_PUBLISHABLE_PREFIX = "sb_publishable_"
+
+
 def get_supabase_client() -> Client:
     """Return a Supabase client using SERVICE_ROLE_KEY (RLS bypass).
 
     Sync scripts MUST use service_role; they perform system-level operations
     that write to multiple users' rows. See docs/09-system-integration.md
     "TV sync 脚本必须用 SERVICE ROLE KEY" for the security rationale.
+
+    Accepts both key formats:
+      - Legacy: long HS256 JWT (role=service_role in payload)
+      - New (2024+): opaque token prefixed with `sb_secret_`
 
     The client has no default schema set — every call must explicitly use
     .schema('truth_vault') / .schema('autowriter') / .schema('public').
@@ -74,9 +87,19 @@ def get_supabase_client() -> Client:
             "See scripts/.env.example for the full list."
         )
 
-    # Primary check: decode the JWT payload (no signature verification —
-    # Supabase rejects forged tokens server-side anyway; we only want to
-    # catch the common mistake of pasting anon-key into the service_role env).
+    # 1. New-format API key — the role is in the prefix. Bail early before
+    #    trying JWT decode (these are opaque, not JWTs).
+    if key.startswith(_SB_PUBLISHABLE_PREFIX):
+        raise RuntimeError(
+            "SUPABASE_SERVICE_ROLE_KEY starts with 'sb_publishable_' — that's "
+            "a publishable (anon-equivalent) key. Sync scripts need a secret "
+            "key (starts with 'sb_secret_'). Check Supabase Dashboard → "
+            "Settings → API."
+        )
+    if key.startswith(_SB_SECRET_PREFIX):
+        return create_client(url, key, ClientOptions(schema=None))
+
+    # 2. Legacy JWT format — decode payload and check the role claim.
     role = _jwt_role_or_none(key)
     if role is not None:
         if role != "service_role":
@@ -85,15 +108,19 @@ def get_supabase_client() -> Client:
                 "Sync scripts need service_role to bypass RLS. Check Supabase "
                 "Dashboard → Settings → API → service_role secret."
             )
-    else:
-        # Fallback heuristic for keys that don't decode (shouldn't happen with
-        # real Supabase keys, but stay defensive).
-        if "anon" in key.lower() or len(key) < 100:
-            raise RuntimeError(
-                "SUPABASE_SERVICE_ROLE_KEY does not look like a service_role JWT "
-                "(unable to decode payload, and key is suspiciously short or "
-                "contains 'anon'). Check Supabase Dashboard → Settings → API."
-            )
+        return create_client(url, key, ClientOptions(schema=None))
+
+    # 3. Neither prefix matched, and not a JWT — last-resort guardrail
+    #    against pasting an obviously wrong value (empty / "your-key-here" /
+    #    accidentally pasted publishable). We're deliberately permissive
+    #    here because Supabase may introduce more formats in the future;
+    #    only the most obvious mistakes get rejected.
+    if "anon" in key.lower() or len(key) < 20:
+        raise RuntimeError(
+            "SUPABASE_SERVICE_ROLE_KEY doesn't look like a known Supabase key "
+            "format (not a JWT, not sb_secret_*, and is suspiciously short or "
+            "contains 'anon'). Check Supabase Dashboard → Settings → API."
+        )
     return create_client(url, key, ClientOptions(schema=None))  # no default schema
 
 
