@@ -151,54 +151,68 @@ Truth Vault 与现存系统形成四层架构。**任何对系统行为的描述
 
 ### 数据映射
 
+⚠️ **Source of truth**: 列名以 `scripts/sync_truth_vault_baokuan_to_sanshengliubu.py:build_reference_sample` 为准。本表为 reader-friendly 视图。Session #7 之前的 v1 spec 用过 `post_title` / `post_body` / 顶级 `quality_score` —— 已弃用。
+
 ```
 Truth Vault notes                  sanshengliubu.reference_samples
 ─────────────────────              ──────────────────────────────
-title                              post_title
-body                               post_body
-projects.platform                  platform (默认 '小红书')
+raw_content[:60]                   title
+raw_content                        content
+projects.platform                  platform (默认 'xiaohongshu')
 projects.category                  category
-comments 表的高赞评论              top_comments (JSONB array)
-emotional_lever                    \
-human_truth_archetype               \  → ai_analysis (JSONB)
-target_audience                     /  (vibe_tags / hook /
-content_format                     /    tone / comment_dna)
-tier ('爆'=100, '大爆'=200)        quality_score
-hashtags + ['truth_vault_synced']  tags
+projects.brand                     brand
+publish_url                        source_url
+target_audience                    target_audience
+hit_blue_keywords                  hit_keywords
+hashtags 不写 reference_samples    tags = ['truth_vault_sync', tier]
+note_id                            source_truth_vault_note_id   ← 幂等键 (must-add)
+
+ai_analysis (JSONB) 内部聚合:
+  _truth_vault_note_id             幂等键的 JSON fallback
+  _truth_vault_project_id
+  _truth_vault_tier                ('爆' / '大爆')
+  _truth_vault_intent
+  _truth_vault_quality_score       ('爆'=100, '大爆'=200)
+  top_comments                     [content, ...] (truth_vault.comments)
+  top_comment_roles                [comment_role, ...]
+  top_comments_pinned              [bool, ...]
 ```
+
+如果 sanshengliubu 后续重命名上述任一列，必须同步更新：(1) build_reference_sample 写列、(2) preflight_check 必填列列表、(3) 本表。三者不一致时 sync 启动会因 preflight 失败。
 
 ### sanshengliubu 需要的修改 (~30 行)
 
+> 现实路径：sync 直接由 TV 仓库的 `scripts/sync_truth_vault_baokuan_to_sanshengliubu.py` 跨 schema INSERT 完成（共享 Supabase + service_role）。下方 `import_truth_vault_baokuan` 是给 sanshengliubu 自有 codebase 的可选 helper —— 用于内部 ssll 工具想读 / 重导 TV 数据时复用。**生产飞轮闭环不依赖这个 helper 存在**。
+
 ```python
-# 在 db/supabase_client.py 加新方法
+# (可选) 在 sanshengliubu db/supabase_client.py 加 helper，便于 ssll 自身工具
+# 读 TV 同步进来的数据时复用 quality_score / ai_analysis 计算逻辑。
+# 列名必须和 truth-vault/scripts/sync_truth_vault_baokuan_to_sanshengliubu.py
+# 的 build_reference_sample() 完全一致。
 def import_truth_vault_baokuan(self, note: dict) -> dict:
-    """从 Truth Vault 导入爆款笔记到 reference_samples。
-    
-    note 是 Truth Vault notes 表的一行 + 关联数据。
-    """
-    # tier → quality_score 映射
-    quality_score = {'爆': 100, '大爆': 200}.get(note['tier'], 0)
-    
-    # essence 字段聚合成 ai_analysis
+    """从 Truth Vault 导入爆款笔记到 reference_samples（helper, 可选）。"""
+    tier = note.get('tier')
+    quality_score = {'爆': 100, '大爆': 200}.get(tier, 0)
     ai_analysis = {
-        'vibe_tags': note.get('emotional_lever'),
-        'hook': note.get('opener_type'),
-        'tone': note.get('content_format'),
-        'comment_dna': note.get('human_truth_archetype'),
-        'target_audience': note.get('target_audience'),
-        '_source': 'truth_vault',
         '_truth_vault_note_id': note['note_id'],
-    }
-    
-    pack = {
-        'post_title': note['title'],
-        'post_body': note['body'],
-        'platform': '小红书',
-        'category': note.get('category'),
+        '_truth_vault_project_id': note['project_id'],
+        '_truth_vault_tier': tier,
+        '_truth_vault_intent': note.get('intent'),
+        '_truth_vault_quality_score': quality_score,
         'top_comments': note.get('top_comments', []),
+    }
+    pack = {
+        'title': (note.get('raw_content') or '')[:60],
+        'content': note.get('raw_content'),
+        'platform': note.get('platform') or 'xiaohongshu',
+        'category': note.get('category'),
+        'brand': note.get('brand'),
+        'source_url': note.get('publish_url'),
+        'target_audience': note.get('target_audience'),
+        'hit_keywords': note.get('hit_blue_keywords') or [],
         'ai_analysis': ai_analysis,
-        'quality_score': quality_score,
-        'tags': (note.get('hashtags') or []) + ['truth_vault_synced'],
+        'tags': ['truth_vault_sync', tier],
+        'source_truth_vault_note_id': note['note_id'],
     }
     return self.save_reference_pack(pack)
 ```

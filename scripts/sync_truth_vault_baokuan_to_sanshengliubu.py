@@ -93,14 +93,31 @@ def build_reference_sample(note: dict, comments: list[dict]) -> dict:
     write the columns it expects.  ai_analysis is JSONB and we put the
     cross-system lineage in there under leading-underscore keys to avoid
     colliding with sanshengliubu's own ai_analysis sub-keys.
+
+    ⚠️ Schema reconciliation pending: docs/09-system-integration.md once
+    spec'd the column mapping as post_title / post_body / quality_score;
+    the live sanshengliubu schema this script targets uses title /
+    content / no quality_score (verified against the v0.30.10 codebase
+    referenced in Session #7). If the actual live schema differs from
+    what's here, the insert will 400 — see preflight_check() at startup.
+    The doc has been updated to match this column set as the source of
+    truth; if sanshengliubu ever renames these columns, update both
+    sides simultaneously.
     """
     proj = note.get("projects") or {}
+    tier = note.get("tier")
+    # tier → quality_score mapping documented in doc 09 §"通道 1 数据映射".
+    # Kept in ai_analysis so any sanshengliubu downstream consumer that
+    # ranks by quality has a numeric handle regardless of whether the
+    # reference_samples table itself exposes a quality_score column.
+    quality_score = {"爆": 100, "大爆": 200}.get(tier, 0)
     ai_analysis = {
         # ── Cross-system lineage (leading underscore = TV-injected, not ssll-native) ──
         "_truth_vault_note_id": note["note_id"],           # idempotency key
         "_truth_vault_project_id": note["project_id"],
-        "_truth_vault_tier": note["tier"],
+        "_truth_vault_tier": tier,
         "_truth_vault_intent": note.get("intent"),
+        "_truth_vault_quality_score": quality_score,
         # ── Comment evidence (sanshengliubu vibe_rewriter reads these) ──
         # Schema reference: comments.content is the text (not 'text');
         # there's no likes/sentiment in the current schema.
@@ -127,6 +144,38 @@ def build_reference_sample(note: dict, comments: list[dict]) -> dict:
         "source_truth_vault_note_id": note["note_id"],
         "created_at": _iso_now(),
     }
+
+
+def preflight_check(sb) -> None:
+    """Fail fast if public.reference_samples is missing required columns.
+
+    Runs once at startup. Issues a no-data SELECT with a tight column list;
+    Supabase/PostgREST returns 400 with 'column X does not exist' if any
+    column is absent. Catching this here (with a curated error message)
+    is friendlier than letting the first INSERT explode mid-loop and
+    leaving half the run un-synced.
+
+    Required columns: see build_reference_sample() for what we write. If
+    the live sanshengliubu schema renames any of them, update both this
+    list and build_reference_sample() in one commit, plus
+    docs/09-system-integration.md.
+    """
+    required = (
+        "id, title, content, platform, category, brand, tags, source_url, "
+        "target_audience, hit_keywords, ai_analysis, "
+        "source_truth_vault_note_id, created_at"
+    )
+    try:
+        sb.schema("public").table("reference_samples").select(required).limit(0).execute()
+    except Exception as exc:
+        msg = str(exc)
+        raise RuntimeError(
+            "public.reference_samples preflight failed. The live sanshengliubu "
+            "schema is missing one of the columns this script writes. Confirm "
+            "sanshengliubu-patches/001_add_source_tv_note_id.sql has been run, "
+            "and that the column list in build_reference_sample() matches what "
+            f"ssll expects. Underlying error: {msg}"
+        ) from exc
 
 
 def existing_ssll_sample_id(sb, note_id: str) -> str | None:
@@ -214,6 +263,8 @@ def main() -> int:
     args = parser.parse_args()
 
     sb = get_supabase_client()
+    if not args.dry_run:
+        preflight_check(sb)
     pending = fetch_pending_baokuan(sb, project_filter=args.project)
     logger.info("Found %d baokuan pending sync to sanshengliubu", len(pending))
 
