@@ -1098,3 +1098,48 @@ WHERE NOT EXISTS (
 **What**: `docs/05-controlled-vocab.md` tier 定义从 7 值增加到 8 值，补入 `数据异常`。
 
 **Why**: SQL CHECK 约束里已有 8 个值（含 `数据异常`），词表文档只列了 7 个（漏了）。D-013 sanity check 机制需要这个值来标记数据自相矛盾的行。
+
+---
+
+## D-034 · prepublish_evaluations 暂不接通 sync（Phase 2 工作）
+
+**日期**: 2026-05-20（Session #9 review 修复）
+
+**What**: `truth_vault.prepublish_evaluations` 表 + `v_evaluator_calibration` view 保留在 schema，但暂不写入。autowriter 现有 codebase 不存"评审记录"，只通过 `best_version_id` 隐式记录，反推 evaluator 会变成猜测。
+
+**Why**:
+- D-025 原意是 autowriter `_select_best_drafts` 的隐式评审在 sync 时反推存入
+- 但 autowriter `_select_best_drafts` 没有 evaluator type / score / decision 字段
+- 强行从 `best_version_id` 推 evaluator 不可靠，会给 v_evaluator_calibration 灌脏数据
+- 当前空表 + 空 view 不报错，等 autowriter 加 evaluations 表再接通
+
+**Rejected**:
+- 在 sync 时随机给 evaluator='autowriter_select_best' 凑数 — 拒绝。脏数据更难清理。
+- 直接删 prepublish_evaluations 表 — 拒绝。设计 + view 已稳定，删了下游 query 会断。
+
+**Implications**:
+- v_evaluator_calibration 当前永远空（不影响主链路）
+- Phase 2+ 工作：autowriter 加 evaluations 表 → TV 加 sync 脚本 → was_correct 自动算
+- 需要 cross-team 协调，等飞轮主链路验收稳定后开
+
+---
+
+## D-035 · Sprint 0 scope 含已知 gap（comments LLM 重建 / essence 标注 / sub_directions）
+
+**日期**: 2026-05-20（Session #9 review 修复）
+
+**What**: Sprint 0 实测的范围明确为"主链路 + 飞轮通道接通"，不是"完整三层标注闭环"。三个 P1 gap 写明：
+
+1. **sub_directions LLM 子分类（D-014）**: NUC_phase1 的 6 个 schema 子方向需要 LLM 在 ingest 时分类才能落到 `target_audience` / `content_format` 等字段。当前 `sync_feishu_notes` 只做单方向 decomposition 的确定性 lookup，sub_directions 保留 `_direction_raw` 到 raw_extra 让独立 LLM pass 处理。
+2. **Essence + audience 标注（D-017 / D-028 Mode A）**: `annotate_essence_pass.py` 已交付，但需要独立运行（D-028 不能和 sync 同进程）。Sprint 0 验收 NUC pilot 30 条标注准确率后才大规模铺开。
+3. **Comments 楼层重建（D-022 / Q21）**: `sync_comments_from_raw_extra.py` 当前只做扁平 line-by-line 解析，不做 parent_comment_id 推断。LLM 重建楼层成本估算（Q21）后再做。
+
+**Why**:
+- 这三件事的实施成本和质量风险都很高（特别是 sub_directions 准确率会影响 NUC 全部 1102 行的下游分析）
+- 主链路 + 飞轮通道不依赖它们就能跑起来（爆款 sync + 双通道注入都能闭环）
+- 先用 Sprint 0 验证主链路稳定性，三件事在 Sprint 1+ 按 ROI 排序补
+
+**Implications**:
+- `CURRENT_STATE.md` "Sprint 0 实测能跑什么 / 不能跑什么" 节明确列出
+- `docs/09-system-integration.md` "comments 暂不闭环" 段保留
+- 不应在 Sprint 0 验收时把这三件事当阻塞点

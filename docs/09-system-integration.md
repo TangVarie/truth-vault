@@ -838,6 +838,29 @@ GROUP BY v.ai_engine, n.project_id;
 - autowriter: **P1 一次性改造 ~190 行**（DDL 修复 + list_example_items 重写 + schema 迁移 + exporter lineage + external_source 字段）。完成后稳态零维护成本。
 - 用户体验: 现存系统的 UI 和工作流不变，只是飞轮注入路径多了一个数据源
 
+### prepublish_evaluations 数据采集（已知 gap, D-034 决策）
+
+`truth_vault.prepublish_evaluations` 表 + `v_evaluator_calibration` view 都
+已在 schema 中就绪，但 **目前没有 sync 代码会写入这张表**。原因：
+
+- 设计意图（D-025）是 autowriter `_select_best_drafts` 的隐式评审在 TV sync
+  时反推存入 prepublish_evaluations
+- 但 autowriter codebase 不存"评审记录"，`_select_best_drafts` 只在每个
+  item 上设置 `best_version_id`，没有 evaluator type / score / decision 这些
+  字段
+- 强行反推 evaluator_id 会变成猜测，evaluator accuracy 数据不可靠
+
+**当前决策（D-034）**: prepublish_evaluations 暂不接通 sync，留作 Phase 2
+工作。`v_evaluator_calibration` view 当前永远空（无数据，不报错）。
+
+**接通条件**:
+1. autowriter 加一张显式的 `evaluations` 表（item_id, evaluator, decision, score）
+2. autowriter 评审动作显式写入这张表（不是从 best_version_id 反推）
+3. 然后 TV 加一个 sync 脚本读 autowriter.evaluations → truth_vault.prepublish_evaluations
+4. 实际 tier 在 TV 已有 → was_correct 字段自动算
+
+这是工程量较大的 cross-team 工作，等 Sprint 2+ 飞轮主链路验收稳定后再开。
+
 ### 原则 3 · Sync 单向 + 幂等
 
 - Truth Vault → sanshengliubu / autowriter 是**单向 sync**（不双向修改）

@@ -4,3 +4,7 @@
 supabase>=2.4.0,<3.0.0
 pyyaml>=6.0
 requests>=2.31.0
+
+# Only required for annotate_essence_pass.py. The 4 sync scripts don't
+# need it; install only on machines that run essence annotation.
+anthropic>=0.39.0

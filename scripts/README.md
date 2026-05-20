@@ -6,8 +6,10 @@ Truth Vault 飞轮的 4 个真实可跑 Python 脚本。
 
 ```
 scripts/
-├── _common.py                                          共享工具（client / mapping loader）
+├── _common.py                                          共享工具（client / mapping loader / pagination）
 ├── sync_feishu_notes_to_truth_vault.py                 飞书 → TV (periodic)
+├── sync_comments_from_raw_extra.py                     comment 文本块 → truth_vault.comments (post-sync)
+├── annotate_essence_pass.py                            Mode A essence/audience LLM 标注 (independent pass)
 ├── sync_truth_vault_baokuan_to_sanshengliubu.py        TV 爆款 → ssll (periodic)
 ├── sync_truth_vault_baokuan_to_autowriter_items.py     TV 爆款 → autowriter (periodic)
 ├── extract_negative_examples_from_autowriter.py        autowriter 历史挖 negative (one-shot)
@@ -20,7 +22,11 @@ scripts/
 
 ```
 飞书多维表格 ──[1]──► truth_vault.notes ──[2]──► public.reference_samples
-                            │                    (sanshengliubu / vibe_rewriter)
+                            │     ▲              (sanshengliubu / vibe_rewriter)
+                            │     │
+                            │   [5,6] enrichment
+                            │     │
+                            │     └─ truth_vault.comments / essence/audience fields
                             │
                             └──[3]──► autowriter.items
                                       (example_label='positive')
@@ -28,6 +34,8 @@ scripts/
 [1] sync_feishu_notes_to_truth_vault.py          每日 cron
 [2] sync_truth_vault_baokuan_to_sanshengliubu.py  每日 cron 或 [1] 跑完后触发
 [3] sync_truth_vault_baokuan_to_autowriter_items.py 同上
+[5] sync_comments_from_raw_extra.py               [1] 跑完后跑 (落 comments 表)
+[6] annotate_essence_pass.py                      独立 LLM pass, D-028 不在 [1] 内
 
 (单独的反向通道)
 autowriter 历史 items ──[4]──► autowriter.items.example_label_proposal
@@ -35,6 +43,12 @@ autowriter 历史 items ──[4]──► autowriter.items.example_label_propos
 
 [4] extract_negative_examples_from_autowriter.py  一次性, NUC pilot 期间跑
 ```
+
+注意 [5] 和 [6] 的顺序很重要：
+- [6] 必须在 [1] 之后单独跑（D-028 要求 LLM 标注绝不和 tier 抽取共进程）。
+- [5] 可以在 [1] 之后随时跑，但晚于 [6] 会让 ssll 拿到带 essence 标注但
+  无 comments 的 reference pack（vibe_rewriter 的评论证据缺失但 essence
+  分析正确）；如果 [5] 先跑则反过来。两者交错并不冲突。
 
 ## 安装
 
@@ -88,10 +102,22 @@ set -a              # auto-export every variable that gets defined
 source .env
 set +a
 
+# Step 1: feishu → TV (主链路)
 for project in NUC_phase1 NRT_phase2 NRT_phase3; do
     python sync_feishu_notes_to_truth_vault.py "$project"
 done
 
+# Step 2: comments 解析（独立，不阻塞主链路）
+for project in NUC_phase1 NRT_phase2 NRT_phase3; do
+    python sync_comments_from_raw_extra.py "$project"
+done
+
+# Step 3: essence/audience LLM 标注（独立 D-028 pass，按预算调 --limit）
+for project in NUC_phase1 NRT_phase2 NRT_phase3; do
+    python annotate_essence_pass.py "$project" --limit 50
+done
+
+# Step 4: TV → 双通道
 python sync_truth_vault_baokuan_to_sanshengliubu.py
 python sync_truth_vault_baokuan_to_autowriter_items.py
 ```

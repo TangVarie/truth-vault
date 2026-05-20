@@ -1,8 +1,35 @@
 # Truth Vault · 当前状态
 
-**最后更新**: 2026-05-20（Session #8.5 审计修复）
-**当前阶段**: 阶段 0 · 设计完成 → Session #8.5 完成二次审计全部修复 → 可以进入 Sprint 0 实测
-**当前会话编号**: #8.5（二次交叉审计修复：D-028~D-033，prompt 双模式拆分 + SQL 部署拆分 + view 一致性 + 词表/约束补齐）
+**最后更新**: 2026-05-20（Session #8.5 审计修复 + Session #9 review 修复）
+**当前阶段**: 阶段 0 · 设计完成 → Session #9 review 修复 → **Sprint 0 主链路就绪（含已知 gap）**
+**当前会话编号**: #9（三轮审计 + 用户 review 8 条问题修复：autowriter recovery / label leakage 白盒 / source B prior version / ingested_at 保留 / 集成补丁包 / 含 gap 的 Sprint 0 scope 明确）
+
+---
+
+## Sprint 0 实测能跑什么 / 不能跑什么 ⭐ 明确边界
+
+Sprint 0 的目标是**主链路上线 + 飞轮通道接通**，不是完整三层标注闭环。
+
+**Sprint 0 可以跑（已实现 + 通过烟测）**:
+- ✅ 飞书 → TV notes 主表 sync（含 quarantine + tier 抽取含 C 家族 + 数值兜底 + 单方向 direction_decomposition 确定性映射 + excluded_directions 标 数据异常）
+- ✅ TV 爆款 → sanshengliubu reference_samples sync（含 preflight + 列名 reconcile + idempotency dual-path）
+- ✅ TV 爆款 → autowriter items sync（含 transactional recovery + JWT 校验）
+- ✅ autowriter 负例候选挖掘（Source A/B 修正版 + 全分页）
+- ✅ 跨 schema views（v_prompt_performance / v_model_comparison / v_top_performing_accounts 直查 notes）
+- ✅ Schema 全部 CHECK 约束 + ON DELETE 语义 + ingested_at trigger 保护
+
+**Sprint 0 暂不闭环（已知 P1 gap）**:
+- 🚧 **direction_decomposition.sub_directions**：NUC_phase1 6 个子方向（健身减脂 / 关心父母营养 / 产后宝妈 / 照顾家人手术 / ...）需要 LLM 子分类才能落到 schema 字段；当前只保留 `_direction_raw` 到 raw_extra，独立 annotation pass 必须做。`ingest_classification_prompt` 在 NUC_phase1.yaml 已就绪。
+- 🚧 **essence + audience LLM 标注**：Mode A 双模式 prompt 已 finalize（v0.3 含白盒 leakage 校验），但没有调用脚本（不在 sync 脚本里跑）。需要独立 annotation pass 脚本读 `notes.emotional_lever IS NULL` 然后批量标注。
+- 🚧 **comments 表 sync**：飞书的「随贴评论」「随贴评论素人」是文本块，需要 LLM 重建楼层结构（D-022 / Q21）。当前 sync 脚本只把这两个字段塞进 `raw_extra`，不写 `truth_vault.comments`。ssll 通道 1 的 `top_comments` 因此为空（用兜底空数组）。
+- 🚧 **prepublish_evaluations 写入路径**：表 + view 都已就绪，但没有 sync 代码会写入。`v_evaluator_calibration` view 当前永远空。可以等 Sprint 1 第二轮再接通。
+- 🚧 **autowriter Memory Manager UI 负例 review tab**：脚本写 `example_label_proposal`，但 autowriter 前端没接。proposal 不污染 negative pool（这是设计），但需要前端工作。
+
+**Sprint 0 验收标准**:
+1. NUC_phase1 飞书 1102 行能进 TV，无 quarantine 误判
+2. NUC_phase1 爆款（24 大爆 + 20 爆）能进 ssll reference_samples + autowriter items
+3. 至少 1 个项目跑通 Source A 负例抽取并人工 review > 0 个候选
+4. 跨 schema view 不报错（即使 prepublish_evaluations 为空也算通过）
 
 ---
 
@@ -16,8 +43,19 @@
 
 **真实可跑代码**（不是 spec）:
 - `truth-vault/scripts/` 4 个 Python sync 脚本 + `_common.py` 共享工具
-- `sanshengliubu-patches/` import_truth_vault_baokuan 方法 + 必需的 SQL migration
-- `autowriter/migrations/` schema 迁移 SQL + 完整 RUNBOOK（含 Auth/RLS）
+- `sanshengliubu-patches/` 001_add_source_tv_note_id.sql + import_truth_vault_baokuan.py + README（**Session #9 补回 final ZIP 漏掉的目录**）
+- `autowriter-migrations/` 001_create_autowriter_schema.sql + 002_add_external_source.sql + 003_add_example_label_proposal.sql + RUNBOOK（**Session #9 补回**）
+
+**Session #9 review 修复（用户反馈 8 条 + 我自己 review 后续）**:
+- ✅ Issue 1 · 补回 sanshengliubu-patches/ 和 autowriter-migrations/ 目录
+- ✅ Issue 2 · autowriter sync 失败恢复（dedup 分支补齐 version + best_version_id）
+- ✅ Issue 3 · 负例 Source B 加 prior-version 校验（同 Source A 模式）
+- ✅ Issue 4 · Sprint 0 scope 含 gap 明确（本节）
+- ✅ Issue 5 · Mode A label leakage 改为白盒（只校验 template + project_context，不扫 title/body）
+- ✅ Issue 6 · reference_samples 字段映射 reconcile（doc 09 对齐 script，加 preflight）
+- ✅ Issue 7 · service_role JWT payload 解码校验（取代弱启发式）
+- ✅ Issue 8 · ingested_at 保留（DB trigger + 客户端不传）
+- ✅ 附加 · C 家族 tier 抽取（_note_for_tier）/ 全 fetch 分页 / Source A 时序 / TIMESTAMP TZ / 数值 tier 兜底 / direction_decomposition 确定性部分 / parent_comment_id ON DELETE / category CHECK / tier_thresholds 默认值移除 / 模型 ID 更新
 
 **Session #8 三轮审计**:
 - 第一轮: P0/P1/P2/P3 共 11 条 issue 全部修复
