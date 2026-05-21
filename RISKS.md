@@ -213,6 +213,7 @@
   pip-compile requirements.txt -o requirements.lock --resolver=backtracking
   ```
   CI 至少跑 `pip install -r requirements.txt && python -c 'import autowriter'`.
+  **详细操作步骤 + CI workflow 模板**: `docs/10-sister-repo-followups.md § R-017`
 - **Owner**: AutoWriter 维护者
 
 ### R-018 · 业务项目用 daemon thread 处理后台任务, 重启即丢 [audit 2026-05-22 P2-8]
@@ -225,12 +226,15 @@
   "偶发卡死".
 - **检测**: 在 staging 上启动 batch → 立刻 `pkill streamlit` → 重启后看
   autowriter.batches.status 是否还是 running 但没新 version 进来.
-- **缓解**: 在两个业务项目仓库中, 把任务移到 DB-backed job queue:
-  - 新增 `jobs` 表 (id, kind, payload, status, claimed_by, claimed_at, heartbeat_at,
-    error_text, started_at, finished_at).
-  - Streamlit 只 INSERT job + 显示状态; 独立 worker (long-running py process,
-    docker --restart unless-stopped) 轮询领取 + 心跳 + 超时回收.
-  - 这是侵入性改动, 建议放 Sprint 2+ 做.
+- **缓解**: 在两个业务项目仓库中, 把任务移到 DB-backed job queue. 完整 SQL +
+  Python worker 代码 + systemd / supervisor / Render 部署模板 + 4-phase 灰度
+  迁移计划 全部在:
+  - DDL: `autowriter-migrations/008_jobs_table.sql` (autowriter schema) /
+    `sanshengliubu-patches/004_jobs_table.sql` (public schema)
+  - 设计: `docs/10-sister-repo-followups.md § R-018`
+  - 关键: 用 PG `SELECT ... FOR UPDATE SKIP LOCKED` (封装为 `claim_one_job()`
+    RPC) 保证多 worker 副本并发不抢同一行; heartbeat thread 独立于 handler
+    线程, 长 LLM call 不阻塞心跳.
 - **Owner**: AutoWriter 维护者 + sanshengliubu 维护者
 
 ### R-019 · sanshengliubu fresh schema 关 RLS — 单租户假设没写明 [audit 2026-05-22 P2-6]
@@ -242,12 +246,16 @@
   时所有数据互相可见 (anon / authenticated JWT 都能 SELECT * 跨项目).
 - **检测**: `SELECT relname, relrowsecurity FROM pg_class JOIN pg_namespace
   ON relnamespace=pg_namespace.oid WHERE nspname='public' AND relrowsecurity=false;`
-- **缓解**: 在 **sanshengliubu 仓** 二选一:
-  - (a) 在 README.md / 部署文档头部写明 "**单租户假设**: 这套 schema 默认所有
-    项目共享一个用户/工作区. 多租户场景需要先实现 workspace_id + RLS policy."
-  - (b) 引入 `workspace_id` 列 + 改 RLS policy `USING (workspace_id = (SELECT
-    current_workspace_id()))`. TV sync 用 service_role 仍能写 (绕过 RLS), 但
-    前端 anon/auth 读自动受限.
+- **缓解**: 在 **sanshengliubu 仓** 二选一. 决策树 + 完整文案模板 + SQL +
+  代码改造步骤都在 `docs/10-sister-repo-followups.md § R-019`. 摘要:
+  - (a) **Option A 单租户声明**: README.md 顶部加醒目段, db/schema.sql 在
+    DISABLE 语句旁加注释指向 R-019 docs, app.py 启动 banner 显示
+    "🔓 单租户模式". 10 分钟工作量.
+  - (b) **Option B 多租户 RLS**: 跑
+    `sanshengliubu-patches/005_multi_tenant_workspaces.sql` 加 workspace_id +
+    ENABLE RLS + workspace-scoped policy. 手工 INSERT workspace_users 行映射
+    现有用户. supabase_client.py 注入 workspace_id 到所有 INSERT. TV sync
+    在 reference_samples 写入时填默认 workspace_id. 1-2 天 + staging 验证.
 - **Owner**: sanshengliubu 维护者 (产品方向决定 a 或 b)
 
 ### R-020 · 业务项目超大单文件, 改动成本高 [audit 2026-05-22 P2-9]
@@ -265,6 +273,9 @@
 - **缓解**: 先拆 DB / repository 层和 sync / job 层 (这两块改动频率最高),
   不要先做 UI 大重构. 给拆出的模块补最小单元测试. 保持原入口函数不变,
   逐步迁移. 仍是 Sprint 2+ 工作.
+  **完整拆分方案 (autowriter/db.py → autowriter/db/{client,projects,batches,items,
+  versions,memories,rls,jobs}.py, memory.py 同理) + 反模式清单 + 暂不拆原因**
+  在 `docs/10-sister-repo-followups.md § R-020`.
 - **Owner**: AutoWriter 维护者 + sanshengliubu 维护者
 
 ### R-021 · 缺 staging E2E 验证 (auth/RLS + 真实 PostgREST join) [audit 2026-05-22 P2/P3-10]
