@@ -664,7 +664,13 @@ CREATE INDEX IF NOT EXISTS idx_tv_audit_table_time
 CREATE INDEX IF NOT EXISTS idx_tv_audit_row
     ON truth_vault.audit_log(schema_name, table_name, row_id, occurred_at DESC);
 
-CREATE OR REPLACE FUNCTION truth_vault.audit_row_change() RETURNS TRIGGER AS $$
+-- SET search_path = '': Supabase advisor "Function Search Path Mutable" 修法.
+-- 函数体所有表引用都 fully qualified (truth_vault.audit_log), 系统函数
+-- (COALESCE/to_jsonb/jsonb_*) 来自 pg_catalog 永远隐式可用. 安全清晰.
+CREATE OR REPLACE FUNCTION truth_vault.audit_row_change() RETURNS TRIGGER
+    LANGUAGE plpgsql
+    SET search_path = ''
+AS $$
 DECLARE
     pk_value TEXT;
     changed JSONB;
@@ -718,7 +724,7 @@ BEGIN
 
     RETURN COALESCE(NEW, OLD);
 END;
-$$ LANGUAGE plpgsql;
+$$;
 
 -- Wire to the two highest-value writeable tables (notes + projects). Other
 -- tables can be added later; we don't audit comments/snapshots etc. because
@@ -738,16 +744,19 @@ FOR EACH ROW EXECUTE FUNCTION truth_vault.audit_row_change();
 -- Triggers
 -- ════════════════════════════════════════════════════════════════════
 
-CREATE OR REPLACE FUNCTION truth_vault.fill_era_tag() RETURNS TRIGGER AS $$
+CREATE OR REPLACE FUNCTION truth_vault.fill_era_tag() RETURNS TRIGGER
+    LANGUAGE plpgsql
+    SET search_path = ''
+AS $$
 BEGIN
     IF NEW.publish_time IS NOT NULL THEN
-        NEW.era_tag := EXTRACT(YEAR FROM NEW.publish_time)::TEXT 
-                       || ' Q' 
+        NEW.era_tag := EXTRACT(YEAR FROM NEW.publish_time)::TEXT
+                       || ' Q'
                        || EXTRACT(QUARTER FROM NEW.publish_time)::TEXT;
     END IF;
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
+$$;
 
 DROP TRIGGER IF EXISTS tv_notes_set_era ON truth_vault.notes;
 CREATE TRIGGER tv_notes_set_era 
@@ -755,26 +764,32 @@ BEFORE INSERT OR UPDATE OF publish_time ON truth_vault.notes
 FOR EACH ROW EXECUTE FUNCTION truth_vault.fill_era_tag();
 
 
-CREATE OR REPLACE FUNCTION truth_vault.set_updated_at() RETURNS TRIGGER AS $$
+CREATE OR REPLACE FUNCTION truth_vault.set_updated_at() RETURNS TRIGGER
+    LANGUAGE plpgsql
+    SET search_path = ''
+AS $$
 BEGIN
     NEW.updated_at := NOW();
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
+$$;
 
 
 -- ingested_at 语义是"第一次 ingest 时间"——UPSERT 时不应被覆盖。
 -- 客户端 (sync_feishu_notes) 每次 UPSERT 都会带 ingested_at = NOW()，
 -- 这个 BEFORE UPDATE trigger 强制还原成 OLD 值，让 schema 语义独立于
 -- 客户端实现。新插入时 trigger 不触发，DEFAULT NOW() 正常生效。
-CREATE OR REPLACE FUNCTION truth_vault.preserve_ingested_at() RETURNS TRIGGER AS $$
+CREATE OR REPLACE FUNCTION truth_vault.preserve_ingested_at() RETURNS TRIGGER
+    LANGUAGE plpgsql
+    SET search_path = ''
+AS $$
 BEGIN
     IF OLD.ingested_at IS NOT NULL THEN
         NEW.ingested_at := OLD.ingested_at;
     END IF;
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
+$$;
 
 DROP TRIGGER IF EXISTS tv_notes_preserve_ingested_at ON truth_vault.notes;
 CREATE TRIGGER tv_notes_preserve_ingested_at
@@ -992,12 +1007,72 @@ LEFT JOIN truth_vault.v_top_performing_accounts a ON a.account_id = e.account_id
 
 
 -- ════════════════════════════════════════════════════════════════════
+-- GRANT + RLS · service_role 全权, anon/authenticated 默认 deny
+-- ════════════════════════════════════════════════════════════════════
+--
+-- TV 是内部数据基础设施, 所有访问应该走 service_role (sync 脚本 /
+-- 后台 job / admin 工具). anon 和 authenticated 永远不应该直接读 TV.
+--
+-- 设计:
+--   - service_role: USAGE on schema + ALL on tables/sequences. 因为
+--     service_role.rolbypassrls=true, RLS 开关对它无影响.
+--   - anon + authenticated: 没 USAGE, 没 grant, RLS 再做兜底.
+--     三重 deny: 进不来 schema → 进得来也读不了表 → 读得到也被 RLS 挡.
+--   - ALTER DEFAULT PRIVILEGES: 未来在 truth_vault 里新建表会自动
+--     继承 service_role 的 grant, 不需要每次手动补.
+--   - 14 张表 ENABLE RLS 不加 policy = "deny all" for non-bypass roles.
+--     未来如果要做 "内部用户登录后查 TV 数据" 的功能, 再单独加 policy.
+--
+-- 跨 schema views (notes_v1_2_cross_schema_views.sql 里那些) 跟 PG view
+-- 一致: view 用 caller 权限 + view 定义者 (或 SECURITY DEFINER) 决定底层
+-- 表访问. 默认 SECURITY INVOKER, 所以 service_role caller 透传 BYPASSRLS,
+-- anon caller 被挡. 跟原设计一致.
+
+-- service_role 用本 schema 的能力
+-- 包在 DO + IF EXISTS 里: Supabase 上 service_role 必有, 裸 Postgres (CI /
+-- 自托管 PG) 没有这个角色, 直接 GRANT 会 ERROR role does not exist.
+-- 跟 autowriter-migrations/001 / 007 同样模式.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+        EXECUTE 'GRANT USAGE ON SCHEMA truth_vault TO service_role';
+        EXECUTE 'GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA truth_vault TO service_role';
+        EXECUTE 'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA truth_vault TO service_role';
+        -- 未来在 truth_vault 里新建的表/序列自动继承 service_role 权限
+        EXECUTE 'ALTER DEFAULT PRIVILEGES IN SCHEMA truth_vault GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO service_role';
+        EXECUTE 'ALTER DEFAULT PRIVILEGES IN SCHEMA truth_vault GRANT USAGE, SELECT ON SEQUENCES TO service_role';
+    END IF;
+END $$;
+
+-- 14 张表 ENABLE RLS (不加 policy = 对 anon/authenticated 默认 deny;
+-- service_role rolbypassrls=true 不受影响)
+ALTER TABLE truth_vault.projects                     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE truth_vault.accounts                     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE truth_vault.account_snapshots            ENABLE ROW LEVEL SECURITY;
+ALTER TABLE truth_vault.notes                        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE truth_vault.metric_snapshots             ENABLE ROW LEVEL SECURITY;
+ALTER TABLE truth_vault.posthoc_analyses             ENABLE ROW LEVEL SECURITY;
+ALTER TABLE truth_vault.prepublish_evaluations       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE truth_vault.quality_review_decisions     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE truth_vault.comments                     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE truth_vault.notes_archive                ENABLE ROW LEVEL SECURITY;
+ALTER TABLE truth_vault.audience_calibrations        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE truth_vault.undeclared_fields_quarantine ENABLE ROW LEVEL SECURITY;
+ALTER TABLE truth_vault.note_features                ENABLE ROW LEVEL SECURITY;
+ALTER TABLE truth_vault.audit_log                    ENABLE ROW LEVEL SECURITY;
+
+
+-- ════════════════════════════════════════════════════════════════════
 -- 完成
 -- ════════════════════════════════════════════════════════════════════
--- 
+--
 -- 部署步骤（D-029 顺序）：
 -- 1. 执行本文件（notes_v1_2.sql）—— 创建 truth_vault schema + 所有表 + 内部 views
+--    + GRANT to service_role + ENABLE RLS
 -- 2. sanshengliubu 在 public schema 部署（已有，不动）
 -- 3. autowriter 迁移到 autowriter schema（避免 public.projects 冲突）
 -- 4. 三个 schema 就绪后，执行 notes_v1_2_cross_schema_views.sql
--- 5. 运行 sync 脚本（详见 docs/09-system-integration.md）
+-- 5. 在 Supabase Dashboard → Settings → API → Exposed schemas 把
+--    truth_vault 加进去 (PostgREST 才会注册这个 schema, 否则 sync 脚本
+--    用 Accept-Profile: truth_vault 报 406 Not Acceptable)
+-- 6. 运行 sync 脚本（详见 docs/09-system-integration.md）
