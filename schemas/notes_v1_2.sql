@@ -1014,17 +1014,20 @@ LEFT JOIN truth_vault.v_top_performing_accounts a ON a.account_id = e.account_id
 -- anon caller 被挡. 跟原设计一致.
 
 -- service_role 用本 schema 的能力
-GRANT USAGE ON SCHEMA truth_vault TO service_role;
-
--- 当前表 + 序列 (audit_log 用 BIGSERIAL, 需要 sequence USAGE)
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA truth_vault TO service_role;
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA truth_vault TO service_role;
-
--- 未来新建的表/序列也跟着给 service_role
-ALTER DEFAULT PRIVILEGES IN SCHEMA truth_vault
-    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO service_role;
-ALTER DEFAULT PRIVILEGES IN SCHEMA truth_vault
-    GRANT USAGE, SELECT ON SEQUENCES TO service_role;
+-- 包在 DO + IF EXISTS 里: Supabase 上 service_role 必有, 裸 Postgres (CI /
+-- 自托管 PG) 没有这个角色, 直接 GRANT 会 ERROR role does not exist.
+-- 跟 autowriter-migrations/001 / 007 同样模式.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+        EXECUTE 'GRANT USAGE ON SCHEMA truth_vault TO service_role';
+        EXECUTE 'GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA truth_vault TO service_role';
+        EXECUTE 'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA truth_vault TO service_role';
+        -- 未来在 truth_vault 里新建的表/序列自动继承 service_role 权限
+        EXECUTE 'ALTER DEFAULT PRIVILEGES IN SCHEMA truth_vault GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO service_role';
+        EXECUTE 'ALTER DEFAULT PRIVILEGES IN SCHEMA truth_vault GRANT USAGE, SELECT ON SEQUENCES TO service_role';
+    END IF;
+END $$;
 
 -- 14 张表 ENABLE RLS (不加 policy = 对 anon/authenticated 默认 deny;
 -- service_role rolbypassrls=true 不受影响)
