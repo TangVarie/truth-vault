@@ -9,8 +9,13 @@ Truth Vault 通道 1 集成 patch 包. 部署到 sanshengliubu 仓库 / Supabase
 | `001_add_source_tv_note_id.sql` | 给 `public.reference_samples` 加 `source_truth_vault_note_id` 列 + **partial UNIQUE** 索引 | ⭐ **必做前置** |
 | `002_widen_pack_filter_backfill.sql` | 把旧 source_type='truth_vault_sync' 行回填成 'pack' | 老库迁移用 |
 | `003_strengthen_tv_note_id_unique.sql` | 把老 (普通 INDEX) 升级成 **partial UNIQUE** | 老库 (装过老版 001) 必做 |
+| `004_jobs_table.sql` | R-018: persistent job queue 替代 pipeline orchestrator daemon thread | Sprint 2+ |
+| `005_multi_tenant_workspaces.sql` | R-019 Option B: workspaces + workspace_users + RLS policies | 多租户场景才跑 |
 | `import_truth_vault_baokuan.py` | sanshengliubu 自有工具用的 helper (列名 + quality_score 计算) | 可选 |
 | `README.md` | 本文件 | — |
+
+R-018 (worker process 代码) 和 R-019 决策树详细方案见 truth-vault
+`docs/10-sister-repo-followups.md`.
 
 ## 部署顺序
 
