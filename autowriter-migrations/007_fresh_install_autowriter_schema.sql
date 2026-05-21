@@ -49,6 +49,9 @@ END $$;
 --   Supabase 把扩展函数装在独立的 `extensions` schema, 所以下面 SET LOCAL
 --   search_path 必须把 extensions 包进去, 否则 uuid_generate_v4() / vector()
 --   会报 42883 function does not exist.
+--   先 CREATE SCHEMA IF NOT EXISTS: Supabase 已经有 (no-op), 裸 Postgres
+--   (CI / 自托管) 默认没有, 不显式建会让 WITH SCHEMA extensions 直接报错.
+CREATE SCHEMA IF NOT EXISTS extensions;
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA extensions;
 CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA extensions;
 

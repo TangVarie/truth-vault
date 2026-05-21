@@ -22,6 +22,10 @@
 -- search_path 的话 uuid_generate_v4() 会 42883 function does not exist.
 -- WITH SCHEMA extensions 仅在 fresh install 时生效; 已部署环境 CREATE
 -- EXTENSION IF NOT EXISTS 是 no-op, schema 位置维持原状.
+-- 先 CREATE SCHEMA IF NOT EXISTS extensions: Supabase 早就有 (no-op),
+-- 但 CI / 裸 Postgres 默认没有, 不显式建会让 WITH SCHEMA extensions
+-- 报 42P01 "schema extensions does not exist".
+CREATE SCHEMA IF NOT EXISTS extensions;
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA extensions;
 CREATE SCHEMA IF NOT EXISTS truth_vault;
 
