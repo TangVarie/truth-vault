@@ -1374,20 +1374,20 @@ jobs:
               ('CI_SAT_n4', 'CI_SAT', 'c4', '爆', '造梦投射'),
               ('CI_SAT_n5', 'CI_SAT', 'c5', '爆', '共鸣释放');
           INSERT INTO autowriter.batches (id, project_id) VALUES
-              ('00000000-0000-0000-0000-000000ci0001'::uuid,
+              ('00000000-0000-0000-0000-000000c10001'::uuid,
                '00000000-0000-0000-0000-000000aaaa01'::uuid);
           INSERT INTO autowriter.items
               (id, batch_id, example_label, external_source, external_source_id, created_at)
           VALUES
-              (gen_random_uuid(), '00000000-0000-0000-0000-000000ci0001'::uuid,
+              (gen_random_uuid(), '00000000-0000-0000-0000-000000c10001'::uuid,
                'positive', 'truth_vault', 'CI_SAT_n1', NOW() - INTERVAL '1 hour'),
-              (gen_random_uuid(), '00000000-0000-0000-0000-000000ci0001'::uuid,
+              (gen_random_uuid(), '00000000-0000-0000-0000-000000c10001'::uuid,
                'positive', 'truth_vault', 'CI_SAT_n2', NOW() - INTERVAL '2 hour'),
-              (gen_random_uuid(), '00000000-0000-0000-0000-000000ci0001'::uuid,
+              (gen_random_uuid(), '00000000-0000-0000-0000-000000c10001'::uuid,
                'positive', 'truth_vault', 'CI_SAT_n3', NOW() - INTERVAL '3 hour'),
-              (gen_random_uuid(), '00000000-0000-0000-0000-000000ci0001'::uuid,
+              (gen_random_uuid(), '00000000-0000-0000-0000-000000c10001'::uuid,
                'positive', 'truth_vault', 'CI_SAT_n4', NOW() - INTERVAL '4 hour'),
-              (gen_random_uuid(), '00000000-0000-0000-0000-000000ci0001'::uuid,
+              (gen_random_uuid(), '00000000-0000-0000-0000-000000c10001'::uuid,
                'positive', 'truth_vault', 'CI_SAT_n5', NOW() - INTERVAL '5 hour');
           DO $$
           DECLARE r RECORD;
