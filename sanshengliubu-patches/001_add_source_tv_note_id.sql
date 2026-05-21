@@ -25,11 +25,20 @@
 ALTER TABLE public.reference_samples
     ADD COLUMN IF NOT EXISTS source_truth_vault_note_id TEXT;
 
--- 2. 加索引 (sync 脚本的幂等查询走这个)
--- partial index: 只索引非 NULL 行,节省空间.
-CREATE INDEX IF NOT EXISTS idx_reference_samples_tv_note
+-- 2. 加索引 (sync 脚本的幂等查询走这个).
+--
+-- 2026-05-22 audit P1-3 修复: 必须是 UNIQUE INDEX, 不能只是 INDEX.
+-- 旧版只是普通 index, 在 cron / 手动并发跑时会插重复 reference pack.
+-- (TV sync 脚本本身做应用层去重, 但应用层去重在并发下不是 race-free 的;
+-- 必须在 DB 层有 UNIQUE 约束做最后一道关.)
+-- partial: 只对非 NULL 行加约束, 不影响 sanshengliubu 自建样本.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_reference_samples_tv_note_id_unique
     ON public.reference_samples (source_truth_vault_note_id)
     WHERE source_truth_vault_note_id IS NOT NULL;
+
+-- 老命名兼容: 之前装过 001 旧版本的库可能已经有 idx_reference_samples_tv_note
+-- (非 unique). 让它和新名共存或换名是 003 migration 的工作 — 见
+-- sanshengliubu-patches/003_strengthen_tv_note_id_unique.sql.
 
 -- 3. (可选) 加注释,方便后续 schema 漫游识别意图
 COMMENT ON COLUMN public.reference_samples.source_truth_vault_note_id IS

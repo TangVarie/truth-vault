@@ -46,7 +46,15 @@ example_label 置 NULL — autowriter 不再注入但历史依旧可查）。
                                           后才能透过 RLS 看到 TV-synced rows;
                                           仅当 projects.owner_id 缺失 (异常)
                                           时回退到这个值。新部署不再需要配)
-    AUTOWRITER_INJECTION_MAX_PER_RUN     (默认 5; 每轮最多 sync N 个高分候选)
+    AUTOWRITER_INJECTION_MAX_PER_PROJECT (默认 5; 每个 autowriter 项目每轮最多
+                                          sync N 个高分候选. 2026-05-22 audit
+                                          P1-2 修复: 旧的 MAX_PER_RUN 是全局上限,
+                                          多项目时会让大项目独占名额、小项目饥饿)
+    AUTOWRITER_INJECTION_GLOBAL_CAP      (默认 0=不限; 跨所有项目的硬上限. 设为 N>0
+                                          会在 per-project 选完后用 round-robin
+                                          按分数轮询裁到 N 条以内)
+    AUTOWRITER_INJECTION_MAX_PER_RUN     (DEPRECATED: 兼容旧 cron 用, 现作为
+                                          MAX_PER_PROJECT 的别名读取)
     AUTOWRITER_INJECTION_MIN_SCORE       (默认 0.5; 低于此 score 的候选不 sync)
     AUTOWRITER_INJECTION_MIN_LEVERS      (默认 3; diversity 软目标 — 在条件允许时
                                           确保 top N 至少覆盖 N 个不同 emotional_lever)
@@ -83,7 +91,24 @@ SPECIAL_BATCH_TACTIC = "truth_vault_synced"
 SPECIAL_BATCH_AI_ENGINE = "truth_vault_sync"  # versions.ai_engine 用，v_model_comparison 会排除
 
 # Tunables — env-var configurable so ops can adjust without touching code.
-DEFAULT_INJECTION_MAX_PER_RUN = int(os.environ.get("AUTOWRITER_INJECTION_MAX_PER_RUN", "5"))
+#
+# 2026-05-22 audit P1-2 fix: the cap is now per-autowriter-project, not global.
+# AUTOWRITER_INJECTION_MAX_PER_RUN is kept as a deprecated alias so existing
+# cron envs don't silently break, but new ops should use
+# AUTOWRITER_INJECTION_MAX_PER_PROJECT. With the global cap, high-volume
+# projects could occupy all 5 daily slots and starve smaller projects of
+# few-shot examples. Per-project quotas guarantee each mapped project gets
+# its own fair share; aggregate cap is enforced by --global-cap (default
+# unbounded since per-project quota already caps total at quota × N projects).
+DEFAULT_INJECTION_MAX_PER_PROJECT = int(
+    os.environ.get(
+        "AUTOWRITER_INJECTION_MAX_PER_PROJECT",
+        os.environ.get("AUTOWRITER_INJECTION_MAX_PER_RUN", "5"),
+    )
+)
+DEFAULT_INJECTION_GLOBAL_CAP = int(
+    os.environ.get("AUTOWRITER_INJECTION_GLOBAL_CAP", "0")  # 0 = unbounded
+)
 DEFAULT_INJECTION_MIN_SCORE = float(os.environ.get("AUTOWRITER_INJECTION_MIN_SCORE", "0.5"))
 DEFAULT_INJECTION_MIN_LEVERS = int(os.environ.get("AUTOWRITER_INJECTION_MIN_LEVERS", "3"))
 DEFAULT_EXAMPLE_MAX_AGE_DAYS = int(os.environ.get("AUTOWRITER_EXAMPLE_MAX_AGE_DAYS", "180"))
@@ -167,7 +192,7 @@ def fetch_injection_candidates(sb, project_filter: str | None = None) -> list[di
 
 def apply_diversity_filter(
     candidates: list[dict],
-    max_n: int = DEFAULT_INJECTION_MAX_PER_RUN,
+    max_n: int = DEFAULT_INJECTION_MAX_PER_PROJECT,
     min_levers: int = DEFAULT_INJECTION_MIN_LEVERS,
 ) -> list[dict]:
     """Pick at most `max_n` candidates from the score-sorted list, prioritising
@@ -301,6 +326,16 @@ def ensure_special_batch(sb, aw_project_id: str, project_user_id: str,
     aw_project_id so re-runs across machines produce the same batch_id;
     avoids ON CONFLICT plumbing on a table that doesn't yet have a unique
     constraint on (project_id, tactic).
+
+    Self-heal (2026-05-22 audit P0/P1-1): if the batch already exists but its
+    user_id doesn't match the current project owner (i.e., upgrade from an
+    old install where TV sync wrote a service-account UUID), we UPDATE it
+    here. AutoWriter's list_example_items() filters via batches!inner
+    (project_id) — when RLS hides the batch row from the owner's JWT, the
+    embedded join filters out all items in the batch, even items whose
+    user_id is correct. Without this self-heal we'd be relying on operators
+    to remember to run autowriter-migrations/006_backfill_tv_synced_user_id.sql
+    after upgrading, and we'd silently fail on missed installs.
     """
     # Deterministic UUID5 based on project_id + tactic
     namespace = uuid.UUID("00000000-0000-0000-0000-000000000000")
@@ -311,15 +346,54 @@ def ensure_special_batch(sb, aw_project_id: str, project_user_id: str,
                     batch_id, aw_project_id)
         return batch_id
 
-    # Try to find the batch first; if missing, create it
+    # Try to find the batch first; if missing, create it. Select user_id
+    # and project_id so we can detect drift from the current canonical
+    # (project_user_id, aw_project_id) tuple.
     existing = (
         sb.schema("autowriter")
         .table("batches")
-        .select("id")
+        .select("id, user_id, project_id")
         .eq("id", batch_id)
+        .limit(1)
         .execute()
     )
     if existing.data:
+        row = existing.data[0]
+        existing_user = row.get("user_id")
+        existing_proj = row.get("project_id")
+
+        repair: dict[str, Any] = {}
+        if existing_user != project_user_id:
+            repair["user_id"] = project_user_id
+            logger.warning(
+                "special batch %s has stale user_id=%s; self-healing to "
+                "project owner_id=%s (resolves RLS visibility for owner JWT). "
+                "This typically means an upgraded library never ran "
+                "autowriter-migrations/006_backfill_tv_synced_user_id.sql.",
+                batch_id, existing_user, project_user_id,
+            )
+        if existing_proj != aw_project_id:
+            # This would be schema corruption: same UUID5 keyed batch but
+            # pointing at a different project. Refuse to silently rewrite.
+            raise RuntimeError(
+                f"special batch {batch_id} has project_id={existing_proj} "
+                f"but UUID5 derivation expects {aw_project_id} — schema "
+                "corruption, refuse to update. Investigate manually."
+            )
+        if repair:
+            res = (
+                sb.schema("autowriter")
+                .table("batches")
+                .update(repair)
+                .eq("id", batch_id)
+                .execute()
+            )
+            if not (res.data or []):
+                raise RuntimeError(
+                    f"failed to self-heal batch {batch_id} user_id — "
+                    "UPDATE matched no rows (RLS or row vanished). "
+                    "Manual fix required."
+                )
         return batch_id
 
     # Create
@@ -572,10 +646,27 @@ def main() -> int:
     parser.add_argument("--project")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
-        "--max-per-run", type=int, default=DEFAULT_INJECTION_MAX_PER_RUN,
-        help="Sync at most N high-score candidates this run (default: env "
-             "AUTOWRITER_INJECTION_MAX_PER_RUN or 5). The remainder stay "
-             "pending; they'll compete in the next run after recency decay.",
+        "--max-per-project", type=int, default=DEFAULT_INJECTION_MAX_PER_PROJECT,
+        help="Sync at most N high-score candidates per autowriter project per "
+             "run (default: env AUTOWRITER_INJECTION_MAX_PER_PROJECT or "
+             "AUTOWRITER_INJECTION_MAX_PER_RUN or 5). Each project gets its "
+             "own diversity filter pass and quota; no project starves another.",
+    )
+    parser.add_argument(
+        "--max-per-run", type=int, default=None,
+        help="DEPRECATED (2026-05-22 audit P1-2): was a global cap. Now treated "
+             "as alias for --max-per-project (since the global cap was the "
+             "source of project-starvation bugs). Use --global-cap if you "
+             "actually want a hard aggregate ceiling across all projects.",
+    )
+    parser.add_argument(
+        "--global-cap", type=int, default=DEFAULT_INJECTION_GLOBAL_CAP,
+        help="Hard ceiling on total candidates synced across all projects this "
+             "run (default: env AUTOWRITER_INJECTION_GLOBAL_CAP or 0 = unbounded). "
+             "When set > 0, after per-project picks are made, we round-robin "
+             "across projects in descending score order and stop at this cap. "
+             "Set this if you want to bound total cost/quota even when many "
+             "new projects come online.",
     )
     parser.add_argument(
         "--min-score", type=float, default=DEFAULT_INJECTION_MIN_SCORE,
@@ -587,6 +678,23 @@ def main() -> int:
              "on TV-synced items older than 6 months).",
     )
     args = parser.parse_args()
+
+    # Handle deprecated --max-per-run alias.
+    if args.max_per_run is not None:
+        if args.max_per_project != DEFAULT_INJECTION_MAX_PER_PROJECT:
+            logger.warning(
+                "both --max-per-run (=%d) and --max-per-project (=%d) supplied; "
+                "--max-per-project takes precedence. Remove --max-per-run from cron.",
+                args.max_per_run, args.max_per_project,
+            )
+        else:
+            args.max_per_project = args.max_per_run
+            logger.warning(
+                "--max-per-run is deprecated (2026-05-22 audit P1-2) — treating "
+                "as --max-per-project=%d. Please update cron/Actions to use "
+                "--max-per-project explicitly.",
+                args.max_per_run,
+            )
 
     # AUTOWRITER_SYNC_USER_ID is now a fallback only — see module docstring
     # "RLS 兼容性". We use autowriter.projects.owner_id as the canonical
@@ -625,10 +733,71 @@ def main() -> int:
             len(candidates) - len(above_threshold), args.min_score,
         )
 
-    # Diversity pick + per-run cap
-    selected = apply_diversity_filter(above_threshold, max_n=args.max_per_run)
-    logger.info("Selected %d / %d candidates for this run (cap=%d)",
-                len(selected), len(above_threshold), args.max_per_run)
+    # Per-project diversity pick + per-project cap (2026-05-22 audit P1-2).
+    # Group candidates by aw_project_id so each project gets its own diversity
+    # pass; this prevents a high-volume project from occupying the entire
+    # global slate. Old behavior: apply_diversity_filter on the flat list,
+    # which silently starved smaller projects when scores tilted toward one.
+    by_project: dict[str, list[dict]] = {}
+    for c in above_threshold:
+        by_project.setdefault(c["aw_project_id"], []).append(c)
+
+    selected: list[dict] = []
+    per_project_log: dict[str, tuple[int, int]] = {}  # aw_proj → (picked, pool)
+    for aw_proj, pool in by_project.items():
+        # The view returns score-sorted overall; we re-sort within the project
+        # bucket so per-project diversity_filter sees its own top picks first.
+        pool.sort(key=lambda r: r["injection_score"], reverse=True)
+        picks = apply_diversity_filter(pool, max_n=args.max_per_project)
+        selected.extend(picks)
+        per_project_log[aw_proj] = (len(picks), len(pool))
+
+    # Optional global cap. When set, we sort the union by score and trim, but
+    # we sort within each project first so the cut preserves per-project fairness:
+    # if global_cap=10 and 3 projects each picked 5, the cut should leave
+    # 4/3/3 (or similar round-robin), not 5/5/0.
+    if args.global_cap > 0 and len(selected) > args.global_cap:
+        # Round-robin by descending score within each project; take in waves
+        # until we hit the cap.
+        per_proj_queues: list[list[dict]] = [
+            sorted(by_project[p], key=lambda r: r["injection_score"], reverse=True)
+            for p in by_project
+        ]
+        # Filter each queue to only items we already selected (project picks)
+        selected_ids = {c["note_id"] for c in selected}
+        per_proj_queues = [
+            [c for c in q if c["note_id"] in selected_ids] for q in per_proj_queues
+        ]
+        rr_selected: list[dict] = []
+        idx = 0
+        while len(rr_selected) < args.global_cap:
+            advanced = False
+            for q in per_proj_queues:
+                if idx < len(q) and len(rr_selected) < args.global_cap:
+                    rr_selected.append(q[idx])
+                    advanced = True
+            if not advanced:
+                break
+            idx += 1
+        logger.info(
+            "Global cap %d applied: %d → %d selected (round-robin by project).",
+            args.global_cap, len(selected), len(rr_selected),
+        )
+        selected = rr_selected
+
+    # Log per-project selection so operators can spot starved projects
+    # (e.g., aw_proj=X pool=80 picked=5 means project X has lots of pending,
+    # which is healthy; pool=0 picked=0 means truly nothing eligible).
+    for aw_proj, (picked, pool) in per_project_log.items():
+        logger.info(
+            "  aw_project=%s: picked=%d / pool=%d (cap=%d)",
+            aw_proj, picked, pool, args.max_per_project,
+        )
+    logger.info(
+        "Selected %d candidates across %d projects (per-project cap=%d, global_cap=%s)",
+        len(selected), len(by_project), args.max_per_project,
+        args.global_cap if args.global_cap > 0 else "unbounded",
+    )
 
     # Group by aw_project_id so we create each special batch only once.
     # owner_cache is keyed by aw_project_id so we only query projects.owner_id

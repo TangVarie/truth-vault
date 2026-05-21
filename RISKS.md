@@ -190,6 +190,101 @@
   cron 的 refresh job（适合按小时刷新即可的看板）。
 - **Owner**：DB / 数据负责人
 
+### R-017 · AutoWriter requirements.txt 无上限, 长期会漂移 [audit 2026-05-22 P2-7]
+
+- **是什么**: AutoWriter 仓 `requirements.txt` 只用 `>=` 没有上限 (`streamlit>=1.30.0`,
+  `anthropic>=0.40.0`, `google-genai>=0.5.0`, `supabase>=2.0.0`). 也没有
+  `requirements.lock`. TV 自己的 scripts/requirements.lock 已经锁定; 这个风险
+  只挂在 AutoWriter 仓.
+- **后果**: 任意一次 fresh deploy 或 `pip install -U` 就可能引入 Streamlit /
+  Supabase-py / Anthropic SDK 的 breaking change. PostgREST 查询参数, Streamlit
+  session_state 行为, Anthropic / Google client 的入参都换过. TV 通道 2 写入
+  靠 supabase-py 的 schema-aware client (autowriter/db.py), supabase-py 一升
+  小版本就可能让 list_example_items() 的 embedded join 解析失败 —— 飞轮静默断.
+- **检测**: 跑 `pip install -r autowriter/requirements.txt && python -c "from autowriter import db; db.get_client()"`
+  烟雾测试; 如果 PostgREST schema 选择或 RLS 走不通就报错.
+- **缓解**: 在 **AutoWriter 仓** 加上限 + 生成 lock:
+  ```bash
+  cd autowriter/
+  echo 'streamlit>=1.30.0,<2.0' > requirements.txt
+  echo 'anthropic>=0.40.0,<1.0' >> requirements.txt
+  echo 'google-genai>=0.5.0,<1.0' >> requirements.txt
+  echo 'supabase>=2.0.0,<3.0' >> requirements.txt
+  pip-compile requirements.txt -o requirements.lock --resolver=backtracking
+  ```
+  CI 至少跑 `pip install -r requirements.txt && python -c 'import autowriter'`.
+- **Owner**: AutoWriter 维护者
+
+### R-018 · 业务项目用 daemon thread 处理后台任务, 重启即丢 [audit 2026-05-22 P2-8]
+
+- **是什么**: AutoWriter `app.py` 的 `_queue_worker` / `_quick_gen_worker` 和
+  sanshengliubu `pipeline/orchestrator.py` 的 `_thread_target` 都用
+  `threading.Thread(daemon=True)` 在 Streamlit 进程内跑生成 / 流水线任务.
+- **后果**: Streamlit 进程被 reload / 容器滚动发布 / OOM 被 kill 时, 正在跑
+  的 batch / pipeline run 直接丢. UI 上显示 "running" 但实际死掉; 用户看到
+  "偶发卡死".
+- **检测**: 在 staging 上启动 batch → 立刻 `pkill streamlit` → 重启后看
+  autowriter.batches.status 是否还是 running 但没新 version 进来.
+- **缓解**: 在两个业务项目仓库中, 把任务移到 DB-backed job queue:
+  - 新增 `jobs` 表 (id, kind, payload, status, claimed_by, claimed_at, heartbeat_at,
+    error_text, started_at, finished_at).
+  - Streamlit 只 INSERT job + 显示状态; 独立 worker (long-running py process,
+    docker --restart unless-stopped) 轮询领取 + 心跳 + 超时回收.
+  - 这是侵入性改动, 建议放 Sprint 2+ 做.
+- **Owner**: AutoWriter 维护者 + sanshengliubu 维护者
+
+### R-019 · sanshengliubu fresh schema 关 RLS — 单租户假设没写明 [audit 2026-05-22 P2-6]
+
+- **是什么**: `sanshengliubu-main/db/schema.sql:117-121` 显式 `ALTER TABLE ...
+  DISABLE ROW LEVEL SECURITY` 对 5 张主表 (projects / pipeline_runs / stage_logs
+  / outputs / reference_samples). 适合 single-tenant MVP, 但部署文档没强调.
+- **后果**: 如果 ssll 后续接入第二个客户 / 第二个品牌, 共用同一个 Supabase
+  时所有数据互相可见 (anon / authenticated JWT 都能 SELECT * 跨项目).
+- **检测**: `SELECT relname, relrowsecurity FROM pg_class JOIN pg_namespace
+  ON relnamespace=pg_namespace.oid WHERE nspname='public' AND relrowsecurity=false;`
+- **缓解**: 在 **sanshengliubu 仓** 二选一:
+  - (a) 在 README.md / 部署文档头部写明 "**单租户假设**: 这套 schema 默认所有
+    项目共享一个用户/工作区. 多租户场景需要先实现 workspace_id + RLS policy."
+  - (b) 引入 `workspace_id` 列 + 改 RLS policy `USING (workspace_id = (SELECT
+    current_workspace_id()))`. TV sync 用 service_role 仍能写 (绕过 RLS), 但
+    前端 anon/auth 读自动受限.
+- **Owner**: sanshengliubu 维护者 (产品方向决定 a 或 b)
+
+### R-020 · 业务项目超大单文件, 改动成本高 [audit 2026-05-22 P2-9]
+
+- **是什么**:
+  - autowriter/app.py: 4,669 行
+  - autowriter/db.py: 2,216 行
+  - autowriter/memory.py: 2,153 行
+  - autowriter/generator.py: 1,724 行
+  - sanshengliubu/pipeline/orchestrator.py: 4,146 行
+  - sanshengliubu/pages/3_pipeline_detail.py: 1,958 行
+  - sanshengliubu/pipeline/agents/__init__.py: 1,602 行
+- **后果**: 不是 bug, 但每次改 sync / RLS / sample selection 都容易碰到远处
+  副作用. 长期会让 audit / review / 改造成本不断上升.
+- **缓解**: 先拆 DB / repository 层和 sync / job 层 (这两块改动频率最高),
+  不要先做 UI 大重构. 给拆出的模块补最小单元测试. 保持原入口函数不变,
+  逐步迁移. 仍是 Sprint 2+ 工作.
+- **Owner**: AutoWriter 维护者 + sanshengliubu 维护者
+
+### R-021 · 缺 staging E2E 验证 (auth/RLS + 真实 PostgREST join) [audit 2026-05-22 P2/P3-10]
+
+- **是什么**: TV CI 主要是 shape / SQL / fake client 测试, 但 service_role
+  写 → owner JWT 读 (真 RLS) 的端到端在 staging 上没跑过.
+- **后果**: TV sync 用 service_role 写 batches/items 后, 项目 owner 用真实
+  JWT 通过 PostgREST 走 `batches!inner(project_id)` embedded join 是否真能拿
+  到 positive examples — 这是飞轮 sync 链路的最后一公里, 静态分析覆盖不到.
+- **缓解**: 部署前在 staging Supabase 至少跑一次:
+  1. service_role 跑 `sync_truth_vault_baokuan_to_autowriter_items.py --dry-run`
+     然后实跑 1 条
+  2. 用真实 project owner 的 JWT 走 PostgREST 查 `autowriter.items?select=*,batches!inner(project_id)&batches.project_id=eq.<aw_project>&example_label=eq.positive`,
+     验证能查到 step 1 写入的行
+  3. 重跑 step 1, 验证 `synced=0, deduped=1` (幂等)
+  4. 在 AutoWriter UI 把那个 item 设 `needs_revision`,
+     跑 `sync_autowriter_decisions_to_prepublish.py`, 验证 `prepublish_evaluations`
+     里出现对应 row, 重跑 → race_skipped=1
+- **Owner**: 工程师 (脚本) + Ziao (准 staging Supabase 实例 + 真实用户 JWT)
+
 ---
 
 ## 已关闭风险 (历史档案)

@@ -140,7 +140,9 @@ jobs:
         run: |
           DRYRUN=""
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRYRUN="--dry-run"
-          # 90 天窗口足够日 cron; 第一次部署时可能要手动跑一次 --since-days 0 全量回填
+          # 2026-05-22 audit P1/P2-4: 默认 365 天窗口足够日 cron 抓到迟到决策;
+          # autowriter.items 没有 updated_at 列, 我们按 created_at 滚动取. 月度
+          # 可以跑一次 --since-days 0 全扫补漏 (在另一个 workflow / 手动 cron).
           python sync_autowriter_decisions_to_prepublish.py $DRYRUN || {
             echo "::warning::prepublish_evaluations sync failed (non-blocking)"
           }

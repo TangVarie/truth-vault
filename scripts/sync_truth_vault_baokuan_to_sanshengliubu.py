@@ -317,19 +317,73 @@ def existing_ssll_sample_id(sb, note_id: str) -> str | None:
     return None
 
 
+def _is_duplicate_error(exc: Exception) -> bool:
+    """Detect Postgres unique-constraint violations from supabase-py.
+
+    Same heuristic as the AutoWriter sync script: checks SQLSTATE 23505 in
+    multiple possible attribute locations because supabase-py wraps the
+    PostgREST error inconsistently across versions.
+    """
+    code = getattr(exc, "code", None) or getattr(exc, "pgcode", None)
+    if code == "23505":
+        return True
+    msg = str(exc)
+    return "23505" in msg or "duplicate key value violates" in msg
+
+
 def insert_reference_sample(sb, sample: dict, dry_run: bool = False) -> str:
+    """Insert a reference_samples row, recovering from concurrent dupes.
+
+    2026-05-22 audit P1-3 update: the existing_ssll_sample_id() check runs
+    before this in main(), but it's a separate query — a concurrent worker
+    could insert the same source_truth_vault_note_id between our SELECT and
+    INSERT. With the new partial UNIQUE index
+    (sanshengliubu-patches/003), that race now surfaces as 23505 instead
+    of silent duplicate rows. We catch it here and recover by looking up
+    the winning row's id, so the caller's mark_synced() still gets a real
+    sample_id to write back to truth_vault.notes.
+    """
+    note_id = sample.get("source_truth_vault_note_id")
     if dry_run:
         logger.info("[dry-run] would insert reference_sample id=%s for note %s",
-                    sample["id"], sample["ai_analysis"]["_truth_vault_note_id"])
+                    sample["id"], note_id or "(no note id)")
         return sample["id"]
-    # public.reference_samples — sanshengliubu's schema, explicit
-    (
-        sb.schema("public")
-        .table("reference_samples")
-        .insert(sample)
-        .execute()
-    )
-    return sample["id"]
+    try:
+        (
+            sb.schema("public")
+            .table("reference_samples")
+            .insert(sample)
+            .execute()
+        )
+        return sample["id"]
+    except Exception as exc:
+        if not _is_duplicate_error(exc):
+            raise
+        # Race recovery: another worker won. Look up its id by the canonical
+        # idempotency key so we still return a real UUID to the caller.
+        if not note_id:
+            # The dup wasn't on our key but on something else (e.g., primary
+            # key collision from a re-used uuid). Re-raise so we don't claim
+            # success for a row we didn't write.
+            raise
+        existing = (
+            sb.schema("public")
+            .table("reference_samples")
+            .select("id")
+            .eq("source_truth_vault_note_id", note_id)
+            .limit(1)
+            .execute()
+        )
+        if not existing.data:
+            # 23505 said dup but the lookup found nothing — schema drift or
+            # the row was deleted between INSERT and SELECT. Re-raise.
+            raise
+        winner_id = existing.data[0]["id"]
+        logger.info(
+            "race recovery: concurrent run inserted reference_sample %s for "
+            "note %s first; treating as success", winner_id, note_id,
+        )
+        return winner_id
 
 
 def mark_synced(sb, note_id: str, sample_id: str, dry_run: bool = False) -> None:
