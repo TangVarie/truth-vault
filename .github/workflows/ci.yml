@@ -639,6 +639,61 @@ jobs:
           print("  ✓ critical fields populated (post_title/post_body/quality_score/lineage)")
           print("\nsanshengliubu sync shape: all 4 checks passed")
           PY
+      - name: essence vocab migration loader self-check
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          import tempfile, yaml
+          from pathlib import Path
+          import migrate_essence_vocab as m
+
+          def write_yaml(d):
+              with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+                  yaml.safe_dump(d, f, allow_unicode=True)
+              return Path(f.name)
+
+          # 1. Valid yaml loads
+          p = write_yaml({
+              "vocab_version_from": "v0.2",
+              "vocab_version_to": "v0.3",
+              "target_essence_vocab_version": "v0.3",
+              "emotional_lever": {"焦虑撬动": "焦虑触发"},
+              "human_truth_archetype": {"情感缺位": "情感真空"},
+          })
+          loaded = m.load_migration(p)
+          assert loaded["emotional_lever"]["焦虑撬动"] == "焦虑触发"
+          print("  ✓ valid yaml loads")
+
+          # 2. Unknown column rejected
+          p = write_yaml({
+              "vocab_version_from": "v0.2", "vocab_version_to": "v0.3",
+              "target_essence_vocab_version": "v0.3",
+              "made_up_column": {"x": "y"},
+          })
+          try:
+              m.load_migration(p)
+              raise AssertionError("should have rejected")
+          except ValueError as e:
+              assert "unknown migration columns" in str(e)
+              print("  ✓ unknown column rejected")
+
+          # 3. Missing required keys
+          p = write_yaml({"vocab_version_from": "v0.2"})
+          try:
+              m.load_migration(p)
+              raise AssertionError("should have rejected")
+          except ValueError as e:
+              assert "missing required keys" in str(e)
+              print("  ✓ missing keys rejected")
+
+          # 4. Known scalar/array column split
+          assert "emotional_lever" in m._SCALAR_COLS
+          assert "human_truth_archetype" in m._ARRAY_COLS
+          assert "content_format" in m._SCALAR_COLS
+          assert "trend_dependencies" in m._ARRAY_COLS
+          print("  ✓ scalar/array column buckets correct")
+          print("\nmigrate_essence_vocab: 4 cases passed")
+          PY
       - name: comment threading validator self-check
         working-directory: scripts
         run: |
