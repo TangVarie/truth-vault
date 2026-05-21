@@ -18,10 +18,14 @@
 -- 直接在 Supabase SQL Editor 执行（先 CREATE SCHEMA truth_vault）。
 -- ════════════════════════════════════════════════════════════════════
 
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+-- Supabase 把扩展函数装在独立 `extensions` schema. 没把 extensions 加进
+-- search_path 的话 uuid_generate_v4() 会 42883 function does not exist.
+-- WITH SCHEMA extensions 仅在 fresh install 时生效; 已部署环境 CREATE
+-- EXTENSION IF NOT EXISTS 是 no-op, schema 位置维持原状.
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA extensions;
 CREATE SCHEMA IF NOT EXISTS truth_vault;
 
-SET search_path TO truth_vault, public;
+SET search_path TO truth_vault, public, extensions;
 
 
 -- ════════════════════════════════════════════════════════════════════
