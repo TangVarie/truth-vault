@@ -1,0 +1,144 @@
+name: Daily TV sync
+
+# Default: 仅手动触发 (workflow_dispatch). schedule 留为注释, 等仓库 secrets
+# 都配齐后再启用. 这样仓库刚 clone 下来不会自动每天 fail 给你发邮件.
+#
+# 启用步骤:
+#   1. Settings → Secrets and variables → Actions → New repository secret 配齐:
+#        SUPABASE_URL
+#        SUPABASE_SERVICE_ROLE_KEY
+#        FEISHU_APP_ID, FEISHU_APP_SECRET
+#        AUTOWRITER_SYNC_USER_ID
+#        ANTHROPIC_API_KEY   (annotation pass 用; 可选)
+#        ESSENCE_MODEL       (默认 claude-sonnet-4-6; 可选)
+#   2. 在下方 on: 块里把 schedule 那段取消注释
+#   3. 第一次手动 Run workflow 验证一遍 (dry_run=true)
+#
+# 失败会自动给 repo owner 发邮件 (GitHub 默认行为, 无需额外配置 Slack/飞书 webhook).
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (no writes to Supabase)"
+        type: boolean
+        default: false
+      skip_essence:
+        description: "Skip Mode A essence annotation (saves Anthropic spend)"
+        type: boolean
+        default: false
+  # schedule:
+  #   # 02:00 UTC = 10:00 北京时间. 飞书表通常这之前已经填好昨日数据.
+  #   - cron: '0 2 * * *'
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+      FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+      AUTOWRITER_SYNC_USER_ID: ${{ secrets.AUTOWRITER_SYNC_USER_ID }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      ESSENCE_MODEL: ${{ secrets.ESSENCE_MODEL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: pip install -r scripts/requirements.txt
+
+      - name: Check secrets are configured (gracefully skip if not)
+        id: check
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
+            echo "::warning::SUPABASE_URL/KEY not configured; skipping sync."
+            echo "See .github/workflows/daily-sync.yml header for setup steps."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: feishu → TV (per project from mappings/)
+        if: steps.check.outputs.skip != 'true' && env.FEISHU_APP_ID != ''
+        working-directory: scripts
+        run: |
+          DRYRUN=""
+          [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRYRUN="--dry-run"
+          # Loop over real project mapping yamls (skip _template). Each project
+          # syncs independently so one failing doesn't take the others down.
+          for f in ../mappings/*.yaml; do
+            p=$(basename "$f" .yaml)
+            [ "$p" = "_template" ] && continue
+            echo "─── feishu → TV · project=$p ───"
+            python sync_feishu_notes_to_truth_vault.py "$p" $DRYRUN || {
+              echo "::warning::feishu sync failed for $p (continuing other projects)"
+            }
+          done
+
+      - name: comments raw_extra → truth_vault.comments
+        if: steps.check.outputs.skip != 'true'
+        working-directory: scripts
+        run: |
+          DRYRUN=""
+          [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRYRUN="--dry-run"
+          for f in ../mappings/*.yaml; do
+            p=$(basename "$f" .yaml)
+            [ "$p" = "_template" ] && continue
+            echo "─── comments parse · project=$p ───"
+            python sync_comments_from_raw_extra.py "$p" $DRYRUN || {
+              echo "::warning::comments parse failed for $p"
+            }
+          done
+
+      - name: essence + sub_direction annotation (Mode A, D-028 独立 pass)
+        if: steps.check.outputs.skip != 'true' && env.ANTHROPIC_API_KEY != '' && github.event.inputs.skip_essence != 'true'
+        working-directory: scripts
+        run: |
+          DRYRUN=""
+          [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRYRUN="--dry-run"
+          for f in ../mappings/*.yaml; do
+            p=$(basename "$f" .yaml)
+            [ "$p" = "_template" ] && continue
+            echo "─── essence annotate · project=$p ───"
+            # --limit 50 per run as a soft budget cap;
+            # NUC pilot estimate ≈ ¥200-400 for full 1102 rows.
+            python annotate_essence_pass.py "$p" --limit 50 $DRYRUN || {
+              echo "::warning::essence annotation failed for $p"
+            }
+          done
+
+      - name: TV 爆款 → sanshengliubu.reference_samples (通道 1)
+        if: steps.check.outputs.skip != 'true'
+        working-directory: scripts
+        run: |
+          DRYRUN=""
+          [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRYRUN="--dry-run"
+          python sync_truth_vault_baokuan_to_sanshengliubu.py $DRYRUN
+
+      - name: TV 爆款 → autowriter.items (通道 2, 含 score+diversity+retire)
+        if: steps.check.outputs.skip != 'true' && env.AUTOWRITER_SYNC_USER_ID != ''
+        working-directory: scripts
+        run: |
+          DRYRUN=""
+          [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRYRUN="--dry-run"
+          python sync_truth_vault_baokuan_to_autowriter_items.py $DRYRUN
+
+      - name: Show flywheel status (truth_vault.v_flywheel_sync_status)
+        if: steps.check.outputs.skip != 'true' && always()
+        working-directory: scripts
+        run: |
+          python - <<'PY' || true
+          from _common import get_supabase_client
+          sb = get_supabase_client()
+          res = sb.schema("truth_vault").table("v_flywheel_sync_status").select("*").execute()
+          for r in (res.data or []):
+              print(
+                f"  {r['project_id']:<16} "
+                f"baokuan={r['total_baokuan']:>3} | "
+                f"→ssll {r['synced_to_ssll']:>3}/{r['pending_ssll_sync']:>3} | "
+                f"→aw {r['synced_to_aw']:>3}/{r['pending_aw_sync']:>3} | "
+                f"last_ssll={r['last_baokuan_sync_to_ssll_at']} "
+                f"last_aw={r['last_baokuan_sync_to_aw_at']}"
+              )
+          PY
