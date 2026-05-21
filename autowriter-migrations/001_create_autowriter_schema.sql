@@ -48,7 +48,22 @@ BEGIN
         END IF;
     END LOOP;
 END $$;
-GRANT USAGE ON SCHEMA autowriter TO anon, authenticated, service_role;
+-- Schema USAGE grants — PostgREST 用 anon/authenticated 接 PostgreSQL 时，
+-- 需要 USAGE on schema 才能"进门"，再加表级 GRANT 才能动数据。
+-- 包在 DO + IF EXISTS 里：Supabase 上 3 个 role 都存在 → 都 grant；
+-- 裸 PG 环境（CI test fixture）3 个 role 都不存在 → 跳过，不报错。
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+        EXECUTE 'GRANT USAGE ON SCHEMA autowriter TO anon';
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+        EXECUTE 'GRANT USAGE ON SCHEMA autowriter TO authenticated';
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+        EXECUTE 'GRANT USAGE ON SCHEMA autowriter TO service_role';
+    END IF;
+END $$;
 -- uuid-ossp 用于 autowriter 表的 UUID 默认值 (生产 schema 已开)
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
