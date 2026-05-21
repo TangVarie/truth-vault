@@ -203,6 +203,8 @@ sanshengliubu-patches/         (跑 001_add_source_tv_         autowriter-migrat
 
 ## 接下来读什么
 
+如果你的目标是**动手部署**，先跳到 **[IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md)** —— 它包含完整的 step-by-step 命令 + 验证 + 排错矩阵, 不依赖任何其他文档背景知识就能跑.
+
 完成 Day 1 checklist 后，按角色读：
 
 - **工程实施** → `scripts/README.md` + `sanshengliubu-patches/README.md` + `autowriter-migrations/RUNBOOK.md`

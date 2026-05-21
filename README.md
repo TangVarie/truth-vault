@@ -98,6 +98,7 @@ Schema 起点决定上限。在 v1 第一版就要包含 essence 层和 audience
 truth-vault/
 ├── README.md                          ← 本文件 · 项目宪法 (30 秒上手)
 ├── ONBOARDING.md                      ← 新人第一周 checklist ⭐ 第一次接手必读
+├── IMPLEMENTATION_GUIDE.md            ← 部署 + 集成实操手册 ⭐ 动手前必读
 ├── CURRENT_STATE.md                   ← 当前进度快照 · Sprint 0 scope
 ├── DECISIONS.md                       ← 决策日志 D-001 ~ D-035 (只追加)
 ├── RISKS.md                           ← 生产风险登记
@@ -168,9 +169,10 @@ truth-vault/
 | 0 ⭐ | [ONBOARDING.md](ONBOARDING.md) | **第一次接手必读** · 第一周 checklist + 找谁要凭证 + FAQ |
 | 1 | 本文件 (README.md) | 项目边界、原则、栈、四层架构 |
 | 2 | [CURRENT_STATE.md](CURRENT_STATE.md) | 当前 sprint scope + 已知 gap |
-| 3 | [docs/09-system-integration.md](docs/09-system-integration.md) ⭐ | 双通道集成 (核心) |
-| 4 | [docs/01-architecture.md](docs/01-architecture.md) | 三层架构 (Surface/Essence/Audience) |
-| 5 | [DECISIONS.md](DECISIONS.md) | D-001 ~ D-035 决策考古 |
+| 3 ⭐ | [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md) | **动手部署/集成时的实操手册** · step-by-step 命令 + 验证 + 排错矩阵 |
+| 4 | [docs/09-system-integration.md](docs/09-system-integration.md) ⭐ | 双通道集成 (核心理论) |
+| 5 | [docs/01-architecture.md](docs/01-architecture.md) | 三层架构 (Surface/Essence/Audience) |
+| 6 | [DECISIONS.md](DECISIONS.md) | D-001 ~ D-035 决策考古 |
 | 6 | [RISKS.md](RISKS.md) | 生产前会咬人的事 |
 
 ### 部署 / 实施 · 按需读
