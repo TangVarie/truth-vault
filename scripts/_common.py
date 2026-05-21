@@ -131,8 +131,14 @@ def get_supabase_client() -> Client:
 _MAPPINGS_DIR = Path(__file__).resolve().parent.parent / "mappings"
 
 
+_ALLOWED_TIER_SOURCES = {"状态字段", "备注字段"}
+
+
 def load_mapping(project_id: str) -> dict:
-    """Load `mappings/<project_id>.yaml`. Validates required keys exist."""
+    """Load `mappings/<project_id>.yaml`. Validates required keys exist
+    and that any closed-set fields (e.g. tier_extraction.source) have
+    legal values.
+    """
     path = _MAPPINGS_DIR / f"{project_id}.yaml"
     if not path.exists():
         raise FileNotFoundError(f"Mapping yaml not found: {path}")
@@ -147,6 +153,19 @@ def load_mapping(project_id: str) -> dict:
             f"{path}: project_id in yaml ({m['project_id']!r}) "
             f"does not match filename ({project_id!r})"
         )
+    # tier_extraction.source picks which intermediate (_status_raw vs
+    # _note_for_tier) the rule engine reads. A typo in the yaml ("souce",
+    # "状态") used to silently fall back to "状态字段" via .get(default),
+    # which means C-family projects (TGV/QSHG that map 备注→_note_for_tier)
+    # would silently drop their tier. Reject unknown values here instead.
+    tier_extraction = m.get("tier_extraction") or {}
+    if "source" in tier_extraction:
+        src = tier_extraction["source"]
+        if src not in _ALLOWED_TIER_SOURCES:
+            raise ValueError(
+                f"{path}: tier_extraction.source={src!r} not in "
+                f"{sorted(_ALLOWED_TIER_SOURCES)}. Check for typos."
+            )
     return m
 
 

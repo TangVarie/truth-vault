@@ -143,11 +143,16 @@ def query_source_b(sb, aw_project_id: str | None = None) -> Set[str]:
     confirmed: Set[str] = set()
     for item_id, versions in by_item.items():
         # find the earliest feedback-bearing revised version that qualifies
+        # isinstance(fb, str) guard: feedback is documented as text but
+        # historical autowriter rows have stored lists/dicts in this column
+        # (jsonb_legacy quirk). Calling .strip() on non-str would crash mid-
+        # scan; type-checking it as a string is what the "user wrote text
+        # feedback" signal actually means.
         feedback_revised = [
             v_num for v_num, engine, fb in versions
             if engine != "manual"
-            and fb is not None
-            and (fb or "").strip() not in ("", "手动精修")
+            and isinstance(fb, str)
+            and fb.strip() not in ("", "手动精修")
         ]
         if not feedback_revised:
             continue

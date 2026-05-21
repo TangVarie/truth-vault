@@ -418,20 +418,59 @@ def build_retry_prompt(original_prompt: str, raw_first_attempt: str,
 # Anthropic call (deferred import so --dry-run works without the SDK)
 # ─────────────────────────────────────────────────────────────────────────
 
-def call_claude(prompt: str, model: str) -> str:
-    """Single Mode A call. Lazy-imports anthropic so --dry-run can work
-    even if the package or env var aren't set."""
+def call_claude(prompt: str, model: str, *, max_attempts: int = 3) -> str:
+    """Single Mode A call with exponential-backoff retry on transient errors.
+
+    Lazy-imports anthropic so --dry-run works without the SDK installed.
+
+    Retry policy: up to `max_attempts` total, with 2s/4s/8s backoff between
+    attempts. Retries only on transient classes (rate limit, network blip,
+    5xx). Validation or permission errors fail fast — they'd repeat the
+    same way. The validation-retry layer (`_annotate_with_retry`) sits on
+    top and handles vocab mismatches separately by sending a correction
+    prompt; this layer just makes the raw HTTP call robust.
+    """
     import anthropic  # noqa: WPS433 (intentional lazy import)
 
     client = anthropic.Anthropic()
-    msg = client.messages.create(
-        model=model,
-        max_tokens=2000,
-        messages=[{"role": "user", "content": prompt}],
+    # Exception types we want to retry. getattr with default () means the
+    # isinstance check evaluates to False on any anthropic SDK version that
+    # doesn't expose that exception name — safer than a hard import.
+    _retryable = tuple(
+        cls for cls in (
+            getattr(anthropic, "RateLimitError", None),
+            getattr(anthropic, "APIConnectionError", None),
+            getattr(anthropic, "APITimeoutError", None),
+            getattr(anthropic, "InternalServerError", None),
+        ) if cls is not None
     )
-    # Concatenate text blocks. Mode A responses are JSON, never tool calls.
-    parts = [b.text for b in msg.content if getattr(b, "type", None) == "text"]
-    return "".join(parts)
+    _retryable_substrings = ("429", "503", "504", "timeout", "connection")
+
+    for attempt in range(max_attempts):
+        try:
+            msg = client.messages.create(
+                model=model,
+                max_tokens=2000,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            # Concatenate text blocks. Mode A responses are JSON, never tool calls.
+            parts = [b.text for b in msg.content if getattr(b, "type", None) == "text"]
+            return "".join(parts)
+        except Exception as exc:
+            is_retryable = (
+                (_retryable and isinstance(exc, _retryable))
+                or any(s in str(exc).lower() for s in _retryable_substrings)
+            )
+            if not is_retryable or attempt == max_attempts - 1:
+                raise
+            wait = 2 ** (attempt + 1)
+            logger.warning(
+                "call_claude attempt %d/%d failed (%s); retrying after %ds",
+                attempt + 1, max_attempts, type(exc).__name__, wait,
+            )
+            time.sleep(wait)
+    # Unreachable: the final attempt always either returns or raises.
+    raise RuntimeError("call_claude exhausted retries without raising")
 
 
 def parse_claude_json(text: str) -> Optional[dict]:
@@ -502,6 +541,25 @@ def write_essence_back(
     if sub_dir_result is not None:
         chosen_name, sub_dirs = sub_dir_result
         apply_sub_direction_to_update(update, sub_dirs, chosen_name)
+
+    # Defensive payload-size cap. validate_essence() only checks closed-set
+    # vocab membership; the free-form `inferred_audience_profile` JSON could
+    # be returned by the LLM at unbounded size (especially under output
+    # truncation edge cases). 100KB is generous (typical payload < 2KB) and
+    # well below Postgres TOAST thresholds; anything beyond is almost
+    # certainly a runaway response and would index-bloat downstream JSONB
+    # scans. Surface as a hard error rather than write — the failed_queue
+    # path is the right place to triage this.
+    _MAX_PAYLOAD_BYTES = 100_000
+    payload_bytes = len(json.dumps(update, ensure_ascii=False).encode("utf-8"))
+    if payload_bytes > _MAX_PAYLOAD_BYTES:
+        raise RuntimeError(
+            f"essence payload for note {note_id} is {payload_bytes} bytes "
+            f"(> {_MAX_PAYLOAD_BYTES} cap). Likely a runaway LLM response; "
+            "review inferred_audience_profile size and either tighten the "
+            "prompt or raise the cap if legitimately needed."
+        )
+
     if dry_run:
         preview_keys = ("emotional_lever", "content_format",
                         "direction_subtype", "target_audience")
@@ -673,8 +731,21 @@ def main() -> int:
             )
             continue
 
-        write_essence_back(sb, note["note_id"], model, parsed,
-                            sub_dir_result, dry_run=False)
+        try:
+            write_essence_back(sb, note["note_id"], model, parsed,
+                                sub_dir_result, dry_run=False)
+        except RuntimeError as exc:
+            # write_essence_back raises on payload size cap / structural
+            # post-validation failures. Route to failed_queue instead of
+            # crashing the loop so the rest of the batch still runs.
+            logger.warning("write_essence_back rejected %s: %s",
+                           note["note_id"], exc)
+            stats["failed_after_retry"] += 1
+            _append_failed_queue(
+                failed_queue_path, note, args.project_id,
+                [f"write_rejected: {exc}"], last_raw,
+            )
+            continue
         stats["ok"] += 1
         if used_retry:
             stats["ok_after_retry"] += 1
@@ -710,6 +781,12 @@ def _append_failed_queue(path: Path, note: dict, project_id: str,
     and so a follow-up script can read it back to retry after fixing the
     prompt or vocab. We deliberately don't write to the DB here — a new
     table for failures is overkill at this scale; the JSONL is enough.
+
+    Concurrent-write safety: when two annotate_essence processes run on
+    the same project simultaneously (operator cron + manual rerun), a
+    plain append could interleave bytes mid-line and corrupt the JSONL.
+    fcntl.flock serializes writes through an OS file lock. Linux/macOS
+    only; lazy import so module load doesn't fail on a Windows host.
     """
     record = {
         "note_id": note.get("note_id"),
@@ -718,8 +795,18 @@ def _append_failed_queue(path: Path, note: dict, project_id: str,
         "raw_response": raw_response,
         "attempted_at": _iso_now(),
     }
+    try:
+        import fcntl  # noqa: WPS433 (POSIX-only; lazy import)
+    except ImportError:
+        fcntl = None  # type: ignore[assignment]
     with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        if fcntl is not None:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        finally:
+            if fcntl is not None:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
 if __name__ == "__main__":
