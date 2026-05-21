@@ -1318,13 +1318,20 @@ jobs:
               version TEXT
           );
           -- autowriter.versions / autowriter.items already created by
-          -- migration 001 + 002. Migration 002 adds external_source,
-          -- but the view references ai_engine — add it if missing.
+          -- migration 001 + 002. The minimum stub in earlier steps only
+          -- has (id, status, example_label) + (id, item_id) — but the
+          -- cross-schema views reference more columns (ai_engine on
+          -- versions for v_model_comparison; batch_id + created_at on
+          -- items for v_autowriter_positive_pool_saturation). Add via
+          -- ALTER ... IF NOT EXISTS so production schema (which has
+          -- these natively) is untouched.
           ALTER TABLE autowriter.versions
               ADD COLUMN IF NOT EXISTS item_id UUID,
               ADD COLUMN IF NOT EXISTS ai_engine TEXT;
           ALTER TABLE autowriter.items
-              ADD COLUMN IF NOT EXISTS best_version_id UUID;
+              ADD COLUMN IF NOT EXISTS best_version_id UUID,
+              ADD COLUMN IF NOT EXISTS batch_id UUID,
+              ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
           SQL
           psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_2_cross_schema_views.sql
           # Idempotency: views use CREATE OR REPLACE so re-apply is safe
