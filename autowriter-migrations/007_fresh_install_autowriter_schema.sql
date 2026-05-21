@@ -81,8 +81,11 @@ CREATE TABLE IF NOT EXISTS projects (
 );
 ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS projects_owner ON projects;
+-- (SELECT auth.uid()) 而不是裸 auth.uid(): PG planner 会把子查询识别为
+-- 单值缓存, 整次 query 只调一次 auth.uid() 而不是每行调一次 (Supabase
+-- advisor "Auth RLS Initialization Plan" 警告就是这个).
 CREATE POLICY projects_owner ON projects
-    USING (owner_id = auth.uid());
+    USING (owner_id = (SELECT auth.uid()));
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS system_prompt_tone TEXT;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS system_prompt_exec TEXT;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS calibration_notes TEXT;
@@ -110,7 +113,7 @@ ALTER TABLE batches
 ALTER TABLE batches ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS batches_owner ON batches;
 CREATE POLICY batches_owner ON batches
-    USING (user_id = auth.uid());
+    USING (user_id = (SELECT auth.uid()));
 
 -- Items
 CREATE TABLE IF NOT EXISTS items (
@@ -144,7 +147,7 @@ CREATE INDEX IF NOT EXISTS items_proposal_idx
 ALTER TABLE items ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS items_owner ON items;
 CREATE POLICY items_owner ON items
-    USING (user_id = auth.uid());
+    USING (user_id = (SELECT auth.uid()));
 
 -- Versions
 CREATE TABLE IF NOT EXISTS versions (
@@ -164,7 +167,7 @@ ALTER TABLE versions ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS versions_owner ON versions;
 CREATE POLICY versions_owner ON versions
     USING (
-        item_id IN (SELECT id FROM items WHERE user_id = auth.uid())
+        item_id IN (SELECT id FROM items WHERE user_id = (SELECT auth.uid()))
     );
 ALTER TABLE versions ADD COLUMN IF NOT EXISTS embedding vector(768);
 CREATE INDEX IF NOT EXISTS versions_embedding_idx
@@ -210,7 +213,7 @@ CREATE INDEX IF NOT EXISTS memories_rule_kind_idx
 ALTER TABLE memories ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS memories_owner ON memories;
 CREATE POLICY memories_owner ON memories
-    USING (user_id = auth.uid());
+    USING (user_id = (SELECT auth.uid()));
 
 -- Calibration audit
 CREATE TABLE IF NOT EXISTS calibration_note_audit (
@@ -226,7 +229,7 @@ ALTER TABLE calibration_note_audit ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS calibration_note_audit_owner ON calibration_note_audit;
 CREATE POLICY calibration_note_audit_owner ON calibration_note_audit
     USING (
-        project_id IN (SELECT id FROM projects WHERE owner_id = auth.uid())
+        project_id IN (SELECT id FROM projects WHERE owner_id = (SELECT auth.uid()))
     );
 CREATE INDEX IF NOT EXISTS calibration_note_audit_project_idx
     ON calibration_note_audit(project_id, created_at DESC);
@@ -246,7 +249,7 @@ CREATE TABLE IF NOT EXISTS batch_metrics (
 ALTER TABLE batch_metrics ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS batch_metrics_owner ON batch_metrics;
 CREATE POLICY batch_metrics_owner ON batch_metrics
-    USING (user_id = auth.uid());
+    USING (user_id = (SELECT auth.uid()));
 CREATE INDEX IF NOT EXISTS batch_metrics_project_idx
     ON batch_metrics(project_id, created_at DESC);
 
@@ -263,9 +266,9 @@ DROP POLICY IF EXISTS user_logins_owner ON user_logins;
 DROP POLICY IF EXISTS user_logins_select_own ON user_logins;
 DROP POLICY IF EXISTS user_logins_insert_own ON user_logins;
 CREATE POLICY user_logins_select_own ON user_logins
-    FOR SELECT USING (user_id = auth.uid());
+    FOR SELECT USING (user_id = (SELECT auth.uid()));
 CREATE POLICY user_logins_insert_own ON user_logins
-    FOR INSERT WITH CHECK (user_id = auth.uid());
+    FOR INSERT WITH CHECK (user_id = (SELECT auth.uid()));
 CREATE INDEX IF NOT EXISTS user_logins_user_idx
     ON user_logins(user_id, created_at DESC);
 
@@ -287,6 +290,9 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON
 -- ════════════════════════════════════════════════════════════════════
 -- RPC: batch_item_counts (server-side aggregation)
 -- ════════════════════════════════════════════════════════════════════
+-- SET search_path = '': pin 死 search_path 防 schema 注入 (Supabase advisor
+-- "Function Search Path Mutable"). 函数体内所有表引用都已 fully qualified
+-- (autowriter.items), pg_catalog 内置函数 (COUNT/FILTER) 不在 search_path 也能找到.
 CREATE OR REPLACE FUNCTION batch_item_counts(batch_ids UUID[])
 RETURNS TABLE(
     batch_id        UUID,
@@ -298,6 +304,7 @@ RETURNS TABLE(
 LANGUAGE sql
 STABLE
 SECURITY INVOKER
+SET search_path = ''
 AS $$
     SELECT
         i.batch_id,

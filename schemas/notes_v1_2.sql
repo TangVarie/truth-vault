@@ -664,7 +664,13 @@ CREATE INDEX IF NOT EXISTS idx_tv_audit_table_time
 CREATE INDEX IF NOT EXISTS idx_tv_audit_row
     ON truth_vault.audit_log(schema_name, table_name, row_id, occurred_at DESC);
 
-CREATE OR REPLACE FUNCTION truth_vault.audit_row_change() RETURNS TRIGGER AS $$
+-- SET search_path = '': Supabase advisor "Function Search Path Mutable" 修法.
+-- 函数体所有表引用都 fully qualified (truth_vault.audit_log), 系统函数
+-- (COALESCE/to_jsonb/jsonb_*) 来自 pg_catalog 永远隐式可用. 安全清晰.
+CREATE OR REPLACE FUNCTION truth_vault.audit_row_change() RETURNS TRIGGER
+    LANGUAGE plpgsql
+    SET search_path = ''
+AS $$
 DECLARE
     pk_value TEXT;
     changed JSONB;
@@ -718,7 +724,7 @@ BEGIN
 
     RETURN COALESCE(NEW, OLD);
 END;
-$$ LANGUAGE plpgsql;
+$$;
 
 -- Wire to the two highest-value writeable tables (notes + projects). Other
 -- tables can be added later; we don't audit comments/snapshots etc. because
@@ -738,16 +744,19 @@ FOR EACH ROW EXECUTE FUNCTION truth_vault.audit_row_change();
 -- Triggers
 -- ════════════════════════════════════════════════════════════════════
 
-CREATE OR REPLACE FUNCTION truth_vault.fill_era_tag() RETURNS TRIGGER AS $$
+CREATE OR REPLACE FUNCTION truth_vault.fill_era_tag() RETURNS TRIGGER
+    LANGUAGE plpgsql
+    SET search_path = ''
+AS $$
 BEGIN
     IF NEW.publish_time IS NOT NULL THEN
-        NEW.era_tag := EXTRACT(YEAR FROM NEW.publish_time)::TEXT 
-                       || ' Q' 
+        NEW.era_tag := EXTRACT(YEAR FROM NEW.publish_time)::TEXT
+                       || ' Q'
                        || EXTRACT(QUARTER FROM NEW.publish_time)::TEXT;
     END IF;
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
+$$;
 
 DROP TRIGGER IF EXISTS tv_notes_set_era ON truth_vault.notes;
 CREATE TRIGGER tv_notes_set_era 
@@ -755,26 +764,32 @@ BEFORE INSERT OR UPDATE OF publish_time ON truth_vault.notes
 FOR EACH ROW EXECUTE FUNCTION truth_vault.fill_era_tag();
 
 
-CREATE OR REPLACE FUNCTION truth_vault.set_updated_at() RETURNS TRIGGER AS $$
+CREATE OR REPLACE FUNCTION truth_vault.set_updated_at() RETURNS TRIGGER
+    LANGUAGE plpgsql
+    SET search_path = ''
+AS $$
 BEGIN
     NEW.updated_at := NOW();
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
+$$;
 
 
 -- ingested_at 语义是"第一次 ingest 时间"——UPSERT 时不应被覆盖。
 -- 客户端 (sync_feishu_notes) 每次 UPSERT 都会带 ingested_at = NOW()，
 -- 这个 BEFORE UPDATE trigger 强制还原成 OLD 值，让 schema 语义独立于
 -- 客户端实现。新插入时 trigger 不触发，DEFAULT NOW() 正常生效。
-CREATE OR REPLACE FUNCTION truth_vault.preserve_ingested_at() RETURNS TRIGGER AS $$
+CREATE OR REPLACE FUNCTION truth_vault.preserve_ingested_at() RETURNS TRIGGER
+    LANGUAGE plpgsql
+    SET search_path = ''
+AS $$
 BEGIN
     IF OLD.ingested_at IS NOT NULL THEN
         NEW.ingested_at := OLD.ingested_at;
     END IF;
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
+$$;
 
 DROP TRIGGER IF EXISTS tv_notes_preserve_ingested_at ON truth_vault.notes;
 CREATE TRIGGER tv_notes_preserve_ingested_at
