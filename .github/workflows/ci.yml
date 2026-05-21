@@ -1239,11 +1239,14 @@ jobs:
               quality_score, tags, source_truth_vault_note_id, created_at
           ) VALUES (
               gen_random_uuid(),
-              'TV smoke title', 'truth_vault_sync', 'TV smoke body',
+              -- Mirrors build_reference_sample post-2026-05-21 audit fix:
+              -- source_type='pack' (sanshengliubu reads `.eq("source_type","pack")`)
+              -- platform='小红书' (sanshengliubu UI/retrieval uses 中文)
+              'TV smoke title', 'pack', 'TV smoke body',
               'TV smoke title', 'TV smoke body',
               '[{"text":"评论1","role":"素人","pinned":false},
                 {"text":"评论2","role":"贴主","pinned":true}]'::jsonb,
-              'xiaohongshu', '保健品',
+              '小红书', '保健品',
               '{"_truth_vault_note_id":"NUC_phase1_rec1",
                 "_truth_vault_tier":"爆",
                 "_truth_vault_brand":"NUC"}'::jsonb,

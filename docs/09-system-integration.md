@@ -165,17 +165,22 @@ Truth Vault notes                  sanshengliubu.reference_samples (v2)
 ─────────────────────              ──────────────────────────────────────
 raw_content[:80] (首行)            post_title    ★ vibe_rewriter 读
 raw_content                        post_body     ★ vibe_rewriter 读
-projects.platform / 'xiaohongshu'  platform      ★ vibe_rewriter 检索键
+projects.platform → EN→ZH alias    platform      ★ vibe_rewriter 检索键
+  ('xiaohongshu' → '小红书')                       (中文 display value; ssll
+                                                   UI 与 list_reference_packs
+                                                   过滤都用中文)
 projects.category                  category      ★ vibe_rewriter 检索键
 truth_vault.comments               top_comments  ★ vibe_rewriter 读
   ↓ 转换为 [{text, role, pinned}, ...]            (shape per 005 + reference_pack_analyzer 注释)
                                    ai_analysis   ★ vibe_rewriter 读
                                      见下方"内部聚合"
 tier → 100/200                     quality_score (排序权重; 'unranked' 默认 0)
-'truth_vault_sync'                 source_type   (区分于 'screenshot'/'text'/'pack')
+'pack'                             source_type   (ssll 用 `.eq("source_type","pack")`
+                                                   过滤; TV 来源标识保留在
+                                                   tags + source_truth_vault_note_id)
 raw_content[:80] (首行)            title         (canonical 短标题; ssll 列表页用)
 raw_content                        content_text  (legacy 镜像; pre-v2 reader 兼容)
-['truth_vault_sync', tier]         tags
+['truth_vault_sync', tier]         tags          (TV-origin 标识在这里)
 note_id                            source_truth_vault_note_id  ← 幂等键 (must-add: 001 patch)
 
 ai_analysis (JSONB) 内部聚合:
@@ -246,12 +251,19 @@ def import_truth_vault_baokuan(self, note: dict) -> dict:
         'post_title': synthetic_title,
         'post_body':  raw_content,
         'top_comments': top_comments,
-        'platform':   note.get('platform') or 'xiaohongshu',
+        # sanshengliubu list_reference_packs 用中文精确过滤;
+        # TV 写 EN canonical key 时必须 alias 为中文 display 值.
+        'platform':   _PLATFORM_EN_TO_SSLL.get(
+                          note.get('platform') or 'xiaohongshu',
+                          '小红书',
+                      ),
         'category':   note.get('category'),
         'ai_analysis': ai_analysis,
         # Other v2 canonical columns
         'title':       synthetic_title,
-        'source_type': 'truth_vault_sync',
+        # ssll 的 list_reference_packs `.eq("source_type","pack")` 过滤;
+        # TV 来源 discriminator 落在 tags + source_truth_vault_note_id.
+        'source_type': 'pack',
         'content_text': raw_content,  # legacy mirror
         'tags': ['truth_vault_sync'] + ([tier] if tier else []),
         'quality_score': quality_score,

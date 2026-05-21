@@ -40,6 +40,32 @@ from _common import fetch_all_pages, get_supabase_client, setup_logger, _iso_now
 logger = setup_logger("sync_tv_baokuan_to_ssll")
 
 
+# TV canonical platform key (English, see schemas/notes_v1_2.sql) → sanshengliubu
+# UI display name (Chinese, see sanshengliubu pipeline/config.py:DEFAULT_PLATFORM and
+# pages/2_new_project.py 平台选项). sanshengliubu 的 list_reference_packs 用
+# `.eq("platform", platform)` 精确过滤，其中 platform 来自项目配置（中文）。
+# 不翻译就会导致 TV 写入 'xiaohongshu' 而 sanshengliubu 检索 '小红书' 永远空。
+_PLATFORM_EN_TO_SSLL: dict[str, str] = {
+    "xiaohongshu": "小红书",
+    "douyin":      "抖音",
+    "weibo":       "微博",
+    "bilibili":    "B站",
+    "kuaishou":    "快手",
+}
+
+
+def _platform_for_ssll(en_or_zh: str | None) -> str:
+    """Map TV's canonical English platform key to sanshengliubu's display name.
+
+    Pass-through for already-Chinese values (defensive: TV projects.platform
+    is enforced English in schemas/notes_v1_2.sql DEFAULT, but a stray
+    legacy row could already be Chinese, in which case we leave it alone).
+    """
+    if not en_or_zh:
+        return "小红书"
+    return _PLATFORM_EN_TO_SSLL.get(en_or_zh, en_or_zh)
+
+
 def fetch_pending_baokuan(
     sb,
     project_filter: str | None = None,
@@ -183,12 +209,18 @@ def build_reference_sample(note: dict, comments: list[dict]) -> dict:
         "post_title": synthetic_title,
         "post_body":  raw_content,
         "top_comments": top_comments,
-        "platform":   proj.get("platform") or note.get("platform") or "xiaohongshu",
+        # platform: write sanshengliubu's display value (中文) so its
+        # list_reference_packs filter `.eq("platform", "小红书")` finds us.
+        "platform":   _platform_for_ssll(proj.get("platform") or note.get("platform")),
         "category":   proj.get("category"),
         "ai_analysis": ai_analysis,
         # ── Other top-level columns the canonical write path sets ──
         "title":        synthetic_title,
-        "source_type":  "truth_vault_sync",   # discriminator vs. 'screenshot'/'text'/'pack'
+        # source_type: sanshengliubu list_reference_packs filters
+        # `.eq("source_type", "pack")` — writing 'pack' is required for
+        # TV samples to appear in vibe_rewriter retrieval. The TV-origin
+        # discriminator stays in `tags` below and in `source_truth_vault_note_id`.
+        "source_type":  "pack",
         "content_text": raw_content,          # legacy mirror; pre-v2 readers still see it
         "tags": ["truth_vault_sync"] + ([tier] if tier else []),
         "quality_score": quality_score,

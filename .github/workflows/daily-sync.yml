@@ -8,7 +8,9 @@ name: Daily TV sync
 #        SUPABASE_URL
 #        SUPABASE_SERVICE_ROLE_KEY
 #        FEISHU_APP_ID, FEISHU_APP_SECRET
-#        AUTOWRITER_SYNC_USER_ID
+#        AUTOWRITER_SYNC_USER_ID   (2026-05-21 audit 后改为可选 — 仅在
+#                                  autowriter.projects.owner_id 异常缺失时
+#                                  作为兜底; 正常部署可以不配)
 #        ANTHROPIC_API_KEY   (annotation pass 用; 可选)
 #        ESSENCE_MODEL       (默认 claude-sonnet-4-6; 可选)
 #   2. 在下方 on: 块里把 schedule 那段取消注释
@@ -122,7 +124,10 @@ jobs:
           python sync_truth_vault_baokuan_to_sanshengliubu.py $DRYRUN
 
       - name: TV 爆款 → autowriter.items (通道 2, 含 score+diversity+retire)
-        if: steps.check.outputs.skip != 'true' && env.AUTOWRITER_SYNC_USER_ID != ''
+        # 2026-05-21 audit 后 AUTOWRITER_SYNC_USER_ID 不再是必需 — sync 脚本
+        # 默认从 autowriter.projects.owner_id 解析 user_id (RLS 兼容). env 仅
+        # 在 owner_id 缺失时作为兜底, 因此不再 gate on 它.
+        if: steps.check.outputs.skip != 'true'
         working-directory: scripts
         run: |
           DRYRUN=""

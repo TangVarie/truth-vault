@@ -29,6 +29,24 @@ from typing import Any
 TIER_QUALITY_SCORE = {"爆": 100, "大爆": 200}
 
 
+# Mirror of sync_truth_vault_baokuan_to_sanshengliubu.py:_PLATFORM_EN_TO_SSLL.
+# TV 用英文 canonical key (xiaohongshu)；sanshengliubu UI 用中文显示名 (小红书)
+# 且 list_reference_packs 按 platform 精确过滤，必须用 ssll 的中文值否则取不到。
+_PLATFORM_EN_TO_SSLL: dict[str, str] = {
+    "xiaohongshu": "小红书",
+    "douyin":      "抖音",
+    "weibo":       "微博",
+    "bilibili":    "B站",
+    "kuaishou":    "快手",
+}
+
+
+def _platform_for_ssll(en_or_zh: str | None) -> str:
+    if not en_or_zh:
+        return "小红书"
+    return _PLATFORM_EN_TO_SSLL.get(en_or_zh, en_or_zh)
+
+
 def build_pack(note: dict) -> dict:
     """Build a public.reference_samples row dict from a Truth Vault note row.
 
@@ -82,12 +100,16 @@ def build_pack(note: dict) -> dict:
 
     return {
         "title": synthetic_title,
-        "source_type": "truth_vault_sync",
+        # sanshengliubu list_reference_packs filters `.eq("source_type","pack")`
+        # — TV samples must write 'pack' to appear in retrieval. TV origin is
+        # still recorded via `tags` + `source_truth_vault_note_id`.
+        "source_type": "pack",
         "content_text": raw_content,
         "post_title": synthetic_title,
         "post_body": raw_content,
         "top_comments": top_comments,
-        "platform": note.get("platform") or "xiaohongshu",
+        # 中文 display name — matches sanshengliubu's UI + retrieval key.
+        "platform": _platform_for_ssll(note.get("platform")),
         "category": note.get("category"),
         "ai_analysis": ai_analysis,
         "quality_score": quality_score,

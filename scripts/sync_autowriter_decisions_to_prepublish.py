@@ -61,19 +61,20 @@ def fetch_pending_decisions(sb, since_iso: str | None) -> list[dict]:
     """Find autowriter items with a status that maps to a decision, that
     don't yet have a 'human' prepublish_evaluations row.
 
-    Returns list of dicts with: item_id, status, user_id, item_updated_at.
+    Returns list of dicts with: id (item_id), status, user_id, created_at.
     """
+    # autowriter.items has no `updated_at` column (see autowriter db.py items
+    # DDL; only created_at exists). Selecting it would make PostgREST 400 with
+    # "column items.updated_at does not exist". We use created_at as the time
+    # filter — coarse but always present; the NOT-EXISTS filter below stops
+    # us from creating duplicate evaluation rows on re-runs.
     q = (
         sb.schema("autowriter")
         .table("items")
-        .select("id, status, user_id, updated_at, created_at")
+        .select("id, status, user_id, created_at")
         .in_("status", list(_STATUS_TO_DECISION.keys()))
     )
     if since_iso:
-        # `updated_at` would be ideal but autowriter doesn't auto-bump it
-        # on status change (no trigger). Use created_at as conservative
-        # lower bound. Worst-case we re-evaluate old items, but the
-        # NOT-EXISTS filter below catches dupes.
         q = q.gte("created_at", since_iso)
     rows = fetch_all_pages(q)
 

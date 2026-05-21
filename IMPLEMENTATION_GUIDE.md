@@ -273,7 +273,7 @@ cp .env.example .env
 | `SUPABASE_SERVICE_ROLE_KEY` | ✅ | Step 1 拿到的 service_role secret | `sb_secret_xxx...` 或 `eyJxxx...` (旧 JWT) |
 | `FEISHU_APP_ID` | ✅ | 飞书开放平台 → 应用凭证 | `cli_axxx` |
 | `FEISHU_APP_SECRET` | ✅ | 同上 | `xxx` |
-| `AUTOWRITER_SYNC_USER_ID` | ✅ (通道 2 用) | autowriter 维护者建的服务账号 UUID | `00000000-0000-0000-0000-000000000001` |
+| `AUTOWRITER_SYNC_USER_ID` | 可选 (兜底) | 2026-05-21 audit 后默认改用 `autowriter.projects.owner_id`; 这个 env 仅在 owner_id 异常缺失时作为兜底, 新部署可以不配 | `00000000-0000-0000-0000-000000000001` |
 | `ANTHROPIC_API_KEY` | annotation 才用 | console.anthropic.com → API Keys | `sk-ant-xxx` |
 | `ESSENCE_MODEL` | 可选 | 默认 `claude-sonnet-4-6` | `claude-sonnet-4-6` |
 | `COMMENT_THREADING_MODEL` | 可选 | 默认同上 | `claude-sonnet-4-6` |
@@ -288,7 +288,7 @@ cp .env.example .env
 
 repo → Settings → Secrets and variables → Actions → New repository secret. 每个变量加一次. 名字和上表完全一致.
 
-**至少**配齐 `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` / `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `AUTOWRITER_SYNC_USER_ID`. 没有 `ANTHROPIC_API_KEY` 的话 annotation step 自动跳过, 主 sync 不受影响.
+**至少**配齐 `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` / `FEISHU_APP_ID` / `FEISHU_APP_SECRET`. `AUTOWRITER_SYNC_USER_ID` 2026-05-21 audit 后改为可选 (默认从 `autowriter.projects.owner_id` 解析); 没有 `ANTHROPIC_API_KEY` 的话 annotation step 自动跳过, 主 sync 不受影响.
 
 ### Step 7 · 第一次 dry-run 验证 (~10 分钟)
 

@@ -40,13 +40,27 @@ example_label 置 NULL — autowriter 不再注入但历史依旧可查）。
 环境变量:
     SUPABASE_URL
     SUPABASE_SERVICE_ROLE_KEY            (必须用 service_role，绕过 RLS)
-    AUTOWRITER_SYNC_USER_ID              (UUID, 用于填 autowriter.items.user_id;
-                                          建议建一个专门的 service account)
+    AUTOWRITER_SYNC_USER_ID              (UUID, 已弃用 ⚠️ — 现在 sync 自动用
+                                          autowriter.projects.owner_id 作为
+                                          batches/items.user_id, 真实用户在登录
+                                          后才能透过 RLS 看到 TV-synced rows;
+                                          仅当 projects.owner_id 缺失 (异常)
+                                          时回退到这个值。新部署不再需要配)
     AUTOWRITER_INJECTION_MAX_PER_RUN     (默认 5; 每轮最多 sync N 个高分候选)
     AUTOWRITER_INJECTION_MIN_SCORE       (默认 0.5; 低于此 score 的候选不 sync)
     AUTOWRITER_INJECTION_MIN_LEVERS      (默认 3; diversity 软目标 — 在条件允许时
                                           确保 top N 至少覆盖 N 个不同 emotional_lever)
     AUTOWRITER_EXAMPLE_MAX_AGE_DAYS      (默认 180; 退役 cutoff)
+
+RLS 兼容性 (audit 2026-05-21):
+    autowriter.batches / items 的 RLS policy 形如
+    `USING (user_id = auth.uid())`。如果 TV sync 写入一个 service account
+    的 user_id，普通登录用户读取时 RLS 会把这些行隐藏，导致 autowriter
+    的 list_example_items() 取不到 TV-synced positive examples，飞轮静默
+    断开。本脚本现在每个 aw_project 自动查询 owner_id 并把它作为
+    batches/items.user_id 写入，让 project owner 用自己的 JWT 就能读到。
+    历史 TV-synced rows 的 user_id 需用 autowriter-migrations/006_backfill_
+    tv_synced_user_id.sql 批量修正。
 """
 
 from __future__ import annotations
@@ -73,6 +87,45 @@ DEFAULT_INJECTION_MAX_PER_RUN = int(os.environ.get("AUTOWRITER_INJECTION_MAX_PER
 DEFAULT_INJECTION_MIN_SCORE = float(os.environ.get("AUTOWRITER_INJECTION_MIN_SCORE", "0.5"))
 DEFAULT_INJECTION_MIN_LEVERS = int(os.environ.get("AUTOWRITER_INJECTION_MIN_LEVERS", "3"))
 DEFAULT_EXAMPLE_MAX_AGE_DAYS = int(os.environ.get("AUTOWRITER_EXAMPLE_MAX_AGE_DAYS", "180"))
+
+
+def resolve_aw_project_owner(sb, aw_project_id: str) -> str:
+    """Return autowriter.projects.owner_id for the given aw_project_id.
+
+    Why this matters (audit 2026-05-21 P0 #3): batches/items RLS is
+    `USING (user_id = auth.uid())`. If TV sync writes a service-account
+    user_id, normal users authenticated with their own JWT never see the
+    synced rows, so list_example_items() returns nothing and the flywheel
+    is silently broken. Writing project.owner_id as user_id makes RLS
+    pass for the project owner.
+
+    Raises RuntimeError if the project is missing or has NULL owner_id —
+    autowriter.projects.owner_id is NOT NULL in the live schema, so NULL
+    here means schema corruption and we refuse to fall through to a
+    bogus user_id silently.
+    """
+    res = (
+        sb.schema("autowriter")
+        .table("projects")
+        .select("owner_id")
+        .eq("id", aw_project_id)
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        raise RuntimeError(
+            f"aw_project_id={aw_project_id} not found in autowriter.projects "
+            "— cannot determine owner_id for TV sync. Check truth_vault "
+            "project mapping_to_autowriter_project_id points at a real project."
+        )
+    owner_id = res.data[0].get("owner_id")
+    if not owner_id:
+        raise RuntimeError(
+            f"aw_project_id={aw_project_id} has NULL owner_id — violates "
+            "autowriter.projects.owner_id NOT NULL invariant. Fix the project "
+            "row before re-running sync."
+        )
+    return owner_id
 
 
 def fetch_injection_candidates(sb, project_filter: str | None = None) -> list[dict]:
@@ -236,9 +289,13 @@ def retire_stale_autowriter_examples(
     return len(candidates)
 
 
-def ensure_special_batch(sb, aw_project_id: str, sync_user_id: str,
+def ensure_special_batch(sb, aw_project_id: str, project_user_id: str,
                         dry_run: bool = False) -> str:
     """Find or create the per-project 'truth_vault_synced' batch.
+
+    project_user_id is normally autowriter.projects.owner_id (resolved by
+    resolve_aw_project_owner) so the resulting batch is RLS-visible to the
+    project owner. See module docstring "RLS 兼容性".
 
     Returns the batch id.  We use a stable deterministic UUID seeded on
     aw_project_id so re-runs across machines produce the same batch_id;
@@ -275,7 +332,7 @@ def ensure_special_batch(sb, aw_project_id: str, sync_user_id: str,
             "tactic": SPECIAL_BATCH_TACTIC,
             "params": {"source": "truth_vault_sync"},
             "ai_engines": [SPECIAL_BATCH_AI_ENGINE],
-            "user_id": sync_user_id,
+            "user_id": project_user_id,
             "created_at": _iso_now(),
         })
         .execute()
@@ -413,10 +470,13 @@ def insert_synced_item(
     sb,
     note: dict,
     batch_id: str,
-    sync_user_id: str,
+    project_user_id: str,
     dry_run: bool = False,
 ) -> tuple[str | None, bool]:
     """Insert the autowriter.items row + version row, idempotently.
+
+    project_user_id is normally autowriter.projects.owner_id so the row is
+    RLS-visible to the project owner. See module docstring "RLS 兼容性".
 
     Returns (item_id, is_new):
         - (uuid_str, True)   newly inserted (both item and version)
@@ -446,7 +506,7 @@ def insert_synced_item(
                 "example_label": "positive",
                 "external_source": "truth_vault",
                 "external_source_id": note["note_id"],   # ⭐ idempotency key
-                "user_id": sync_user_id,
+                "user_id": project_user_id,
                 "created_at": _iso_now(),
             })
             .execute()
@@ -521,23 +581,24 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    sync_user_id = os.environ.get("AUTOWRITER_SYNC_USER_ID")
-    if not sync_user_id:
-        logger.error("AUTOWRITER_SYNC_USER_ID env var is required (UUID of the "
-                     "service account that 'owns' synced items).")
-        return 2
-    # Validate the UUID up-front; otherwise the first INSERT 100 baokuan in
-    # would fail with a confusing Postgres cast error.
-    try:
-        uuid.UUID(sync_user_id)
-    except (ValueError, AttributeError):
-        logger.error(
-            "AUTOWRITER_SYNC_USER_ID=%r is not a valid UUID. Expected the UUID "
-            "of a user row in auth.users (the service account that 'owns' "
-            "TV-synced items in autowriter).",
-            sync_user_id,
+    # AUTOWRITER_SYNC_USER_ID is now a fallback only — see module docstring
+    # "RLS 兼容性". We use autowriter.projects.owner_id as the canonical
+    # user_id so RLS lets the project owner read TV-synced rows.
+    fallback_user_id = os.environ.get("AUTOWRITER_SYNC_USER_ID")
+    if fallback_user_id:
+        try:
+            uuid.UUID(fallback_user_id)
+        except (ValueError, AttributeError):
+            logger.error(
+                "AUTOWRITER_SYNC_USER_ID=%r is not a valid UUID (used only as "
+                "fallback when projects.owner_id lookup fails).",
+                fallback_user_id,
+            )
+            return 2
+        logger.info(
+            "AUTOWRITER_SYNC_USER_ID is set but only used as fallback; "
+            "default behaviour is to write project owner_id (RLS-compatible)."
         )
-        return 2
 
     sb = get_supabase_client()
     candidates = fetch_injection_candidates(sb, project_filter=args.project)
@@ -562,19 +623,38 @@ def main() -> int:
     logger.info("Selected %d / %d candidates for this run (cap=%d)",
                 len(selected), len(above_threshold), args.max_per_run)
 
-    # Group by aw_project_id so we create each special batch only once
+    # Group by aw_project_id so we create each special batch only once.
+    # owner_cache is keyed by aw_project_id so we only query projects.owner_id
+    # once per project per run, even if many baokuan map to the same project.
     batch_cache: dict[str, str] = {}
+    owner_cache: dict[str, str] = {}
     stats = {"synced": 0, "deduped": 0, "errors": 0, "retired": 0}
 
     for note in selected:
         aw_proj = note["aw_project_id"]
         try:
+            if aw_proj not in owner_cache:
+                try:
+                    owner_cache[aw_proj] = resolve_aw_project_owner(sb, aw_proj)
+                except RuntimeError as exc:
+                    if fallback_user_id:
+                        logger.warning(
+                            "owner_id lookup failed for project %s (%s); "
+                            "falling back to AUTOWRITER_SYNC_USER_ID. Items "
+                            "written this run will be invisible to project "
+                            "owner under RLS until owner_id is restored.",
+                            aw_proj, exc,
+                        )
+                        owner_cache[aw_proj] = fallback_user_id
+                    else:
+                        raise
+            project_user_id = owner_cache[aw_proj]
             if aw_proj not in batch_cache:
                 batch_cache[aw_proj] = ensure_special_batch(
-                    sb, aw_proj, sync_user_id, dry_run=args.dry_run,
+                    sb, aw_proj, project_user_id, dry_run=args.dry_run,
                 )
             item_id, is_new = insert_synced_item(
-                sb, note, batch_cache[aw_proj], sync_user_id, dry_run=args.dry_run,
+                sb, note, batch_cache[aw_proj], project_user_id, dry_run=args.dry_run,
             )
             # Always write the real UUID back to truth_vault.notes — whether
             # this run inserted the item or just looked up an existing one.
