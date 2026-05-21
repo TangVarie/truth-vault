@@ -15,10 +15,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install scripts dependencies
+      - name: Install scripts dependencies (from lockfile for reproducibility)
         run: |
           python -m pip install --upgrade pip
-          pip install -r scripts/requirements.txt
+          # Prefer the lockfile so CI reproduces exactly what production runs.
+          # requirements.txt is the high-level "what we depend on"; .lock is
+          # "the resolved versions we tested against". If .lock drifts from
+          # .txt (e.g. someone adds a new dep without regenerating), CI will
+          # install stale versions for the new dep until lock is refreshed.
+          if [ -f scripts/requirements.lock ]; then
+            pip install -r scripts/requirements.lock
+          else
+            pip install -r scripts/requirements.txt
+          fi
       - name: Compile all scripts
         run: |
           python -m py_compile \
@@ -630,6 +639,55 @@ jobs:
           print("  ✓ critical fields populated (post_title/post_body/quality_score/lineage)")
           print("\nsanshengliubu sync shape: all 4 checks passed")
           PY
+      - name: metric_snapshots hours_since_publish + window_label heuristic
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # _derive_metric_window 把 publish_time → (hours_since_publish,
+          # window_label) 的转换是后续做 Layer 4 时序分析的基础. 边界 case
+          # 必须严丝合缝, 否则 metric_snapshots.window_label 会跟 CHECK
+          # constraint 冲突或者落到 'ad_hoc' 兜底 (失去时序意义).
+          from datetime import datetime, timedelta
+          import sync_feishu_notes_to_truth_vault as s
+
+          def at(delta):
+              return (datetime.utcnow() - delta).isoformat(timespec="seconds")
+
+          cases = [
+              (at(timedelta(hours=1)),    "2h"),
+              (at(timedelta(hours=12)),   "24h"),
+              (at(timedelta(hours=48)),   "72h"),
+              (at(timedelta(days=6)),     "7d"),
+              (at(timedelta(days=13)),    "14d"),
+              (at(timedelta(days=25)),    "30d"),
+              (at(timedelta(days=60)),    "final"),
+              (at(timedelta(days=400)),   "ad_hoc"),  # past 1y → ad_hoc
+              (at(timedelta(hours=-1)),   "ad_hoc"),  # future → ad_hoc
+              (None,                      "ad_hoc"),
+              ("not a date",              "ad_hoc"),
+          ]
+          for pt, expected in cases:
+              hrs, win = s._derive_metric_window(pt)
+              assert win == expected, f"pt={pt!r} expected {expected}, got {win}"
+          print(f"  ✓ all {len(cases)} hours-since-publish window cases pass")
+          PY
+      - name: recommend_tier_thresholds percentile helper
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # 简单 percentile 函数, 不依赖 numpy. 必须能算对 P50 / P75 / P90 才能
+          # 给 yaml 阈值建议; 算错的话 recommendations 全是噪音.
+          import recommend_tier_thresholds as r
+
+          # Known values
+          assert r._pct([], 50) is None
+          assert r._pct([42], 99) == 42
+          assert r._pct([1, 2, 3, 4, 5], 50) == 3
+          assert r._pct([1, 2, 3, 4], 50) == 2.5
+          assert r._pct([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 75) == 7.75
+          assert r._pct([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 90) == 9.1
+          print("  ✓ _pct returns correct values across 6 cases")
+          PY
       - name: Autowriter injection diversity filter self-check (D-036)
         working-directory: scripts
         run: |
@@ -949,6 +1007,55 @@ jobs:
               END IF;
               RAISE NOTICE 'mapping_to_autowriter_project_id IS NULL filter OK';
           END $$;
+
+          -- audit_log: notes INSERT / UPDATE / DELETE 都应该留下行
+          INSERT INTO truth_vault.projects (project_id, brand, product, category)
+          VALUES ('CI_AUDIT', 'b', 'p', '保健品');
+          INSERT INTO truth_vault.notes (note_id, project_id, raw_content)
+          VALUES ('CI_AUDIT_r1', 'CI_AUDIT', 'content');
+          UPDATE truth_vault.notes SET body = 'updated' WHERE note_id = 'CI_AUDIT_r1';
+          UPDATE truth_vault.notes SET tier = '爆' WHERE note_id = 'CI_AUDIT_r1';
+          DELETE FROM truth_vault.notes WHERE note_id = 'CI_AUDIT_r1';
+          DO $$
+          DECLARE n_insert INT; n_update INT; n_delete INT;
+          BEGIN
+              SELECT COUNT(*) INTO n_insert FROM truth_vault.audit_log
+                  WHERE row_id='CI_AUDIT_r1' AND operation='INSERT';
+              SELECT COUNT(*) INTO n_update FROM truth_vault.audit_log
+                  WHERE row_id='CI_AUDIT_r1' AND operation='UPDATE';
+              SELECT COUNT(*) INTO n_delete FROM truth_vault.audit_log
+                  WHERE row_id='CI_AUDIT_r1' AND operation='DELETE';
+              IF n_insert != 1 OR n_update < 2 OR n_delete != 1 THEN
+                  RAISE EXCEPTION 'audit log unexpected counts: ins=% upd=% del=%',
+                      n_insert, n_update, n_delete;
+              END IF;
+              RAISE NOTICE 'audit_log OK (ins=% upd=% del=%)', n_insert, n_update, n_delete;
+          END $$;
+
+          -- changed_cols on UPDATE shows only changed fields
+          DO $$
+          DECLARE diff JSONB;
+          BEGIN
+              SELECT changed_cols INTO diff FROM truth_vault.audit_log
+                  WHERE row_id='CI_AUDIT_r1' AND operation='UPDATE'
+                    AND changed_cols ? 'tier'
+                  ORDER BY occurred_at DESC LIMIT 1;
+              IF diff IS NULL THEN
+                  RAISE EXCEPTION 'no UPDATE audit row for tier change';
+              END IF;
+              -- diff should have tier:[null, '爆']
+              IF NOT (diff->'tier'->>1 = '爆') THEN
+                  RAISE EXCEPTION 'tier change diff wrong: %', diff;
+              END IF;
+              RAISE NOTICE 'audit_log changed_cols diff OK (% keys)',
+                  jsonb_object_keys_count(diff);
+          EXCEPTION WHEN undefined_function THEN
+              -- jsonb_object_keys_count is non-standard; fall back to logging length
+              RAISE NOTICE 'audit_log changed_cols diff OK';
+          END $$;
+
+          -- v_autowriter_positive_pool_saturation (in cross-schema views file
+          -- applied later — wait until that step before testing).
           SQL
       - name: Apply integration migration packs
         run: |
@@ -1118,11 +1225,65 @@ jobs:
                              AND table_name = 'v_model_comparison') THEN
                   RAISE EXCEPTION 'v_model_comparison view missing';
               END IF;
+              IF NOT EXISTS (SELECT 1 FROM information_schema.views
+                             WHERE table_schema = 'truth_vault'
+                             AND table_name = 'v_autowriter_positive_pool_saturation') THEN
+                  RAISE EXCEPTION 'v_autowriter_positive_pool_saturation view missing';
+              END IF;
               RAISE NOTICE 'cross-schema views applied OK';
           END $$;
-          -- Verify both views are queryable (catches column drift)
+          -- Verify all three views are queryable (catches column drift)
           SELECT COUNT(*) FROM truth_vault.v_prompt_performance;
           SELECT COUNT(*) FROM truth_vault.v_model_comparison;
+          SELECT COUNT(*) FROM truth_vault.v_autowriter_positive_pool_saturation;
+
+          -- Seed saturation scenario: 5 TV-synced positive items in one
+          -- autowriter project, 3 of them share the same emotional_lever.
+          -- Expected: dominant_lever_ratio = 0.6 (3/5 dominant).
+          INSERT INTO truth_vault.projects (project_id, brand, product, category)
+              VALUES ('CI_SAT', 'b', 'p', '保健品');
+          INSERT INTO truth_vault.notes (note_id, project_id, raw_content, tier, emotional_lever) VALUES
+              ('CI_SAT_n1', 'CI_SAT', 'c1', '爆', '焦虑撬动'),
+              ('CI_SAT_n2', 'CI_SAT', 'c2', '爆', '焦虑撬动'),
+              ('CI_SAT_n3', 'CI_SAT', 'c3', '爆', '焦虑撬动'),
+              ('CI_SAT_n4', 'CI_SAT', 'c4', '爆', '造梦投射'),
+              ('CI_SAT_n5', 'CI_SAT', 'c5', '爆', '共鸣释放');
+          INSERT INTO autowriter.batches (id, project_id) VALUES
+              ('00000000-0000-0000-0000-000000ci0001'::uuid,
+               '00000000-0000-0000-0000-000000aaaa01'::uuid);
+          INSERT INTO autowriter.items
+              (id, batch_id, example_label, external_source, external_source_id, created_at)
+          VALUES
+              (gen_random_uuid(), '00000000-0000-0000-0000-000000ci0001'::uuid,
+               'positive', 'truth_vault', 'CI_SAT_n1', NOW() - INTERVAL '1 hour'),
+              (gen_random_uuid(), '00000000-0000-0000-0000-000000ci0001'::uuid,
+               'positive', 'truth_vault', 'CI_SAT_n2', NOW() - INTERVAL '2 hour'),
+              (gen_random_uuid(), '00000000-0000-0000-0000-000000ci0001'::uuid,
+               'positive', 'truth_vault', 'CI_SAT_n3', NOW() - INTERVAL '3 hour'),
+              (gen_random_uuid(), '00000000-0000-0000-0000-000000ci0001'::uuid,
+               'positive', 'truth_vault', 'CI_SAT_n4', NOW() - INTERVAL '4 hour'),
+              (gen_random_uuid(), '00000000-0000-0000-0000-000000ci0001'::uuid,
+               'positive', 'truth_vault', 'CI_SAT_n5', NOW() - INTERVAL '5 hour');
+          DO $$
+          DECLARE r RECORD;
+          BEGIN
+              SELECT * INTO r FROM truth_vault.v_autowriter_positive_pool_saturation
+                  WHERE aw_project_id = '00000000-0000-0000-0000-000000aaaa01'::uuid;
+              IF r.active_positive_count != 5 THEN
+                  RAISE EXCEPTION 'expected 5 active positives, got %', r.active_positive_count;
+              END IF;
+              IF r.distinct_lever_count != 3 THEN
+                  RAISE EXCEPTION 'expected 3 distinct levers, got %', r.distinct_lever_count;
+              END IF;
+              IF r.top_lever_count != 3 THEN
+                  RAISE EXCEPTION 'expected top_lever_count=3 (焦虑撬动 x3), got %', r.top_lever_count;
+              END IF;
+              IF ABS(r.dominant_lever_ratio - 0.60) > 0.01 THEN
+                  RAISE EXCEPTION 'expected dominant_lever_ratio=0.60, got %', r.dominant_lever_ratio;
+              END IF;
+              RAISE NOTICE 'v_autowriter_positive_pool_saturation OK (active=5, distinct=3, top=3, ratio=%)',
+                  r.dominant_lever_ratio;
+          END $$;
           SQL
 
   yaml:

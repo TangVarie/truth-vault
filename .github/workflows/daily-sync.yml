@@ -47,8 +47,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install deps
-        run: pip install -r scripts/requirements.txt
+      - name: Install deps (from lockfile for reproducibility)
+        run: |
+          if [ -f scripts/requirements.lock ]; then
+            pip install -r scripts/requirements.lock
+          else
+            pip install -r scripts/requirements.txt
+          fi
 
       - name: Check secrets are configured (gracefully skip if not)
         id: check

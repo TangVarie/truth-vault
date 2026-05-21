@@ -55,10 +55,25 @@ autowriter 历史 items ──[4]──► autowriter.items.example_label_propos
 ```bash
 cd truth-vault/scripts
 python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
+# 用 .lock 装 (生产 / CI 标准)
+pip install -r requirements.lock
+# 或 .txt 装 (本地快速尝试; 会拿到最新 minor 版本可能有意外)
+# pip install -r requirements.txt
 cp .env.example .env
 # 编辑 .env 填入真实凭证
 ```
+
+### 更新依赖锁文件
+
+加新 dep 或 bump 版本时:
+```bash
+# 在 scripts/ 目录:
+pip install pip-tools
+pip-compile requirements.txt -o requirements.lock --quiet
+# 检查 diff 后 commit
+```
+CI 和 daily-sync workflow 都优先读 `.lock`; `.txt` 仅作为 "high-level intent"
+和 lockfile 缺失时的回退.
 
 ## 运行（按顺序）
 

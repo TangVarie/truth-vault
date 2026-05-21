@@ -622,6 +622,111 @@ CREATE TABLE IF NOT EXISTS truth_vault.note_features (
 
 
 -- ════════════════════════════════════════════════════════════════════
+-- Audit log (D-036 配套): 谁 / 何时 / 改了哪行 / 改了哪些字段
+-- ════════════════════════════════════════════════════════════════════
+--
+-- 触发条件 (来自 CURRENT_STATE.md 延后清单 🟡 慢性病): "真出现过一次
+-- 误操作污染生产; 或合规要求审计". 这个 table + trigger 是为了在
+-- 真发生之前就把基础设施铺好, 之后不用再去回溯 sync log 找 "谁动的".
+--
+-- 设计原则:
+--   - 只记 truth_vault schema 的写入 (跨 schema 写需要分别在 ssll / aw
+--     schema 里也建审计, 但那两个 schema 不是我们维护的; 留待 ssll/aw
+--     的运维者各自决定)
+--   - 记 row_id (PK) + operation (INSERT/UPDATE/DELETE) + timestamp +
+--     session_user (Postgres role) + application_name (PostgREST 透传)
+--   - changed_cols 用 jsonb {col: [old_val, new_val]} 形式, 只在 UPDATE
+--     时填; INSERT / DELETE 填整行
+--   - 30 天 retention (后台任务 / 手动 DELETE 都可以)
+
+CREATE TABLE IF NOT EXISTS truth_vault.audit_log (
+    audit_id      BIGSERIAL PRIMARY KEY,
+    schema_name   TEXT NOT NULL,
+    table_name    TEXT NOT NULL,
+    row_id        TEXT,                    -- PK as TEXT (notes.note_id is text, items.id is uuid → text)
+    operation     TEXT NOT NULL CHECK (operation IN ('INSERT','UPDATE','DELETE')),
+    changed_cols  JSONB,                   -- {col: [old, new]} on UPDATE, full row on INSERT, deleted row on DELETE
+    actor_user    TEXT,                    -- session_user; for service_role this is 'service_role'
+    application   TEXT,                    -- application_name from connection
+    occurred_at   TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_tv_audit_table_time
+    ON truth_vault.audit_log(table_name, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tv_audit_row
+    ON truth_vault.audit_log(schema_name, table_name, row_id, occurred_at DESC);
+
+CREATE OR REPLACE FUNCTION truth_vault.audit_row_change() RETURNS TRIGGER AS $$
+DECLARE
+    pk_value TEXT;
+    changed JSONB;
+    actor TEXT;
+    app TEXT;
+BEGIN
+    -- Best-effort actor identification. service_role token surfaces as
+    -- 'service_role' here. PostgREST sets application_name on the conn.
+    actor := COALESCE(current_setting('request.jwt.claim.role', true),
+                      session_user::TEXT,
+                      'unknown');
+    app := COALESCE(current_setting('application_name', true), '');
+
+    -- Resolve PK as TEXT (table-specific; only the tables we wire up here)
+    IF TG_TABLE_NAME = 'notes' THEN
+        IF TG_OP = 'DELETE' THEN pk_value := OLD.note_id;
+        ELSE pk_value := NEW.note_id;
+        END IF;
+    ELSIF TG_TABLE_NAME = 'projects' THEN
+        IF TG_OP = 'DELETE' THEN pk_value := OLD.project_id;
+        ELSE pk_value := NEW.project_id;
+        END IF;
+    ELSE
+        pk_value := NULL;   -- unrecognized table; just log without row_id
+    END IF;
+
+    -- changed_cols: full row on INSERT/DELETE; diff on UPDATE
+    IF TG_OP = 'INSERT' THEN
+        changed := to_jsonb(NEW);
+    ELSIF TG_OP = 'DELETE' THEN
+        changed := to_jsonb(OLD);
+    ELSE  -- UPDATE
+        SELECT jsonb_object_agg(key, jsonb_build_array(old_val, new_val))
+        INTO changed
+        FROM (
+            SELECT key, old_val, new_val
+            FROM jsonb_each(to_jsonb(OLD)) AS o(key, old_val)
+            JOIN jsonb_each(to_jsonb(NEW)) AS n(key, new_val) USING (key)
+            WHERE old_val IS DISTINCT FROM new_val
+        ) diff;
+        -- No changes? Skip the log row to keep noise down.
+        IF changed IS NULL THEN
+            RETURN NEW;
+        END IF;
+    END IF;
+
+    INSERT INTO truth_vault.audit_log
+        (schema_name, table_name, row_id, operation, changed_cols, actor_user, application)
+    VALUES
+        (TG_TABLE_SCHEMA, TG_TABLE_NAME, pk_value, TG_OP, changed, actor, app);
+
+    RETURN COALESCE(NEW, OLD);
+END;
+$$ LANGUAGE plpgsql;
+
+-- Wire to the two highest-value writeable tables (notes + projects). Other
+-- tables can be added later; we don't audit comments/snapshots etc. because
+-- they're append-mostly and the volume would crowd the log without value.
+DROP TRIGGER IF EXISTS tv_audit_notes ON truth_vault.notes;
+CREATE TRIGGER tv_audit_notes
+AFTER INSERT OR UPDATE OR DELETE ON truth_vault.notes
+FOR EACH ROW EXECUTE FUNCTION truth_vault.audit_row_change();
+
+DROP TRIGGER IF EXISTS tv_audit_projects ON truth_vault.projects;
+CREATE TRIGGER tv_audit_projects
+AFTER INSERT OR UPDATE OR DELETE ON truth_vault.projects
+FOR EACH ROW EXECUTE FUNCTION truth_vault.audit_row_change();
+
+
+-- ════════════════════════════════════════════════════════════════════
 -- Triggers
 -- ════════════════════════════════════════════════════════════════════
 

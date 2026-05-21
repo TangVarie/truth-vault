@@ -304,17 +304,74 @@ def transform_row(
                         "search_rank", "keyword_rank")
     all_metric_cols = notes_and_metric_cols + metric_only_cols
     if any(c in note for c in all_metric_cols):
+        # Compute hours_since_publish + best-fit window_label from publish_time
+        # if it's available. Doing this here means even runs that only stamp
+        # 'ad_hoc' get a usable bucket label for time-series aggregation later
+        # (e.g. group by COALESCE(window_label,'ad_hoc') for a histogram-style
+        # view of "interactions at +24h vs +7d"). Note: this is best-effort —
+        # the canonical time-series flow requires multiple sync passes per
+        # note at the actual windows, which the operator doesn't yet do.
+        # 详见 CURRENT_STATE.md 延后清单 § metric_snapshots 时序回收.
+        publish_time = note.get("publish_time")
+        hours_since_publish, window_label = _derive_metric_window(publish_time)
         metric = {
             "note_id": note["note_id"],
             "collected_at": _iso_now(),
-            "window_label": "ad_hoc",        # 历史飞书数据没有时间窗信息
+            "window_label": window_label,    # heuristic from hours_since_publish or 'ad_hoc'
             "source": "feishu_import",
             **{c: note[c] for c in all_metric_cols if c in note},
         }
+        if hours_since_publish is not None:
+            metric["hours_since_publish"] = hours_since_publish
     for c in metric_only_cols:
         note.pop(c, None)
 
     return note, metric, undeclared
+
+
+# Mapping of (lower, upper) hours-since-publish bounds → canonical
+# window_label per schemas/notes_v1_2.sql CHECK constraint. Bounds are
+# inclusive at the lower edge, exclusive at the upper. Any value outside
+# all bounds falls back to 'ad_hoc'.
+_WINDOW_BOUNDS = (
+    (0,    3,   "2h"),       # 0-3h → 2h window
+    (3,    36,  "24h"),      # 3-36h → 24h window
+    (36,   120, "72h"),      # 36-120h → 72h window
+    (120,  240, "7d"),       # 120-240h ≈ 5-10d → 7d window
+    (240,  504, "14d"),      # 240-504h ≈ 10-21d → 14d window
+    (504,  1080,"30d"),      # 504-1080h ≈ 21-45d → 30d window
+    (1080, 365*24, "final"), # 45d-1y → final
+)
+
+
+def _derive_metric_window(publish_time_iso: str | None) -> tuple[int | None, str]:
+    """Return (hours_since_publish, window_label) for a metric snapshot.
+
+    publish_time is a naive UTC ISO string (per project convention). When
+    it's missing or unparseable, returns (None, 'ad_hoc') — the historical
+    backward-compatible behavior. Bucketing is purely heuristic; see
+    _WINDOW_BOUNDS for the cutoffs.
+    """
+    if not publish_time_iso:
+        return None, "ad_hoc"
+    try:
+        from datetime import datetime as _dt
+        pt = _dt.fromisoformat(str(publish_time_iso).replace("Z", "+00:00"))
+        if pt.tzinfo is not None:
+            pt = pt.replace(tzinfo=None)
+        delta = _dt.utcnow() - pt
+    except (ValueError, TypeError):
+        return None, "ad_hoc"
+    hrs = int(delta.total_seconds() // 3600)
+    if hrs < 0:
+        # Future publish_time — operator typo or pre-scheduled note. Don't
+        # claim a window, just record the (impossible) hour count so it's
+        # visible in queries.
+        return hrs, "ad_hoc"
+    for lo, hi, label in _WINDOW_BOUNDS:
+        if lo <= hrs < hi:
+            return hrs, label
+    return hrs, "ad_hoc"
 
 
 _NUMERIC_COLS = {
