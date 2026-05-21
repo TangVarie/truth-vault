@@ -1,6 +1,6 @@
 # truth-vault/scripts/
 
-Truth Vault 飞轮的 4 个真实可跑 Python 脚本。
+Truth Vault 飞轮的 6 个真实可跑 Python 脚本（+ `_common.py` 共享工具）。
 
 ## 概览
 

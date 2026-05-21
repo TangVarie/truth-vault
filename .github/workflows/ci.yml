@@ -389,6 +389,158 @@ jobs:
               sys.exit(f"{len(failed)} key validation case(s) failed")
           print(f"\nkey validation: {len(cases)}/{len(cases)} passed")
           PY
+      - name: load_mapping tier_source whitelist self-check
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # Regression: tier_extraction.source previously fell back to "状态字段"
+          # via .get(default) on any unknown value, silently dropping tier for
+          # C-family projects whose source is "备注字段". Now validated up-front.
+          import tempfile, os
+          from pathlib import Path
+          import yaml
+          import _common
+
+          with tempfile.TemporaryDirectory() as td:
+              td_path = Path(td)
+              _common._MAPPINGS_DIR = td_path
+
+              def write(name, body):
+                  (td_path / f"{name}.yaml").write_text(
+                      yaml.safe_dump(body, allow_unicode=True), encoding="utf-8"
+                  )
+
+              # 1. valid source 状态字段
+              write("p1", {
+                  "project_id": "p1",
+                  "field_mapping": {"a": "raw_content"},
+                  "tier_extraction": {"source": "状态字段", "rules": []},
+              })
+              assert _common.load_mapping("p1")["project_id"] == "p1"
+              print("  ✓ source=状态字段 accepted")
+
+              # 2. valid source 备注字段
+              write("p2", {
+                  "project_id": "p2",
+                  "field_mapping": {"a": "raw_content"},
+                  "tier_extraction": {"source": "备注字段", "rules": []},
+              })
+              _common.load_mapping("p2")
+              print("  ✓ source=备注字段 accepted")
+
+              # 3. typo rejected with helpful message
+              write("p3", {
+                  "project_id": "p3",
+                  "field_mapping": {"a": "raw_content"},
+                  "tier_extraction": {"source": "状态字"},
+              })
+              try:
+                  _common.load_mapping("p3")
+                  raise AssertionError("typo should have been rejected")
+              except ValueError as e:
+                  assert "tier_extraction.source" in str(e), e
+                  print("  ✓ source=状态字 (typo) rejected with helpful message")
+
+              # 4. absent source → no validation (legacy mappings still load)
+              write("p4", {
+                  "project_id": "p4",
+                  "field_mapping": {"a": "raw_content"},
+              })
+              _common.load_mapping("p4")
+              print("  ✓ absent source ignored (legacy mappings still load)")
+
+              # 5. tier_extraction without source key → no validation
+              write("p5", {
+                  "project_id": "p5",
+                  "field_mapping": {"a": "raw_content"},
+                  "tier_extraction": {"rules": []},
+              })
+              _common.load_mapping("p5")
+              print("  ✓ tier_extraction without source key still loads")
+
+          print("\ntier_source whitelist: all 5 checks passed")
+          PY
+      - name: write_essence_back payload size cap self-check
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # Regression: validate_essence only checks closed-set vocab membership;
+          # inferred_audience_profile is free-form JSONB. A runaway LLM response
+          # (esp. under output-truncation edge cases) could yield a multi-MB
+          # payload that index-bloats every later SELECT. Hard cap pre-write.
+          import annotate_essence_pass as a
+
+          good_essence = {
+              "emotional_lever": "焦虑撬动",
+              "emotional_valence": "negative",
+              "emotional_intensity": "high",
+              "human_truth_archetype": ["健康焦虑"],
+              "trend_dependencies": ["平台话术"],
+              "content_format": "情感叙事",
+          }
+
+          # 1. Oversized audience profile → RuntimeError
+          parsed_huge = {
+              "essence": good_essence,
+              "audience": {"runaway": "x" * 200_000},
+          }
+          try:
+              a.write_essence_back(None, "N1", "fake", parsed_huge, None, dry_run=True)
+              raise AssertionError("oversized payload should have been rejected")
+          except RuntimeError as exc:
+              assert "100000 cap" in str(exc) or "100000 bytes" in str(exc), exc
+              print("  ✓ 200KB audience profile rejected with byte count")
+
+          # 2. Normal-size payload passes the cap (dry_run avoids DB call)
+          parsed_normal = {
+              "essence": good_essence,
+              "audience": {"primary_pain": "短句", "primary_aspiration": "更短"},
+          }
+          a.write_essence_back(None, "N2", "fake", parsed_normal, None, dry_run=True)
+          print("  ✓ normal payload accepted under cap")
+
+          print("\npayload size cap: 2/2 checks passed")
+          PY
+      - name: extract_negative isinstance feedback guard self-check
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # Regression: query_source_b's feedback filter called (fb or "").strip()
+          # which crashes when fb is a list/dict (autowriter historical schema
+          # quirk). Now uses isinstance(fb, str) — non-string feedback is skipped.
+          import extract_negative_examples_from_autowriter as e
+
+          class FakeBuilder:
+              def __init__(self, rows): self.rows = rows
+              def select(self, *a, **kw): return self
+              def eq(self, *a, **kw): return self
+              def range(self, *a, **kw): return self
+              def execute(self):
+                  class R: pass
+                  r = R(); r.data = self.rows; return r
+
+          class FakeSB:
+              def __init__(self, rows): self.rows = rows
+              def schema(self, *a, **kw): return self
+              def table(self, *a, **kw): return FakeBuilder(self.rows)
+
+          # Mixed feedback shapes: str ok, list/dict/int filtered without crash
+          rows = [
+              {"item_id": "i1", "version_num": 1, "ai_engine": "gpt", "feedback": None},
+              {"item_id": "i1", "version_num": 2, "ai_engine": "gpt", "feedback": "需要更口语"},
+              {"item_id": "i2", "version_num": 1, "ai_engine": "gpt", "feedback": None},
+              {"item_id": "i2", "version_num": 2, "ai_engine": "gpt", "feedback": ["legacy", "list"]},
+              {"item_id": "i3", "version_num": 1, "ai_engine": "gpt", "feedback": None},
+              {"item_id": "i3", "version_num": 2, "ai_engine": "gpt", "feedback": 42},
+              {"item_id": "i4", "version_num": 1, "ai_engine": "gpt", "feedback": "手动精修"},
+              {"item_id": "i4", "version_num": 2, "ai_engine": "gpt", "feedback": "  "},
+          ]
+          result = e.query_source_b(FakeSB(rows))
+          assert result == {"i1"}, f"expected only i1, got {result}"
+          print("  ✓ str feedback matched; list/int feedback skipped without crash")
+          print("  ✓ blank + '手动精修' feedback correctly filtered out")
+          print("\nfeedback isinstance guard: passed")
+          PY
       - name: Autowriter dup-error detection self-check
         working-directory: scripts
         run: |
@@ -536,6 +688,28 @@ jobs:
                   RAISE EXCEPTION 'expected 2 quarantine rows (different reasons), got %', n;
               END IF;
               RAISE NOTICE 'quarantine allows distinct reasons (% rows for same record)', n;
+          END $$;
+
+          -- Partial UNIQUE INDEX: rows with NULL feishu_record_id bypass the
+          -- dedup (anonymous records can't be correlated across runs anyway).
+          -- Inserting two such rows must succeed; previous full UNIQUE constraint
+          -- treated NULL != NULL so duplicates accumulated without our intent.
+          INSERT INTO truth_vault.undeclared_fields_quarantine
+              (project_id, feishu_record_id, raw_row, undeclared_field_names, reason)
+          VALUES ('CI_OK', NULL, '{}', ARRAY['anon1'], 'undeclared_fields');
+          INSERT INTO truth_vault.undeclared_fields_quarantine
+              (project_id, feishu_record_id, raw_row, undeclared_field_names, reason)
+          VALUES ('CI_OK', NULL, '{}', ARRAY['anon2'], 'undeclared_fields');
+          DO $$
+          DECLARE n INT;
+          BEGIN
+              SELECT COUNT(*) INTO n FROM truth_vault.undeclared_fields_quarantine
+              WHERE project_id='CI_OK' AND feishu_record_id IS NULL;
+              IF n != 2 THEN
+                  RAISE EXCEPTION
+                      'partial UNIQUE INDEX should allow NULL feishu_record_id duplicates, got % rows', n;
+              END IF;
+              RAISE NOTICE 'partial UNIQUE INDEX bypasses NULL feishu_record_id (% anonymous rows)', n;
           END $$;
 
           -- v_top_performing_accounts threshold + bao_rate
