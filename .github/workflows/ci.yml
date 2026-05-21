@@ -1209,14 +1209,22 @@ jobs:
           -- All 5 autowriter tables in public, so migration 001 has
           -- something to move into the autowriter schema. Production has
           -- richer columns; this is a minimum viable footprint.
+          -- user_id / owner_id 列必须在 stub 里就有,
+          -- 否则后续 ALTER TABLE SET SCHEMA 搬过去之后, 002 的
+          -- "CREATE UNIQUE INDEX ON items (user_id, ...)" 会 ERROR
+          -- column "user_id" does not exist. 同理 006 的 backfill
+          -- 也读 projects.owner_id / batches.user_id (CI 暂时不跑
+          -- 006, 但放在 stub 里跟生产 schema 对齐, 防后续测试加进来时
+          -- 又踩同样的坑).
           CREATE TABLE IF NOT EXISTS public.projects (
-              id UUID PRIMARY KEY DEFAULT gen_random_uuid()
+              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+              owner_id UUID
           );
           CREATE TABLE IF NOT EXISTS public.batches (
-              id UUID PRIMARY KEY, project_id UUID
+              id UUID PRIMARY KEY, project_id UUID, user_id UUID, tactic TEXT
           );
           CREATE TABLE IF NOT EXISTS public.items (
-              id UUID PRIMARY KEY, status TEXT, example_label TEXT
+              id UUID PRIMARY KEY, status TEXT, example_label TEXT, user_id UUID
           );
           CREATE TABLE IF NOT EXISTS public.versions (
               id UUID PRIMARY KEY, item_id UUID
