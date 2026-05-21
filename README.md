@@ -10,11 +10,13 @@ Truth Vault 是帆谷的私有数据基础设施 —— 把每一次小红书种
 
 让发的越多 → 数据库越准 → 判断越精 → 后续投放命中率越高 —— 形成数据飞轮。
 
-具体来说，Truth Vault 服务三个调用方：
+具体来说，Truth Vault 通过**双通道直接 INSERT**（D-024 模式，不是 HTTP RPC）把真实爆款回流到两个现存系统的飞轮注入点：
 
-1. **sanshengliubu（三省六部）** —— 提示词生产管线，在 persona simulation 之前注入历史 anchor
-2. **autowriter（内容工作台）** —— 内容批量生产工具，在 Claude vs Gemini 二选一时提供历史依据
-3. **去中心化写手网络** —— 写手提交内容时获得"这条相比历史爆款的差异点"诊断
+1. **sanshengliubu（三省六部）** —— Truth Vault 写入 `public.reference_samples`（v2 "证据包" 列：`post_title` / `post_body` / `top_comments` / `ai_analysis` / `quality_score`），sanshengliubu 的 `vibe_rewriter` 按 `platform + category` 检索并注入到 prompt 高权重位
+2. **autowriter（内容工作台）** —— Truth Vault 写入 `autowriter.items`（`example_label='positive'` + `external_source='truth_vault'`），autowriter 的 `build_system_prompt` 通过 `list_example_items` 自动装配到 system prompt
+3. **去中心化写手网络（未来阶段）** —— 写手网络 codebase 尚未启动；规划是写手提交时由 TV 提供"这条相比历史爆款的差异点"诊断（具体集成模式待 Sprint 2+ 设计，可能继续走双通道也可能加只读 RPC）
+
+> ⚠️ v1 spec（D-023）曾设计为 HTTP REST API，要求三个系统主动调用 TV 的 `/v1/anchor/query` 等端点；Session #7 后改为双通道 push 模式（D-024）以最小化对现存系统的改造。任何"调用 Truth Vault"的描述都属于过时表述。
 
 ## 不解决什么（边界）
 

@@ -65,6 +65,14 @@ cp .env.example .env
 ### 第一次部署（Sprint 0 工程实施）
 
 ```bash
+# Step 0 · 必做前置 migrations (跑 sync 之前必须应用，否则 preflight 会 400):
+#   - schemas/notes_v1_2.sql                          → 建 truth_vault schema
+#   - autowriter-migrations/001_create_autowriter_schema.sql → 把 autowriter 表从 public 迁到 autowriter schema
+#   - autowriter-migrations/002_add_external_source.sql     → items 加 (external_source, external_source_id) 列 + partial UNIQUE
+#         注意: autowriter 本体代码不知道这两列, 只有 TV sync 写入它们.
+#   - autowriter-migrations/003_add_example_label_proposal.sql → items 加 example_label_proposal 列 (extract_negative 用)
+#   - sanshengliubu-patches/001_add_source_tv_note_id.sql   → reference_samples 加 source_truth_vault_note_id 列 + 索引
+#         前提: ssll 已经跑过自己的 db/migrations/005_reference_samples_v2.sql (v2 "证据包" 列).
 # Step 1: 共享 Supabase 已就绪（autowriter schema 已迁移，truth_vault schema 已建表）
 # Step 2: sanshengliubu 已部署，include import_truth_vault_baokuan 方法
 

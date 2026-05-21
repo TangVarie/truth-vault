@@ -151,34 +151,54 @@ Truth Vault 与现存系统形成四层架构。**任何对系统行为的描述
 
 ### 数据映射
 
-⚠️ **Source of truth**: 列名以 `scripts/sync_truth_vault_baokuan_to_sanshengliubu.py:build_reference_sample` 为准。本表为 reader-friendly 视图。Session #7 之前的 v1 spec 用过 `post_title` / `post_body` / 顶级 `quality_score` —— 已弃用。
+⚠️ **Source of truth**:
+1. sanshengliubu 的 `db/schema.sql` + `db/migrations/005_reference_samples_v2.sql`（"证据包" v2 列） — 定义合法列集
+2. `scripts/sync_truth_vault_baokuan_to_sanshengliubu.py:build_reference_sample` — TV 端实际写的字段
+3. 本表 — reader-friendly 视图，应该与 (1)(2) 一致
+
+三者不一致时，CI 的 `sanshengliubu sync shape self-check` step 会失败。
+
+⚠️ **v1 → v2 迁移背景**: ssll 早期（v0.10–v0.19）的 reference_samples 用 `title` / `content_text` / `analysis` / `image_url` / `tags` 这套 legacy 列。Migration 005（v0.20+）加入 v2"证据包"列 (`post_title` / `post_body` / `top_comments` / `platform` / `category` / `ai_analysis` / `quality_score`)，作为新的 canonical 来源。`vibe_rewriter` 在 `pipeline/retrieve_samples._shape_for_rewriter` 里**只读 v2 列**，所以 TV 写入必须填 v2 列（legacy `content_text` 仅作为镜像保留给老 reader）。
 
 ```
-Truth Vault notes                  sanshengliubu.reference_samples
-─────────────────────              ──────────────────────────────
-raw_content[:60]                   title
-raw_content                        content
-projects.platform                  platform (默认 'xiaohongshu')
-projects.category                  category
-projects.brand                     brand
-publish_url                        source_url
-target_audience                    target_audience
-hit_blue_keywords                  hit_keywords
-hashtags 不写 reference_samples    tags = ['truth_vault_sync', tier]
-note_id                            source_truth_vault_note_id   ← 幂等键 (must-add)
+Truth Vault notes                  sanshengliubu.reference_samples (v2)
+─────────────────────              ──────────────────────────────────────
+raw_content[:80] (首行)            post_title    ★ vibe_rewriter 读
+raw_content                        post_body     ★ vibe_rewriter 读
+projects.platform / 'xiaohongshu'  platform      ★ vibe_rewriter 检索键
+projects.category                  category      ★ vibe_rewriter 检索键
+truth_vault.comments               top_comments  ★ vibe_rewriter 读
+  ↓ 转换为 [{text, role, pinned}, ...]            (shape per 005 + reference_pack_analyzer 注释)
+                                   ai_analysis   ★ vibe_rewriter 读
+                                     见下方"内部聚合"
+tier → 100/200                     quality_score (排序权重; 'unranked' 默认 0)
+'truth_vault_sync'                 source_type   (区分于 'screenshot'/'text'/'pack')
+raw_content[:80] (首行)            title         (canonical 短标题; ssll 列表页用)
+raw_content                        content_text  (legacy 镜像; pre-v2 reader 兼容)
+['truth_vault_sync', tier]         tags
+note_id                            source_truth_vault_note_id  ← 幂等键 (must-add: 001 patch)
 
 ai_analysis (JSONB) 内部聚合:
-  _truth_vault_note_id             幂等键的 JSON fallback
+  _truth_vault_note_id             幂等键的 JSON fallback (老 row 无 source_truth_vault_note_id)
   _truth_vault_project_id
   _truth_vault_tier                ('爆' / '大爆')
   _truth_vault_intent
-  _truth_vault_quality_score       ('爆'=100, '大爆'=200)
-  top_comments                     [content, ...] (truth_vault.comments)
-  top_comment_roles                [comment_role, ...]
-  top_comments_pinned              [bool, ...]
+  _truth_vault_quality_score       (与顶级 quality_score 一致，方便不读顶级列的下游)
+  _truth_vault_brand               ssll 没有 brand 列, 嵌入这里
+  _truth_vault_source_url          ssll 没有 source_url 列, 嵌入这里
+  _truth_vault_target_audience     ssll 没有 target_audience 列, 嵌入这里
+  _truth_vault_hit_blue_keywords   ssll 没有 hit_keywords 列, 嵌入这里
 ```
 
-如果 sanshengliubu 后续重命名上述任一列，必须同步更新：(1) build_reference_sample 写列、(2) preflight_check 必填列列表、(3) 本表。三者不一致时 sync 启动会因 preflight 失败。
+`top_comments` 的元素结构（与 ssll `reference_pack_analyzer.md` 一致）：
+```jsonc
+{ "text": "评论内容",   // 必填
+  "role": "贴主/素人/路人/运营/未知",   // 来自 truth_vault.comments.comment_role
+  "pinned": true }                      // 来自 truth_vault.comments.is_pinned
+```
+注：`likes` 字段在 ssll spec 里是可选 (`{text, likes?}`)，truth_vault.comments 不收集点赞数，所以 TV 注入的行 `likes` 缺省。如果未来 comments 加 likes 字段，同步更新 build_reference_sample。
+
+ssll 重命名任一列时必须同步更新：(1) `sanshengliubu/db/schema.sql` 或 migration、(2) `build_reference_sample` 写列、(3) `preflight_check` 必填列列表、(4) 本表、(5) CI 的 ssll stub 与 shape self-check。任一不一致时 sync 启动会因 preflight 失败 / CI 红。
 
 ### sanshengliubu 需要的修改 (~30 行)
 
@@ -187,31 +207,55 @@ ai_analysis (JSONB) 内部聚合:
 ```python
 # (可选) 在 sanshengliubu db/supabase_client.py 加 helper，便于 ssll 自身工具
 # 读 TV 同步进来的数据时复用 quality_score / ai_analysis 计算逻辑。
-# 列名必须和 truth-vault/scripts/sync_truth_vault_baokuan_to_sanshengliubu.py
-# 的 build_reference_sample() 完全一致。
+# Shape 必须和 truth-vault/scripts/sync_truth_vault_baokuan_to_sanshengliubu.py
+# 的 build_reference_sample() 完全一致 —— v2 "证据包" 列 (post_title /
+# post_body / top_comments / ...), 不要重新发明列名。
 def import_truth_vault_baokuan(self, note: dict) -> dict:
-    """从 Truth Vault 导入爆款笔记到 reference_samples（helper, 可选）。"""
+    """从 Truth Vault 导入爆款笔记到 reference_samples（helper, 可选）。
+    note 来自 truth_vault.notes JOIN projects，含 top_comments 字段。
+    """
     tier = note.get('tier')
     quality_score = {'爆': 100, '大爆': 200}.get(tier, 0)
+    raw_content = note.get('raw_content') or ''
+    synthetic_title = raw_content.split('\n', 1)[0][:80] or '未命名样本'
+
+    # truth_vault.comments → ssll's [{text, role, pinned}] shape.
+    top_comments = [
+        {'text': c.get('content'),
+         'role': c.get('comment_role'),
+         'pinned': bool(c.get('is_pinned'))}
+        for c in (note.get('top_comments') or [])
+        if c.get('content')
+    ]
+
     ai_analysis = {
         '_truth_vault_note_id': note['note_id'],
         '_truth_vault_project_id': note['project_id'],
         '_truth_vault_tier': tier,
         '_truth_vault_intent': note.get('intent'),
         '_truth_vault_quality_score': quality_score,
-        'top_comments': note.get('top_comments', []),
+        # TV-side metadata that ssll's schema has no top-level home for.
+        '_truth_vault_brand': note.get('brand'),
+        '_truth_vault_source_url': note.get('publish_url'),
+        '_truth_vault_target_audience': note.get('target_audience'),
+        '_truth_vault_hit_blue_keywords': note.get('hit_blue_keywords') or [],
     }
+
     pack = {
-        'title': (note.get('raw_content') or '')[:60],
-        'content': note.get('raw_content'),
-        'platform': note.get('platform') or 'xiaohongshu',
-        'category': note.get('category'),
-        'brand': note.get('brand'),
-        'source_url': note.get('publish_url'),
-        'target_audience': note.get('target_audience'),
-        'hit_keywords': note.get('hit_blue_keywords') or [],
+        # v2 columns vibe_rewriter actually reads
+        'post_title': synthetic_title,
+        'post_body':  raw_content,
+        'top_comments': top_comments,
+        'platform':   note.get('platform') or 'xiaohongshu',
+        'category':   note.get('category'),
         'ai_analysis': ai_analysis,
-        'tags': ['truth_vault_sync', tier],
+        # Other v2 canonical columns
+        'title':       synthetic_title,
+        'source_type': 'truth_vault_sync',
+        'content_text': raw_content,  # legacy mirror
+        'tags': ['truth_vault_sync'] + ([tier] if tier else []),
+        'quality_score': quality_score,
+        # Lineage / idempotency key (must-add: 001 patch)
         'source_truth_vault_note_id': note['note_id'],
     }
     return self.save_reference_pack(pack)

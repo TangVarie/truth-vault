@@ -65,8 +65,12 @@ LLM 分类、essence 标注、prepublish_evaluations 反推），详见
 ### Day 4-5 · 部署 schema (在 staging 上)
 
 - [ ] 跑 `schemas/notes_v1_2.sql` → 创建 truth_vault schema
-- [ ] 按 `autowriter-migrations/RUNBOOK.md` 跑场景 A 或 B
-- [ ] 跑 `sanshengliubu-patches/001_add_source_tv_note_id.sql`
+- [ ] 按 `autowriter-migrations/RUNBOOK.md` 跑场景 A 或 B (含 001/002/003)
+      - 001: 把 autowriter 表从 public 迁到 autowriter schema
+      - 002: items 加 `external_source` / `external_source_id` 列 (TV sync 用; autowriter 本体不读)
+      - 003: items 加 `example_label_proposal` 列 (extract_negative 用)
+- [ ] **必须先确认 ssll 已跑过自己的 `db/migrations/005_reference_samples_v2.sql`** 再跑 TV patch (TV sync 写 `post_title` / `post_body` / `top_comments` 这些 v2 列, 005 没跑就会 400)
+- [ ] 跑 `sanshengliubu-patches/001_add_source_tv_note_id.sql` (给 ssll reference_samples 加 source_truth_vault_note_id 列 + 索引)
 - [ ] **autowriter 数据迁移要协调停机窗口** — 找 autowriter 维护者
 - [ ] 三个 schema 全部就绪后跑 `schemas/notes_v1_2_cross_schema_views.sql`
 

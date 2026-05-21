@@ -11,19 +11,29 @@
 
 ## High severity (必须开打开前解决)
 
-### R-001 · sanshengliubu reference_samples 真实 schema 未对账
+### R-001 · sanshengliubu reference_samples schema drift 持续监控
 
-- **是什么**: TV 通道 1 sync 写入的列名 (`title` / `content` / `target_audience`
-  / `hit_keywords` / 等) 来自 Session #7 代码审查时观察的 ssll codebase。
-  没有任何人在最新版 ssll 实例上验证过这套列名仍然存在
-- **后果**: TV → ssll sync 启动时 preflight_check 报错，飞轮通道 1 完全不通。
-  不影响 TV 主表，但飞轮闭环坏了一半
-- **检测**: `scripts/sync_truth_vault_baokuan_to_sanshengliubu.py:preflight_check`
-  在脚本启动时跑一次列存在性扫描，无脏数据风险
-- **缓解**: Sprint 0 第一次 dry-run 时验证。preflight 失败 →
-  对账 ssll schema → 同步更新三处 (build_reference_sample + preflight 必填列
-  列表 + docs/09 数据映射表)
-- **Owner**: 工程师 (拉 ssll dump) + Ziao (确认列名是否能改)
+- **是什么**: TV 通道 1 sync 写入的列名集合（v2 "证据包" 列：`post_title` /
+  `post_body` / `top_comments` / `platform` / `category` / `ai_analysis` /
+  `quality_score` / `source_type` / `content_text` / `title` / `tags` /
+  `source_truth_vault_note_id`）。ssll codebase 仍在演化，未来再加列 / 改名
+  会让 sync 静默写错位置或被 preflight 拒掉。
+- **历史**: 早期（≤ Session #8）误用 v1 legacy 列名 (`title` / `content` /
+  `target_audience` / `hit_keywords` / `brand` / `source_url`)，其中 4 列在
+  实际 ssll v2 schema 中不存在；如果按那个版本部署，preflight 直接 400。
+  当前轮（2026-05）已对账 ssll 仓库 `db/schema.sql` + migrations/005 + 真实
+  Postgres 16 实测 INSERT 通过。
+- **后果**: 未来 ssll 改 schema 时如未同步更新 TV 端，preflight 失败 → 通道
+  1 飞轮坏掉。不影响 TV 主表。
+- **检测**: 三层保护:
+  1. CI 的 `sanshengliubu sync shape self-check` (Python): 验证
+     `build_reference_sample` 输出 keys ⊆ ssll v2 schema 列集
+  2. CI 的 `Apply integration migration packs` SQL step: 拿真实 ssll v2
+     schema stub 做一次 TV-shape INSERT, 失败即红
+  3. `preflight_check` 运行时再核一次 (脚本启动, 无脏数据风险)
+- **缓解**: ssll 改列时必须同步五处（同 docs/09 末尾的"重命名 checklist"）。
+  生产 dry-run 前先在 staging 上对账一次 ssll 真实 schema。
+- **Owner**: 工程师 (CI 守住 drift) + Ziao (协调 ssll 改 schema 时的通知)
 
 ### R-002 · autowriter schema 迁移需要停机窗口
 
