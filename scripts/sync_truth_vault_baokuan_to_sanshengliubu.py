@@ -93,59 +93,90 @@ def fetch_top_comments(sb, note_id: str, limit: int = 5) -> list[dict[str, Any]]
 def build_reference_sample(note: dict, comments: list[dict]) -> dict:
     """Map a Truth Vault note into a sanshengliubu.reference_samples row.
 
-    Returns the dict to INSERT (id is generated here in Python, not DB).
-    The schema of public.reference_samples is owned by sanshengliubu; we
-    write the columns it expects.  ai_analysis is JSONB and we put the
-    cross-system lineage in there under leading-underscore keys to avoid
-    colliding with sanshengliubu's own ai_analysis sub-keys.
+    Schema source of truth: sanshengliubu's db/schema.sql + db/migrations/
+    005_reference_samples_v2.sql. The live v2 columns vibe_rewriter actually
+    reads (see pipeline/retrieve_samples._shape_for_rewriter) are:
 
-    ⚠️ Schema reconciliation pending: docs/09-system-integration.md once
-    spec'd the column mapping as post_title / post_body / quality_score;
-    the live sanshengliubu schema this script targets uses title /
-    content / no quality_score (verified against the v0.30.10 codebase
-    referenced in Session #7). If the actual live schema differs from
-    what's here, the insert will 400 — see preflight_check() at startup.
-    The doc has been updated to match this column set as the source of
-    truth; if sanshengliubu ever renames these columns, update both
-    sides simultaneously.
+        id, platform, category, post_title, post_body, top_comments,
+        ai_analysis
+
+    Plus the canonical write path (db/supabase_client.save_reference_pack)
+    also writes title, source_type, content_text (legacy mirror), tags,
+    quality_score.
+
+    Anything NOT in that schema (brand, source_url, target_audience,
+    hit_keywords — fields TV cares about but ssll doesn't have columns
+    for) goes into ai_analysis under leading-underscore TV-injected keys.
+
+    top_comments shape: live ssll schema is JSONB array of {text, likes?}
+    dicts (vibe_rewriter passes the list verbatim to the prompt; extra
+    keys are tolerated). truth_vault.comments has no `likes` column, so
+    we emit {text, role, pinned} — `role` and `pinned` are extra
+    metadata that the prompt may or may not use but don't hurt.
     """
     proj = note.get("projects") or {}
     tier = note.get("tier")
-    # tier → quality_score mapping documented in doc 09 §"通道 1 数据映射".
-    # Kept in ai_analysis so any sanshengliubu downstream consumer that
-    # ranks by quality has a numeric handle regardless of whether the
-    # reference_samples table itself exposes a quality_score column.
+    # tier → quality_score is sanshengliubu's own column (INTEGER) used
+    # for "优质优先" sample retrieval ordering.  爆=100, 大爆=200 puts
+    # TV-injected samples comfortably above any default 0.
     quality_score = {"爆": 100, "大爆": 200}.get(tier, 0)
+
+    # Comments as [{text, role, pinned}, …] — the shape vibe_rewriter
+    # expects (see pipeline/agents/reference_pack_analyzer docstring:
+    # `top_comments: [{"text": "...", "likes": 123}, ...]`). `likes`
+    # isn't tracked in truth_vault.comments; we omit it rather than
+    # invent a fake number.
+    top_comments = [
+        {
+            "text": c.get("content"),
+            "role": c.get("comment_role"),
+            "pinned": bool(c.get("is_pinned")),
+        }
+        for c in comments
+        if c.get("content")
+    ]
+
     ai_analysis = {
-        # ── Cross-system lineage (leading underscore = TV-injected, not ssll-native) ──
-        "_truth_vault_note_id": note["note_id"],           # idempotency key
+        # Cross-system lineage (leading underscore = TV-injected, not ssll-native).
+        "_truth_vault_note_id": note["note_id"],           # idempotency key (also top-level column)
         "_truth_vault_project_id": note["project_id"],
         "_truth_vault_tier": tier,
         "_truth_vault_intent": note.get("intent"),
         "_truth_vault_quality_score": quality_score,
-        # ── Comment evidence (sanshengliubu vibe_rewriter reads these) ──
-        # Schema reference: comments.content is the text (not 'text');
-        # there's no likes/sentiment in the current schema.
-        "top_comments": [c.get("content") for c in comments if c.get("content")],
-        "top_comment_roles": [c.get("comment_role") for c in comments],
-        "top_comments_pinned": [bool(c.get("is_pinned")) for c in comments],
+        # TV-specific metadata that ssll's reference_samples schema has no
+        # top-level home for. Stash here so any TV-side downstream (e.g.
+        # an Analytics view that joins by sample_id) can still see them.
+        "_truth_vault_brand": proj.get("brand"),
+        "_truth_vault_source_url": note.get("publish_url"),
+        "_truth_vault_target_audience": note.get("target_audience"),
+        "_truth_vault_hit_blue_keywords": note.get("hit_blue_keywords") or [],
     }
+
+    raw_content = note.get("raw_content") or ""
+    # Use the first line / first 80 chars as a synthetic title — TV notes
+    # don't carry an original post title, so this is the best approximation.
+    # 80 chars is what ssll's own save_reference_pack uses.
+    synthetic_title = raw_content.split("\n", 1)[0][:80] or "未命名样本"
+
     return {
         "id": str(uuid.uuid4()),
-        "title": (note.get("raw_content") or "")[:60],   # sanshengliubu convention
-        "content": note.get("raw_content"),
-        "platform": proj.get("platform") or note.get("platform") or "xiaohongshu",
-        "category": proj.get("category"),
-        "brand": proj.get("brand"),
-        "tags": ["truth_vault_sync", note["tier"]],
-        "source_url": note.get("publish_url"),
-        "target_audience": note.get("target_audience"),
-        "hit_keywords": note.get("hit_blue_keywords") or [],
+        # ── Top-level columns ssll's vibe_rewriter actually reads ──
+        "post_title": synthetic_title,
+        "post_body":  raw_content,
+        "top_comments": top_comments,
+        "platform":   proj.get("platform") or note.get("platform") or "xiaohongshu",
+        "category":   proj.get("category"),
         "ai_analysis": ai_analysis,
-        # Clean idempotency / lineage key — column added by
-        # sanshengliubu-patches/001_add_source_tv_note_id.sql (REQUIRED).
-        # Without this, the index idx_reference_samples_tv_note stays empty
-        # and existing_ssll_sample_id() falls back to the slower JSON path.
+        # ── Other top-level columns the canonical write path sets ──
+        "title":        synthetic_title,
+        "source_type":  "truth_vault_sync",   # discriminator vs. 'screenshot'/'text'/'pack'
+        "content_text": raw_content,          # legacy mirror; pre-v2 readers still see it
+        "tags": ["truth_vault_sync"] + ([tier] if tier else []),
+        "quality_score": quality_score,
+        # ── Lineage / idempotency key (added by
+        #    sanshengliubu-patches/001_add_source_tv_note_id.sql) ──
+        # Without 001, idx_reference_samples_tv_note stays empty and
+        # existing_ssll_sample_id() falls back to the slower JSON path.
         "source_truth_vault_note_id": note["note_id"],
         "created_at": _iso_now(),
     }
@@ -160,15 +191,17 @@ def preflight_check(sb) -> None:
     is friendlier than letting the first INSERT explode mid-loop and
     leaving half the run un-synced.
 
-    Required columns: see build_reference_sample() for what we write. If
-    the live sanshengliubu schema renames any of them, update both this
-    list and build_reference_sample() in one commit, plus
-    docs/09-system-integration.md.
+    Required columns are the v2 reference_samples columns
+    (db/migrations/005_reference_samples_v2.sql) plus the TV-injected
+    lineage key (sanshengliubu-patches/001_add_source_tv_note_id.sql).
+    If sanshengliubu renames any of these, update this list,
+    build_reference_sample(), and docs/09-system-integration.md in one
+    commit.
     """
     required = (
-        "id, title, content, platform, category, brand, tags, source_url, "
-        "target_audience, hit_keywords, ai_analysis, "
-        "source_truth_vault_note_id, created_at"
+        "id, title, source_type, content_text, post_title, post_body, "
+        "top_comments, platform, category, ai_analysis, quality_score, "
+        "tags, source_truth_vault_note_id, created_at"
     )
     try:
         sb.schema("public").table("reference_samples").select(required).limit(0).execute()
@@ -178,8 +211,10 @@ def preflight_check(sb) -> None:
             "public.reference_samples preflight failed. The live sanshengliubu "
             "schema is missing one of the columns this script writes. Confirm "
             "sanshengliubu-patches/001_add_source_tv_note_id.sql has been run, "
-            "and that the column list in build_reference_sample() matches what "
-            f"ssll expects. Underlying error: {msg}"
+            "and that sanshengliubu's own db/migrations/005_reference_samples_v2.sql "
+            "(the v2 'evidence pack' columns: post_title / post_body / "
+            "top_comments / platform / category / ai_analysis / quality_score) "
+            f"has also been applied. Underlying error: {msg}"
         ) from exc
 
 

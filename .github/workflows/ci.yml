@@ -541,6 +541,95 @@ jobs:
           print("  ✓ blank + '手动精修' feedback correctly filtered out")
           print("\nfeedback isinstance guard: passed")
           PY
+      - name: sanshengliubu sync shape self-check (build_reference_sample ↔ preflight ↔ ssll v2 schema)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # The three sources of truth for the TV → ssll write must agree:
+          #   1. build_reference_sample (keys produced)
+          #   2. preflight_check (columns required at startup)
+          #   3. sanshengliubu's actual reference_samples schema (v2)
+          # If 1 and 2 drift, sync 跑得起来但写错位置;
+          # if 1/2 and 3 drift, preflight 会爆 / INSERT 会爆.
+          # This test pins 1 ↔ 2 and 1 ⊂ {ssll v2 columns + TV-injected key}.
+          import sync_truth_vault_baokuan_to_sanshengliubu as s
+
+          # Build a representative sample
+          note = {
+              "note_id": "TST_P_rec1",
+              "project_id": "TST_P",
+              "raw_content": "title line\nbody continues",
+              "tier": "爆",
+              "intent": "traffic",
+              "publish_url": "https://example.com/x",
+              "target_audience": ["20-29"],
+              "hit_blue_keywords": ["k1"],
+              "platform": "xiaohongshu",
+              "projects": {"brand": "TST", "category": "保健品", "platform": "xiaohongshu"},
+          }
+          comments = [
+              {"content": "评论1", "comment_role": "素人", "is_pinned": False},
+              {"content": "评论2", "comment_role": "贴主", "is_pinned": True},
+              {"content": None,   "comment_role": "路人", "is_pinned": False},
+          ]
+          sample = s.build_reference_sample(note, comments)
+          built_keys = set(sample.keys())
+
+          # The canonical v2 reference_samples columns (mirror of
+          # sanshengliubu/db/schema.sql + migration 005) + the TV-added key.
+          SSLL_V2_COLUMNS = {
+              "id", "title", "source_type", "content_text", "analysis",
+              "image_url", "tags", "post_title", "post_body",
+              "cover_image_b64", "top_comments", "platform", "category",
+              "ai_analysis", "quality_score", "created_by", "created_at",
+          }
+          TV_INJECTED = {"source_truth_vault_note_id"}
+          allowed = SSLL_V2_COLUMNS | TV_INJECTED
+          surprise = built_keys - allowed
+          assert not surprise, (
+              f"build_reference_sample writes columns not in ssll schema: {sorted(surprise)}. "
+              "Check sanshengliubu/db/schema.sql + migrations/005 for the canonical set."
+          )
+          print(f"  ✓ {len(built_keys)} written keys all exist in ssll v2 schema")
+
+          # preflight required ⊆ built — preflight would falsely flag a column
+          # the script doesn't try to use otherwise. Extract from source.
+          import re
+          src = open(s.__file__).read()
+          m = re.search(r"required = \(\s*((?:\"[^\"]*\"\s*)+)\)", src)
+          assert m, "couldn't locate preflight required-cols literal"
+          required_str = "".join(re.findall(r'"([^"]*)"', m.group(1)))
+          preflight_cols = {c.strip() for c in required_str.split(",") if c.strip()}
+          missing = preflight_cols - built_keys
+          assert not missing, (
+              f"preflight_check requires columns build_reference_sample doesn't write: "
+              f"{sorted(missing)}. They'd be reported as 'present' on startup but"
+              " never populated."
+          )
+          extra_in_build = built_keys - preflight_cols
+          # built_keys can include columns preflight doesn't require (defensive),
+          # but warn so we know about drift candidates.
+          if extra_in_build:
+              print(f"  ℹ build writes but preflight doesn't require: {sorted(extra_in_build)}")
+          print(f"  ✓ preflight required cols ⊆ built keys ({len(preflight_cols)} required)")
+
+          # top_comments shape: list of dicts with 'text' key (the live
+          # vibe_rewriter contract; see retrieve_samples._shape_for_rewriter).
+          assert isinstance(sample["top_comments"], list)
+          assert all(isinstance(c, dict) and "text" in c for c in sample["top_comments"])
+          assert len(sample["top_comments"]) == 2, "None-content comment should be filtered"
+          assert sample["top_comments"][1]["pinned"] is True
+          print("  ✓ top_comments shape matches vibe_rewriter contract")
+
+          # post_title / post_body / source_truth_vault_note_id are the
+          # downstream-critical fields. Make sure they're not silently empty.
+          assert sample["post_title"], "post_title empty — vibe_rewriter shows '(no title)'"
+          assert sample["post_body"], "post_body empty — vibe_rewriter has nothing to imitate"
+          assert sample["source_truth_vault_note_id"] == "TST_P_rec1"
+          assert sample["quality_score"] == 100
+          print("  ✓ critical fields populated (post_title/post_body/quality_score/lineage)")
+          print("\nsanshengliubu sync shape: all 4 checks passed")
+          PY
       - name: Autowriter dup-error detection self-check
         working-directory: scripts
         run: |
@@ -738,9 +827,29 @@ jobs:
           # (different schema, so no name conflict with the to-be-moved
           # autowriter tables in public).
           psql -v ON_ERROR_STOP=1 <<'SQL'
+          -- Mirror of sanshengliubu's actual schema/db/migrations/005_reference_samples_v2.sql.
+          -- Catches drift between truth-vault's sync write shape and what
+          -- ssll actually accepts. Bringing in the full column set here
+          -- means 001_add_source_tv_note_id.sql and build_reference_sample
+          -- both run against a faithful stub.
           CREATE TABLE IF NOT EXISTS public.reference_samples (
               id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-              title TEXT, content TEXT, ai_analysis JSONB
+              title TEXT NOT NULL DEFAULT '未命名样本',
+              source_type TEXT DEFAULT 'screenshot',
+              content_text TEXT,
+              analysis JSONB,
+              image_url TEXT,
+              tags TEXT[] DEFAULT '{}',
+              post_title TEXT,
+              post_body TEXT,
+              cover_image_b64 TEXT,
+              top_comments JSONB DEFAULT '[]'::jsonb,
+              platform TEXT,
+              category TEXT,
+              ai_analysis JSONB,
+              quality_score INTEGER DEFAULT 0,
+              created_by TEXT DEFAULT 'default',
+              created_at TIMESTAMPTZ DEFAULT now()
           );
           -- All 5 autowriter tables in public, so migration 001 has
           -- something to move into the autowriter schema. Production has
@@ -765,6 +874,56 @@ jobs:
           psql -v ON_ERROR_STOP=1 -f autowriter-migrations/001_create_autowriter_schema.sql
           psql -v ON_ERROR_STOP=1 -f autowriter-migrations/002_add_external_source.sql
           psql -v ON_ERROR_STOP=1 -f autowriter-migrations/003_add_example_label_proposal.sql
+          # TV → ssll write smoke test: a TV-shaped reference_samples INSERT
+          # must succeed against the v2 schema. Mirrors build_reference_sample
+          # output exactly — if columns drift, this fails before any prod run.
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          INSERT INTO public.reference_samples (
+              id, title, source_type, content_text, post_title, post_body,
+              top_comments, platform, category, ai_analysis,
+              quality_score, tags, source_truth_vault_note_id, created_at
+          ) VALUES (
+              gen_random_uuid(),
+              'TV smoke title', 'truth_vault_sync', 'TV smoke body',
+              'TV smoke title', 'TV smoke body',
+              '[{"text":"评论1","role":"素人","pinned":false},
+                {"text":"评论2","role":"贴主","pinned":true}]'::jsonb,
+              'xiaohongshu', '保健品',
+              '{"_truth_vault_note_id":"NUC_phase1_rec1",
+                "_truth_vault_tier":"爆",
+                "_truth_vault_brand":"NUC"}'::jsonb,
+              100, ARRAY['truth_vault_sync','爆']::TEXT[],
+              'NUC_phase1_rec1', NOW()
+          );
+          DO $$
+          DECLARE n INT; pt TEXT;
+          BEGIN
+              SELECT COUNT(*), MAX(post_title) INTO n, pt
+              FROM public.reference_samples
+              WHERE source_truth_vault_note_id = 'NUC_phase1_rec1';
+              IF n != 1 OR pt != 'TV smoke title' THEN
+                  RAISE EXCEPTION 'TV → ssll smoke INSERT failed: rows=% post_title=%', n, pt;
+              END IF;
+              RAISE NOTICE 'TV → ssll smoke INSERT OK (rows=%)', n;
+          END $$;
+          -- Idempotency: re-inserting with the same source_truth_vault_note_id
+          -- should be detected by existing_ssll_sample_id() at runtime (the
+          -- check happens application-side; no UNIQUE constraint on this
+          -- column in the live schema, so DB will accept dupes). Confirm
+          -- the column has the partial index that makes the lookup fast.
+          DO $$
+          BEGIN
+              IF NOT EXISTS (
+                  SELECT 1 FROM pg_indexes
+                  WHERE schemaname='public'
+                  AND indexname='idx_reference_samples_tv_note'
+              ) THEN
+                  RAISE EXCEPTION 'idx_reference_samples_tv_note missing — '
+                                  'existing_ssll_sample_id() will full-scan';
+              END IF;
+              RAISE NOTICE 'idx_reference_samples_tv_note present';
+          END $$;
+          SQL
           # Verify migration 001 actually moved all 5 tables
           psql -v ON_ERROR_STOP=1 <<'SQL'
           DO $$

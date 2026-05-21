@@ -32,16 +32,38 @@ TIER_QUALITY_SCORE = {"爆": 100, "大爆": 200}
 def build_pack(note: dict) -> dict:
     """Build a public.reference_samples row dict from a Truth Vault note row.
 
+    Mirror of truth-vault/scripts/sync_truth_vault_baokuan_to_sanshengliubu.py:
+    build_reference_sample. The two must stay in sync — both target the
+    canonical v2 reference_samples schema (post_title / post_body /
+    top_comments / platform / category / ai_analysis / quality_score,
+    added by sanshengliubu/db/migrations/005_reference_samples_v2.sql).
+
     note 是一个含以下字段的 dict (truth_vault.notes 主表 + 关联):
         - note_id, project_id, raw_content, tier, intent
         - publish_url, target_audience, hit_blue_keywords
         - platform (默认 'xiaohongshu')
         - top_comments: List[dict{content, comment_role, is_pinned}]
         - brand, category (可由 projects 表 join 拿到)
+
+    Fields TV cares about but reference_samples has no top-level column
+    for (brand / source_url / target_audience / hit_blue_keywords) get
+    stashed inside ai_analysis under `_truth_vault_*` keys.
     """
     tier = note.get("tier")
     quality_score = TIER_QUALITY_SCORE.get(tier, 0)
-    top_comments = note.get("top_comments") or []
+    top_comments_raw = note.get("top_comments") or []
+
+    # Shape vibe_rewriter expects: [{"text": ..., "likes": ...}, ...]
+    # truth_vault.comments lacks `likes`; we emit text/role/pinned only.
+    top_comments = [
+        {
+            "text": c.get("content"),
+            "role": c.get("comment_role"),
+            "pinned": bool(c.get("is_pinned")),
+        }
+        for c in top_comments_raw
+        if c.get("content")
+    ]
 
     ai_analysis = {
         "_truth_vault_note_id": note["note_id"],
@@ -49,22 +71,27 @@ def build_pack(note: dict) -> dict:
         "_truth_vault_tier": tier,
         "_truth_vault_intent": note.get("intent"),
         "_truth_vault_quality_score": quality_score,
-        "top_comments": [c.get("content") for c in top_comments if c.get("content")],
-        "top_comment_roles": [c.get("comment_role") for c in top_comments],
-        "top_comments_pinned": [bool(c.get("is_pinned")) for c in top_comments],
+        "_truth_vault_brand": note.get("brand"),
+        "_truth_vault_source_url": note.get("publish_url"),
+        "_truth_vault_target_audience": note.get("target_audience"),
+        "_truth_vault_hit_blue_keywords": note.get("hit_blue_keywords") or [],
     }
 
+    raw_content = note.get("raw_content") or ""
+    synthetic_title = raw_content.split("\n", 1)[0][:80] or "未命名样本"
+
     return {
-        "title": (note.get("raw_content") or "")[:60],
-        "content": note.get("raw_content"),
+        "title": synthetic_title,
+        "source_type": "truth_vault_sync",
+        "content_text": raw_content,
+        "post_title": synthetic_title,
+        "post_body": raw_content,
+        "top_comments": top_comments,
         "platform": note.get("platform") or "xiaohongshu",
         "category": note.get("category"),
-        "brand": note.get("brand"),
-        "source_url": note.get("publish_url"),
-        "target_audience": note.get("target_audience"),
-        "hit_keywords": note.get("hit_blue_keywords") or [],
         "ai_analysis": ai_analysis,
-        "tags": ["truth_vault_sync", tier],
+        "quality_score": quality_score,
+        "tags": ["truth_vault_sync"] + ([tier] if tier else []),
         "source_truth_vault_note_id": note["note_id"],
     }
 
