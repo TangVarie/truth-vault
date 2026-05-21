@@ -1418,6 +1418,8 @@ jobs:
 
           -- Concurrency smoke test: a second INSERT with the same
           -- source_truth_vault_note_id must raise SQLSTATE 23505.
+          -- NOTE: public.reference_samples.id is UUID (not TEXT) in the
+          -- ssll v2 schema — gen_random_uuid() goes in directly, no ::TEXT cast.
           DO $$
           BEGIN
               BEGIN
@@ -1426,7 +1428,7 @@ jobs:
                       post_body, top_comments, platform, category, ai_analysis,
                       quality_score, tags, source_truth_vault_note_id, created_at
                   ) VALUES (
-                      gen_random_uuid()::TEXT,
+                      gen_random_uuid(),
                       'TV smoke title (dup)', 'pack', '正文', 'TV smoke title (dup)',
                       '正文', '[]'::jsonb, '小红书', NULL,
                       '{"_truth_vault_note_id":"NUC_phase1_rec1"}'::jsonb,
