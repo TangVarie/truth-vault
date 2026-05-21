@@ -129,6 +129,23 @@ jobs:
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRYRUN="--dry-run"
           python sync_truth_vault_baokuan_to_autowriter_items.py $DRYRUN
 
+      - name: autowriter 人工审稿决定 → truth_vault.prepublish_evaluations
+        if: steps.check.outputs.skip != 'true'
+        working-directory: scripts
+        run: |
+          DRYRUN=""
+          [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRYRUN="--dry-run"
+          # 90 天窗口足够日 cron; 第一次部署时可能要手动跑一次 --since-days 0 全量回填
+          python sync_autowriter_decisions_to_prepublish.py $DRYRUN || {
+            echo "::warning::prepublish_evaluations sync failed (non-blocking)"
+          }
+
+      - name: positive pool 饱和度检查 (advisory, 不 fail)
+        if: steps.check.outputs.skip != 'true' && always()
+        working-directory: scripts
+        run: |
+          python check_positive_saturation.py || true  # advisory only
+
       - name: Show flywheel status (truth_vault.v_flywheel_sync_status)
         if: steps.check.outputs.skip != 'true' && always()
         working-directory: scripts

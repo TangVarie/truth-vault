@@ -639,6 +639,69 @@ jobs:
           print("  ✓ critical fields populated (post_title/post_body/quality_score/lineage)")
           print("\nsanshengliubu sync shape: all 4 checks passed")
           PY
+      - name: comment threading validator self-check
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # validate_threading 是 LLM 输出 → DB 写入 之间的唯一防线.
+          # 必须拦下: unknown comment/parent ids, self-loops, cycles, dupes.
+          import annotate_comment_threading as t
+          allowed = {"a", "b", "c", "d"}
+
+          # Valid tree
+          ok = {"threading": [
+              {"comment_id": "a", "parent_comment_id": None},
+              {"comment_id": "b", "parent_comment_id": "a"},
+              {"comment_id": "c", "parent_comment_id": "b"},
+              {"comment_id": "d", "parent_comment_id": None},
+          ]}
+          assert t.validate_threading(ok, allowed) == []
+          print("  ✓ valid tree passes")
+
+          # Cycle
+          errs = t.validate_threading({"threading": [
+              {"comment_id": "a", "parent_comment_id": "b"},
+              {"comment_id": "b", "parent_comment_id": "a"},
+          ]}, allowed)
+          assert any("cycle" in e for e in errs), errs
+          print("  ✓ cycle detected")
+
+          # Unknown comment_id
+          errs = t.validate_threading({"threading": [
+              {"comment_id": "zzz", "parent_comment_id": None},
+          ]}, allowed)
+          assert any("unknown comment_id" in e for e in errs)
+          print("  ✓ unknown comment_id rejected")
+
+          # Unknown parent
+          errs = t.validate_threading({"threading": [
+              {"comment_id": "a", "parent_comment_id": "zzz"},
+          ]}, allowed)
+          assert any("unknown parent_comment_id" in e for e in errs)
+          print("  ✓ unknown parent rejected")
+
+          # Self-loop
+          errs = t.validate_threading({"threading": [
+              {"comment_id": "a", "parent_comment_id": "a"},
+          ]}, allowed)
+          assert any("self-loop" in e for e in errs)
+          print("  ✓ self-loop rejected")
+
+          # Duplicate entry
+          errs = t.validate_threading({"threading": [
+              {"comment_id": "a", "parent_comment_id": None},
+              {"comment_id": "a", "parent_comment_id": "b"},
+          ]}, allowed)
+          assert any("duplicate" in e for e in errs)
+          print("  ✓ duplicate entry rejected")
+
+          # Non-list
+          errs = t.validate_threading({"threading": "not a list"}, allowed)
+          assert errs == ["threading is not a list"]
+          print("  ✓ non-list input rejected")
+
+          print("\nvalidate_threading: 7/7 cases passed")
+          PY
       - name: metric_snapshots hours_since_publish + window_label heuristic
         working-directory: scripts
         run: |
