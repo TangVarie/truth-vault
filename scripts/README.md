@@ -167,6 +167,35 @@ python sync_truth_vault_baokuan_to_autowriter_items.py
 1. 在 staging Supabase 上跑 `--dry-run --limit 5`
 2. 看 stdout 的 stats 是否合理
 3. 实跑 `--limit 5`，去数据库验证写入正确
+
+## 注入策略预览（preview_injection_candidates.py）
+
+通道 2 sync 的注入策略由 `truth_vault.v_autowriter_injection_candidates`
+view 控制（D-036：recency + tier + tier_source + account_bao_rate 复合
+score + Python 端 diversity 软约束）。**调权重前后建议先用 preview
+工具看一眼"会选哪 5 条变化"，确保新策略选的更顺眼再切。**
+
+```bash
+# 看 NUC_phase1 现在 vs 新策略各选哪 5 条
+python preview_injection_candidates.py --project NUC_phase1
+
+# 多看几条 / 全部项目
+python preview_injection_candidates.py --limit 10
+python preview_injection_candidates.py
+```
+
+输出会显示三块：
+1. 当前策略（publish_time DESC）会选的 5 条
+2. 新策略（injection_score DESC + diversity）会选的 5 条
+3. 差异 + 候选池统计（score 分布、lever 覆盖）
+
+**用时机**：
+- 第一次切到新 sync 之前
+- 调 `AUTOWRITER_INJECTION_MIN_SCORE` / `AUTOWRITER_INJECTION_MIN_LEVERS` 环境变量后
+- 改 view 的权重表达式后（schemas/notes_v1_2.sql 里的 score 公式）
+- 怀疑"最近 autowriter 写的怎么调子不对"时
+
+无写入、无副作用，是个纯查询工具。
 4. 全量跑
 
 ## 已知限制
