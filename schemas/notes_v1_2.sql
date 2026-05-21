@@ -992,12 +992,69 @@ LEFT JOIN truth_vault.v_top_performing_accounts a ON a.account_id = e.account_id
 
 
 -- ════════════════════════════════════════════════════════════════════
+-- GRANT + RLS · service_role 全权, anon/authenticated 默认 deny
+-- ════════════════════════════════════════════════════════════════════
+--
+-- TV 是内部数据基础设施, 所有访问应该走 service_role (sync 脚本 /
+-- 后台 job / admin 工具). anon 和 authenticated 永远不应该直接读 TV.
+--
+-- 设计:
+--   - service_role: USAGE on schema + ALL on tables/sequences. 因为
+--     service_role.rolbypassrls=true, RLS 开关对它无影响.
+--   - anon + authenticated: 没 USAGE, 没 grant, RLS 再做兜底.
+--     三重 deny: 进不来 schema → 进得来也读不了表 → 读得到也被 RLS 挡.
+--   - ALTER DEFAULT PRIVILEGES: 未来在 truth_vault 里新建表会自动
+--     继承 service_role 的 grant, 不需要每次手动补.
+--   - 14 张表 ENABLE RLS 不加 policy = "deny all" for non-bypass roles.
+--     未来如果要做 "内部用户登录后查 TV 数据" 的功能, 再单独加 policy.
+--
+-- 跨 schema views (notes_v1_2_cross_schema_views.sql 里那些) 跟 PG view
+-- 一致: view 用 caller 权限 + view 定义者 (或 SECURITY DEFINER) 决定底层
+-- 表访问. 默认 SECURITY INVOKER, 所以 service_role caller 透传 BYPASSRLS,
+-- anon caller 被挡. 跟原设计一致.
+
+-- service_role 用本 schema 的能力
+GRANT USAGE ON SCHEMA truth_vault TO service_role;
+
+-- 当前表 + 序列 (audit_log 用 BIGSERIAL, 需要 sequence USAGE)
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA truth_vault TO service_role;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA truth_vault TO service_role;
+
+-- 未来新建的表/序列也跟着给 service_role
+ALTER DEFAULT PRIVILEGES IN SCHEMA truth_vault
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA truth_vault
+    GRANT USAGE, SELECT ON SEQUENCES TO service_role;
+
+-- 14 张表 ENABLE RLS (不加 policy = 对 anon/authenticated 默认 deny;
+-- service_role rolbypassrls=true 不受影响)
+ALTER TABLE truth_vault.projects                     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE truth_vault.accounts                     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE truth_vault.account_snapshots            ENABLE ROW LEVEL SECURITY;
+ALTER TABLE truth_vault.notes                        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE truth_vault.metric_snapshots             ENABLE ROW LEVEL SECURITY;
+ALTER TABLE truth_vault.posthoc_analyses             ENABLE ROW LEVEL SECURITY;
+ALTER TABLE truth_vault.prepublish_evaluations       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE truth_vault.quality_review_decisions     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE truth_vault.comments                     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE truth_vault.notes_archive                ENABLE ROW LEVEL SECURITY;
+ALTER TABLE truth_vault.audience_calibrations        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE truth_vault.undeclared_fields_quarantine ENABLE ROW LEVEL SECURITY;
+ALTER TABLE truth_vault.note_features                ENABLE ROW LEVEL SECURITY;
+ALTER TABLE truth_vault.audit_log                    ENABLE ROW LEVEL SECURITY;
+
+
+-- ════════════════════════════════════════════════════════════════════
 -- 完成
 -- ════════════════════════════════════════════════════════════════════
--- 
+--
 -- 部署步骤（D-029 顺序）：
 -- 1. 执行本文件（notes_v1_2.sql）—— 创建 truth_vault schema + 所有表 + 内部 views
+--    + GRANT to service_role + ENABLE RLS
 -- 2. sanshengliubu 在 public schema 部署（已有，不动）
 -- 3. autowriter 迁移到 autowriter schema（避免 public.projects 冲突）
 -- 4. 三个 schema 就绪后，执行 notes_v1_2_cross_schema_views.sql
--- 5. 运行 sync 脚本（详见 docs/09-system-integration.md）
+-- 5. 在 Supabase Dashboard → Settings → API → Exposed schemas 把
+--    truth_vault 加进去 (PostgREST 才会注册这个 schema, 否则 sync 脚本
+--    用 Accept-Profile: truth_vault 报 406 Not Acceptable)
+-- 6. 运行 sync 脚本（详见 docs/09-system-integration.md）
