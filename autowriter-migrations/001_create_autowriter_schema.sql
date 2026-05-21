@@ -48,7 +48,7 @@ BEGIN
         END IF;
     END LOOP;
 END $$;
-
+GRANT USAGE ON SCHEMA autowriter TO anon, authenticated, service_role;
 -- uuid-ossp 用于 autowriter 表的 UUID 默认值 (生产 schema 已开)
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
