@@ -860,6 +860,91 @@ jobs:
           print("  ✓ empty input → empty output")
           print("\napply_diversity_filter: 5/5 cases passed")
           PY
+      - name: Per-project quota self-check (2026-05-22 audit P1-2)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # Per-project quota: each aw_project should get its own diversity
+          # pass + cap; high-volume projects must not starve low-volume ones.
+          # The selection logic lives in main(), but the pure-Python grouping
+          # + per-project filter is what matters; we replicate the bucket
+          # step here to verify.
+          import sync_truth_vault_baokuan_to_autowriter_items as s
+
+          # 3 projects, very uneven volumes; project A has all top scores
+          candidates = []
+          for i in range(20):  # A: 20 candidates, scores 2.0..0.1
+              candidates.append({
+                  "note_id": f"a{i}", "aw_project_id": "A",
+                  "emotional_lever": ["焦虑", "造梦", "共鸣"][i % 3],
+                  "injection_score": 2.0 - i*0.1,
+              })
+          for i in range(3):   # B: 3 candidates, lower scores
+              candidates.append({
+                  "note_id": f"b{i}", "aw_project_id": "B",
+                  "emotional_lever": ["焦虑", "造梦"][i % 2],
+                  "injection_score": 0.9 - i*0.1,
+              })
+          for i in range(1):   # C: 1 candidate
+              candidates.append({
+                  "note_id": f"c{i}", "aw_project_id": "C",
+                  "emotional_lever": "焦虑",
+                  "injection_score": 0.85,
+              })
+
+          # Simulate main()'s per-project bucketing + per-project diversity
+          by_project = {}
+          for c in candidates:
+              by_project.setdefault(c["aw_project_id"], []).append(c)
+          selected = []
+          for proj, pool in by_project.items():
+              pool.sort(key=lambda r: r["injection_score"], reverse=True)
+              picks = s.apply_diversity_filter(pool, max_n=5)
+              selected.extend(picks)
+
+          # Old global-cap would have given: 5 from A only (since A has all
+          # the top scores). New per-project gives: 5 from A + 3 from B + 1 from C = 9
+          picked_per_project = {}
+          for c in selected:
+              picked_per_project[c["aw_project_id"]] = picked_per_project.get(c["aw_project_id"], 0) + 1
+          assert picked_per_project == {"A": 5, "B": 3, "C": 1}, picked_per_project
+          print(f"  ✓ per-project picks: {picked_per_project} (no starvation)")
+
+          # Each project's picks must respect diversity (when possible)
+          a_picks = [c for c in selected if c["aw_project_id"] == "A"]
+          a_levers = {c["emotional_lever"] for c in a_picks}
+          assert a_levers == {"焦虑", "造梦", "共鸣"}, a_levers
+          print(f"  ✓ project A's 5 picks cover all 3 levers ({a_levers})")
+
+          # Global cap round-robin: cap=4 should bring it down fairly
+          # (e.g., 2 from A, 1 from B, 1 from C, NOT 4 from A and 0 elsewhere)
+          # Replicating the round-robin logic from main()
+          GLOBAL_CAP = 4
+          selected_ids = {c["note_id"] for c in selected}
+          per_proj_queues = [
+              [c for c in sorted(by_project[p], key=lambda r: r["injection_score"], reverse=True)
+               if c["note_id"] in selected_ids]
+              for p in by_project
+          ]
+          rr = []
+          idx = 0
+          while len(rr) < GLOBAL_CAP:
+              advanced = False
+              for q in per_proj_queues:
+                  if idx < len(q) and len(rr) < GLOBAL_CAP:
+                      rr.append(q[idx])
+                      advanced = True
+              if not advanced:
+                  break
+              idx += 1
+          rr_per_proj = {}
+          for c in rr:
+              rr_per_proj[c["aw_project_id"]] = rr_per_proj.get(c["aw_project_id"], 0) + 1
+          # Round-robin order: A0, B0, C0, A1 → {A:2, B:1, C:1}
+          assert rr_per_proj == {"A": 2, "B": 1, "C": 1}, rr_per_proj
+          print(f"  ✓ global cap round-robin: {rr_per_proj} (fair across projects)")
+          print("\nper-project quota: 3/3 cases passed")
+          PY
       - name: Autowriter dup-error detection self-check
         working-directory: scripts
         run: |
@@ -1007,6 +1092,35 @@ jobs:
                   RAISE EXCEPTION 'expected 2 quarantine rows (different reasons), got %', n;
               END IF;
               RAISE NOTICE 'quarantine allows distinct reasons (% rows for same record)', n;
+          END $$;
+
+          -- prepublish_evaluations partial UNIQUE (2026-05-22 audit P1/P2-4):
+          -- one human eval per autowriter_item_id. A second INSERT with same
+          -- (item_id, 'human') must be rejected with 23505. LLM evaluator_type
+          -- ('persona' / 'critic' / 'model') should still be allowed to write
+          -- multiple rows for the same item (different evaluation events).
+          DO $$
+          DECLARE
+              test_item UUID := gen_random_uuid();
+          BEGIN
+              INSERT INTO truth_vault.prepublish_evaluations
+                  (autowriter_item_id, evaluator_type, evaluator_id, decision)
+              VALUES (test_item, 'human', 'u1', 'pass');
+              BEGIN
+                  INSERT INTO truth_vault.prepublish_evaluations
+                      (autowriter_item_id, evaluator_type, evaluator_id, decision)
+                  VALUES (test_item, 'human', 'u2', 'revise');
+                  RAISE EXCEPTION 'prepublish_evaluations partial UNIQUE did not reject duplicate human eval';
+              EXCEPTION WHEN unique_violation THEN
+                  RAISE NOTICE 'prepublish_evaluations partial UNIQUE OK (rejected duplicate human eval)';
+              END;
+              -- But persona / critic / model on the same item ARE allowed (event-style)
+              INSERT INTO truth_vault.prepublish_evaluations
+                  (autowriter_item_id, evaluator_type, evaluator_id, decision)
+              VALUES (test_item, 'persona', 'p1', 'pass'),
+                     (test_item, 'persona', 'p2', 'revise'),
+                     (test_item, 'critic', 'c1', 'pass');
+              RAISE NOTICE 'prepublish_evaluations allows multiple LLM evaluator rows for same item';
           END $$;
 
           -- Partial UNIQUE INDEX: rows with NULL feishu_record_id bypass the
@@ -1273,21 +1387,56 @@ jobs:
               RAISE NOTICE 'TV → ssll smoke INSERT OK (rows=%)', n;
           END $$;
           -- Idempotency: re-inserting with the same source_truth_vault_note_id
-          -- should be detected by existing_ssll_sample_id() at runtime (the
-          -- check happens application-side; no UNIQUE constraint on this
-          -- column in the live schema, so DB will accept dupes). Confirm
-          -- the column has the partial index that makes the lookup fast.
+          -- now violates a partial UNIQUE index (2026-05-22 audit P1-3 fix).
+          -- Application layer still pre-checks via existing_ssll_sample_id()
+          -- to skip the round-trip, but DB-level UNIQUE is the actual
+          -- correctness guarantee under concurrency. Confirm the index
+          -- exists AND is unique (the old patch 001 created it as a plain
+          -- INDEX which would silently allow duplicates).
+          DO $$
+          DECLARE
+              is_unique BOOLEAN;
+          BEGIN
+              SELECT i.indisunique INTO is_unique
+              FROM pg_index i
+              JOIN pg_class c ON c.oid = i.indexrelid
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'public'
+                AND c.relname IN ('idx_reference_samples_tv_note',
+                                  'idx_reference_samples_tv_note_id_unique');
+              IF is_unique IS NULL THEN
+                  RAISE EXCEPTION 'reference_samples tv_note index missing — '
+                                  'sanshengliubu-patches/001 not applied';
+              END IF;
+              IF NOT is_unique THEN
+                  RAISE EXCEPTION 'reference_samples tv_note index exists but '
+                                  'indisunique=false — apply '
+                                  'sanshengliubu-patches/003_strengthen_tv_note_id_unique.sql';
+              END IF;
+              RAISE NOTICE 'reference_samples tv_note partial UNIQUE present';
+          END $$;
+
+          -- Concurrency smoke test: a second INSERT with the same
+          -- source_truth_vault_note_id must raise SQLSTATE 23505.
           DO $$
           BEGIN
-              IF NOT EXISTS (
-                  SELECT 1 FROM pg_indexes
-                  WHERE schemaname='public'
-                  AND indexname='idx_reference_samples_tv_note'
-              ) THEN
-                  RAISE EXCEPTION 'idx_reference_samples_tv_note missing — '
-                                  'existing_ssll_sample_id() will full-scan';
-              END IF;
-              RAISE NOTICE 'idx_reference_samples_tv_note present';
+              BEGIN
+                  INSERT INTO public.reference_samples (
+                      id, title, source_type, content_text, post_title,
+                      post_body, top_comments, platform, category, ai_analysis,
+                      quality_score, tags, source_truth_vault_note_id, created_at
+                  ) VALUES (
+                      gen_random_uuid()::TEXT,
+                      'TV smoke title (dup)', 'pack', '正文', 'TV smoke title (dup)',
+                      '正文', '[]'::jsonb, '小红书', NULL,
+                      '{"_truth_vault_note_id":"NUC_phase1_rec1"}'::jsonb,
+                      100, ARRAY['truth_vault_sync','爆']::TEXT[],
+                      'NUC_phase1_rec1', NOW()
+                  );
+                  RAISE EXCEPTION 'TV → ssll concurrency smoke FAIL: duplicate INSERT was accepted';
+              EXCEPTION WHEN unique_violation THEN
+                  RAISE NOTICE 'TV → ssll concurrency smoke OK: duplicate INSERT rejected with 23505';
+              END;
           END $$;
           SQL
           # Verify migration 001 actually moved all 5 tables

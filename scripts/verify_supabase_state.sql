@@ -85,6 +85,25 @@ SELECT '13', 'B · truth_vault',
           AND column_name='mapping_to_autowriter_project_id'
     ))::TEXT,
     'true', '通道 2 sync 需要这一列做 TV → aw 项目映射'
+UNION ALL
+SELECT '14', 'B · truth_vault',
+    'truth_vault.prepublish_evaluations 表存在',
+    (to_regclass('truth_vault.prepublish_evaluations') IS NOT NULL)::TEXT,
+    'true', 'schemas/notes_v1_2.sql'
+UNION ALL
+SELECT '15', 'B · truth_vault',
+    'prepublish_evaluations partial UNIQUE (autowriter_item_id, evaluator_type) 存在',
+    (EXISTS (
+        SELECT 1
+        FROM pg_index i
+        JOIN pg_class c ON c.oid = i.indexrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'truth_vault'
+          AND c.relname = 'idx_tv_evals_aw_item_evaluator_uniq'
+          AND i.indisunique = true
+    ))::TEXT,
+    'true',
+    '2026-05-22 audit P1/P2-4: 防 decision sync 并发写重复; 旧库需要重跑 schemas/notes_v1_2.sql 的相应 CREATE UNIQUE INDEX IF NOT EXISTS 段'
 
 -- ═════════════════════════════════════════════════════════════════
 -- C. autowriter schema 配置
@@ -185,6 +204,35 @@ SELECT '43', 'E · sanshengliubu',
                             'idx_reference_samples_tv_note_id_unique')
     ))::TEXT,
     'true', '老命名 (001 patch) 或新命名 (schema.sql 内置) 都行'
+UNION ALL
+SELECT '44', 'E · sanshengliubu',
+    '上面的 index 是 UNIQUE 而不是普通 INDEX',
+    (EXISTS (
+        SELECT 1
+        FROM pg_index i
+        JOIN pg_class c ON c.oid = i.indexrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public'
+          AND c.relname IN ('idx_reference_samples_tv_note',
+                            'idx_reference_samples_tv_note_id_unique')
+          AND i.indisunique = true
+    ))::TEXT,
+    'true',
+    '2026-05-22 audit P1-3: 必须是 partial UNIQUE 防并发重复. false 表示老 001 patch 留下的普通 index, 跑 sanshengliubu-patches/003_strengthen_tv_note_id_unique.sql 升级.'
+UNION ALL
+SELECT '45', 'E · sanshengliubu',
+    '当前 reference_samples 里有没有重复 source_truth_vault_note_id (UNIQUE 前的污染)',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(*) FROM (
+            SELECT source_truth_vault_note_id
+            FROM public.reference_samples
+            WHERE source_truth_vault_note_id IS NOT NULL
+            GROUP BY 1
+            HAVING COUNT(*) > 1
+        ) d$q$
+    )::TEXT, 'N/A'),
+    '0',
+    '> 0 表示 UNIQUE 加之前并发跑产生过重复. 在跑 003 之前必须手工 dedupe.'
 
 -- ═════════════════════════════════════════════════════════════════
 -- F. 数据状态 — 飞轮在转吗?

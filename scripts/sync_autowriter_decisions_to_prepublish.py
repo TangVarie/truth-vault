@@ -26,10 +26,23 @@ sync_autowriter_decisions_to_prepublish.py
     每个 (autowriter_item_id, evaluator_type='human') 元组只写一次。重跑
     会跳过已经有 prepublish_evaluations 行的 items。
 
+    2026-05-22 audit P1/P2-4 加强: schemas/notes_v1_2.sql 现在带 partial
+    UNIQUE INDEX (autowriter_item_id, evaluator_type) WHERE evaluator_type
+    ='human' AND autowriter_item_id IS NOT NULL. 应用层去重照旧 (避免读后
+    才发现冲突的高耗 round-trip), 但即便两个 worker 同时跑, DB 层会拒第
+    二个 INSERT 而不是写两行. 脚本现在会把 23505 转成 info 级 "race"
+    日志, 不当 error 计.
+
+迟到决策 (audit P1/P2-4 已知局限):
+    autowriter.items 没有 updated_at 列, 我们只能按 created_at 过滤.
+    --since-days 默认从 90 改为 365, 这样一年内人工才改状态的旧 item
+    仍能被回收. 长期 deployment 仍可能漏 1+ 年前创建的 item; 临时全扫
+    用 --since-days 0 (或 cron 每月跑一次 --since-days 0).
+
 用法:
     python sync_autowriter_decisions_to_prepublish.py
     python sync_autowriter_decisions_to_prepublish.py --dry-run
-    python sync_autowriter_decisions_to_prepublish.py --since-days 30
+    python sync_autowriter_decisions_to_prepublish.py --since-days 0   # 全扫
 
 环境变量:
     SUPABASE_URL
@@ -93,7 +106,26 @@ def fetch_pending_decisions(sb, since_iso: str | None) -> list[dict]:
     return [r for r in rows if r["id"] not in existing_ids]
 
 
-def insert_evaluation(sb, item: dict, dry_run: bool = False) -> None:
+def _is_duplicate_error(exc: Exception) -> bool:
+    """Detect SQLSTATE 23505 (unique_violation) from supabase-py errors."""
+    code = getattr(exc, "code", None) or getattr(exc, "pgcode", None)
+    if code == "23505":
+        return True
+    msg = str(exc)
+    return "23505" in msg or "duplicate key value violates" in msg
+
+
+def insert_evaluation(sb, item: dict, dry_run: bool = False) -> bool:
+    """Insert one prepublish_evaluations row.
+
+    Returns True if the row was inserted, False if it was already present
+    (race recovery via 23505). The application-level NOT EXISTS pre-filter
+    catches most repeats, but two concurrent runs of this script (e.g., a
+    manual run overlapping with cron) can both pass the pre-filter and
+    both attempt the INSERT. With the new partial UNIQUE index
+    (schemas/notes_v1_2.sql: idx_tv_evals_aw_item_evaluator_uniq), the
+    loser gets 23505; we treat that as success-by-other-worker, not error.
+    """
     decision = _STATUS_TO_DECISION[item["status"]]
     row = {
         "autowriter_item_id": item["id"],
@@ -107,22 +139,37 @@ def insert_evaluation(sb, item: dict, dry_run: bool = False) -> None:
     }
     if dry_run:
         logger.info("[dry-run] would insert evaluation %s", row)
-        return
-    (
-        sb.schema("truth_vault")
-        .table("prepublish_evaluations")
-        .insert(row)
-        .execute()
-    )
+        return True
+    try:
+        (
+            sb.schema("truth_vault")
+            .table("prepublish_evaluations")
+            .insert(row)
+            .execute()
+        )
+        return True
+    except Exception as exc:
+        if _is_duplicate_error(exc):
+            logger.info(
+                "race: prepublish_evaluations row for item %s already exists "
+                "(probably another worker wrote it between our SELECT and INSERT). "
+                "Treating as success.",
+                item["id"],
+            )
+            return False
+        raise
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
-        "--since-days", type=int, default=90,
-        help="Only sync items created within the last N days (default 90). "
-             "Set 0 to scan everything (slow on aged deployments).",
+        "--since-days", type=int, default=365,
+        help="Only sync items created within the last N days (default 365 — "
+             "2026-05-22 audit P1/P2-4 bumped from 90, since autowriter.items "
+             "has no updated_at and we can't otherwise tell a 91-day-old item "
+             "got its decision changed today). Set 0 to scan everything; safe "
+             "but slower on aged deployments, run monthly as a catch-all.",
     )
     args = parser.parse_args()
 
@@ -137,11 +184,16 @@ def main() -> int:
     logger.info("Found %d autowriter items with new human decisions to archive",
                 len(pending))
 
-    stats = {"pass": 0, "revise": 0, "errors": 0}
+    stats = {"pass": 0, "revise": 0, "race_skipped": 0, "errors": 0}
     for item in pending:
         try:
-            insert_evaluation(sb, item, dry_run=args.dry_run)
-            stats[_STATUS_TO_DECISION[item["status"]]] += 1
+            inserted = insert_evaluation(sb, item, dry_run=args.dry_run)
+            if inserted:
+                stats[_STATUS_TO_DECISION[item["status"]]] += 1
+            else:
+                # 23505 race recovery — another worker wrote it. Not an error,
+                # but track separately so ops can spot abnormal contention.
+                stats["race_skipped"] += 1
         except Exception as exc:
             logger.exception("item_id=%s failed: %s", item["id"], exc)
             stats["errors"] += 1

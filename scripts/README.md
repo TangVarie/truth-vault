@@ -83,8 +83,10 @@ CI 和 daily-sync workflow 都优先读 `.lock`; `.txt` 仅作为 "high-level in
 # Step 0 · 必做前置 migrations (跑 sync 之前必须应用，否则 preflight 会 400):
 #   - schemas/notes_v1_2.sql                          → 建 truth_vault schema
 #   - autowriter-migrations/001_create_autowriter_schema.sql → 把 autowriter 表从 public 迁到 autowriter schema
-#   - autowriter-migrations/002_add_external_source.sql     → items 加 (external_source, external_source_id) 列 + partial UNIQUE
+#   - autowriter-migrations/002_add_external_source.sql     → items 加 (external_source, external_source_id) 列
+#         + per-user partial UNIQUE (user_id, external_source, external_source_id) WHERE external_source IS NOT NULL.
 #         注意: autowriter 本体代码不知道这两列, 只有 TV sync 写入它们.
+#         (2026-05-22 audit P2-5 修正: 实际 unique 是 3-tuple, 不是 2-tuple, 让 per-user 副本不冲突.)
 #   - autowriter-migrations/003_add_example_label_proposal.sql → items 加 example_label_proposal 列 (extract_negative 用)
 #   - sanshengliubu-patches/001_add_source_tv_note_id.sql   → reference_samples 加 source_truth_vault_note_id 列 + 索引
 #         前提: ssll 已经跑过自己的 db/migrations/005_reference_samples_v2.sql (v2 "证据包" 列).

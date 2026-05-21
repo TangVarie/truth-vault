@@ -349,7 +349,11 @@ ON CONFLICT (id) DO NOTHING;
 
 ```sql
 -- 1. 插 item 行（external_source 是幂等 key）
--- 注: PG 默认没有 uuid() 函数；autowriter schema 启用了 uuid-ossp 扩展，用 uuid_generate_v4()
+-- 注 1: PG 默认没有 uuid() 函数；autowriter schema 启用了 uuid-ossp 扩展，用 uuid_generate_v4()
+-- 注 2: 2026-05-22 audit P2-5 修正: autowriter-migrations/002_add_external_source.sql
+--       的实际 unique 索引是 (user_id, external_source, external_source_id), 不是
+--       (external_source, external_source_id). per-user 让多个用户各自能保留同源同 id
+--       的本地副本, 同时 TV sync 仍幂等 (它每次都用 project owner 的 user_id).
 INSERT INTO autowriter.items (
     id, batch_id, status, example_label,
     external_source, external_source_id,    -- P1 加的去重 key
@@ -357,9 +361,9 @@ INSERT INTO autowriter.items (
 ) VALUES (
     uuid_generate_v4(), {special_batch_id}, 'approved', 'positive',
     'truth_vault', {note.note_id},
-    {tv_synced_user_id}, NOW()
+    {project_owner_id}, NOW()           -- 2026-05-21 改: 写 projects.owner_id, 不再用 service account
 )
-ON CONFLICT (external_source, external_source_id)
+ON CONFLICT (user_id, external_source, external_source_id)
 WHERE external_source IS NOT NULL
 DO NOTHING;  -- partial UNIQUE INDEX 保证重跑不重复插
 
@@ -921,8 +925,8 @@ GROUP BY v.ai_engine, n.project_id;
 
 - Truth Vault → sanshengliubu / autowriter 是**单向 sync**（不双向修改）
 - 所有 sync 操作必须**幂等**（重跑不重复插入）
-- **autowriter 通道**用 `items.external_source='truth_vault' + external_source_id=note_id` 作主去重键（partial UNIQUE INDEX 保证）；不再依赖 `versions.title` 这种弱键
-- **sanshengliubu 通道**优先用 `reference_samples.source_truth_vault_note_id` 作主去重键（专门加的索引列，由 `sanshengliubu-patches/001_add_source_tv_note_id.sql` 加）；`ai_analysis->>'_truth_vault_note_id'` 仅作 legacy fallback，兼容老数据
+- **autowriter 通道**用 `items.(user_id, external_source, external_source_id)` 作主去重键 (per-user partial UNIQUE INDEX `items_external_source_per_user_uniq`, 见 `autowriter-migrations/002_add_external_source.sql`)。TV sync 始终用 `projects.owner_id` 作为 user_id, 所以每个 (project, TV note) 仍是幂等的; 其它用户从导入功能引入的同源同 id 副本不冲突。
+- **sanshengliubu 通道**用 `reference_samples.source_truth_vault_note_id` 作主去重键, **partial UNIQUE INDEX** 保证 (2026-05-22 audit P1-3 起强制 unique; 升级老库需要跑 `sanshengliubu-patches/003_strengthen_tv_note_id_unique.sql`). `ai_analysis->>'_truth_vault_note_id'` 仅作 legacy fallback, 兼容老数据.
 
 ---
 

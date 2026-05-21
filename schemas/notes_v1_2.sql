@@ -421,8 +421,19 @@ CREATE TABLE IF NOT EXISTS truth_vault.prepublish_evaluations (
 );
 
 CREATE INDEX IF NOT EXISTS idx_tv_evals_aw_item ON truth_vault.prepublish_evaluations(autowriter_item_id);
-CREATE INDEX IF NOT EXISTS idx_tv_evals_evaluator 
+CREATE INDEX IF NOT EXISTS idx_tv_evals_evaluator
     ON truth_vault.prepublish_evaluations(evaluator_type, evaluator_id);
+
+-- 2026-05-22 audit P1/P2-4: partial UNIQUE 防 decision sync 并发写重复.
+-- sync_autowriter_decisions_to_prepublish.py 的文档承诺 "每个 (autowriter_item_id,
+-- evaluator_type='human') 元组只写一次", 但旧 schema 只有普通 index, 多 worker
+-- 并发跑或者 retry 重叠时会插重复. evaluator_type='persona'/'critic'/'model'
+-- 等 LLM evaluator 未来可能多次评分 (不同时间点的回顾打分), 所以约束限定在
+-- evaluator_type='human' 的范围, 不影响 LLM 评估走多行历史的设计.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tv_evals_aw_item_evaluator_uniq
+    ON truth_vault.prepublish_evaluations (autowriter_item_id, evaluator_type)
+    WHERE autowriter_item_id IS NOT NULL
+      AND evaluator_type = 'human';
 
 
 -- ════════════════════════════════════════════════════════════════════

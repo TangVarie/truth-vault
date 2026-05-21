@@ -26,7 +26,7 @@
 | Supabase service_role key | sync 脚本写入用 (绕过 RLS) | 同上 → service_role secret (新格式 `sb_secret_*` 或旧 JWT) |
 | 飞书应用 ID + Secret | 拉飞书 Bitable 数据 | 飞书开放平台 → 创建企业自建应用 → 凭证与基础信息. 需要开通 `bitable:app` 权限 |
 | Anthropic API key | essence / sub_direction / comments threading LLM pass | console.anthropic.com → API Keys. 第一次跑 NUC_phase1 全量 ≈ ¥200-400 |
-| autowriter 服务账号 user_id | autowriter.items.user_id 必填; sync 脚本注入用 | 找 autowriter 维护者建一个 "service account" 用户, 拿它的 UUID |
+| ~~autowriter 服务账号 user_id~~ | ~~已弃用 (2026-05-21 audit 后)~~ — 新部署不需要单独的 service account; sync 脚本现在用 `autowriter.projects.owner_id` 写 batches/items.user_id, 让项目 owner 用自己的 JWT 就能通过 RLS 读到. 仅在 owner_id 异常缺失时, 用 env `AUTOWRITER_SYNC_USER_ID` 兜底 | 跳过这一行, 用 § 4 配 mapping 时, autowriter 的 projects.owner_id 是必须填的 |
 | GitHub repo 写权限 + Settings/Secrets 权限 | 配 daily-sync.yml secrets, 启用 cron | 找 repo owner (Ziao) 加你为 admin |
 
 ### 0.2 协调对象 (找谁谈)
@@ -277,7 +277,9 @@ cp .env.example .env
 | `ANTHROPIC_API_KEY` | annotation 才用 | console.anthropic.com → API Keys | `sk-ant-xxx` |
 | `ESSENCE_MODEL` | 可选 | 默认 `claude-sonnet-4-6` | `claude-sonnet-4-6` |
 | `COMMENT_THREADING_MODEL` | 可选 | 默认同上 | `claude-sonnet-4-6` |
-| `AUTOWRITER_INJECTION_MAX_PER_RUN` | 可选 | 默认 5 | `5` |
+| `AUTOWRITER_INJECTION_MAX_PER_PROJECT` | 可选 | 默认 5; 每个 autowriter 项目每轮上限 (2026-05-22 audit P1-2 防项目饥饿改成 per-project) | `5` |
+| `AUTOWRITER_INJECTION_GLOBAL_CAP` | 可选 | 默认 0=无限. 设 >0 做跨项目总硬上限 (round-robin 裁) | `0` |
+| ~~`AUTOWRITER_INJECTION_MAX_PER_RUN`~~ | DEPRECATED | 旧全局上限 env, 现作为 MAX_PER_PROJECT 的别名读取, 新部署用上面两个 | — |
 | `AUTOWRITER_INJECTION_MIN_SCORE` | 可选 | 默认 0.5 | `0.5` |
 | `AUTOWRITER_INJECTION_MIN_LEVERS` | 可选 | 默认 3 | `3` |
 | `AUTOWRITER_EXAMPLE_MAX_AGE_DAYS` | 可选 | 默认 180 | `180` |
@@ -458,7 +460,7 @@ SELECT id, name FROM autowriter.projects WHERE name LIKE '%NUC%';
 | 维护 `mappings/<project>.yaml` | 项目 onboarding 时 | 新项目按 § 3.3 模板填 |
 | 设置 mapping_to_autowriter_project_id | 项目 onboarding 时 | 按 § 3.4 手工建跨系统映射 |
 | 审 `example_label_proposal` 负例候选 | 每月一次 (或等触发) | 在 autowriter Memory Manager UI 里确认 (#8 实施完成后) |
-| 审 essence 标注质量 | 每月一次 | 抽 30 条人工核对, 调词表/prompt; 见 [`docs/07-quality-review.md`](docs/07-quality-review.md) |
+| 审 essence 标注质量 | 每月一次 | 抽 30 条人工核对, 调词表/prompt; 见 [`docs/06-essence-annotation.md`](docs/06-essence-annotation.md) § "质量保证流程" |
 | 看 `recommend_tier_thresholds.py` 报告 | 每季度一次 | drift > 50% 考虑改 yaml 的 tier_thresholds |
 | 看 `check_positive_saturation.py` 输出 | 每周一次 / cron 自动 | 哪个项目 dominant_lever_ratio ≥ 0.6 就要警惕 |
 
