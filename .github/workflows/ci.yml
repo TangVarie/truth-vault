@@ -630,6 +630,60 @@ jobs:
           print("  ✓ critical fields populated (post_title/post_body/quality_score/lineage)")
           print("\nsanshengliubu sync shape: all 4 checks passed")
           PY
+      - name: Autowriter injection diversity filter self-check (D-036)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # Diversity filter must:
+          #   1. Prefer first-occurrence of each lever (top-score wins per lever)
+          #   2. Fill remaining slots by score order if max_n not yet reached
+          #   3. Degrade gracefully to plain top-N when essence unannotated
+          #   4. Handle fewer-than-cap candidates without error
+          import sync_truth_vault_baokuan_to_autowriter_items as s
+
+          # Case A: 7 candidates, 3 distinct levers (焦虑/造梦/共鸣), max 5
+          # Expected: n1(焦虑) n3(造梦) n5(共鸣) n2(焦虑) n4(焦虑)
+          # n6/n7 don't make it (lever already saturated and quota full)
+          A = [
+              {"note_id": "n1", "emotional_lever": "焦虑撬动", "injection_score": 1.9},
+              {"note_id": "n2", "emotional_lever": "焦虑撬动", "injection_score": 1.8},
+              {"note_id": "n3", "emotional_lever": "造梦投射", "injection_score": 1.7},
+              {"note_id": "n4", "emotional_lever": "焦虑撬动", "injection_score": 1.6},
+              {"note_id": "n5", "emotional_lever": "共鸣释放", "injection_score": 1.5},
+              {"note_id": "n6", "emotional_lever": "焦虑撬动", "injection_score": 1.4},
+              {"note_id": "n7", "emotional_lever": "造梦投射", "injection_score": 1.3},
+          ]
+          got = [c["note_id"] for c in s.apply_diversity_filter(A, max_n=5, min_levers=3)]
+          assert got == ["n1", "n3", "n5", "n2", "n4"], got
+          print("  ✓ diverse pool: 3 distinct levers picked first, then fill by score")
+
+          # Case B: essence unannotated everywhere → plain top-N by score
+          B = [{"note_id": f"u{i}", "emotional_lever": None,
+                "injection_score": 2.0 - i*0.1} for i in range(8)]
+          got = [c["note_id"] for c in s.apply_diversity_filter(B, max_n=5)]
+          assert got == ["u0", "u1", "u2", "u3", "u4"], got
+          print("  ✓ unannotated essence: clean degrade to score-DESC top N")
+
+          # Case C: dominant single lever — should still pick all from same lever
+          # rather than refuse to sync. Diversity is advisory, not blocking.
+          C = [{"note_id": f"d{i}", "emotional_lever": "焦虑撬动",
+                "injection_score": 2.0 - i*0.1} for i in range(6)]
+          got = [c["note_id"] for c in s.apply_diversity_filter(C, max_n=5, min_levers=3)]
+          assert got == ["d0", "d1", "d2", "d3", "d4"], got
+          print("  ✓ saturated lever pool: doesn't refuse to sync (advisory only)")
+
+          # Case D: fewer candidates than cap
+          D = [{"note_id": "x1", "emotional_lever": "焦虑撬动", "injection_score": 1.5},
+               {"note_id": "x2", "emotional_lever": "造梦投射", "injection_score": 1.0}]
+          got = s.apply_diversity_filter(D, max_n=5)
+          assert len(got) == 2 and {c["note_id"] for c in got} == {"x1", "x2"}
+          print("  ✓ handles fewer candidates than cap (no padding, no error)")
+
+          # Case E: empty
+          assert s.apply_diversity_filter([], max_n=5) == []
+          print("  ✓ empty input → empty output")
+          print("\napply_diversity_filter: 5/5 cases passed")
+          PY
       - name: Autowriter dup-error detection self-check
         working-directory: scripts
         run: |
@@ -818,6 +872,82 @@ jobs:
                   RAISE EXCEPTION 'v_top_performing_accounts wrong rate: %', rate;
               END IF;
               RAISE NOTICE 'v_top_performing_accounts OK (rate=%)', rate;
+          END $$;
+
+          -- v_autowriter_injection_candidates view (D-036): eligibility filters
+          -- 数值推断 / 老笔记 / 无 aw 映射的 / 趴 都必须被过滤掉.
+          UPDATE truth_vault.projects
+            SET mapping_to_autowriter_project_id = '00000000-0000-0000-0000-000000000001'::uuid
+            WHERE project_id = 'CI_OK';
+          -- 几个 baokuan 测试各种 filter:
+          INSERT INTO truth_vault.notes
+              (note_id, project_id, raw_content, tier, tier_source, publish_time, emotional_lever)
+          VALUES
+              ('CI_v_recent_baoA', 'CI_OK', 'A', '大爆', '状态字段',
+                NOW()::TIMESTAMP - INTERVAL '7 days', '焦虑撬动'),
+              ('CI_v_recent_baoB', 'CI_OK', 'B', '爆',   '状态字段',
+                NOW()::TIMESTAMP - INTERVAL '60 days', '造梦投射'),
+              ('CI_v_numeric_only', 'CI_OK', 'C', '爆', '数值推断',
+                NOW()::TIMESTAMP - INTERVAL '7 days', '焦虑撬动'),
+              ('CI_v_too_old', 'CI_OK', 'D', '大爆', '状态字段',
+                NOW()::TIMESTAMP - INTERVAL '400 days', '焦虑撬动'),
+              ('CI_v_confirmed_numeric', 'CI_OK', 'F', '大爆', '人工补录',
+                NOW()::TIMESTAMP - INTERVAL '14 days', '共鸣释放');
+          DO $$
+          DECLARE n INT; max_score FLOAT; numeric_present BOOLEAN; old_present BOOLEAN;
+          BEGIN
+              -- Eligible count: A, B, F (3). C excluded (数值推断). D excluded (>12m).
+              SELECT COUNT(*) INTO n FROM truth_vault.v_autowriter_injection_candidates
+              WHERE project_id = 'CI_OK';
+              IF n != 3 THEN
+                  RAISE EXCEPTION 'view should expose 3 candidates, got %', n;
+              END IF;
+              -- 数值推断 must NOT appear
+              SELECT EXISTS (SELECT 1 FROM truth_vault.v_autowriter_injection_candidates
+                  WHERE note_id = 'CI_v_numeric_only') INTO numeric_present;
+              IF numeric_present THEN
+                  RAISE EXCEPTION 'CI_v_numeric_only should be filtered out (数值推断)';
+              END IF;
+              -- > 12 months must NOT appear
+              SELECT EXISTS (SELECT 1 FROM truth_vault.v_autowriter_injection_candidates
+                  WHERE note_id = 'CI_v_too_old') INTO old_present;
+              IF old_present THEN
+                  RAISE EXCEPTION 'CI_v_too_old should be filtered out (>12 months)';
+              END IF;
+              -- Highest-score row is 大爆 + 状态字段 + recent (CI_v_recent_baoA)
+              SELECT injection_score INTO max_score FROM truth_vault.v_autowriter_injection_candidates
+              WHERE project_id = 'CI_OK' ORDER BY injection_score DESC LIMIT 1;
+              IF max_score < 1.5 THEN
+                  RAISE EXCEPTION 'top score should be ≥1.5 (recent 大爆 状态字段); got %', max_score;
+              END IF;
+              RAISE NOTICE 'v_autowriter_injection_candidates OK (3 eligible, top score=%)', max_score;
+          END $$;
+
+          -- 人工补录 should ALSO be eligible (so operators can promote 数值推断
+          -- by changing tier_source — documented escape hatch)
+          DO $$
+          BEGIN
+              IF NOT EXISTS (SELECT 1 FROM truth_vault.v_autowriter_injection_candidates
+                  WHERE note_id = 'CI_v_confirmed_numeric') THEN
+                  RAISE EXCEPTION 'CI_v_confirmed_numeric (人工补录) should be eligible';
+              END IF;
+              RAISE NOTICE 'tier_source=人工补录 promotion path OK';
+          END $$;
+
+          -- Project without aw mapping should not appear in view
+          INSERT INTO truth_vault.projects (project_id, brand, product, category)
+              VALUES ('CI_NOAW', 'b', 'p', '保健品');
+          INSERT INTO truth_vault.notes
+              (note_id, project_id, raw_content, tier, tier_source, publish_time, emotional_lever)
+          VALUES ('CI_v_no_aw_map', 'CI_NOAW', 'X', '大爆', '状态字段',
+                  NOW()::TIMESTAMP - INTERVAL '7 days', '焦虑撬动');
+          DO $$
+          BEGIN
+              IF EXISTS (SELECT 1 FROM truth_vault.v_autowriter_injection_candidates
+                  WHERE note_id = 'CI_v_no_aw_map') THEN
+                  RAISE EXCEPTION 'project without aw mapping should be filtered out';
+              END IF;
+              RAISE NOTICE 'mapping_to_autowriter_project_id IS NULL filter OK';
           END $$;
           SQL
       - name: Apply integration migration packs

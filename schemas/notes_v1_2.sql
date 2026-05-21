@@ -807,6 +807,77 @@ LEFT JOIN truth_vault.notes n ON p.project_id = n.project_id
 GROUP BY p.project_id, p.brand;
 
 
+-- ── autowriter 注入候选 + 评分 (D-036) ──
+-- 通道 2 sync 的 single source of truth: 哪条 baokuan 进 autowriter.items
+-- 由本 view 决定. sync 脚本读这个 view, 取 injection_score DESC, 加 Python
+-- 端的 diversity 后再写 autowriter.items.
+--
+-- 设计原则:
+--   - 全部用 TV 已经标过的字段做 weighted sum, 不引入新维度也不引入模型
+--   - 想调权重就改本 view, 不需要碰 sync 脚本
+--   - 想增删 eligibility filter 也是改本 view, 改完整个 pipeline 一致
+--
+-- Eligibility:
+--   - tier ∈ ('爆','大爆')                             仅同步爆款
+--   - tier_source != '数值推断'                         排除未人工 confirm 的自动 tier
+--                                                       (运营要把某条数值推断的 row 重新
+--                                                        纳入候选, 改 tier_source 为
+--                                                        '人工补录' 即可: UPDATE notes
+--                                                        SET tier_source='人工补录'
+--                                                        WHERE note_id=...)
+--   - publish_time within 12 months                     不持续注入过气审美 / 半衰期约束
+--   - projects.mapping_to_autowriter_project_id NOT NULL  必须有 aw 项目映射
+--
+-- Score 组成 (各项独立可调):
+--   recency_weight       近期权重 (12 月内线性衰减, 范围 [0, 1])
+--   tier_weight          大爆 +0.5 / 爆 +0.3
+--   tier_source_weight   人工标 +0.2 / 数值推断 0
+--   account_weight       账号历史爆率 * 0.3 (无账号映射时回退 0.3 中性)
+-- 满分约 2.0 / 中位 0.5-0.8 / 强候选 1.0+
+CREATE OR REPLACE VIEW truth_vault.v_autowriter_injection_candidates AS
+WITH eligible AS (
+  SELECT
+    n.note_id, n.project_id,
+    n.raw_content, n.hit_blue_keywords, n.tier, n.tier_source,
+    n.emotional_lever, n.target_audience, n.publish_time,
+    n.account_id, n.synced_to_aw_at,
+    p.brand, p.category,
+    p.mapping_to_autowriter_project_id,
+    -- recency: TIMESTAMP 列按 naive UTC 处理 (项目惯例), 转成 epoch 秒后归一化
+    GREATEST(
+        0::FLOAT,
+        1.0 - EXTRACT(EPOCH FROM (NOW()::TIMESTAMP - n.publish_time)) / (86400.0 * 365.0)
+    ) AS recency_weight
+  FROM truth_vault.notes n
+  JOIN truth_vault.projects p ON p.project_id = n.project_id
+  WHERE n.tier IN ('爆','大爆')
+    AND n.tier_source IS DISTINCT FROM '数值推断'
+    AND n.publish_time IS NOT NULL
+    AND n.publish_time > (NOW() - INTERVAL '12 months')::TIMESTAMP
+    AND p.mapping_to_autowriter_project_id IS NOT NULL
+)
+SELECT
+  e.note_id, e.project_id, e.raw_content, e.hit_blue_keywords,
+  e.tier, e.tier_source, e.emotional_lever, e.target_audience,
+  e.publish_time, e.synced_to_aw_at, e.account_id,
+  e.brand, e.category, e.mapping_to_autowriter_project_id,
+  e.recency_weight,
+  COALESCE(a.personal_bao_rate, 0.3) AS account_bao_rate,
+  (
+    e.recency_weight
+    + CASE e.tier WHEN '大爆' THEN 0.5 WHEN '爆' THEN 0.3 ELSE 0 END
+    + CASE e.tier_source
+        WHEN '状态字段' THEN 0.2
+        WHEN '备注字段' THEN 0.2
+        WHEN '人工补录' THEN 0.2
+        ELSE 0
+      END
+    + COALESCE(a.personal_bao_rate, 0.3) * 0.3
+  ) AS injection_score
+FROM eligible e
+LEFT JOIN truth_vault.v_top_performing_accounts a ON a.account_id = e.account_id;
+
+
 -- ════════════════════════════════════════════════════════════════════
 -- 完成
 -- ════════════════════════════════════════════════════════════════════

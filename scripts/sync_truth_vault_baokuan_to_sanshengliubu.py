@@ -46,18 +46,37 @@ def fetch_pending_baokuan(
 ) -> list[dict[str, Any]]:
     """Query Truth Vault for baokuan notes not yet synced to sanshengliubu.
 
+    Eligibility filters (matching通道 2 D-036 data-hygiene rules):
+      - tier ∈ ('爆','大爆')                              仅爆款
+      - tier_source != '数值推断'                          排除未人工 confirm 的自动 tier
+                                                          (运营要把某条数值推断的 row
+                                                          重新纳入 sync, 改 tier_source 为
+                                                          '人工补录': UPDATE notes SET
+                                                          tier_source='人工补录' WHERE
+                                                          note_id=...)
+      - publish_time within 12 months                     不持续推过气审美进 ssll
+                                                          的 reference_samples
+      - synced_to_ssll_at IS NULL                         未同步
+
     Paginates explicitly. Supabase's PostgREST defaults to 1000 rows/response;
     once enough projects onboard, unsynced 爆款 will cross that boundary and
     silent truncation would leak baokuan from the flywheel.
     """
+    from datetime import datetime, timedelta, timezone
+    twelve_months_ago = (
+        datetime.now(timezone.utc) - timedelta(days=365)
+    ).replace(tzinfo=None).isoformat(timespec="seconds")
+
     q = (
         sb.schema("truth_vault")
         .table("notes")
         .select("note_id, project_id, raw_content, hit_blue_keywords, "
-                "tier, intent, publish_url, target_audience, "
-                "projects(category, brand, platform)")
+                "tier, tier_source, intent, publish_url, publish_time, "
+                "target_audience, projects(category, brand, platform)")
         .in_("tier", ["爆", "大爆"])
-        .is_("synced_to_ssll_at", None)  # not yet synced
+        .neq("tier_source", "数值推断")
+        .gte("publish_time", twelve_months_ago)
+        .is_("synced_to_ssll_at", None)
     )
     if project_filter:
         q = q.eq("project_id", project_filter)

@@ -2,11 +2,24 @@
 sync_truth_vault_baokuan_to_autowriter_items.py
 ═══════════════════════════════════════════════════════════════════════════
 
-把 Truth Vault 中 tier ∈ ('爆','大爆') 的爆款 sync 到 autowriter.items，
-打标 example_label='positive'，注入 build_system_prompt 的 few-shot pool。
+把 Truth Vault 中筛选过的爆款 sync 到 autowriter.items，打标
+example_label='positive'，注入 autowriter `memory.build_system_prompt` 的
+few-shot pool（autowriter 的 `list_example_items` 会按 created_at DESC 取
+前 5 个作为 P1 段的"优质正案例"）。
 
-需要 truth_vault.projects 表里有 mapping_to_autowriter_project_id 列，
-指向 autowriter.projects.id。没有 mapping 的 TV 项目跳过。
+候选选择由 `truth_vault.v_autowriter_injection_candidates` view 决定 ——
+view 内含 eligibility filter (tier / tier_source / recency / aw 项目映射)
+和加权 injection_score。本脚本读 view、按 score DESC 取候选、在 Python 端
+应用 diversity 软约束（avoid 同一 emotional_lever 占满 N slot）、然后只 sync
+top N per run（默认 5），让 autowriter 的 `[:5]` 自然窗口反映"当前最值得借鉴"
+而非"全量历史顺次填"。低分候选不会被丢失 —— 下一轮如果它仍处于 top N
+位置就会同步, 否则随 recency 自然降权直到 publish_time 过 12 个月被
+filter 出局。
+
+退役 (D-036 配套): 同一脚本末尾会跑 retire_stale_autowriter_examples，
+清掉 TV-synced items 中 created_at 早于 6 个月的 example_label，让老
+样本从 autowriter 的 positive_examples pool 中静默退出（行不删，仅
+example_label 置 NULL — autowriter 不再注入但历史依旧可查）。
 
 幂等性:
     autowriter.items 有 partial UNIQUE INDEX(external_source, external_source_id)
@@ -22,12 +35,18 @@ sync_truth_vault_baokuan_to_autowriter_items.py
     python sync_truth_vault_baokuan_to_autowriter_items.py
     python sync_truth_vault_baokuan_to_autowriter_items.py --project NUC_phase1
     python sync_truth_vault_baokuan_to_autowriter_items.py --dry-run
+    python sync_truth_vault_baokuan_to_autowriter_items.py --skip-retire   # 只 sync 不退役
 
 环境变量:
     SUPABASE_URL
-    SUPABASE_SERVICE_ROLE_KEY       (必须用 service_role，绕过 RLS)
-    AUTOWRITER_SYNC_USER_ID         (UUID, 用于填 autowriter.items.user_id;
-                                     建议建一个专门的 service account)
+    SUPABASE_SERVICE_ROLE_KEY            (必须用 service_role，绕过 RLS)
+    AUTOWRITER_SYNC_USER_ID              (UUID, 用于填 autowriter.items.user_id;
+                                          建议建一个专门的 service account)
+    AUTOWRITER_INJECTION_MAX_PER_RUN     (默认 5; 每轮最多 sync N 个高分候选)
+    AUTOWRITER_INJECTION_MIN_SCORE       (默认 0.5; 低于此 score 的候选不 sync)
+    AUTOWRITER_INJECTION_MIN_LEVERS      (默认 3; diversity 软目标 — 在条件允许时
+                                          确保 top N 至少覆盖 N 个不同 emotional_lever)
+    AUTOWRITER_EXAMPLE_MAX_AGE_DAYS      (默认 180; 退役 cutoff)
 """
 
 from __future__ import annotations
@@ -37,6 +56,7 @@ import json
 import os
 import sys
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from _common import fetch_all_pages, get_supabase_client, setup_logger, _iso_now
@@ -48,44 +68,172 @@ logger = setup_logger("sync_tv_baokuan_to_aw")
 SPECIAL_BATCH_TACTIC = "truth_vault_synced"
 SPECIAL_BATCH_AI_ENGINE = "truth_vault_sync"  # versions.ai_engine 用，v_model_comparison 会排除
 
+# Tunables — env-var configurable so ops can adjust without touching code.
+DEFAULT_INJECTION_MAX_PER_RUN = int(os.environ.get("AUTOWRITER_INJECTION_MAX_PER_RUN", "5"))
+DEFAULT_INJECTION_MIN_SCORE = float(os.environ.get("AUTOWRITER_INJECTION_MIN_SCORE", "0.5"))
+DEFAULT_INJECTION_MIN_LEVERS = int(os.environ.get("AUTOWRITER_INJECTION_MIN_LEVERS", "3"))
+DEFAULT_EXAMPLE_MAX_AGE_DAYS = int(os.environ.get("AUTOWRITER_EXAMPLE_MAX_AGE_DAYS", "180"))
 
-def fetch_pending_baokuan_with_aw_project(sb, project_filter: str | None = None):
-    """Pull baokuan from TV joined with the aw_project_id mapping.
 
-    Paginated explicitly to avoid Supabase's 1000-row default cap silently
-    truncating the candidate set once unsynced 爆款 accumulate across
-    projects.
+def fetch_injection_candidates(sb, project_filter: str | None = None) -> list[dict]:
+    """Pull pending baokuan from the ranking view, ordered by score DESC.
+
+    Reads `truth_vault.v_autowriter_injection_candidates` which has the
+    eligibility filters baked in (tier IN ('爆','大爆'), tier_source !=
+    '数值推断', publish_time within 12 months, project has aw mapping).
+    Adds `synced_to_aw_at IS NULL` here since the view doesn't filter on
+    sync state (it's a candidate pool, not a queue).
+
+    Paginated explicitly — even with the 12-month + tier filters, a
+    long-running deployment will eventually have hundreds of pending
+    rows; the 1000-row PostgREST default would truncate silently.
     """
     q = (
         sb.schema("truth_vault")
-        .table("notes")
+        .table("v_autowriter_injection_candidates")
         .select(
             "note_id, project_id, raw_content, hit_blue_keywords, tier, "
-            "projects(category, brand, mapping_to_autowriter_project_id)"
+            "tier_source, emotional_lever, target_audience, publish_time, "
+            "synced_to_aw_at, account_id, brand, category, "
+            "mapping_to_autowriter_project_id, "
+            "recency_weight, account_bao_rate, injection_score"
         )
-        .in_("tier", ["爆", "大爆"])
         .is_("synced_to_aw_at", None)
     )
     if project_filter:
         q = q.eq("project_id", project_filter)
-    rows = fetch_all_pages(q)
-    # filter out rows where the project hasn't been mapped to autowriter yet
-    keepable = []
-    skipped_no_mapping = 0
+    # PostgREST honors ORDER BY on a view. View output isn't materialized; the
+    # score expression is computed at query time.
+    rows = fetch_all_pages(q.order("injection_score", desc=True))
+    # Map mapping_to_autowriter_project_id → aw_project_id for downstream
+    # code that doesn't want the long name.
     for r in rows:
-        proj = r.get("projects") or {}
-        if proj.get("mapping_to_autowriter_project_id"):
-            r["aw_project_id"] = proj["mapping_to_autowriter_project_id"]
-            keepable.append(r)
-        else:
-            skipped_no_mapping += 1
-    if skipped_no_mapping:
-        logger.info(
-            "Skipping %d baokuan without truth_vault.projects."
-            "mapping_to_autowriter_project_id set",
-            skipped_no_mapping,
+        r["aw_project_id"] = r["mapping_to_autowriter_project_id"]
+    return rows
+
+
+def apply_diversity_filter(
+    candidates: list[dict],
+    max_n: int = DEFAULT_INJECTION_MAX_PER_RUN,
+    min_levers: int = DEFAULT_INJECTION_MIN_LEVERS,
+) -> list[dict]:
+    """Pick at most `max_n` candidates from the score-sorted list, prioritising
+    coverage across distinct emotional_lever values.
+
+    Two-pass strategy:
+      1. First pass: walk the score-sorted list, accept each item only if its
+         lever hasn't been seen yet (or if it has no lever — essence-unannotated
+         rows still flow through, they just don't contribute to diversity).
+      2. Second pass: if we don't have max_n yet (e.g. fewer distinct levers
+         than max_n available), fill remaining slots by score order.
+
+    The result is: top N by score whenever diversity allows, but a single
+    very dominant lever can take >1 slot if it's also the only one available.
+    When essence annotation isn't filled in (early-Sprint state), `levers_seen`
+    stays empty and the function degenerates to a plain top-N-by-score.
+
+    `min_levers` is currently advisory — we don't reject runs that fall short
+    (which would block sync entirely when a project only has 1 lever). It's
+    surfaced in logging so the operator can spot saturation as it builds.
+    """
+    if not candidates:
+        return []
+
+    picked: list[dict] = []
+    picked_ids: set[str] = set()
+    levers_seen: set[str] = set()
+
+    # Pass 1: prefer new levers
+    for c in candidates:
+        if len(picked) >= max_n:
+            break
+        lever = c.get("emotional_lever")
+        if lever is None or lever not in levers_seen:
+            picked.append(c)
+            picked_ids.add(c["note_id"])
+            if lever:
+                levers_seen.add(lever)
+
+    # Pass 2: fill any remaining slots by raw score order
+    if len(picked) < max_n:
+        for c in candidates:
+            if len(picked) >= max_n:
+                break
+            if c["note_id"] not in picked_ids:
+                picked.append(c)
+                picked_ids.add(c["note_id"])
+
+    if levers_seen and len(levers_seen) < min_levers:
+        logger.warning(
+            "diversity advisory: top %d picks cover only %d distinct emotional_lever "
+            "(target ≥ %d). Pool may be saturated; consider widening the project's "
+            "content angle or lowering min_levers temporarily.",
+            len(picked), len(levers_seen), min_levers,
         )
-    return keepable
+
+    return picked
+
+
+def retire_stale_autowriter_examples(
+    sb,
+    max_age_days: int = DEFAULT_EXAMPLE_MAX_AGE_DAYS,
+    dry_run: bool = False,
+) -> int:
+    """Clear example_label on TV-synced items older than max_age_days.
+
+    Stops old baokuan from forever occupying autowriter's positive_examples
+    pool. We don't delete the rows (they're audit/lineage artifacts) — just
+    clear the label so `list_example_items` stops returning them.
+
+    Idempotent: re-running on an already-retired row is a no-op (label is
+    already NULL so the WHERE clause excludes it).
+
+    Returns the number of items affected. Logs in detail for the first few
+    so operators can see what's rotating out.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).replace(tzinfo=None)
+    cutoff_iso = cutoff.isoformat(timespec="seconds")
+
+    sel = (
+        sb.schema("autowriter")
+        .table("items")
+        .select("id, external_source_id, created_at")
+        .eq("external_source", "truth_vault")
+        .eq("example_label", "positive")
+        .lt("created_at", cutoff_iso)
+        .execute()
+    )
+    candidates = sel.data or []
+
+    if not candidates:
+        logger.info(
+            "No stale TV-synced positive examples to retire (cutoff=%s, max_age=%d days)",
+            cutoff_iso, max_age_days,
+        )
+        return 0
+
+    logger.info(
+        "Retiring %d stale TV-synced positive examples (created < %s)",
+        len(candidates), cutoff_iso,
+    )
+    for c in candidates[:5]:
+        logger.info("  retiring %s (created %s)", c["external_source_id"], c["created_at"])
+    if len(candidates) > 5:
+        logger.info("  ... and %d more", len(candidates) - 5)
+
+    if dry_run:
+        return len(candidates)
+
+    (
+        sb.schema("autowriter")
+        .table("items")
+        .update({"example_label": None})
+        .eq("external_source", "truth_vault")
+        .eq("example_label", "positive")
+        .lt("created_at", cutoff_iso)
+        .execute()
+    )
+    return len(candidates)
 
 
 def ensure_special_batch(sb, aw_project_id: str, sync_user_id: str,
@@ -356,7 +504,21 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--project")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument(
+        "--max-per-run", type=int, default=DEFAULT_INJECTION_MAX_PER_RUN,
+        help="Sync at most N high-score candidates this run (default: env "
+             "AUTOWRITER_INJECTION_MAX_PER_RUN or 5). The remainder stay "
+             "pending; they'll compete in the next run after recency decay.",
+    )
+    parser.add_argument(
+        "--min-score", type=float, default=DEFAULT_INJECTION_MIN_SCORE,
+        help="Skip candidates with injection_score below this. Default 0.5.",
+    )
+    parser.add_argument(
+        "--skip-retire", action="store_true",
+        help="Skip the post-sync retire pass (the one that clears example_label "
+             "on TV-synced items older than 6 months).",
+    )
     args = parser.parse_args()
 
     sync_user_id = os.environ.get("AUTOWRITER_SYNC_USER_ID")
@@ -378,16 +540,33 @@ def main() -> int:
         return 2
 
     sb = get_supabase_client()
-    pending = fetch_pending_baokuan_with_aw_project(sb, project_filter=args.project)
-    logger.info("Found %d baokuan pending sync to autowriter", len(pending))
+    candidates = fetch_injection_candidates(sb, project_filter=args.project)
+    logger.info(
+        "Found %d eligible candidates (view-filtered: tier∈爆/大爆, tier_source!='数值推断', "
+        "publish_time within 12m, project has aw mapping)",
+        len(candidates),
+    )
+
+    # Min-score gate: candidates below threshold stay pending across runs.
+    # If the project's quality bar is genuinely lower we should re-tune the
+    # min-score, not bypass it case by case.
+    above_threshold = [c for c in candidates if c["injection_score"] >= args.min_score]
+    if len(above_threshold) < len(candidates):
+        logger.info(
+            "Filtered out %d candidates below min_score=%.2f",
+            len(candidates) - len(above_threshold), args.min_score,
+        )
+
+    # Diversity pick + per-run cap
+    selected = apply_diversity_filter(above_threshold, max_n=args.max_per_run)
+    logger.info("Selected %d / %d candidates for this run (cap=%d)",
+                len(selected), len(above_threshold), args.max_per_run)
 
     # Group by aw_project_id so we create each special batch only once
     batch_cache: dict[str, str] = {}
-    stats = {"synced": 0, "deduped": 0, "errors": 0}
+    stats = {"synced": 0, "deduped": 0, "errors": 0, "retired": 0}
 
-    for i, note in enumerate(pending):
-        if args.limit and i >= args.limit:
-            break
+    for note in selected:
         aw_proj = note["aw_project_id"]
         try:
             if aw_proj not in batch_cache:
@@ -404,13 +583,24 @@ def main() -> int:
             mark_synced(sb, note["note_id"], item_id, dry_run=args.dry_run)
             if is_new:
                 stats["synced"] += 1
-                logger.info("Synced %s (tier=%s) → aw item %s",
-                            note["note_id"], note["tier"], item_id)
+                logger.info(
+                    "Synced %s (tier=%s, score=%.2f, lever=%s) → aw item %s",
+                    note["note_id"], note["tier"], note["injection_score"],
+                    note.get("emotional_lever") or "?", item_id,
+                )
             else:
                 stats["deduped"] += 1
         except Exception as exc:
             logger.exception("note_id=%s failed: %s", note["note_id"], exc)
             stats["errors"] += 1
+
+    # Post-sync: retire old TV-synced positive examples so autowriter doesn't
+    # forever serve stale baokuan to its prompt.
+    if not args.skip_retire:
+        try:
+            stats["retired"] = retire_stale_autowriter_examples(sb, dry_run=args.dry_run)
+        except Exception as exc:
+            logger.exception("retire pass failed (sync results unaffected): %s", exc)
 
     logger.info("Done: %s", json.dumps(stats, ensure_ascii=False))
     return 0 if stats["errors"] == 0 else 1
