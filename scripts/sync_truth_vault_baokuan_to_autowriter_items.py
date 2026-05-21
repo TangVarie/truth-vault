@@ -152,23 +152,64 @@ def _ensure_version_and_link(
     that, on rerun, would just be marked synced without ever getting a
     version. That used to be the user's #2 P0 issue.
 
+    Reconciliation rule for best_version_id:
+      - already points to a real version on this item → keep it
+      - NULL or stale (points to a deleted/foreign UUID) → re-link to a
+        real version on this item and log
+    The old "UPDATE ... WHERE best_version_id IS NULL" silently no-op'd
+    on stale pointers; the caller would then write a version_id back to
+    truth_vault that didn't match the autowriter side, corrupting lineage.
+
     Returns the version_id that ends up linked as best_version_id.
     """
-    existing_v = (
+    item_state = (
+        sb.schema("autowriter")
+        .table("items")
+        .select("best_version_id")
+        .eq("id", item_id)
+        .limit(1)
+        .execute()
+    )
+    current_best = (
+        item_state.data[0]["best_version_id"] if item_state.data else None
+    )
+
+    existing_versions = (
         sb.schema("autowriter")
         .table("versions")
         .select("id")
         .eq("item_id", item_id)
-        .limit(1)
         .execute()
-    )
-    if existing_v.data:
-        version_id = existing_v.data[0]["id"]
-        # belt-and-suspenders: ensure best_version_id is set
-        sb.schema("autowriter").table("items").update(
-            {"best_version_id": version_id}
-        ).eq("id", item_id).is_("best_version_id", None).execute()
-        return version_id
+    ).data or []
+    existing_ids = {v["id"] for v in existing_versions}
+
+    if existing_versions:
+        if current_best in existing_ids:
+            return current_best
+        chosen = existing_versions[0]["id"]
+        if current_best is not None:
+            logger.warning(
+                "item %s has stale best_version_id=%s (not in %d existing "
+                "versions); re-linking to %s",
+                item_id, current_best, len(existing_versions), chosen,
+            )
+        res = (
+            sb.schema("autowriter")
+            .table("items")
+            .update({"best_version_id": chosen})
+            .eq("id", item_id)
+            .execute()
+        )
+        # supabase-py returns the updated row(s); empty list means the WHERE
+        # matched no rows, which here would mean the item disappeared
+        # between our two queries. Surface this so the caller can see it
+        # instead of marking the note synced against a deleted item.
+        if not (res.data or []):
+            raise RuntimeError(
+                f"item_id={item_id} vanished between read and best_version_id "
+                "update — refusing to mark note synced against a missing item"
+            )
+        return chosen
 
     version_id = str(uuid.uuid4())
     (
@@ -189,13 +230,19 @@ def _ensure_version_and_link(
         })
         .execute()
     )
-    (
+    res = (
         sb.schema("autowriter")
         .table("items")
         .update({"best_version_id": version_id})
         .eq("id", item_id)
         .execute()
     )
+    if not (res.data or []):
+        raise RuntimeError(
+            f"item_id={item_id} vanished between version insert and "
+            "best_version_id link — leaves orphan version, refusing to "
+            "mark note synced"
+        )
     return version_id
 
 

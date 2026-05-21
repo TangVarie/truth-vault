@@ -345,10 +345,15 @@ CREATE TABLE IF NOT EXISTS truth_vault.metric_snapshots (
     UNIQUE (note_id, window_label, source)
 );
 
-CREATE INDEX IF NOT EXISTS idx_tv_snapshots_note 
+CREATE INDEX IF NOT EXISTS idx_tv_snapshots_note
     ON truth_vault.metric_snapshots(note_id, collected_at DESC);
-CREATE INDEX IF NOT EXISTS idx_tv_snapshots_window 
+CREATE INDEX IF NOT EXISTS idx_tv_snapshots_window
     ON truth_vault.metric_snapshots(note_id, window_label);
+-- 时间窗口聚合查询 (例 "过去 7 天的 7d window 快照" 用于 dashboard
+-- + alerting): 这种 SQL 没有 note_id 前缀,会让上两个索引失效,导致
+-- 全表扫. 加 (window_label, collected_at DESC) 覆盖该模式.
+CREATE INDEX IF NOT EXISTS idx_tv_snapshots_window_time
+    ON truth_vault.metric_snapshots(window_label, collected_at DESC);
 
 
 -- ════════════════════════════════════════════════════════════════════
@@ -578,18 +583,17 @@ WITH ranked AS (
 DELETE FROM truth_vault.undeclared_fields_quarantine
 WHERE quarantine_id IN (SELECT quarantine_id FROM ranked WHERE rn > 1);
 
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conrelid = 'truth_vault.undeclared_fields_quarantine'::regclass
-          AND conname  = 'uq_quarantine_project_record_reason'
-    ) THEN
-        ALTER TABLE truth_vault.undeclared_fields_quarantine
-            ADD CONSTRAINT uq_quarantine_project_record_reason
-            UNIQUE (project_id, feishu_record_id, reason);
-    END IF;
-END $$;
+-- 历史版本曾用 ADD CONSTRAINT UNIQUE (...); 但 SQL UNIQUE 把 NULL 视为不相等,
+-- feishu_record_id 为 NULL 的行会无限堆积. 改成 partial UNIQUE INDEX,
+-- 只在 feishu_record_id 非空时去重 (这正是有意义的场景). 匿名行 (NULL
+-- feishu_record_id) 无法跨 run 关联, 重复是无害的且原本就不该出现.
+ALTER TABLE truth_vault.undeclared_fields_quarantine
+    DROP CONSTRAINT IF EXISTS uq_quarantine_project_record_reason;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_quarantine_project_record_reason
+    ON truth_vault.undeclared_fields_quarantine
+    (project_id, feishu_record_id, reason)
+    WHERE feishu_record_id IS NOT NULL;
 
 
 -- ════════════════════════════════════════════════════════════════════

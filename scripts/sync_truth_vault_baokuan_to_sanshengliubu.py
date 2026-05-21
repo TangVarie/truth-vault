@@ -198,25 +198,36 @@ def existing_ssll_sample_id(sb, note_id: str) -> str | None:
         query reference_samples for the canonical key
         (source_truth_vault_note_id, also kept in ai_analysis for legacy
         rows).  If we find a row, we skip insert and only run mark_synced.
+
+    Two separate queries instead of an OR clause: PostgREST's `or=` is a
+    comma-separated string filter, so embedding the raw note_id (which is
+    f"{project_id}_{feishu_record_id}") meant a comma or '.' in the value
+    could break the parser. Two `.eq()` queries are safer and the cost
+    (a second round trip on the rare fallback) is negligible — the index
+    on source_truth_vault_note_id makes the first probe ~free, and the
+    second probe (the JSON path) runs only when the new column is empty.
     """
-    # Single OR query covers both the clean column AND the legacy
-    # ai_analysis->>'_truth_vault_note_id' JSON fallback in one round trip.
-    # Postgres uses the partial index on source_truth_vault_note_id when
-    # the column matches; the JSON probe is the rare fallback path.
-    or_clause = (
-        f"source_truth_vault_note_id.eq.{note_id},"
-        f"ai_analysis->>_truth_vault_note_id.eq.{note_id}"
-    )
-    res = (
+    primary = (
         sb.schema("public")
         .table("reference_samples")
         .select("id")
-        .or_(or_clause)
+        .eq("source_truth_vault_note_id", note_id)
         .limit(1)
         .execute()
     )
-    if res.data:
-        return res.data[0]["id"]
+    if primary.data:
+        return primary.data[0]["id"]
+
+    fallback = (
+        sb.schema("public")
+        .table("reference_samples")
+        .select("id")
+        .eq("ai_analysis->>_truth_vault_note_id", note_id)
+        .limit(1)
+        .execute()
+    )
+    if fallback.data:
+        return fallback.data[0]["id"]
     return None
 
 
