@@ -518,10 +518,17 @@ def insert_synced_item(
         # Dedup hit. Look up the existing item_id so we can:
         #   1. write a real UUID into truth_vault.notes.synced_autowriter_item_id
         #   2. verify the version + best_version_id link exist (orphan recovery)
+        # Filter by user_id to align with autowriter's per-user unique index
+        # (autowriter db.py: items_external_source_per_user_uniq). Without
+        # user_id filter, a stale row from a previous service-account sync
+        # could be returned and we'd write the wrong UUID back. Pre-006
+        # backfill rows have stale user_id; run 006 first so the lookup hits
+        # the current project_user_id row.
         existing = (
             sb.schema("autowriter")
             .table("items")
             .select("id, best_version_id")
+            .eq("user_id", project_user_id)
             .eq("external_source", "truth_vault")
             .eq("external_source_id", note["note_id"])
             .limit(1)

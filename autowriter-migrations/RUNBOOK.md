@@ -92,10 +92,12 @@ WHERE table_schema = 'autowriter' AND table_name = 'items'
                       'example_label_proposal');
 -- 应返回 3 行
 
--- partial UNIQUE index
+-- partial UNIQUE index (2026-05-21 后改为 per-user)
 SELECT indexname FROM pg_indexes
 WHERE schemaname = 'autowriter'
-  AND indexname IN ('items_external_source_uniq', 'items_proposal_idx');
+  AND indexname IN ('items_external_source_per_user_uniq', 'items_proposal_idx');
+-- 应返回 2 行. 如果还看到 'items_external_source_uniq' (旧的全局名)
+-- 需要重跑 002_add_external_source.sql 让自愈 DROP 生效.
 ```
 
 ### Step 7 · 跑 TV sync dry-run
@@ -156,7 +158,8 @@ DROP INDEX IF EXISTS autowriter.items_proposal_idx;
 ALTER TABLE autowriter.items DROP COLUMN IF EXISTS example_label_proposal;
 
 -- 002 回滚
-DROP INDEX IF EXISTS autowriter.items_external_source_uniq;
+DROP INDEX IF EXISTS autowriter.items_external_source_per_user_uniq;
+DROP INDEX IF EXISTS autowriter.items_external_source_uniq;  -- 老版本可能还在
 ALTER TABLE autowriter.items DROP COLUMN IF EXISTS external_source_id;
 ALTER TABLE autowriter.items DROP COLUMN IF EXISTS external_source;
 
@@ -170,6 +173,7 @@ ALTER TABLE autowriter.items DROP COLUMN IF EXISTS external_source;
 |---|---|---|
 | sync 报 `relation "items" does not exist` | autowriter schema 没在 Exposed schemas | Dashboard → Settings → API 加 autowriter |
 | sync 报 `permission denied for table items` | 用了 anon key | .env 改 SERVICE_ROLE_KEY |
-| `duplicate key value violates ... items_external_source_uniq` | sync 在跑, 这是预期的幂等机制 | 日志应是 INFO 'Already synced (external_source_id=X)' |
+| `duplicate key value violates ... items_external_source_per_user_uniq` | sync 在跑, 这是预期的幂等机制 (autowriter 2026-05-21 改成 per-user index) | 日志应是 INFO 'Already synced (external_source_id=X)' |
+| 还看到 `items_external_source_uniq` (旧全局名) | 旧 PR 版 002 跑过, 但 autowriter 升级 / 重跑 002 之前 | 重跑 `002_add_external_source.sql` (自愈 DROP 旧 + 重建 per-user); 或启动新版 autowriter app, db.py bootstrap 会代劳 |
 | `column external_source does not exist` | 002 没跑 | 跑 002 |
 | autowriter UI 不显示 negative review tab | 003 跑了但 UI 还没接 | UI 工作另起 (本包不含) |
