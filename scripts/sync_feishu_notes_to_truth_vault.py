@@ -101,6 +101,50 @@ class FeishuClient:
         self._token_expires_at = time.time() + data.get("expire", 7200)
         return self._token
 
+    def _get_with_retry(
+        self,
+        url: str,
+        headers: dict,
+        params: dict,
+        *,
+        max_attempts: int = 3,
+    ) -> "requests.Response":
+        """GET with bounded retries on transient errors.
+
+        Retry policy:
+          - 401 → refresh token, retry once (existing behavior)
+          - 5xx, Timeout, ConnectionError → exponential backoff 1/2/4s, max 3 tries
+          - Other 4xx (404 / 422 / etc) → return immediately, caller raises
+        """
+        last_exc: Exception | None = None
+        for attempt in range(max_attempts):
+            try:
+                r = requests.get(url, headers=headers, params=params, timeout=30)
+                if r.status_code == 401 and attempt == 0:
+                    # token expired mid-pagination; refresh and retry once
+                    self._token = None
+                    new_token = self._ensure_token()
+                    headers = dict(headers)
+                    headers["Authorization"] = f"Bearer {new_token}"
+                    continue
+                if 500 <= r.status_code < 600:
+                    if attempt == max_attempts - 1:
+                        return r  # let caller raise via raise_for_status
+                    wait = 2 ** attempt
+                    time.sleep(wait)
+                    continue
+                return r
+            except (requests.Timeout, requests.ConnectionError) as exc:
+                last_exc = exc
+                if attempt == max_attempts - 1:
+                    raise
+                wait = 2 ** attempt
+                time.sleep(wait)
+        # Unreachable: above loop either returns or raises
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("_get_with_retry exhausted retries without raising")
+
     def list_records(
         self,
         app_token: str,
@@ -113,6 +157,11 @@ class FeishuClient:
         Each yielded dict has at least:
             record_id: str         (飞书自动 ID, used as feishu_record_id)
             fields: dict           (列名 → 单元格值; 飞书 API 原生格式)
+
+        2026-05-22 audit P1: GET 在 5xx / 网络异常时, 老代码直接 raise_for_status,
+        飞书侧瞬时抖动会中断整个 sync. 加 _get_with_retry: 401 刷 token (一次),
+        5xx / Timeout / ConnectionError 指数退避 (1/2/4s), 最多 3 次.
+        硬性 4xx (404 / 422) 仍 fail-fast 因为重试也是同样错.
         """
         token = self._ensure_token()
         url = self.BITABLE_RECORDS_URL.format(app_token=app_token, table_id=table_id)
@@ -122,13 +171,7 @@ class FeishuClient:
             params["view_id"] = view_id
 
         while True:
-            r = requests.get(url, headers=headers, params=params, timeout=30)
-            if r.status_code == 401:
-                # token expired mid-pagination; refresh and retry once
-                self._token = None
-                token = self._ensure_token()
-                headers["Authorization"] = f"Bearer {token}"
-                r = requests.get(url, headers=headers, params=params, timeout=30)
+            r = self._get_with_retry(url, headers, params)
             r.raise_for_status()
             data = r.json()
             if data.get("code") != 0:

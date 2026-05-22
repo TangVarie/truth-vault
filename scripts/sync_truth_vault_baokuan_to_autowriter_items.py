@@ -490,6 +490,37 @@ def _ensure_version_and_link(
             )
         return chosen
 
+    # 2026-05-22 audit P2 race window 收窄: 上面 SELECT 后到这里 INSERT 之间,
+    # 另一个 worker 可能已经创建了 version. 重查一次, 已经有就直接用别人那条
+    # (不再 INSERT, 避免造成 (item_id, version_num=1) 重复或孤儿 version).
+    recheck = (
+        sb.schema("autowriter")
+        .table("versions")
+        .select("id")
+        .eq("item_id", item_id)
+        .limit(1)
+        .execute()
+    ).data or []
+    if recheck:
+        chosen = recheck[0]["id"]
+        logger.info(
+            "item %s: another worker just created version %s; reusing it",
+            item_id, chosen,
+        )
+        res = (
+            sb.schema("autowriter")
+            .table("items")
+            .update({"best_version_id": chosen})
+            .eq("id", item_id)
+            .execute()
+        )
+        if not (res.data or []):
+            raise RuntimeError(
+                f"item_id={item_id} vanished between recheck and best_version_id "
+                "update — refusing to mark note synced against a missing item"
+            )
+        return chosen
+
     version_id = str(uuid.uuid4())
     (
         sb.schema("autowriter")
