@@ -53,9 +53,12 @@ jobs:
       AUTOWRITER_SYNC_USER_ID: ${{ secrets.AUTOWRITER_SYNC_USER_ID }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       ESSENCE_MODEL: ${{ secrets.ESSENCE_MODEL }}
-      # 2026-05-22 audit P1-2 配套: per-project 配额 + 可选全局 round-robin 上限
-      AUTOWRITER_INJECTION_MAX_PER_PROJECT: ${{ secrets.AUTOWRITER_INJECTION_MAX_PER_PROJECT }}
-      AUTOWRITER_INJECTION_GLOBAL_CAP: ${{ secrets.AUTOWRITER_INJECTION_GLOBAL_CAP }}
+      # 2026-05-22 audit P1-2 配套: per-project 配额 + 可选全局 round-robin 上限.
+      # `|| 'default'`: secret 未配时 GH Actions 把变量设为空字符串 (不是 unset),
+      # 直接传给 Python int() 会 ValueError. 显式 fallback 到默认值 (5 / 0).
+      # Python 端 _env_int helper 还有第二层保护 (PR #14 codex 修).
+      AUTOWRITER_INJECTION_MAX_PER_PROJECT: ${{ secrets.AUTOWRITER_INJECTION_MAX_PER_PROJECT || '5' }}
+      AUTOWRITER_INJECTION_GLOBAL_CAP: ${{ secrets.AUTOWRITER_INJECTION_GLOBAL_CAP || '0' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

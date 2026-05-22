@@ -100,18 +100,36 @@ SPECIAL_BATCH_AI_ENGINE = "truth_vault_sync"  # versions.ai_engine 用，v_model
 # few-shot examples. Per-project quotas guarantee each mapped project gets
 # its own fair share; aggregate cap is enforced by --global-cap (default
 # unbounded since per-project quota already caps total at quota × N projects).
-DEFAULT_INJECTION_MAX_PER_PROJECT = int(
-    os.environ.get(
-        "AUTOWRITER_INJECTION_MAX_PER_PROJECT",
-        os.environ.get("AUTOWRITER_INJECTION_MAX_PER_RUN", "5"),
-    )
+# 2026-05-22 audit P1 (codex PR #14 discussion_r3286552079):
+# GitHub Actions 把"未配的 secret"渲染成空字符串而不是 unset env.
+# 标准 os.environ.get(name, default) 拿到空串会跳过 default 返回 ""，
+# 再 int("") / float("") 直接 ValueError. 用 helper 把 "" / 空白当作 unset
+# 才安全 — workflow 写 secrets.X 时 default 也照样生效.
+def _env_int(name: str, default: int, *, fallback_envs: tuple[str, ...] = ()) -> int:
+    val = os.environ.get(name, "").strip()
+    if val:
+        return int(val)
+    for fb in fallback_envs:
+        fb_val = os.environ.get(fb, "").strip()
+        if fb_val:
+            return int(fb_val)
+    return default
+
+
+def _env_float(name: str, default: float) -> float:
+    val = os.environ.get(name, "").strip()
+    return float(val) if val else default
+
+
+DEFAULT_INJECTION_MAX_PER_PROJECT = _env_int(
+    "AUTOWRITER_INJECTION_MAX_PER_PROJECT",
+    5,
+    fallback_envs=("AUTOWRITER_INJECTION_MAX_PER_RUN",),
 )
-DEFAULT_INJECTION_GLOBAL_CAP = int(
-    os.environ.get("AUTOWRITER_INJECTION_GLOBAL_CAP", "0")  # 0 = unbounded
-)
-DEFAULT_INJECTION_MIN_SCORE = float(os.environ.get("AUTOWRITER_INJECTION_MIN_SCORE", "0.5"))
-DEFAULT_INJECTION_MIN_LEVERS = int(os.environ.get("AUTOWRITER_INJECTION_MIN_LEVERS", "3"))
-DEFAULT_EXAMPLE_MAX_AGE_DAYS = int(os.environ.get("AUTOWRITER_EXAMPLE_MAX_AGE_DAYS", "180"))
+DEFAULT_INJECTION_GLOBAL_CAP = _env_int("AUTOWRITER_INJECTION_GLOBAL_CAP", 0)  # 0 = unbounded
+DEFAULT_INJECTION_MIN_SCORE = _env_float("AUTOWRITER_INJECTION_MIN_SCORE", 0.5)
+DEFAULT_INJECTION_MIN_LEVERS = _env_int("AUTOWRITER_INJECTION_MIN_LEVERS", 3)
+DEFAULT_EXAMPLE_MAX_AGE_DAYS = _env_int("AUTOWRITER_EXAMPLE_MAX_AGE_DAYS", 180)
 
 
 def resolve_aw_project_owner(sb, aw_project_id: str) -> str:
