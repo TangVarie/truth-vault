@@ -174,13 +174,24 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 
 -- ── 4b. claim_one_job 权限收紧 (2026-05-22 audit P1) ────────────────
--- PG 函数默认对 PUBLIC 开放 EXECUTE. 这个函数是 SECURITY DEFINER 且会写
--- jobs 表 (status / claimed_by / attempts), 不加约束的话任何能 hit RPC 的
--- 角色 (anon / authenticated) 都能 claim 别人的 job, 破坏队列完整性.
--- worker 应该用 service_role key 调用, 这里 REVOKE PUBLIC + 仅 GRANT service_role.
+-- PG 函数默认对 PUBLIC 开放 EXECUTE. Supabase 还对 public schema 设置了
+-- ALTER DEFAULT PRIVILEGES ... GRANT EXECUTE ... TO anon, authenticated,
+-- service_role, 所以新建函数会自动拿到 anon/authenticated 角色级别的
+-- 显式 GRANT — REVOKE FROM PUBLIC 不会撤销这些角色级 GRANT.
+--
+-- 这个函数是 SECURITY DEFINER 且会写 jobs 表 (status / claimed_by /
+-- attempts), 不三层都收的话任何能 hit RPC 的角色仍能 claim 别人的 job.
+-- worker 只该用 service_role key 调用 — REVOKE FROM PUBLIC + anon +
+-- authenticated, 仅 GRANT service_role.
 REVOKE EXECUTE ON FUNCTION public.claim_one_job(TEXT, TEXT[]) FROM PUBLIC;
 DO $$
 BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+        EXECUTE 'REVOKE EXECUTE ON FUNCTION public.claim_one_job(TEXT, TEXT[]) FROM anon';
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+        EXECUTE 'REVOKE EXECUTE ON FUNCTION public.claim_one_job(TEXT, TEXT[]) FROM authenticated';
+    END IF;
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
         EXECUTE 'GRANT EXECUTE ON FUNCTION public.claim_one_job(TEXT, TEXT[]) TO service_role';
     END IF;
@@ -245,6 +256,19 @@ BEGIN
         WHERE n.nspname = 'public' AND p.proname = 'claim_one_job'
     ) THEN
         RAISE EXCEPTION '004 migration failed: claim_one_job() not present';
+    END IF;
+    -- audit P1: PUBLIC + anon + authenticated 三个都不应该有 EXECUTE.
+    -- Supabase 的 ALTER DEFAULT PRIVILEGES 会自动把 anon/authenticated GRANT
+    -- 上去 — 只 REVOKE FROM PUBLIC 是不够的, 必须显式 REVOKE 这两个角色.
+    IF EXISTS (
+        SELECT 1 FROM information_schema.routine_privileges
+        WHERE routine_schema = 'public'
+          AND routine_name = 'claim_one_job'
+          AND grantee IN ('PUBLIC', 'anon', 'authenticated')
+          AND privilege_type = 'EXECUTE'
+    ) THEN
+        RAISE EXCEPTION
+            '004 migration failed: claim_one_job still grants EXECUTE to PUBLIC/anon/authenticated';
     END IF;
     RAISE NOTICE 'sanshengliubu-patches/004 OK: jobs table + claim RPC + RLS in place';
 END $$;
