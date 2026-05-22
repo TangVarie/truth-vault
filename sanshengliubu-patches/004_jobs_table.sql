@@ -173,24 +173,61 @@ END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 
+-- ── 4b. claim_one_job 权限收紧 (2026-05-22 audit P1) ────────────────
+-- PG 函数默认对 PUBLIC 开放 EXECUTE. 这个函数是 SECURITY DEFINER 且会写
+-- jobs 表 (status / claimed_by / attempts), 不加约束的话任何能 hit RPC 的
+-- 角色 (anon / authenticated) 都能 claim 别人的 job, 破坏队列完整性.
+-- worker 应该用 service_role key 调用, 这里 REVOKE PUBLIC + 仅 GRANT service_role.
+REVOKE EXECUTE ON FUNCTION public.claim_one_job(TEXT, TEXT[]) FROM PUBLIC;
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+        EXECUTE 'GRANT EXECUTE ON FUNCTION public.claim_one_job(TEXT, TEXT[]) TO service_role';
+    END IF;
+END $$;
+
+
 -- ── 5. RLS ───────────────────────────────────────────────────────────
 -- 单租户场景: 用户能看到所有 jobs (sanshengliubu 现 schema 5 张主表都没 RLS,
 -- jobs 跟着走单租户假设, RLS enable 但 policy 放宽). 多租户场景: 跑
 -- 005_multi_tenant_workspaces.sql 后会被替换成 workspace-scoped policy.
+--
+-- 2026-05-22 audit P2: 旧的 jobs_owner_or_anon (FOR ALL) 让 authenticated 角色
+-- 能 UPDATE/DELETE 任意 job (含别人的), 在多用户单租户部署里可被互相 cancel.
+-- 拆成: SELECT 给所有 authenticated (保留"团队都能看"的单租户语义),
+-- INSERT/UPDATE/DELETE 仅限自己的行 (user_id = auth.uid()).
+-- service_role 仍绕 RLS (worker 进程用).
 ALTER TABLE public.jobs ENABLE ROW LEVEL SECURITY;
 
+-- 清掉旧 policy (老 P2 版本) 和新 policy (本 patch 重跑时)
 DROP POLICY IF EXISTS jobs_owner_or_anon ON public.jobs;
-CREATE POLICY jobs_owner_or_anon ON public.jobs
-    FOR ALL
+DROP POLICY IF EXISTS jobs_select_team   ON public.jobs;
+DROP POLICY IF EXISTS jobs_insert_owner  ON public.jobs;
+DROP POLICY IF EXISTS jobs_update_owner  ON public.jobs;
+DROP POLICY IF EXISTS jobs_delete_owner  ON public.jobs;
+
+-- 读: 单租户假设保留 "所有 authenticated 都能看", anon/历史行 (user_id NULL)
+-- 也放过. service_role 绕 RLS 不走这里.
+CREATE POLICY jobs_select_team ON public.jobs
+    FOR SELECT
     USING (
-        -- 单租户假设: 如果 user_id 是 NULL (老数据 / anon 路径) 或当前用户
-        -- 是 authenticated 角色, 都能看. service_role 绕 RLS 不走这里.
         user_id IS NULL OR user_id = auth.uid()
         OR auth.role() = 'authenticated'
-    )
-    WITH CHECK (
-        user_id IS NULL OR user_id = auth.uid()
     );
+
+-- 写: 只能动自己的 job. NEW row 必须挂自己 user_id; OLD row 必须是自己的.
+CREATE POLICY jobs_insert_owner ON public.jobs
+    FOR INSERT
+    WITH CHECK (user_id = auth.uid());
+
+CREATE POLICY jobs_update_owner ON public.jobs
+    FOR UPDATE
+    USING (user_id = auth.uid())
+    WITH CHECK (user_id = auth.uid());
+
+CREATE POLICY jobs_delete_owner ON public.jobs
+    FOR DELETE
+    USING (user_id = auth.uid());
 
 
 -- ── 6. 校验 ──────────────────────────────────────────────────────────

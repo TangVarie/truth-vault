@@ -149,15 +149,33 @@ CREATE INDEX IF NOT EXISTS idx_jobs_workspace
     ON public.jobs (workspace_id);
 
 
--- ── 7. helper function: current_workspace_ids() ─────────────────────
--- 让 RLS policy 写起来短. STABLE 让 PG planner 可以 cache 函数结果在
--- 单 query 内的多次调用 (RLS policy 每行求值一次, 这个 cache 重要).
+-- ── 7. helper functions ─────────────────────────────────────────────
+-- current_workspace_ids: 让 RLS policy 写起来短. STABLE 让 PG planner 可以
+-- cache 函数结果在单 query 内的多次调用 (RLS policy 每行求值一次, 这个
+-- cache 重要). SECURITY DEFINER 让函数体绕过 RLS, 否则查 workspace_users
+-- 自身会被 workspace_users 自己的 policy 拦, 死锁.
 CREATE OR REPLACE FUNCTION public.current_workspace_ids()
 RETURNS SETOF UUID AS $$
     SELECT workspace_id FROM public.workspace_users WHERE user_id = auth.uid()
 $$ LANGUAGE SQL STABLE SECURITY DEFINER;
 
 GRANT EXECUTE ON FUNCTION public.current_workspace_ids() TO authenticated;
+
+-- is_workspace_admin: 判断当前 auth.uid() 是不是给定 workspace 的 owner/admin.
+-- 2026-05-22 audit P1 需要: workspace_users 的写入 policy 用它判断调用者
+-- 是否有权管理成员. 同样 SECURITY DEFINER 绕 workspace_users 自身的 RLS.
+CREATE OR REPLACE FUNCTION public.is_workspace_admin(_workspace_id UUID)
+RETURNS BOOLEAN AS $$
+    SELECT EXISTS (
+        SELECT 1 FROM public.workspace_users
+        WHERE workspace_id = _workspace_id
+          AND user_id = auth.uid()
+          AND role IN ('owner', 'admin')
+    );
+$$ LANGUAGE SQL STABLE SECURITY DEFINER;
+
+REVOKE EXECUTE ON FUNCTION public.is_workspace_admin(UUID) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.is_workspace_admin(UUID) TO authenticated;
 
 
 -- ── 8. ENABLE RLS + policy ──────────────────────────────────────────
@@ -202,9 +220,14 @@ CREATE POLICY reference_samples_workspace_member ON public.reference_samples
     USING (workspace_id IN (SELECT public.current_workspace_ids()))
     WITH CHECK (workspace_id IN (SELECT public.current_workspace_ids()));
 
--- jobs 把 004 那条 owner_or_anon policy 替换成 workspace-scoped
-DROP POLICY IF EXISTS jobs_owner_or_anon ON public.jobs;
-DROP POLICY IF EXISTS jobs_workspace_member ON public.jobs;
+-- jobs 把 004 那条 owner_or_anon policy + 拆出来的读写 policy 都清掉,
+-- 换成 workspace-scoped (workspace 内所有 member 共享 job 队列)
+DROP POLICY IF EXISTS jobs_owner_or_anon     ON public.jobs;
+DROP POLICY IF EXISTS jobs_select_team       ON public.jobs;
+DROP POLICY IF EXISTS jobs_insert_owner      ON public.jobs;
+DROP POLICY IF EXISTS jobs_update_owner      ON public.jobs;
+DROP POLICY IF EXISTS jobs_delete_owner      ON public.jobs;
+DROP POLICY IF EXISTS jobs_workspace_member  ON public.jobs;
 CREATE POLICY jobs_workspace_member ON public.jobs
     FOR ALL TO authenticated
     USING (workspace_id IN (SELECT public.current_workspace_ids()))
@@ -216,11 +239,36 @@ CREATE POLICY workspaces_member ON public.workspaces
     FOR ALL TO authenticated
     USING (id IN (SELECT public.current_workspace_ids()));
 
--- workspace_users 表 policy: 你只能看到自己所在 workspace 的成员关系
-DROP POLICY IF EXISTS workspace_users_self ON public.workspace_users;
-CREATE POLICY workspace_users_self ON public.workspace_users
-    FOR ALL TO authenticated
+-- workspace_users 表 policy (2026-05-22 audit P1):
+-- 旧 workspace_users_self 是 FOR ALL + 只看 workspace_id, 任何 member 都能
+-- INSERT/UPDATE/DELETE 其他人 → 等于让普通成员自己提权拉人. 拆成:
+--   1. 读: workspace 内所有 member 都能看成员列表 (展示协作者)
+--   2. 写: 仅 owner/admin 能 INSERT/UPDATE/DELETE (用 is_workspace_admin)
+-- bootstrap (默认 workspace 第一批成员、新建 workspace 时初始 owner) 必须
+-- 走 service_role key 绕 RLS, 因为空 workspace 没人是 admin 来满足 WITH CHECK.
+-- 见本 patch 顶部第 80-89 行说明的 INSERT 用 service_role 跑.
+DROP POLICY IF EXISTS workspace_users_self          ON public.workspace_users;
+DROP POLICY IF EXISTS workspace_users_read         ON public.workspace_users;
+DROP POLICY IF EXISTS workspace_users_insert_admin ON public.workspace_users;
+DROP POLICY IF EXISTS workspace_users_update_admin ON public.workspace_users;
+DROP POLICY IF EXISTS workspace_users_delete_admin ON public.workspace_users;
+
+CREATE POLICY workspace_users_read ON public.workspace_users
+    FOR SELECT TO authenticated
     USING (workspace_id IN (SELECT public.current_workspace_ids()));
+
+CREATE POLICY workspace_users_insert_admin ON public.workspace_users
+    FOR INSERT TO authenticated
+    WITH CHECK (public.is_workspace_admin(workspace_id));
+
+CREATE POLICY workspace_users_update_admin ON public.workspace_users
+    FOR UPDATE TO authenticated
+    USING (public.is_workspace_admin(workspace_id))
+    WITH CHECK (public.is_workspace_admin(workspace_id));
+
+CREATE POLICY workspace_users_delete_admin ON public.workspace_users
+    FOR DELETE TO authenticated
+    USING (public.is_workspace_admin(workspace_id));
 
 
 -- ── 9. 校验 ──────────────────────────────────────────────────────────
@@ -254,6 +302,27 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM public.workspaces
                    WHERE id = '00000000-0000-0000-0000-000000000001') THEN
         RAISE EXCEPTION '005 migration failed: default workspace missing';
+    END IF;
+
+    -- 9.4 audit P1: workspace_users 必须用拆分后的 read + admin-only write
+    -- policy, 不能再留旧的 FOR ALL policy
+    IF EXISTS (
+        SELECT 1 FROM pg_policies
+        WHERE schemaname = 'public' AND tablename = 'workspace_users'
+          AND policyname = 'workspace_users_self'
+    ) THEN
+        RAISE EXCEPTION
+            '005 migration failed: legacy workspace_users_self policy still present; '
+            'expected workspace_users_read + workspace_users_{insert,update,delete}_admin';
+    END IF;
+
+    -- 9.5 is_workspace_admin helper 必须存在 (写入 policy 引用)
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_proc p
+        JOIN pg_namespace n ON p.pronamespace = n.oid
+        WHERE n.nspname = 'public' AND p.proname = 'is_workspace_admin'
+    ) THEN
+        RAISE EXCEPTION '005 migration failed: is_workspace_admin() helper missing';
     END IF;
 
     RAISE NOTICE 'sanshengliubu-patches/005 OK: multi-tenant RLS enabled. '

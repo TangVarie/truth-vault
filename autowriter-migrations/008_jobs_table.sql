@@ -191,6 +191,20 @@ COMMENT ON FUNCTION autowriter.claim_one_job(TEXT, TEXT[]) IS
 'so it can be called via PostgREST RPC by worker''s service_role JWT.';
 
 
+-- ── 4b. claim_one_job 权限收紧 (2026-05-22 audit P1) ────────────────
+-- PG 函数默认对 PUBLIC 开放 EXECUTE. 这个函数是 SECURITY DEFINER 且会写 jobs
+-- 表 (status / claimed_by / attempts), 不加约束的话任何能访问 PostgREST RPC
+-- 的角色 (anon / authenticated) 都能 claim 别人的 job, 直接绕过 jobs_owner
+-- RLS. 显式 REVOKE PUBLIC + 仅 GRANT service_role (worker 唯一应该调用方).
+REVOKE EXECUTE ON FUNCTION autowriter.claim_one_job(TEXT, TEXT[]) FROM PUBLIC;
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+        EXECUTE 'GRANT EXECUTE ON FUNCTION autowriter.claim_one_job(TEXT, TEXT[]) TO service_role';
+    END IF;
+END $$;
+
+
 -- ── 5. RLS policy ────────────────────────────────────────────────────
 -- 用户只能看自己的 jobs. Worker 必须用 service_role key (绕 RLS).
 ALTER TABLE autowriter.jobs ENABLE ROW LEVEL SECURITY;
@@ -217,6 +231,16 @@ BEGIN
         WHERE n.nspname = 'autowriter' AND p.proname = 'claim_one_job'
     ) THEN
         RAISE EXCEPTION '008 migration failed: claim_one_job() not present';
+    END IF;
+    -- PUBLIC 不应该有 EXECUTE (audit P1 防越权 claim)
+    IF EXISTS (
+        SELECT 1 FROM information_schema.routine_privileges
+        WHERE routine_schema = 'autowriter'
+          AND routine_name = 'claim_one_job'
+          AND grantee = 'PUBLIC'
+          AND privilege_type = 'EXECUTE'
+    ) THEN
+        RAISE EXCEPTION '008 migration failed: claim_one_job still grants EXECUTE to PUBLIC';
     END IF;
     RAISE NOTICE 'autowriter-migrations/008 OK: jobs table + claim RPC + RLS in place';
 END $$;
