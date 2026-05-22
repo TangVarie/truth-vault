@@ -85,30 +85,46 @@ xhs-workstation (vnbcytilakkxojhgzeqr, ap-south-1)
 
 ## 还需要做的 · 由 operator 完成
 
-### 🔜 Step 4. 数据迁移：xhs-workstation → 三省六部.autowriter
+### ✅ Step 4. 数据迁移：xhs-workstation → 三省六部.autowriter [已完成 2026-05-21]
 
-需要 operator 手动跑一次，因为脚本要 service_role key（敏感凭据，
-不能落到 MCP/CI 里）。
+数据已成功迁移. 2026-05-22 通过 Supabase API 核对三省六部 (`kduysqedrclrfevrxiie`)
+实际状态:
 
-#### 4.1 准备凭据
+```
+autowriter.projects                    40 rows
+autowriter.batches                    468 rows
+autowriter.items                    3,671 rows
+autowriter.versions                 4,425 rows
+autowriter.memories                   269 rows
+autowriter.batch_metrics               20 rows
+autowriter.calibration_note_audit      47 rows
+autowriter.user_logins                  8 rows
+```
 
-Supabase Dashboard → 两个 project 都取一次：
+行数对账, 完整性校验 (owner_id 全部 NOT NULL, 0 个 service-account user_id
+残留, 因此 `006_backfill_tv_synced_user_id.sql` 跑过等于 no-op), 飞轮可启用.
+
+历史步骤 (4.1-4.7 详细说明保留在下面供回滚 / 二次部署参考):
+
+#### 4.1 准备凭据 (已完成)
+
+Supabase Dashboard → 两个 project 都取一次:
 - `Settings → API → Project URL`
-- `Settings → API → service_role secret`（**不是 anon**！）
+- `Settings → API → service_role secret` (**不是 anon**!)
 
-#### 4.2 设置环境变量
+#### 4.2 设置环境变量 (已完成)
 
 ```bash
-# 源（autowriter 数据所在地）
+# 源 (autowriter 数据所在地)
 export AW_MIGRATE_SRC_URL='https://vnbcytilakkxojhgzeqr.supabase.co'
 export AW_MIGRATE_SRC_KEY='sb_secret_... 或老 JWT'   # service_role key
 
-# 目标（D-024 共享 Supabase）
+# 目标 (D-024 共享 Supabase)
 export AW_MIGRATE_DST_URL='https://kduysqedrclrfevrxiie.supabase.co'
 export AW_MIGRATE_DST_KEY='sb_secret_... 或老 JWT'   # service_role key
 ```
 
-#### 4.3 干跑校验
+#### 4.3 干跑校验 (已完成)
 
 ```bash
 cd truth-vault
@@ -116,75 +132,66 @@ pip install -r scripts/requirements.lock  # supabase-py 等
 python scripts/migrate_autowriter_across_supabase.py --dry-run
 ```
 
-预期输出（行数对账，写入 0 行）：
-
-```
-[projects]              src=40    dst(before)=0    dst(after)=0    delta=0    ✅
-[batches]               src=460   dst(before)=0    dst(after)=0    delta=0    ✅
-[items]                 src=3621  dst(before)=0    dst(after)=0    delta=0    ✅
-[versions]              src=4321  dst(before)=0    dst(after)=0    delta=0    ✅
-[memories]              src=257   dst(before)=0    dst(after)=0    delta=0    ✅
-[calibration_note_audit] src=37    dst(before)=0    dst(after)=0    delta=0    ✅
-[batch_metrics]         src=12    dst(before)=0    dst(after)=0    delta=0    ✅
-[user_logins]           src=2     dst(before)=0    dst(after)=0    delta=0    ✅
-```
-
-#### 4.4 真跑
+#### 4.4 真跑 (已完成)
 
 ```bash
 python scripts/migrate_autowriter_across_supabase.py
 ```
 
-预期 5-10 分钟（取决于跨 region 延迟）。脚本会按 FK 依赖顺序分批迁移
-（projects → batches → items → versions → memories → calibration_note_audit
- → batch_metrics → user_logins），每张表迁完立即校验 src vs dst 行数。
+#### 4.5 切换 autowriter 应用配置 (autowriter 维护者侧)
 
-任何 delta ≠ 0 的表都会被标 `⚠️`，integration 不算完成。
-
-#### 4.5 切换 autowriter 应用配置
-
-autowriter 的部署位置（Streamlit Cloud / Railway / 自托管）的 secrets：
+autowriter 部署位置 (Streamlit Cloud / Railway / 自托管) 的 secrets:
 
 ```toml
-# 旧
-SUPABASE_URL = "https://vnbcytilakkxojhgzeqr.supabase.co"
-SUPABASE_ANON_KEY = "..."  # xhs-workstation anon key
-
-# 新
 SUPABASE_URL = "https://kduysqedrclrfevrxiie.supabase.co"
 SUPABASE_ANON_KEY = "..."  # 三省六部 anon key
 ```
 
-同时确认 `Settings → API → Exposed schemas` 已包含 `autowriter`
-（PostgREST 才会暴露这些表，否则 autowriter app 启动 404）。
+同时确认 `Settings → API → Exposed schemas` 已包含 `autowriter` + `truth_vault`
+(PostgREST 才会暴露这些表, 否则 sync 脚本启动 PGRST204 / autowriter app 404).
 
 #### 4.6 (可选) 第三方部署 .env 更新
 
-如果有 CI / cron job 用同一套 SUPABASE_URL，记得一并改。
+CI / cron job 同一套 SUPABASE_URL 一并改.
 
 #### 4.7 兜底回滚窗口
 
-`xhs-workstation` project pause 但不删，留 2 周观察期。任何 autowriter
-异常都可以 `Settings → Pause project 切回` 临时恢复。2 周后归档（保留
-project 不动，仅 DELETE 数据）或彻底删 project。
+`xhs-workstation` project pause 但不删, 留 2 周观察期 (到 2026-06-04). 任何
+autowriter 异常都可以 `Settings → Pause project 切回` 临时恢复. 2 周后归档.
 
-### 🔜 Step 5. 启动飞轮（取决于 TV notes 有数据）
+### ✅ Step 5. 启动飞轮 · 基础设施就绪 [2026-05-22]
 
-数据迁移完成后，开飞轮：
+数据库基础设施已 100% 就绪 (`scripts/verify_supabase_state.sql` 跑全 ✅ 或 ⚪
+预期范围). 启用日常 cron 之前还要确认两件事:
+
+1. **R-022 vibe_rewriter 飞轮闭环**: 见 `docs/10-sister-repo-followups.md § R-022`.
+   sanshengliubu 维护者需要确认 `pipeline/prompts/vibe_rewriter.md` 真的把
+   `retrieve_samples.py` 返回的 DB 样本注入到 prompt — audit 2026-05-22 怀疑
+   这条断了 (硬编码 6 条假人例子). 不修, TV 飞轮跑半年 ssll 生成质量不提升.
+
+2. **Exposed schemas 配置**: Supabase Dashboard → Settings → API → Exposed
+   schemas 包含 `public`, `truth_vault`, `autowriter` 三个. 缺一个 sync 脚本
+   就会 PGRST204.
+
+跑 sync 命令:
 
 ```bash
 # 1. 同步飞书原始 notes 到 truth_vault
 python scripts/sync_feishu_notes_to_truth_vault.py --project NUC_phase1
 
-# 2. 同步爆款到 sansheng（通道 1）
+# 2. 同步爆款到 sansheng (通道 1)
 python scripts/sync_truth_vault_baokuan_to_sanshengliubu.py
 
-# 3. 同步爆款到 autowriter（通道 2）
+# 3. 同步爆款到 autowriter (通道 2)
 python scripts/sync_truth_vault_baokuan_to_autowriter_items.py
 ```
 
 3 个脚本都用同一个 `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` env var
-（指向三省六部 project）。详见 `docs/09-system-integration.md`。
+(指向三省六部 project). 详见 `docs/09-system-integration.md`.
+
+或者用 GitHub Actions: `.github/workflows/daily-sync.yml` 手动 dispatch
+或取消注释 cron schedule. 2026-05-22 audit 改进后, 任一 sync step 失败会让
+workflow fail → GitHub 默认给 repo owner 发邮件 (无需配 webhook).
 
 ## 监控
 

@@ -4,22 +4,31 @@
 
 ---
 
-## 30 秒判断：现在到底处于什么状态
+## 30 秒判断：现在到底处于什么状态 (2026-05-22 update)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│  代码状态:    ✅ Sprint 0 就绪 (40 文件 · 6 个 sync 脚本 · 全部本地烟测过)│
-│  部署状态:    ⬜ 0% — 还没有任何 sync 在真实数据上跑过                │
-│  阻塞点:      Sprint 0 dry-run 验收 (需要共享 Supabase + 凭证)        │
-│  Sprint 1 缺口: 见 CURRENT_STATE.md "已知 gap" (4 项 P1)              │
+│  代码状态:    ✅ TV 仓全部就绪 (6 sync + LLM 标注 + comments 解析 +     │
+│                    decisions 反推 + audit P1/P2/P3 + 监控告警 + helper) │
+│  数据库状态:  ✅ 共享 Supabase (三省六部) 三个 schema 全就位            │
+│                    autowriter: 40 项目 / 3671 items / 4425 versions    │
+│                    truth_vault: 14 张表 + RLS + grants + triggers      │
+│                    public (ssll): 5 表 + reference_samples UNIQUE      │
+│  Sister-repo 状态: ⚠️ sanshengliubu R-022 (vibe_rewriter prompt 注入   │
+│                    DB 样本) 待维护者核查/修复; AutoWriter R-017        │
+│                    requirements 上限 + lockfile 待落地                 │
+│  飞轮启动:    ⬜ cron schedule 默认未启用 (workflow 文件需手工取消注释)  │
+│  阻塞点:      R-022 vibe_rewriter (飞轮闭环) + Exposed schemas 配置     │
 │  下一步:      见下方 "新人第一周 checklist"                           │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-**翻译**：飞轮还没转起来。Sprint 0 范围内代码可以跑、SQL 可以应用；但
-Sprint 1 仍有 4 个 LLM/sync 待补（comments 楼层重建、sub_directions
-LLM 分类、essence 标注、prepublish_evaluations 反推），详见
-`CURRENT_STATE.md`。先把基础设施搭起来才能跑第一次真实数据。
+**翻译**：TV 自己的基础设施 + 数据库全部就位 (2026-05-22 audit followup
+PR #10..#14 都已合并). 但飞轮**还没真正闭环** — sanshengliubu 的
+`vibe_rewriter.md` prompt 怀疑没用 DB 样本 (R-022), TV 写入的爆款样本可能
+进了库没被 LLM 读到. 这条修了之后, 启用 daily-sync.yml 的 cron schedule
+就能开始飞轮. 详细任务列表见 `docs/10-sister-repo-followups.md` 优先级
+总览表 (文末).
 
 ---
 
