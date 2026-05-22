@@ -301,7 +301,7 @@
      里出现对应 row, 重跑 → race_skipped=1
 - **Owner**: 工程师 (脚本) + Ziao (准 staging Supabase 实例 + 真实用户 JWT)
 
-### R-022 · sanshengliubu vibe_rewriter 没用 DB 样本, 飞轮闭环漏 [audit 2026-05-22 deep-dive P0] 🟡 进行中 (ssll PR #27 ✅ merged / PR #28 ⏳ pending merge)
+### R-022 · sanshengliubu vibe_rewriter 没用 DB 样本, 飞轮闭环漏 [audit 2026-05-22 deep-dive P0] ✅ 已关闭 2026-05-22 (ssll PR #27 + #28 都已合)
 
 - **是什么 (audit 原始诊断)**: sanshengliubu `pipeline/prompts/vibe_rewriter.md`
   用 6 条硬编码人物例子做"真人参照", `pipeline/retrieve_samples.py` 虽然能查
@@ -319,16 +319,19 @@
      summarize_packs_by_platform; 0 packs 升 WARNING
   3. **注入层** (PR #27 ✅): orchestrator vibe_loop 把 reference_packs_summary
      推到 critic / structural_rewriter / vibe_rewriter 三处
-  4. **运行时审计 + 持久化** (PR #28 ⏳ **pending merge**):
+  4. **运行时审计 + 持久化** (PR #28 ✅ 已合):
      `_audit_rewrite_source_tags` 每 iteration 跑, findings 落 `stage_logs`
      (stage_name='r022_flywheel_audit'), per-platform 配额规则防包用尽误报,
-     unicode 冒号也支持. **TV 跨仓监控依赖这层** — 没有 PR #28, `stage_logs`
-     就不会出现 `r022_flywheel_audit` 行, 跨仓 SQL 查零结果.
-- **正式关闭前置 (gate)**: ssll PR #28 合到 main 后, R-022 才能标 ✅ 已关闭.
-  在那之前 R-022 是生产飞轮的实际 gate — 4 道关卡中第 4 道还在 PR, "飞轮通了
-  但没监控" 不算完整关闭.
-- **TV 侧后续 (PR #28 合并后)**: 加 `scripts/check_flywheel_health.py` 或在
-  `verify_supabase_state.sql` 加新 J 节查 `r022_flywheel_audit.completed_warn`.
+     unicode 冒号也支持. TV 跨仓监控基础设施就位.
+- **代码层面已关闭**: 4 道关卡全部在 ssll main, 飞轮 prompt + 运行时 audit +
+  持久化都跑得起来.
+- **生产验证 gate (待 ssll vibe_loop 首次真跑)**: 2026-05-22 用 Supabase MCP
+  查 `SELECT COUNT(*) FROM public.stage_logs WHERE stage_name='r022_flywheel_audit'`
+  得 0 行 — 预期, ssll 还没在生产跑过 vibe_loop. 下次真跑后这条 SQL 应该出现
+  行, 且 `output_data->>'db_sourced'` > 0 表明飞轮真的命中. **0 行不代表 bug,
+  代表还没跑数据**.
+- **TV 侧 follow-up**: 飞轮真启用后, 加 `scripts/check_flywheel_health.py` 或
+  在 `verify_supabase_state.sql` 加新 J 节查 `r022_flywheel_audit.completed_warn`.
   SQL 模板见 `docs/10-sister-repo-followups.md § "TV 日报跨仓查 R-022 audit"`.
 
 ### R-023 · 3 项目 logger 没 mask secret [audit 2026-05-22 deep-dive P1] 🟡 部分关闭 (ssll + TV ✅, aw ⏳)

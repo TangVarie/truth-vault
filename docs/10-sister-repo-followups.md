@@ -1466,9 +1466,9 @@ sanshengliubu 维护者. **工时**: 1-2 天 (含测试).
   段).
 - **sanshengliubu PR #27** (已合 2026-05-22, main `7d005b6`) — R-019/R-022/
   R-023/R-026 初始落地. 详见 sanshengliubu `docs/2026-05-22-audit-followups-report.md`.
-- **sanshengliubu PR #28** (pending merge) — round 1+2+3 review 加固 (含
+- **sanshengliubu PR #28** (✅ 已合 2026-05-22) — round 1+2+3 review 加固 (含
   `_persist_audit_findings` 把 audit 写 stage_logs + per-platform 配额防误报 +
-  unicode 冒号修复 + `docs/architecture.md`). TV 跨仓监控需要 PR #28 上 main.
+  unicode 冒号修复 + `docs/architecture.md`). TV 跨仓监控基础设施已就位.
 
 ## TV 日报跨仓查 R-022 audit (sanshengliubu PR #28 合并后启用)
 
@@ -1513,7 +1513,7 @@ WHERE sl.stage_name = 'r022_flywheel_audit'
 | ID | 主题 | Owner | 状态 | 备注 |
 |----|------|-------|------|------|
 | R-019 | sanshengliubu 单/多租户决策 | ssll | ✅ 完成 | ssll PR #27, Option A 单租户声明 (README + schema.sql + sidebar banner) |
-| R-022 | sanshengliubu vibe_rewriter 注入 DB 样本 | ssll | 🟡 进行中 | ssll PR #27 ✅ merged (prompt + retrieve + orchestrator). ssll PR #28 ⏳ **pending merge** (运行时 audit + `stage_logs` 持久化 + per-platform 配额防误报 + unicode 修复). **PR #28 合并是 R-022 完整关闭的前置** — 跨仓 SQL 监控依赖 `r022_flywheel_audit` 行存在. 合后再标 ✅. |
+| R-022 | sanshengliubu vibe_rewriter 注入 DB 样本 | ssll | ✅ 完成 | ssll PR #27 + #28 都已合 (prompt + retrieve + orchestrator + 运行时 audit + stage_logs 持久化 + per-platform 配额防误报 + unicode 修复). 4 道关卡全部在 main. **生产验证**: 等下次 ssll vibe_loop 真跑后查 `public.stage_logs.r022_flywheel_audit` 应该有行 (跨仓 SQL 模板见下方"TV 日报跨仓查 R-022 audit"). |
 | R-023 | logger secret masking | 3 仓 | ✅ ssll/TV / ⏳ aw | TV: `scripts/_common.py::mask_secrets`. ssll: PR #27 `pipeline/logger_utils.py` (7 模式 shadow-aligned). aw 仍待实施. |
 | R-026 | LLM retry framework | 3 仓 | ✅ ssll/TV / ⏳ aw | TV: `annotate_essence_pass.call_claude`. ssll: PR #27 `pipeline/llm_retry.py` (Gemini), Claude 路径保留独立 retry (R-026.2 未来再统一). aw 仍待实施. |
 | R-017 | AutoWriter requirements 上限 + lockfile | aw | ⏳ 待执行 | 30 分钟, 见本文 § R-017 |
