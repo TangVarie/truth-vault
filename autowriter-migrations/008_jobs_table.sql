@@ -192,13 +192,24 @@ COMMENT ON FUNCTION autowriter.claim_one_job(TEXT, TEXT[]) IS
 
 
 -- ── 4b. claim_one_job 权限收紧 (2026-05-22 audit P1) ────────────────
--- PG 函数默认对 PUBLIC 开放 EXECUTE. 这个函数是 SECURITY DEFINER 且会写 jobs
--- 表 (status / claimed_by / attempts), 不加约束的话任何能访问 PostgREST RPC
--- 的角色 (anon / authenticated) 都能 claim 别人的 job, 直接绕过 jobs_owner
--- RLS. 显式 REVOKE PUBLIC + 仅 GRANT service_role (worker 唯一应该调用方).
+-- PG 函数默认对 PUBLIC 开放 EXECUTE. 这个函数是 SECURITY DEFINER 且会写
+-- jobs 表 (status / claimed_by / attempts), 不加约束的话任何能访问 PostgREST
+-- RPC 的角色都能 claim 别人的 job, 直接绕过 jobs_owner RLS.
+--
+-- 即使 autowriter schema 现在没设 ALTER DEFAULT PRIVILEGES, 如果 operator
+-- 未来在 autowriter schema 上加了类似 public 那种 GRANT TO anon/authenticated
+-- 的默认权限, 单 REVOKE FROM PUBLIC 会漏掉角色级 GRANT. 跟 sanshengliubu
+-- 那边 public.claim_one_job 一致, 防御性 REVOKE 三层: PUBLIC + anon +
+-- authenticated, 仅 GRANT service_role (worker 唯一应该调用方).
 REVOKE EXECUTE ON FUNCTION autowriter.claim_one_job(TEXT, TEXT[]) FROM PUBLIC;
 DO $$
 BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+        EXECUTE 'REVOKE EXECUTE ON FUNCTION autowriter.claim_one_job(TEXT, TEXT[]) FROM anon';
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+        EXECUTE 'REVOKE EXECUTE ON FUNCTION autowriter.claim_one_job(TEXT, TEXT[]) FROM authenticated';
+    END IF;
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
         EXECUTE 'GRANT EXECUTE ON FUNCTION autowriter.claim_one_job(TEXT, TEXT[]) TO service_role';
     END IF;
@@ -232,15 +243,18 @@ BEGIN
     ) THEN
         RAISE EXCEPTION '008 migration failed: claim_one_job() not present';
     END IF;
-    -- PUBLIC 不应该有 EXECUTE (audit P1 防越权 claim)
+    -- audit P1: PUBLIC + anon + authenticated 三个都不应该有 EXECUTE.
+    -- Supabase 在 public schema 默认 ALTER DEFAULT PRIVILEGES 会 GRANT 给
+    -- anon/authenticated; autowriter schema 现在没设, 但防御性一并 REVOKE.
     IF EXISTS (
         SELECT 1 FROM information_schema.routine_privileges
         WHERE routine_schema = 'autowriter'
           AND routine_name = 'claim_one_job'
-          AND grantee = 'PUBLIC'
+          AND grantee IN ('PUBLIC', 'anon', 'authenticated')
           AND privilege_type = 'EXECUTE'
     ) THEN
-        RAISE EXCEPTION '008 migration failed: claim_one_job still grants EXECUTE to PUBLIC';
+        RAISE EXCEPTION
+            '008 migration failed: claim_one_job still grants EXECUTE to PUBLIC/anon/authenticated';
     END IF;
     RAISE NOTICE 'autowriter-migrations/008 OK: jobs table + claim RPC + RLS in place';
 END $$;

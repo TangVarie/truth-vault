@@ -159,6 +159,16 @@ RETURNS SETOF UUID AS $$
     SELECT workspace_id FROM public.workspace_users WHERE user_id = auth.uid()
 $$ LANGUAGE SQL STABLE SECURITY DEFINER;
 
+-- audit P1 (2026-05-22): Supabase 在 public schema 默认 GRANT FUNCTION
+-- EXECUTE 给 anon/authenticated/service_role. anon 调这个函数 auth.uid()
+-- 是 NULL 返回 0 行, 不算泄漏, 但出于 least-privilege 原则收紧到 authenticated.
+REVOKE EXECUTE ON FUNCTION public.current_workspace_ids() FROM PUBLIC;
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+        EXECUTE 'REVOKE EXECUTE ON FUNCTION public.current_workspace_ids() FROM anon';
+    END IF;
+END $$;
 GRANT EXECUTE ON FUNCTION public.current_workspace_ids() TO authenticated;
 
 -- is_workspace_admin: 判断当前 auth.uid() 是不是给定 workspace 的 owner/admin.
@@ -174,7 +184,14 @@ RETURNS BOOLEAN AS $$
     );
 $$ LANGUAGE SQL STABLE SECURITY DEFINER;
 
+-- 同 current_workspace_ids: REVOKE PUBLIC + anon, 仅 GRANT authenticated.
 REVOKE EXECUTE ON FUNCTION public.is_workspace_admin(UUID) FROM PUBLIC;
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+        EXECUTE 'REVOKE EXECUTE ON FUNCTION public.is_workspace_admin(UUID) FROM anon';
+    END IF;
+END $$;
 GRANT EXECUTE ON FUNCTION public.is_workspace_admin(UUID) TO authenticated;
 
 
