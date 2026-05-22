@@ -13,10 +13,19 @@ name: Daily TV sync
 #                                  作为兜底; 正常部署可以不配)
 #        ANTHROPIC_API_KEY   (annotation pass 用; 可选)
 #        ESSENCE_MODEL       (默认 claude-sonnet-4-6; 可选)
+#        AUTOWRITER_INJECTION_MAX_PER_PROJECT   (可选, 默认 5/项目/轮;
+#                                  2026-05-22 audit P1-2 防项目饥饿,
+#                                  per-project 配额代替老的全局 MAX_PER_RUN)
+#        AUTOWRITER_INJECTION_GLOBAL_CAP        (可选, round-robin 全局上限)
 #   2. 在下方 on: 块里把 schedule 那段取消注释
 #   3. 第一次手动 Run workflow 验证一遍 (dry_run=true)
 #
-# 失败会自动给 repo owner 发邮件 (GitHub 默认行为, 无需额外配置 Slack/飞书 webhook).
+# 失败告警 (2026-05-22 audit 改进):
+#   - 每个 sync 步骤跑完后会汇总失败计数; 任何一个 sync 失败都让 workflow
+#     退出非零 → GitHub 默认给 repo owner / 触发者发邮件 (无需额外 webhook).
+#   - 老版本用 "|| warning" 吞错误, 表面上 workflow 永远成功, cron 静默漂移.
+#     新版用 continue-on-error: true + 最后 "Fail job on any sync failure"
+#     step 聚合, 保证失败可见.
 
 on:
   workflow_dispatch:
@@ -44,6 +53,9 @@ jobs:
       AUTOWRITER_SYNC_USER_ID: ${{ secrets.AUTOWRITER_SYNC_USER_ID }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       ESSENCE_MODEL: ${{ secrets.ESSENCE_MODEL }}
+      # 2026-05-22 audit P1-2 配套: per-project 配额 + 可选全局 round-robin 上限
+      AUTOWRITER_INJECTION_MAX_PER_PROJECT: ${{ secrets.AUTOWRITER_INJECTION_MAX_PER_PROJECT }}
+      AUTOWRITER_INJECTION_GLOBAL_CAP: ${{ secrets.AUTOWRITER_INJECTION_GLOBAL_CAP }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -67,43 +79,60 @@ jobs:
           fi
 
       - name: feishu → TV (per project from mappings/)
+        id: feishu_sync
+        continue-on-error: true
         if: steps.check.outputs.skip != 'true' && env.FEISHU_APP_ID != ''
         working-directory: scripts
         run: |
           DRYRUN=""
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRYRUN="--dry-run"
-          # Loop over real project mapping yamls (skip _template). Each project
-          # syncs independently so one failing doesn't take the others down.
+          fail_count=0
           for f in ../mappings/*.yaml; do
             p=$(basename "$f" .yaml)
             [ "$p" = "_template" ] && continue
             echo "─── feishu → TV · project=$p ───"
             python sync_feishu_notes_to_truth_vault.py "$p" $DRYRUN || {
-              echo "::warning::feishu sync failed for $p (continuing other projects)"
+              echo "::error::feishu sync failed for $p"
+              fail_count=$((fail_count + 1))
             }
           done
+          if [ $fail_count -gt 0 ]; then
+            echo "::error::feishu sync failed for $fail_count project(s)"
+            exit 1
+          fi
 
       - name: comments raw_extra → truth_vault.comments
+        id: comments_sync
+        continue-on-error: true
         if: steps.check.outputs.skip != 'true'
         working-directory: scripts
         run: |
           DRYRUN=""
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRYRUN="--dry-run"
+          fail_count=0
           for f in ../mappings/*.yaml; do
             p=$(basename "$f" .yaml)
             [ "$p" = "_template" ] && continue
             echo "─── comments parse · project=$p ───"
             python sync_comments_from_raw_extra.py "$p" $DRYRUN || {
-              echo "::warning::comments parse failed for $p"
+              echo "::error::comments parse failed for $p"
+              fail_count=$((fail_count + 1))
             }
           done
+          if [ $fail_count -gt 0 ]; then
+            echo "::error::comments parse failed for $fail_count project(s)"
+            exit 1
+          fi
 
       - name: essence + sub_direction annotation (Mode A, D-028 独立 pass)
+        id: essence_sync
+        continue-on-error: true
         if: steps.check.outputs.skip != 'true' && env.ANTHROPIC_API_KEY != '' && github.event.inputs.skip_essence != 'true'
         working-directory: scripts
         run: |
           DRYRUN=""
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRYRUN="--dry-run"
+          fail_count=0
           for f in ../mappings/*.yaml; do
             p=$(basename "$f" .yaml)
             [ "$p" = "_template" ] && continue
@@ -111,11 +140,18 @@ jobs:
             # --limit 50 per run as a soft budget cap;
             # NUC pilot estimate ≈ ¥200-400 for full 1102 rows.
             python annotate_essence_pass.py "$p" --limit 50 $DRYRUN || {
-              echo "::warning::essence annotation failed for $p"
+              echo "::error::essence annotation failed for $p"
+              fail_count=$((fail_count + 1))
             }
           done
+          if [ $fail_count -gt 0 ]; then
+            echo "::error::essence annotation failed for $fail_count project(s)"
+            exit 1
+          fi
 
       - name: TV 爆款 → sanshengliubu.reference_samples (通道 1)
+        id: ssll_sync
+        continue-on-error: true
         if: steps.check.outputs.skip != 'true'
         working-directory: scripts
         run: |
@@ -124,6 +160,8 @@ jobs:
           python sync_truth_vault_baokuan_to_sanshengliubu.py $DRYRUN
 
       - name: TV 爆款 → autowriter.items (通道 2, 含 score+diversity+retire)
+        id: aw_sync
+        continue-on-error: true
         # 2026-05-21 audit 后 AUTOWRITER_SYNC_USER_ID 不再是必需 — sync 脚本
         # 默认从 autowriter.projects.owner_id 解析 user_id (RLS 兼容). env 仅
         # 在 owner_id 缺失时作为兜底, 因此不再 gate on 它.
@@ -135,6 +173,8 @@ jobs:
           python sync_truth_vault_baokuan_to_autowriter_items.py $DRYRUN
 
       - name: autowriter 人工审稿决定 → truth_vault.prepublish_evaluations
+        id: prepublish_sync
+        continue-on-error: true
         if: steps.check.outputs.skip != 'true'
         working-directory: scripts
         run: |
@@ -143,9 +183,7 @@ jobs:
           # 2026-05-22 audit P1/P2-4: 默认 365 天窗口足够日 cron 抓到迟到决策;
           # autowriter.items 没有 updated_at 列, 我们按 created_at 滚动取. 月度
           # 可以跑一次 --since-days 0 全扫补漏 (在另一个 workflow / 手动 cron).
-          python sync_autowriter_decisions_to_prepublish.py $DRYRUN || {
-            echo "::warning::prepublish_evaluations sync failed (non-blocking)"
-          }
+          python sync_autowriter_decisions_to_prepublish.py $DRYRUN
 
       - name: positive pool 饱和度检查 (advisory, 不 fail)
         if: steps.check.outputs.skip != 'true' && always()
@@ -171,3 +209,38 @@ jobs:
                 f"last_aw={r['last_baokuan_sync_to_aw_at']}"
               )
           PY
+
+      # ── 失败聚合: 任一 sync step 失败 → 整 workflow 失败 → GitHub 默认发邮件 ──
+      # 2026-05-22 audit 改进: 老版本每个 sync 步骤用 "|| echo warning" 吞错误,
+      # workflow 永远 success, cron 静默漂移到 ssll/aw 没数据也没告警. 现在每个
+      # sync step 用 continue-on-error: true 单独跑完, 最后这步聚合所有 outcome,
+      # 任一 failure 就 exit 1, GitHub 自动给 repo owner / actor 发邮件.
+      - name: Fail job on any sync failure (so GitHub notifies)
+        if: steps.check.outputs.skip != 'true' && always()
+        run: |
+          failed_steps=""
+          if [ "${{ steps.feishu_sync.outcome }}" = "failure" ]; then
+            failed_steps="$failed_steps feishu_sync"
+          fi
+          if [ "${{ steps.comments_sync.outcome }}" = "failure" ]; then
+            failed_steps="$failed_steps comments_sync"
+          fi
+          if [ "${{ steps.essence_sync.outcome }}" = "failure" ]; then
+            failed_steps="$failed_steps essence_sync"
+          fi
+          if [ "${{ steps.ssll_sync.outcome }}" = "failure" ]; then
+            failed_steps="$failed_steps ssll_sync"
+          fi
+          if [ "${{ steps.aw_sync.outcome }}" = "failure" ]; then
+            failed_steps="$failed_steps aw_sync"
+          fi
+          if [ "${{ steps.prepublish_sync.outcome }}" = "failure" ]; then
+            failed_steps="$failed_steps prepublish_sync"
+          fi
+          if [ -n "$failed_steps" ]; then
+            echo "::error::Daily TV sync failed steps:$failed_steps"
+            echo "Repo owner will get an email via GitHub default notifications."
+            echo "Investigate: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            exit 1
+          fi
+          echo "✅ All sync steps succeeded."
