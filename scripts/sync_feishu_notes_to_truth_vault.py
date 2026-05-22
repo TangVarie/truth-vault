@@ -115,16 +115,24 @@ class FeishuClient:
           - 401 → refresh token, retry once (existing behavior)
           - 5xx, Timeout, ConnectionError → exponential backoff 1/2/4s, max 3 tries
           - Other 4xx (404 / 422 / etc) → return immediately, caller raises
+
+        NOTE: mutates `headers` in place when refreshing the bearer token
+        on 401. The caller (list_records) shares ONE headers dict across all
+        pagination requests; updating in place ensures every subsequent page
+        uses the fresh token instead of hitting 401 → reauth on each page.
+        Don't pass a dict you need preserved as-is.
         """
         last_exc: Exception | None = None
         for attempt in range(max_attempts):
             try:
                 r = requests.get(url, headers=headers, params=params, timeout=30)
                 if r.status_code == 401 and attempt == 0:
-                    # token expired mid-pagination; refresh and retry once
+                    # token expired mid-pagination; refresh and retry once.
+                    # Mutate caller's headers dict in place so subsequent
+                    # pages also pick up the new token (codex review
+                    # discussion_r3286292885 PR #12).
                     self._token = None
                     new_token = self._ensure_token()
-                    headers = dict(headers)
                     headers["Authorization"] = f"Bearer {new_token}"
                     continue
                 if 500 <= r.status_code < 600:
