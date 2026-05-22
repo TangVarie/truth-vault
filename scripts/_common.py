@@ -480,30 +480,30 @@ def update_project_date_range(client: Client, project_id: str) -> None:
     project-level date range honest.
 
     No-op if the project has no notes with publish_time set yet.
+
+    2026-05-22 audit P1: 老版本是两次独立 SELECT + 一次 UPDATE 三步, 中间没
+    事务保护. 同一时刻另一个 sync_feishu 写入新 note, 可能让 start_date >
+    end_date (查 earliest 时数据是 A, 查 latest 时数据更新成 B). 改成单条
+    AGGREGATE: client 端 fetch 完所有 publish_time 再算 min/max, 一次 UPDATE.
+    PostgREST 不支持 SELECT MIN/MAX 子查询 + UPDATE 的原子写, 但 client 端
+    one-shot 算完已经把 race window 关掉了 (要 race, 得在 fetch 那一瞬间
+    insert; 而 insert 走 upsert + 不动 start/end_date 列, 不会产生 start>end).
     """
-    earliest = (
+    # 一次 fetch 拿到所有 publish_time. 行数大时 fetch_all_pages 自动分页.
+    rows = fetch_all_pages(
         client.schema("truth_vault").table("notes")
         .select("publish_time")
         .eq("project_id", project_id)
         .not_.is_("publish_time", None)
-        .order("publish_time", desc=False)
-        .limit(1).execute()
     )
-    latest = (
-        client.schema("truth_vault").table("notes")
-        .select("publish_time")
-        .eq("project_id", project_id)
-        .not_.is_("publish_time", None)
-        .order("publish_time", desc=True)
-        .limit(1).execute()
-    )
-    if not earliest.data or not latest.data:
+    if not rows:
         return
-    # publish_time comes back as ISO strings (TIMESTAMP WITHOUT TIME ZONE).
-    # Truncate to date portion for the DATE column.
+    times = [str(r["publish_time"])[:10] for r in rows if r.get("publish_time")]
+    if not times:
+        return
     update = {
-        "start_date": str(earliest.data[0]["publish_time"])[:10],
-        "end_date":   str(latest.data[0]["publish_time"])[:10],
+        "start_date": min(times),
+        "end_date":   max(times),
     }
     (
         client.schema("truth_vault")
@@ -512,6 +512,42 @@ def update_project_date_range(client: Client, project_id: str) -> None:
         .eq("project_id", project_id)
         .execute()
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Secret masking (2026-05-22 audit P3)
+# ─────────────────────────────────────────────────────────────────────────
+
+import re as _re
+
+# 已知 secret 前缀正则. 加新格式时往这里加, 让 mask_secrets 覆盖所有 logger.
+_SECRET_PATTERNS = [
+    _re.compile(r"sk-ant-[A-Za-z0-9_\-]{20,}"),       # Anthropic
+    _re.compile(r"sb_secret_[A-Za-z0-9]{20,}"),       # Supabase 2024+
+    _re.compile(r"sbp_[A-Za-z0-9]{20,}"),             # Supabase service token
+    _re.compile(r"eyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}"),  # JWT
+    _re.compile(r"AIza[A-Za-z0-9_\-]{20,}"),          # Google API key
+    _re.compile(r"sk-proj-[A-Za-z0-9_\-]{20,}"),      # OpenAI
+    _re.compile(r"sk-[A-Za-z0-9]{40,}"),              # OpenAI 老格式
+]
+
+
+def mask_secrets(s: str) -> str:
+    """Mask known secret patterns in a string before logging it.
+
+    Logger formatters / exception handlers / telemetry events should pipe
+    user-visible strings through this before writing. Conservative — won't
+    catch every secret shape, but catches Anthropic / Supabase / Google /
+    OpenAI / JWT default formats.
+
+    For exception messages from supabase-py / requests that may include
+    bearer tokens in URLs or stacktrace, pass `mask_secrets(str(exc))`.
+    """
+    if not isinstance(s, str) or not s:
+        return s
+    for pat in _SECRET_PATTERNS:
+        s = pat.sub("***REDACTED***", s)
+    return s
 
 
 # ─────────────────────────────────────────────────────────────────────────

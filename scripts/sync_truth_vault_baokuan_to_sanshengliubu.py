@@ -53,17 +53,37 @@ _PLATFORM_EN_TO_SSLL: dict[str, str] = {
     "kuaishou":    "快手",
 }
 
+# 2026-05-22 audit P2: 老版本不在 dict 里的平台会 silent fallback 写英文,
+# sanshengliubu 用中文检索时永远空, 飞轮静默漂移. 改成显式白名单 (中+英)
+# + 未知平台立刻报错. 加新平台必须先在两边都加, 防漏。
+_PLATFORM_ALLOWED_ZH: frozenset[str] = frozenset(_PLATFORM_EN_TO_SSLL.values())
+
 
 def _platform_for_ssll(en_or_zh: str | None) -> str:
     """Map TV's canonical English platform key to sanshengliubu's display name.
 
-    Pass-through for already-Chinese values (defensive: TV projects.platform
-    is enforced English in schemas/notes_v1_2.sql DEFAULT, but a stray
-    legacy row could already be Chinese, in which case we leave it alone).
+    - None / 空 → 默认 "小红书" (TV 单一品类目前都跑小红书)
+    - 已知 英文 (xiaohongshu / douyin / ...) → 翻译成对应中文
+    - 已知 中文 (小红书 / 抖音 / ...) → 直接放过
+    - 其他 → ValueError. 不再 silent fallback, 防"看似在跑实际飞轮断"。
+
+    新增平台时:
+      1. 这里 _PLATFORM_EN_TO_SSLL 加一行
+      2. sanshengliubu 仓那边确认新平台在 list_reference_packs 检索逻辑里有处理
+      3. truth-vault docs/03-mapping-protocol.md platform 枚举更新
     """
     if not en_or_zh:
         return "小红书"
-    return _PLATFORM_EN_TO_SSLL.get(en_or_zh, en_or_zh)
+    if en_or_zh in _PLATFORM_EN_TO_SSLL:
+        return _PLATFORM_EN_TO_SSLL[en_or_zh]
+    if en_or_zh in _PLATFORM_ALLOWED_ZH:
+        return en_or_zh
+    raise ValueError(
+        f"Unknown platform {en_or_zh!r}. Add it to _PLATFORM_EN_TO_SSLL "
+        "in this file AND confirm sanshengliubu list_reference_packs handles it. "
+        f"Currently allowed: en={sorted(_PLATFORM_EN_TO_SSLL.keys())}, "
+        f"zh={sorted(_PLATFORM_ALLOWED_ZH)}"
+    )
 
 
 def fetch_pending_baokuan(

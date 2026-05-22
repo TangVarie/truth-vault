@@ -296,6 +296,74 @@
      里出现对应 row, 重跑 → race_skipped=1
 - **Owner**: 工程师 (脚本) + Ziao (准 staging Supabase 实例 + 真实用户 JWT)
 
+### R-022 · sanshengliubu vibe_rewriter 没用 DB 样本, 飞轮闭环漏 [audit 2026-05-22 deep-dive P0]
+
+- **是什么**: sanshengliubu `pipeline/prompts/vibe_rewriter.md` 用 6 条硬编码
+  人物例子做"真人参照", `pipeline/retrieve_samples.py` 虽然能查 DB 样本但
+  **结果没拼进 prompt**. TV → reference_samples 通路通了, 但 LLM 看不到.
+- **后果**: TV 飞轮存满爆款, sanshengliubu 生成质量不提升. **整个飞轮架构最大漏洞**.
+- **缓解**: 完整修复方案见 `docs/10-sister-repo-followups.md § R-022`. 摘要:
+  vibe_rewriter.md prompt 加 `{db_samples_block}` 占位符, orchestrator 渲染时
+  调 retrieve_samples 注入, 兜底保留 3 条人工精选.
+- **Owner**: sanshengliubu 维护者. 工时 0.5 天. **P0, TV 飞轮启用前应修**.
+
+### R-023 · 3 项目 logger 没 mask secret [audit 2026-05-22 deep-dive P1]
+
+- **是什么**: API key (sk-ant-* / sb_secret_* / AIza* / JWT) 可能出现在
+  logger.exception / Streamlit 错误 expander / telemetry 事件参数里.
+- **后果**: 日志被运维查看 / 上传到第三方平台 / 截图发群时, secret 外泄.
+- **缓解**: TV 仓已加 `scripts/_common.py::mask_secrets()`. 兄弟仓复制 helper
+  + logger formatter 应用. 见 `docs/10-sister-repo-followups.md § R-023`.
+- **Owner**: 3 仓维护者各自. 每仓 1 小时.
+
+### R-024 · autowriter worker 多次启动重叠 + stacktrace 泄漏 [audit 2026-05-22 deep-dive P1]
+
+- **是什么**: autowriter `app.py:3004` 的 daemon worker 没有"单例校验",
+  用户快速点击多次启动按钮会启动重叠 worker 抢同一 batch; `app.py:2332`
+  把 traceback.format_exc() 直接展示到 UI expander.
+- **后果**: 重叠 worker 浪费 token / 状态机错乱; stacktrace 泄漏内部路径 + API key.
+- **缓解**: R-018 (jobs+worker) 是终极方案, R-024 是短期止血. 完整代码见
+  `docs/10-sister-repo-followups.md § R-024`.
+- **Owner**: autowriter 维护者. 工时 2 小时.
+
+### R-025 · autowriter prompt 用户输入直拼, 无 token 上限 [audit 2026-05-22 deep-dive P2]
+
+- **是什么**: `generator.py:61-118` 把用户表单输入 (tactic / target_audience /
+  extra_instructions) 直接拼进 system prompt, 无 escape 无字符上限.
+- **后果**: 自家用风险低. 未来开放给客户/团队成员填表单时, 可被 `<!-- system:
+  ignore previous -->` 注入越权; 长 calibration_notes 把总 token 推过模型上限
+  导致生成截断.
+- **缓解**: 用 `[USER-FIELD-*]` 标记边界 + 硬上限 8000 字 + system prompt 头部
+  防注入声明. 见 `docs/10-sister-repo-followups.md § R-025`.
+- **Owner**: autowriter 维护者. 工时 3 小时.
+
+### R-026 · 3 项目 LLM 调用 retry framework 不统一 [audit 2026-05-22 deep-dive P2]
+
+- **是什么**: TV `annotate_essence_pass` 有 max_attempts + backoff, sanshengliubu
+  `pipeline/orchestrator.py` + autowriter `generator.py` 调 LLM **没看到 retry**.
+- **后果**: LLM 服务 429/5xx 瞬时抖动时, 兄弟仓直接挂掉整个 batch / pipeline run,
+  用户看到 "Anthropic overloaded" 失败但其实只是临时.
+- **缓解**: 抽 `llm_retry.py` 通用 helper (`max_attempts=3, max_wait=60s` 上限),
+  3 仓复用. 见 `docs/10-sister-repo-followups.md § R-026`.
+- **Owner**: 3 仓各自. 每仓 1-2 小时.
+
+### R-027 · autowriter update_project 列漂移静默 strip [audit 2026-05-22 deep-dive P3]
+
+- **是什么**: autowriter `db.py:477-505` 撞到"列不存在"会剥掉那列再 retry, 只埋
+  telemetry, **用户在 UI 设了值但 DB 没生效, 无明显错误提示**.
+- **后果**: schema 滞后时 UI 行为不符预期, 运维只能从日志反查.
+- **缓解**: 加 `st.warning` + 显式 logger.error. 见 `docs/10-sister-repo-followups.md § R-027`.
+- **Owner**: autowriter 维护者. 工时 1 小时.
+
+### R-028 · sanshengliubu 单 stage 失败必须整 pipeline 重跑 [audit 2026-05-22 deep-dive P3]
+
+- **是什么**: 复合 stage (strategy_loop / vibe_loop) 内部 cell 失败时, resume
+  会重跑前面已成功的 cell, 浪费 LLM token + 时间.
+- **后果**: 单 stage 偶发抖动 → 整 pipeline 重跑 → 时间和成本翻倍.
+- **缓解**: stage_logs 加 cell_status JSONB + resume 时 skip 已 success 的 cell.
+  见 `docs/10-sister-repo-followups.md § R-028`.
+- **Owner**: sanshengliubu 维护者. 工时 1-2 天.
+
 ---
 
 ## 已关闭风险 (历史档案)

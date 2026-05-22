@@ -317,6 +317,82 @@ SELECT '60', 'F · 数据状态',
     )::TEXT, 'N/A'),
     '> 0', '为 0 时 list_example_items 取不到 positive examples'
 
+-- ── G · 跨 schema mapping 完整性 (2026-05-22 audit P0 补) ──────────────
+-- TV → autowriter / sanshengliubu 的 mapping 字段是手工填的, 错填会让 sync
+-- 静默落后某个项目. 这几行检查会立刻显示哪个 TV project 配置有问题.
+UNION ALL
+SELECT '70', 'G · mapping 完整性',
+    'TV projects 里指向无效 autowriter project 的 mapping 数量 (aw 不存在 OR owner_id NULL)',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(*) FROM truth_vault.projects tvp
+        LEFT JOIN autowriter.projects awp ON awp.id::TEXT = tvp.mapping_to_autowriter_project_id
+        WHERE tvp.mapping_to_autowriter_project_id IS NOT NULL
+          AND (awp.id IS NULL OR awp.owner_id IS NULL)$q$
+    )::TEXT, 'N/A'),
+    '0',
+    '> 0 表示某个 mapping 填错或对应 aw project 没初始化 owner. 跑下面 SQL 看具体哪个: '
+    'SELECT id, brand, mapping_to_autowriter_project_id FROM truth_vault.projects WHERE ...'
+UNION ALL
+SELECT '71', 'G · mapping 完整性',
+    'TV projects 里指向不存在的 sanshengliubu project 的 mapping 数量',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(*) FROM truth_vault.projects tvp
+        LEFT JOIN public.projects sslp ON sslp.id::TEXT = tvp.mapping_to_sanshengliubu_project_id
+        WHERE tvp.mapping_to_sanshengliubu_project_id IS NOT NULL
+          AND sslp.id IS NULL$q$
+    )::TEXT, 'N/A'),
+    '0',
+    '> 0 表示某个 mapping 填错. 看 truth_vault.projects 表手工修.'
+
+-- ── H · 跨 schema 孤儿引用检测 (2026-05-22 audit P0 补) ────────────────
+-- PG 不支持跨 schema FK ON DELETE 联动. 如果有人在 aw / ssll 删了一行,
+-- TV 这边的 source_*_id 就成孤儿, cross-schema view 静默 JOIN 失败.
+-- 这两行检查会暴露隐藏的数据完整性问题.
+UNION ALL
+SELECT '80', 'H · 跨 schema 孤儿',
+    'truth_vault.notes.source_autowriter_item_id 指向不存在的 autowriter.items 数量',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(*) FROM truth_vault.notes n
+        LEFT JOIN autowriter.items i ON i.id = n.source_autowriter_item_id
+        WHERE n.source_autowriter_item_id IS NOT NULL AND i.id IS NULL$q$
+    )::TEXT, 'N/A'),
+    '0',
+    '> 0 表示 aw item 被删/UUID 变了; v_model_comparison 等 view 会少行. '
+    '修法: 找具体行 UPDATE notes SET source_autowriter_item_id=NULL 或重新 sync.'
+UNION ALL
+SELECT '81', 'H · 跨 schema 孤儿',
+    'truth_vault.notes.source_autowriter_version_id 指向不存在的 autowriter.versions 数量',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(*) FROM truth_vault.notes n
+        LEFT JOIN autowriter.versions v ON v.id = n.source_autowriter_version_id
+        WHERE n.source_autowriter_version_id IS NOT NULL AND v.id IS NULL$q$
+    )::TEXT, 'N/A'),
+    '0',
+    '> 0 表示 aw version 被删. 同 #80 处理.'
+UNION ALL
+SELECT '82', 'H · 跨 schema 孤儿',
+    'truth_vault.notes.source_sanshengliubu_output_id 指向不存在的 public.outputs 数量',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(*) FROM truth_vault.notes n
+        LEFT JOIN public.outputs o ON o.id = n.source_sanshengliubu_output_id
+        WHERE n.source_sanshengliubu_output_id IS NOT NULL AND o.id IS NULL$q$
+    )::TEXT, 'N/A'),
+    '0',
+    '> 0 表示 ssll output 被删. 同 #80 处理.'
+
+-- ── I · 数据一致性副作用 ──────────────────────────────────────────────
+UNION ALL
+SELECT '90', 'I · 数据一致性',
+    'TV projects 里 start_date > end_date 的项目数 (update_project_date_range 竞态)',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(*) FROM truth_vault.projects
+        WHERE start_date IS NOT NULL AND end_date IS NOT NULL
+          AND start_date > end_date$q$
+    )::TEXT, 'N/A'),
+    '0',
+    '> 0 表示 _common.py:update_project_date_range 撞了 race. '
+    '修法: UPDATE projects SET start_date = end_date WHERE start_date > end_date; 再重跑 sync.'
+
 )
 SELECT
     ord, section, check_name,
