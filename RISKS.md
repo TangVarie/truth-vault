@@ -238,7 +238,7 @@
     线程, 长 LLM call 不阻塞心跳.
 - **Owner**: AutoWriter 维护者 + sanshengliubu 维护者
 
-### R-019 · sanshengliubu fresh schema 关 RLS — 单租户假设没写明 [audit 2026-05-22 P2-6]
+### R-019 · sanshengliubu fresh schema 关 RLS — 单租户假设没写明 [audit 2026-05-22 P2-6] ✅ 已关闭 2026-05-22
 
 - **是什么**: `sanshengliubu-main/db/schema.sql:117-121` 显式 `ALTER TABLE ...
   DISABLE ROW LEVEL SECURITY` 对 5 张主表 (projects / pipeline_runs / stage_logs
@@ -258,6 +258,10 @@
     现有用户. supabase_client.py 注入 workspace_id 到所有 INSERT. TV sync
     在 reference_samples 写入时填默认 workspace_id. 1-2 天 + staging 验证.
 - **Owner**: sanshengliubu 维护者 (产品方向决定 a 或 b)
+- **关闭说明 (2026-05-22)**: sanshengliubu PR #27 落地 Option A. README.md
+  顶部 ⚠️ 警告条 + `db/schema.sql` DISABLE RLS 块上方 13 行 audit 注释
+  + `app.py` sidebar `🔓 单租户模式` caption. 三处显式提醒 + 指向 005 多租户
+  migration. Option B 未来切换零迷路.
 
 ### R-020 · 业务项目超大单文件, 改动成本高 [audit 2026-05-22 P2-9]
 
@@ -297,25 +301,46 @@
      里出现对应 row, 重跑 → race_skipped=1
 - **Owner**: 工程师 (脚本) + Ziao (准 staging Supabase 实例 + 真实用户 JWT)
 
-### R-022 · sanshengliubu vibe_rewriter 没用 DB 样本, 飞轮闭环漏 [audit 2026-05-22 deep-dive P0]
+### R-022 · sanshengliubu vibe_rewriter 没用 DB 样本, 飞轮闭环漏 [audit 2026-05-22 deep-dive P0] 🟡 进行中 (ssll PR #27 ✅ merged / PR #28 ⏳ pending merge)
 
-- **是什么**: sanshengliubu `pipeline/prompts/vibe_rewriter.md` 用 6 条硬编码
-  人物例子做"真人参照", `pipeline/retrieve_samples.py` 虽然能查 DB 样本但
-  **结果没拼进 prompt**. TV → reference_samples 通路通了, 但 LLM 看不到.
-- **后果**: TV 飞轮存满爆款, sanshengliubu 生成质量不提升. **整个飞轮架构最大漏洞**.
-- **缓解**: 完整修复方案见 `docs/10-sister-repo-followups.md § R-022`. 摘要:
-  vibe_rewriter.md prompt 加 `{db_samples_block}` 占位符, orchestrator 渲染时
-  调 retrieve_samples 注入, 兜底保留 3 条人工精选.
-- **Owner**: sanshengliubu 维护者. 工时 0.5 天. **P0, TV 飞轮启用前应修**.
+- **是什么 (audit 原始诊断)**: sanshengliubu `pipeline/prompts/vibe_rewriter.md`
+  用 6 条硬编码人物例子做"真人参照", `pipeline/retrieve_samples.py` 虽然能查
+  DB 样本但**结果没拼进 prompt**. TV → reference_samples 通路通了, 但 LLM 看不到.
+- **复核澄清**: sanshengliubu 维护者复核发现链路其实早就在 (orchestrator
+  注入了 reference_packs_by_platform, prompt 里也有"如有必用"指令), 但**有 3
+  个隐患让飞轮事实失效**: 静态样本位置喧宾夺主、没 source_type 追溯、0 命中
+  无告警. 修复方向正确, 范围有调整.
+- **后果**: TV 飞轮存满爆款, sanshengliubu 生成质量不提升. **飞轮架构最大隐患**.
+- **进度说明 (2026-05-22)**: sanshengliubu 维护者实施 4 道关卡:
+  1. **Prompt 层** (PR #27 ✅): vibe_rewriter.md PRIMARY/FALLBACK 分层 +
+     **三态决策表** 强制 LLM 在 rewrite_summary 写 `源:数据库样本 #<id>`
+     或 `源:静态兜底 #<编号>`
+  2. **检索层** (PR #27 ✅): retrieve_samples 加 source_type (truth_vault/manual) +
+     summarize_packs_by_platform; 0 packs 升 WARNING
+  3. **注入层** (PR #27 ✅): orchestrator vibe_loop 把 reference_packs_summary
+     推到 critic / structural_rewriter / vibe_rewriter 三处
+  4. **运行时审计 + 持久化** (PR #28 ⏳ **pending merge**):
+     `_audit_rewrite_source_tags` 每 iteration 跑, findings 落 `stage_logs`
+     (stage_name='r022_flywheel_audit'), per-platform 配额规则防包用尽误报,
+     unicode 冒号也支持. **TV 跨仓监控依赖这层** — 没有 PR #28, `stage_logs`
+     就不会出现 `r022_flywheel_audit` 行, 跨仓 SQL 查零结果.
+- **正式关闭前置 (gate)**: ssll PR #28 合到 main 后, R-022 才能标 ✅ 已关闭.
+  在那之前 R-022 是生产飞轮的实际 gate — 4 道关卡中第 4 道还在 PR, "飞轮通了
+  但没监控" 不算完整关闭.
+- **TV 侧后续 (PR #28 合并后)**: 加 `scripts/check_flywheel_health.py` 或在
+  `verify_supabase_state.sql` 加新 J 节查 `r022_flywheel_audit.completed_warn`.
+  SQL 模板见 `docs/10-sister-repo-followups.md § "TV 日报跨仓查 R-022 audit"`.
 
-### R-023 · 3 项目 logger 没 mask secret [audit 2026-05-22 deep-dive P1]
+### R-023 · 3 项目 logger 没 mask secret [audit 2026-05-22 deep-dive P1] 🟡 部分关闭 (ssll + TV ✅, aw ⏳)
 
 - **是什么**: API key (sk-ant-* / sb_secret_* / AIza* / JWT) 可能出现在
   logger.exception / Streamlit 错误 expander / telemetry 事件参数里.
 - **后果**: 日志被运维查看 / 上传到第三方平台 / 截图发群时, secret 外泄.
-- **缓解**: TV 仓已加 `scripts/_common.py::mask_secrets()`. 兄弟仓复制 helper
-  + logger formatter 应用. 见 `docs/10-sister-repo-followups.md § R-023`.
-- **Owner**: 3 仓维护者各自. 每仓 1 小时.
+- **缓解**: TV 仓已加 `scripts/_common.py::mask_secrets()` (7 模式).
+  sanshengliubu PR #27 加 `pipeline/logger_utils.py` (7 模式 shadow-aligned)
+  + `install_secret_masking_on_root_logger()` 启动时挂 root logger formatter.
+  autowriter 仍待实施, 完整方案见 `docs/10-sister-repo-followups.md § R-023`.
+- **Owner**: autowriter 维护者仍需做.
 
 ### R-024 · autowriter worker 多次启动重叠 + stacktrace 泄漏 [audit 2026-05-22 deep-dive P1]
 
@@ -338,15 +363,42 @@
   防注入声明. 见 `docs/10-sister-repo-followups.md § R-025`.
 - **Owner**: autowriter 维护者. 工时 3 小时.
 
-### R-026 · 3 项目 LLM 调用 retry framework 不统一 [audit 2026-05-22 deep-dive P2]
+### R-026 · 3 项目 LLM 调用 retry framework 不统一 [audit 2026-05-22 deep-dive P2] 🟡 部分关闭 (ssll Gemini + TV ✅, aw ⏳, ssll Claude → R-026.2)
 
 - **是什么**: TV `annotate_essence_pass` 有 max_attempts + backoff, sanshengliubu
   `pipeline/orchestrator.py` + autowriter `generator.py` 调 LLM **没看到 retry**.
-- **后果**: LLM 服务 429/5xx 瞬时抖动时, 兄弟仓直接挂掉整个 batch / pipeline run,
-  用户看到 "Anthropic overloaded" 失败但其实只是临时.
-- **缓解**: 抽 `llm_retry.py` 通用 helper (`max_attempts=3, max_wait=60s` 上限),
-  3 仓复用. 见 `docs/10-sister-repo-followups.md § R-026`.
-- **Owner**: 3 仓各自. 每仓 1-2 小时.
+- **复核澄清**: sanshengliubu 复核发现 Claude 调用其实在 `BaseAgent.run()`
+  已有 MAX_RETRIES + 指数退避 (3 次 / 3s 基底). 但 **Gemini 调用裸跑**, 429/503
+  直接挂条 vibe_loop.
+- **后果**: LLM 服务 429/5xx 瞬时抖动时, sister-repo 直接挂掉整个 batch /
+  pipeline run, 用户看到 "Anthropic overloaded" 失败但其实只是临时.
+- **关闭进度**:
+  - ✅ TV: `annotate_essence_pass.call_claude` 已有 max_attempts + backoff
+  - ✅ ssll Gemini: PR #27 加 `pipeline/llm_retry.py` (max_attempts=3,
+    max_wait=30s, `_is_transient` 覆盖 429/503/504/timeout/overloaded 等) +
+    `gemini_client.call_gemini_json` 包重试
+  - ⏳ ssll Claude 路径: 保留 BaseAgent.run() 独立 retry (4 项耦合状态机:
+    retry + budget + rate limiter + cache-fallback). 统一迁移留给 R-026.2
+    未来 PR
+  - ⏳ autowriter: 仍待实施
+- **跨 backend 设计选择**: 详见 sanshengliubu `docs/architecture.md §1`
+  对照表 + 不统一理由. 未来触发条件: 第三个非 Anthropic backend / 全局重试
+  可观测 / BaseAgent.run() 改动频繁.
+
+### R-026.2 · sanshengliubu BaseAgent.run() 重试迁到 llm_retry [Sprint 2+]
+
+- **是什么**: PR #27 落地 R-026 时只把 Gemini 加了独立 retry. Claude /
+  DeepSeek / OpenAI 走 `BaseAgent.run()` 内嵌的 4 项耦合状态机 (retry + budget
+  + rate limiter + cache-fallback). 跨 backend 重试参数和日志格式不统一.
+- **后果**: 跨 backend 调试时"为什么 Claude 等了 3s, Gemini 等了 30s" 类型
+  问题查起来要看两套代码; 未来加全局重试可观测困难.
+- **缓解**: 把 BaseAgent.run() 重试逻辑迁到 `pipeline/llm_retry.py`. 需要先
+  把 budget / rate limiter / cache-fallback 拆出来或保留, 再统一 retry 入口.
+- **触发条件** (sanshengliubu `docs/architecture.md §1` 末尾):
+  - 出现第三个非 Anthropic LLM backend (e.g. 直连 Mistral)
+  - 运维要"全局重试可观测", 需要统一日志格式
+  - `BaseAgent.run()` 自身改动频繁, 维护重试逻辑成本超过迁移成本
+- **Owner**: sanshengliubu 维护者. 工时 1-2 天 + e2e 测试.
 
 ### R-027 · autowriter update_project 列漂移静默 strip [audit 2026-05-22 deep-dive P3]
 

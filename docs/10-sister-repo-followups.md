@@ -1460,19 +1460,67 @@ sanshengliubu 维护者. **工时**: 1-2 天 (含测试).
 - `RISKS.md` — R-017..R-021 完整登记
 - `scripts/verify_supabase_state.sql` — 跑完两边 migration 后用它验证全局状态
 - `scripts/_common.py::mask_secrets()` — R-023 的 helper (3 仓复用)
+- **sanshengliubu `docs/architecture.md`** — R-022 飞轮可观测落 stage_logs
+  + R-026 三套 LLM 重试设计选择 + R-019/R-023 ssll 侧实施细节 single source
+  of truth. TV 日报跨仓 SQL 模板直接复用 (见下方 "TV 日报跨仓查 R-022 audit"
+  段).
+- **sanshengliubu PR #27** (已合 2026-05-22, main `7d005b6`) — R-019/R-022/
+  R-023/R-026 初始落地. 详见 sanshengliubu `docs/2026-05-22-audit-followups-report.md`.
+- **sanshengliubu PR #28** (pending merge) — round 1+2+3 review 加固 (含
+  `_persist_audit_findings` 把 audit 写 stage_logs + per-platform 配额防误报 +
+  unicode 冒号修复 + `docs/architecture.md`). TV 跨仓监控需要 PR #28 上 main.
 
-## 优先级总览 (2026-05-22)
+## TV 日报跨仓查 R-022 audit (sanshengliubu PR #28 合并后启用)
 
-| ID | 主题 | Owner | 紧急度 | 工时 |
-|----|------|-------|--------|------|
-| R-022 | sanshengliubu vibe_rewriter 注入 DB 样本 | ssll | **P0 (飞轮闭环)** | 0.5 天 |
-| R-023 | 3 项目 logger secret masking | 3 仓 | P1 | 各 1 小时 |
-| R-024 | autowriter worker 防重启 + 错误展示 | aw | P1 | 2 小时 |
-| R-025 | autowriter prompt sanitize | aw | P2 | 3 小时 |
-| R-026 | 3 项目 LLM retry framework | 3 仓 | P2 | 各 1-2 小时 |
-| R-027 | autowriter schema 漂移告警 | aw | P3 | 1 小时 |
-| R-028 | sanshengliubu stage-level resume | ssll | P3 | 1-2 天 |
-| R-017 | AutoWriter requirements 上限 + lockfile | aw | **P1 (本周)** | 30 分钟 |
-| R-018 | daemon thread → jobs+worker | 2 仓 | Sprint 2+ | 1-2 周/仓 |
-| R-019 | sanshengliubu 单/多租户决策 | ssll | P1 (单租户已定) | 10 分钟 (Option A) |
-| R-020 | 拆 db.py/memory.py/app.py | aw | Sprint 2+ | 每文件 1-2 天 |
+sanshengliubu vibe_loop 每轮把"飞轮命中率"写一行 `stage_logs`, schema 见
+sanshengliubu `docs/architecture.md §2`. TV 这边可以直接跨 schema 查, 不需要
+sanshengliubu 自己跑 cron:
+
+```sql
+-- 过去 7 天 ssll 飞轮命中率 (TV 日报 cron 跑这条, ratio < 0.3 告警)
+SELECT
+    DATE(sl.created_at) AS day,
+    SUM((sl.output_data->>'db_sourced')::int)         AS db_anchored,
+    SUM((sl.output_data->>'static_sourced')::int)     AS static_anchored,
+    SUM((sl.output_data->>'total_vibe_cells')::int)   AS total,
+    ROUND(
+      SUM((sl.output_data->>'db_sourced')::int)::numeric
+      / NULLIF(SUM((sl.output_data->>'total_vibe_cells')::int), 0),
+      3
+    ) AS db_hit_rate
+FROM public.stage_logs sl
+WHERE sl.stage_name = 'r022_flywheel_audit'
+  AND sl.created_at > NOW() - INTERVAL '7 days'
+GROUP BY DATE(sl.created_at)
+ORDER BY day DESC;
+
+-- 过去 24h 任何 warn (missing_tag 或 excess_static_use 非空)
+SELECT sl.run_id, sl.created_at, sl.output_data
+FROM public.stage_logs sl
+WHERE sl.stage_name = 'r022_flywheel_audit'
+  AND sl.status = 'completed_warn'
+  AND sl.created_at > NOW() - INTERVAL '24 hours';
+```
+
+这条 SQL 应该加进 `scripts/verify_supabase_state.sql` 的 G/H/I 节 (作为飞轮
+健康度的第 J 节), 或写进新的 `scripts/check_flywheel_health.py` 由
+`daily-sync.yml` 跑完飞轮 sync 后顺手跑.
+
+## 优先级总览 (2026-05-22 update)
+
+✅ = 已落地 · 🟡 = 部分落地 · ⏳ = 待 sister-repo 维护者执行
+
+| ID | 主题 | Owner | 状态 | 备注 |
+|----|------|-------|------|------|
+| R-019 | sanshengliubu 单/多租户决策 | ssll | ✅ 完成 | ssll PR #27, Option A 单租户声明 (README + schema.sql + sidebar banner) |
+| R-022 | sanshengliubu vibe_rewriter 注入 DB 样本 | ssll | 🟡 进行中 | ssll PR #27 ✅ merged (prompt + retrieve + orchestrator). ssll PR #28 ⏳ **pending merge** (运行时 audit + `stage_logs` 持久化 + per-platform 配额防误报 + unicode 修复). **PR #28 合并是 R-022 完整关闭的前置** — 跨仓 SQL 监控依赖 `r022_flywheel_audit` 行存在. 合后再标 ✅. |
+| R-023 | logger secret masking | 3 仓 | ✅ ssll/TV / ⏳ aw | TV: `scripts/_common.py::mask_secrets`. ssll: PR #27 `pipeline/logger_utils.py` (7 模式 shadow-aligned). aw 仍待实施. |
+| R-026 | LLM retry framework | 3 仓 | ✅ ssll/TV / ⏳ aw | TV: `annotate_essence_pass.call_claude`. ssll: PR #27 `pipeline/llm_retry.py` (Gemini), Claude 路径保留独立 retry (R-026.2 未来再统一). aw 仍待实施. |
+| R-017 | AutoWriter requirements 上限 + lockfile | aw | ⏳ 待执行 | 30 分钟, 见本文 § R-017 |
+| R-018 | daemon thread → jobs+worker | 2 仓 | ⏳ Sprint 2+ | 触发条件: 浏览器关闭丢任务变成日常痛点 (ssll) / Streamlit 重启卡 batch (aw). 1-2 周/仓. |
+| R-020 | 拆 db.py/memory.py/app.py | aw | ⏳ Sprint 2+ | 每文件 1-2 天. 触发条件: 单文件改 bug 时反复撞 git conflict / 难定位 |
+| R-024 | autowriter worker 防重启 + 错误展示 | aw | ⏳ 待执行 | 2 小时. 见本文 § R-024 |
+| R-025 | autowriter prompt sanitize | aw | ⏳ 待执行 | 3 小时. 见本文 § R-025 |
+| R-026.2 | sanshengliubu BaseAgent.run() retry 迁到 llm_retry.py | ssll | ⏳ 未来 PR | 1-2 天. 触发条件 (sanshengliubu `docs/architecture.md` §1 末尾): 出现第三个非 Anthropic backend / 全局重试可观测 / BaseAgent.run() 改动频繁. |
+| R-027 | autowriter schema 漂移告警 | aw | ⏳ 待执行 | 1 小时. 见本文 § R-027 |
+| R-028 | sanshengliubu stage-level resume | ssll | ⏳ P3 backlog | 1-2 天 + schema 改动. 触发条件 (sanshengliubu `docs/architecture.md`): matrix > 30 cells 时 resume 成本显著. |
