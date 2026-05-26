@@ -1452,6 +1452,78 @@ sanshengliubu 维护者. **工时**: 1-2 天 (含测试).
 
 ---
 
+## R-029 · autowriter RLS policy auth.uid() 每行重算 (Supabase auth_rls_initplan)
+
+### 问题
+
+Supabase performance advisor (`auth_rls_initplan`) 2026-05-22 报 autowriter
+两张表的 RLS policy 每行重新求值 `auth.uid()`, 大规模时慢:
+
+| 表 | policy | 原 USING |
+|----|--------|----------|
+| `autowriter.generation_sessions` | `generation_sessions_owner` | `user_id = auth.uid()` |
+| `autowriter.session_messages` | `session_messages_owner` | `session_id IN (SELECT id FROM generation_sessions WHERE user_id = auth.uid())` |
+
+PG 对 `auth.uid()` 这种 STABLE 函数, 如果直接写在 policy 里会**每行调用一次**;
+包成 `(select auth.uid())` 后 planner 当 initplan **只算一次**. 这两张表当前
+60 / 1244 行, 影响还小, 但 session_messages 会随使用持续涨.
+
+(这两张表是 autowriter app 自己建的, 不在 truth-vault `007_fresh_install`
+migration 里 — 007 只建 projects/batches/items/versions/memories/
+calibration_note_audit/batch_metrics/user_logins.)
+
+### 已做 (TV 侧即时修复)
+
+2026-05-22 已通过 Supabase MCP `apply_migration` 把两个 policy 就地改成
+`(select auth.uid())`. advisor 的 2 个 `auth_rls_initplan` WARN 已消失.
+零行为改变 — `(select auth.uid())` 返回值跟 `auth.uid()` 完全一样.
+
+### ⏳ autowriter 维护者要做 (防 regress)
+
+**Supabase 上改了但 autowriter db.py 源码没改的话, 下次 autowriter 重跑
+schema bootstrap (CREATE POLICY) 会覆盖回 `auth.uid()`, advisor 警告复现.**
+
+autowriter 维护者需要在源码 (db.py CREATE_TABLES_SQL 或对应 migration) 把
+这两个 policy 定义改成 `(select auth.uid())`:
+
+```sql
+-- generation_sessions
+DROP POLICY IF EXISTS generation_sessions_owner ON autowriter.generation_sessions;
+CREATE POLICY generation_sessions_owner ON autowriter.generation_sessions
+    FOR ALL
+    USING (user_id = (select auth.uid()));
+
+-- session_messages
+DROP POLICY IF EXISTS session_messages_owner ON autowriter.session_messages;
+CREATE POLICY session_messages_owner ON autowriter.session_messages
+    FOR ALL
+    USING (session_id IN (
+        SELECT generation_sessions.id
+        FROM autowriter.generation_sessions
+        WHERE generation_sessions.user_id = (select auth.uid())
+    ));
+```
+
+顺便检查 autowriter **所有** RLS policy: 其它表 (projects/batches/items/
+versions/memories) 的 owner policy 如果也用裸 `auth.uid()`, 一并包成
+`(select auth.uid())`. 一次 grep `auth.uid()` 在 db.py 里就能找全.
+
+### 顺带 (INFO 级, 不急)
+
+同次 advisor 还报了 autowriter 几个 `unindexed_foreign_keys` (INFO):
+`batch_metrics.batch_id` / `batches.project_id` / `items.batch_id` /
+`memories.project_id` / `memories.source_batch_id` / `session_messages.batch_id`
+/ `session_messages.item_id` / `versions.item_id`. FK 列没覆盖索引, 大表
+JOIN / 级联删除时慢. autowriter 维护者评估数据量后决定是否加 `CREATE INDEX`.
+当前数据量 (items 3671 / versions 4425) 还没到必须加的程度.
+
+### Owner
+
+autowriter 维护者. **工时**: 30 分钟 (改 2-N 个 policy 定义 + 重跑验证).
+**优先级**: P3 (当前数据量影响小, 但写进源码防 regress 值得顺手做).
+
+---
+
 ## 参考 / 配套文件
 
 - `autowriter-migrations/008_jobs_table.sql` — R-018 autowriter DDL
@@ -1524,3 +1596,4 @@ WHERE sl.stage_name = 'r022_flywheel_audit'
 | R-026.2 | sanshengliubu BaseAgent.run() retry 迁到 llm_retry.py | ssll | ⏳ 未来 PR | 1-2 天. 触发条件 (sanshengliubu `docs/architecture.md` §1 末尾): 出现第三个非 Anthropic backend / 全局重试可观测 / BaseAgent.run() 改动频繁. |
 | R-027 | autowriter schema 漂移告警 | aw | ⏳ 待执行 | 1 小时. 见本文 § R-027 |
 | R-028 | sanshengliubu stage-level resume | ssll | ⏳ P3 backlog | 1-2 天 + schema 改动. 触发条件 (sanshengliubu `docs/architecture.md`): matrix > 30 cells 时 resume 成本显著. |
+| R-029 | autowriter RLS auth.uid() 每行重算 | aw | 🟡 TV 即时修已应用 / aw 源码待改 | Supabase 上 2 个 policy 已包成 `(select auth.uid())` (advisor WARN 已消), 但 autowriter db.py 源码要同步改防 regress. 见本文 § R-029. 30 分钟. |

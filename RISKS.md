@@ -420,6 +420,37 @@
   见 `docs/10-sister-repo-followups.md § R-028`.
 - **Owner**: sanshengliubu 维护者. 工时 1-2 天.
 
+### R-029 · autowriter RLS policy auth.uid() 每行重算 [Supabase advisor 2026-05-22 auth_rls_initplan] 🟡 TV 即时修已应用 / aw 源码待改
+
+- **是什么**: Supabase perf advisor 报 `autowriter.generation_sessions`
+  (`generation_sessions_owner`) 和 `autowriter.session_messages`
+  (`session_messages_owner`) 的 RLS policy 每行重新求值 `auth.uid()`.
+  包成 `(select auth.uid())` 后 PG 当 initplan 只算一次.
+- **后果**: 大规模时 RLS 检查慢. 当前 60 / 1244 行影响还小, session_messages
+  会随使用持续涨.
+- **已做 (TV 侧即时修复)**: 2026-05-22 用 Supabase MCP apply_migration 把两个
+  policy 就地改成 `(select auth.uid())`, advisor 2 个 auth_rls_initplan WARN
+  已消失. 零行为改变.
+- **⏳ 待 autowriter 维护者**: Supabase 上改了但 autowriter db.py 源码没改的话,
+  下次 autowriter 重跑 schema bootstrap 会覆盖回 `auth.uid()`, 警告复现. 需要
+  在 db.py CREATE_TABLES_SQL 源码把这两个 (+ 检查其它表) policy 改成
+  `(select auth.uid())`. 完整 SQL 见 `docs/10-sister-repo-followups.md § R-029`.
+- **顺带 (INFO 级)**: 同次 advisor 报 autowriter 8 个 unindexed_foreign_keys
+  (batch_metrics/batches/items/memories×2/session_messages×2/versions). 当前
+  数据量不急, autowriter 维护者评估后决定是否加覆盖索引.
+- **Owner**: autowriter 维护者. 工时 30 分钟. 优先级 P3.
+
+### R-030 · TV 一堆 unused_index advisor (INFO) — 预期, 不处理 [Supabase advisor 2026-05-22]
+
+- **是什么**: Supabase perf advisor 报 truth_vault 几十个 index "unused".
+- **后果**: 无. **这是预期**: TV 14 张表现在全 0 行 (飞轮还没跑数据), 没有
+  query 命中过这些 index, 所以全标 "unused". 它们是按 sync 脚本 + view 的
+  查询模式设计的 (note_id / project_id / tier / publish_time / GIN 等), 数据
+  一进来就会被用上.
+- **缓解**: **不要删这些 index**. 飞轮启用 + sync 跑过几轮后重新看 advisor,
+  真正一直 unused 的 (比如某个从没被查的列) 再单独评估. 现在删等于自废武功.
+- **Owner**: 无需 action. 记录在案防止有人看到 advisor 就手贱删索引.
+
 ---
 
 ## 已关闭风险 (历史档案)
