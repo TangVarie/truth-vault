@@ -151,6 +151,8 @@ tier_extraction:
       tier: 预备
     - match_contains: ["爆贴"]
       tier: 爆
+    - match_contains: ["参考"]      # 够不上爆款但值得参考: 也进飞轮(低权重), 不计爆款统计
+      tier: 参考
     - match_contains: ["风控"]
       tier: 风控
     - match_contains: ["无水花"]

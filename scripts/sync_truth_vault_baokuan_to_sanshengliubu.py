@@ -2,7 +2,7 @@
 sync_truth_vault_baokuan_to_sanshengliubu.py
 ═══════════════════════════════════════════════════════════════════════════
 
-把 Truth Vault 中 tier ∈ ('爆', '大爆') 的爆款笔记 sync 到
+把 Truth Vault 中 tier ∈ ('爆', '大爆', '参考') 的笔记 sync 到
 public.reference_samples（sanshengliubu 保持在 public schema，D-024）。
 注入到 vibe_rewriter 的高权重检索池。
 
@@ -93,7 +93,7 @@ def fetch_pending_baokuan(
     """Query Truth Vault for baokuan notes not yet synced to sanshengliubu.
 
     Eligibility filters (matching通道 2 D-036 data-hygiene rules):
-      - tier ∈ ('爆','大爆')                              仅爆款
+      - tier ∈ ('爆','大爆','参考')                       爆款 + 运营标的参考级 (参考权重低)
       - tier_source != '数值推断'                          排除未人工 confirm 的自动 tier
                                                           (运营要把某条数值推断的 row
                                                           重新纳入 sync, 改 tier_source 为
@@ -124,7 +124,7 @@ def fetch_pending_baokuan(
         .select("note_id, project_id, raw_content, hit_blue_keywords, "
                 "tier, tier_source, intent, publish_url, publish_time, "
                 "target_audience, data_quality_flags, projects(category, brand, platform)")
-        .in_("tier", ["爆", "大爆"])
+        .in_("tier", ["爆", "大爆", "参考"])
         .neq("tier_source", "数值推断")
         .gte("publish_time", twelve_months_ago)
         .is_("synced_to_ssll_at", None)
