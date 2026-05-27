@@ -366,7 +366,7 @@ jobs:
           import _common
           # Stub create_client so we exercise validation, not network.
           captured = []
-          _common.create_client = lambda url, key, opts: captured.append(key) or "fake"
+          _common.create_client = lambda url, key, opts=None: captured.append(key) or "fake"
 
           os.environ['SUPABASE_URL'] = 'https://test.supabase.co'
           cases = [
