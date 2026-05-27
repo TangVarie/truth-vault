@@ -200,6 +200,28 @@ class FeishuClient:
 # Mapping-driven row transformation
 # ═════════════════════════════════════════════════════════════════════════
 
+def _direction_key(value: Any) -> str:
+    """Flatten a Feishu 方向 cell to a hashable string for the
+    direction_decomposition / excluded_directions key lookups.
+
+    Feishu returns this column as a str, a rich-text segment list
+    ([{'text': ...}]), or a multi-select list of strings. Using the raw list
+    as a dict key raises `TypeError: unhashable type: 'list'`. A genuinely
+    multi-valued cell flattens to a joined string that won't match a
+    single-direction yaml key, so the deterministic lift is simply skipped
+    (raw value stays in raw_extra for a later annotation pass).
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return str(value.get("text", "")).strip()
+    if isinstance(value, list):
+        if value and all(isinstance(x, dict) for x in value):
+            return "".join(str(x.get("text", "")) for x in value).strip()
+        return ", ".join(str(x).strip() for x in value if str(x).strip())
+    return "" if value is None else str(value)
+
+
 def transform_row(
     mapping: dict,
     feishu_record_id: str,
@@ -287,6 +309,9 @@ def transform_row(
         # Always keep the raw value in raw_extra for traceability/annotation
         note.setdefault("raw_extra", {})["_direction_raw"] = raw_dir
         consumed_intermediates.add("_direction_raw")
+        # Feishu may return 方向 as a list (multi-select / rich-text segments);
+        # flatten to a hashable string for the dict-key lookups below.
+        dir_key = _direction_key(raw_dir)
 
         # Apply the deterministic portion of direction_decomposition. For
         # single-direction configs (no sub_directions), we can lift
@@ -296,7 +321,7 @@ def transform_row(
         # still require LLM sub-classification and are skipped here; the
         # raw direction stays in raw_extra so an annotation pass can resolve
         # it. excluded_directions is honored as 'quarantine via tier_source'.
-        decomposition = (mapping.get("direction_decomposition") or {}).get(raw_dir)
+        decomposition = (mapping.get("direction_decomposition") or {}).get(dir_key)
         if decomposition is not None and "sub_directions" not in decomposition:
             for col in ("content_format", "target_audience",
                         "user_pain_point", "product_focus"):
@@ -310,7 +335,7 @@ def transform_row(
         # mark as data-anomalous so downstream training queries filter it out
         # without losing the row.
         for excluded in (mapping.get("excluded_directions") or []):
-            if excluded.get("direction") == raw_dir:
+            if excluded.get("direction") == dir_key:
                 note["tier"] = "数据异常"
                 note["tier_source"] = "数据异常"
                 break
