@@ -24,7 +24,6 @@ from typing import Any, Optional
 
 import yaml
 from supabase import create_client, Client
-from supabase.client import ClientOptions
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -74,10 +73,13 @@ def get_supabase_client() -> Client:
       - Legacy: long HS256 JWT (role=service_role in payload)
       - New (2024+): opaque token prefixed with `sb_secret_`
 
-    The client has no default schema set — every call must explicitly use
-    .schema('truth_vault') / .schema('autowriter') / .schema('public').
-    This is intentional: forgetting .schema() should fail loudly with 404
-    rather than silently writing to the wrong place.
+    Every call explicitly does .schema('truth_vault'/'autowriter'/'public'),
+    which sets the schema per-request, so the client default doesn't matter.
+    Do NOT pass ClientOptions(schema=None): on supabase-py 2.30.0 a None
+    schema becomes a None Accept-Profile header and every .execute() raises
+    `AttributeError: 'NoneType' object has no attribute 'encode'` BEFORE any
+    request is sent — that bug is why all sync steps failed with truth_vault
+    staying empty (debugged 2026-05-27, see docs/12).
     """
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
@@ -97,7 +99,7 @@ def get_supabase_client() -> Client:
             "Settings → API."
         )
     if key.startswith(_SB_SECRET_PREFIX):
-        return create_client(url, key, ClientOptions(schema=None))
+        return create_client(url, key)
 
     # 2. Legacy JWT format — decode payload and check the role claim.
     role = _jwt_role_or_none(key)
@@ -108,7 +110,7 @@ def get_supabase_client() -> Client:
                 "Sync scripts need service_role to bypass RLS. Check Supabase "
                 "Dashboard → Settings → API → service_role secret."
             )
-        return create_client(url, key, ClientOptions(schema=None))
+        return create_client(url, key)
 
     # 3. Neither prefix matched, and not a JWT — last-resort guardrail
     #    against pasting an obviously wrong value (empty / "your-key-here" /
@@ -121,7 +123,7 @@ def get_supabase_client() -> Client:
             "format (not a JWT, not sb_secret_*, and is suspiciously short or "
             "contains 'anon'). Check Supabase Dashboard → Settings → API."
         )
-    return create_client(url, key, ClientOptions(schema=None))  # no default schema
+    return create_client(url, key)
 
 
 # ─────────────────────────────────────────────────────────────────────────
