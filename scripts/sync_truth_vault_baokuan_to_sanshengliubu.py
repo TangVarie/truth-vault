@@ -103,6 +103,11 @@ def fetch_pending_baokuan(
       - publish_time within 12 months                     不持续推过气审美进 ssll
                                                           的 reference_samples
       - synced_to_ssll_at IS NULL                         未同步
+      - data_quality_flags.synthetic != true              排除伪爆贴 (WTG「笔记状态」
+                                                          含"关注"的人工假数据). 和通道 2
+                                                          v_autowriter_injection_candidates
+                                                          的 synthetic 排除对齐, 防假
+                                                          指标的爆款污染两条飞轮.
 
     Paginates explicitly. Supabase's PostgREST defaults to 1000 rows/response;
     once enough projects onboard, unsynced 爆款 will cross that boundary and
@@ -118,7 +123,7 @@ def fetch_pending_baokuan(
         .table("notes")
         .select("note_id, project_id, raw_content, hit_blue_keywords, "
                 "tier, tier_source, intent, publish_url, publish_time, "
-                "target_audience, projects(category, brand, platform)")
+                "target_audience, data_quality_flags, projects(category, brand, platform)")
         .in_("tier", ["爆", "大爆"])
         .neq("tier_source", "数值推断")
         .gte("publish_time", twelve_months_ago)
@@ -126,7 +131,15 @@ def fetch_pending_baokuan(
     )
     if project_filter:
         q = q.eq("project_id", project_filter)
-    return fetch_all_pages(q)
+    rows = fetch_all_pages(q)
+    # 排除伪爆贴 (synthetic). 在 Python 过滤而非 PostgREST: JSONB ->>'synthetic'
+    # 为 NULL (绝大多数正常行) 时, PostgREST 的 neq.true 会把 NULL 也滤掉 (NULL
+    # <> 'true' = NULL = 不通过), 反而漏掉正常行. Python 端显式判 True 最稳.
+    return [
+        r for r in rows
+        if not (isinstance(r.get("data_quality_flags"), dict)
+                and r["data_quality_flags"].get("synthetic") is True)
+    ]
 
 
 def fetch_top_comments(sb, note_id: str, limit: int = 5) -> list[dict[str, Any]]:

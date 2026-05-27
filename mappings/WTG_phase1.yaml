@@ -120,29 +120,36 @@ direction_decomposition:
   # 方向六: 不同产品线 (一次性内裤). 用 sub_directions 细分场景人群
   # (月子/差旅/经期) —— 粗人群进 target_audience, 细场景进 sub_direction.
   # sub_directions 需要 annotate_essence_pass LLM 按 detection_signal 分类.
+  # ⚠️ product_focus 必须写进【每个 sub_direction】: sync 对带 sub_directions 的
+  #    方向跳过父级字段提升, annotate_essence_pass 只拷选中 sub 上的字段, 父级
+  #    product_focus 不传播 (codex PR #19). 所以每条 sub 都重复 product_focus.
   "方向六 辐照消杀内裤":
-    product_focus: 一次性内裤
+    product_focus: 一次性内裤        # 父级仅文档说明; 实际生效靠下面每条 sub 重复
     sub_directions:
       - name: 内裤_月子人群
         detection_signal: 文案提到 月子/产后/坐月子/恶露/哺乳
         content_format: 直给推荐
         target_audience: ["宝妈"]
         user_pain_point: 月子期一次性内裤卫生需求
+        product_focus: 一次性内裤
       - name: 内裤_差旅人群
         detection_signal: 文案提到 出差/旅行/差旅/酒店/出行
         content_format: 场景植入
         target_audience: ["通用"]
         user_pain_point: 差旅一次性内裤便携需求
+        product_focus: 一次性内裤
       - name: 内裤_经期人群
         detection_signal: 文案提到 经期/姨妈/生理期/大姨妈
         content_format: 直给推荐
         target_audience: ["年轻女性"]
         user_pain_point: 经期一次性内裤需求
+        product_focus: 一次性内裤
       - name: 内裤_其他
         detection_signal: 上述都不匹配时归此 (fallback)
         content_format: 直给推荐
         target_audience: ["通用"]
         user_pain_point: 一次性内裤通用需求
+        product_focus: 一次性内裤
 
 # ════════════════════════════════════════════════════════════════════
 # tier 抽取规则 (流量状态 → tier)

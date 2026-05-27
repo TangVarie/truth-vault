@@ -349,11 +349,18 @@ def transform_row(
     if "_note_status_raw" in intermediates:
         nsr = str(intermediates["_note_status_raw"] or "")
         note.setdefault("raw_extra", {})["_note_status_raw"] = nsr
+        flags = dict(note.get("data_quality_flags") or {})
         if "关注" in nsr:
-            flags = dict(note.get("data_quality_flags") or {})
             flags["synthetic"] = True
             flags["synthetic_reason"] = "笔记状态含'关注'=人工伪爆贴; 指标不可信但有潜力信号"
-            note["data_quality_flags"] = flags
+        else:
+            # resync 时若状态从"关注"改回正常, 必须显式清除旧 synthetic 标记 ——
+            # upsert 只 SET payload 里出现的列, 不写 data_quality_flags 会让 DB
+            # 里的旧 true 残留, 行被 v_autowriter_injection_candidates 永久排除
+            # (codex PR #19 review). 显式写 false + 去掉 reason.
+            flags["synthetic"] = False
+            flags.pop("synthetic_reason", None)
+        note["data_quality_flags"] = flags
         consumed_intermediates.add("_note_status_raw")
 
     # Any intermediate that wasn't consumed above (e.g. _account_name,
