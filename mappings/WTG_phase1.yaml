@@ -231,7 +231,7 @@ project_specific_fields_to_raw_extra:
 # ════════════════════════════════════════════════════════════════════
 data_supplement_needed:
   - field: actual_audience_data
-    method: 观众分析列已有半结构化文本, 待 annotation pass 解析 (见 R-032 提案)
+    method: 观众分析列已接 sync 确定性解析 (_common.parse_audience_analysis), sync 时自动结构化进 actual_audience_data JSONB. 无需额外补录.
     estimated_rows: 268
 
 # ════════════════════════════════════════════════════════════════════
