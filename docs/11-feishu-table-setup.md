@@ -41,7 +41,7 @@ sync 脚本 (`scripts/sync_feishu_notes_to_truth_vault.py`) 是按
 | 飞书列名 | 字段类型 | mapping yaml 映射 | schema 字段 | 必填 |
 |---|---|---|---|---|
 | 文案 | 多行文本 | `文案: raw_content` | `notes.raw_content` | ✅ NOT NULL（空行会进 quarantine） |
-| 反馈链接 | URL 或文本 | `反馈链接: publish_url` | `notes.publish_url` | 强烈建议 |
+| 反馈链接 | **文本**（**别用 URL 字段**，见坑 #7） | `反馈链接: publish_url` | `notes.publish_url` | 强烈建议 |
 | 发布时间 | 日期 | `发布时间: publish_time` | `notes.publish_time` | 建议（缺则 era_tag / 时序分析无法算） |
 | 素人编号 | 文本 | `素人编号: account_id` | `notes.account_id` | 建议（缺则 accounts FK 不填） |
 | 状态 | **单选** | `状态: _status_raw` → tier_extraction | `notes.tier` | ✅ 不填则全部 tier=null |
@@ -124,10 +124,12 @@ user_pain_point 等多维度，可能还要配 LLM 子分类（见 NUC_phase1.ya
 
 ---
 
-## lineage 元数据列（autowriter "AI 写 → 人工审 → 发布"流程才需要）
+## lineage 元数据列（autowriter "AI 写 → 人工审 → 发布"流程）
 
-如果这张表会接收 autowriter 导出的内容，加这 6 列（下划线前缀，建议设隐藏字段
-防误删）。否则 `v_model_comparison` / `v_prompt_performance` 长期为空：
+> 🚫 **当前先别加这 6 列**（除非按下面的临时办法处理）。原因见下方"⚠️ 重要限制"。
+
+如果这张表会接收 autowriter 导出的内容，理论上要这 6 列让 TV 反向归因
+（否则 `v_model_comparison` / `v_prompt_performance` 长期为空）：
 
 | 飞书列名 | 字段类型 | 用途 |
 |---|---|---|
@@ -138,9 +140,37 @@ user_pain_point 等多维度，可能还要配 LLM 子分类（见 NUC_phase1.ya
 | `_ai_engine` | 文本 | 用了哪个 LLM |
 | `_exported_at` | 日期 | 导出时间 |
 
-> ⚠️ **关键**：autowriter 导出的 Excel 的 lineage 在隐藏列 G-L，**只有"整表
-> 导入"才会跟着进飞书**（飞书原生「数据导入」功能）。复制可见列粘贴 → 隐藏列
-> 丢失 → lineage 断。详见 `docs/09-system-integration.md` 的 lineage 段。
+### ⚠️ 重要限制（当前 sync 脚本未支持，照搬会搞坏 ingestion）
+
+`transform_row` (sync_feishu_notes_to_truth_vault.py:215/221) 把**任何不在
+`field_mapping` 也不在 `project_specific_fields_to_raw_extra` 的列**判为
+"未声明字段" → 整行进 `undeclared_fields_quarantine`（D-021）。当前所有
+mapping yaml + 脚本**都没声明这 6 列**，也没有把它们翻译到
+`notes.source_autowriter_item_id` / `source_autowriter_version_id` 的逻辑。
+
+**后果**：你飞书表只要加了这 6 列，**每一行**都会被 quarantine，连正常
+内容都进不了 `notes` 表 —— 不是"comparison view 为空"那么轻，是**整个
+ingestion 被它拖垮**。
+
+**两个安全选项（二选一）**：
+
+1. **暂时别加这 6 列**（推荐）。`v_model_comparison` 留空，等下面的脚本支持
+   做完再加。当前飞轮主链路（飞书 → TV → ssll/aw 注入）不依赖 lineage。
+
+2. **如果你坚持现在就加**：必须把这 6 列名**全部列进**你项目 yaml 的
+   `project_specific_fields_to_raw_extra`，这样它们落进 `notes.raw_extra`
+   JSONB 而不是触发 quarantine。但注意：这只是"不报错"，它们**不会**自动填进
+   `notes.source_autowriter_*_id` FK 列，所以 `v_model_comparison` 仍然为空 ——
+   数据存了但归因没通。
+
+**真正打通需要脚本支持**（已登记 `docs/10-sister-repo-followups.md § R-031`）：
+sync 脚本要把 `_source_autowriter_item_id` / `_source_autowriter_version_id`
+特殊处理成 `notes.source_autowriter_item_id` / `source_autowriter_version_id`
+（这俩列 schema 已有，是 UUID）。在 R-031 落地前，按选项 1 或 2 走。
+
+> ⚠️ 另一个独立的坑：autowriter 导出的 Excel 的 lineage 在隐藏列 G-L，**只有
+> "整表导入"才会跟着进飞书**。复制可见列粘贴 → 隐藏列丢失。详见
+> `docs/09-system-integration.md` lineage 段。（这个坑就算 R-031 做完也存在。）
 
 ---
 
@@ -239,6 +269,15 @@ python sync_feishu_notes_to_truth_vault.py <项目名> --dry-run --limit 5
    99% 是 Step 5 的"加协作者"或"发布版本"漏了。
 6. **列名和 yaml 对不上**：最常见。数据进 quarantine 不报错但不入 notes 表。
    永远以 `mappings/<项目>.yaml` 的 `field_mapping` 左边为准。
+7. **`反馈链接` 用 URL/超链接字段类型**：飞书 URL 字段 API 返回 `{text, link}`
+   对象，但 `_coerce_value`（sync_feishu_notes_to_truth_vault.py）只取 `text`
+   （显示文本），**不取 `link`（真实 URL）**。如果运营给链接加了显示标签，
+   `notes.publish_url` 存进去的是标签不是链接，下游审计/集成拿到的是没用的文本。
+   **对策**：`反馈链接` 用**纯文本字段**，单元格里直接粘 URL（text == 真实 URL）。
+   等脚本支持读 `link` 再改回 URL 字段。
+8. **加了 lineage 列（`_source_autowriter_*`）**：当前脚本未声明这些列 →
+   整行 quarantine，拖垮 ingestion。见上方"lineage 元数据列 · ⚠️ 重要限制"。
+   当前结论：先别加，或全列进 `project_specific_fields_to_raw_extra`。
 
 ---
 

@@ -354,16 +354,18 @@
   在 `verify_supabase_state.sql` 加新 J 节查 `r022_flywheel_audit.completed_warn`.
   SQL 模板见 `docs/10-sister-repo-followups.md § "TV 日报跨仓查 R-022 audit"`.
 
-### R-023 · 3 项目 logger 没 mask secret [audit 2026-05-22 deep-dive P1] 🟡 部分关闭 (ssll + TV ✅, aw ⏳)
+### R-023 · 3 项目 logger 没 mask secret [audit 2026-05-22 deep-dive P1] ✅ 已关闭 2026-05-22 (3 仓全)
 
 - **是什么**: API key (sk-ant-* / sb_secret_* / AIza* / JWT) 可能出现在
   logger.exception / Streamlit 错误 expander / telemetry 事件参数里.
 - **后果**: 日志被运维查看 / 上传到第三方平台 / 截图发群时, secret 外泄.
-- **缓解**: TV 仓已加 `scripts/_common.py::mask_secrets()` (7 模式).
-  sanshengliubu PR #27 加 `pipeline/logger_utils.py` (7 模式 shadow-aligned)
-  + `install_secret_masking_on_root_logger()` 启动时挂 root logger formatter.
-  autowriter 仍待实施, 完整方案见 `docs/10-sister-repo-followups.md § R-023`.
-- **Owner**: autowriter 维护者仍需做.
+- **关闭说明 (2026-05-22, 3 仓全)**:
+  - TV: `scripts/_common.py::mask_secrets()` (7 模式)
+  - ssll: PR #27 `pipeline/logger_utils.py` (7 模式 shadow-aligned) +
+    `install_secret_masking_on_root_logger()` 启动挂 root logger formatter
+  - aw: `logger_utils.mask_secrets` (7 类) 接入日志 + UI 错误展示 (autowriter
+    维护者周知完成)
+- **Owner**: 已完成.
 
 ### R-024 · autowriter worker 多次启动重叠 + stacktrace 泄漏 [audit 2026-05-22 deep-dive P1] ✅ 已关闭 2026-05-22 (重复启动已被 phase 状态机阻止 + 错误脱敏并入 R-023)
 
@@ -386,7 +388,7 @@
   防注入声明. 见 `docs/10-sister-repo-followups.md § R-025`.
 - **Owner**: autowriter 维护者. 工时 3 小时.
 
-### R-026 · 3 项目 LLM 调用 retry framework 不统一 [audit 2026-05-22 deep-dive P2] 🟡 部分关闭 (ssll Gemini + TV ✅, aw ⏳, ssll Claude → R-026.2)
+### R-026 · 3 项目 LLM 调用 retry framework 不统一 [audit 2026-05-22 deep-dive P2] ✅ 已关闭 2026-05-22 (ssll Claude 统一留 R-026.2)
 
 - **是什么**: TV `annotate_essence_pass` 有 max_attempts + backoff, sanshengliubu
   `pipeline/orchestrator.py` + autowriter `generator.py` 调 LLM **没看到 retry**.
@@ -400,10 +402,10 @@
   - ✅ ssll Gemini: PR #27 加 `pipeline/llm_retry.py` (max_attempts=3,
     max_wait=30s, `_is_transient` 覆盖 429/503/504/timeout/overloaded 等) +
     `gemini_client.call_gemini_json` 包重试
+  - ✅ autowriter: 8 处此前裸调的辅助 LLM 调用已补重试 (autowriter 维护者周知)
   - ⏳ ssll Claude 路径: 保留 BaseAgent.run() 独立 retry (4 项耦合状态机:
-    retry + budget + rate limiter + cache-fallback). 统一迁移留给 R-026.2
-    未来 PR
-  - ⏳ autowriter: 仍待实施
+    retry + budget + rate limiter + cache-fallback). 统一迁移留给 **R-026.2**
+    (触发式延后, 非 R-026 主体范围). 这是 R-026 唯一剩余尾巴, 不阻塞关闭.
 - **跨 backend 设计选择**: 详见 sanshengliubu `docs/architecture.md §1`
   对照表 + 不统一理由. 未来触发条件: 第三个非 Anthropic backend / 全局重试
   可观测 / BaseAgent.run() 改动频繁.
@@ -470,6 +472,19 @@
 - **缓解**: **不要删这些 index**. 飞轮启用 + sync 跑过几轮后重新看 advisor,
   真正一直 unused 的 (比如某个从没被查的列) 再单独评估. 现在删等于自废武功.
 - **Owner**: 无需 action. 记录在案防止有人看到 advisor 就手贱删索引.
+
+### R-031 · 飞书 lineage 列未接通 notes FK (docs/11 文档化时发现) [2026-05-22]
+
+- **是什么**: docs/11 描述 autowriter 回灌要在飞书表加 6 个 `_source_autowriter_*`
+  lineage 列, 但当前 sync 脚本未声明这些列 → 加了会 quarantine 整行; 即使列进
+  `project_specific_fields_to_raw_extra` 也只落 raw_extra, 不填
+  `notes.source_autowriter_item_id` / `source_autowriter_version_id` FK 列.
+- **后果**: 现状下 lineage 列要么搞坏 ingestion, 要么数据存了但 `v_model_comparison`
+  仍空. docs/11 已加 🚫 警告 "先别加这 6 列" + 临时办法 (列进 raw_extra allowlist).
+- **缓解**: sync 脚本 `transform_row` 加 lineage 列 → FK 列的特殊处理. 完整代码
+  + 验证见 `docs/10-sister-repo-followups.md § R-031`.
+- **Owner**: TV 维护者. 工时 2-3 小时. P3. 触发条件: 真跑 autowriter "AI 写→
+  人工审→发布→飞书回收" 完整闭环时.
 
 ---
 
