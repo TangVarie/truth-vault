@@ -190,6 +190,7 @@ truth-vault/
 
 | 文件 | 用途 |
 |---|---|
+| [docs/11-feishu-table-setup.md](docs/11-feishu-table-setup.md) ⭐ | **建飞书表入口（运营/新项目接入第一步）** · 建哪些列 + 拿 API 凭证 + 避坑 |
 | [docs/03-mapping-protocol.md](docs/03-mapping-protocol.md) | 飞书 → DB 映射协议 |
 | [docs/04-onboarding-sop.md](docs/04-onboarding-sop.md) | 新项目接入 7 步 SOP |
 | [docs/05-controlled-vocab.md](docs/05-controlled-vocab.md) | 受控词表 v0.2 (essence/audience/category) |
