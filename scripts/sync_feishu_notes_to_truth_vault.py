@@ -566,6 +566,101 @@ def upsert_metric(client: Client, metric: dict[str, Any], dry_run: bool = False)
     )
 
 
+_BATCH_CHUNK = 500
+
+
+def ensure_accounts_batch(
+    client: Client, account_platforms: dict[str, str], *,
+    dry_run: bool = False, chunk_size: int = _BATCH_CHUNK,
+) -> None:
+    """Batch version of ensure_account_exists: upsert unique accounts in chunks
+    instead of one call per note. ignore_duplicates preserves first_seen_at.
+    Falls back to per-row (ensure_account_exists) if a chunk fails."""
+    if dry_run or not account_platforms:
+        return
+    rows = [
+        {"account_id": aid, "platform": plat, "owner_type": "素人",
+         "first_seen_at": _iso_now()}
+        for aid, plat in account_platforms.items()
+    ]
+    for i in range(0, len(rows), chunk_size):
+        chunk = rows[i:i + chunk_size]
+        try:
+            (
+                client.schema("truth_vault").table("accounts")
+                .upsert(chunk, on_conflict="account_id", ignore_duplicates=True)
+                .execute()
+            )
+        except Exception as exc:
+            logger.warning("accounts batch [%d:%d] failed (%s); per-row fallback",
+                           i, i + len(chunk), exc)
+            for row in chunk:
+                try:
+                    ensure_account_exists(client, row["account_id"], platform=row["platform"])
+                except Exception:
+                    logger.exception("per-row account upsert failed: %s", row.get("account_id"))
+
+
+def upsert_notes_batch(
+    client: Client, notes: list[dict[str, Any]], *,
+    dry_run: bool = False, chunk_size: int = _BATCH_CHUNK,
+) -> int:
+    """Batch-upsert notes (one call per chunk); returns count written. On a
+    chunk failure, falls back to per-row (upsert_note) so one bad row can't
+    drop the whole chunk."""
+    if dry_run:
+        for n in notes:
+            logger.info("[dry-run] would upsert note_id=%s", n["note_id"])
+        return len(notes)
+    written = 0
+    for i in range(0, len(notes), chunk_size):
+        chunk = notes[i:i + chunk_size]
+        try:
+            (
+                client.schema("truth_vault").table("notes")
+                .upsert(chunk, on_conflict="note_id").execute()
+            )
+            written += len(chunk)
+        except Exception as exc:
+            logger.warning("notes batch [%d:%d] failed (%s); per-row fallback",
+                           i, i + len(chunk), exc)
+            for n in chunk:
+                try:
+                    upsert_note(client, n)
+                    written += 1
+                except Exception:
+                    logger.exception("per-row note upsert failed note_id=%s", n.get("note_id"))
+    return written
+
+
+def upsert_metrics_batch(
+    client: Client, metrics: list[dict[str, Any]], *,
+    dry_run: bool = False, chunk_size: int = _BATCH_CHUNK,
+) -> None:
+    """Batch-upsert metric_snapshots; per-row fallback (upsert_metric) on a
+    chunk failure."""
+    if dry_run:
+        for m in metrics:
+            logger.info("[dry-run] would upsert metric_snapshot note_id=%s window=%s",
+                        m["note_id"], m["window_label"])
+        return
+    for i in range(0, len(metrics), chunk_size):
+        chunk = metrics[i:i + chunk_size]
+        try:
+            (
+                client.schema("truth_vault").table("metric_snapshots")
+                .upsert(chunk, on_conflict="note_id,window_label,source").execute()
+            )
+        except Exception as exc:
+            logger.warning("metrics batch [%d:%d] failed (%s); per-row fallback",
+                           i, i + len(chunk), exc)
+            for m in chunk:
+                try:
+                    upsert_metric(client, m)
+                except Exception:
+                    logger.exception("per-row metric upsert failed note_id=%s", m.get("note_id"))
+
+
 # ═════════════════════════════════════════════════════════════════════════
 # Main
 # ═════════════════════════════════════════════════════════════════════════
@@ -623,6 +718,11 @@ def main() -> int:
         ensure_project_exists(sb, mapping)
 
     stats = {"total": 0, "upserted": 0, "quarantined": 0, "errors": 0}
+    # Collect transformed rows, then write in batches after the loop (one
+    # upsert per chunk instead of ~3 REST calls per record — see *_batch above).
+    pending_notes: list[dict[str, Any]] = []
+    pending_metrics: list[dict[str, Any]] = []
+    account_platforms: dict[str, str] = {}
     for item in fs.list_records(app_token, table_id, view_id):
         if args.limit and stats["total"] >= args.limit:
             break
@@ -665,22 +765,24 @@ def main() -> int:
                 stats["quarantined"] += 1
                 continue
 
-            # Ensure the account row exists before inserting the note —
-            # notes.account_id has a FK to accounts.account_id; without
-            # this upsert, the insert below would fail with FK violation
-            # for any new 素人编号 (audit issue 2).
-            if not args.dry_run:
-                ensure_account_exists(
-                    sb,
-                    note.get("account_id"),
-                    platform=note.get("platform", "xiaohongshu"),
-                )
-            upsert_note(sb, note, dry_run=args.dry_run)
-            upsert_metric(sb, metric, dry_run=args.dry_run)
-            stats["upserted"] += 1
+            # Collect for the batched write after the loop. Dedupe the account
+            # here (notes.account_id FK → accounts) so each account upserts once.
+            acct = note.get("account_id")
+            if acct:
+                account_platforms.setdefault(acct, note.get("platform", "xiaohongshu"))
+            pending_notes.append(note)
+            if metric:
+                pending_metrics.append(metric)
         except Exception as exc:
             logger.exception("record_id=%s failed: %s", feishu_record_id, exc)
             stats["errors"] += 1
+
+    # ── Batch write (FK order: project → accounts → notes → metrics) ──
+    ensure_accounts_batch(sb, account_platforms, dry_run=args.dry_run)
+    written = upsert_notes_batch(sb, pending_notes, dry_run=args.dry_run)
+    upsert_metrics_batch(sb, pending_metrics, dry_run=args.dry_run)
+    stats["upserted"] = written
+    stats["errors"] += len(pending_notes) - written
 
     # Roll up project-level date range from the freshly synced notes. The yaml
     # placeholders (auto_from_publish_time_min/max) aren't DATE-castable, so
