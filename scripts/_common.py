@@ -325,6 +325,71 @@ def parse_feishu_date(value: Any) -> Optional[str]:
     return None
 
 
+def parse_audience_analysis(value: Any) -> Optional[dict]:
+    """Parse 半结构化「观众分析」文本 → structured dict for notes.actual_audience_data.
+
+    WTG ROC素人分发表 的「观众分析」列格式 (；分段, ：分键值):
+      "性别分布：男性4%，女性96%；年龄分布：<18占2%，18-24占5%，25-34占45%；
+       城市分布：上海11%，北京5%；阅读时长：14.7秒"
+    空段 ("性别分布：" 或 "性别分布：无") 跳过. 返回只含有数据的键 + _raw 原文;
+    全空 / None / 非字符串 → None (不写 actual_audience_data).
+
+    输出形状 (供 actual_audience_data JSONB):
+      {"gender": {"男性": 4.0, "女性": 96.0},
+       "age": {"<18": 2.0, ...}, "city": {"上海": 11.0, ...},
+       "read_duration_sec": 14.7, "_raw": "原文"}
+
+    这是确定性解析 (不用 LLM). 飞书「观众分析」格式若变, 改这里的分段/键判断.
+    """
+    if not value or not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+
+    def _parse_pairs(s: str) -> dict:
+        # "男性4%，女性96%" / "<18占2%，18-24占5%" → {name: pct_float}
+        out: dict[str, float] = {}
+        for part in re.split(r"[，,]", s):
+            part = part.strip()
+            if not part or part in ("无", "-"):
+                continue
+            m = re.match(r"^(.+?)占?(\d+(?:\.\d+)?)\s*%?$", part)
+            if m:
+                try:
+                    out[m.group(1).strip()] = float(m.group(2))
+                except ValueError:
+                    pass
+        return out
+
+    result: dict[str, Any] = {}
+    for sec in re.split(r"[；;]", text):
+        parts = re.split(r"[：:]", sec.strip(), maxsplit=1)
+        if len(parts) != 2:
+            continue
+        key, val = parts[0].strip(), parts[1].strip()
+        if not val or val == "无":
+            continue
+        if key.startswith("性别"):
+            d = _parse_pairs(val)
+            if d:
+                result["gender"] = d
+        elif key.startswith("年龄"):
+            d = _parse_pairs(val)
+            if d:
+                result["age"] = d
+        elif key.startswith("城市"):
+            d = _parse_pairs(val)
+            if d:
+                result["city"] = d
+        elif key.startswith("阅读时长"):
+            mnum = re.search(r"(\d+(?:\.\d+)?)", val)
+            if mnum:
+                result["read_duration_sec"] = float(mnum.group(1))
+    if not result:
+        return None
+    result["_raw"] = text[:500]
+    return result
 
 
 def quarantine_record(

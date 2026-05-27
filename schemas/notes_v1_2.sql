@@ -994,6 +994,10 @@ WITH eligible AS (
     AND n.publish_time IS NOT NULL
     AND n.publish_time > (NOW() - INTERVAL '12 months')::TIMESTAMP
     AND p.mapping_to_autowriter_project_id IS NOT NULL
+    -- 排除伪爆贴 (WTG「笔记状态」含"关注"的人工假数据): 指标不可信,
+    -- 不能当真爆款注入飞轮污染模型. data_quality_flags.synthetic=true 由
+    -- sync 脚本检测 _note_status_raw 设置. (2026-05-22 WTG onboarding)
+    AND (n.data_quality_flags->>'synthetic') IS DISTINCT FROM 'true'
 )
 SELECT
   e.note_id, e.project_id, e.raw_content, e.hit_blue_keywords,

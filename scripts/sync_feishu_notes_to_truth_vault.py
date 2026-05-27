@@ -51,6 +51,7 @@ from _common import (
     parse_array,
     parse_numeric,
     parse_feishu_date,
+    parse_audience_analysis,
     quarantine_record,
     setup_logger,
     update_project_date_range,
@@ -331,6 +332,29 @@ def transform_row(
         elif "爆" in thresholds and n_interactions >= thresholds["爆"]:
             note["tier"] = "爆"
             note["tier_source"] = "数值推断"
+
+    # ── 观众分析 → actual_audience_data (WTG · 确定性解析, 不用 LLM) ──
+    # 飞书「观众分析」列映射成 _audience_raw 时, 解析半结构化文本
+    # ("性别分布：男4%女96%；年龄分布：...；阅读时长：12.5秒") 进 JSONB.
+    if "_audience_raw" in intermediates:
+        parsed_audience = parse_audience_analysis(intermediates["_audience_raw"])
+        if parsed_audience:
+            note["actual_audience_data"] = parsed_audience
+            note["audience_actual_synced_at"] = _iso_now()
+        consumed_intermediates.add("_audience_raw")
+
+    # ── 伪爆贴标记 (WTG · 「笔记状态」含"关注" = 人工伪造的假数据) ──
+    # 这种数据指标做不得真, 但代表运营认为这篇有潜力. 标 data_quality_flags
+    # 让下游 (v_autowriter_injection_candidates) 排除, 防假爆款污染飞轮.
+    if "_note_status_raw" in intermediates:
+        nsr = str(intermediates["_note_status_raw"] or "")
+        note.setdefault("raw_extra", {})["_note_status_raw"] = nsr
+        if "关注" in nsr:
+            flags = dict(note.get("data_quality_flags") or {})
+            flags["synthetic"] = True
+            flags["synthetic_reason"] = "笔记状态含'关注'=人工伪爆贴; 指标不可信但有潜力信号"
+            note["data_quality_flags"] = flags
+        consumed_intermediates.add("_note_status_raw")
 
     # Any intermediate that wasn't consumed above (e.g. _account_name,
     # _account_followers, _comment_text, _comment_text_persona) goes to

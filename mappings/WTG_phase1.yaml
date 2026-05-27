@@ -17,8 +17,8 @@ version: 1.0
 
 # ── 项目元数据 ──
 project_id: WTG_phase1
-brand: waytogo              # [待确认] 中文品牌名? 数据里只出现 "waytogo"
-product: 一次性洗护用品       # [待确认] 准确品类: 洗脸巾/浴巾/手帕为主, 方向六涉及一次性内裤
+brand: waytogo              # 品牌名就用 waytogo (确认)
+product: 一次性洗护用品       # 洗脸巾/浴巾/手帕 + 一次性内裤 (确认)
 category: 个护               # 受控词表合法值 (洗护属个护)
 platform: xiaohongshu
 schema_family: A            # 有 巡查状态/最近检查时间/主页链接/数据回收情况 → A 家族
@@ -64,6 +64,13 @@ field_mapping:
   # ── 数据健康度 (A 家族) ──
   数据回收情况: data_quality_status # → notes.data_quality_status
 
+  # ── 观众分析 → 确定性解析进 actual_audience_data (sync 脚本 parse_audience_analysis) ──
+  观众分析: _audience_raw           # → notes.actual_audience_data (JSONB)
+
+  # ── 笔记状态 → 检测伪爆贴 ("关注" = 人工假数据) ──
+  # 不是 tier 源 (tier 看 流量状态); 这里只为提取 synthetic flag.
+  笔记状态: _note_status_raw        # → 含"关注"则 data_quality_flags.synthetic=true
+
 # ════════════════════════════════════════════════════════════════════
 # intent 映射
 # ════════════════════════════════════════════════════════════════════
@@ -100,21 +107,42 @@ direction_decomposition:
     target_audience: ["通用"]       # [待确认]
     user_pain_point: null           # [待确认]
 
-  "方向四 贴全面时代":
-    content_format: 场景植入        # [待确认] 方向名不直观, 需策略解释含义
-    target_audience: ["通用"]       # [待确认]
-    user_pain_point: null           # [待确认]
+  "方向四 贴全面时代":              # 确认: 全棉时代是竞品, 这是"贴着竞品"做对比内容
+    content_format: 横评对比        # 竞品对比 (全棉时代 vs waytogo)
+    target_audience: ["通用"]       # [待细化] 看竞品对比打的人群
+    user_pain_point: 全棉时代平替/对比
 
   "方向五 破圈万用型":
-    content_format: 场景植入        # [待确认] "破圈万用" 可能多场景植入
-    target_audience: ["通用"]       # [待确认]
+    content_format: 场景植入        # [待确认] "破圈万用" 多场景植入
+    target_audience: ["通用"]       # [待细化]
     user_pain_point: null           # [待确认]
 
-  "方向六 辐照消杀内裤":            # 注意: 不同产品线 (一次性内裤, 非洗脸巾)
-    content_format: 直给推荐        # [待确认]
-    target_audience: ["年轻女性"]   # [待确认] 一次性内裤主力人群?
-    user_pain_point: 出行/经期一次性内裤需求   # [待确认]
-    product_focus: 一次性内裤        # 项目专属
+  # 方向六: 不同产品线 (一次性内裤). 用 sub_directions 细分场景人群
+  # (月子/差旅/经期) —— 粗人群进 target_audience, 细场景进 sub_direction.
+  # sub_directions 需要 annotate_essence_pass LLM 按 detection_signal 分类.
+  "方向六 辐照消杀内裤":
+    product_focus: 一次性内裤
+    sub_directions:
+      - name: 内裤_月子人群
+        detection_signal: 文案提到 月子/产后/坐月子/恶露/哺乳
+        content_format: 直给推荐
+        target_audience: ["宝妈"]
+        user_pain_point: 月子期一次性内裤卫生需求
+      - name: 内裤_差旅人群
+        detection_signal: 文案提到 出差/旅行/差旅/酒店/出行
+        content_format: 场景植入
+        target_audience: ["通用"]
+        user_pain_point: 差旅一次性内裤便携需求
+      - name: 内裤_经期人群
+        detection_signal: 文案提到 经期/姨妈/生理期/大姨妈
+        content_format: 直给推荐
+        target_audience: ["年轻女性"]
+        user_pain_point: 经期一次性内裤需求
+      - name: 内裤_其他
+        detection_signal: 上述都不匹配时归此 (fallback)
+        content_format: 直给推荐
+        target_audience: ["通用"]
+        user_pain_point: 一次性内裤通用需求
 
 # ════════════════════════════════════════════════════════════════════
 # tier 抽取规则 (流量状态 → tier)
@@ -178,7 +206,7 @@ project_specific_fields_to_raw_extra:
   - 合作码                # 合作码 (业务追踪)
   - 是否发起口碑通         # 口碑通投放标记
   - 笔记截图              # 图片 URL/附件
-  - 笔记状态              # 发布工作流状态 (已发布/第二期), 区别于 tier 源的 流量状态
+  # 笔记状态 已移到 field_mapping (→ _note_status_raw, 提取 synthetic flag)
   - 内容配图
   - 评论配图
   - 评论状态              # 显示评论/暂未显示
@@ -192,8 +220,7 @@ project_specific_fields_to_raw_extra:
   - 主页链接              # A 家族账号主页 (未来可扩到 accounts 表)
   - 发布状态
   - 数据整理
-  - 观众分析              # ⭐ "性别分布:男4%女96%;年龄分布:...;阅读时长:12.5秒"
-                          #    268 行有值. 高价值. 见下方 R-032 提案: 解析进 actual_audience_data
+  # 观众分析 已移到 field_mapping (→ _audience_raw → actual_audience_data)
   - 曝光副本              # 曝光量的 int 副本 (部分行)
   - 阅读副本
   - 互动副本
@@ -212,10 +239,12 @@ data_supplement_needed:
 # ════════════════════════════════════════════════════════════════════
 sync_config:
   source_type: feishu_api
-  feishu_app_token: null            # [待填] WTG 飞书表 URL 里 base/ 后那串 bascnXXX
-  feishu_table_id: null             # [待填] table= 后那串 tblXXX
-  feishu_view_id: null              # [待填/可选] 默认全表视图 vewXXX (别填带过滤的)
+  feishu_app_token: A2sybSE0pa5kcnsukAMcJ9TDngb   # WTG 表标识 (非密钥)
+  feishu_table_id: tbliiz1N4m9bCRx2               # WTG 表标识 (非密钥)
+  feishu_view_id: null              # 留空 = 读全表 (机器人已授权, 不需要 view)
   sync_interval: on_demand
+  # ⚠️ App ID / App Secret 不在这里 — 走 env / GitHub Secrets:
+  #    FEISHU_APP_ID, FEISHU_APP_SECRET (密钥绝不进 git)
 
 # ════════════════════════════════════════════════════════════════════
 onboarding_meta:
