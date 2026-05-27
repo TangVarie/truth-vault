@@ -1586,14 +1586,14 @@ WHERE sl.stage_name = 'r022_flywheel_audit'
 |----|------|-------|------|------|
 | R-019 | sanshengliubu 单/多租户决策 | ssll | ✅ 完成 | ssll PR #27, Option A 单租户声明 (README + schema.sql + sidebar banner) |
 | R-022 | sanshengliubu vibe_rewriter 注入 DB 样本 | ssll | ✅ 完成 | ssll PR #27 + #28 都已合 (prompt + retrieve + orchestrator + 运行时 audit + stage_logs 持久化 + per-platform 配额防误报 + unicode 修复). 4 道关卡全部在 main. **生产验证**: 等下次 ssll vibe_loop 真跑后查 `public.stage_logs.r022_flywheel_audit` 应该有行 (跨仓 SQL 模板见下方"TV 日报跨仓查 R-022 audit"). |
-| R-023 | logger secret masking | 3 仓 | ✅ ssll/TV / ⏳ aw | TV: `scripts/_common.py::mask_secrets`. ssll: PR #27 `pipeline/logger_utils.py` (7 模式 shadow-aligned). aw 仍待实施. |
-| R-026 | LLM retry framework | 3 仓 | ✅ ssll/TV / ⏳ aw | TV: `annotate_essence_pass.call_claude`. ssll: PR #27 `pipeline/llm_retry.py` (Gemini), Claude 路径保留独立 retry (R-026.2 未来再统一). aw 仍待实施. |
-| R-017 | AutoWriter requirements 上限 + lockfile | aw | ⏳ 待执行 | 30 分钟, 见本文 § R-017 |
-| R-018 | daemon thread → jobs+worker | 2 仓 | ⏳ Sprint 2+ | 触发条件: 浏览器关闭丢任务变成日常痛点 (ssll) / Streamlit 重启卡 batch (aw). 1-2 周/仓. |
-| R-020 | 拆 db.py/memory.py/app.py | aw | ⏳ Sprint 2+ | 每文件 1-2 天. 触发条件: 单文件改 bug 时反复撞 git conflict / 难定位 |
-| R-024 | autowriter worker 防重启 + 错误展示 | aw | ⏳ 待执行 | 2 小时. 见本文 § R-024 |
-| R-025 | autowriter prompt sanitize | aw | ⏳ 待执行 | 3 小时. 见本文 § R-025 |
+| R-023 | logger secret masking | 3 仓 | ✅ 完成 (3 仓全) | TV: `scripts/_common.py::mask_secrets`. ssll: PR #27 `pipeline/logger_utils.py` (7 模式). aw: ✅ `logger_utils.mask_secrets` (7 类) 接入日志 + UI 错误展示. |
+| R-026 | LLM retry framework | 3 仓 | ✅ 完成 (ssll Claude → R-026.2) | TV: `annotate_essence_pass.call_claude`. ssll: PR #27 Gemini retry. aw: ✅ 8 处此前裸调辅助 LLM 补重试. ssll Claude 路径统一留 R-026.2. |
+| R-017 | AutoWriter requirements 上限 + lockfile | aw | ✅ 完成 | aw: 9 个依赖锁到下一个 major + requirements.lock + CI 烟雾测试. |
+| R-018 | daemon thread → jobs+worker | 2 仓 | 🟡 aw Phase 1 已合 (休眠) / Phase 2 + ssll 延后 | aw PR #37 (jobs 表 + claim_one_job RPC + worker.py 地基) + #38 (并发 CAS 修复). **生产已建 jobs 表 + RPC, 但 worker 没跑, UI 仍走原线程, 零影响**. Phase 2 (worker 部署 + UI 灰度) 触发式延后. ssll 侧未启. |
+| R-020 | 拆 db.py/memory.py/app.py | aw | ⏳ 触发式延后 | aw db.py 3253 / memory.py 2232 / app.py 5276 行. 纯重构无功能价值, 触发条件: 真在这些文件频繁撞 git conflict 时再做. |
+| R-024 | autowriter worker 防重启 + 错误展示 | aw | ✅ 完成 | aw 核查确认"重复启动 worker"已被现有 phase 状态机阻止; 错误展示脱敏并入 R-023. |
+| R-025 | autowriter prompt sanitize | aw | ✅ 完成 | aw: 用户输入截断 + `[USER_INPUT]` 围栏 + system prompt 注入防御. |
 | R-026.2 | sanshengliubu BaseAgent.run() retry 迁到 llm_retry.py | ssll | ⏳ 未来 PR | 1-2 天. 触发条件 (sanshengliubu `docs/architecture.md` §1 末尾): 出现第三个非 Anthropic backend / 全局重试可观测 / BaseAgent.run() 改动频繁. |
-| R-027 | autowriter schema 漂移告警 | aw | ⏳ 待执行 | 1 小时. 见本文 § R-027 |
+| R-027 | autowriter schema 漂移告警 | aw | ✅ 完成 | aw: `update_project` 列漂移从静默改为 UI 显式告警. |
 | R-028 | sanshengliubu stage-level resume | ssll | ⏳ P3 backlog | 1-2 天 + schema 改动. 触发条件 (sanshengliubu `docs/architecture.md`): matrix > 30 cells 时 resume 成本显著. |
-| R-029 | autowriter RLS auth.uid() 每行重算 | aw | 🟡 TV 即时修已应用 / aw 源码待改 | Supabase 上 2 个 policy 已包成 `(select auth.uid())` (advisor WARN 已消), 但 autowriter db.py 源码要同步改防 regress. 见本文 § R-029. 30 分钟. |
+| R-029 | autowriter RLS auth.uid() 每行重算 | aw | ✅ 完成 | TV 即时修 (2 policy) 已应用 + aw 源码同步 (全 10 表 11 处 RLS policy 包 `(select auth.uid())` + 8 个 FK 覆盖索引). advisor auth_rls_initplan + unindexed_fk(autowriter) 均清零. |

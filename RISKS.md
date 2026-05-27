@@ -36,7 +36,7 @@
   生产 dry-run 前先在 staging 上对账一次 ssll 真实 schema。
 - **Owner**: 工程师 (CI 守住 drift) + Ziao (协调 ssll 改 schema 时的通知)
 
-### R-002 · autowriter schema 迁移需要停机窗口
+### R-002 · autowriter schema 迁移需要停机窗口 ✅ 已关闭 2026-05-22
 
 - **是什么**: 场景 A 部署 (autowriter 当前在独立 Supabase + public schema) 要
   把 5 张表迁到共享 Supabase 的 autowriter schema，期间 autowriter UI 不能写入
@@ -50,6 +50,10 @@
   3. 按 RUNBOOK 跑 pg_dump → restore，再切 config.py 的 SUPABASE_URL
   4. 切完先 read-only 验证 30 分钟再放开写入
 - **Owner**: Ziao + autowriter 维护者 (协调窗口)
+- **关闭说明 (2026-05-22)**: autowriter 数据已迁到共享 Supabase
+  (`kduysqedrclrfevrxiie`) 的 autowriter schema, 验证 40 projects / 3671 items
+  / 4425 versions 完整. autowriter 维护者周知迁移完成 (走 007 fresh-install +
+  migrate_autowriter_across_supabase.py 路径, 见 MIGRATION_PLAN.md Step 4 ✅).
 
 ### R-003 · service_role key 泄露
 
@@ -115,7 +119,7 @@
 - **缓解**: D-034 已落档为 Phase 2，等 autowriter 加 `evaluations` 表
 - **Owner**: cross-team (autowriter 维护者 + 工程师)
 
-### R-008 · autowriter Memory Manager UI 没有负例 review tab
+### R-008 · autowriter Memory Manager UI 没有负例 review tab ✅ 已关闭 2026-05-22
 
 - **是什么**: `extract_negative_examples_from_autowriter.py` 写 `example_label_proposal`
   列，但 autowriter UI 没有页面让用户 review
@@ -125,6 +129,9 @@
   review (`SELECT id, ... FROM autowriter.items WHERE example_label_proposal IS NOT NULL`)
   + 写一次性 UPDATE 升级。长期还是要前端
 - **Owner**: 前端 (待补)
+- **关闭说明 (2026-05-22)**: autowriter 维护者周知 Memory Manager 负例审核
+  tab 已在代码完成 (autowriter 仓前端). 负例候选 (example_label_proposal)
+  现在能在 UI review → 确认后落 example_label='negative'.
 
 ### R-009 · NRT_2 / NRT_3 category (处方药 vs OTC) 未拍板
 
@@ -191,7 +198,7 @@
   cron 的 refresh job（适合按小时刷新即可的看板）。
 - **Owner**：DB / 数据负责人
 
-### R-017 · AutoWriter requirements.txt 无上限, 长期会漂移 [audit 2026-05-22 P2-7]
+### R-017 · AutoWriter requirements.txt 无上限, 长期会漂移 [audit 2026-05-22 P2-7] ✅ 已关闭 2026-05-22 (aw: 9 依赖锁上限 + requirements.lock + CI 烟雾)
 
 - **是什么**: AutoWriter 仓 `requirements.txt` 只用 `>=` 没有上限 (`streamlit>=1.30.0`,
   `anthropic>=0.40.0`, `google-genai>=0.5.0`, `supabase>=2.0.0`). 也没有
@@ -217,7 +224,7 @@
   **详细操作步骤 + CI workflow 模板**: `docs/10-sister-repo-followups.md § R-017`
 - **Owner**: AutoWriter 维护者
 
-### R-018 · 业务项目用 daemon thread 处理后台任务, 重启即丢 [audit 2026-05-22 P2-8]
+### R-018 · 业务项目用 daemon thread 处理后台任务, 重启即丢 [audit 2026-05-22 P2-8] 🟡 aw Phase 1 已合 (休眠) / Phase 2 + ssll 延后
 
 - **是什么**: AutoWriter `app.py` 的 `_queue_worker` / `_quick_gen_worker` 和
   sanshengliubu `pipeline/orchestrator.py` 的 `_thread_target` 都用
@@ -236,6 +243,19 @@
   - 关键: 用 PG `SELECT ... FOR UPDATE SKIP LOCKED` (封装为 `claim_one_job()`
     RPC) 保证多 worker 副本并发不抢同一行; heartbeat thread 独立于 handler
     线程, 长 LLM call 不阻塞心跳.
+- **进度 (2026-05-22)**:
+  - ✅ **aw Phase 1 已合** (PR #37 地基 + #38 并发 CAS 修复). 生产
+    (`kduysqedrclrfevrxiie`) 已建 `autowriter.jobs` 表 + `claim_one_job` RPC,
+    领取机制 (含并发 CAS) 端到端实测过, 测试数据已清. **代码休眠**: 没 worker
+    在跑, UI 仍走原线程, 对线上零影响.
+    - TV 核查: `autowriter.claim_one_job` EXECUTE 仅 postgres + service_role
+      (PUBLIC/anon/authenticated 已 revoke, 沿用 008 的 P1 加固) ✅
+    - 注: 生产 RPC 是 SECURITY INVOKER (TV 008 源是 DEFINER) — 因只 service_role
+      可调 + service_role bypassrls, 功能等价且更最小权限, 非安全洞.
+  - ⏳ **aw Phase 2 延后**: worker 部署 + UI 灰度切换 + 常驻 worker. 触发条件:
+    频繁重部署 / 多用户 / 高频高量 / 关浏览器挂着生成. 地基已就绪随时可接.
+  - ⏳ **ssll 侧未启**: 见 sanshengliubu `docs/architecture.md` backlog (触发
+    条件: 浏览器关闭丢任务变成日常痛点).
 - **Owner**: AutoWriter 维护者 + sanshengliubu 维护者
 
 ### R-019 · sanshengliubu fresh schema 关 RLS — 单租户假设没写明 [audit 2026-05-22 P2-6] ✅ 已关闭 2026-05-22
@@ -345,7 +365,7 @@
   autowriter 仍待实施, 完整方案见 `docs/10-sister-repo-followups.md § R-023`.
 - **Owner**: autowriter 维护者仍需做.
 
-### R-024 · autowriter worker 多次启动重叠 + stacktrace 泄漏 [audit 2026-05-22 deep-dive P1]
+### R-024 · autowriter worker 多次启动重叠 + stacktrace 泄漏 [audit 2026-05-22 deep-dive P1] ✅ 已关闭 2026-05-22 (重复启动已被 phase 状态机阻止 + 错误脱敏并入 R-023)
 
 - **是什么**: autowriter `app.py:3004` 的 daemon worker 没有"单例校验",
   用户快速点击多次启动按钮会启动重叠 worker 抢同一 batch; `app.py:2332`
@@ -355,7 +375,7 @@
   `docs/10-sister-repo-followups.md § R-024`.
 - **Owner**: autowriter 维护者. 工时 2 小时.
 
-### R-025 · autowriter prompt 用户输入直拼, 无 token 上限 [audit 2026-05-22 deep-dive P2]
+### R-025 · autowriter prompt 用户输入直拼, 无 token 上限 [audit 2026-05-22 deep-dive P2] ✅ 已关闭 2026-05-22 (aw: 输入截断 + [USER_INPUT] 围栏 + 注入防御)
 
 - **是什么**: `generator.py:61-118` 把用户表单输入 (tactic / target_audience /
   extra_instructions) 直接拼进 system prompt, 无 escape 无字符上限.
@@ -403,7 +423,7 @@
   - `BaseAgent.run()` 自身改动频繁, 维护重试逻辑成本超过迁移成本
 - **Owner**: sanshengliubu 维护者. 工时 1-2 天 + e2e 测试.
 
-### R-027 · autowriter update_project 列漂移静默 strip [audit 2026-05-22 deep-dive P3]
+### R-027 · autowriter update_project 列漂移静默 strip [audit 2026-05-22 deep-dive P3] ✅ 已关闭 2026-05-22 (aw: 改为 UI 显式告警)
 
 - **是什么**: autowriter `db.py:477-505` 撞到"列不存在"会剥掉那列再 retry, 只埋
   telemetry, **用户在 UI 设了值但 DB 没生效, 无明显错误提示**.
@@ -420,7 +440,7 @@
   见 `docs/10-sister-repo-followups.md § R-028`.
 - **Owner**: sanshengliubu 维护者. 工时 1-2 天.
 
-### R-029 · autowriter RLS policy auth.uid() 每行重算 [Supabase advisor 2026-05-22 auth_rls_initplan] 🟡 TV 即时修已应用 / aw 源码待改
+### R-029 · autowriter RLS policy auth.uid() 每行重算 [Supabase advisor 2026-05-22 auth_rls_initplan] ✅ 已关闭 2026-05-22 (TV 即时修 + aw 源码同步)
 
 - **是什么**: Supabase perf advisor 报 `autowriter.generation_sessions`
   (`generation_sessions_owner`) 和 `autowriter.session_messages`
@@ -431,14 +451,14 @@
 - **已做 (TV 侧即时修复)**: 2026-05-22 用 Supabase MCP apply_migration 把两个
   policy 就地改成 `(select auth.uid())`, advisor 2 个 auth_rls_initplan WARN
   已消失. 零行为改变.
-- **⏳ 待 autowriter 维护者**: Supabase 上改了但 autowriter db.py 源码没改的话,
-  下次 autowriter 重跑 schema bootstrap 会覆盖回 `auth.uid()`, 警告复现. 需要
-  在 db.py CREATE_TABLES_SQL 源码把这两个 (+ 检查其它表) policy 改成
-  `(select auth.uid())`. 完整 SQL 见 `docs/10-sister-repo-followups.md § R-029`.
-- **顺带 (INFO 级)**: 同次 advisor 报 autowriter 8 个 unindexed_foreign_keys
-  (batch_metrics/batches/items/memories×2/session_messages×2/versions). 当前
-  数据量不急, autowriter 维护者评估后决定是否加覆盖索引.
-- **Owner**: autowriter 维护者. 工时 30 分钟. 优先级 P3.
+- **✅ aw 源码已同步 (2026-05-22)**: autowriter 维护者把全 10 表 11 处 RLS
+  policy 的 `auth.uid()` 都包成 `(select auth.uid())` 写进源码, 重跑 bootstrap
+  不会再 regress. TV 复查生产: `generation_sessions` / `session_messages` 两个
+  policy 确认是 `(select auth.uid())`, advisor auth_rls_initplan 清零.
+- **✅ 顺带 unindexed_fk 也修了**: autowriter 维护者建了 8 个 FK 覆盖索引,
+  advisor unindexed_foreign_keys 对 autowriter 表清零 (TV 复查: autowriter
+  schema FK 覆盖索引 11 个).
+- **Owner**: autowriter 维护者 (已完成).
 
 ### R-030 · TV 一堆 unused_index advisor (INFO) — 预期, 不处理 [Supabase advisor 2026-05-22]
 
