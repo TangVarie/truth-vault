@@ -217,6 +217,7 @@ jobs:
                 f"baokuan={r['total_baokuan']:>3} | "
                 f"→ssll {r['synced_to_ssll']:>3}/{r['pending_ssll_sync']:>3} | "
                 f"→aw {r['synced_to_aw']:>3}/{r['pending_aw_sync']:>3} | "
+                f"ref={r['total_reference']:>3}(→ssll {r['synced_reference_to_ssll']}/{r['pending_reference_ssll']}, →aw {r['synced_reference_to_aw']}/{r['pending_reference_aw']}) | "
                 f"last_ssll={r['last_baokuan_sync_to_ssll_at']} "
                 f"last_aw={r['last_baokuan_sync_to_aw_at']}"
               )
