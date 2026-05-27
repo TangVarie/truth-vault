@@ -325,6 +325,82 @@ def parse_feishu_date(value: Any) -> Optional[str]:
     return None
 
 
+def parse_audience_analysis(value: Any) -> Optional[dict]:
+    """Parse 半结构化「观众分析」文本 → notes.actual_audience_data (文档约定形状).
+
+    WTG ROC素人分发表 的「观众分析」列格式 (；分段, ：分键值):
+      "性别分布：男性4%，女性96%；年龄分布：<18占2%，18-24占5%，25-34占45%；
+       城市分布：上海11%，北京5%；阅读时长：14.7秒"
+
+    输出对齐 docs/07-audience-data.md 约定 (消费方 prompts/audience_inferrer.md
+    直接 actual['gender_distribution']['female'] / actual['age_distribution']):
+      - top-level 键: gender_distribution / age_distribution / city_distribution
+      - 百分比【归一化成分数】(96% → 0.96), 不是原始 96.0 (否则下游 ×100 错)
+      - 性别键映射英文 female / male (消费方按英文键直接索引)
+      - 年龄/城市保留源 bucket 标签 (WTG 分桶 != 蒲公英标准桶, 消费方只 iterate
+        items() 取 majority, 标签不影响)
+      - read_duration_sec 是秒数, 不归一化
+    空段 ("性别分布：" / "性别分布：无") 跳过. 全空 / None / 非字符串 → None.
+    """
+    if not value or not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+
+    _GENDER_KEY = {"男性": "male", "男": "male", "女性": "female", "女": "female"}
+
+    def _pairs(s: str) -> dict:
+        # "男性4%，女性96%" / "<18占2%，18-24占5%" → {name: pct_float}
+        out: dict[str, float] = {}
+        for part in re.split(r"[，,]", s):
+            part = part.strip()
+            if not part or part in ("无", "-"):
+                continue
+            m = re.match(r"^(.+?)占?(\d+(?:\.\d+)?)\s*%?$", part)
+            if m:
+                try:
+                    out[m.group(1).strip()] = float(m.group(2))
+                except ValueError:
+                    pass
+        return out
+
+    def _as_fraction(d: dict, key_map: Optional[dict] = None) -> dict:
+        # 百分比 → 分数 (96 → 0.96); 可选键名映射 (性别 → 英文 female/male)
+        return {
+            (key_map.get(k, k) if key_map else k): round(v / 100.0, 4)
+            for k, v in d.items()
+        }
+
+    result: dict[str, Any] = {}
+    for sec in re.split(r"[；;]", text):
+        parts = re.split(r"[：:]", sec.strip(), maxsplit=1)
+        if len(parts) != 2:
+            continue
+        key, val = parts[0].strip(), parts[1].strip()
+        if not val or val == "无":
+            continue
+        if key.startswith("性别"):
+            raw = _pairs(val)
+            if raw:
+                result["gender_distribution"] = _as_fraction(raw, _GENDER_KEY)
+        elif key.startswith("年龄"):
+            raw = _pairs(val)
+            if raw:
+                result["age_distribution"] = _as_fraction(raw)
+        elif key.startswith("城市"):
+            raw = _pairs(val)
+            if raw:
+                result["city_distribution"] = _as_fraction(raw)
+        elif key.startswith("阅读时长"):
+            mnum = re.search(r"(\d+(?:\.\d+)?)", val)
+            if mnum:
+                result["read_duration_sec"] = float(mnum.group(1))
+    if not result:
+        return None
+    result["data_source"] = "feishu_观众分析"
+    result["_raw"] = text[:500]
+    return result
 
 
 def quarantine_record(

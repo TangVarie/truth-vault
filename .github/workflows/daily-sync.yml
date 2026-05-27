@@ -30,6 +30,10 @@ name: Daily TV sync
 on:
   workflow_dispatch:
     inputs:
+      project:
+        description: "只跑某个项目 (如 WTG_phase1). 留空 = 跑 mappings/ 下全部项目"
+        type: string
+        default: ""
       dry_run:
         description: "Dry run (no writes to Supabase)"
         type: boolean
@@ -53,6 +57,8 @@ jobs:
       AUTOWRITER_SYNC_USER_ID: ${{ secrets.AUTOWRITER_SYNC_USER_ID }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       ESSENCE_MODEL: ${{ secrets.ESSENCE_MODEL }}
+      # 只跑某项目 (workflow_dispatch 的 project 输入); 空 = 全部. cron 触发时为空.
+      PROJECT_FILTER: ${{ github.event.inputs.project }}
       # 2026-05-22 audit P1-2 配套: per-project 配额 + 可选全局 round-robin 上限.
       # `|| 'default'`: secret 未配时 GH Actions 把变量设为空字符串 (不是 unset),
       # 直接传给 Python int() 会 ValueError. 显式 fallback 到默认值 (5 / 0).
@@ -93,6 +99,7 @@ jobs:
           for f in ../mappings/*.yaml; do
             p=$(basename "$f" .yaml)
             [ "$p" = "_template" ] && continue
+            [ -n "$PROJECT_FILTER" ] && [ "$p" != "$PROJECT_FILTER" ] && continue
             echo "─── feishu → TV · project=$p ───"
             python sync_feishu_notes_to_truth_vault.py "$p" $DRYRUN || {
               echo "::error::feishu sync failed for $p"
@@ -116,6 +123,7 @@ jobs:
           for f in ../mappings/*.yaml; do
             p=$(basename "$f" .yaml)
             [ "$p" = "_template" ] && continue
+            [ -n "$PROJECT_FILTER" ] && [ "$p" != "$PROJECT_FILTER" ] && continue
             echo "─── comments parse · project=$p ───"
             python sync_comments_from_raw_extra.py "$p" $DRYRUN || {
               echo "::error::comments parse failed for $p"
@@ -139,6 +147,7 @@ jobs:
           for f in ../mappings/*.yaml; do
             p=$(basename "$f" .yaml)
             [ "$p" = "_template" ] && continue
+            [ -n "$PROJECT_FILTER" ] && [ "$p" != "$PROJECT_FILTER" ] && continue
             echo "─── essence annotate · project=$p ───"
             # --limit 50 per run as a soft budget cap;
             # NUC pilot estimate ≈ ¥200-400 for full 1102 rows.
