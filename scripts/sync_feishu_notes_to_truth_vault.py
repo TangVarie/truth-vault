@@ -55,6 +55,7 @@ from _common import (
     quarantine_record,
     setup_logger,
     update_project_date_range,
+    _direction_key,
     _iso_now,
 )
 
@@ -199,28 +200,6 @@ class FeishuClient:
 # ═════════════════════════════════════════════════════════════════════════
 # Mapping-driven row transformation
 # ═════════════════════════════════════════════════════════════════════════
-
-def _direction_key(value: Any) -> str:
-    """Flatten a Feishu 方向 cell to a hashable string for the
-    direction_decomposition / excluded_directions key lookups.
-
-    Feishu returns this column as a str, a rich-text segment list
-    ([{'text': ...}]), or a multi-select list of strings. Using the raw list
-    as a dict key raises `TypeError: unhashable type: 'list'`. A genuinely
-    multi-valued cell flattens to a joined string that won't match a
-    single-direction yaml key, so the deterministic lift is simply skipped
-    (raw value stays in raw_extra for a later annotation pass).
-    """
-    if isinstance(value, str):
-        return value
-    if isinstance(value, dict):
-        return str(value.get("text", "")).strip()
-    if isinstance(value, list):
-        if value and all(isinstance(x, dict) for x in value):
-            return "".join(str(x.get("text", "")) for x in value).strip()
-        return ", ".join(str(x).strip() for x in value if str(x).strip())
-    return "" if value is None else str(value)
-
 
 def transform_row(
     mapping: dict,

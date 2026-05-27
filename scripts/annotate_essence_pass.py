@@ -54,6 +54,7 @@ from _common import (
     get_supabase_client,
     load_mapping,
     setup_logger,
+    _direction_key,
     _iso_now,
 )
 
@@ -266,13 +267,16 @@ def get_sub_directions_for_note(mapping: dict, note: dict
     raw_dir = (note.get("raw_extra") or {}).get("_direction_raw")
     if not raw_dir:
         return None
-    decomp = (mapping.get("direction_decomposition") or {}).get(raw_dir)
+    # raw_extra stores the original Feishu cell, which may be a list
+    # (multi-select / rich-text); normalize to the same hashable key sync uses.
+    dir_key = _direction_key(raw_dir)
+    decomp = (mapping.get("direction_decomposition") or {}).get(dir_key)
     if decomp is None:
         return None
     sub_dirs = decomp.get("sub_directions")
     if not sub_dirs:
         return None
-    return raw_dir, sub_dirs
+    return dir_key, sub_dirs
 
 
 def build_sub_direction_prompt(direction: str, sub_dirs: list[dict],

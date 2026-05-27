@@ -264,6 +264,36 @@ def parse_array(value: Any) -> Optional[list]:
     return [str(value)]
 
 
+def _direction_key(value: Any) -> str:
+    """Flatten a Feishu 方向 cell to a hashable string key for the
+    direction_decomposition / excluded_directions lookups.
+
+    Feishu returns this column as a str, or a list whose elements are plain
+    strings (multi-select) or {'text': ...} dicts (rich-text / option cells).
+    Using the raw list as a dict key raises `TypeError: unhashable type:
+    'list'`. We join multi-value lists with ", " to match the mapping yaml's
+    multi-direction keys (e.g. excluded_directions "女性自发, 男性自发"), the
+    same per-element convention parse_array() uses. A single-value cell yields
+    just that value, so single-direction configs still match.
+
+    Used at BOTH sync time (transform_row) and annotation time
+    (annotate_essence_pass.get_sub_directions_for_note) — keep them consistent
+    by sharing this one helper, or a list-valued direction just moves the
+    crash from one pass to the next.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return str(value.get("text", "")).strip()
+    if isinstance(value, list):
+        parts = [
+            str(x.get("text", "")).strip() if isinstance(x, dict) else str(x).strip()
+            for x in value
+        ]
+        return ", ".join(p for p in parts if p)
+    return "" if value is None else str(value)
+
+
 def parse_numeric(value: Any) -> Optional[float]:
     """Robustly convert a Feishu cell value to a number, or None if it's
     one of the conventional 'no data' tokens.
