@@ -175,11 +175,15 @@ def load_mapping(project_id: str) -> dict:
 # Tier / intent / direction rule engines
 # ─────────────────────────────────────────────────────────────────────────
 
-def extract_tier(raw_status: Optional[str], rules: list[dict]) -> Optional[str]:
-    """Apply tier_extraction.rules from mapping yaml to a raw 状态 string."""
+def extract_tier(raw_status: Any, rules: list[dict]) -> Optional[str]:
+    """Apply tier_extraction.rules from mapping yaml to a raw 状态 value."""
     if raw_status is None:
         return _default_tier(rules)
-    text = str(raw_status)
+    # 飞书「状态」/「流量状态」列可能是多选 list 或 {'text': ...} 单元格, 不是纯
+    # 字符串. 用 _direction_key 展平成 "值1, 值2" 再做 match_contains, 而不是
+    # str(['风控中']) → "['风控中']" 那种靠 Python repr 巧合命中 (元素顺序或特殊
+    # 字符一变就漏判). 与 transform_row 处理「方向」列共用同一展平逻辑保持一致.
+    text = _direction_key(raw_status)
     for rule in rules:
         if "match_contains" in rule:
             for needle in rule["match_contains"]:
@@ -279,7 +283,9 @@ def _direction_key(value: Any) -> str:
     Used at BOTH sync time (transform_row) and annotation time
     (annotate_essence_pass.get_sub_directions_for_note) — keep them consistent
     by sharing this one helper, or a list-valued direction just moves the
-    crash from one pass to the next.
+    crash from one pass to the next. Also reused by extract_tier() to flatten a
+    list/dict 状态 cell before substring matching (same generic Feishu-cell →
+    string logic; the name says 方向 for historical reasons).
     """
     if isinstance(value, str):
         return value

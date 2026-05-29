@@ -1013,6 +1013,44 @@ jobs:
         run: psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_2.sql
       - name: Apply truth_vault schema again (idempotency)
         run: psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_2.sql
+      - name: Apply v1.3 reference tier migration (+ idempotency)
+        # notes_v1_3 must apply on top of v1_2: widens tier CHECK to add '参考'
+        # and CREATE OR REPLACE-s the injection / flywheel views. DROP CONSTRAINT
+        # IF EXISTS + CREATE OR REPLACE → a second apply must be a clean no-op.
+        run: |
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_3_reference_tier.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_3_reference_tier.sql
+      - name: Apply tier discrepancy view (+ idempotency)
+        run: |
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_2_tier_discrepancy_view.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_2_tier_discrepancy_view.sql
+      - name: Sanity-check v1.3 (参考 tier accepted + reference cols + discrepancy view)
+        run: |
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          -- '参考' must be a legal tier now; pre-1.3 CHECK would reject this insert.
+          INSERT INTO truth_vault.projects (project_id, brand, product, category)
+          VALUES ('CI_REF', 'b', 'p', '保健品');
+          INSERT INTO truth_vault.notes (note_id, project_id, raw_content, tier)
+          VALUES ('CI_REF_r1', 'CI_REF', 'content', '参考');
+          DO $$
+          BEGIN
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                             WHERE table_schema='truth_vault'
+                               AND table_name='v_flywheel_sync_status'
+                               AND column_name='total_reference') THEN
+                  RAISE EXCEPTION 'v_flywheel_sync_status missing total_reference (1.3 not applied?)';
+              END IF;
+              IF NOT EXISTS (SELECT 1 FROM information_schema.views
+                             WHERE table_schema='truth_vault'
+                               AND table_name='v_tier_discrepancy') THEN
+                  RAISE EXCEPTION 'v_tier_discrepancy view missing';
+              END IF;
+              RAISE NOTICE 'v1.3 reference tier + discrepancy view OK';
+          END $$;
+          -- clean up so later steps' row counts aren't polluted
+          DELETE FROM truth_vault.notes    WHERE note_id='CI_REF_r1';
+          DELETE FROM truth_vault.projects WHERE project_id='CI_REF';
+          SQL
       - name: Sanity-check triggers + CHECK constraints
         run: |
           psql -v ON_ERROR_STOP=1 <<'SQL'

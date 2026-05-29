@@ -604,15 +604,20 @@ def ensure_accounts_batch(
 def upsert_notes_batch(
     client: Client, notes: list[dict[str, Any]], *,
     dry_run: bool = False, chunk_size: int = _BATCH_CHUNK,
-) -> int:
-    """Batch-upsert notes (one call per chunk); returns count written. On a
-    chunk failure, falls back to per-row (upsert_note) so one bad row can't
-    drop the whole chunk."""
+) -> set[str]:
+    """Batch-upsert notes (one call per chunk); returns the SET of note_ids
+    successfully written. On a chunk failure, falls back to per-row
+    (upsert_note) so one bad row can't drop the whole chunk.
+
+    Returning the written ids (not just a count) lets the caller skip metric
+    rows whose note failed to land. Otherwise an orphan metric hits the
+    metric_snapshots.note_id FK, fails the whole metrics chunk, degrades it to
+    a per-row retry, and every orphan re-fails — pure log noise + slowdown."""
     if dry_run:
         for n in notes:
             logger.info("[dry-run] would upsert note_id=%s", n["note_id"])
-        return len(notes)
-    written = 0
+        return {n["note_id"] for n in notes}
+    written: set[str] = set()
     for i in range(0, len(notes), chunk_size):
         chunk = notes[i:i + chunk_size]
         try:
@@ -620,14 +625,14 @@ def upsert_notes_batch(
                 client.schema("truth_vault").table("notes")
                 .upsert(chunk, on_conflict="note_id").execute()
             )
-            written += len(chunk)
+            written.update(n["note_id"] for n in chunk)
         except Exception as exc:
             logger.warning("notes batch [%d:%d] failed (%s); per-row fallback",
                            i, i + len(chunk), exc)
             for n in chunk:
                 try:
                     upsert_note(client, n)
-                    written += 1
+                    written.add(n["note_id"])
                 except Exception:
                     logger.exception("per-row note upsert failed note_id=%s", n.get("note_id"))
     return written
@@ -635,10 +640,23 @@ def upsert_notes_batch(
 
 def upsert_metrics_batch(
     client: Client, metrics: list[dict[str, Any]], *,
+    written_note_ids: set[str] | None = None,
     dry_run: bool = False, chunk_size: int = _BATCH_CHUNK,
 ) -> None:
     """Batch-upsert metric_snapshots; per-row fallback (upsert_metric) on a
-    chunk failure."""
+    chunk failure.
+
+    If `written_note_ids` is given, drop any metric whose note_id isn't in it —
+    that note failed to upsert, so its metric would violate the
+    metric_snapshots.note_id FK and sink the whole chunk into a per-row retry."""
+    if written_note_ids is not None:
+        orphaned = [m for m in metrics if m["note_id"] not in written_note_ids]
+        if orphaned:
+            logger.warning(
+                "skipping %d metric(s) whose note failed to upsert (FK safety): %s",
+                len(orphaned), [m["note_id"] for m in orphaned[:10]],
+            )
+        metrics = [m for m in metrics if m["note_id"] in written_note_ids]
     if dry_run:
         for m in metrics:
             logger.info("[dry-run] would upsert metric_snapshot note_id=%s window=%s",
@@ -779,10 +797,15 @@ def main() -> int:
 
     # ── Batch write (FK order: project → accounts → notes → metrics) ──
     ensure_accounts_batch(sb, account_platforms, dry_run=args.dry_run)
-    written = upsert_notes_batch(sb, pending_notes, dry_run=args.dry_run)
-    upsert_metrics_batch(sb, pending_metrics, dry_run=args.dry_run)
-    stats["upserted"] = written
-    stats["errors"] += len(pending_notes) - written
+    written_ids = upsert_notes_batch(sb, pending_notes, dry_run=args.dry_run)
+    # Only write metrics for notes that actually landed — a metric whose note
+    # failed to upsert would violate the metric_snapshots.note_id FK (see
+    # upsert_metrics_batch). In dry-run written_ids holds all ids, so nothing
+    # is filtered.
+    upsert_metrics_batch(sb, pending_metrics, written_note_ids=written_ids,
+                         dry_run=args.dry_run)
+    stats["upserted"] = len(written_ids)
+    stats["errors"] += len(pending_notes) - len(written_ids)
 
     # Roll up project-level date range from the freshly synced notes. The yaml
     # placeholders (auto_from_publish_time_min/max) aren't DATE-castable, so

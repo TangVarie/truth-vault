@@ -995,18 +995,36 @@ backlog, 等 AutoWriter 加第三个 engine (e.g., DeepSeek) 时一起做.
 
 ---
 
-## R-022 · sanshengliubu vibe_rewriter 必须从 DB 注入 reference_samples (P0 飞轮闭环)
+## R-022 · sanshengliubu vibe_rewriter 从 DB 注入 reference_samples (✅ 已解决)
 
-### 为什么这条最紧急
+> ✅ **已解决** (sanshengliubu PR #27 + #28, 2026-05-22 合并; 2026-05-29 对照
+> sanshengliubu 实际代码复核确认)。与本文件末尾总览表 R-022 行一致。下面
+> "当时为什么最紧急 / 验证步骤" 是 2026-05-22 audit 时的问题陈述, **按现在的
+> 代码已不成立**, 保留作考古; 当前实现见下方"✅ 现状"。
+
+### ✅ 现状 (2026-05-29 复核, 注入链路完整无断点)
+
+- `pipeline/orchestrator._run_vibe_loop()` 用 `retrieve_reference_packs()` 从
+  `public.reference_samples` 查出 packs, 写进 `rewriter_input["reference_packs_by_platform"]`
+  (critic 也一并注入)。
+- `BaseAgent.run()` 把整个 input dict `json.dumps` 成 user message 发给 LLM
+  (`pipeline/agents/__init__.py`), DB 样本随之进 prompt —— 不靠 `{占位符}` 字符串
+  替换, 而是放进 JSON 输入体, 效果等价。
+- `vibe_rewriter.md` 把 DB 样本列为 🥇 PRIMARY, 原硬编码样本降级为 🥈 FALLBACK
+  (仅 DB 为空时用), 并写明"有 DB 内容时禁止主锚点用 FALLBACK 否则飞轮失效"。
+- 额外加了运行时 audit: `r022_flywheel_audit` 写 `public.stage_logs`, 供 TV 日报
+  跨仓监控飞轮是否真在用 DB 样本 (SQL 模板见本文件"TV 日报跨仓查 R-022 audit")。
+
+### 当时为什么这条最紧急 (历史 · 已不成立)
 
 audit 发现 (2026-05-22): sanshengliubu 的 `pipeline/prompts/vibe_rewriter.md` 用
-**硬编码的 6 条假人例子**做"真人参照"。`pipeline/retrieve_samples.py` 虽然能
+**硬编码的假人例子**做"真人参照"。`pipeline/retrieve_samples.py` 虽然能
 从 DB 查到 TV-synced 的爆款样本, 但**这些样本根本没被注入到 prompt**.
 
 后果: TV 飞轮跑半年, `public.reference_samples` 存了 1 万条爆款, sanshengliubu
-生成出来的内容质量没提升, 因为 LLM 看到的还是 6 条硬编码假数据.
+生成出来的内容质量没提升, 因为 LLM 看到的还是硬编码假数据.
 
-这是**整个飞轮架构最大的漏洞** — 数据通了, 但价值没回流.
+这是**当时整个飞轮架构最大的漏洞** — 数据通了, 但价值没回流.
 
 ### 验证步骤 (5 分钟自查)
 
@@ -1017,7 +1035,8 @@ audit 发现 (2026-05-22): sanshengliubu 的 `pipeline/prompts/vibe_rewriter.md`
 3. 打开 `pipeline/orchestrator.py` 的 vibe_rewriter 调用点. 确认 prompt 构造
    时只读了硬编码 .md 文件, 没把 retrieve_samples 的结果拼进去.
 
-如果三条都成立, R-022 是真实 bug, 必须 P0 修.
+(历史) 当时三条都成立即确认 R-022 为真实 bug。→ 现已由 sanshengliubu PR #27 + #28
+修复, 见上方"✅ 现状"; 此自查步骤仅留作背景参考。
 
 ### 怎么修
 

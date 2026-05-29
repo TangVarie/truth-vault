@@ -2,7 +2,8 @@
 extract_negative_examples_from_autowriter.py
 ═══════════════════════════════════════════════════════════════════════════
 
-一次性脚本: 扫 autowriter 历史数据，识别 negative example 候选，
+幂等可重跑脚本 (daily cron 反复跑安全; 已处理过的 item 由 fetch_already_reviewed
+跳过): 扫 autowriter 历史数据，识别 negative example 候选，
 写入 autowriter.items.example_label_proposal（NOT 直接 example_label）。
 用户在 Memory Manager UI 审核后才落 example_label='negative'。
 

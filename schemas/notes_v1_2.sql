@@ -1084,6 +1084,13 @@ ALTER TABLE truth_vault.audit_log                    ENABLE ROW LEVEL SECURITY;
 -- 部署步骤（D-029 顺序）：
 -- 1. 执行本文件（notes_v1_2.sql）—— 创建 truth_vault schema + 所有表 + 内部 views
 --    + GRANT to service_role + ENABLE RLS
+-- 1b. 执行 notes_v1_3_reference_tier.sql（必须在 1 之后）—— 把 notes.tier CHECK
+--     从 8 值扩成 9 值（加「参考」）+ 用 CREATE OR REPLACE 升级
+--     v_autowriter_injection_candidates / v_flywheel_sync_status 两个 view。
+--     ⚠ 漏跑后果: 飞书写「参考」被旧 CHECK 拒 (SQLSTATE 23514, 整批退化逐行),
+--     且 daily-sync 飞轮状态步骤读不到 total_reference 等列。CI sql 任务已纳入此步。
+-- 1c. 执行 notes_v1_2_tier_discrepancy_view.sql（在 1 之后；只依赖 notes/projects,
+--     与 1b 无先后）—— 建 v_tier_discrepancy 标注质量复核 gate。
 -- 2. sanshengliubu 在 public schema 部署（已有，不动）
 -- 3. autowriter 迁移到 autowriter schema（避免 public.projects 冲突）
 -- 4. 三个 schema 就绪后，执行 notes_v1_2_cross_schema_views.sql
