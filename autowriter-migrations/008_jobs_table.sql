@@ -183,7 +183,11 @@ BEGIN
     WHERE id = claimed_id
     RETURNING *;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+   -- advisor 0011 (function_search_path_mutable): SECURITY DEFINER 函数固定
+   -- search_path 防 search_path 注入. 体内对象全部 schema 限定 (autowriter.jobs)
+   -- 或属 pg_catalog (now()), 空 search_path 不影响解析.
+   SET search_path = '';
 
 COMMENT ON FUNCTION autowriter.claim_one_job(TEXT, TEXT[]) IS
 'Atomically claim one pending job from the queue. SKIP LOCKED so concurrent '

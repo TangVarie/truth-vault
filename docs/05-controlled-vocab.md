@@ -319,7 +319,7 @@ inferred_audience_profile:
 
 ---
 
-## 10. `tier` · 内容表现等级（8 个值）
+## 10. `tier` · 内容表现等级（9 个值）
 
 笔记最终表现的人工标注 label。
 
@@ -329,14 +329,20 @@ inferred_audience_profile:
 | `预备` | 有爆款潜质但还在观察 | 状态字段"爆贴预备" |
 | `爆` | 已经爆了，互动显著超过项目均值 | 状态字段"爆贴" / 备注"新爆" / 数值高 |
 | `大爆` | 超级爆款，互动是中位数的 50-100 倍 | 状态字段"大爆" |
+| `参考` | 够不上爆款，但运营认为值得后续参考；进飞轮两条通道但低权重 (+0.15)，**不计入爆款统计** | 状态字段"参考"（2026-05-27 新增，见 schemas/notes_v1_3_reference_tier.sql） |
 | `风控` | 被平台限流或风控 | 状态字段"风控中" |
 | `删除` | 已被删除（人工或平台） | 备注"删0" / "他自己删了" |
 | `未知` | 还在观察 / 数据不足 | 状态字段"评估中" / 完全无数据 |
 | `数据异常` | D-013 sanity check 发现数据自相矛盾 | 自动标注（如 tier_source 与数值严重不符）|
 
+> SQL CHECK 真相源: `schemas/notes_v1_2.sql` 建 8 值, `notes_v1_3_reference_tier.sql`
+> ALTER 成上述 9 值。代码侧 `_common.extract_tier` 不硬校验 tier 集合（按 yaml
+> rules 透传），所以本表是人读真相源 —— 改词表时务必同步 SQL CHECK 与各 mapping yaml。
+
 **训练时使用建议**:
-- 二分类（爆 vs 不爆）：`爆 + 大爆` → 正样本；`趴` → 负样本；`预备 / 风控 / 删除 / 未知` → 不用
+- 二分类（爆 vs 不爆）：`爆 + 大爆` → 正样本；`趴` → 负样本；`预备 / 参考 / 风控 / 删除 / 未知` → 不用
 - 多分类：`趴 / 爆 / 大爆`三分类，其他状态不用
+- 注意 `参考` 是**飞轮注入信号**（低权重调用 ssll/autowriter），不是 ground-truth tier，不进训练正负样本集
 
 ---
 
@@ -407,7 +413,7 @@ SHORT_TERM_DEPS = {
 - intent (5 个值)
 - content_format (8 个值)
 - emotional_valence / emotional_intensity (定义微调)
-- tier (8 个值)
+- tier (9 个值)
 
 ---
 

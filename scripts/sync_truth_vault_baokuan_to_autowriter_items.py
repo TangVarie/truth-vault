@@ -510,7 +510,9 @@ def _ensure_version_and_link(
 
     # 2026-05-22 audit P2 race window 收窄: 上面 SELECT 后到这里 INSERT 之间,
     # 另一个 worker 可能已经创建了 version. 重查一次, 已经有就直接用别人那条
-    # (不再 INSERT, 避免造成 (item_id, version_num=1) 重复或孤儿 version).
+    # (不再 INSERT, 避免给同一 item 重复插 version 行 / 留下孤儿 version).
+    # 注: autowriter.versions 对 (item_id, version_num) 没有唯一约束, 所以这里靠
+    # 应用层重查防重复, 不是靠 DB 唯一键 (早期注释误称撞唯一键, 已更正).
     recheck = (
         sb.schema("autowriter")
         .table("versions")
