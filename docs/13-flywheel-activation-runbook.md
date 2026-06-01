@@ -35,7 +35,7 @@
 脚本 `scripts/sync_truth_vault_baokuan_to_sanshengliubu.py`，filter：
 - `tier ∈ ('爆','大爆','参考')`
 - `tier_source != '数值推断'`（只认人工确认的 tier）
-- `data_quality_flags.synthetic != true`（排除伪爆贴）
+- `data_quality_flags.synthetic`（伪爆贴分级）：`爆/大爆` 排除，`参考` 放行（纯人工判断，与指标真假无关）
 - **不需要** `mapping_to_sanshengliubu_project_id`：按 `projects.category` + `platform`
   写入，ssll 用 category/platform 检索。映射列仅作溯源，可不配。
 - ⚠ 前提：`projects.category` / `platform` 要对（`ensure_project_exists` 从 yaml 填，

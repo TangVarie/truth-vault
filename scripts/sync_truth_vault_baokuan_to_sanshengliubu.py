@@ -107,11 +107,11 @@ def fetch_pending_baokuan(
       - publish_time within 12 months                     不持续推过气审美进 ssll
                                                           的 reference_samples
       - synced_to_ssll_at IS NULL                         未同步
-      - data_quality_flags.synthetic != true              排除伪爆贴 (WTG「笔记状态」
+      - data_quality_flags.synthetic (分级处理)              排除伪爆贴 (WTG「笔记状态」
                                                           含"关注"的人工假数据). 和通道 2
                                                           v_autowriter_injection_candidates
-                                                          的 synthetic 排除对齐, 防假
-                                                          指标的爆款污染两条飞轮.
+                                                          的 synthetic 排除"曾"全量对齐; 2026-06-01 起通道1细化为只挡
+                                                          指标撑的 爆/大爆; 参考 放行 (纯人工判断·与指标真假无关). 详见下方 fetch 过滤注释.
 
     Paginates explicitly. Supabase's PostgREST defaults to 1000 rows/response;
     once enough projects onboard, unsynced 爆款 will cross that boundary and
@@ -136,13 +136,22 @@ def fetch_pending_baokuan(
     if project_filter:
         q = q.eq("project_id", project_filter)
     rows = fetch_all_pages(q)
-    # 排除伪爆贴 (synthetic). 在 Python 过滤而非 PostgREST: JSONB ->>'synthetic'
-    # 为 NULL (绝大多数正常行) 时, PostgREST 的 neq.true 会把 NULL 也滤掉 (NULL
-    # <> 'true' = NULL = 不通过), 反而漏掉正常行. Python 端显式判 True 最稳.
+    # 伪爆贴 (synthetic = 人工刷的假指标, 如 WTG「笔记状态」含"关注") 分级处理
+    # (2026-06-01 运营决定):
+    #   - 指标型 tier (爆/大爆): 排除. 它们的"爆"是假数据撑的, 不可信.
+    #   - 参考: 放行. "参考"是运营纯人工判断("这条内容值得参考"), 与指标真假无关;
+    #     synthetic_reason 本身就写"指标不可信但有潜力信号", 标参考正是认领这潜力.
+    #     参考本就低权重 (quality_score=0), 且 reference_samples 喂的是内容不是指标,
+    #     假数据不外泄. 通道 2 只取爆/大爆, 不受此影响.
+    # 仍在 Python 过滤而非 PostgREST: JSONB ->>'synthetic' 为 NULL (绝大多数正常行)
+    # 时 neq.true 会把 NULL 也滤掉 (NULL<>'true'=NULL=不通过), Python 端显式判最稳.
+    def _is_synthetic(r: dict[str, Any]) -> bool:
+        f = r.get("data_quality_flags")
+        return isinstance(f, dict) and f.get("synthetic") is True
+
     return [
         r for r in rows
-        if not (isinstance(r.get("data_quality_flags"), dict)
-                and r["data_quality_flags"].get("synthetic") is True)
+        if not (_is_synthetic(r) and r.get("tier") in ("爆", "大爆"))
     ]
 
 
@@ -232,6 +241,13 @@ def build_reference_sample(note: dict, comments: list[dict]) -> dict:
         "_truth_vault_source_url": note.get("publish_url"),
         "_truth_vault_target_audience": note.get("target_audience"),
         "_truth_vault_hit_blue_keywords": note.get("hit_blue_keywords") or [],
+        # synthetic=true 但能到这里 = 运营标了"参考"(内容潜力背书), 其互动指标却是
+        # 人工刷的、不可信. 标出来让下游别把这条的"数据"当真. (爆/大爆 的 synthetic
+        # 已在 fetch_pending_baokuan 端拦掉, 能到这里的 synthetic 只会是 参考.)
+        "_truth_vault_synthetic": bool(
+            isinstance(note.get("data_quality_flags"), dict)
+            and note["data_quality_flags"].get("synthetic") is True
+        ),
     }
 
     raw_content = note.get("raw_content") or ""
