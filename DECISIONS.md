@@ -1172,6 +1172,8 @@ WHERE NOT EXISTS (
 - D-024 的**通道2 部分作废**（push 管子待 pull 上线后退役）；通道1 不受影响。D-024 已加 superseded-in-part 标记。
 - `scripts/sync_truth_vault_baokuan_to_autowriter_items.py` 进入退役倒计时（pull 上线前保留，因为 0 注入、留着无害）；`v_autowriter_injection_candidates` 的排序 / 多样性逻辑搬进策展库 + 馆员。
 - autowriter 侧需改生成流程（调馆员 + 注入），跟踪见 [docs/10 R-032](docs/10-sister-repo-followups.md#r-032)。
+- **馆员 = 独立共享服务（FastAPI on Railway），aw + ssll 共用**（Edge Function 排除：Deno 重写 + ~2min 执行上限顶不住）。brief 以项目 `system_prompt` 为主体 + 请求 delta；结果走内容寻址缓存（库版本自动失效）省 LLM。详见 docs/14 §4.2 / §6。
+- ssll 从现有 category-filter `retrieve_reference_packs` 切到馆员（可选升级）：跟踪 [R-033](docs/10-sister-repo-followups.md#r-033)。
 - 不触碰：owner 原生 `example_label`、negative 反向通道（[D-027](#d-027)）、通道1。
 - `docs/13` 通道2 步骤（配 aw 映射 + 跑 push sync）加 deprecation 横幅。
 
