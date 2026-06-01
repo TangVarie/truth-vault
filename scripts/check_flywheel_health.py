@@ -64,12 +64,15 @@ def check_1_reference_samples(sb) -> dict:
         sb.schema("public").table("reference_samples")
         .select("*", count="exact").limit(1).execute()
     ).count or 0
-    tv_rows = (
+    # 分页拉全 (review #27 r3332926868): TV 样本超 PostgREST 1000 行上限时,
+    # 单次 .execute() 只回第一页 → tv_origin 少算, 且 Check 4 只检视第一页,
+    # 后面缺 platform/category 的样本会被误报健康. 用 fetch_all_pages 跟
+    # check_2 / check_3 的 stage_logs 拉取保持一致.
+    tv_rows = fetch_all_pages(
         sb.schema("public").table("reference_samples")
         .select("source_truth_vault_note_id, platform, category, quality_score")
         .not_.is_("source_truth_vault_note_id", None)
-        .execute()
-    ).data or []
+    )
     return {"total": total, "tv_origin": len(tv_rows), "tv_rows": tv_rows}
 
 
