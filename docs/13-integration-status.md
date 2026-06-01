@@ -21,7 +21,7 @@ truth_vault.notes  (+ metric_snapshots / comments / undeclared_quarantine)
 ```
 
 - **tier 来源**: 飞书「流量状态」→ `tier_extraction` 规则 → `notes.tier`(大爆/爆/参考/预备/趴/风控/未知/数据异常)。
-- **进飞轮的**: `tier ∈ (爆, 大爆, 参考)`,且排除 `tier_source=数值推断`(机器猜的)与 `synthetic=true`(伪爆/关注)。
+- **进飞轮的**: `tier ∈ (爆, 大爆, 参考)`,排除 `tier_source=数值推断`(机器猜的);`synthetic=true`(伪爆/关注)只挡 `爆/大爆`,`参考` 放行(纯人工判断·与指标真假无关)。
 - **爆款统计**(`total_baokuan`)只算 爆/大爆;**「参考」单独计数**,不污染爆款标准。这是监控/业务信号,不驱动自动逻辑。
 
 ---

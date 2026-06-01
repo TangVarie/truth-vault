@@ -35,7 +35,7 @@
 脚本 `scripts/sync_truth_vault_baokuan_to_sanshengliubu.py`，filter：
 - `tier ∈ ('爆','大爆','参考')`
 - `tier_source != '数值推断'`（只认人工确认的 tier）
-- `data_quality_flags.synthetic != true`（排除伪爆贴）
+- `data_quality_flags.synthetic`（伪爆贴分级）：`爆/大爆` 排除，`参考` 放行（纯人工判断，与指标真假无关）
 - **不需要** `mapping_to_sanshengliubu_project_id`：按 `projects.category` + `platform`
   写入，ssll 用 category/platform 检索。映射列仅作溯源，可不配。
 - ⚠ 前提：`projects.category` / `platform` 要对（`ensure_project_exists` 从 yaml 填，
@@ -71,9 +71,9 @@ python sync_feishu_notes_to_truth_vault.py WTG_phase1            # 或加 --dry-
 
 这样 tier 来自状态字段（`tier_source=状态字段`），是人工确认的，能进两条通道。
 
-### 路径 B（一次性）· 把已有数值推断爆款转人工确认
-如果某条 `数值推断` 的爆款，运营复核后确实算数，直接把 `tier_source` 提成 `人工补录`
-（脚本注释里就是这么约定的）。先用质量复核 view 找候选：
+### 路径 B（一次性，⚠️ 不持久，见下方警告）· 把已有数值推断爆款转人工确认
+如果某条 `数值推断` 的爆款，运营复核后确实算数，可把 `tier_source` 提成 `人工补录`
+（`人工补录` 是 schema 合法 tier_source、权重 0.2）。先用质量复核 view 找候选：
 
 ```sql
 -- 哪些笔记的人工标 tier 与互动量推断矛盾，或哪条数值推断爆款值得转人工
@@ -85,6 +85,14 @@ UPDATE truth_vault.notes
 SET tier = '爆', tier_source = '人工补录'
 WHERE note_id = 'WTG_phase1_recvjACT8ep3bt';   -- 换成实际 note_id
 ```
+
+> ⚠️ **路径 B 不持久**：这条 `UPDATE` 只改了 DB 当前行；**下次该项目飞书回灌
+> （`sync_feishu_notes_to_truth_vault.py`）会按源头重算并覆盖 `tier_source`**，把它打回
+> `数值推断`，笔记又被挡在闸外。2026-06-01 实测：手改 `人工补录` → ssll dry-run 能进 →
+> 真跑时 ingest 先跑、把它冲回 `数值推断` → ssll `Found 0`，什么都没同步。
+> 故路径 B 仅在「改完后不再回灌、或紧接着单独跑 ssll/aw sync」时有效；**要持久就走路径 A
+> 在飞书源头标 tier**（`tier_source=状态字段`，回灌也不变）。当前 ingest 不把 `人工补录`
+> 当 sticky override（要让路径 B 真正可靠，需给 ingest 加"保留人工 override"逻辑，尚未实现）。
 
 > 不要无脑把所有数值推断爆款转人工——那等于绕过"人工确认"这道闸。只转复核过的。
 
