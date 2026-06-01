@@ -114,3 +114,45 @@ attribute 'encode'`**。显式 `.schema("truth_vault")` 也盖不住。
   如预期变红; 再用正确 key 确认它放行; 然后才合并。** 不要未测就合。
 - 把 `preflight` 也加进末尾 `Fail job on any sync failure` 聚合 step 的判断里
   (`if [ "${{ steps.preflight.outcome }}" = "failure" ]`...), 保持失败消息一致。
+
+---
+
+## 7. 飞轮健康自查 (R-022 / 通道1 下游验证)
+
+> 跟上面的"sync 失败排查"用途不同: 这节是 **sync 都绿了之后, 验证飞轮在 ssll 侧
+> 真闭环** —— ① TV 把爆款上架到 `public.reference_samples`(写入), ② ssll 写稿时
+> 真检索并用了它们(消费)。R-022 修的就是后半段(ssll 之前用硬编码假样本, 见 docs/10 R-022)。
+
+一键跑(只读, 不写库):
+
+```bash
+cd scripts
+python check_flywheel_health.py                # 人读报告
+python check_flywheel_health.py --json          # 机器可读(给 cron / 监控)
+python check_flywheel_health.py --days 14        # 放宽 Check 2 审计窗口
+```
+
+脚本跑四个检查:
+
+| 检查 | 看什么 | ✅ 通过 | ⚠️ / ℹ️ |
+|---|---|---|---|
+| 1 · TV→ssll 上架 | `reference_samples` 里 TV 来源样本数 | tv_origin > 0 且随飞书标 tier 增长 | =0 → 提示:还没爆/大爆/参考同步到 ssll(**不算失败**) |
+| 2 · ssll 真用了吗 | `stage_logs.r022_flywheel_audit` 的 `db_hit_rate` | 有行且 hit_rate ≥ 0.3 | 0 行 → 提示:ssll 还没跑过 vibe_loop,去触发一次再来;hit_rate < 0.3 → 告警 |
+| 3 · 飞轮告警 | 近 24h `status='completed_warn'` | 0 条 | >0 → 告警(查 missing_tag / excess_static_use) |
+| 4 · 样本检索得到吗 | TV 来源样本的 platform/category | 都非空 | 有空 → 告警(ssll 退化成 platform-only 检索, 见 docs/13) |
+
+退出码: `0` = 健康 / 仅提示; `1` = 有可处理问题。**"0 审计行" 是提示不是失败** —— 它只
+说明 ssll 还没产出过内容、无从验证它真用了样本;触发一次 ssll vibe_loop 后再跑本脚本。
+
+**关键认知**: Check 1(上架)和 Check 2(消费)是两件事。R-022 的代码已复核正确
+(ssll PR #27+#28, docs/10), 但 **"它真用了" 要靠 Check 2 的审计行证明**, 而审计行只在
+ssll 真写过稿后才有。所以新部署的正常节奏: 标爆款 → Check 1 看上架 → 触发 ssll 写一次
+→ Check 2/3 看命中率和告警 → Check 4 排查"为什么没命中"。
+
+原始 SQL(不想跑脚本时手查)+ 字段定义(`db_sourced` / `static_sourced` / `total_vibe_cells`)
+见 [docs/10 "TV 日报跨仓查 R-022 audit"](10-sister-repo-followups.md)。建议把本脚本接进
+`daily-sync.yml`(sync 步骤之后), 让飞轮健康每天自动可见。
+
+> **2026-06-01 现场快照**: Check 1 = 1(参考笔记 `WTG_phase1_recvk9VPCTNG1b` 已上架,
+> 写入路径实锤); Check 2 = 0 审计行(ssll 还没跑过 vibe_loop, 消费侧待验)。即"货上架了、
+> 还没人来借过"。
