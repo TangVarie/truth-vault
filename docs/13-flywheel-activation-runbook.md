@@ -101,6 +101,9 @@ WHERE note_id = 'WTG_phase1_recvjACT8ep3bt';   -- 换成实际 note_id
 ## 3. Step 2 · 配跨系统映射
 
 ### 通道 2（autowriter）必配
+
+> ⚠️ **2026-06-01 起，通道 2 正在改为 pull / 图书馆 + LLM 馆员模型**（[D-038](../DECISIONS.md#d-038) / [docs/14](14-channel2-pull-librarian.md)）。下面这套"配 `mapping_to_autowriter_project_id` + 跑 push sync"是**旧 push 路径**：pull 上线前保留（留着无害，目前 0 注入），但**不必再为通道 2 新配 aw 映射 / 纠结一对多路由**。**通道 1（ssll）不受影响，照常走。** pull 上线后本小节退役。
+
 `mapping_to_autowriter_project_id` 要指向一个**真实存在、owner_id 非空**的 autowriter 项目。
 先在 autowriter 找到目标项目 id：
 

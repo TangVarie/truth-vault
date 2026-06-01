@@ -313,6 +313,8 @@ def sync_baokuan_to_sanshengliubu():
 
 ## 通道 2 · Truth Vault → autowriter.items (example_label='positive')
 
+> ⚠️ **本通道的 push 模型已被 [D-038](../DECISIONS.md#d-038) / [docs/14](14-channel2-pull-librarian.md) 取代为 pull / 图书馆 + LLM 馆员**（2026-06-01）。根因：autowriter 正例机制是 recency-push、不做检索，逼出"一条爆款先钦定进哪个项目"的一对多路由复杂度。下方 push 描述保留作背景与决策档案，pull 上线后退役。**通道 1（ssll）不变。**
+
 ### 关键洞察
 
 autowriter 的 `items.example_label='positive'` 已经有完整的注入机制：
