@@ -119,7 +119,7 @@ rank_score          ← 吸收 D-036：tier 权重 + recency + account_bao_rate
   ```
   全是 aw / ssll 生成时**现成就有的**，不用新收集。
 - **输出**: `[{source_note_id, why_relevant(点评), borrow_what(借哪个部位), excerpt}]` × 3-5
-- **缓存（必须，省 LLM 成本）**: 内容寻址缓存，一张 Supabase 表 `truth_vault.flywheel_librarian_cache`：
+- **缓存（必须，省 LLM 成本）** — ✅ 表已建：`schemas/notes_v1_5_librarian_cache.sql`。内容寻址缓存，一张 Supabase 表 `truth_vault.flywheel_librarian_cache`：
   - `cache_key = hash(consumer + project_id + brief_digest + library_version)`
   - 命中 → 直接返回上次精选，**跳过 LLM**；未命中 → 跑馆员 → 写回。
   - **自动失效**：`library_version` = 经验卡 `max(updated_at)` / 计数器；新爆款入库 → 版本变 → 旧 key 不命中 → 重算。brief 改 → `brief_digest` 变 → 重算。
