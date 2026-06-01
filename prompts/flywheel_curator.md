@@ -1,6 +1,7 @@
 # prompts/flywheel_curator.md · 飞轮经验卡策展 prompt (v1)
 
-**用途**: 把已验证的真实爆款(爆/大爆/参考)提炼成"经验卡"——供 pull 模型的 LLM 馆员
+**用途**: 把运营确认【值得借鉴】的真实笔记(爆/大爆 = 验证过的爆款; 参考 = 值得学的好内容;
+**均排除 synthetic 伪贴**)提炼成"经验卡"——供 pull 模型的 LLM 馆员
 借阅时用的、可【迁移】的写作经验。由 `scripts/curate_flywheel_lessons.py` 调用,产出写入
 `truth_vault.flywheel_lesson_annotations`(schema 见 `schemas/notes_v1_4_flywheel_lesson_cards.sql`)。
 
@@ -29,7 +30,7 @@
 {
   "hook_type": "钩子类型(短语,便于馆员按类型检索): 痛点共鸣 / 反差 / 福利 / 悬念 / 身份认同 / 场景代入 / 信息差 …",
   "structure": "结构骨架(1-2 句): 开场怎么抓 → 正文怎么铺 → 转折/高潮 → CTA → 评论区怎么设计",
-  "why_it_worked": "为什么爆(1-2 句): 最核心、且可迁移的那条原因(不是复述内容)",
+  "why_it_worked": "为什么有效/值得学(1-2 句): 最核心、且可迁移的那条原因(不是复述内容)",
   "transferable_tactic": "可直接借走的具体手法(1 句): 别的产品/选题也能套用的那一招"
 }
 ```

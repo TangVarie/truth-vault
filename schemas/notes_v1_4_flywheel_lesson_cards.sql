@@ -4,7 +4,7 @@
 --   写稿时向 LLM 馆员借阅匹配的爆款经验。本迁移建"书架"的两件:
 --     1. flywheel_lesson_annotations · 管家(LLM)入库时提炼的"经验卡"字段
 --        (hook_type / structure / why_it_worked / transferable_tactic),
---        由 annotate_essence_pass 扩展出的策展 pass 写入 (docs/14 §6.4)。
+--        由 curate_flywheel_lessons.py (策展 pass) 写入; prompt 见 prompts/flywheel_curator.md。
 --     2. v_flywheel_lesson_cards · 馆员读的视图: 把合格爆款(notes) + essence
 --        + 经验卡 + rank_score 组装成一张张"卡"。
 --
@@ -32,13 +32,25 @@ CREATE TABLE IF NOT EXISTS truth_vault.flywheel_lesson_annotations (
     transferable_tactic TEXT,   -- 可直接借走的具体手法
 
     curated_by      TEXT,        -- 策展模型 id (如 claude-sonnet-4-6)
-    curator_version TEXT,        -- 策展 prompt/spec 版本 (essence_annotator vX)
-    curated_at      TIMESTAMP DEFAULT NOW()
+    curator_version TEXT,        -- 策展 prompt/spec 版本 (flywheel_curator vX)
+    curated_at      TIMESTAMP DEFAULT NOW(),
+    -- updated_at: 馆员缓存失效用 (library_version = max(updated_at), docs/14 §4.2)。
+    -- DEFAULT 只在 INSERT 生效、UPDATE 时不变, 所以【重策展】(upsert 的 DO UPDATE)
+    -- 必须靠下方 BEFORE UPDATE 触发器刷新, 不能指望写入方记得 (PR#28 review r3333039971)。
+    updated_at      TIMESTAMP DEFAULT NOW()
 );
 
--- 退役/新鲜度: 馆员可按 curated_at 判断卡是否过期需重策展
-CREATE INDEX IF NOT EXISTS idx_tv_lesson_curated_at
-    ON truth_vault.flywheel_lesson_annotations(curated_at);
+-- 退役/新鲜度 + 缓存版本: 馆员按 updated_at 判断卡是否过期, 并算 library_version。
+CREATE INDEX IF NOT EXISTS idx_tv_lesson_updated_at
+    ON truth_vault.flywheel_lesson_annotations(updated_at);
+
+-- updated_at 自动刷新 (复用 notes_v1_2.sql 已定义的 truth_vault.set_updated_at()):
+-- 重策展走 upsert 的 DO UPDATE → BEFORE UPDATE 触发器把 updated_at 置 NOW(),
+-- 馆员缓存据此可靠失效。幂等: DROP IF EXISTS 后重建。
+DROP TRIGGER IF EXISTS tv_lesson_updated_at ON truth_vault.flywheel_lesson_annotations;
+CREATE TRIGGER tv_lesson_updated_at
+BEFORE UPDATE ON truth_vault.flywheel_lesson_annotations
+FOR EACH ROW EXECUTE FUNCTION truth_vault.set_updated_at();
 
 -- 2. 策展库视图: 馆员按 brief 借阅的"经验卡"
 --    eligibility 同注入候选, 但【去掉 aw 映射要求】(pull 不预路由)。
@@ -61,19 +73,20 @@ WITH eligible AS (
       AND n.tier_source IS DISTINCT FROM '数值推断'
       AND n.publish_time IS NOT NULL
       AND n.publish_time > (now() - '1 year'::interval)::timestamp without time zone
-      -- synthetic(伪爆贴): 爆/大爆【排除】(不污染真爆款标准); 参考【放行】——
-      -- 参考是纯人工"值得参考"判断, 与指标真假无关 (与 docs/13 通道1 规则一致;
-      -- 注: push 的 v_autowriter_injection_candidates 是无差别排除 synthetic,
-      --     那条通道在退役, 不去动它; pull 这里按通道1 的 tier 感知规则做)。
-      AND (
-          n.tier = '参考'
-          OR (n.data_quality_flags ->> 'synthetic') IS DISTINCT FROM 'true'
-      )
+      -- synthetic(伪爆贴, 指标造假)【无差别排除】所有 tier(含参考) —— 馆员是
+      -- "教 LLM 这条为什么有效"的高权重学习面, 不能拿造假指标的内容当真经验喂模型
+      -- (PR#28 review r3333039948)。与 push 的 v_autowriter_injection_candidates 一致
+      -- (都排除 synthetic)。注: 通道1 ssll 对 参考 放行 synthetic 是因为那只是"证据包"、
+      -- 不是"已验证经验"; 本视图等同通道2 的学习面, 从严。
+      AND (n.data_quality_flags ->> 'synthetic') IS DISTINCT FROM 'true'
       -- ⚠️ 故意【不】加 p.mapping_to_autowriter_project_id IS NOT NULL ——
       --    pull 不做 per-project 预路由 (D-038 改 pull 要消灭的复杂度)。
 )
 SELECT
-    e.note_id, e.project_id, e.brand, e.category, e.platform,
+    -- 导出为 source_note_id (对齐 docs/14 §4.1 + lineage 契约 docs/10; 馆员/反向
+    -- 归因按此列取) —— PR#28 review r3333039964。
+    e.note_id AS source_note_id,
+    e.project_id, e.brand, e.category, e.platform,
     e.tier, e.tier_source, e.publish_time,
     -- essence (来自 notes, annotate_essence_pass 已标)
     e.emotional_lever, e.target_audience, e.user_pain_point, e.content_format,
