@@ -99,7 +99,11 @@ def fetch_pending_baokuan(
                                                           重新纳入 sync, 改 tier_source 为
                                                           '人工补录': UPDATE notes SET
                                                           tier_source='人工补录' WHERE
-                                                          note_id=...)
+                                                          note_id=...) ⚠️但只改 DB
+                                                          当前行、不持久: 下次该项目飞书回灌
+                                                          会按源头重算覆盖 tier_source.
+                                                          持久做法见 docs/13 路径 A
+                                                          (飞书源头标 tier))
       - publish_time within 12 months                     不持续推过气审美进 ssll
                                                           的 reference_samples
       - synced_to_ssll_at IS NULL                         未同步

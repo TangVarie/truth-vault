@@ -964,6 +964,9 @@ GROUP BY p.project_id, p.brand;
 --                                                        '人工补录' 即可: UPDATE notes
 --                                                        SET tier_source='人工补录'
 --                                                        WHERE note_id=...)
+--                                                        ⚠️ 不持久: 下次飞书回灌按源头
+--                                                        重算覆盖 tier_source. 持久做法见
+--                                                        docs/13 路径 A (飞书源头标 tier)
 --   - publish_time within 12 months                     不持续注入过气审美 / 半衰期约束
 --   - projects.mapping_to_autowriter_project_id NOT NULL  必须有 aw 项目映射
 --
