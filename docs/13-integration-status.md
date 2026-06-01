@@ -1,8 +1,13 @@
 # Truth Vault 飞轮 · 集成与进度快照 (一眼跟进)
 
-> 更新: 2026-05-27 (Session #13)。
+> 更新: 2026-06-01 (Session #15)。
 > 本文件 = "现在到哪了 / 各环节怎么配合 / 哪些设了哪些没设 / 还差什么" 的速查。
 > 详细历史见 `CURRENT_STATE.md`;排查手册见 `docs/12`;sister-repo 跟进见 `docs/10`。
+>
+> 🎉 **里程碑 (2026-06-01 · Session #15)**:**通道1 首次端到端打通** —— WTG 运营标的
+> 第一条「参考」(MF65) 实跑同步进 `public.reference_samples`(低权重样本,带 synthetic
+> 血缘标记)。同期落地 **synthetic 分级**:伪爆贴只挡 爆/大爆,放行「参考」(纯人工内容
+> 判断,与刷的指标无关)。详见 §4 与 `CURRENT_STATE.md` Session #15。
 
 ---
 
@@ -53,8 +58,9 @@ WTG 数据现状:682 notes(512 条自动解出 content_format),662 metric_snapsh
 
 ## 4. 飞轮两条输出通道 · 接线状态 ⭐
 
-- **通道1 · ssll `reference_samples`**:✅ 脚本已接(**不依赖** per-project 映射,直接写 `public.reference_samples`)。
-  - WTG 当前 0 条流入 —— 唯一的「爆」是数值推断,ssll 按设计排除;运营标出真爆贴/参考后即会流入。
+- **通道1 · ssll `reference_samples`**:✅ **已首次端到端打通**(脚本不依赖 per-project 映射,直接写 `public.reference_samples`)。
+  - WTG 已有 **1 条「参考」流入**(MF65,2026-06-01,`quality_score=0` 低权重)。真爆款 774 是数值推断、仍被按设计排除;运营在飞书标「流量状态=爆贴」后即以高权重(100)流入。
+  - **synthetic 分级**(2026-06-01):伪爆贴只挡 爆/大爆;「参考」纯人工判断、放行(MF65 即属此例,样本带 `_truth_vault_synthetic` 标记)。
   - 🔴 **R-022 未解**:三省六部 `vibe_rewriter.md` 还没把 `reference_samples` 真正拼进 prompt → 数据到了 ssll 库但 LLM 还没用(见 `docs/10 § R-022`)。**这是飞轮"转起来产生价值"的最后阻塞。**
 
 - **通道2 · autowriter `items`**:⚠️ **尚未接线** —— WTG 的 `mapping_to_autowriter_project_id` 是 **null**,而注入视图 `v_autowriter_injection_candidates` 要求它非空。
@@ -77,7 +83,7 @@ WTG 数据现状:682 notes(512 条自动解出 content_format),662 metric_snapsh
 **最上游(决定飞轮能否产生价值):**
 - [ ] 🔴 **R-022**:三省六部 vibe_rewriter 真注入 DB 样本(sister-repo,见 `docs/10`)。不解则通道1 空转。
 - [ ] 设置 WTG 的 `mapping_to_autowriter_project_id` → 打通通道2。
-- [ ] 运营开始在飞书标 **爆贴/参考**(当前 WTG 0 真爆款);并复核 `v_tier_discrepancy` 那 3 条。
+- [~] 运营开始在飞书标 **爆贴/参考**:✅ 已标第一条「参考」(MF65)并实跑进 ssll;**待**:真爆款(如 774)标「爆贴」走高权重 + 复核 `v_tier_discrepancy` 那 3 条。
 
 **数据扩面:**
 - [ ] NUC / NRT 等:填 `sync_config`(feishu_app_token / table_id)→ 接入跑数据。

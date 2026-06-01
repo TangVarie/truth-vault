@@ -1,9 +1,11 @@
 name: Daily TV sync
 
-# Default: 仅手动触发 (workflow_dispatch). schedule 留为注释, 等仓库 secrets
-# 都配齐后再启用. 这样仓库刚 clone 下来不会自动每天 fail 给你发邮件.
+# 2026-06-01 (Session #15): schedule 已启用 (每日 02:00 UTC = 10:00 北京时间).
+# secrets 已配齐, 手动 dry-run / 真跑验证过 (通道1 已通, MF65 已同步).
+# ⚠️ GitHub 定时任务只从【默认分支】的 workflow 文件触发 —— 所以本改动必须
+#    合并进默认分支 (main) 后 cron 才真正开始跑; 停在 feature 分支上不会触发.
 #
-# 启用步骤:
+# (历史) 原启用步骤, 留作配置参考:
 #   1. Settings → Secrets and variables → Actions → New repository secret 配齐:
 #        SUPABASE_URL
 #        SUPABASE_SERVICE_ROLE_KEY
@@ -42,9 +44,9 @@ on:
         description: "Skip Mode A essence annotation (saves Anthropic spend)"
         type: boolean
         default: false
-  # schedule:
-  #   # 02:00 UTC = 10:00 北京时间. 飞书表通常这之前已经填好昨日数据.
-  #   - cron: '0 2 * * *'
+  schedule:
+    # 02:00 UTC = 10:00 北京时间. 飞书表通常这之前已经填好昨日数据.
+    - cron: '0 2 * * *'
 
 jobs:
   sync:

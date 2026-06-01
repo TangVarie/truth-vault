@@ -1603,6 +1603,63 @@ TV 维护者. **工时**: 2-3 小时 (改 transform_row + 测试 + 更新 docs/1
 
 ---
 
+## R-032 · autowriter 通道2 改 pull：调 LLM 馆员 + 注入飞轮经验
+
+### 背景
+
+通道2 从 push 改为 pull / 图书馆 + LLM 馆员（[D-038](../DECISIONS.md#d-038)，完整设计
+[docs/14](14-channel2-pull-librarian.md)）。TV 侧出策展库 + 馆员服务；**autowriter 侧要改生成
+流程**去借阅 + 注入，这条跟踪 aw 侧的活。
+
+### 怎么做（autowriter 侧）
+
+1. 写稿 / 起 batch 前，按 brief（project/category/brand/方向/人群）调 TV 馆员服务
+   （endpoint 形态见 docs/14 §6 待定）。
+2. 把返回的 3-5 条飞轮经验作为**独立 section** 注入 `build_system_prompt`，与 owner 自有
+   正例（`list_example_items('positive')`）**并列、分区标注**——见 docs/14 §4.3。
+3. **降级**：馆员超时/不可用/空库 → 跳过飞轮 section，照常用 owner 自有正例写稿，绝不阻塞。
+4. （可选）记录本次参考了哪几条 `source_note_id`，供飞轮效果溯源（替代 push 模式的
+   `synced_autowriter_item_id` lineage）。
+
+**不动**：autowriter 原生 `example_label` / negative 反向通道（D-027）/ 现有 `build_system_prompt`
+消费 owner 正例的逻辑。
+
+### 依赖
+
+- TV 侧先交付策展库（`v_flywheel_lesson_cards`）+ 馆员服务（docs/14 §4.1 / 4.2）。
+- docs/14 §6 待定项（馆员接口形态 / brief 字段 / 规则+LLM vs 纯 LLM）先拍。
+
+### Owner
+
+TV 维护者出策展库 + 馆员；autowriter 维护者出调用 + 注入。**工时**: aw 侧约 0.5-1 天
+（一个调用 + 一段 prompt 装配 + 降级）。**优先级**: 跟随 D-038。**触发**: TV 馆员服务就绪
++ docs/14 §6 拍板后。**阻塞**: 无（pull 上线前 push 路径留着，0 注入无害）。
+
+---
+
+## R-033 · sanshengliubu 通道1 从 category-filter 切到 LLM 馆员（可选升级）
+
+### 背景
+
+通道1（ssll）现在用 `retrieve_reference_packs()` 按 category/platform 结构化检索
+`public.reference_samples`（[R-022 ✅](#r-022)，能用）。馆员服务（[D-038](../DECISIONS.md#d-038)
+/ [docs/14](14-channel2-pull-librarian.md)）做好后，ssll 可**升级**为调馆员做 LLM 推理选取，
+跟 aw 共用同一个"管家"。馆员被设计成 aw + ssll 共享服务，正是为了这条。
+
+### 怎么做（ssll 侧）
+
+1. `pipeline/orchestrator._run_vibe_loop()` 拼 prompt 前，按 brief（项目 system_prompt 包 +
+   platform/category + 本次选题）调馆员服务。
+2. 把馆员返回的精选 + 点评注入 `vibe_rewriter`（现有 DB 样本注入位，见 R-022）。
+3. **降级**：馆员不可用 → 回退现有 `retrieve_reference_packs`（已经在跑，零风险）。
+
+### Owner / 优先级
+
+ssll 维护者。**可选升级，不阻塞**：R-022 的 category-filter 注入已经在用、有效。馆员上线且
+aw（R-032）验证后再评估是否切。**工时**: ssll 侧约 0.5 天。
+
+---
+
 ## 参考 / 配套文件
 
 - `autowriter-migrations/008_jobs_table.sql` — R-018 autowriter DDL
@@ -1677,3 +1734,5 @@ WHERE sl.stage_name = 'r022_flywheel_audit'
 | R-028 | sanshengliubu stage-level resume | ssll | ⏳ P3 backlog | 1-2 天 + schema 改动. 触发条件 (sanshengliubu `docs/architecture.md`): matrix > 30 cells 时 resume 成本显著. |
 | R-029 | autowriter RLS auth.uid() 每行重算 | aw | ✅ 完成 | TV 即时修 (2 policy) 已应用 + aw 源码同步 (全 10 表 11 处 RLS policy 包 `(select auth.uid())` + 8 个 FK 覆盖索引). advisor auth_rls_initplan + unindexed_fk(autowriter) 均清零. |
 | R-031 | 飞书 lineage 列 → notes.source_autowriter_*_id 脚本支持 | TV | ⏳ 待执行 | 当前 sync 未声明 `_source_autowriter_*` 列, 加了会 quarantine 整行. 要在 sync 脚本特殊处理这几列→FK 列 (schema 已有). 见本文 § R-031. 没做前 docs/11 让运营先别加 lineage 列. |
+| R-032 | autowriter 通道2 改 pull (调 LLM 馆员 + 注入) | TV + aw | ⏳ 待执行 | [D-038](../DECISIONS.md#d-038) / [docs/14](14-channel2-pull-librarian.md) 的落地. docs/14 §6 已拍板 (纯LLM/brief含system_prompt/FastAPI+Railway/缓存). 待 TV 馆员服务就绪后 aw 出调用 + 注入. 取代旧 push 路由那一坨. |
+| R-033 | ssll 通道1 切到 LLM 馆员 (可选升级) | ssll | ⏳ 可选 | R-022 的 category-filter 已能用; 馆员(D-038)上线后 ssll 可升级共用同一馆员. 不阻塞, 降级回退现有 retrieve_reference_packs. |

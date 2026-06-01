@@ -215,6 +215,21 @@ python preview_injection_candidates.py
 无写入、无副作用，是个纯查询工具。
 4. 全量跑
 
+## 飞轮健康自查（check_flywheel_health.py）
+
+固化 R-022 / 通道1 下游验证清单：sync 都绿了之后，确认飞轮在 ssll 侧**真闭环**
+——① TV 把爆款上架到 `reference_samples`，② ssll 写稿时真检索并用了它们。
+
+```bash
+python check_flywheel_health.py            # 人读报告
+python check_flywheel_health.py --json      # 机器可读（cron / 监控）
+```
+
+四个只读检查（reference_samples 上架数 / `r022_flywheel_audit` 命中率 / 24h 告警 /
+样本 platform·category 完整性），退出码 0=健康、1=有可处理问题；"0 审计行"是提示
+（ssll 还没写过稿）不算失败。完整说明、通过标准、与 cron 集成见
+[docs/12 §7 飞轮健康自查](../docs/12-daily-sync-troubleshooting.md)。无写入、纯查询。
+
 ## 已知限制
 
 - **`sync_feishu_notes_to_truth_vault.py` 不调用 LLM**：sync 脚本只做映射 + 落 `notes` / `metric_snapshots`。对于带 `sub_directions` 的多分支方向（NUC_phase1 的 营养保健代餐 / 术后恢复），sync 仅把 `_direction_raw` 放进 `raw_extra`，由 `annotate_essence_pass.py` 同 pass 内用 LLM 选 sub_direction 并写回 `direction_subtype` + `content_format` / `target_audience` / `user_pain_point` / `product_focus`。单方向配置（糖尿病 / 抗癌放化疗）的 `content_format` 等字段在 sync 时已确定性写入，不依赖 LLM。

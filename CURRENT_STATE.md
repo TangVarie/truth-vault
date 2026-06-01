@@ -1,8 +1,8 @@
 # Truth Vault · 当前状态
 
-**最后更新**: 2026-05-29 (Session #14 三仓集成审计 + 连生产库核对真实状态)
-**当前阶段**: 阶段 0 基础设施就绪且**已生效** (truth_vault 682 行已入库, ClientOptions 修复确认有效); 飞轮**代码侧全通、R-022 已解决**; **真正待办 = 运营 onboarding** (见下方 Session #14 地面真相节)
-**当前会话编号**: #14
+**最后更新**: 2026-06-01 (Session #15 · 通道1 首次端到端打通 + synthetic 分级)
+**当前阶段**: 飞轮**通道1 已首次转起来** (WTG 第一条「参考」MF65 实跑同步进 `public.reference_samples`); 基础设施全通; **待办 = 通道2 映射(autowriter 一对多需定) + 运营继续标 tier(774 走爆贴高权重) + R-022 下游端到端验证** (详见下方 Session #15)
+**当前会话编号**: #15
 
 会话进度脉络:
 - Session #9 (2026-05-20): Sprint 0 三轮 review 完成, 主链路代码就绪
@@ -12,10 +12,50 @@
 - Session #13 (2026-05-27): WTG_phase1 (waytogo 个护洗护) onboarding 落地 (观众分析结构化解析 + 伪爆贴排除) + daily-sync 加 project 输入 + PR #19 codex 4 修 + **daily-sync 连库失败诊断: 5 步全挂根因 = SUPABASE_URL/KEY 配错项目, 沉淀 docs/12 (PR #20)**
 
 - Session #14 (2026-05-29): 三仓集成审计 (5 路并行 agent) + 连生产库 (kduysqedrclrfevrxiie) 只读核对地面真相 + 仓内修复 (部署/CI 缺口 + 文档对齐 + 轻量健壮性)
+- Session #15 (2026-06-01): **通道1 首次端到端打通** —— WTG 运营标的第一条「参考」(MF65) 实跑进 ssll `reference_samples`; 落地 **synthetic 分级** (伪爆贴只挡爆/大爆、放行参考); 修正 `tier_source='人工补录'` DB 改法不持久 (飞书回灌覆盖); 连库确认 autowriter 侧零影响 (`efaf9c4`/`bd45656`, main PR #26)
 
 ---
 
-## 🟢 Session #14 (2026-05-29) · 三仓集成审计 + 连生产库核对地面真相 ⭐ 新人必读
+## 🟢 Session #15 (2026-06-01) · 通道1 首次端到端打通 + synthetic 分级 ⭐ 最新必读
+
+> 本节 supersede #14 的「🔴 飞轮其实还没转起来」—— **通道1 现已首次转起来。**
+
+**里程碑:飞轮通道1 第一次真转起来了。** WTG 运营在飞书把一条笔记 (素人编号 MF65,
+方向「315后怕」) 的「流量状态」标了「参考」,跑 daily-sync (main 含本会话修复) 后,这条经
+`sync_..._to_sanshengliubu.py` 实跑同步进 `public.reference_samples` (id `d0c604af…a6ac`,
+`quality_score=0` 低权重,platform 小红书 / category 个护,带 `_truth_vault_synthetic=true`
+血缘标记);双向血缘对上,飞轮视图 `synced_reference_to_ssll` 0→1。
+
+### 设计决定:synthetic (伪爆贴) 分级
+MF65 的「笔记状态」含「关注」→ 被标 `synthetic=true` (人工刷指标的伪爆贴)。此前通道1
+**全量排除** synthetic,标了参考也进不去。运营拍板正解:**synthetic 只该挡"指标型" tier
+(爆/大爆)** —— 它们的"爆"靠假数据撑;**「参考」是纯人工内容判断、与指标真假无关**,该放行
+(synthetic_reason 本身写「指标不可信但有潜力信号」)。落地:`fetch_pending_baokuan` 改为
+`synthetic AND tier IN (爆,大爆)` 才排除,`build_reference_sample` 加 `_truth_vault_synthetic`
+标记;通道2 只取爆/大爆、不受影响。(`bd45656`,main PR #26)
+
+### 修正:`tier_source='人工补录'` 的 DB 改法不持久
+runbook 路径 B 教运营 `UPDATE notes SET tier_source='人工补录'`,但**下次飞书回灌会按源头
+重算覆盖它** (实测:手改 → dry-run 能进 → 真跑时 ingest 先跑冲回数值推断 → Found 0)。已在
+docs/13 runbook / ssll docstring / notes_v1_2 注释三处标清,指向持久正路:飞书源头标 tier
+(→ 状态字段)。(`efaf9c4`)
+
+### 连库确认:autowriter 侧零影响
+本会话只改通道1 + 写过一次 `truth_vault.notes`,没碰 autowriter schema。`autowriter.items`
+4140 行全 `external_source=NULL` (原生)、来自 TV 的 0 行;今天 autowriter 自己新增 130 行
+(独立运行)。WTG `mapping_to_autowriter_project_id=null` + 注入候选 0 → 通道2 没写任何东西。
+
+### 下一步
+- **通道2 (autowriter)**:仍未接。autowriter 侧 WTG **按方向拆成多个项目** (WTG-315后怕 /
+  经期 / 出差 / 产品内裤… 共 7 个),而 TV 是单 `WTG_phase1` → 一对多,
+  `mapping_to_autowriter_project_id` 指哪个需运营定 (或建一个汇总项目 / 扩展按方向路由)。
+- **774 真爆款**:想以高权重 (100) 进通道1,运营在飞书标「流量状态=爆贴」。
+- **R-022**:docs/10 标记已解决;建议用 MF65 这条真实样本在下游 vibe_rewriter 端到端验一次检索命中。
+- **cron**:`daily-sync.yml` 的 `schedule:` 仍注释;通道1 验稳后可开。
+
+---
+
+## 🟢 Session #14 (2026-05-29) · 三仓集成审计 + 连生产库核对地面真相
 
 本会话用 5 路并行审计 + 连生产 Supabase (`kduysqedrclrfevrxiie`) 只读核对, 校正了
 本文档此前与现实不符的几处关键状态。**新接手者先读这一节, 它 supersede 下面所有
