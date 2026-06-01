@@ -100,9 +100,9 @@ raw_excerpt         ← raw_content 片段（供仿写，截断防 prompt 爆）
 rank_score          ← 吸收 D-036：tier 权重 + recency + account_bao_rate
 ```
 
-`hook_type / structure / why_it_worked / transferable_tactic` 是 essence pass 的**扩展产出**（新增 prompt 段，扩 `prompts/essence_annotator.md`）。
+`hook_type / structure / why_it_worked / transferable_tactic` 由**独立策展 pass** 提炼（prompt 在 `prompts/flywheel_curator.md`，**不并进** `essence_annotator.md`——见下方实现说明与 §6.4）。
 
-**实现说明（v1.4 已落地）**：经验卡字段落在独立表 `truth_vault.flywheel_lesson_annotations`（按 note_id 一行，仿 `note_features` 范式，不污染 notes 主表），由策展 pass 写入；视图 `truth_vault.v_flywheel_lesson_cards` 把合格爆款 + essence + 经验卡（LEFT JOIN，未策展也出卡，馆员用 raw_excerpt + essence 兜底）+ rank_score 组装好。eligibility 同注入候选但**去掉 aw 映射要求**（pull 不预路由）；**synthetic 伪贴：爆/大爆排除、参考放行**（纯人工判断、与指标真假无关，同 docs/13 通道1——push 的注入 view 是无差别排除，那条在退役不动它）。已用现有 1 条参考笔记实跑验证（eligibility + rank_score 正确）。下一步 ② 策展 pass 填这张表。
+**实现说明（v1.4 已落地）**：经验卡字段落在独立表 `truth_vault.flywheel_lesson_annotations`（按 note_id 一行，仿 `note_features` 范式，不污染 notes 主表），由策展 pass 写入；视图 `truth_vault.v_flywheel_lesson_cards` 把合格爆款 + essence + 经验卡（LEFT JOIN，未策展也出卡，馆员用 raw_excerpt + essence 兜底）+ rank_score 组装好。eligibility 同注入候选但**去掉 aw 映射要求**（pull 不预路由）；**synthetic 伪贴：爆/大爆排除、参考放行**（纯人工判断、与指标真假无关，同 docs/13 通道1——push 的注入 view 是无差别排除，那条在退役不动它）。已用现有 1 条参考笔记实跑验证（eligibility + rank_score 正确）。② 策展 pass **已实现**：`scripts/curate_flywheel_lessons.py` + `prompts/flywheel_curator.md`（读 `is_curated=false` 的卡 → LLM 产 4 字段 → 写 `flywheel_lesson_annotations`）。
 
 ### 4.2 LLM 馆员服务（独立共享服务）
 
@@ -156,7 +156,7 @@ ssll 侧类似：在 `vibe_rewriter` 现有 DB 样本注入位（R-022）改为/
 1. **馆员 = 纯 LLM，不建手维护规则表** ✅。"tier 只摆爆/大爆"是结构性过滤（零维护）保留；"category/方向 → 借哪些"这种手工映射表不建，交 LLM 每次看 brief 判断。爆款稀少 → 库长期很小 → 直接把整库喂 LLM 最省最准。
 2. **brief = 项目 prompt 包（system_prompt + tone + exec + tactics + calibration_notes）+ 本次 delta** ✅。实质内容在项目 prompt 里；全是消费方现成的。详见 §4.2。
 3. **接口 = FastAPI on Railway，作为 aw + ssll 共享馆员服务** ✅（[D-038](../DECISIONS.md#d-038)）。Edge Function 排除（Deno 重写 + ~2 分钟执行上限顶不住 + 共享服务不该用受限函数）。详见 §4.2。
-4. **经验卡字段 + 策展 prompt 由设计方定** ✅。字段见 §4.1；策展 prompt 扩 `prompts/essence_annotator.md`，新增 hook_type / structure / why_it_worked / transferable_tactic 四段，其余复用现有 essence。
+4. **经验卡字段 + 策展 prompt 由设计方定** ✅。字段见 §4.1；策展 prompt **单独建 `prompts/flywheel_curator.md`**（实现于 `scripts/curate_flywheel_lessons.py`）。**修正早期"扩 essence_annotator.md"的说法**：本 pass 是 performance-AWARE（解释已知爆款为何爆），而 essence 是 performance-BLIND（D-028 盲标）——合进一个文件会破坏盲标隔离，故必须分开。
 5. **新增 · 馆员结果缓存** ✅（你提的）：内容寻址 + 库版本自动失效，见 §4.2，省 LLM 成本。
 
 **仍待定（不阻塞开建）**:
