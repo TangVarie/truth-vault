@@ -1024,6 +1024,17 @@ jobs:
         run: |
           psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_2_tier_discrepancy_view.sql
           psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_2_tier_discrepancy_view.sql
+      - name: Apply v1.4 flywheel lesson cards (+ idempotency)
+        # v1_4 depends on v1_2 (notes/projects/set_updated_at fn) + v1_3 (参考 tier).
+        # CREATE TABLE/INDEX IF NOT EXISTS + CREATE OR REPLACE VIEW + DROP TRIGGER
+        # IF EXISTS → a second apply must be a clean no-op.
+        run: |
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_4_flywheel_lesson_cards.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_4_flywheel_lesson_cards.sql
+      - name: Sanity-check v1.4 (lesson table + librarian view + source_note_id)
+        run: |
+          psql -v ON_ERROR_STOP=1 -c "SELECT 'truth_vault.flywheel_lesson_annotations'::regclass;"
+          psql -v ON_ERROR_STOP=1 -c "SELECT source_note_id, rank_score FROM truth_vault.v_flywheel_lesson_cards LIMIT 1;"
       - name: Sanity-check v1.3 (参考 tier accepted + reference cols + discrepancy view)
         run: |
           psql -v ON_ERROR_STOP=1 <<'SQL'
