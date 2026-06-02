@@ -1,0 +1,14 @@
+{
+  "consumer": "autowriter",
+  "project_id": "WTG-产品内裤",
+  "brand": "waytogo",
+  "project_name": "WTG-产品内裤",
+  "system_prompt": "为 waytogo 一次性内裤写小红书种草, 强调便携卫生、差旅/经期场景。",
+  "system_prompt_tone": "真实、像素人朋友安利, 不硬广",
+  "tactics": "产品直给 + 场景痛点",
+  "tactic": "经期场景痛点切入",
+  "target_audience": "20-35 岁女性, 经期/差旅人群",
+  "tone": "口语、共鸣",
+  "extra_instructions": "开头要有强钩子, 评论区埋互动",
+  "draft_topic": "经期出差怎么解决内裤换洗尴尬"
+}

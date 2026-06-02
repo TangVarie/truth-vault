@@ -1,0 +1,14 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "//": "飞轮馆员服务 (librarian/) 的 Railway 部署配置。root 设为 repo 根, 让 `librarian` 包可导入。本仓唯一的可部署服务就是它; sync 脚本走 GitHub Actions, 与此无关。",
+  "build": {
+    "builder": "NIXPACKS",
+    "buildCommand": "pip install -r librarian/requirements.txt"
+  },
+  "deploy": {
+    "startCommand": "uvicorn librarian.app:app --host 0.0.0.0 --port $PORT",
+    "healthcheckPath": "/health",
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 3
+  }
+}

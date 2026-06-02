@@ -38,6 +38,13 @@ jobs:
             scripts/sync_truth_vault_baokuan_to_sanshengliubu.py \
             scripts/sync_truth_vault_baokuan_to_autowriter_items.py \
             scripts/extract_negative_examples_from_autowriter.py \
+            scripts/check_flywheel_health.py \
+            scripts/curate_flywheel_lessons.py \
+            librarian/__init__.py \
+            librarian/clients.py \
+            librarian/core.py \
+            librarian/cli.py \
+            librarian/app.py \
             sanshengliubu-patches/import_truth_vault_baokuan.py
       - name: Comment parser unit tests
         working-directory: scripts
@@ -1035,6 +1042,15 @@ jobs:
         run: |
           psql -v ON_ERROR_STOP=1 -c "SELECT 'truth_vault.flywheel_lesson_annotations'::regclass;"
           psql -v ON_ERROR_STOP=1 -c "SELECT source_note_id, rank_score FROM truth_vault.v_flywheel_lesson_cards LIMIT 1;"
+      - name: Apply v1.5 librarian cache (+ idempotency)
+        # 只依赖 truth_vault schema (v1_2)。CREATE TABLE/INDEX IF NOT EXISTS →
+        # 第二次 apply 必须是干净 no-op。
+        run: |
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_5_librarian_cache.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_5_librarian_cache.sql
+      - name: Sanity-check v1.5 (librarian cache table exists)
+        run: |
+          psql -v ON_ERROR_STOP=1 -c "SELECT 'truth_vault.flywheel_librarian_cache'::regclass;"
       - name: Sanity-check v1.3 (参考 tier accepted + reference cols + discrepancy view)
         run: |
           psql -v ON_ERROR_STOP=1 <<'SQL'
