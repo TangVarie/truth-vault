@@ -19,7 +19,7 @@ POST  {LIBRARIAN_URL}/librarian
       "system_prompt": "...", "system_prompt_tone": "...",
       "system_prompt_exec": "...", "tactics": "...", "calibration_notes": "...",
       # —— 本次 batch 的 delta ——
-      "tactic": "...", "target_audience": "...", "tone": "...",
+      "tactic": "...", "key_messages": "...", "target_audience": "...", "tone": "...",
       "extra_instructions": "...", "draft_topic": "..."(可选) }
 
 → 200  { "selected": [
@@ -123,7 +123,9 @@ if flywheel_lessons:
     blocks = []
     for L in flywheel_lessons[:5]:
         blocks.append(
-            f"· 钩子：{L.get('hook_type') or '?'}｜为何有效：{L.get('why_it_worked') or ''}\n"
+            f"· 钩子：{L.get('hook_type') or '?'}｜结构：{L.get('structure') or '?'}"
+            f"｜为何有效：{L.get('why_it_worked') or ''}\n"
+            f"  可迁移手法：{L.get('transferable_tactic') or ''}\n"
             f"  借这条的：{L.get('borrow_what') or ''}（相关性：{L.get('why_relevant') or ''}）\n"
             f"  原文片段：{(L.get('excerpt') or '')[:200]}"
         )
@@ -135,6 +137,10 @@ if flywheel_lessons:
     )
 ```
 
+> **注入哪几个字段(回应消费侧落地反馈)**:返回的 `structure`(结构)与 `transferable_tactic`(可迁移手法)
+> 是经验卡的**核心**(策展员的整个工作就是提炼这两样),请一并注入(上面已含)。`tier` 可选(轻量
+> 权重信号,注入与否都行);`source_note_id` **不要**注入(内部 id,对模型是噪音)。
+>
 > 与 owner 的 `[优质正案例]` 并列、分区标注 —— 两套都进 prompt,互不替代(docs/14 §1 的"owner 判断 ⊕ 飞轮内容")。
 
 ---
@@ -167,3 +173,38 @@ curl -s -X POST {LIBRARIAN_URL}/librarian -H "X-Librarian-Key: <key>" \
 ```
 
 **工时估计**: 0.5–1 天(一个 HTTP client + generate_batch 透传 + build_layered_system_prompt 加一节 + config + 自测)。**owner**: autowriter 维护者。**前置**: 无(TV 侧 + 服务已就绪;空库期间接好也只是 no-op,不影响现有写稿)。
+
+---
+
+## 8. R-032 回执 · 消费侧落地反馈处置(2026-06-02)
+
+aw 维护者已完成消费侧落地(`librarian_client.py` + `config.py` + `memory.py` + `app.py`),
+回了一份消费侧契约 + 4 个待 TV 侧确认项。TV 侧逐条处置如下:
+
+**4 个待确认 → 已拍板 + TV 侧已落地:**
+
+1. **`key_messages`(核心卖点)要发** —— 对匹配有用(优先同卖点的爆款)。TV 侧已把
+   `key_messages` 加进馆员 brief 的 **delta 字段**(`librarian/core.py` `_DELTA_FIELDS`,
+   并自动进结果缓存 key)。aw 在 brief 里发 `key_messages` 即可(此前发了也是被静默忽略)。
+2. **`draft_topic` 不要用 `key_messages` 顶替** —— 两者语义不同(核心卖点 ≠ 选题)。
+   `key_messages` 走自己的槽(见 1);`draft_topic` 保持**可选**,aw 暂无真·选题字段就
+   **不发**(馆员对缺失字段按"无"处理)。日后 aw 有真选题字段再填。
+3. **响应里 `structure` + `transferable_tactic` 请一并注入 prompt** —— 它们是经验卡的
+   **核心**(策展员的整个工作就是提炼这两样)。已更新本文 §4 的 P2 渲染示例(含 结构 +
+   可迁移手法)。`tier` 可选(轻量信号);`source_note_id` 不注入(内部 id、对模型是噪音)。
+4. **`tactics` 字段形态** —— 发 `project["tactics"]` 原始值即可。TV 侧已在
+   `_render_fields` 用 `json.dumps(..., sort_keys=True)` 序列化 dict/list 型字段,保证
+   缓存块(block2)字节稳定、不会因 key 顺序漂移悄悄打穿 prompt cache。aw 无需特殊处理。
+
+**aw 的 3 处与本规范的差异(A/B/C)—— 均合理、不影响契约,确认接受:**
+
+- **A**(真正构建 system prompt 的点在 `app.py` 三处、非 `generate_batch`):本文 §3 是按
+  "构建前透传"的意图写的近似描述;aw 把借阅接在两个 batch 生成点(`_queue_worker_impl` /
+  `_quick_gen_worker`)、迭代点不接 —— 符合"新批生成才借阅"的 scope,✔。
+- **B**(P2 原是单字符串、aw 重构成 `p2_sections` 列表,无飞轮料时 byte-identical):正是
+  我们要的 prompt-cache 卫生(空料不破坏稳定前缀),✔。
+- **C**(用 `requests` 而非 `httpx`,零新增依赖):契约只关心 HTTP 语义,客户端库随意,✔。
+
+> 契约本身**未变**(brief 多了一个可选 `key_messages`、响应字段早就返回 `structure`/
+> `transferable_tactic`)。TV 侧改动仅 `librarian/core.py` 两处(加 `key_messages` delta +
+> `sort_keys` 稳定化),无 schema / 服务接口变更。
