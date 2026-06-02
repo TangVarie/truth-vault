@@ -1,0 +1,7 @@
+# 飞轮馆员服务 (FastAPI on Railway) 依赖。
+# 上限锁到下一个 major (与 R-017 同理念: 防一次 fresh install 拉到 breaking major)。
+# 真要升 major 前: 看 changelog → staging smoke test → 一次升一个。
+fastapi>=0.110,<1.0
+uvicorn[standard]>=0.29,<1.0
+supabase>=2.0,<3.0
+anthropic>=0.40,<1.0

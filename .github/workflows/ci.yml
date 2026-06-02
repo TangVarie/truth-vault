@@ -38,6 +38,13 @@ jobs:
             scripts/sync_truth_vault_baokuan_to_sanshengliubu.py \
             scripts/sync_truth_vault_baokuan_to_autowriter_items.py \
             scripts/extract_negative_examples_from_autowriter.py \
+            scripts/check_flywheel_health.py \
+            scripts/curate_flywheel_lessons.py \
+            librarian/__init__.py \
+            librarian/clients.py \
+            librarian/core.py \
+            librarian/cli.py \
+            librarian/app.py \
             sanshengliubu-patches/import_truth_vault_baokuan.py
       - name: Comment parser unit tests
         working-directory: scripts

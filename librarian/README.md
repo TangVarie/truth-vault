@@ -9,8 +9,10 @@ librarian/
 ├── core.py      选取核心: 取候选 + 缓存 + LLM 按 brief 推理选 3-5 张 + 降级
 ├── cli.py       命令行测试器 (--dry-run 看 prompt; 真跑连库 + LLM)
 ├── sample_brief.json   示例 brief
-└── app.py       (后续) FastAPI 端点, aw/ssll 调它; + Railway 部署配置
+├── app.py       FastAPI 端点 (POST /librarian, GET /health), aw/ssll 调它
+└── requirements.txt  服务依赖 (fastapi/uvicorn/supabase/anthropic)
 ```
+> Railway 部署配置在 **repo 根 `railway.json`**(root 设 repo 根, 让 `librarian` 包可导入)。
 
 ## 流程 (core.librarian_select)
 
@@ -40,7 +42,19 @@ python -m librarian.cli --brief librarian/sample_brief.json
 - **策展员**(`prompts/flywheel_curator.md` + `scripts/curate_flywheel_lessons.py`):入库时把**单条**爆款提炼成一张经验卡。
 - **馆员**(`prompts/flywheel_librarian.md` + 本目录):写稿时从**多张**卡里**按 brief 推理选取**。
 
+## 部署 (Railway)
+
+repo 根 `railway.json` 已配好;在 Railway 建一个 service、root 指 repo 根、设环境变量
+(`SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` / `ANTHROPIC_API_KEY` / 可选
+`FLYWHEEL_LIBRARIAN_MODEL` / 建议设 `LIBRARIAN_API_KEY` 鉴权)即可。healthcheck 走 `/health`。
+
+调用(消费方):
+```
+POST /librarian   header: X-Librarian-Key: <key>   body: <brief JSON>
+→ {"selected": [ {source_note_id, why_relevant, borrow_what, hook_type, structure, excerpt, ...}, ... ]}
+```
+
 ## 待办
 
-- `app.py`:FastAPI 端点(`POST /librarian` 收 brief、回 selected)+ Railway 部署配置(`requirements.txt` / Procfile)。
-- 接入消费方:autowriter([R-032](../docs/10-sister-repo-followups.md#r-032))、sanshengliubu([R-033](../docs/10-sister-repo-followups.md#r-033))。
+- 前置:`schemas/notes_v1_4` + `notes_v1_5` apply 到 prod(否则视图/表不存在)。
+- 接入消费方:autowriter([R-032](../docs/10-sister-repo-followups.md#r-032))、sanshengliubu([R-033](../docs/10-sister-repo-followups.md#r-033))——写稿前调本服务、把 selected 注入 prompt。
