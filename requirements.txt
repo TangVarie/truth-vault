@@ -1,0 +1,4 @@
+# Railway / Nixpacks 部署入口 —— 让构建器检测到这是 Python 项目并安装馆员服务依赖。
+# 真正的依赖清单在 librarian/requirements.txt; 本文件只是 repo 根的检测标记 + 转引。
+# 注: scripts/ 的同步脚本另用 scripts/requirements.lock(CI 用那个), 与本文件互不影响。
+-r librarian/requirements.txt
