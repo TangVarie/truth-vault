@@ -31,36 +31,31 @@ CANDIDATE_CAP = 50          # 喂给 LLM 的候选上限 (库小, 50 足够; 大
 DEFAULT_SELECT_MIN = 3
 DEFAULT_SELECT_MAX = 5
 
-# 运行时模板 — 应与 prompts/flywheel_librarian.md 保持一致 (改其一时同步另一个)。
-LIBRARIAN_PROMPT_TEMPLATE = """你是帆谷内容飞轮的"经验馆员"。下面有一批【已验证爆款/值得参考】的"经验卡", 和一个写作 brief。
-你的任务: 为这次写作【推理挑选 3-5 张最有借鉴价值的卡】, 并说清每张【为什么相关】+【借它哪个部位】。
+# ── prompt 分段(Anthropic prompt caching 友好, 同 autowriter generator 的策略) ──
+# 把【稳定且大】的部分作为带 cache_control: ephemeral 的 system 块, 重复请求共享缓存
+# 前缀、省 ~90% 成本/延迟。顺序按"前缀稳定性"排(越稳越靠前, 因为缓存匹配的是前缀):
+#   block1 = ROLE_TASK(永不变) + 候选卡(同 library_version 内不变, 且【跨项目共享】)
+#   block2 = 项目 prompt 包(同项目内不变)
+#   user   = 本次 delta(每次变, 不缓存)
+# Anthropic 单请求最多 4 个 cache breakpoint, 这里用 2 个。这层 prompt-cache 与上面的
+# 结果缓存(flywheel_librarian_cache)互补: 结果缓存挡"完全相同的请求", prompt-cache 省
+# "同库不同 brief"的请求(只重算 delta 部分)。prompts/flywheel_librarian.md 同步说明。
+ROLE_TASK_INSTR = """你是帆谷内容飞轮的"经验馆员"。下面给你一批【已验证爆款/值得参考】的"经验卡",
+和一个写作 brief。你的任务: 为这次写作【推理挑选 3-5 张最有借鉴价值的卡】, 并说清每张
+【为什么相关】+【借它哪个部位】。
 
-═══════════════════════════════════════════════
-写作 brief
-═══════════════════════════════════════════════
-{brief_block}
-
-═══════════════════════════════════════════════
-候选经验卡 (按 rank_score 排序, 共 {n} 张)
-═══════════════════════════════════════════════
-{cards_block}
-
-═══════════════════════════════════════════════
-任务
-═══════════════════════════════════════════════
-推理(不是按相似度硬凑): 这次写作最需要借哪几张卡? 优先同品牌/同品类/同人群, 但也可
-跨主题借走可迁移的钩子/结构/手法。挑 3-5 张(候选不足就少挑; 一张都不合适就返回空数组)。
+推理(不是按相似度硬凑): 优先同品牌/同品类/同人群, 但也可跨主题借走可迁移的钩子/结构/手法。
+挑 3-5 张(候选不足就少挑; 一张都不合适就返回空数组)。
 
 输出严格 JSON(无 markdown 包装):
-{{"selected": [
-  {{"source_note_id": "<必须是上面候选里出现过的 id>",
-    "why_relevant": "<为什么对这次写作有用, 1 句>",
-    "borrow_what": "<借它哪个部位: 钩子/结构/评论区设计/某手法, 1 句>"}}
-]}}
-"""
+{"selected": [
+  {"source_note_id": "<必须是候选里出现过的 id>",
+   "why_relevant": "<为什么对这次写作有用, 1 句>",
+   "borrow_what": "<借它哪个部位: 钩子/结构/评论区设计/某手法, 1 句>"}
+]}"""
 
-# brief 里纳入 prompt 的字段 (项目 prompt 包为主体 + 本次 delta), 见 docs/14 §4.2。
-_BRIEF_FIELDS = (
+# 项目级、稳定字段(进【缓存】的 system 块; 同项目跨请求复用)。
+_PROJECT_FIELDS = (
     ("brand", "品牌"),
     ("project_name", "项目"),
     ("system_prompt", "项目定位(system_prompt)"),
@@ -68,14 +63,21 @@ _BRIEF_FIELDS = (
     ("system_prompt_exec", "执行要求"),
     ("tactics", "项目战术"),
     ("calibration_notes", "校准笔记"),
+)
+# 本次请求 delta(进 user message; 每次变, 不缓存)。
+_DELTA_FIELDS = (
     ("tactic", "本次策略/方向"),
     ("target_audience", "目标人群"),
     ("tone", "本次语气"),
     ("extra_instructions", "本次特别要求"),
     ("draft_topic", "本次选题"),
 )
-# brief_digest 只 hash 这些字段, 保证 key 稳定 (无关字段变化不影响命中)。
-_BRIEF_DIGEST_KEYS = tuple(k for k, _ in _BRIEF_FIELDS) + ("consumer", "project_id")
+# brief_digest 只 hash 这些字段(项目+delta+consumer+project_id), 保证结果缓存 key 稳定。
+_BRIEF_DIGEST_KEYS = (
+    tuple(k for k, _ in _PROJECT_FIELDS)
+    + tuple(k for k, _ in _DELTA_FIELDS)
+    + ("consumer", "project_id")
+)
 
 
 # ── 候选 + 版本 ──────────────────────────────────────────────────────────
@@ -148,15 +150,15 @@ def put_cache(sb, key: str, brief: dict, lib_version: str, selected: list) -> No
 
 
 # ── prompt 渲染 + 选取 ──────────────────────────────────────────────────
-def _render_brief(brief: dict) -> str:
+def _render_fields(brief: dict, fields) -> str:
     lines = []
-    for key, label in _BRIEF_FIELDS:
+    for key, label in fields:
         val = brief.get(key)
         if val:
             if isinstance(val, (list, dict)):
                 val = json.dumps(val, ensure_ascii=False)
             lines.append(f"- {label}: {val}")
-    return "\n".join(lines) or "(brief 为空)"
+    return "\n".join(lines)
 
 
 def _render_cards(cards: list[dict]) -> str:
@@ -179,17 +181,44 @@ def _render_cards(cards: list[dict]) -> str:
     return "\n\n".join(blocks)
 
 
-def build_prompt(brief: dict, cards: list[dict]) -> str:
-    return LIBRARIAN_PROMPT_TEMPLATE.format(
-        brief_block=_render_brief(brief),
-        n=len(cards),
-        cards_block=_render_cards(cards),
+def build_system_blocks(brief: dict, cards: list[dict]) -> list[dict]:
+    """两个带 cache_control 的 system 块(prompt caching):
+      block1 = ROLE_TASK + 候选卡 (同 library_version 内稳定, 跨项目共享 → 命中率最高)
+      block2 = 项目 prompt 包      (同项目内稳定)
+    本次 delta 不在这里(进 user message)。"""
+    cards_text = (
+        f"{ROLE_TASK_INSTR}\n\n"
+        f"═══ 候选经验卡 (按 rank_score 排序, 共 {len(cards)} 张) ═══\n"
+        f"{_render_cards(cards)}"
+    )
+    project_text = "═══ 项目背景 ═══\n" + (_render_fields(brief, _PROJECT_FIELDS) or "(无)")
+    return [
+        {"type": "text", "text": cards_text, "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": project_text, "cache_control": {"type": "ephemeral"}},
+    ]
+
+
+def build_user_message(brief: dict) -> str:
+    delta = _render_fields(brief, _DELTA_FIELDS) or "(无特别要求)"
+    return (
+        "═══ 本次写作 ═══\n" + delta
+        + "\n\n据此从上面候选经验卡里挑 3-5 张, 按要求输出严格 JSON {\"selected\": [...]}。"
     )
 
 
-def _select_via_llm(prompt: str, cards: list[dict], model: str) -> list[dict]:
-    """调 LLM 选取 → 解析 → 校验 id 在候选内 → 富集卡内容。失败抛异常给上层降级。"""
-    raw = call_anthropic(prompt, model)
+def build_prompt(brief: dict, cards: list[dict]) -> str:
+    """dry-run 展示用: 把缓存块 + user message 拼成可读串(实际调用走分块 system)。"""
+    sys_text = "\n\n".join(b["text"] for b in build_system_blocks(brief, cards))
+    return f"{sys_text}\n\n──────── [user message] ────────\n{build_user_message(brief)}"
+
+
+def _select_via_llm(brief: dict, cards: list[dict], model: str) -> list[dict]:
+    """调 LLM 选取 → 解析 → 校验 id 在候选内 → 富集卡内容。失败抛异常给上层降级。
+    用带 cache_control 的 system 块(候选卡 + 项目包)+ delta user message → prompt caching。"""
+    raw = call_anthropic(
+        build_user_message(brief), model,
+        system=build_system_blocks(brief, cards),
+    )
     parsed = parse_json(raw)
     if not isinstance(parsed, dict) or not isinstance(parsed.get("selected"), list):
         raise ValueError("librarian response missing 'selected' list")
@@ -251,7 +280,7 @@ def librarian_select(brief: dict, *, model: Optional[str] = None,
             return cached
 
     try:
-        selected = _select_via_llm(build_prompt(brief, cards), cards, model)
+        selected = _select_via_llm(brief, cards, model)
     except Exception:
         return []   # 降级: 绝不阻塞写稿
 
