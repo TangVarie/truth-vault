@@ -67,6 +67,7 @@ _PROJECT_FIELDS = (
 # 本次请求 delta(进 user message; 每次变, 不缓存)。
 _DELTA_FIELDS = (
     ("tactic", "本次策略/方向"),
+    ("key_messages", "本次核心卖点"),
     ("target_audience", "目标人群"),
     ("tone", "本次语气"),
     ("extra_instructions", "本次特别要求"),
@@ -156,7 +157,9 @@ def _render_fields(brief: dict, fields) -> str:
         val = brief.get(key)
         if val:
             if isinstance(val, (list, dict)):
-                val = json.dumps(val, ensure_ascii=False)
+                # sort_keys: 保证 dict/list 型字段(如 tactics)序列化字节稳定 ——
+                # 否则同项目跨请求 key 顺序漂移会悄悄打穿缓存块(block2)的 prompt cache。
+                val = json.dumps(val, ensure_ascii=False, sort_keys=True)
             lines.append(f"- {label}: {val}")
     return "\n".join(lines)
 

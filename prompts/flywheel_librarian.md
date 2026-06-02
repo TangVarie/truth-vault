@@ -15,7 +15,7 @@
 
 ## 输入
 
-- **brief**: 品牌 / 项目定位(system_prompt 包) / 本次策略·人群·选题(delta)。
+- **brief**: 品牌 / 项目定位(system_prompt 包) / 本次策略·核心卖点·人群·选题(delta)。
 - **候选经验卡**(按 `rank_score` 排序): 每张含 `source_note_id` / tier / 品牌·品类 /
   hook_type / structure / why_it_worked / transferable_tactic / 原文摘要。未策展的卡
   (经验字段为 NULL)用 essence + 摘要兜底。
