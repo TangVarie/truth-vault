@@ -1,7 +1,7 @@
 # Truth Vault · 当前状态
 
-**最后更新**: 2026-06-02 (Session #16 · 通道2 改 pull + LLM 馆员服务建成)
-**当前阶段**: 通道1 已转起来; **通道2 重构为 pull / 图书馆 + LLM 馆员 (D-038), TV 侧全建完** (v1.4/v1.5 已上 prod, `librarian/` 服务就绪, 策展 pass 上 cron); **待办 = 部署 librarian 到 Railway + R-032/R-033 sister-repo 接入 + 真爆款进库** (详见下方 Session #16)
+**最后更新**: 2026-06-02 (Session #16 · 通道2 改 pull + LLM 馆员服务**已上线 Railway**)
+**当前阶段**: 通道1 已转起来; **通道2 重构为 pull / 图书馆 + LLM 馆员 (D-038), TV 侧全建完 + 馆员服务已部署上线** (v1.4/v1.5 已上 prod, `librarian/` 服务 live 在 `truth-vault-production.up.railway.app` `/health` OK, 走中转站 + prompt caching, 策展 pass + cron 已开); **待办 = R-032/R-033 sister-repo 接入 (接入说明见 [docs/15](docs/15-autowriter-librarian-integration.md)) + 真爆款进库** (详见下方 Session #16)
 **当前会话编号**: #16
 
 会话进度脉络:
@@ -13,28 +13,34 @@
 
 - Session #14 (2026-05-29): 三仓集成审计 (5 路并行 agent) + 连生产库 (kduysqedrclrfevrxiie) 只读核对地面真相 + 仓内修复 (部署/CI 缺口 + 文档对齐 + 轻量健壮性)
 - Session #15 (2026-06-01): **通道1 首次端到端打通** —— WTG 运营标的第一条「参考」(MF65) 实跑进 ssll `reference_samples`; 落地 **synthetic 分级** (伪爆贴只挡爆/大爆、放行参考); 修正 `tier_source='人工补录'` DB 改法不持久 (飞书回灌覆盖); 连库确认 autowriter 侧零影响 (`efaf9c4`/`bd45656`, main PR #26)
-- Session #16 (2026-06-02): **通道2 改 pull + LLM 馆员服务建成** —— D-038 把通道2 从 push 重构为 pull / 图书馆 + LLM 馆员; 建 v1.4 策展库 + v1.5 缓存 + `librarian/` 服务 + 策展 pass(上 daily-sync cron); v1.4/v1.5 已 apply 到 prod + advisor 核验无回归; 处理 PR #27/#28 review (分页 / synthetic / source_note_id / updated_at) (PR #27/#28/#29 已合 main)
+- Session #16 (2026-06-02): **通道2 改 pull + LLM 馆员服务建成并上线** —— D-038 把通道2 从 push 重构为 pull / 图书馆 + LLM 馆员; 建 v1.4 策展库 + v1.5 缓存 + `librarian/` 服务 + 策展 pass; v1.4/v1.5 已 apply 到 prod + advisor 核验无回归; **馆员服务部署上线 Railway** (`truth-vault-production.up.railway.app`, `/health` OK) + 接中转站 (`ANTHROPIC_BASE_URL`) + Anthropic prompt caching; **daily-sync cron 已开** (`0 2 * * *`) + 修未 onboard 项目优雅跳过; 起草 aw 接入说明 [docs/15](docs/15-autowriter-librarian-integration.md); 处理 PR #27..#32 review (分页 / synthetic / source_note_id / updated_at / feishu 半配置) (PR #27..#32 全合 main)
 
 ---
 
-## 🟢 Session #16 (2026-06-02) · 通道2 改 pull + LLM 馆员服务建成 ⭐ 最新必读
+## 🟢 Session #16 (2026-06-02) · 通道2 改 pull + LLM 馆员服务建成并上线 ⭐ 最新必读
 
-> 通道2 从 push 重构为 pull / 图书馆 + LLM 馆员 的完整落地。
+> 通道2 从 push 重构为 pull / 图书馆 + LLM 馆员 的完整落地 —— **设计 → 建成 → 上 prod → 部署上线 Railway → 接中转站 + prompt caching → cron 开**,全打通。
 
 **决策 D-038**:通道2 从「TV push 进 `autowriter.items` + 单 FK 路由」改为 **pull / 图书馆 + LLM 馆员**。根因:autowriter 正例机制是 recency-push、不做检索,逼出一对多路由复杂度(WTG 1 个 TV 项目 ↔ 18 个 aw 项目 / 3 owner);通道1(ssll)本就是 pull,对齐之。完整设计见 [docs/14](docs/14-channel2-pull-librarian.md)。
 
-**TV 侧已建完**(PR #28/#29 已合 main;v1.4 + v1.5 已 apply 到 prod):
+**TV 侧已建完 + 上线**(PR #27..#32 全合 main;v1.4 + v1.5 已 apply 到 prod):
 - ① 策展库:`flywheel_lesson_annotations` 表 + `v_flywheel_lesson_cards` 视图(v1.4)
-- ② 策展 pass(管家·单条爆款→经验卡):`scripts/curate_flywheel_lessons.py` + `prompts/flywheel_curator.md`,已上 daily-sync cron
+- ② 策展 pass(策展员·单条爆款→经验卡):`scripts/curate_flywheel_lessons.py` + `prompts/flywheel_curator.md`,已上 daily-sync cron
 - ③ 缓存:`flywheel_librarian_cache`(v1.5,内容寻址 + 库版本自动失效)
 - ④⑤ 馆员服务(馆员·多卡→按 brief 推理选取):`librarian/`(core 选取 + FastAPI `POST /librarian` + dry-run CLI + `railway.json`)
-- ⑥ 契约:R-032(aw)/ R-033(ssll) 写明 `POST /librarian` 调用契约
+- ⑥ 契约 + 接入说明:R-032(aw)/ R-033(ssll) 写明 `POST /librarian` 契约;**aw 维护者一步步接入说明 = [docs/15](docs/15-autowriter-librarian-integration.md)**(config / httpx client / generate_batch 透传 / build_layered_system_prompt 注入 P2 / 降级语义 / 自测)
 
-**关键设计点**:馆员=纯 LLM 推理选取(非 RAG);brief 以项目 system_prompt 包为主体;独立共享服务(aw + ssll 共用);结果缓存省 LLM;synthetic 伪贴**无差别排除**(不拿造假指标喂高权重学习面)。
+**已部署上线**(本会话新增,超出原"待办=部署"):
+- **馆员服务 live 在 Railway** —— `https://truth-vault-production.up.railway.app`,`GET /health` 返回 `{"ok":true,"service":"flywheel-librarian"}`。NIXPACKS / uvicorn / root=repo 根(让 `librarian` 包可导入)。
+- **接中转站**:`librarian/clients.py:call_anthropic` 读 `ANTHROPIC_BASE_URL`(同 autowriter `get_anthropic_client` 约定,走第三方网关),重试覆盖 429/502/503/504/529 + "overloaded";`annotate_essence_pass.py`(essence + 策展共用)也已接中转站。
+- **Anthropic prompt caching**:`librarian/core.py:build_system_blocks` 把 ROLE_TASK + 候选卡库 + 项目 system_prompt 包做成 2 个 `cache_control: ephemeral` system 块,本次 brief 的 delta 只进 user message —— 同库不同 brief 命中大前缀缓存(省 ~90%)。**两层省钱**:结果缓存(整次跳过 LLM) ⊕ prompt cache(只重算 delta)。
+- **daily-sync cron 已开**:`schedule: '0 2 * * *'`(仅从 default branch main 触发);加了策展 sync step(尊重 `PROJECT_FILTER` → `--project`)+ 接进失败聚合 + `ANTHROPIC_BASE_URL` env。修了 cron 全红根因:未配 feishu `sync_config` 的项目(NUC/NRT)现优雅跳过(两定位符都空→return 0;半配置→return 2 仍报错)。
 
-**当前书架为空**:0 真·非 synthetic 爆款(WTG 唯一那条参考是 synthetic、已正确排除)。plumbing 全通,等真爆款进库 + 策展 pass 生成经验卡才有料(同整条飞轮:先搭好、等料)。
+**关键设计点**:馆员=纯 LLM 推理选取(非 RAG);brief 以项目 system_prompt 包为主体;独立共享服务(aw + ssll 共用);结果缓存省 LLM;synthetic 伪贴**无差别排除**(不拿造假指标喂高权重学习面)。**鉴权**:`POST /librarian` 校验 `X-Librarian-Key`(对应 Railway env `LIBRARIAN_API_KEY`);任何内部错误返回 `{"selected":[]}`(不 500),消费方永远拿得到可用结构。
 
-**剩余(非本仓代码)**:部署 `librarian/` 到 Railway(`railway.json` 就绪);R-032 / R-033 sister-repo 接入(契约见 docs/10);真爆款进库。
+**当前书架为空**:0 真·非 synthetic 爆款(WTG 唯一那条参考是 synthetic、已正确排除)。plumbing 全通、服务 live、`/librarian` 现返回 `{"selected":[]}`(正确/预期,且空库不触发 LLM)。等真爆款进库 + 策展 pass 生成经验卡才有料 —— 届时才首次跑满 LLM 路径(中转站 + caching)(同整条飞轮:先搭好、等料)。
+
+**剩余(非本仓代码)**:R-032 / R-033 sister-repo 接入 —— aw 照 [docs/15](docs/15-autowriter-librarian-integration.md) 接一个 HTTP client + generate_batch 透传 + 注入 P2(ssll 同理,见 docs/10 R-033);真爆款进库(运营在飞书标真爆/大爆 → 策展 pass 生成卡)。
 
 **advisor**:apply v1.4/v1.5 后查过 —— 新表只有 `rls_enabled_no_policy`(INFO,与现有 15 张 truth_vault 表同模式:service_role-only 后台表,刻意)+ 新索引 `unused_index`(INFO,空表未被查),无 ERROR、无回归。
 
