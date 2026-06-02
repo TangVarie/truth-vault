@@ -3,8 +3,10 @@
 **用途**: pull 模型的【借阅端】。写稿时,LLM 馆员拿一个写作 **brief** + 一批【已验证爆款/
 值得参考】的"经验卡"(由策展 pass 产出,见 `prompts/flywheel_curator.md`),**推理挑选
 3-5 张最有借鉴价值的**,并说清每张【为什么相关】+【借它哪个部位】。由
-`librarian/core.py` 调用,运行时模板在 `librarian/core.py:LIBRARIAN_PROMPT_TEMPLATE`
-(改其一时同步另一个)。
+`librarian/core.py` 调用。运行时为 **prompt caching 分块结构**(`core.py`):`ROLE_TASK_INSTR`
++ 候选卡 → 第 1 个 `cache_control: ephemeral` system 块(跨项目共享、同 library_version 内稳定);
+项目 prompt 包 → 第 2 个缓存块(按项目);本次 delta → user message(每次变、不缓存)。
+改本文件时同步 `core.py` 的 `ROLE_TASK_INSTR`。
 
 背景: D-038 / docs/14。**馆员 ≠ 策展员**:
 - 策展(`flywheel_curator.md`): 入库时把**单条**生贴提炼成一张经验卡。

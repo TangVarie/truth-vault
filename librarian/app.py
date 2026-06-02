@@ -15,7 +15,9 @@
   build:  pip install -r librarian/requirements.txt
   start:  uvicorn librarian.app:app --host 0.0.0.0 --port $PORT
   env:    SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY / ANTHROPIC_API_KEY /
-          FLYWHEEL_LIBRARIAN_MODEL(可选) / LIBRARIAN_API_KEY(鉴权, 生产建议设)
+          ANTHROPIC_BASE_URL(中转站/第三方网关, 可选; 不设走官方) /
+          FLYWHEEL_LIBRARIAN_MODEL(可选, 默认 claude-sonnet-4-6) /
+          LIBRARIAN_API_KEY(鉴权, 生产建议设)
   见 repo 根 railway.json。
 """
 

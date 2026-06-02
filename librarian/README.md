@@ -22,6 +22,11 @@ librarian/
 4. 未命中 → LLM 按 brief 推理选 3-5 张 → 校验 id 在候选内 → 富集卡内容 → 写缓存。
    **LLM 失败 → 返回 `[]`**(绝不阻塞写稿; 飞轮是增强项)。
 
+**两层省钱(应用 autowriter 同款策略)**:
+- **结果缓存**(上面 step 3, `flywheel_librarian_cache`):挡"完全相同的请求"(同 brief + 同 library_version),直接复用上次精选、**整次跳过 LLM**。
+- **Anthropic prompt caching**(`cache_control: ephemeral`):候选卡库 + 项目 system_prompt 作为缓存 system 块,挡"同库不同 brief"的请求 —— 只重算 delta 部分,大前缀缓存命中省 ~90%。
+- LLM 调用支持**中转站**(`ANTHROPIC_BASE_URL`,同 autowriter `clients.get_anthropic_client` 约定);重试覆盖 429/502/503/529(中转站常见 overloaded)。
+
 ## 本地测试
 
 ```bash
@@ -45,8 +50,9 @@ python -m librarian.cli --brief librarian/sample_brief.json
 ## 部署 (Railway)
 
 repo 根 `railway.json` 已配好;在 Railway 建一个 service、root 指 repo 根、设环境变量
-(`SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` / `ANTHROPIC_API_KEY` / 可选
-`FLYWHEEL_LIBRARIAN_MODEL` / 建议设 `LIBRARIAN_API_KEY` 鉴权)即可。healthcheck 走 `/health`。
+(`SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` / `ANTHROPIC_API_KEY` / **`ANTHROPIC_BASE_URL`**
+(中转站/第三方网关, 可选, 不设走官方) / 可选 `FLYWHEEL_LIBRARIAN_MODEL` / 建议设
+`LIBRARIAN_API_KEY` 鉴权)即可。healthcheck 走 `/health`。
 
 调用(消费方):
 ```
