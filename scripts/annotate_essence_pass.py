@@ -436,7 +436,14 @@ def call_claude(prompt: str, model: str, *, max_attempts: int = 3) -> str:
     """
     import anthropic  # noqa: WPS433 (intentional lazy import)
 
-    client = anthropic.Anthropic()
+    # 中转站 / 第三方网关支持(同 autowriter clients.get_anthropic_client + librarian):
+    # 设了 ANTHROPIC_BASE_URL 就作 base_url, 空则走官方。essence + 复用本函数的
+    # curate_flywheel_lessons 都靠这个才能在帆谷的中转站上跑(api_key SDK 自动读 ANTHROPIC_API_KEY)。
+    _kwargs: dict = {}
+    _base_url = os.environ.get("ANTHROPIC_BASE_URL")
+    if _base_url:
+        _kwargs["base_url"] = _base_url
+    client = anthropic.Anthropic(**_kwargs)
     # Exception types we want to retry. getattr with default () means the
     # isinstance check evaluates to False on any anthropic SDK version that
     # doesn't expose that exception name — safer than a hard import.
