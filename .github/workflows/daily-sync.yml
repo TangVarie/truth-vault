@@ -58,6 +58,9 @@ jobs:
       FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
       AUTOWRITER_SYNC_USER_ID: ${{ secrets.AUTOWRITER_SYNC_USER_ID }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      # 中转站 / 第三方网关地址(同 autowriter)。配了它 essence/curate 的 LLM 调用才走中转站;
+      # 空则走官方 endpoint。注: 现在没配 ANTHROPIC_API_KEY → essence/curate 直接 skip。
+      ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
       ESSENCE_MODEL: ${{ secrets.ESSENCE_MODEL }}
       # 只跑某项目 (workflow_dispatch 的 project 输入); 空 = 全部. cron 触发时为空.
       PROJECT_FILTER: ${{ github.event.inputs.project }}

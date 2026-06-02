@@ -712,11 +712,25 @@ def main() -> int:
     app_token = sync_config.get("feishu_app_token") or os.environ.get("FEISHU_APP_TOKEN")
     table_id  = sync_config.get("feishu_table_id")  or os.environ.get("FEISHU_TABLE_ID")
     view_id   = sync_config.get("feishu_view_id")
+    if not app_token and not table_id:
+        # 两个定位符【都】空 = 占位、该项目【还没 onboard】→ 优雅跳过(非错误, exit 0)。
+        # 否则 daily-sync 跑全量时, 任何尚未 onboard 的占位项目都会拖垮整个 cron
+        # (2026-06-02 实测: NUC/NRT 占位 → cron 全红)。接入: 在 mappings/<project>.yaml
+        # 的 sync_config 同时填 feishu_app_token + feishu_table_id。
+        logger.warning(
+            "project %s 未配 feishu sync_config (app_token + table_id 都为空) "
+            "→ 尚未 onboard, 跳过(非错误)。接入请在 mappings/%s.yaml 填 sync_config。",
+            args.project_id, args.project_id,
+        )
+        return 0
     if not app_token or not table_id:
+        # 只配了【一半】= 配置写错(漏填/拼错), 不是"未 onboard" → 仍报错暴露, 别假装
+        # 成功却一行都不同步 (PR#32 review r3339895103)。
         logger.error(
-            "Missing feishu_app_token / feishu_table_id. Set them in "
-            "mapping yaml's sync_config block, or pass FEISHU_APP_TOKEN / "
-            "FEISHU_TABLE_ID env vars."
+            "project %s 的 feishu sync_config 只配了一半 "
+            "(feishu_app_token 有=%s / feishu_table_id 有=%s) — 这是配置错误、不是未 onboard。"
+            "请检查 mappings/%s.yaml 的 sync_config 是否漏填或拼错。",
+            args.project_id, bool(app_token), bool(table_id), args.project_id,
         )
         return 2
 
