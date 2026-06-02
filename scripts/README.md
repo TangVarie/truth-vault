@@ -82,6 +82,10 @@ CI 和 daily-sync workflow 都优先读 `.lock`; `.txt` 仅作为 "high-level in
 ```bash
 # Step 0 · 必做前置 migrations (跑 sync 之前必须应用，否则 preflight 会 400):
 #   - schemas/notes_v1_2.sql                          → 建 truth_vault schema
+#   - schemas/notes_v1_3_reference_tier.sql           → tier 加「参考」+ supersede 注入/飞轮视图
+#   - schemas/notes_v1_2_tier_discrepancy_view.sql    → tier 矛盾复核视图
+#   - schemas/notes_v1_4_flywheel_lesson_cards.sql    → 飞轮策展库 (经验卡表 + v_flywheel_lesson_cards 视图)
+#   - schemas/notes_v1_5_librarian_cache.sql          → 馆员结果缓存表 (pull / D-038)
 #   - autowriter-migrations/001_create_autowriter_schema.sql → 把 autowriter 表从 public 迁到 autowriter schema
 #   - autowriter-migrations/002_add_external_source.sql     → items 加 (external_source, external_source_id) 列
 #         + per-user partial UNIQUE (user_id, external_source, external_source_id) WHERE external_source IS NOT NULL.

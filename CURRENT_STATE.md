@@ -1,8 +1,8 @@
 # Truth Vault · 当前状态
 
-**最后更新**: 2026-06-01 (Session #15 · 通道1 首次端到端打通 + synthetic 分级)
-**当前阶段**: 飞轮**通道1 已首次转起来** (WTG 第一条「参考」MF65 实跑同步进 `public.reference_samples`); 基础设施全通; **待办 = 通道2 映射(autowriter 一对多需定) + 运营继续标 tier(774 走爆贴高权重) + R-022 下游端到端验证** (详见下方 Session #15)
-**当前会话编号**: #15
+**最后更新**: 2026-06-02 (Session #16 · 通道2 改 pull + LLM 馆员服务建成)
+**当前阶段**: 通道1 已转起来; **通道2 重构为 pull / 图书馆 + LLM 馆员 (D-038), TV 侧全建完** (v1.4/v1.5 已上 prod, `librarian/` 服务就绪, 策展 pass 上 cron); **待办 = 部署 librarian 到 Railway + R-032/R-033 sister-repo 接入 + 真爆款进库** (详见下方 Session #16)
+**当前会话编号**: #16
 
 会话进度脉络:
 - Session #9 (2026-05-20): Sprint 0 三轮 review 完成, 主链路代码就绪
@@ -13,10 +13,34 @@
 
 - Session #14 (2026-05-29): 三仓集成审计 (5 路并行 agent) + 连生产库 (kduysqedrclrfevrxiie) 只读核对地面真相 + 仓内修复 (部署/CI 缺口 + 文档对齐 + 轻量健壮性)
 - Session #15 (2026-06-01): **通道1 首次端到端打通** —— WTG 运营标的第一条「参考」(MF65) 实跑进 ssll `reference_samples`; 落地 **synthetic 分级** (伪爆贴只挡爆/大爆、放行参考); 修正 `tier_source='人工补录'` DB 改法不持久 (飞书回灌覆盖); 连库确认 autowriter 侧零影响 (`efaf9c4`/`bd45656`, main PR #26)
+- Session #16 (2026-06-02): **通道2 改 pull + LLM 馆员服务建成** —— D-038 把通道2 从 push 重构为 pull / 图书馆 + LLM 馆员; 建 v1.4 策展库 + v1.5 缓存 + `librarian/` 服务 + 策展 pass(上 daily-sync cron); v1.4/v1.5 已 apply 到 prod + advisor 核验无回归; 处理 PR #27/#28 review (分页 / synthetic / source_note_id / updated_at) (PR #27/#28/#29 已合 main)
 
 ---
 
-## 🟢 Session #15 (2026-06-01) · 通道1 首次端到端打通 + synthetic 分级 ⭐ 最新必读
+## 🟢 Session #16 (2026-06-02) · 通道2 改 pull + LLM 馆员服务建成 ⭐ 最新必读
+
+> 通道2 从 push 重构为 pull / 图书馆 + LLM 馆员 的完整落地。
+
+**决策 D-038**:通道2 从「TV push 进 `autowriter.items` + 单 FK 路由」改为 **pull / 图书馆 + LLM 馆员**。根因:autowriter 正例机制是 recency-push、不做检索,逼出一对多路由复杂度(WTG 1 个 TV 项目 ↔ 18 个 aw 项目 / 3 owner);通道1(ssll)本就是 pull,对齐之。完整设计见 [docs/14](docs/14-channel2-pull-librarian.md)。
+
+**TV 侧已建完**(PR #28/#29 已合 main;v1.4 + v1.5 已 apply 到 prod):
+- ① 策展库:`flywheel_lesson_annotations` 表 + `v_flywheel_lesson_cards` 视图(v1.4)
+- ② 策展 pass(管家·单条爆款→经验卡):`scripts/curate_flywheel_lessons.py` + `prompts/flywheel_curator.md`,已上 daily-sync cron
+- ③ 缓存:`flywheel_librarian_cache`(v1.5,内容寻址 + 库版本自动失效)
+- ④⑤ 馆员服务(馆员·多卡→按 brief 推理选取):`librarian/`(core 选取 + FastAPI `POST /librarian` + dry-run CLI + `railway.json`)
+- ⑥ 契约:R-032(aw)/ R-033(ssll) 写明 `POST /librarian` 调用契约
+
+**关键设计点**:馆员=纯 LLM 推理选取(非 RAG);brief 以项目 system_prompt 包为主体;独立共享服务(aw + ssll 共用);结果缓存省 LLM;synthetic 伪贴**无差别排除**(不拿造假指标喂高权重学习面)。
+
+**当前书架为空**:0 真·非 synthetic 爆款(WTG 唯一那条参考是 synthetic、已正确排除)。plumbing 全通,等真爆款进库 + 策展 pass 生成经验卡才有料(同整条飞轮:先搭好、等料)。
+
+**剩余(非本仓代码)**:部署 `librarian/` 到 Railway(`railway.json` 就绪);R-032 / R-033 sister-repo 接入(契约见 docs/10);真爆款进库。
+
+**advisor**:apply v1.4/v1.5 后查过 —— 新表只有 `rls_enabled_no_policy`(INFO,与现有 15 张 truth_vault 表同模式:service_role-only 后台表,刻意)+ 新索引 `unused_index`(INFO,空表未被查),无 ERROR、无回归。
+
+---
+
+## 🟢 Session #15 (2026-06-01) · 通道1 首次端到端打通 + synthetic 分级 (上一里程碑)
 
 > 本节 supersede #14 的「🔴 飞轮其实还没转起来」—— **通道1 现已首次转起来。**
 

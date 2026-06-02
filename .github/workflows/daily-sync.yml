@@ -163,6 +163,23 @@ jobs:
             exit 1
           fi
 
+      - name: 策展 flywheel 经验卡 (pull 馆员书架, D-038 / docs/14)
+        id: curate_sync
+        continue-on-error: true
+        if: steps.check.outputs.skip != 'true' && env.ANTHROPIC_API_KEY != '' && github.event.inputs.skip_essence != 'true'
+        working-directory: scripts
+        run: |
+          DRYRUN=""
+          [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRYRUN="--dry-run"
+          # 尊重 workflow 的 project 输入: 定向跑某项目时只策展该项目, 不在别的项目上花
+          # Anthropic 预算(与 feishu/essence 等 per-project 步骤一致; PR#30 review r3338862087)。
+          PROJ=""
+          [ -n "$PROJECT_FILTER" ] && PROJ="--project $PROJECT_FILTER"
+          # 把合格爆款(爆/大爆/参考, 非 synthetic)提炼成"经验卡", 喂 pull 模型的 LLM 馆员书架。
+          # 读 v_flywheel_lesson_cards 里 is_curated=false 的卡; 库小时一轮跑完(--limit 50 软上限)。
+          # 复用 skip_essence flag(同属 LLM 花费, 一起跳)。书架空时 0 卡, no-op。
+          python curate_flywheel_lessons.py --limit 50 $PROJ $DRYRUN
+
       - name: TV 爆款 → sanshengliubu.reference_samples (通道 1)
         id: ssll_sync
         continue-on-error: true
@@ -242,6 +259,9 @@ jobs:
           fi
           if [ "${{ steps.essence_sync.outcome }}" = "failure" ]; then
             failed_steps="$failed_steps essence_sync"
+          fi
+          if [ "${{ steps.curate_sync.outcome }}" = "failure" ]; then
+            failed_steps="$failed_steps curate_sync"
           fi
           if [ "${{ steps.ssll_sync.outcome }}" = "failure" ]; then
             failed_steps="$failed_steps ssll_sync"
