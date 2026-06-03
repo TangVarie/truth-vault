@@ -51,11 +51,11 @@ mappings/<project_id>.yaml(结构对齐现有 mapping,尤其 mappings/WTG_phase1
 受控词表(闭集,只能从中取值,编造会被校验拒绝):
 {vocab.vocab_reference()}
 
-输出【严格 JSON,无 markdown 围栏】,正好两个 key:
-{{"mapping_yaml": "<完整 mapping.yaml 文本(YAML 字符串);结构对齐 mappings/WTG_phase1.yaml;\
-所有判断项写成 [待确认]>",
-  "review_brief": "<给策略 lead 的 review brief(markdown):只列要拍板的项,每项带\
-你的草稿 + 理由 + 在别的表里的先例;别复述整份 yaml>"}}"""
+输出两段,用下面两行分隔标记隔开;**不要用 ``` 代码块包裹,也不要输出 JSON**:
+===MAPPING_YAML===
+(完整 mapping.yaml 文本,结构对齐 mappings/WTG_phase1.yaml;所有判断项写成 [待确认])
+===REVIEW_BRIEF===
+(给策略 lead 的 review brief,markdown:只列要拍板的项,每项带草稿 + 理由 + 在别的表里的先例;别复述整份 yaml)"""
 
 
 def _render_fields(fields: list[dict]) -> str:
@@ -91,8 +91,33 @@ def build_user_message(project_id: str, fields: list, sample: dict, distinct: di
         "── 字段清单(权威列名 + 单选/多选的完整选项)──\n" + _render_fields(fields),
         "── 全表 distinct(枚举型列的取值【全集】;高基数列只报数量)──\n" + _render_distinct(distinct),
         "── 文案样本(看风格,不用于枚举)──\n" + _render_samples(sample.get("rows", [])),
-        f"据此起草 mappings/{project_id}.yaml + review brief,按系统提示输出严格 JSON。",
+        f"据此起草 mappings/{project_id}.yaml + review brief,按系统提示的两段分隔格式输出。",
     ])
+
+
+def _strip_fence(s: str) -> str:
+    s = (s or "").strip()
+    if s.startswith("```"):
+        s = s.split("\n", 1)[1] if "\n" in s else ""
+        if s.rstrip().endswith("```"):
+            s = s.rstrip()[:-3]
+    return s.strip()
+
+
+def _split_output(raw: str) -> tuple[str, str]:
+    """从模型输出切出 (mapping_yaml, review_brief)。
+
+    首选 ===MAPPING_YAML=== / ===REVIEW_BRIEF=== 分隔;兼容旧 JSON;再不行整段当 yaml。
+    """
+    M, B = "===MAPPING_YAML===", "===REVIEW_BRIEF==="
+    if M in raw and B in raw:
+        after = raw.split(M, 1)[1]
+        y, b = after.split(B, 1)
+        return _strip_fence(y), _strip_fence(b)
+    parsed = clients.parse_json(raw)
+    if isinstance(parsed, dict) and "mapping_yaml" in parsed:
+        return parsed["mapping_yaml"], parsed.get("review_brief", "")
+    return _strip_fence(raw), ""
 
 
 def run_onboarding(
@@ -130,13 +155,11 @@ def run_onboarding(
 
     # ── 3. 一次 LLM 调用 ──
     print(f"· 调 {model}(单次,走中转站)起草中…")
-    raw = clients.call_anthropic(user, model, system=SYSTEM_PROMPT, max_tokens=8000)
-    parsed = clients.parse_json(raw)
-    if not isinstance(parsed, dict) or "mapping_yaml" not in parsed:
-        print("❌ 模型没按 JSON 输出。原始响应前 800 字:\n" + (raw or "")[:800])
+    raw = clients.call_anthropic(user, model, system=SYSTEM_PROMPT, max_tokens=16000)
+    mapping_text, brief = _split_output(raw)
+    if not mapping_text.strip():
+        print("❌ 没解析出 mapping_yaml。原始响应前 1200 字:\n" + (raw or "")[:1200])
         return {"is_error": True}
-    mapping_text = parsed["mapping_yaml"]
-    brief = parsed.get("review_brief", "")
 
     # ── 4. 校验 + 写盘 ──
     all_cols = [f["field_name"] for f in fields] or sample.get("columns")
