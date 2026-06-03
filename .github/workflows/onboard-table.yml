@@ -39,6 +39,35 @@ jobs:
           python-version: "3.11"
       - run: pip install -r onboarder/requirements.txt
 
+      - name: 中转站连通性自检(20s 给结论,URL 不外泄)
+        env:
+          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          base="${ANTHROPIC_BASE_URL%/}"
+          echo "探测中转站(URL 已被 GitHub 掩码)…"
+          code=$(curl -sS -o /tmp/probe.txt -w "%{http_code}" --max-time 20 \
+            "$base/v1/messages" \
+            -H "x-api-key: $ANTHROPIC_API_KEY" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "content-type: application/json" \
+            -d '{"model":"claude-sonnet-4-6","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}' \
+            2>/tmp/curlerr.txt) || {
+              echo "❌ 连不上中转站 (curl exit $?):"; cat /tmp/curlerr.txt
+              echo "→ ANTHROPIC_BASE_URL 这个 GitHub Secret 的值很可能不对/不可达(它今天才第一次被真正用到)。"
+              echo "  对照 librarian 在 Railway 用的值重设:必须 https://、不带 /v1 后缀、host/端口无误。"
+              exit 1; }
+          echo "✅ 可达,HTTP $code;响应前 300 字:"; head -c 300 /tmp/probe.txt; echo
+          if [ "$code" != "200" ]; then
+            case "$code" in
+              401|403) echo "→ 可达但鉴权失败:查 ANTHROPIC_API_KEY(或网关要 Bearer 而非 x-api-key)。";;
+              404) echo "→ 可达但路径不对:ANTHROPIC_BASE_URL 可能多了 /v1 或不是 Anthropic 原生端点。";;
+              *) echo "→ 网关非 200,看上面响应体。";;
+            esac
+            echo "先修网关再跑 agent。"; exit 1
+          fi
+          echo "→ 网关 OK 且 key 有效,继续 agent。"
+
       - name: 起草 mapping(agent)
         timeout-minutes: 12
         env:
