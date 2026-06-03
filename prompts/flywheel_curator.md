@@ -1,7 +1,8 @@
 # prompts/flywheel_curator.md · 飞轮经验卡策展 prompt (v1)
 
 **用途**: 把运营确认【值得借鉴】的真实笔记(爆/大爆 = 验证过的爆款; 参考 = 值得学的好内容;
-**均排除 synthetic 伪贴**)提炼成"经验卡"——供 pull 模型的 LLM 馆员
+synthetic 伪贴**只排除爆/大爆**, 参考放行 —— 参考是人工内容判断、与指标真假无关,
+Session #15)提炼成"经验卡"——供 pull 模型的 LLM 馆员
 借阅时用的、可【迁移】的写作经验。由 `scripts/curate_flywheel_lessons.py` 调用,产出写入
 `truth_vault.flywheel_lesson_annotations`(schema 见 `schemas/notes_v1_4_flywheel_lesson_cards.sql`)。
 

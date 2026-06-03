@@ -39,8 +39,10 @@ export ANTHROPIC_API_KEY=...
 python -m librarian.cli --brief librarian/sample_brief.json
 ```
 
-> 当前书架为空(0 真·非 synthetic 爆款), 所以真跑会返回 `[]`、dry-run 会显示
-> `candidate_count: 0`。等飞书出现真爆款/参考(非 synthetic)、经策展 pass 入库后才有料。
+> 当前书架有 **1 张卡**:WTG 那条「参考」(`WTG_phase1_recvk9VPCTNG1b`)。它 synthetic=true
+> 但 tier=参考 → 放行(synthetic 只挡爆/大爆;参考是人工内容判断、与指标真假无关,Session #15;
+> 卡带 `synthetic` 标记,馆员 `_render_cards` 会提示"指标未验证")。`is_curated=false`,馆员用
+> essence + excerpt 兜底,下次策展 pass 补 hook/structure 等 4 字段。真·爆款进库后书架扩充。
 
 ## 与"策展员"的区别
 

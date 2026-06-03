@@ -14,6 +14,8 @@
 --   * rank_score 复用注入打分【同一公式】(recency + tier + tier_source +
 --     account_bao_rate), 让馆员"借到的是好书且新"(吸收 D-036)。
 --   * tier 纳入 爆/大爆/参考 (与 v1.3 一致; 参考权重 +0.15)。
+--   * synthetic(伪爆贴)只挡爆/大爆(指标型 tier), 参考放行 —— 参考是纯人工内容判断、
+--     与指标真假无关 (Session #15 运营拍板, 同通道1 ssll); 放行的卡带 synthetic 标记。
 --
 -- 经验卡为何独立建表 (不加列到 notes): 仿 note_features (按 note_id 一行的
 --   特征表) 的范式 —— 策展字段稀疏(只对爆/大爆/参考算) + 生命周期独立(LLM
@@ -62,7 +64,7 @@ WITH eligible AS (
         n.note_id, n.project_id, n.raw_content, n.account_id,
         n.tier, n.tier_source, n.publish_time, n.platform,
         n.emotional_lever, n.target_audience, n.user_pain_point, n.content_format,
-        n.hit_blue_keywords,
+        n.hit_blue_keywords, n.data_quality_flags,
         p.brand, p.category,
         GREATEST(0::double precision,
             (1.0 - EXTRACT(epoch FROM now()::timestamp without time zone - n.publish_time)
@@ -73,12 +75,14 @@ WITH eligible AS (
       AND n.tier_source IS DISTINCT FROM '数值推断'
       AND n.publish_time IS NOT NULL
       AND n.publish_time > (now() - '1 year'::interval)::timestamp without time zone
-      -- synthetic(伪爆贴, 指标造假)【无差别排除】所有 tier(含参考) —— 馆员是
-      -- "教 LLM 这条为什么有效"的高权重学习面, 不能拿造假指标的内容当真经验喂模型
-      -- (PR#28 review r3333039948)。与 push 的 v_autowriter_injection_candidates 一致
-      -- (都排除 synthetic)。注: 通道1 ssll 对 参考 放行 synthetic 是因为那只是"证据包"、
-      -- 不是"已验证经验"; 本视图等同通道2 的学习面, 从严。
-      AND (n.data_quality_flags ->> 'synthetic') IS DISTINCT FROM 'true'
+      -- synthetic(伪爆贴, 指标造假)只挡【指标型 tier】(爆/大爆) —— 它们的"爆"靠假数据
+      -- 撑; 「参考」是纯人工内容判断、与指标真假无关, 放行(Session #15 运营拍板, 同通道1
+      -- ssll 的 fetch_pending_baokuan: `synthetic AND tier IN (爆,大爆)` 才排除)。馆员借的
+      -- 是钩子/结构/可迁移手法(内容经验)而非指标; synthetic_reason 本身写「指标不可信但有
+      -- 潜力信号」—— 正是参考的用法。放行的 synthetic 卡带 synthetic=true 标记(见下方
+      -- select), 馆员/aw 据此知"指标未验证"。COALESCE 保证 synthetic 为 NULL 的真贴照常进。
+      AND NOT (COALESCE(n.data_quality_flags ->> 'synthetic', 'false') = 'true'
+               AND n.tier = ANY (ARRAY['爆', '大爆']))
       -- ⚠️ 故意【不】加 p.mapping_to_autowriter_project_id IS NOT NULL ——
       --    pull 不做 per-project 预路由 (D-038 改 pull 要消灭的复杂度)。
 )
@@ -113,7 +117,10 @@ SELECT
             WHEN '人工补录' THEN 0.2
             ELSE 0
           END::double precision
-        + COALESCE(a.personal_bao_rate, 0.3::double precision) * 0.3::double precision AS rank_score
+        + COALESCE(a.personal_bao_rate, 0.3::double precision) * 0.3::double precision AS rank_score,
+    -- synthetic 标记: 放行的 synthetic 参考带此标, 馆员/aw 据此知"指标未验证"
+    -- (Session #15 的"带标记"口径, 对齐 ssll 的 _truth_vault_synthetic)。
+    (COALESCE(e.data_quality_flags ->> 'synthetic', 'false') = 'true') AS synthetic
 FROM eligible e
 LEFT JOIN truth_vault.flywheel_lesson_annotations la ON la.note_id = e.note_id
 LEFT JOIN truth_vault.v_top_performing_accounts a   ON a.account_id = e.account_id;
