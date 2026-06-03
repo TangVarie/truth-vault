@@ -9,6 +9,7 @@ hermetic CI),跑一次 query() 起草一张表的 mapping。
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Any, Optional
 
@@ -100,6 +101,12 @@ async def _guard_tools(input_data: dict, tool_use_id: Optional[str], context: An
     }
 
 
+def _cli_stderr(line: str) -> None:
+    """把底层 claude CLI 的 stderr 透出来 —— 卡住时这是唯一能看到原因的地方
+    (例:中转站不回流式响应 / 鉴权失败 / 网络)。"""
+    print(f"[cli] {line}", flush=True)
+
+
 def build_options(model: str, max_turns: int, budget_usd: float, cwd: str) -> ClaudeAgentOptions:
     server = create_sdk_mcp_server("onboarder", "1.0.0", tools=tools.ALL_TOOLS)
     return ClaudeAgentOptions(
@@ -113,6 +120,8 @@ def build_options(model: str, max_turns: int, budget_usd: float, cwd: str) -> Cl
         max_budget_usd=budget_usd,              # 成本硬上限
         setting_sources=[],                     # hermetic:不读本机 ~/.claude
         cwd=cwd,
+        stderr=_cli_stderr,                     # 透出 CLI stderr(诊断卡死)
+        load_timeout_ms=60_000,                 # CLI 起不来就 60s 报错,别干等
     )
 
 
@@ -127,6 +136,7 @@ async def run_onboarding(
     budget_usd: float = 2.0,
     out_dir: str = "mappings",
     cwd: Optional[str] = None,
+    timeout_s: int = 600,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """跑一次接表。dry_run=True 只打印 system prompt + 任务 + 工具,不调 LLM。"""
@@ -145,18 +155,30 @@ async def run_onboarding(
     options = build_options(model, max_turns, budget_usd, cwd)
     final: dict[str, Any] = {"result": None, "cost_usd": None, "is_error": None, "tool_calls": []}
 
-    async for message in query(prompt=task, options=options):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if isinstance(block, TextBlock) and block.text.strip():
-                    print("· claude:", block.text.strip()[:400])
-                elif isinstance(block, ToolUseBlock):
-                    final["tool_calls"].append(block.name)
-                    print(f"  → tool: {block.name}")
-        elif isinstance(message, ResultMessage):
-            final["result"] = getattr(message, "result", None)
-            final["cost_usd"] = getattr(message, "total_cost_usd", None)
-            final["is_error"] = getattr(message, "is_error", None)
+    async def _consume() -> None:
+        async for message in query(prompt=task, options=options):
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock) and block.text.strip():
+                        print("· claude:", block.text.strip()[:400], flush=True)
+                    elif isinstance(block, ToolUseBlock):
+                        final["tool_calls"].append(block.name)
+                        print(f"  → tool: {block.name}", flush=True)
+            elif isinstance(message, ResultMessage):
+                final["result"] = getattr(message, "result", None)
+                final["cost_usd"] = getattr(message, "total_cost_usd", None)
+                final["is_error"] = getattr(message, "is_error", None)
+
+    try:
+        await asyncio.wait_for(_consume(), timeout=timeout_s)
+    except asyncio.TimeoutError:
+        final["is_error"] = True
+        print(
+            f"\n!! TIMEOUT after {timeout_s}s —— agent 没拿到模型响应。"
+            f"\n   最可能: 中转站没把 Claude Code CLI 的【流式】响应传回(librarian 用非流式所以能过)。"
+            f"\n   看上面 [cli] 行的 stderr 定位; 退路见 docs/16 §额度(换官方 endpoint / 全兼容网关)。",
+            flush=True,
+        )
 
     print(
         f"\n=== done === cost≈${final['cost_usd']} "

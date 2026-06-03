@@ -40,6 +40,7 @@ jobs:
       - run: pip install -r onboarder/requirements.txt
 
       - name: 起草 mapping(agent)
+        timeout-minutes: 12
         env:
           # 中转站(同 librarian);若网关要 bearer,改用 ANTHROPIC_AUTH_TOKEN
           ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
@@ -54,6 +55,7 @@ jobs:
             --table-id "${{ inputs.feishu_table_id }}" \
             --sample-n "${{ inputs.sample_n }}" \
             --budget-usd 2.0 \
+            --timeout 300 \
             --out-dir mappings
 
       - name: 开 PR(草稿 + brief,待策略 lead 审)

@@ -28,6 +28,7 @@ def main() -> int:
     p.add_argument("--model", default=core.DEFAULT_MODEL, help="模型(默认 %(default)s)")
     p.add_argument("--max-turns", type=int, default=40)
     p.add_argument("--budget-usd", type=float, default=2.0, help="单次成本硬上限")
+    p.add_argument("--timeout", type=int, default=600, help="整轮超时秒数(超了快速失败,不干挂)")
     p.add_argument("--out-dir", default="mappings", help="draft yaml + brief 输出目录")
     p.add_argument("--dry-run", action="store_true", help="只打印 prompt/工具,不调 LLM")
     args = p.parse_args()
@@ -45,6 +46,7 @@ def main() -> int:
             max_turns=args.max_turns,
             budget_usd=args.budget_usd,
             out_dir=args.out_dir,
+            timeout_s=args.timeout,
             dry_run=args.dry_run,
         )
     )
