@@ -1,0 +1,70 @@
+# 接表 agent —— 手动触发:飞书表 → mapping.yaml 草稿 → 自动开 PR。
+# 见 docs/16-onboarding-agent.md。额度走中转站;产出是带 [待确认] 的草稿,人审 PR 才进库。
+name: 接表 agent (onboard a feishu table)
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_id:
+        description: "品牌_期数,如 TXQ_phase1"
+        required: true
+      feishu_app_token:
+        description: "飞书表 app_token (bascn.../A2sy...)"
+        required: true
+      feishu_table_id:
+        description: "飞书表 table_id (tbl...)"
+        required: true
+      sample_n:
+        description: "拉多少行样本"
+        required: false
+        default: "30"
+
+jobs:
+  onboard:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write          # 提交草稿到新分支
+      pull-requests: write      # 开 PR
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: 装 Claude Code CLI (agent SDK 底层驱动它)
+        run: npm install -g @anthropic-ai/claude-code
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r onboarder/requirements.txt
+
+      - name: 起草 mapping(agent)
+        env:
+          # 中转站(同 librarian);若网关要 bearer,改用 ANTHROPIC_AUTH_TOKEN
+          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # 飞书 bot(与 daily-sync 同一对)
+          FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+          FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+        run: |
+          python -m onboarder.cli \
+            --project-id "${{ inputs.project_id }}" \
+            --app-token "${{ inputs.feishu_app_token }}" \
+            --table-id "${{ inputs.feishu_table_id }}" \
+            --sample-n "${{ inputs.sample_n }}" \
+            --budget-usd 2.0 \
+            --out-dir mappings
+
+      - name: 开 PR(草稿 + brief,待策略 lead 审)
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: onboarder/draft-${{ inputs.project_id }}
+          title: "接表草稿: ${{ inputs.project_id }} (agent 起草, 待策略 lead 审)"
+          body-path: mappings/${{ inputs.project_id }}.brief.md
+          add-paths: |
+            mappings/${{ inputs.project_id }}.yaml
+            mappings/${{ inputs.project_id }}.brief.md
+          labels: |
+            onboarding
+            needs-strategy-review
