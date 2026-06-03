@@ -46,8 +46,12 @@ mappings/<project_id>.yaml(结构对齐现有 mapping,尤其 mappings/WTG_phase1
                (仅限 _status_raw / _direction_raw / _comment_text / _note_for_tier 这类)
              · 其它"保留但不处理"的列(图片/附件/巡查/副本/备注/截图…)一律进
                project_specific_fields_to_raw_extra,**别用 _xxx_raw 塞进 field_mapping**
-  3 方向拆解: 用【字段选项 / 全表 distinct 的完整取值集】枚举所有「方向」(不是样本!),
-             逐个起草 content_format/target_audience/user_pain_point,全标 [待确认]
+  3 方向拆解: 「方向」是多选,distinct 里会出现组合(如「方向三 / 方向六」)。**只给每个
+             【基础方向】(方向一…方向六这种单项)各写一条 direction_decomposition,
+             不要为多选组合单独建条目** —— 组合行由 sync 拆成各基础方向分别套用。
+             同一基础方向内的产品线/场景差异,用该方向下的 sub_directions(带
+             detection_signal;写法见 mappings/WTG_phase1.yaml 方向六)。每条起草
+             content_format/target_audience/user_pain_point,全标 [待确认]。
   4 tier    : tier_extraction.source 只能填【状态字段】或【备注字段】(sync 只认这两个)。
              A/B 家族填 状态字段(把表里的状态列——哪怕它叫"流量状态"——映射成 _status_raw);
              C 家族填 备注字段(映射成 _note_for_tier)。规则里的 tier 值用受控词表。
