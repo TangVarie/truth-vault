@@ -33,34 +33,51 @@ jobs:
           python-version: "3.11"
       - run: pip install -r onboarder/requirements.txt
 
-      - name: 中转站连通性自检(20s 给结论,URL 不外泄)
+      - name: 中转站连通性自检(分阶段诊断,不打印域名/IP/key)
         env:
           ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
+          set +e
+          set +o pipefail
           base="${ANTHROPIC_BASE_URL%/}"
-          echo "探测中转站(URL 已被 GitHub 掩码)…"
-          code=$(curl -sS -o /tmp/probe.txt -w "%{http_code}" --max-time 20 \
+          echo "── ① URL 形状(不泄露值)──"
+          echo "长度=${#ANTHROPIC_BASE_URL}"
+          case "$ANTHROPIC_BASE_URL" in
+            https://*) echo "开头: OK https://";;
+            http://*)  echo "开头: ⚠️ http://(非 https)";;
+            *) echo "开头: ❌ 不是 http(s)://(填错/有前导空格?)";;
+          esac
+          last=$(printf %s "$ANTHROPIC_BASE_URL" | tail -c 1 | od -An -tx1 | tr -d ' \n')
+          echo "末字符 hex=$last(字母数字正常;0a=换行 20=空格 09=tab → 粘贴带了尾部空白!)"
+          case "$ANTHROPIC_BASE_URL" in
+            */v1|*/v1/) echo "⚠️ 末尾带 /v1 → 会拼成 /v1/v1/messages";;
+          esac
+          echo "── ② DNS(只报成败)──"
+          host=$(printf %s "$base" | sed -E 's#^https?://##; s#[:/].*$##')
+          if getent hosts "$host" >/dev/null 2>&1; then echo "DNS 解析: OK"; else echo "DNS 解析: ❌(域名解析不了 → 值可能错)"; fi
+          echo "── ③ 分阶段连接(连接超时 10s,总超时 25s)──"
+          out=$(curl -sS -o /dev/null --connect-timeout 10 --max-time 25 \
+            -w "connect=%{time_connect}s tls=%{time_appconnect}s total=%{time_total}s http=%{http_code}" \
             "$base/v1/messages" \
-            -H "x-api-key: $ANTHROPIC_API_KEY" \
-            -H "anthropic-version: 2023-06-01" \
+            -H "x-api-key: $ANTHROPIC_API_KEY" -H "anthropic-version: 2023-06-01" \
             -H "content-type: application/json" \
-            -d '{"model":"claude-sonnet-4-6","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}' \
-            2>/tmp/curlerr.txt) || {
-              echo "❌ 连不上中转站 (curl exit $?):"; cat /tmp/curlerr.txt
-              echo "→ ANTHROPIC_BASE_URL 这个 GitHub Secret 的值很可能不对/不可达(它今天才第一次被真正用到)。"
-              echo "  对照 librarian 在 Railway 用的值重设:必须 https://、不带 /v1 后缀、host/端口无误。"
-              exit 1; }
-          echo "✅ 可达,HTTP $code;响应前 300 字:"; head -c 300 /tmp/probe.txt; echo
-          if [ "$code" != "200" ]; then
-            case "$code" in
-              401|403) echo "→ 可达但鉴权失败:查 ANTHROPIC_API_KEY(或网关要 Bearer 而非 x-api-key)。";;
-              404) echo "→ 可达但路径不对:ANTHROPIC_BASE_URL 可能多了 /v1 或不是 Anthropic 原生端点。";;
-              *) echo "→ 网关非 200,看上面响应体。";;
-            esac
-            echo "先修网关再跑 agent。"; exit 1
-          fi
-          echo "→ 网关 OK 且 key 有效,继续 agent。"
+            -d '{"model":"claude-sonnet-4-6","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}' 2>/dev/null)
+          rc=$?
+          echo "curl 退出码=$rc | $out"
+          case $rc in
+            0)  echo "→ OK 连上并拿到响应(看 http=)。网络通,问题在别处。";;
+            6)  echo "→ ❌ exit 6:域名解析失败 → ANTHROPIC_BASE_URL 域名写错。";;
+            7)  echo "→ ❌ exit 7:连接被拒(refused)→ 端口不对 / 服务没监听该端口。";;
+            28) echo "→ ❌ exit 28:超时。关键看上面 connect= :";
+                echo "     connect>0     = 连上了但网关 25s 没回 →【网关/请求】问题,不是网络;";
+                echo "     connect=0.000000 = 连都没连上 →【网络/路由/IP 可达性】问题。";;
+            35) echo "→ ❌ exit 35:TLS 握手失败(证书/协议)。";;
+            *)  echo "→ ❌ 其它 curl 错误码 $rc。";;
+          esac
+          [ "$rc" = "0" ] || { echo "自检未通过,停在这里(不跑 agent)。"; exit 1; }
+          echo "$out" | grep -q "http=200" || { echo "连上了但 http≠200,先看上面 http 码(401/403=鉴权,404=路径)。"; exit 1; }
+          echo "✅ 全通,继续 agent。"
 
       - name: 起草 mapping(agent)
         timeout-minutes: 12
