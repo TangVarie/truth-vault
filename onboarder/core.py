@@ -1,189 +1,167 @@
-"""onboarder/core.py — 接表 agent 编排(claude-agent-sdk)。
+"""onboarder/core.py — 接表起草核心(确定性取数 + 单次 Anthropic 调用)。
 
-构造 ClaudeAgentOptions(in-process MCP 工具 + PreToolUse 护栏 + 预算/turn 上限 +
-hermetic CI),跑一次 query() 起草一张表的 mapping。
+改版说明:原先用 claude-agent-sdk 的 agent 循环 + 进程内 MCP 工具,实测那条
+"CLI + 流式 + 进程内 MCP"的路太脆(网关连不上、工具不暴露)。本任务本质是
+"确定性取数 → 一次推理出草稿",和 librarian 一样,故改成 librarian 同款【单次
+非流式 Anthropic 调用】(已验证能透传中转站)。
 
-额度:走中转站 —— CLI 读环境变量 ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN
-(或 ANTHROPIC_API_KEY),与 librarian 同一约定、同一个池子。**不**用订阅额度。
+流程(全确定性,除了第 3 步一次 LLM):
+  1. 飞书:list_fields(权威列名 + 单选/多选【完整选项】)+ N 行文案样本 +
+     全表 distinct(枚举型列取【全集】,不靠样本 —— 稀有方向不漏)
+  2. corpus:历史 mapping + 家族指纹 + 词表(跨表对齐)
+  3. 拼一次 prompt → call_anthropic → {mapping_yaml, review_brief}
+  4. 词表 + D-021 校验 → 写盘
+判断项(方向/阈值/合规)一律标 [待确认];人审 PR 才进库(原则 1)。
 """
 
 from __future__ import annotations
 
-import asyncio
+import json
 import os
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any
 
-from claude_agent_sdk import (
-    AssistantMessage,
-    ClaudeAgentOptions,
-    HookMatcher,
-    ResultMessage,
-    TextBlock,
-    ToolUseBlock,
-    create_sdk_mcp_server,
-    query,
-)
+import yaml
 
-from . import tools, vocab
+from . import clients, corpus, vocab
 
 DEFAULT_MODEL = os.environ.get("ONBOARDER_MODEL", "claude-sonnet-4-6")
+DISTINCT_CAP = 40   # 不同值超过这个数的列视为自由文本,只报数量不铺开(控 prompt 体积)
 
-# agent 只能用这 5 个 onboarder 工具(SDK MCP 命名:mcp__<server>__<tool>)
-ALLOWED_TOOLS = [f"mcp__onboarder__{t.name}" for t in tools.ALL_TOOLS]
+SYSTEM_PROMPT = f"""你是 Truth Vault 的接表管家。把一张飞书投放表【起草】成一份
+mappings/<project_id>.yaml(结构对齐现有 mapping,尤其 mappings/WTG_phase1.yaml),
+供策略 lead 审。
 
-SYSTEM_PROMPT = f"""\
-你是 Truth Vault 的【接表管家】。任务:把一张飞书投放表【起草】成一份
-mappings/<project_id>.yaml(对齐现有 mapping 的结构),供策略 lead 审。
-
-宪法(README 原则 1「管家不做判断」):你只做【梳理 + 闭集抽取 + 起草】。
-判断权属于策略 lead —— 以下三类【永远只出草稿、标 [待确认]】,绝不替人拍死:
-  · direction_decomposition(方向拆解)
-  · tier_thresholds(数值阈值)
-  · compliance(合规红线 / 蓝词策略)
-另外 brand 中文名 / product / category 拿不准也标 [待确认]。
+宪法(README 原则 1「管家不做判断」):只做【梳理 + 闭集抽取 + 起草】。判断权属于
+策略 lead —— 以下【永远只出草稿、标 [待确认]】,绝不替人拍死:
+  · direction_decomposition(方向拆解)· tier_thresholds(阈值)· compliance(合规)
+  · brand 中文名 / product / category 拿不准也标 [待确认]
 
 分工(对着 docs/04 的 7 步 SOP):
-  1 元数据   : 按字段指纹判 schema_family;从数据填 project_id/平台/起止日期
-  2 字段映射 : 按家族标准表自动配;**飞书每一列都要交代**(typed 列 / 中间变量 /
-              raw_extra allowlist),一条不漏 —— 漏了的列会进 D-021 quarantine
-  3 方向拆解⭐: 用 field 选项 / 全表 distinct 枚举【所有】「方向」取值(不是样本!),
-              按方向名+文案样本【起草】content_format/target_audience/user_pain_point,
-              全部标 [待确认]
-  4 tier 抽取: A/B 套标准规则;C 家族从「备注」起草规则
-  5 阈值     : 调 recommend_thresholds,按分布给推荐(标 [待确认])
-  6 合规     : 按 category 提模板 + 扫候选蓝词(标 [待确认])
-  7 产出     : 自查通过后 emit_draft
+  1 元数据  : 按字段指纹判 schema_family(A:有巡查状态/最近检查时间/主页链接;
+             B:有关键词/蓝词记录/项目阶段、缺粉丝数;C:无方向、无数据回收、日期化结算列)
+  2 字段映射: 飞书【每一列】都要交代 —— typed 列 / 下划线中间变量 / raw_extra allowlist,
+             一条不漏(漏的列会进 D-021 quarantine)
+  3 方向拆解: 用【字段选项 / 全表 distinct 的完整取值集】枚举所有「方向」(不是样本!),
+             逐个起草 content_format/target_audience/user_pain_point,全标 [待确认]
+  4 tier    : A/B 套标准状态规则;C 家族从「备注」起草规则
+  5 阈值    : 看互动量分布给推荐,标 [待确认]
+  6 合规    : 按 category 提模板 + 扫候选蓝词,标 [待确认]
 
-受控词表(闭集,只能从中取值;编造会被 emit_draft 拒绝):
+受控词表(闭集,只能从中取值,编造会被校验拒绝):
 {vocab.vocab_reference()}
 
-工作步骤(严格按序):
-  1) read_mapping_corpus(exclude_project_id=<本表>):读词表+家族指纹+历史 mapping,
-     做跨表对齐、尽量复用已有方向拆解的写法。
-  2) list_field_options(app_token, table_id):拿【权威列清单】(含空列)+ 单选/多选字段
-     的完整选项。这是 D-021 列覆盖和枚举的基准。
-  3) pull_feishu_table:拿 N 行文案样本(只用于看正文、辅助判断,不用于枚举)。
-  4) 枚举型列(方向/状态/发布笔记/备注)取【完整】取值集:是单选/多选 → 用第 2 步的
-     options;是文本列 → 调 distinct_values 全表扫描。
-     **绝不只从 N 行样本枚举方向 —— 稀有方向(1-4 行)会漏。**
-  5) 起草整份 yaml(结构对齐 mappings/WTG_phase1.yaml;判断项全标 [待确认]),每个方向
-     取值都要有一条 direction_decomposition。
-  6) 互动量调 recommend_thresholds。
-  7) validate_mapping_yaml(columns=第 2 步的权威列清单)自查,直到 errors=0 且
-     uncovered_columns=[]。
-  8) emit_draft(columns=权威列清单)产出 yaml + review brief。
-
-review brief(emit_draft 的 review_brief 参数)只列【要策略 lead 拍板的项】,
-每项给:你的草稿 + 理由 + 在别的表里的先例。别复述整份 yaml。
-"""
-
-TASK_TEMPLATE = """\
-请接入这张飞书表并起草 mapping:
-  project_id      = {project_id}
-  feishu_app_token = {app_token}
-  feishu_table_id  = {table_id}
-  sample_n         = {sample_n}
-按系统提示的步骤,最后用 emit_draft 产出。完成后用一句话汇报写到哪、还剩几个 [待确认]。
-"""
+输出【严格 JSON,无 markdown 围栏】,正好两个 key:
+{{"mapping_yaml": "<完整 mapping.yaml 文本(YAML 字符串);结构对齐 mappings/WTG_phase1.yaml;\
+所有判断项写成 [待确认]>",
+  "review_brief": "<给策略 lead 的 review brief(markdown):只列要拍板的项,每项带\
+你的草稿 + 理由 + 在别的表里的先例;别复述整份 yaml>"}}"""
 
 
-async def _guard_tools(input_data: dict, tool_use_id: Optional[str], context: Any) -> dict:
-    """PreToolUse 硬护栏:只放行 onboarder 自己的工具(挡掉任何内建 Bash/Write/Edit 等)。"""
-    name = input_data.get("tool_name", "")
-    if name in ALLOWED_TOOLS or name.startswith("mcp__onboarder__"):
-        return {}
-    return {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": f"接表 agent 只能用 onboarder 工具,拒绝 {name}",
-        }
-    }
+def _render_fields(fields: list[dict]) -> str:
+    if not fields:
+        return "(list_fields 不可用 —— 只能依据下面样本里出现过的列;注意空列可能漏)"
+    out = []
+    for f in fields:
+        opts = f.get("options") or []
+        tail = f"  选项({len(opts)}): {opts}" if opts else ""
+        out.append(f"- {f.get('field_name')} (type={f.get('type')}){tail}")
+    return "\n".join(out)
 
 
-def _cli_stderr(line: str) -> None:
-    """把底层 claude CLI 的 stderr 透出来 —— 卡住时这是唯一能看到原因的地方
-    (例:中转站不回流式响应 / 鉴权失败 / 网络)。"""
-    print(f"[cli] {line}", flush=True)
+def _render_distinct(distinct: dict, cap: int = DISTINCT_CAP) -> str:
+    out = []
+    for col, items in distinct.get("distinct", {}).items():
+        if len(items) > cap:
+            out.append(f"[{col}] {len(items)} 个不同值(高基数,疑似自由文本,略)")
+        else:
+            vals = ", ".join(f"{v}×{c}" for v, c in items)
+            out.append(f"[{col}] {len(items)} 个: {vals}")
+    return "\n".join(out) or "(无)"
 
 
-def build_options(model: str, max_turns: int, budget_usd: float, cwd: str) -> ClaudeAgentOptions:
-    server = create_sdk_mcp_server("onboarder", "1.0.0", tools=tools.ALL_TOOLS)
-    return ClaudeAgentOptions(
-        system_prompt=SYSTEM_PROMPT,
-        model=model,
-        mcp_servers={"onboarder": server},
-        allowed_tools=ALLOWED_TOOLS,
-        hooks={"PreToolUse": [HookMatcher(hooks=[_guard_tools])]},
-        permission_mode="bypassPermissions",   # headless;放行靠 allowed_tools + 护栏
-        max_turns=max_turns,
-        max_budget_usd=budget_usd,              # 成本硬上限
-        setting_sources=[],                     # hermetic:不读本机 ~/.claude
-        cwd=cwd,
-        stderr=_cli_stderr,                     # 透出 CLI stderr(诊断卡死)
-        load_timeout_ms=60_000,                 # CLI 起不来就 60s 报错,别干等
-    )
+def _render_samples(rows: list[dict], k: int = 8) -> str:
+    return json.dumps([r.get("fields", {}) for r in rows[:k]], ensure_ascii=False, indent=2)
 
 
-async def run_onboarding(
+def build_user_message(project_id: str, fields: list, sample: dict, distinct: dict) -> str:
+    return "\n\n".join([
+        corpus.build_corpus_context(exclude=project_id),
+        f"═══ 本次要接的表 ═══\nproject_id: {project_id}\n拉到 {sample.get('n')} 行样本。",
+        "── 字段清单(权威列名 + 单选/多选的完整选项)──\n" + _render_fields(fields),
+        "── 全表 distinct(枚举型列的取值【全集】;高基数列只报数量)──\n" + _render_distinct(distinct),
+        "── 文案样本(看风格,不用于枚举)──\n" + _render_samples(sample.get("rows", [])),
+        f"据此起草 mappings/{project_id}.yaml + review brief,按系统提示输出严格 JSON。",
+    ])
+
+
+def run_onboarding(
     *,
     project_id: str,
     app_token: str,
     table_id: str,
     sample_n: int = 30,
     model: str = DEFAULT_MODEL,
-    max_turns: int = 40,
-    budget_usd: float = 2.0,
     out_dir: str = "mappings",
-    cwd: Optional[str] = None,
-    timeout_s: int = 600,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """跑一次接表。dry_run=True 只打印 system prompt + 任务 + 工具,不调 LLM。"""
-    os.environ["ONBOARDER_OUT_DIR"] = out_dir
-    cwd = cwd or os.getcwd()
-    task = TASK_TEMPLATE.format(
-        project_id=project_id, app_token=app_token, table_id=table_id, sample_n=sample_n
-    )
+    """跑一次接表起草。dry_run=True 只拼 prompt 不调 LLM(也不连飞书)。"""
+    # ── 1. 确定性取数 ──
+    if dry_run:
+        fields, sample, distinct = [], {"columns": [], "rows": [], "n": 0}, {"distinct": {}}
+    else:
+        try:
+            fields = clients.list_fields(app_token, table_id)
+        except Exception as exc:  # noqa: BLE001
+            print(f"⚠️ list_fields 失败(飞书 bot 权限?): {exc}")
+            fields = []
+        sample = clients.pull_columns_and_samples(app_token, table_id, sample_n)
+        all_cols = [f["field_name"] for f in fields] or sample["columns"]
+        print(f"· 拉到 {len(all_cols)} 列、{sample['n']} 行样本;全表 distinct 扫描中…")
+        distinct = clients.distinct_values(app_token, table_id, all_cols)
+        print(f"· distinct 扫描了 {distinct['scanned']} 行")
+
+    user = build_user_message(project_id, fields, sample, distinct)
 
     if dry_run:
         print("=== SYSTEM PROMPT ===\n" + SYSTEM_PROMPT)
-        print("=== ALLOWED TOOLS ===\n" + "\n".join(ALLOWED_TOOLS))
-        print("=== TASK ===\n" + task)
+        print("\n=== USER (corpus 已省, 仅结构) ===\n" + user[-1500:])
         return {"dry_run": True}
 
-    options = build_options(model, max_turns, budget_usd, cwd)
-    final: dict[str, Any] = {"result": None, "cost_usd": None, "is_error": None, "tool_calls": []}
+    # ── 3. 一次 LLM 调用 ──
+    print(f"· 调 {model}(单次,走中转站)起草中…")
+    raw = clients.call_anthropic(user, model, system=SYSTEM_PROMPT, max_tokens=8000)
+    parsed = clients.parse_json(raw)
+    if not isinstance(parsed, dict) or "mapping_yaml" not in parsed:
+        print("❌ 模型没按 JSON 输出。原始响应前 800 字:\n" + (raw or "")[:800])
+        return {"is_error": True}
+    mapping_text = parsed["mapping_yaml"]
+    brief = parsed.get("review_brief", "")
 
-    async def _consume() -> None:
-        async for message in query(prompt=task, options=options):
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, TextBlock) and block.text.strip():
-                        print("· claude:", block.text.strip()[:400], flush=True)
-                    elif isinstance(block, ToolUseBlock):
-                        final["tool_calls"].append(block.name)
-                        print(f"  → tool: {block.name}", flush=True)
-            elif isinstance(message, ResultMessage):
-                final["result"] = getattr(message, "result", None)
-                final["cost_usd"] = getattr(message, "total_cost_usd", None)
-                final["is_error"] = getattr(message, "is_error", None)
-
+    # ── 4. 校验 + 写盘 ──
+    all_cols = [f["field_name"] for f in fields] or sample.get("columns")
     try:
-        await asyncio.wait_for(_consume(), timeout=timeout_s)
-    except asyncio.TimeoutError:
-        final["is_error"] = True
-        print(
-            f"\n!! TIMEOUT after {timeout_s}s —— agent 没拿到模型响应。"
-            f"\n   最可能: 中转站没把 Claude Code CLI 的【流式】响应传回(librarian 用非流式所以能过)。"
-            f"\n   看上面 [cli] 行的 stderr 定位; 退路见 docs/16 §额度(换官方 endpoint / 全兼容网关)。",
-            flush=True,
-        )
+        mp = yaml.safe_load(mapping_text)
+    except yaml.YAMLError as exc:
+        print(f"❌ 产出的 yaml 解析失败: {exc}")
+        mp = None
+    res = (vocab.validate_mapping(mp, columns=all_cols) if isinstance(mp, dict)
+           else {"errors": ["yaml 解析失败"], "pending": [], "uncovered_columns": []})
 
-    print(
-        f"\n=== done === cost≈${final['cost_usd']} "
-        f"tools={final['tool_calls']} is_error={final['is_error']}"
-    )
-    if final["result"]:
-        print("result:", final["result"])
-    return final
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    yaml_path = out / f"{project_id}.yaml"
+    brief_path = out / f"{project_id}.brief.md"
+    yaml_path.write_text(mapping_text, encoding="utf-8")
+    brief_path.write_text(brief, encoding="utf-8")
+
+    print(f"\n=== 写出 {yaml_path} + {brief_path} ===")
+    print("词表 errors:", res["errors"] or "无")
+    print("未覆盖列(D-021):", res["uncovered_columns"] or "无")
+    print(f"待确认项 {len(res['pending'])} 个(交策略 lead 拍板)")
+    return {
+        "yaml": str(yaml_path), "brief": str(brief_path),
+        "errors": res["errors"], "uncovered": res["uncovered_columns"],
+        "pending": res["pending"],
+        "is_error": bool(res["errors"] or res["uncovered_columns"]),
+    }

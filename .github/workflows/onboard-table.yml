@@ -28,12 +28,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - name: 装 Claude Code CLI (agent SDK 底层驱动它)
-        run: npm install -g @anthropic-ai/claude-code
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -83,8 +77,6 @@ jobs:
             --app-token "${{ inputs.feishu_app_token }}" \
             --table-id "${{ inputs.feishu_table_id }}" \
             --sample-n "${{ inputs.sample_n }}" \
-            --budget-usd 2.0 \
-            --timeout 300 \
             --out-dir mappings
 
       - name: 开 PR(草稿 + brief,待策略 lead 审)

@@ -8,6 +8,7 @@ Railway 单独跑)。只读。
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from typing import Any, Iterator
@@ -204,3 +205,58 @@ def get_supabase():
     if not url or not key:
         raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set")
     return create_client(url, key)
+
+
+# ── Anthropic(中转站)单次调用 —— 镜像 librarian/clients.call_anthropic ──────
+# 这是已验证能透传你中转站的那条路(非流式 messages.create + base_url)。
+def parse_json(text: str):
+    """剥掉 ``` 围栏再 json.loads;失败返回 None。"""
+    t = (text or "").strip()
+    if t.startswith("```"):
+        t = t.split("\n", 1)[1] if "\n" in t else ""
+        if t.endswith("```"):
+            t = t.rsplit("```", 1)[0]
+    try:
+        return json.loads(t)
+    except json.JSONDecodeError:
+        return None
+
+
+def call_anthropic(prompt: str, model: str, *, system=None, max_tokens: int = 8000,
+                   max_attempts: int = 4) -> str:
+    """一次 Anthropic 调用 + 瞬时错误退避重试。lazy-import anthropic。
+
+    走中转站:设了 ANTHROPIC_BASE_URL 就作为 base_url(api_key 用 ANTHROPIC_API_KEY),
+    与 librarian / autowriter 同一约定;不设则走官方 endpoint。
+    """
+    import anthropic  # lazy
+
+    kwargs: dict = {}
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        kwargs["api_key"] = os.environ["ANTHROPIC_API_KEY"]
+    if os.environ.get("ANTHROPIC_BASE_URL"):
+        kwargs["base_url"] = os.environ["ANTHROPIC_BASE_URL"]
+    client = anthropic.Anthropic(**kwargs)
+    for attempt in range(max_attempts):
+        try:
+            create_kwargs: dict = {
+                "model": model,
+                "max_tokens": max_tokens,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+            if system is not None:
+                create_kwargs["system"] = system
+            msg = client.messages.create(**create_kwargs)
+            return "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
+        except Exception as exc:  # noqa: BLE001
+            status = getattr(exc, "status_code", None)
+            transient = (
+                status in (429, 500, 502, 503, 504, 529)
+                or any(s in str(exc).lower() for s in (
+                    "429", "500", "502", "503", "504", "529",
+                    "timeout", "connection", "overloaded"))
+            )
+            if not transient or attempt == max_attempts - 1:
+                raise
+            time.sleep(2 ** (attempt + 1))
+    raise RuntimeError("call_anthropic exhausted retries")

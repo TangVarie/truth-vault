@@ -1,62 +1,51 @@
-# onboarder/ · 接表 agent
+# onboarder/ · 接表助手
 
-飞书投放表 → `mappings/<project_id>.yaml` **草稿** 的自动起草 agent。
-设计/决策见 **[docs/16-onboarding-agent.md](../docs/16-onboarding-agent.md)**。
+飞书投放表 → `mappings/<project_id>.yaml` **草稿**。设计/决策见
+**[docs/16-onboarding-agent.md](../docs/16-onboarding-agent.md)**。
 
-agent 干「梳理 + 闭集抽取 + 起草」,判断权(方向拆解 / tier 阈值 / 合规)留给策略
-lead(README 原则 1)。产出永远是带 `[待确认]` 的草稿 + review brief,人审 PR 才进库。
+做「梳理 + 闭集抽取 + 起草」,判断权(方向拆解 / tier 阈值 / 合规)留给策略 lead;
+产出永远是带 `[待确认]` 的草稿 + review brief,人审 PR 才进库(README 原则 1)。
 
-## 流程
+## 架构(为什么不是 agent)
 
-```
-read_mapping_corpus   读词表+家族指纹+历史 mapping(跨表对齐、复用已有拆解)
-   → pull_feishu_table   拉列 + 样本行
-   → 起草整份 yaml(锁受控词表;判断项标 [待确认])
-   → recommend_thresholds 按互动量分布推荐阈值
-   → validate_mapping_yaml 自查(errors=0 且 D-021 列全覆盖)
-   → emit_draft          写 draft yaml + brief(再校验一次兜底)
-```
+**确定性取数 + 单次 Anthropic 调用**(librarian 同款,走中转站非流式 —— 已验证能透传)。
+不用 agent-sdk / claude CLI / Node。原先用 Agent SDK 的 agent 循环 + 进程内 MCP 工具,
+实测那条路太脆(网关流式连不上、工具不暴露),而本任务本就是"取数 → 一次推理",
+单次调用更稳更省。
 
-护栏:`PreToolUse` hook 只放行 onboarder 工具(挡内建 Bash/Write);`emit_draft`
-词表 error / 未覆盖列 → 拒绝写盘;`max_budget_usd` + `max_turns` 封顶成本;
-`setting_sources=[]` 不读本机配置。
+## 流程(`core.run_onboarding`)
 
-## 额度
+1. **飞书**:`list_fields`(权威列名 + 单选/多选**完整选项**)+ N 行文案样本 +
+   **全表 distinct**(枚举型列取**全集**,不靠样本 → 稀有方向不漏)
+2. **corpus**:历史 `mappings/*.yaml` + 家族指纹 + 词表(跨表对齐)
+3. **一次** `call_anthropic` → `{mapping_yaml, review_brief}`
+4. **校验**(词表闭集 + D-021 列覆盖)→ 写 `out/<id>.yaml` + `out/<id>.brief.md`
 
-走**中转站**(同 `librarian` 池子):CLI 读 `ANTHROPIC_BASE_URL` +
-`ANTHROPIC_API_KEY`(中转站若要 bearer 则用 `ANTHROPIC_AUTH_TOKEN`)。
-**不**用 Claude 订阅额度(每周封顶 + 交互专用,见 docs/16)。
+## 额度 / 网络
 
-## 本地跑
+走中转站(`ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY`,同 librarian)。
+
+> ⚠️ 必须从**能连到中转站的网络**跑。实测 **GitHub Actions 连不上你的网关**(curl 超时),
+> 所以**本地 / Railway** 跑;GH Actions 那条要等网关放行 GH 的 IP,或改用官方 endpoint。
+
+## 本地跑(Win / Mac / Linux 通用 —— 只要 Python,不要 Node)
 
 ```bash
-# 1) 装依赖 + Claude Code CLI(agent SDK 底层驱动它)
 pip install -r onboarder/requirements.txt
-npm install -g @anthropic-ai/claude-code
-
-# 2) 只看 prompt/工具(不调 LLM、不连飞书):
-python -m onboarder.cli --project-id TXQ_phase1 --app-token x --table-id y --dry-run
-
-# 3) 真跑(需下面的环境变量):
-export ANTHROPIC_BASE_URL=...   ANTHROPIC_API_KEY=...      # 中转站
-export FEISHU_APP_ID=...        FEISHU_APP_SECRET=...      # 飞书 bot
-python -m onboarder.cli --project-id TXQ_phase1 --app-token bascnXXX --table-id tblXXX
+# 设 4 个环境变量(你已知好用的值;Win 用 $env:VAR="...",Mac/Linux 用 export VAR=...):
+#   ANTHROPIC_BASE_URL   ANTHROPIC_API_KEY   FEISHU_APP_ID   FEISHU_APP_SECRET
+python -m onboarder.cli --project-id WTG_phase1 \
+  --app-token A2sybSE0pa5kcnsukAMcJ9TDngb --table-id tbliiz1N4m9bCRx2 --out-dir out
 ```
 
-## CI / 运营
-
-GitHub Actions `workflow_dispatch`([.github/workflows/onboard-table.yml](../.github/workflows/onboard-table.yml)):
-填 `project_id` + 飞书 `app_token`/`table_id` → agent 起草 → **自动开 PR**(yaml + brief)
-→ 策略 lead 审 / 改 / merge。成本在中转站用量面板看。
+只拼 prompt 看看(不连飞书、不调 LLM):
+`python -m onboarder.cli --project-id X --dry-run`
 
 ## 验收 · WTG 金标准
 
 ```bash
-# 校验器 + 词表 + 金标准 三者自洽(现在就能跑,无需任何凭证):
-python -m onboarder.eval_wtg
-# agent 重跑 WTG 后,产出 vs 金标准结构对比:
-python -m onboarder.eval_wtg --against /tmp/WTG_phase1.yaml
+python -m onboarder.eval_wtg                              # 校验器/词表/金标准自洽(无需凭证)
+python -m onboarder.eval_wtg --against out/WTG_phase1.yaml  # 产出 vs 金标准结构对比
 ```
 
-通过判据:结构 diff=0(schema_family / field_mapping 列集 / raw_extra / tier 规则 /
-阈值 / 方向名),且 `[待确认]` 项 ⊇ 金标准。
+WTG 只有**结构部分**定稿,eval 只比结构字段 + `[待确认]` 覆盖,**不**断言草稿的判断值。
