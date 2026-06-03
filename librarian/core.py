@@ -88,7 +88,7 @@ def fetch_candidates(sb, limit: int = CANDIDATE_CAP) -> list[dict]:
         .select(
             "source_note_id, tier, brand, category, emotional_lever, target_audience, "
             "hook_type, structure, why_it_worked, transferable_tactic, raw_excerpt, "
-            "curated_at, is_curated, rank_score"
+            "curated_at, is_curated, rank_score, synthetic"
         )
         .order("rank_score", desc=True)
         .limit(limit)
@@ -168,6 +168,10 @@ def _render_cards(cards: list[dict]) -> str:
     blocks = []
     for c in cards:
         head = f"[{c.get('source_note_id')}] {c.get('tier')}|{c.get('brand')}|{c.get('category')}"
+        if c.get("synthetic"):
+            # 伪爆贴(指标造假): 凭人工内容判断进库(参考 tier), 提醒 LLM 别把指标当真,
+            # 只借内容层面的钩子/结构/手法。
+            head += "｜⚠️指标未验证(伪爆贴, 凭内容判断借鉴)"
         if c.get("is_curated"):
             body = (
                 f"  钩子: {c.get('hook_type')}\n"
@@ -241,6 +245,7 @@ def _select_via_llm(brief: dict, cards: list[dict], model: str) -> list[dict]:
             "borrow_what": (item.get("borrow_what") or "").strip(),
             # 富集: 把卡内容附上, 消费方拼 prompt 直接可用
             "tier": card.get("tier"),
+            "synthetic": bool(card.get("synthetic")),  # 指标未验证(伪爆贴); 消费方可据此降权/标注
             "hook_type": card.get("hook_type"),
             "structure": card.get("structure"),
             "why_it_worked": card.get("why_it_worked"),

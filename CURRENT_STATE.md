@@ -36,9 +36,10 @@
 - **Anthropic prompt caching**:`librarian/core.py:build_system_blocks` 把 ROLE_TASK + 候选卡库 + 项目 system_prompt 包做成 2 个 `cache_control: ephemeral` system 块,本次 brief 的 delta 只进 user message —— 同库不同 brief 命中大前缀缓存(省 ~90%)。**两层省钱**:结果缓存(整次跳过 LLM) ⊕ prompt cache(只重算 delta)。
 - **daily-sync cron 已开**:`schedule: '0 2 * * *'`(仅从 default branch main 触发);加了策展 sync step(尊重 `PROJECT_FILTER` → `--project`)+ 接进失败聚合 + `ANTHROPIC_BASE_URL` env。修了 cron 全红根因:未配 feishu `sync_config` 的项目(NUC/NRT)现优雅跳过(两定位符都空→return 0;半配置→return 2 仍报错)。
 
-**关键设计点**:馆员=纯 LLM 推理选取(非 RAG);brief 以项目 system_prompt 包为主体;独立共享服务(aw + ssll 共用);结果缓存省 LLM;synthetic 伪贴**无差别排除**(不拿造假指标喂高权重学习面)。**鉴权**:`POST /librarian` 校验 `X-Librarian-Key`(对应 Railway env `LIBRARIAN_API_KEY`);任何内部错误返回 `{"selected":[]}`(不 500),消费方永远拿得到可用结构。
+**关键设计点**:馆员=纯 LLM 推理选取(非 RAG);brief 以项目 system_prompt 包为主体;独立共享服务(aw + ssll 共用);结果缓存省 LLM;**synthetic 伪贴只挡爆/大爆,参考放行**(参考是纯人工内容判断、与指标真假无关,对齐 Session #15 通道1;放行的卡带 `synthetic` 标记,馆员/aw 据此知"指标未验证")。**鉴权**:`POST /librarian` 校验 `X-Librarian-Key`(对应 Railway env `LIBRARIAN_API_KEY`);任何内部错误返回 `{"selected":[]}`(不 500),消费方永远拿得到可用结构。
 
-**当前书架为空**:0 真·非 synthetic 爆款(WTG 唯一那条参考是 synthetic、已正确排除)。plumbing 全通、服务 live、`/librarian` 现返回 `{"selected":[]}`(正确/预期,且空库不触发 LLM)。等真爆款进库 + 策展 pass 生成经验卡才有料 —— 届时才首次跑满 LLM 路径(中转站 + caching)(同整条飞轮:先搭好、等料)。
+**当前书架有 1 张卡**:WTG 那条「参考」(`WTG_phase1_recvk9VPCTNG1b`,synthetic 但 tier=参考 → 放行,带 `synthetic` 标记,`is_curated=false` → 馆员用 essence+excerpt 兜底,下次策展 pass 补 4 字段,rank_score 1.401)。plumbing 全通、服务 live;有了候选后,真 brief 进来会**首次跑满 LLM 路径**(中转站 + prompt caching)、`/librarian` 返回非空 `selected`。其余真·爆款(运营在飞书标爆/大爆)进库后扩充书架(同整条飞轮:先搭好、等料)。
+> **注**:此前一版馆员视图把 synthetic **无差别排除**(顺 PR#28 reviewer bot),导致这条参考被挡、书架为空 —— 与 Session #15"参考放行"拍板冲突;已改回 tier-aware(见 Session #15 节)。
 
 **剩余(非本仓代码)**:R-032 / R-033 sister-repo 接入 —— aw 照 [docs/15](docs/15-autowriter-librarian-integration.md) 接一个 HTTP client + generate_batch 透传 + 注入 P2(ssll 同理,见 docs/10 R-033);真爆款进库(运营在飞书标真爆/大爆 → 策展 pass 生成卡)。
 
