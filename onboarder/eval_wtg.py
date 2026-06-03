@@ -1,6 +1,9 @@
 """onboarder/eval_wtg.py — WTG 金标准回归 eval(docs/16 §验收)。
 
-你已有一份【人工确认过】的 mappings/WTG_phase1.yaml。它是回归基准:
+⚠️ WTG 不是已确认的金标准 —— 只有【结构部分】定稿(见 WTG yaml 头注);direction /
+阈值 / 合规仍是 [待确认] 草稿、未经策略 lead 确认。所以本 eval 【只】拿结构字段当
+oracle,绝不断言草稿的判断值(否则 = 拿没人审的 agent 猜测当答案,codex PR#37 review)。
+mappings/WTG_phase1.yaml 当【结构】回归基准:
 
   --check-golden (默认):金标准本身必须通过 vocab 校验(证明校验器 + 词表 + 金标准
                          三者自洽,现在就能跑)。

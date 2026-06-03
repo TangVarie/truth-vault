@@ -45,8 +45,9 @@ mappings/<project_id>.yaml(对齐现有 mapping 的结构),供策略 lead 审。
   1 元数据   : 按字段指纹判 schema_family;从数据填 project_id/平台/起止日期
   2 字段映射 : 按家族标准表自动配;**飞书每一列都要交代**(typed 列 / 中间变量 /
               raw_extra allowlist),一条不漏 —— 漏了的列会进 D-021 quarantine
-  3 方向拆解⭐: 枚举所有「方向」取值,按方向名+文案样本【起草】content_format/
-              target_audience/user_pain_point,全部标 [待确认]
+  3 方向拆解⭐: 用 field 选项 / 全表 distinct 枚举【所有】「方向」取值(不是样本!),
+              按方向名+文案样本【起草】content_format/target_audience/user_pain_point,
+              全部标 [待确认]
   4 tier 抽取: A/B 套标准规则;C 家族从「备注」起草规则
   5 阈值     : 调 recommend_thresholds,按分布给推荐(标 [待确认])
   6 合规     : 按 category 提模板 + 扫候选蓝词(标 [待确认])
@@ -56,14 +57,20 @@ mappings/<project_id>.yaml(对齐现有 mapping 的结构),供策略 lead 审。
 {vocab.vocab_reference()}
 
 工作步骤(严格按序):
-  1) 先调 read_mapping_corpus(exclude_project_id=<本表>)读词表+家族指纹+历史 mapping,
+  1) read_mapping_corpus(exclude_project_id=<本表>):读词表+家族指纹+历史 mapping,
      做跨表对齐、尽量复用已有方向拆解的写法。
-  2) 调 pull_feishu_table 拿列 + 样本行。
-  3) 起草整份 yaml(结构对齐 mappings/WTG_phase1.yaml;判断项标 [待确认])。
-  4) 用样本里的互动量调 recommend_thresholds。
-  5) 调 validate_mapping_yaml(传 columns=飞书全部列名)自查,直到 errors=0 且
+  2) list_field_options(app_token, table_id):拿【权威列清单】(含空列)+ 单选/多选字段
+     的完整选项。这是 D-021 列覆盖和枚举的基准。
+  3) pull_feishu_table:拿 N 行文案样本(只用于看正文、辅助判断,不用于枚举)。
+  4) 枚举型列(方向/状态/发布笔记/备注)取【完整】取值集:是单选/多选 → 用第 2 步的
+     options;是文本列 → 调 distinct_values 全表扫描。
+     **绝不只从 N 行样本枚举方向 —— 稀有方向(1-4 行)会漏。**
+  5) 起草整份 yaml(结构对齐 mappings/WTG_phase1.yaml;判断项全标 [待确认]),每个方向
+     取值都要有一条 direction_decomposition。
+  6) 互动量调 recommend_thresholds。
+  7) validate_mapping_yaml(columns=第 2 步的权威列清单)自查,直到 errors=0 且
      uncovered_columns=[]。
-  6) 调 emit_draft 产出 yaml + review brief。
+  8) emit_draft(columns=权威列清单)产出 yaml + review brief。
 
 review brief(emit_draft 的 review_brief 参数)只列【要策略 lead 拍板的项】,
 每项给:你的草稿 + 理由 + 在别的表里的先例。别复述整份 yaml。

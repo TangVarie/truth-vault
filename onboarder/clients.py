@@ -21,6 +21,10 @@ class FeishuClient:
         "https://open.feishu.cn/open-apis/bitable/v1/apps/"
         "{app_token}/tables/{table_id}/records"
     )
+    FIELDS_URL = (
+        "https://open.feishu.cn/open-apis/bitable/v1/apps/"
+        "{app_token}/tables/{table_id}/fields"
+    )
 
     def __init__(self, app_id: str, app_secret: str):
         self.app_id = app_id
@@ -93,6 +97,25 @@ class FeishuClient:
             params["page_token"] = data["data"]["page_token"]
             time.sleep(0.1)
 
+    def list_fields(self, app_token: str, table_id: str, page_size: int = 100) -> list[dict[str, Any]]:
+        """列出表的所有字段(名称 + type + property,含单选/多选的 options)。"""
+        token = self._ensure_token()
+        url = self.FIELDS_URL.format(app_token=app_token, table_id=table_id)
+        headers = {"Authorization": f"Bearer {token}"}
+        params: dict[str, Any] = {"page_size": page_size}
+        out: list[dict[str, Any]] = []
+        while True:
+            r = self._get_with_retry(url, headers, params)
+            r.raise_for_status()
+            data = r.json()
+            if data.get("code") != 0:
+                raise RuntimeError(f"Feishu list_fields error: {data}")
+            out.extend(data["data"].get("items", []))
+            if not data["data"].get("has_more"):
+                break
+            params["page_token"] = data["data"]["page_token"]
+        return out
+
 
 def feishu_from_env() -> FeishuClient:
     app_id = os.environ.get("FEISHU_APP_ID")
@@ -124,6 +147,52 @@ def pull_columns_and_samples(
         if len(rows) >= sample_n:
             break
     return {"columns": columns, "rows": rows, "n": len(rows)}
+
+
+def _cell_to_str(v: Any):
+    """飞书单元格 → 稳定字符串(单选=str;多选=list;有的字段是 dict / list[dict])。"""
+    if v is None:
+        return None
+    if isinstance(v, list):
+        parts = [str(x.get("text") or x.get("name") or x) if isinstance(x, dict) else str(x) for x in v]
+        return " / ".join(p for p in parts if p) or None
+    if isinstance(v, dict):
+        return str(v.get("text") or v.get("name") or v)
+    s = str(v).strip()
+    return s or None
+
+
+def list_fields(app_token: str, table_id: str) -> list[dict[str, Any]]:
+    """字段元数据 [{field_name, type, options}]。单选/多选字段的 options = 枚举列的【完整】取值。"""
+    out: list[dict[str, Any]] = []
+    for f in feishu_from_env().list_fields(app_token, table_id):
+        opts = ((f.get("property") or {}).get("options")) or []
+        out.append({
+            "field_name": f.get("field_name"),
+            "type": f.get("type"),
+            "options": [o.get("name") for o in opts if isinstance(o, dict)],
+        })
+    return out
+
+
+def distinct_values(app_token: str, table_id: str, columns: list[str], max_scan: int = 50000) -> dict[str, Any]:
+    """对 columns 做【全表】扫描,返回每列完整 distinct 取值 + 计数(枚举型列取全集,别靠样本)。"""
+    from collections import Counter
+
+    fs = feishu_from_env()
+    counters: dict[str, Counter] = {c: Counter() for c in columns}
+    n = 0
+    for item in fs.list_records(app_token, table_id, page_size=100):
+        fields = item.get("fields", {}) or {}
+        for c in columns:
+            if c in fields:
+                s = _cell_to_str(fields[c])
+                if s is not None:
+                    counters[c][s] += 1
+        n += 1
+        if n >= max_scan:
+            break
+    return {"scanned": n, "distinct": {c: counters[c].most_common() for c in columns}}
 
 
 def get_supabase():

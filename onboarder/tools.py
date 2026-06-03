@@ -35,7 +35,8 @@ def _text(s: str, is_error: bool = False) -> dict[str, Any]:
 # ── 1. 拉飞书表 ──────────────────────────────────────────────────────────
 @tool(
     "pull_feishu_table",
-    "拉指定飞书多维表格的列名清单 + 前 N 行样本(只读)。用于枚举方向/状态取值、看文案样本。",
+    "拉飞书表前 N 行【文案样本】+ 样本里出现的列(只读)。看正文用;**枚举方向/状态请用 "
+    "list_field_options 或 distinct_values,别靠这 N 行(稀有方向会漏)**。",
     {"app_token": str, "table_id": str, "sample_n": int},
 )
 async def pull_feishu_table(args: dict[str, Any]) -> dict[str, Any]:
@@ -49,6 +50,47 @@ async def pull_feishu_table(args: dict[str, Any]) -> dict[str, Any]:
         f"列({len(data['columns'])}): {data['columns']}\n\n"
         f"样本 {data['n']} 行:\n" + json.dumps(data["rows"], ensure_ascii=False, indent=2)
     )
+
+
+# ── 1b. 字段元数据(枚举型列的权威/完整取值)──────────────────────────────
+@tool(
+    "list_field_options",
+    "列出飞书表所有字段:名称 + 类型 + 单选/多选字段的【完整】选项。枚举方向/状态优先用它;"
+    "字段名也是 D-021 列覆盖的权威清单(含空列)。",
+    {"app_token": str, "table_id": str},
+)
+async def list_field_options(args: dict[str, Any]) -> dict[str, Any]:
+    try:
+        fields = clients.list_fields(args["app_token"], args["table_id"])
+    except Exception as exc:  # noqa: BLE001
+        return _text(f"列字段失败: {type(exc).__name__}: {exc}", is_error=True)
+    lines = [f"字段 {len(fields)} 个(权威列清单;带「选项」的是枚举型列的完整取值):"]
+    for f in fields:
+        tail = f"  选项({len(f['options'])}): {f['options']}" if f["options"] else ""
+        lines.append(f"- {f['field_name']} (type={f['type']}){tail}")
+    return _text("\n".join(lines))
+
+
+# ── 1c. 全表 distinct(文本型枚举列取全集)──────────────────────────────────
+@tool(
+    "distinct_values",
+    "对指定列做【全表】扫描,返回每列完整 distinct 取值 + 计数。枚举型【文本】列"
+    "(方向/状态/发布笔记/备注 若不是单选字段)用它拿全集,别从样本凑。",
+    {"app_token": str, "table_id": str, "columns": list},
+)
+async def distinct_values(args: dict[str, Any]) -> dict[str, Any]:
+    cols = args.get("columns") or []
+    if not cols:
+        return _text("columns 不能为空", is_error=True)
+    try:
+        res = clients.distinct_values(args["app_token"], args["table_id"], cols)
+    except Exception as exc:  # noqa: BLE001
+        return _text(f"distinct 扫描失败: {type(exc).__name__}: {exc}", is_error=True)
+    out = [f"全表扫描 {res['scanned']} 行:"]
+    for c, items in res["distinct"].items():
+        out.append(f"\n[{c}] {len(items)} 个不同值:")
+        out.extend(f"  {val!r} × {cnt}" for val, cnt in items)
+    return _text("\n".join(out))
 
 
 # ── 2. 读历史语料 ────────────────────────────────────────────────────────
@@ -155,6 +197,8 @@ async def emit_draft(args: dict[str, Any]) -> dict[str, Any]:
 
 ALL_TOOLS = [
     pull_feishu_table,
+    list_field_options,
+    distinct_values,
     read_mapping_corpus,
     recommend_thresholds,
     validate_mapping_yaml,
