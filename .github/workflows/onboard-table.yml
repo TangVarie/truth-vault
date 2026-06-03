@@ -1,5 +1,6 @@
-# 接表 agent —— 手动触发:飞书表 → mapping.yaml 草稿 → 自动开 PR。
-# 见 docs/16-onboarding-agent.md。额度走中转站;产出是带 [待确认] 的草稿,人审 PR 才进库。
+# 接表 agent —— GitHub 按钮触发 → 调 Railway onboarder 端点起草 → 推草稿分支 + 给开 PR 链接。
+# 见 docs/16 / onboarder/README。Railway 跑 LLM(它连得上中转站,GitHub Actions 连不上);
+# GH 这边只做 git —— 拿回草稿、推分支。只需 contents:write,不碰"允许 Actions 开 PR"开关。
 name: 接表 agent (onboard a feishu table)
 
 on:
@@ -15,7 +16,7 @@ on:
         description: "飞书表 table_id (tbl...)"
         required: true
       sample_n:
-        description: "拉多少行样本"
+        description: "拉多少行文案样本"
         required: false
         default: "30"
 
@@ -23,88 +24,41 @@ jobs:
   onboard:
     runs-on: ubuntu-latest
     permissions:
-      contents: write          # 提交草稿到新分支
-      pull-requests: write      # 开 PR
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - run: pip install -r onboarder/requirements.txt
-
-      - name: 中转站连通性自检(分阶段诊断,不打印域名/IP/key)
+      - name: 调 Railway onboarder 起草(Railway 连得上网关)
         env:
-          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ONBOARDER_URL: ${{ secrets.ONBOARDER_URL }}
+          ONBOARDER_API_KEY: ${{ secrets.ONBOARDER_API_KEY }}
         run: |
-          set +e
-          set +o pipefail
-          base="${ANTHROPIC_BASE_URL%/}"
-          echo "── ① URL 形状(不泄露值)──"
-          echo "长度=${#ANTHROPIC_BASE_URL}"
-          case "$ANTHROPIC_BASE_URL" in
-            https://*) echo "开头: OK https://";;
-            http://*)  echo "开头: ⚠️ http://(非 https)";;
-            *) echo "开头: ❌ 不是 http(s)://(填错/有前导空格?)";;
-          esac
-          last=$(printf %s "$ANTHROPIC_BASE_URL" | tail -c 1 | od -An -tx1 | tr -d ' \n')
-          echo "末字符 hex=$last(字母数字正常;0a=换行 20=空格 09=tab → 粘贴带了尾部空白!)"
-          case "$ANTHROPIC_BASE_URL" in
-            */v1|*/v1/) echo "⚠️ 末尾带 /v1 → 会拼成 /v1/v1/messages";;
-          esac
-          echo "── ② DNS(只报成败)──"
-          host=$(printf %s "$base" | sed -E 's#^https?://##; s#[:/].*$##')
-          if getent hosts "$host" >/dev/null 2>&1; then echo "DNS 解析: OK"; else echo "DNS 解析: ❌(域名解析不了 → 值可能错)"; fi
-          echo "── ③ 分阶段连接(连接超时 10s,总超时 25s)──"
-          out=$(curl -sS -o /dev/null --connect-timeout 10 --max-time 25 \
-            -w "connect=%{time_connect}s tls=%{time_appconnect}s total=%{time_total}s http=%{http_code}" \
-            "$base/v1/messages" \
-            -H "x-api-key: $ANTHROPIC_API_KEY" -H "anthropic-version: 2023-06-01" \
+          [ -n "$ONBOARDER_URL" ] || { echo "❌ 缺 secret ONBOARDER_URL(Railway 端点地址)"; exit 1; }
+          code=$(curl -sS -w "%{http_code}" -o /tmp/resp.json --max-time 220 \
+            -X POST "${ONBOARDER_URL%/}/onboard" \
+            -H "X-Onboarder-Key: $ONBOARDER_API_KEY" \
             -H "content-type: application/json" \
-            -d '{"model":"claude-sonnet-4-6","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}' 2>/dev/null)
-          rc=$?
-          echo "curl 退出码=$rc | $out"
-          case $rc in
-            0)  echo "→ OK 连上并拿到响应(看 http=)。网络通,问题在别处。";;
-            6)  echo "→ ❌ exit 6:域名解析失败 → ANTHROPIC_BASE_URL 域名写错。";;
-            7)  echo "→ ❌ exit 7:连接被拒(refused)→ 端口不对 / 服务没监听该端口。";;
-            28) echo "→ ❌ exit 28:超时。关键看上面 connect= :";
-                echo "     connect>0     = 连上了但网关 25s 没回 →【网关/请求】问题,不是网络;";
-                echo "     connect=0.000000 = 连都没连上 →【网络/路由/IP 可达性】问题。";;
-            35) echo "→ ❌ exit 35:TLS 握手失败(证书/协议)。";;
-            *)  echo "→ ❌ 其它 curl 错误码 $rc。";;
-          esac
-          [ "$rc" = "0" ] || { echo "自检未通过,停在这里(不跑 agent)。"; exit 1; }
-          echo "$out" | grep -q "http=200" || { echo "连上了但 http≠200,先看上面 http 码(401/403=鉴权,404=路径)。"; exit 1; }
-          echo "✅ 全通,继续 agent。"
+            -d "{\"project_id\":\"${{ inputs.project_id }}\",\"app_token\":\"${{ inputs.feishu_app_token }}\",\"table_id\":\"${{ inputs.feishu_table_id }}\",\"sample_n\":${{ inputs.sample_n }}}")
+          echo "HTTP $code"
+          [ "$code" = "200" ] || { echo "❌ 端点返回非 200:"; cat /tmp/resp.json; echo; exit 1; }
 
-      - name: 起草 mapping(agent)
-        timeout-minutes: 12
-        env:
-          # 中转站(同 librarian);若网关要 bearer,改用 ANTHROPIC_AUTH_TOKEN
-          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          # 飞书 bot(与 daily-sync 同一对)
-          FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
-          FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+      - name: 写出草稿文件
         run: |
-          python -m onboarder.cli \
-            --project-id "${{ inputs.project_id }}" \
-            --app-token "${{ inputs.feishu_app_token }}" \
-            --table-id "${{ inputs.feishu_table_id }}" \
-            --sample-n "${{ inputs.sample_n }}" \
-            --out-dir mappings
+          jq -r '.mapping_yaml'  /tmp/resp.json > "mappings/${{ inputs.project_id }}.yaml"
+          jq -r '.review_brief'  /tmp/resp.json > "mappings/${{ inputs.project_id }}.brief.md"
+          echo "── 校验 ──"
+          echo "词表 errors:   $(jq -c '.errors'    /tmp/resp.json)"
+          echo "未覆盖列(D-021):$(jq -c '.uncovered' /tmp/resp.json)"
+          echo "待确认项:       $(jq -r '.pending | length' /tmp/resp.json) 项"
 
-      - name: 开 PR(草稿 + brief,待策略 lead 审)
-        uses: peter-evans/create-pull-request@v6
-        with:
-          branch: onboarder/draft-${{ inputs.project_id }}
-          title: "接表草稿: ${{ inputs.project_id }} (agent 起草, 待策略 lead 审)"
-          body-path: mappings/${{ inputs.project_id }}.brief.md
-          add-paths: |
-            mappings/${{ inputs.project_id }}.yaml
-            mappings/${{ inputs.project_id }}.brief.md
-          labels: |
-            onboarding
-            needs-strategy-review
+      - name: 推草稿分支 + 给出开 PR 链接
+        run: |
+          git config user.name "onboarder-bot"
+          git config user.email "onboarder@users.noreply.github.com"
+          b="onboarder/draft-${{ inputs.project_id }}"
+          git checkout -b "$b"
+          git add "mappings/${{ inputs.project_id }}.yaml" "mappings/${{ inputs.project_id }}.brief.md"
+          git commit -m "接表草稿: ${{ inputs.project_id }}(agent 起草,待策略 lead 审)"
+          git push -f -u origin "$b"
+          echo "::notice title=草稿已就绪::分支 $b 已推送"
+          echo "👉 点这里开 PR: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/main...$b?expand=1"

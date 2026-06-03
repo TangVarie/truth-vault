@@ -1,22 +1,18 @@
 """onboarder/core.py — 接表起草核心(确定性取数 + 单次 Anthropic 调用)。
 
-改版说明:原先用 claude-agent-sdk 的 agent 循环 + 进程内 MCP 工具,实测那条
-"CLI + 流式 + 进程内 MCP"的路太脆(网关连不上、工具不暴露)。本任务本质是
-"确定性取数 → 一次推理出草稿",和 librarian 一样,故改成 librarian 同款【单次
-非流式 Anthropic 调用】(已验证能透传中转站)。
-
-流程(全确定性,除了第 3 步一次 LLM):
-  1. 飞书:list_fields(权威列名 + 单选/多选【完整选项】)+ N 行文案样本 +
-     全表 distinct(枚举型列取【全集】,不靠样本 —— 稀有方向不漏)
+不用 agent-sdk / claude CLI。流程(全确定性,除第 3 步一次 LLM):
+  1. 飞书:list_fields(权威列名 + 单选/多选完整选项)+ N 行文案样本 +
+     全表 distinct(枚举型列取全集,不靠样本 → 稀有方向不漏)
   2. corpus:历史 mapping + 家族指纹 + 词表(跨表对齐)
-  3. 拼一次 prompt → call_anthropic → {mapping_yaml, review_brief}
-  4. 词表 + D-021 校验 → 写盘
-判断项(方向/阈值/合规)一律标 [待确认];人审 PR 才进库(原则 1)。
+  3. 拼一次 prompt → call_anthropic → ===MAPPING_YAML=== / ===REVIEW_BRIEF===
+  4. 词表 + D-021 校验
+判断项(方向/阈值/合规)一律 [待确认];人审 PR 才进库(原则 1)。
+
+draft() 只产草稿(不写盘),CLI(run_onboarding)和 Railway 端点(app.py)共用。
 """
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 from typing import Any
@@ -29,8 +25,7 @@ DEFAULT_MODEL = os.environ.get("ONBOARDER_MODEL", "claude-sonnet-4-6")
 DISTINCT_CAP = 40   # 不同值超过这个数的列视为自由文本,只报数量不铺开(控 prompt 体积)
 
 SYSTEM_PROMPT = f"""你是 Truth Vault 的接表管家。把一张飞书投放表【起草】成一份
-mappings/<project_id>.yaml(结构对齐现有 mapping,尤其 mappings/WTG_phase1.yaml),
-供策略 lead 审。
+mappings/<project_id>.yaml(结构对齐现有 mapping,尤其 mappings/WTG_phase1.yaml),供策略 lead 审。
 
 宪法(README 原则 1「管家不做判断」):只做【梳理 + 闭集抽取 + 起草】。判断权属于
 策略 lead —— 以下【永远只出草稿、标 [待确认]】,绝不替人拍死:
@@ -91,6 +86,7 @@ def _render_distinct(distinct: dict, cap: int = DISTINCT_CAP) -> str:
 
 
 def _render_samples(rows: list[dict], k: int = 8) -> str:
+    import json
     return json.dumps([r.get("fields", {}) for r in rows[:k]], ensure_ascii=False, indent=2)
 
 
@@ -130,6 +126,54 @@ def _split_output(raw: str) -> tuple[str, str]:
     return _strip_fence(raw), ""
 
 
+def draft(
+    *,
+    project_id: str,
+    app_token: str,
+    table_id: str,
+    sample_n: int = 30,
+    model: str = DEFAULT_MODEL,
+) -> dict[str, Any]:
+    """确定性取数 + 单次 Anthropic 调用 → 草稿(不写盘;CLI 和 Railway 端点共用)。
+
+    返回 {mapping_yaml, review_brief, errors, uncovered, pending, is_error};
+    解析不出 mapping 时返回 {is_error, reason, raw_head}(无 mapping_yaml)。
+    """
+    try:
+        fields = clients.list_fields(app_token, table_id)
+    except Exception as exc:  # noqa: BLE001
+        print(f"⚠️ list_fields 失败(飞书 bot 权限?): {exc}")
+        fields = []
+    sample = clients.pull_columns_and_samples(app_token, table_id, sample_n)
+    all_cols = [f["field_name"] for f in fields] or sample["columns"]
+    print(f"· 拉到 {len(all_cols)} 列、{sample['n']} 行样本;全表 distinct 扫描中…")
+    distinct = clients.distinct_values(app_token, table_id, all_cols)
+    print(f"· distinct 扫描了 {distinct['scanned']} 行")
+
+    user = build_user_message(project_id, fields, sample, distinct)
+    print(f"· 调 {model}(单次,走中转站)起草中…")
+    raw = clients.call_anthropic(user, model, system=SYSTEM_PROMPT, max_tokens=16000)
+    mapping_text, brief = _split_output(raw)
+    if not mapping_text.strip():
+        return {"is_error": True, "reason": "模型没产出可解析的 mapping", "raw_head": (raw or "")[:1200]}
+
+    try:
+        mp = yaml.safe_load(mapping_text)
+        yaml_err = None
+    except yaml.YAMLError as exc:
+        mp, yaml_err = None, str(exc)
+    res = (vocab.validate_mapping(mp, columns=all_cols) if isinstance(mp, dict)
+           else {"errors": [f"yaml 解析失败: {yaml_err}"], "pending": [], "uncovered_columns": []})
+    return {
+        "mapping_yaml": mapping_text,
+        "review_brief": brief,
+        "errors": res["errors"],
+        "uncovered": res["uncovered_columns"],
+        "pending": res["pending"],
+        "is_error": bool(res["errors"] or res["uncovered_columns"]),
+    }
+
+
 def run_onboarding(
     *,
     project_id: str,
@@ -140,61 +184,27 @@ def run_onboarding(
     out_dir: str = "mappings",
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """跑一次接表起草。dry_run=True 只拼 prompt 不调 LLM(也不连飞书)。"""
-    # ── 1. 确定性取数 ──
+    """CLI 入口:dry_run 只拼 prompt;否则 draft() + 写盘 + 打印。"""
     if dry_run:
-        fields, sample, distinct = [], {"columns": [], "rows": [], "n": 0}, {"distinct": {}}
-    else:
-        try:
-            fields = clients.list_fields(app_token, table_id)
-        except Exception as exc:  # noqa: BLE001
-            print(f"⚠️ list_fields 失败(飞书 bot 权限?): {exc}")
-            fields = []
-        sample = clients.pull_columns_and_samples(app_token, table_id, sample_n)
-        all_cols = [f["field_name"] for f in fields] or sample["columns"]
-        print(f"· 拉到 {len(all_cols)} 列、{sample['n']} 行样本;全表 distinct 扫描中…")
-        distinct = clients.distinct_values(app_token, table_id, all_cols)
-        print(f"· distinct 扫描了 {distinct['scanned']} 行")
-
-    user = build_user_message(project_id, fields, sample, distinct)
-
-    if dry_run:
+        user = build_user_message(project_id, [], {"columns": [], "rows": [], "n": 0}, {"distinct": {}})
         print("=== SYSTEM PROMPT ===\n" + SYSTEM_PROMPT)
         print("\n=== USER (corpus 已省, 仅结构) ===\n" + user[-1500:])
         return {"dry_run": True}
 
-    # ── 3. 一次 LLM 调用 ──
-    print(f"· 调 {model}(单次,走中转站)起草中…")
-    raw = clients.call_anthropic(user, model, system=SYSTEM_PROMPT, max_tokens=16000)
-    mapping_text, brief = _split_output(raw)
-    if not mapping_text.strip():
-        print("❌ 没解析出 mapping_yaml。原始响应前 1200 字:\n" + (raw or "")[:1200])
-        return {"is_error": True}
-
-    # ── 4. 校验 + 写盘 ──
-    all_cols = [f["field_name"] for f in fields] or sample.get("columns")
-    try:
-        mp = yaml.safe_load(mapping_text)
-    except yaml.YAMLError as exc:
-        print(f"❌ 产出的 yaml 解析失败: {exc}")
-        mp = None
-    res = (vocab.validate_mapping(mp, columns=all_cols) if isinstance(mp, dict)
-           else {"errors": ["yaml 解析失败"], "pending": [], "uncovered_columns": []})
+    res = draft(project_id=project_id, app_token=app_token, table_id=table_id,
+                sample_n=sample_n, model=model)
+    if "mapping_yaml" not in res:
+        print("❌ " + res.get("reason", "失败") + "。原始响应前 1200 字:\n" + res.get("raw_head", ""))
+        return res
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     yaml_path = out / f"{project_id}.yaml"
     brief_path = out / f"{project_id}.brief.md"
-    yaml_path.write_text(mapping_text, encoding="utf-8")
-    brief_path.write_text(brief, encoding="utf-8")
-
+    yaml_path.write_text(res["mapping_yaml"], encoding="utf-8")
+    brief_path.write_text(res["review_brief"], encoding="utf-8")
     print(f"\n=== 写出 {yaml_path} + {brief_path} ===")
     print("词表 errors:", res["errors"] or "无")
-    print("未覆盖列(D-021):", res["uncovered_columns"] or "无")
+    print("未覆盖列(D-021):", res["uncovered"] or "无")
     print(f"待确认项 {len(res['pending'])} 个(交策略 lead 拍板)")
-    return {
-        "yaml": str(yaml_path), "brief": str(brief_path),
-        "errors": res["errors"], "uncovered": res["uncovered_columns"],
-        "pending": res["pending"],
-        "is_error": bool(res["errors"] or res["uncovered_columns"]),
-    }
+    return res
