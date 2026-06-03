@@ -25,6 +25,8 @@ TARGET_AUDIENCES = (
 
 TIERS = ("大爆", "爆", "预备", "参考", "风控", "趴", "未知", "删除")  # tier_extraction
 
+TIER_SOURCES = ("状态字段", "备注字段")  # tier_extraction.source 闭集(sync 只认这两个)
+
 INTENTS = ("traffic", "conversion", "educational", "other")  # docs/03 intent enum
 
 SCHEMA_FAMILIES = ("A", "B", "C")
@@ -86,8 +88,11 @@ def validate_mapping(
     for k, v in (mapping.get("intent_mapping") or {}).items():
         _check(v, INTENTS, f"intent_mapping[{k}]", errors, pending)
 
-    # tier_extraction.rules[*].tier
-    for i, rule in enumerate((mapping.get("tier_extraction") or {}).get("rules", []) or []):
+    # tier_extraction.source(闭集)+ rules[*].tier
+    te = mapping.get("tier_extraction") or {}
+    if "source" in te:
+        _check(te.get("source"), TIER_SOURCES, "tier_extraction.source", errors, pending)
+    for i, rule in enumerate(te.get("rules", []) or []):
         if isinstance(rule, dict) and "tier" in rule and rule["tier"] is not None:
             _check(rule["tier"], TIERS, f"tier_extraction.rules[{i}].tier", errors, pending)
 
@@ -128,6 +133,7 @@ def vocab_reference() -> str:
         "content_format(8): " + " / ".join(CONTENT_FORMATS) + "\n"
         "target_audience(11): " + " / ".join(TARGET_AUDIENCES) + "\n"
         "tier(8): " + " / ".join(TIERS) + "\n"
+        "tier_extraction.source(只能二选一): " + " / ".join(TIER_SOURCES) + "\n"
         "intent(4): " + " / ".join(INTENTS) + "\n"
         "schema_family: " + " / ".join(SCHEMA_FAMILIES) + "\n"
         "category: " + " / ".join(CATEGORIES)

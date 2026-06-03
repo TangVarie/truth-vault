@@ -40,11 +40,17 @@ mappings/<project_id>.yaml(结构对齐现有 mapping,尤其 mappings/WTG_phase1
 分工(对着 docs/04 的 7 步 SOP):
   1 元数据  : 按字段指纹判 schema_family(A:有巡查状态/最近检查时间/主页链接;
              B:有关键词/蓝词记录/项目阶段、缺粉丝数;C:无方向、无数据回收、日期化结算列)
-  2 字段映射: 飞书【每一列】都要交代 —— typed 列 / 下划线中间变量 / raw_extra allowlist,
-             一条不漏(漏的列会进 D-021 quarantine)
+  2 字段映射: 飞书【每一列】都要交代,一条不漏(漏的列会进 D-021 quarantine —— 包括你在
+             "异常/备注"里提到要保留的列,如 备注,也必须真的列进 raw_extra allowlist):
+             · field_mapping 只放:① 直接入库的 typed 列;② 需要二次处理的下划线中间变量
+               (仅限 _status_raw / _direction_raw / _comment_text / _note_for_tier 这类)
+             · 其它"保留但不处理"的列(图片/附件/巡查/副本/备注/截图…)一律进
+               project_specific_fields_to_raw_extra,**别用 _xxx_raw 塞进 field_mapping**
   3 方向拆解: 用【字段选项 / 全表 distinct 的完整取值集】枚举所有「方向」(不是样本!),
              逐个起草 content_format/target_audience/user_pain_point,全标 [待确认]
-  4 tier    : A/B 套标准状态规则;C 家族从「备注」起草规则
+  4 tier    : tier_extraction.source 只能填【状态字段】或【备注字段】(sync 只认这两个)。
+             A/B 家族填 状态字段(把表里的状态列——哪怕它叫"流量状态"——映射成 _status_raw);
+             C 家族填 备注字段(映射成 _note_for_tier)。规则里的 tier 值用受控词表。
   5 阈值    : 看互动量分布给推荐,标 [待确认]
   6 合规    : 按 category 提模板 + 扫候选蓝词,标 [待确认]
 
