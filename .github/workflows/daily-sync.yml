@@ -193,18 +193,9 @@ jobs:
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRYRUN="--dry-run"
           python sync_truth_vault_baokuan_to_sanshengliubu.py $DRYRUN
 
-      - name: TV 爆款 → autowriter.items (通道 2, 含 score+diversity+retire)
-        id: aw_sync
-        continue-on-error: true
-        # 2026-05-21 audit 后 AUTOWRITER_SYNC_USER_ID 不再是必需 — sync 脚本
-        # 默认从 autowriter.projects.owner_id 解析 user_id (RLS 兼容). env 仅
-        # 在 owner_id 缺失时作为兜底, 因此不再 gate on 它.
-        if: steps.check.outputs.skip != 'true'
-        working-directory: scripts
-        run: |
-          DRYRUN=""
-          [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRYRUN="--dry-run"
-          python sync_truth_vault_baokuan_to_autowriter_items.py $DRYRUN
+      # 通道2 push 已退役 (D-038 / docs/15): TV 不再写 autowriter.items;
+      # aw 改为 write-time 主动 pull 馆员书架 (见上 curate_sync 步骤策展经验卡)。
+      # 历史脚本 sync_truth_vault_baokuan_to_autowriter_items.py 保留在 repo 备查。
 
       - name: autowriter 人工审稿决定 → truth_vault.prepublish_evaluations
         id: prepublish_sync
@@ -268,9 +259,6 @@ jobs:
           fi
           if [ "${{ steps.ssll_sync.outcome }}" = "failure" ]; then
             failed_steps="$failed_steps ssll_sync"
-          fi
-          if [ "${{ steps.aw_sync.outcome }}" = "failure" ]; then
-            failed_steps="$failed_steps aw_sync"
           fi
           if [ "${{ steps.prepublish_sync.outcome }}" = "failure" ]; then
             failed_steps="$failed_steps prepublish_sync"
