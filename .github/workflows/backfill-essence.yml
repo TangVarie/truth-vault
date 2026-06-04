@@ -99,16 +99,25 @@ jobs:
               exit 1
             fi
             prev=$rem
-            code=$(curl -sS -w '%{http_code}' -o /tmp/b.json --max-time 900 \
-              -X POST "${WORKER_URL%/}/annotate-essence" \
-              -H "X-Worker-Key: $WORKER_API_KEY" -H 'content-type: application/json' \
-              -d "{\"project\":\"$PROJECT\",\"limit\":${BATCH}}") || code=000
-            ok=$(jq -r '.ok // false' /tmp/b.json 2>/dev/null)
-            echo "   HTTP $code · ok=$ok · returncode=$(jq -r '.returncode // "?"' /tmp/b.json 2>/dev/null)"
-            jq -r '.stdout_tail // ""' /tmp/b.json 2>/dev/null | tail -4
+            # 单批最多试 3 次:worker 偶发重启 / 瞬断时,等一下重试 —— 标注幂等
+            # (按 essence_annotated_at IS NULL 续作),重试只会接着标、不会重复烧已标的。
+            # 实测:连续多批后 Railway worker 会重启一次(注解已落库但 HTTP 响应没回)→ 重试可续。
+            ok=false; code=000
+            for attempt in 1 2 3; do
+              code=$(curl -sS -w '%{http_code}' -o /tmp/b.json --max-time 900 \
+                -X POST "${WORKER_URL%/}/annotate-essence" \
+                -H "X-Worker-Key: $WORKER_API_KEY" -H 'content-type: application/json' \
+                -d "{\"project\":\"$PROJECT\",\"limit\":${BATCH}}") || code=000
+              ok=$(jq -r '.ok // false' /tmp/b.json 2>/dev/null)
+              echo "   [try $attempt] HTTP $code · ok=$ok · returncode=$(jq -r '.returncode // "?"' /tmp/b.json 2>/dev/null)"
+              jq -r '.stdout_tail // ""' /tmp/b.json 2>/dev/null | tail -4
+              { [ "$code" = "200" ] && [ "$ok" = "true" ]; } && break
+              echo "::warning::batch $i try $attempt 失败 (HTTP $code, ok=$ok);等 30s 重试(worker 可能在重启)"
+              jq -r '.stderr_tail // ""' /tmp/b.json 2>/dev/null | tail -6
+              sleep 30
+            done
             if [ "$code" != "200" ] || [ "$ok" != "true" ]; then
-              echo "::error::worker 调用失败 (HTTP $code, ok=$ok) —— 停止 backfill。"
-              jq -r '.stderr_tail // ""' /tmp/b.json 2>/dev/null | tail -8
+              echo "::error::worker 调用连续 3 次失败 (HTTP $code, ok=$ok) —— 停止 backfill。已标的不丢,修好后重跑接着灌。"
               exit 1
             fi
           done
