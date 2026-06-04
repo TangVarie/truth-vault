@@ -41,6 +41,7 @@ jobs:
             scripts/check_flywheel_health.py \
             scripts/curate_flywheel_lessons.py \
             scripts/count_unannotated_essence.py \
+            scripts/prune_librarian_cache.py \
             librarian/__init__.py \
             librarian/clients.py \
             librarian/core.py \
@@ -1062,6 +1063,14 @@ jobs:
       - name: Sanity-check v1.5 (librarian cache table exists)
         run: |
           psql -v ON_ERROR_STOP=1 -c "SELECT 'truth_vault.flywheel_librarian_cache'::regclass;"
+      - name: Apply v1.6 sync_status pending fix (+ idempotency)
+        # CREATE OR REPLACE VIEW; supersede v1_3 的 v_flywheel_sync_status。两遍验幂等。
+        run: |
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_6_sync_status_pending_fix.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_6_sync_status_pending_fix.sql
+      - name: Sanity-check v1.6 (v_flywheel_sync_status pending cols intact)
+        run: |
+          psql -v ON_ERROR_STOP=1 -c "SELECT pending_ssll_sync, pending_reference_ssll FROM truth_vault.v_flywheel_sync_status LIMIT 0;"
       - name: Sanity-check v1.3 (参考 tier accepted + reference cols + discrepancy view)
         run: |
           psql -v ON_ERROR_STOP=1 <<'SQL'
