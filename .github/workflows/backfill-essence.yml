@@ -84,6 +84,10 @@ jobs:
       - name: Loop worker until project essence is fully annotated
         working-directory: scripts
         run: |
+          # 关掉 errexit:本步靠下面【显式检查 $code/$ok】决定 retry/exit。若保留 bash -e,
+          # worker 重启吐空/坏响应时 `ok=$(jq …)` 解析失败会触发 errexit 直接杀掉整步、
+          # 绕过重试循环(实测:整步 exit 5、连 [try 1] 都没打印 → 重试从没机会跑)。
+          set +e
           prev=-1
           for i in $(seq 1 "$MAXB"); do
             rem=$(python count_unannotated_essence.py "$PROJECT") || { echo "::error::查 remaining 失败"; exit 1; }
