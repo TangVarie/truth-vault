@@ -20,9 +20,9 @@ on:
         required: false
         default: "12"
       max_batches:
-        description: "最多循环几轮 (安全上限,防意外死循环)。批小了要调大它"
+        description: "最多循环几轮。一轮上限≈batch×max_batches 条,且受 GitHub 6h job 上限(batch=12 时一轮约能灌 ~1400 条)。更大的表灌不完会在末尾警告→再触发一次接着灌(幂等)。"
         required: false
-        default: "80"
+        default: "120"
 
 # 同一项目同时只允许一个 backfill 在跑 —— 否则两个 run 会各自快照同一批未标注笔记、
 # 重复烧 LLM 且非确定性地互相覆盖 essence(codex PR#43 review r3355530533)。
@@ -70,6 +70,9 @@ jobs:
           case "$BATCH" in ''|*[!0-9]*) echo "::error::batch 必须是正整数,收到 '$BATCH'"; exit 1;; esac
           case "$MAXB"  in ''|*[!0-9]*) echo "::error::max_batches 必须是正整数,收到 '$MAXB'"; exit 1;; esac
           [ "$BATCH" -ge 1 ] || { echo "::error::batch 必须 ≥1"; exit 1; }
+          # batch 硬上限 15:Railway 边缘【单请求 ~5min 超时】,>15 条/批会跑超时 → 502。
+          # 别只写在描述里靠自觉,这里强制(codex review r3356930643)。
+          [ "$BATCH" -le 15 ] || { echo "::error::batch=$BATCH 太大 —— 上限 15(>15 会撞 Railway 边缘 ~5min 超时 → 502)。请用 ≤15。"; exit 1; }
           [ "$MAXB"  -ge 1 ] || { echo "::error::max_batches 必须 ≥1"; exit 1; }
           # project 必须是已知项目(有 mapping)。否则拼错的名字会查到 remaining=0 → 被当成
           # "已灌完"绿着退出、一条没处理(codex review r3355530520)。
