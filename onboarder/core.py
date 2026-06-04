@@ -142,10 +142,17 @@ def draft(
     try:
         fields = clients.list_fields(app_token, table_id)
     except Exception as exc:  # noqa: BLE001
-        print(f"⚠️ list_fields 失败(飞书 bot 权限?): {exc}")
-        fields = []
+        # 不降级到样本列:list_fields 是【权威列清单】的唯一来源,失败时退回样本列会漏掉
+        # 空列/稀有取值 → 出 D-021 校验 → 真导入时 quarantine。宁可快速失败,让人修权限。
+        raise RuntimeError(
+            f"list_fields 失败({exc})—— 飞书 bot 需要对该表的【字段读权限】。"
+            "不降级到样本列(否则空列/稀有取值会漏过 D-021 校验,真导入时 quarantine)。"
+            "确认 bot 权限后重试。"
+        ) from exc
+    if not fields:
+        raise RuntimeError("list_fields 返回空字段 —— 该表无字段?或 bot 权限不足,请检查。")
     sample = clients.pull_columns_and_samples(app_token, table_id, sample_n)
-    all_cols = [f["field_name"] for f in fields] or sample["columns"]
+    all_cols = [f["field_name"] for f in fields]   # 权威列清单(不靠样本,空列也覆盖)
     print(f"· 拉到 {len(all_cols)} 列、{sample['n']} 行样本;全表 distinct 扫描中…")
     distinct = clients.distinct_values(app_token, table_id, all_cols)
     print(f"· distinct 扫描了 {distinct['scanned']} 行")

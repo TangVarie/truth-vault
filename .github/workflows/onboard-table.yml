@@ -62,3 +62,12 @@ jobs:
           git push -f -u origin "$b"
           echo "::notice title=草稿已就绪::分支 $b 已推送"
           echo "👉 点这里开 PR: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/main...$b?expand=1"
+
+      - name: 校验门(草稿已推;有校验问题则让 run 变红,不静默放过)
+        run: |
+          if [ "$(jq -r '.is_error' /tmp/resp.json)" = "true" ]; then
+            echo "::error title=草稿有校验问题,需修复后再 merge::errors=$(jq -c '.errors' /tmp/resp.json) | uncovered(D-021)=$(jq -c '.uncovered' /tmp/resp.json)"
+            echo "(草稿已推到分支,可在该分支/PR 上直接改;但本次 run 标红提醒别直接 merge。)"
+            exit 1
+          fi
+          echo "✅ 词表 + D-021 校验通过。"
