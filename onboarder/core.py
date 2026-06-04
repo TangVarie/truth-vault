@@ -56,8 +56,11 @@ mappings/<project_id>.yaml(结构对齐现有 mapping,尤其 mappings/WTG_phase1
              intent_mapping(把该列原值映射成 traffic/conversion/educational/other)。
              **没有意图列时 intent 留空**:既不写 intent_mapping(写了也是死配置,sync 不会用),
              也【不要】给方向凭空造 intent_override —— WTG 金标准就是 intent=null。
-             intent_override 只在该项目确有先例/源据(方向与 intent 稳定对应)时,由策略 lead
-             拍板;起草拿不准一律留空、标 [待确认],绝不替人按方向反推 intent(那是无源造数据)。
+             ⚠️ intent_override 拿不准时【省略该键、或写 null】,**绝不要写 [待确认] 占位**:
+             sync 对确定性方向会把非 None 的 intent_override 直接写进 notes.intent,而
+             "[待确认]" 不在 intent 的 DB CHECK 闭集(traffic/conversion/educational/mixed/other)里
+             → 该方向每行 sync 都 CHECK 失败(其它判断字段标 [待确认] 由人审前填实值,intent 例外:
+             正确解常是"无值")。不确定只写进 review brief 让策略 lead 定;确有先例/源据才填实值。
 
 受控词表(闭集,只能从中取值,编造会被校验拒绝):
 {vocab.vocab_reference()}
