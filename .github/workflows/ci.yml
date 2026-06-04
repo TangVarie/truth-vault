@@ -1235,10 +1235,13 @@ jobs:
               RAISE NOTICE 'prepublish_evaluations allows multiple LLM evaluator rows for same item';
           END $$;
 
-          -- Partial UNIQUE INDEX: rows with NULL feishu_record_id bypass the
-          -- dedup (anonymous records can't be correlated across runs anyway).
-          -- Inserting two such rows must succeed; previous full UNIQUE constraint
-          -- treated NULL != NULL so duplicates accumulated without our intent.
+          -- Non-partial unique index (default NULLS DISTINCT): non-null
+          -- feishu_record_id rows dedup (above), but NULL feishu_record_id is
+          -- treated as distinct, so anonymous rows coexist (can't be correlated
+          -- across runs anyway). Two such rows must both insert. (A partial index
+          -- WHERE feishu_record_id IS NOT NULL gives the same data semantics but
+          -- breaks PostgREST's predicateless ON CONFLICT → 42P10, so we use a
+          -- non-partial index instead — see notes_v1_2.sql.)
           INSERT INTO truth_vault.undeclared_fields_quarantine
               (project_id, feishu_record_id, raw_row, undeclared_field_names, reason)
           VALUES ('CI_OK', NULL, '{}', ARRAY['anon1'], 'undeclared_fields');
@@ -1252,9 +1255,9 @@ jobs:
               WHERE project_id='CI_OK' AND feishu_record_id IS NULL;
               IF n != 2 THEN
                   RAISE EXCEPTION
-                      'partial UNIQUE INDEX should allow NULL feishu_record_id duplicates, got % rows', n;
+                      'non-partial NULLS DISTINCT index should let NULL feishu_record_id rows coexist, got % rows', n;
               END IF;
-              RAISE NOTICE 'partial UNIQUE INDEX bypasses NULL feishu_record_id (% anonymous rows)', n;
+              RAISE NOTICE 'NULL feishu_record_id rows coexist under NULLS DISTINCT (% anonymous rows)', n;
           END $$;
 
           -- v_top_performing_accounts threshold + bao_rate
