@@ -24,6 +24,13 @@ on:
         required: false
         default: "40"
 
+# 同一项目同时只允许一个 backfill 在跑 —— 否则两个 run 会各自快照同一批未标注笔记、
+# 重复烧 LLM 且非确定性地互相覆盖 essence(codex PR#43 review r3355530533)。
+# cancel-in-progress: false = 第二次触发排队等第一次跑完(幂等续作),不打断在飞的批次。
+concurrency:
+  group: backfill-essence-${{ github.event.inputs.project }}
+  cancel-in-progress: false
+
 jobs:
   backfill:
     runs-on: ubuntu-latest
@@ -54,6 +61,25 @@ jobs:
           [ -n "$WORKER_API_KEY" ] || { echo "::error::缺 secret WORKER_API_KEY"; exit 1; }
           [ -n "$SUPABASE_URL" ] || { echo "::error::缺 secret SUPABASE_URL"; exit 1; }
           [ -n "$SUPABASE_SERVICE_ROLE_KEY" ] || { echo "::error::缺 secret SUPABASE_SERVICE_ROLE_KEY"; exit 1; }
+
+      - name: Validate inputs (项目已知 + batch/max_batches 为正整数)
+        working-directory: scripts
+        run: |
+          # batch / max_batches 必须是正整数:workflow_dispatch 输入是自由字符串,非数字会让
+          # `seq 1 "$MAXB"` 产 0 次迭代 → 循环体一次都不执行、却绿着退出(codex review r3355530527)。
+          case "$BATCH" in ''|*[!0-9]*) echo "::error::batch 必须是正整数,收到 '$BATCH'"; exit 1;; esac
+          case "$MAXB"  in ''|*[!0-9]*) echo "::error::max_batches 必须是正整数,收到 '$MAXB'"; exit 1;; esac
+          [ "$BATCH" -ge 1 ] || { echo "::error::batch 必须 ≥1"; exit 1; }
+          [ "$MAXB"  -ge 1 ] || { echo "::error::max_batches 必须 ≥1"; exit 1; }
+          # project 必须是已知项目(有 mapping)。否则拼错的名字会查到 remaining=0 → 被当成
+          # "已灌完"绿着退出、一条没处理(codex review r3355530520)。
+          if [ ! -f "../mappings/${PROJECT}.yaml" ]; then
+            echo "::error::未知项目 '${PROJECT}':mappings/${PROJECT}.yaml 不存在(拼错了?)"
+            echo "可选项目:"
+            for f in ../mappings/*.yaml; do b=$(basename "$f" .yaml); [ "$b" = "_template" ] || echo "  - $b"; done
+            exit 1
+          fi
+          echo "✅ inputs OK: project=$PROJECT batch=$BATCH max_batches=$MAXB"
 
       - name: Loop worker until project essence is fully annotated
         working-directory: scripts
