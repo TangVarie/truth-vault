@@ -451,7 +451,7 @@ v0.2 可投入使用。如果周哥后续 review 提出修改，将升级到 v0.
 | `教育` | 课程/培训/教辅 | 教育 |
 | `其他` | 兜底 | 其他 |
 
-> ⚠️ **历史 mapping 待 review**: 当前 `mappings/NRT_phase2.yaml` 和 `mappings/NRT_phase3.yaml` 的 `category: 处方药` 在监管口径上可能不准（力克雷品牌的尼古丁贴片/咀嚼片在中国按 OTC 销售）。NRT_2/NRT_3 重新 onboard 进 TV 之前，需由策略 lead（Ziao / 周哥）确认按 `处方药` 还是 `OTC药` 入库；vocab 词表本身不预设这个判断。
+> ✅ **已决议（2026-06-04 · RISKS R-009）**: NRT_phase2 / NRT_phase3 按 `OTC药` 入库（策略 lead Ziao 确认；力克雷品牌的尼古丁贴片/咀嚼片在中国按 OTC 销售）。两份 mapping 的 `category` 已改为 `OTC药`，在 NRT_2 sync 启用前完成，未发生 ssll 样本池污染；vocab 词表本身不预设这个判断。
 
 **双重归属处理**（如 Sudocrem 既是 `个护` 又涉及 `母婴`）: 主类别取 `category`，次要类别走 `target_audience` 字段标注。不允许在 `category` 字段写复合值（如"个护/母婴"），会破坏 sanshengliubu 的 platform+category 检索。
 

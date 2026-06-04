@@ -14,7 +14,7 @@ version: 1.0
 project_id: PROJECT_PHASE      # 形式: 品牌缩写_phase号，如 NUC_phase1, NRT_phase3
 brand: 品牌中文全名
 product: 具体产品名
-category: 保健品                # 处方药/保健品/美妆/酒类/FMCG/母婴/教育/其他
+category: 保健品                # 见 docs/05 §9 统一词表: 处方药/OTC药/保健品/医疗器械/美妆/个护/酒类/食品饮料/母婴/3C数码/家居家电/服饰鞋包/教育/其他
 platform: xiaohongshu          # xiaohongshu / douyin
 schema_family: B               # A / B / C (见 docs/03-mapping-protocol.md)
 start_date: 2025-XX-XX

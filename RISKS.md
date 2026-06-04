@@ -133,14 +133,16 @@
   tab 已在代码完成 (autowriter 仓前端). 负例候选 (example_label_proposal)
   现在能在 UI review → 确认后落 example_label='negative'.
 
-### R-009 · NRT_2 / NRT_3 category (处方药 vs OTC) 未拍板
+### R-009 · NRT_2 / NRT_3 category (处方药 vs OTC) — ✅ 已决议 (2026-06-04)
 
-- **是什么**: 这两个 mapping yaml 现在写 `category: 处方药`，但力克雷 NRT
+- **是什么**: 这两个 mapping yaml 原写 `category: 处方药`，但力克雷 NRT
   系列在国内按 OTC 销售
-- **后果**: TV 通道 1 sync 写到 ssll `category = '处方药'`, ssll 检索时
+- **后果（若不改）**: TV 通道 1 sync 写到 ssll `category = '处方药'`, ssll 检索时
   这两个项目会和真正的处方药混在一起，污染 vibe_rewriter 的样本池
-- **缓解**: docs/05-controlled-vocab.md §9 已经标出待 Ziao + 周哥确认。
-  这两个项目在 onboard 进 TV 之前必须先决议
+- **决议**: 策略 lead Ziao 确认按 **`OTC药`** 入库。NRT_phase2 / NRT_phase3 的
+  `category` 已改为 `OTC药`，docs/05 §9 同步标记。在 NRT_2 sync 真正启用前完成，
+  **未发生污染**。（注:`compliance.base_template` 仍保守用 `处方药` 红线,与 ssll
+  归类的 `category` 是两回事;若要放宽合规模板再单独评估。）
 - **Owner**: Ziao + 周哥
 
 ### R-010 · 飞书 OpenAPI rate limit (50 QPS)

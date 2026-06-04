@@ -43,7 +43,7 @@ project_id: <品牌_期数>  # 例: NUC_phase1, NRT_phase3
 brand: <品牌中文名>
 product: <具体产品>
 category: 
-  - 处方药 / 保健品 / 美妆 / 酒类 / FMCG / 母婴 / 教育 / 其他
+  - 处方药 / OTC药 / 保健品 / 医疗器械 / 美妆 / 个护 / 酒类 / 食品饮料 / 母婴 / 3C数码 / 家居家电 / 服饰鞋包 / 教育 / 其他   # 权威见 docs/05 §9
 platform: 
   - xiaohongshu / douyin / both
 schema_family: A / B / C    # 看飞书表字段命名判断

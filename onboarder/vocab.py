@@ -32,8 +32,9 @@ INTENTS = ("traffic", "conversion", "educational", "other")  # docs/03 intent en
 SCHEMA_FAMILIES = ("A", "B", "C")
 
 CATEGORIES = (
-    "处方药", "保健品", "美妆", "酒类", "FMCG", "母婴", "教育", "个护", "其他",
-)  # mappings/_template.yaml + WTG(个护)
+    "处方药", "OTC药", "保健品", "医疗器械", "美妆", "个护", "酒类",
+    "食品饮料", "母婴", "3C数码", "家居家电", "服饰鞋包", "教育", "其他",
+)  # 权威清单 = docs/05-controlled-vocab.md §9「统一词表 v1」(14 值);改这里要同步改 docs/05 §9
 
 # 占位/待确认 → 草稿里合法,不算 error
 _PENDING = {"", "[待确认]", "待确认", "[待定]", "待定", "null", "None", "?"}
