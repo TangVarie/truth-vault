@@ -42,11 +42,21 @@ GitHub daily-sync(cron)
 > (essence/curate 的 LLM 调用已搬到 Railway)。删掉它们可避免有人误以为 GitHub 还在直跑 LLM。
 > daily-sync 之前的"红"正是因为 GitHub 配了 `ANTHROPIC_API_KEY` → essence/curate 真跑 → 连不上网关。
 
-## 超时说明
+## 已知坑 / 运维(2026-06-04 首次上线实测)
 
-worker 同步跑 subprocess、跑完才回。`--limit 50` 一轮约几分钟,跑不完下轮 cron 续作
-(脚本按 `essence_annotated_at IS NULL` 续、幂等)。若 Railway HTTP 边缘超时(部分套餐 ~5min),
-把 daily-sync 里的 `WORKER_LIMIT` 调小即可。
+1. **中转站余额不足 → 403 `insufficient balance`**:essence/curate 是真花钱的 LLM 调用。
+   余额用光时,脚本会收到 `PermissionDeniedError 403 insufficient balance`,该步报 `ok=false`,
+   daily-sync 标红。**处置:给中转站账号/token 充值,或换一条有余额的通道**。跟代码无关。
+
+2. **长任务必须在线程池跑(已修)**:`_run` 是阻塞的 `subprocess.run`。它**必须经
+   `run_in_threadpool`**(app.py 已这么做),否则一次几分钟的 essence 会**堵死 asyncio
+   事件循环 → `/health` 失联 → Railway 健康检查超时把容器重启 → 杀掉本次 run**
+   (首版 bug:50 条/轮在 ~301s 被重启,只标了 23 条)。
+
+3. **WORKER_LIMIT 与节奏**:worker 同步跑、跑完才回。默认 `WORKER_LIMIT=15`(实测 ~13s/条,
+   约 200s/轮),跑不完下轮 cron 续(脚本按 `essence_annotated_at IS NULL` 续、幂等)。
+   backfill 想快:在 GitHub repo **Variables** 把 `WORKER_LIMIT` 调大(单次受 daily-sync 的
+   `curl --max-time 900s` 约束,≈ 60 条上限);或手动多跑几轮 `Run workflow`。
 
 ## 本地自测
 

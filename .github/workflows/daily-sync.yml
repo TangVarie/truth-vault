@@ -56,7 +56,10 @@ jobs:
       # 未配 WORKER_URL → essence/curate 优雅跳过(不再因 GitHub 连不上网关而红)。
       WORKER_URL: ${{ secrets.WORKER_URL }}
       WORKER_API_KEY: ${{ secrets.WORKER_API_KEY }}
-      WORKER_LIMIT: ${{ vars.WORKER_LIMIT || '50' }}
+      # 每轮 essence/curate 上限。默认压到 15:实测中转站 ~13s/条,15 条约 200s,
+      # 给 worker(线程池跑、不堵 /health)留足余量。backfill 想快可在 repo Variables
+      # 把 WORKER_LIMIT 调大(单次 ≤ curl --max-time 900s ≈ 60 条),靠多轮 cron 也会清完。
+      WORKER_LIMIT: ${{ vars.WORKER_LIMIT || '15' }}
       # 只跑某项目 (workflow_dispatch 的 project 输入); 空 = 全部. cron 触发时为空.
       PROJECT_FILTER: ${{ github.event.inputs.project }}
     steps:
