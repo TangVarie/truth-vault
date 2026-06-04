@@ -52,6 +52,10 @@ mappings/<project_id>.yaml(结构对齐现有 mapping,尤其 mappings/WTG_phase1
              C 家族填 备注字段(映射成 _note_for_tier)。规则里的 tier 值用受控词表。
   5 阈值    : 看互动量分布给推荐,标 [待确认]
   6 合规    : 按 category 提模板 + 扫候选蓝词,标 [待确认]
+  ★ intent  : 仅当表里有【意图列】(如「发布笔记」,原值像 流量帖/直给笔记/科普贴)才写
+             intent_mapping(把该列原值映射成 traffic/conversion/educational/other)。
+             **没有意图列就【不要】写 intent_mapping**(写了也是死配置,sync 不会用)——
+             改用每个方向的 intent_override 表达意图(WTG 这类就是)。
 
 受控词表(闭集,只能从中取值,编造会被校验拒绝):
 {vocab.vocab_reference()}
