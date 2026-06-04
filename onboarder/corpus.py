@@ -23,22 +23,30 @@ schema 家族判定(看飞书列名指纹):
 # docs/03 标准字段映射表(飞书常见列名 → 标准字段)。看到这些列就映成对应 typed 列/中间变量,
 # 别一股脑塞 raw_extra —— 否则丢掉结构化处理(典型坑:爆帖置顶评论该是 pinned_comment)。
 STANDARD_FIELD_MAP = """\
-标准字段映射(docs/03;看到这些列名就映成右边的 typed 列/中间变量,**别塞 raw_extra**):
+标准字段映射(docs/03;看到这些列名优先按右边映成 typed 列/中间变量,别无脑塞 raw_extra;
+但带【条件】标注的几项必须按 schema 家族 / 文本格式判断,否则会丢数据 —— 见各行说明):
 - 素人编号 → account_id
 - 发布时间 → publish_time
 - 反馈链接 → publish_url
 - 文案 → raw_content(sync 再解析 title/body/hashtags)
 - 曝光数/曝光量 → impressions;阅读数/阅读量 → reads;互动数/互动量 → interactions
 - 状态/流量状态 → _status_raw(A/B 家族 tier 源,tier_extraction.source 填"状态字段")
-- 备注 → _note_for_tier(C 家族 tier 源,source 填"备注字段")
+- 备注 → 【条件】仅 C 家族(tier 藏在备注、tier_extraction.source="备注字段")才映 _note_for_tier;
+  A/B 家族的备注通常只是运营备注、tier 来自状态列 → 按【原列名「备注」】进
+  project_specific_fields_to_raw_extra,别映 _note_for_tier(否则它不会被 tier 消费,只会以
+  _note_for_tier 这个合成键落进 raw_extra,丢掉原飞书列名的可追溯性)
 - 方向 → _direction_raw(走 direction_decomposition)
-- 发布笔记 → _intent_raw(走 intent_mapping;**没有这列就别写 intent_mapping**)
+- 发布笔记 → _intent_raw(走 intent_mapping);**没有这列就别写 intent_mapping、也别给方向造
+  intent_override → intent 留空**(WTG 金标准 intent=null)
 - 关键词 → target_blue_keywords(投放前定的目标蓝词)
 - 蓝词记录/蓝词字段 → hit_blue_keywords(事后回收的命中蓝词)
 - 爆帖置顶评论 → pinned_comment
 - 随贴评论 → _comment_text(进 comments 表);随贴评论素人 → _comment_text_persona
 - 数据回收情况 → data_quality_status
-- 观众分析 → _audience_raw(sync 解析进 actual_audience_data,半结构化受众数据;见 NUC/WTG)
+- 观众分析 → 【条件】仅当是 WTG 那种可解析的半结构化文本(如"性别分布:男4%女96%;年龄分布…")
+  才映 _audience_raw(sync parse 进 actual_audience_data);若为空或非该格式(如 NUC 多为空)→
+  按【原列名「观众分析」】进 project_specific_fields_to_raw_extra。否则 sync 会无条件消费
+  _audience_raw、parse 出 None,该列既没解析也没留 raw_extra → 丢数据
 - 帐号昵称 → _account_name;粉丝数 → _account_followers;主页链接 → _account_url(暂进 raw_extra)
 其余"保留但不处理"的列(图片/附件/巡查/副本/截图/合作码/父记录…)才进 project_specific_fields_to_raw_extra。"""
 

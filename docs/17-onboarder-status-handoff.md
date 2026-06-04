@@ -100,6 +100,8 @@ GitHub Action 写文件 → 推 onboarder/draft-<id> 分支 → 打印开 PR 链
 ## 7. 待办 —— 到"齐全功能"的路径(用户明确:不要半成品)
 
 ### 0. 先修 PR #40 的 3 条 review,再合 main(否则给 Railway 喂了"太一刀切"的提示)
+> ✅ **已修复(2026-06-04,本分支 `claude/tender-volta-B1jOg`)**:三条提示已条件化。核对 `transform_row` 真实行为确认:`_audience_raw` 在 `sync_feishu_notes_to_truth_vault.py:348` 无条件 `consumed`(parse=None 即丢数据);`_note_for_tier` 仅 `tier_source=="备注字段"` 才消费(否则落 `raw_extra` 合成键);`intent_override`(:310)对确定性方向直接赋 `note["intent"]`。另核实 NRT_phase2/3 用 `intent_override` 但**同时有 intent 列**,WTG 无意图列且 intent 留空 —— 故"无列→造 intent_override"无先例。改动见 `onboarder/core.py` intent 段 + `onboarder/corpus.py` STANDARD_FIELD_MAP(备注/观众分析/发布笔记 三行)。
+
 Codex 指出我那两个 polish 的标准映射提示**没分家族/格式**,会带偏:
 - **备注**:仅 **C 家族** tier 源(→`_note_for_tier`);**A/B 家族**通常只是运营备注 → 进 `project_specific_fields_to_raw_extra`(按原列名,保可追溯)。标准映射提示要**条件化**,别一刀切成 `_note_for_tier`。
 - **观众分析**:仅 **WTG 那种可解析的半结构化文本** → `_audience_raw`;**空 / 非该格式(如 NUC)** → raw_extra。否则 `transform_row` 吃掉 `_audience_raw` 却 parse 出 None → 列既没解析也没留 raw_extra,**丢数据**。

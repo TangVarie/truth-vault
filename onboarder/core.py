@@ -54,8 +54,10 @@ mappings/<project_id>.yaml(结构对齐现有 mapping,尤其 mappings/WTG_phase1
   6 合规    : 按 category 提模板 + 扫候选蓝词,标 [待确认]
   ★ intent  : 仅当表里有【意图列】(如「发布笔记」,原值像 流量帖/直给笔记/科普贴)才写
              intent_mapping(把该列原值映射成 traffic/conversion/educational/other)。
-             **没有意图列就【不要】写 intent_mapping**(写了也是死配置,sync 不会用)——
-             改用每个方向的 intent_override 表达意图(WTG 这类就是)。
+             **没有意图列时 intent 留空**:既不写 intent_mapping(写了也是死配置,sync 不会用),
+             也【不要】给方向凭空造 intent_override —— WTG 金标准就是 intent=null。
+             intent_override 只在该项目确有先例/源据(方向与 intent 稳定对应)时,由策略 lead
+             拍板;起草拿不准一律留空、标 [待确认],绝不替人按方向反推 intent(那是无源造数据)。
 
 受控词表(闭集,只能从中取值,编造会被校验拒绝):
 {vocab.vocab_reference()}
