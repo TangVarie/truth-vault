@@ -228,6 +228,14 @@ jobs:
         run: |
           python check_positive_saturation.py || true  # advisory only
 
+      - name: prune 馆员旧缓存 (advisory, 不 fail)
+        if: steps.check.outputs.skip != 'true' && always()
+        working-directory: scripts
+        run: |
+          # flywheel_librarian_cache 里 library_version 过期的死行会无限累积;
+          # 删掉 >30 天没命中的(advisory,删不动也不影响整轮)。
+          python prune_librarian_cache.py --ttl-days 30 || true
+
       - name: Show flywheel status (truth_vault.v_flywheel_sync_status)
         if: steps.check.outputs.skip != 'true' && always()
         working-directory: scripts

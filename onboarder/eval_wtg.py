@@ -7,12 +7,15 @@ mappings/WTG_phase1.yaml 当【结构】回归基准:
 
   --check-golden (默认):金标准本身必须通过 vocab 校验(证明校验器 + 词表 + 金标准
                          三者自洽,现在就能跑)。
-  --against <produced.yaml>:把 agent 重跑 WTG 产出的 yaml 与金标准做【结构对比】+
-                         [待确认] 覆盖对比。
+  --against <produced.yaml>:把 agent 重跑 WTG 产出的 yaml 与金标准做【结构对比】;
+                         produced 标的 [待确认] 项仅作报告,不当判据(原因见下)。
 
 通过判据:结构 diff = 0 关键差异(schema_family / field_mapping 列集 / raw_extra
-allowlist / tier 规则 / 阈值存在 / 方向名集合),且 produced 的 [待确认] 项 ⊇ 金标准。
-完整"agent 重跑"接 core.run_onboarding(需中转站+飞书凭证)。
+allowlist / tier 规则 / 阈值存在 / 方向名集合)。
+注:[待确认] 覆盖【无法】用金标准当基准 —— WTG 金标准是人工定稿的(判断字段已填实值,
+[待确认] 只在 yaml 注释里、validate_mapping 看不到注释)→ golden 的 pending 恒为空,
+拿它做 produced ⊇ golden 的断言永远为真(无效,codex review)。故只【报告】produced
+标了哪些 [待确认] 供人审。完整"agent 重跑"接 core.run_onboarding(需中转站+飞书凭证)。
 """
 
 from __future__ import annotations
@@ -102,11 +105,13 @@ def main() -> int:
         print("  ✓", s)
     for s in rep["diffs"]:
         print("  ✗", s)
-    pen_p = set(vocab.validate_mapping(produced)["pending"])
-    pen_g = set(vocab.validate_mapping(golden)["pending"])
-    missing = pen_g - pen_p
-    print(f"\n[待确认] 覆盖: produced={len(pen_p)} golden={len(pen_g)} 漏标={sorted(missing) or '无'}")
-    passed = not rep["diffs"] and not missing
+    # [待确认] 覆盖无法用金标准当基准:WTG 金标准是人工定稿的(判断字段已填实值,
+    # [待确认] 只在 yaml 注释里、validate_mapping 看不到)→ golden 的 pending 恒为空,
+    # 拿它做 produced ⊇ golden 的断言永远为真(无效)。故只【报告】produced 标了哪些
+    # [待确认] 供人审,不当 pass/fail 闸(codex review)。结构对比才是 oracle。
+    pen_p = sorted(vocab.validate_mapping(produced)["pending"])
+    print(f"\n[待确认] produced 标注 {len(pen_p)} 项(仅供人审,非判据): {pen_p or '无'}")
+    passed = not rep["diffs"]
     print("\n=== " + ("PASS" if passed else "FAIL") + " ===")
     return 0 if passed else 1
 
