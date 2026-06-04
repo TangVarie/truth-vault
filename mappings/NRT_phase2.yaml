@@ -297,10 +297,12 @@ project_specific_fields_to_raw_extra:
 
 sync_config:
   source_type: feishu_api
-  feishu_app_token: null
-  feishu_table_id: null
-  feishu_view_id: null
+  feishu_app_token: IKDabbT7HascF5szHrRciBe0ndg   # NRT_2 表标识 (非密钥)
+  feishu_table_id: tblD33LZSDTOLCb8               # NRT_2 表标识 (非密钥)
+  feishu_view_id: null              # 留空 = 读全表 (机器人需已授权为协作者)
   sync_interval: on_demand
+  # ⚠️ App ID / App Secret 不在这里 — 走 env / GitHub Secrets:
+  #    FEISHU_APP_ID, FEISHU_APP_SECRET (密钥绝不进 git)
 
 # ════════════════════════════════════════════════════════════════════
 # Onboarding 元数据
