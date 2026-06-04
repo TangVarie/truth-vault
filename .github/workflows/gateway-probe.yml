@@ -1,0 +1,50 @@
+# 一次性诊断:从 GitHub Actions 探测中转站可达性(分阶段,不泄露 URL/IP/key)。
+# 目的:确认 GitHub 的 runner 到底能不能连上你的中转站。
+#   connect>0 + http=200 → GitHub 连得上 + 通道有模型 → 可【跳过 Railway】直接在 GH 跑;
+#   connect>0 + http=503 → 连得上,但通道无该模型 → 换通道(secret)即可,仍可 GH 直跑;
+#   connect=0(超时)    → 网络/路由层连不上 → 确认要走 Railway。
+name: gateway-probe (中转站可达性自检)
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 分阶段探测
+        env:
+          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set +e
+          set +o pipefail
+          base="${ANTHROPIC_BASE_URL%/}"
+          echo "── ① URL 形状(不泄露值)──"
+          echo "长度=${#ANTHROPIC_BASE_URL}"
+          case "$ANTHROPIC_BASE_URL" in
+            https://*) echo "开头: OK https://";;
+            *) echo "开头: ⚠️ 非 https://(填错/前导空格?)";;
+          esac
+          last=$(printf %s "$ANTHROPIC_BASE_URL" | tail -c 1 | od -An -tx1 | tr -d ' \n')
+          echo "末字符 hex=$last(0a=换行 20=空格 → 尾部带空白)"
+          echo "── ② DNS(只报成败)──"
+          host=$(printf %s "$base" | sed -E 's#^https?://##; s#[:/].*$##')
+          if getent hosts "$host" >/dev/null 2>&1; then echo "DNS 解析: OK"; else echo "DNS 解析: ❌(域名错?)"; fi
+          echo "── ③ 分阶段连接(connect-timeout 10s, max 25s)──"
+          out=$(curl -sS -o /dev/null --connect-timeout 10 --max-time 25 \
+            -w "connect=%{time_connect}s tls=%{time_appconnect}s total=%{time_total}s http=%{http_code}" \
+            "$base/v1/messages" \
+            -H "x-api-key: $ANTHROPIC_API_KEY" -H "anthropic-version: 2023-06-01" \
+            -H "content-type: application/json" \
+            -d '{"model":"claude-sonnet-4-6","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}' 2>/dev/null)
+          rc=$?
+          echo "curl 退出码=$rc | $out"
+          case $rc in
+            0)  echo "→ ✅ 连上并拿到响应。看 http=: 200=全通(可跳过 Railway!) / 503=连上了但通道无该模型(换通道 secret 即可) / 401|403=鉴权 / 404=路径";;
+            6)  echo "→ exit 6: DNS 解析失败 → URL 域名写错";;
+            7)  echo "→ exit 7: 连接被拒 → 端口错";;
+            28) echo "→ exit 28 超时:connect>0=连上了没回(网关);connect=0.000000=连都没连上(网络/路由 → 走 Railway)";;
+            35) echo "→ exit 35: TLS 握手失败";;
+            *)  echo "→ 其它 curl 错误 $rc";;
+          esac
