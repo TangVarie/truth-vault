@@ -170,7 +170,7 @@ def main() -> int:
     logger.info("Found %d card(s) to curate (model=%s, recurate=%s)",
                 len(cards), model, args.recurate)
 
-    stats = {"ok": 0, "failed": 0}
+    stats = {"ok": 0, "ok_after_retry": 0, "failed": 0}
     sleep_s = 1.0 / args.qps if args.qps > 0 else 0
     for i, card in enumerate(cards):
         note_id = card["source_note_id"]   # 视图导出列名是 source_note_id; 写回仍落 note_id PK
@@ -179,16 +179,25 @@ def main() -> int:
             logger.info("[dry-run] %s prompt len=%d", note_id, len(prompt))
             stats["ok"] += 1
             continue
-        try:
-            raw = call_claude(prompt, model)
-        except Exception as exc:
-            logger.warning("curate API failed for %s: %r", note_id, exc)
-            stats["failed"] += 1
-            continue
-        parsed = parse_claude_json(raw)
-        errors = validate_lesson(parsed) if parsed is not None else ["json_parse_failed"]
+        # 单卡最多试 2 次。call_claude 自身只重试【API 错误】,不重试"HTTP 200 但返回非法 JSON /
+        # 不合规"——而 LLM 偶发吐坏 JSON 正是此类(实测 NRT_2 15 张里偶发 1 张 json_parse_failed)。
+        # curate 是 best-effort 富集,单卡抽风不该拖红整条 daily-sync,故失败重提一次。
+        parsed, errors = None, ["not_attempted"]
+        for attempt in (1, 2):
+            try:
+                raw = call_claude(prompt, model)
+            except Exception as exc:
+                errors = [f"api_failed: {exc!r}"]
+                logger.warning("curate API failed for %s (try %d): %r", note_id, attempt, exc)
+                continue
+            parsed = parse_claude_json(raw)
+            errors = validate_lesson(parsed) if parsed is not None else ["json_parse_failed"]
+            if not errors:
+                if attempt == 2:
+                    stats["ok_after_retry"] += 1
+                break
+            logger.warning("curate validation failed for %s (try %d): %s", note_id, attempt, errors)
         if errors:
-            logger.warning("curate validation failed for %s: %s", note_id, errors)
             stats["failed"] += 1
             continue
         write_lesson_back(sb, note_id, model, parsed, dry_run=False)
@@ -199,7 +208,18 @@ def main() -> int:
         time.sleep(sleep_s)
 
     logger.info("Done: %s", json.dumps(stats, ensure_ascii=False))
-    return 0 if stats["failed"] == 0 else 1
+    # 返回码策略:只有【全军覆没】(一张都没成功却有失败)才判失败 —— 那多半是系统性问题
+    # (FLYWHEEL_CURATOR_MODEL 配错 / 中转站余额耗尽 / 限流),该红该告警。零星单卡失败(ok>0)
+    # 容忍并返回 0:curate 幂等(失败卡 is_curated=false),下轮 daily-sync 自动重试,不该
+    # 因 LLM 偶发抽风把整条 sync 拖红(对齐 best-effort 富集定位)。
+    if stats["failed"] > 0 and stats["ok"] == 0:
+        logger.error("curate 全部失败 (%d 张) —— 多半系统性(模型 env / 余额 / 限流),需排查。",
+                     stats["failed"])
+        return 1
+    if stats["failed"] > 0:
+        logger.warning("curate 有 %d 张失败(已各重试一次),ok=%d;失败卡下轮幂等重试,不拖红本次。",
+                       stats["failed"], stats["ok"])
+    return 0
 
 
 if __name__ == "__main__":
