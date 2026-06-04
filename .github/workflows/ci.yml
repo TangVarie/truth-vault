@@ -375,7 +375,34 @@ jobs:
           assert metric_a["interactions"] == 500
           print("  ✓ metric-only cols stripped from note payload, retained in metric snapshot")
 
-          print("\ntransform_row tier+metric: all 5 checks passed")
+          # Case F (PR#51/#52 regression): Feishu 可能把「发布笔记」返回成 LIST
+          # (多选 / list[str]) — map_intent 必须经 _direction_key 展平,不能直接拿
+          # list 做 dict-key 查找而 `TypeError: unhashable type: 'list'`
+          # (NRT_2 全表 sync 失败的根因)。
+          mapping_intent = {
+              "project_id": "TEST_I", "platform": "xiaohongshu",
+              "field_mapping": {"文案": "raw_content", "发布笔记": "_intent_raw"},
+              "intent_mapping": {"钓鱼帖": "traffic", "直给笔记": "conversion"},
+          }
+          note_f1, _, _ = s.transform_row(mapping_intent, "recF1", {"文案": "c", "发布笔记": ["钓鱼帖"]})
+          assert note_f1.get("intent") == "traffic", note_f1.get("intent")
+          note_f2, _, _ = s.transform_row(mapping_intent, "recF2", {"文案": "c", "发布笔记": [{"text": "直给笔记"}]})
+          assert note_f2.get("intent") == "conversion", note_f2.get("intent")
+          note_f3, _, _ = s.transform_row(mapping_intent, "recF3", {"文案": "c", "发布笔记": "钓鱼帖"})
+          assert note_f3.get("intent") == "traffic", note_f3.get("intent")
+          # 多选(2 个不同 intent)→ 收敛为合法 enum 'mixed',绝不写非法拼接串(撞 notes.intent CHECK)
+          note_f4, _, _ = s.transform_row(mapping_intent, "recF4", {"文案": "c", "发布笔记": ["钓鱼帖", "直给笔记"]})
+          assert note_f4.get("intent") == "mixed", note_f4.get("intent")
+          # 未知值 → 'other'(合法 enum),不原样写中文
+          note_f5, _, _ = s.transform_row(mapping_intent, "recF5", {"文案": "c", "发布笔记": ["说书帖"]})
+          assert note_f5.get("intent") == "other", note_f5.get("intent")
+          # 不变量:任何非空 intent 都必须落在 notes.intent CHECK 的合法 enum 内
+          _ENUM = {"traffic", "conversion", "educational", "mixed", "other"}
+          for nf in (note_f1, note_f2, note_f3, note_f4, note_f5):
+              assert nf.get("intent") in _ENUM, nf.get("intent")
+          print("  ✓ list[str]/list[dict]/str + 多选→mixed + 未知→other,intent 恒为合法 enum(不崩不撞 CHECK)")
+
+          print("\ntransform_row tier+metric+intent: all 6 checks passed")
           PY
       - name: Supabase key validation self-check
         working-directory: scripts
