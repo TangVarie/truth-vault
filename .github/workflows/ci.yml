@@ -40,6 +40,7 @@ jobs:
             scripts/extract_negative_examples_from_autowriter.py \
             scripts/check_flywheel_health.py \
             scripts/curate_flywheel_lessons.py \
+            scripts/count_unannotated_essence.py \
             librarian/__init__.py \
             librarian/clients.py \
             librarian/core.py \
