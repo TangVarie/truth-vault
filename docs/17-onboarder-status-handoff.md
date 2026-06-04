@@ -115,6 +115,10 @@ Codex 指出我那两个 polish 的标准映射提示**没分家族/格式**,会
 → 要加"拆多选 → 各基础方向分别套用"+ "决定多方向时各字段怎么合并(content_format 单值怎么取、audience 是否并集)"。**设计决策 + 生产代码,单独仔细做。**
 
 ### B. 草稿写 sync_config(小改进)
+> ✅ **已修复(2026-06-04,本分支)**:`onboarder/core.py` 加 `_rewrite_sync_config()`,`draft()` 用已知
+> app_token/table_id 删掉模型输出的 sync_config 段、追加带实值的规范段(表标识非密钥;App ID/Secret 仍走 env)。
+> 单测覆盖三种情形(块在中间/末尾/缺失),保证恰一个 sync_config、yaml 可解析、其余顶层键不丢。
+
 现在草稿 `sync_config.feishu_app_token/table_id = null` → daily cron 遍历 `mappings/*.yaml` 会**跳过**该项目。workflow 手上就有这俩值(用户输入)→ 让 onboarder/workflow 把它们**写进草稿 sync_config**。
 
 ### C. polish 合 main(= §7-0 修完后的合并动作)

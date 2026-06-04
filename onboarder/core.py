@@ -132,6 +132,39 @@ def _split_output(raw: str) -> tuple[str, str]:
     return _strip_fence(raw), ""
 
 
+def _rewrite_sync_config(mapping_text: str, app_token: str, table_id: str) -> str:
+    """把已知的 app_token / table_id 写进草稿的 sync_config 段(§7-B)。
+
+    daily cron 遍历 mappings/*.yaml 时,sync_config.feishu_app_token/table_id 为 null
+    的项目会被【跳过】(视为从未 onboard)。接表时这俩值是已知输入 → 删掉模型可能输出的
+    sync_config 段,改追加一个带实值的规范段。这俩是【表标识、非密钥】;App ID/Secret
+    仍走 env / GitHub Secrets,不进 git。
+    """
+    out: list[str] = []
+    skip = False
+    for ln in (mapping_text or "").splitlines():
+        if skip:
+            # 跳到下一个顶层键(行首非空白、非注释)或文件尾,期间的块内行/注释一律丢弃
+            if ln and not ln[0].isspace() and not ln.lstrip().startswith("#"):
+                skip = False  # 本行是新的顶层键 → 不再跳过,正常往下处理
+            else:
+                continue
+        if ln.startswith("sync_config:"):
+            skip = True
+            continue
+        out.append(ln)
+    body = "\n".join(out).rstrip()
+    block = (
+        "sync_config:\n"
+        "  source_type: feishu_api\n"
+        f"  feishu_app_token: {app_token}   # 表标识(非密钥), 接表时已知\n"
+        f"  feishu_table_id: {table_id}\n"
+        "  feishu_view_id: null\n"
+        "  sync_interval: on_demand\n"
+    )
+    return f"{body}\n\n{block}"
+
+
 def draft(
     *,
     project_id: str,
@@ -169,6 +202,9 @@ def draft(
     mapping_text, brief = _split_output(raw)
     if not mapping_text.strip():
         return {"is_error": True, "reason": "模型没产出可解析的 mapping", "raw_head": (raw or "")[:1200]}
+
+    # §7-B: 把已知 app_token/table_id 写进 sync_config —— 否则 daily cron 见 null 会跳过该项目。
+    mapping_text = _rewrite_sync_config(mapping_text, app_token, table_id)
 
     try:
         mp = yaml.safe_load(mapping_text)
