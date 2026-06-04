@@ -199,21 +199,39 @@ def _default_tier(rules: list[dict]) -> Optional[str]:
     return None
 
 
-def map_intent(raw_intent: Any, mapping: dict) -> Optional[str]:
-    """Apply intent_mapping from mapping yaml. None passes through.
+# notes.intent 的 CHECK 约束取值(schemas/notes_v1_2.sql:200)。map_intent 必须只产出
+# 这几个值或 None,否则 upsert 撞 check constraint(codex PR#53)。
+_INTENT_ENUM = frozenset({"traffic", "conversion", "educational", "mixed", "other"})
 
-    Feishu 可能把「发布笔记」返回成 list(多选 / list[str])或 {'text':...} dict;
-    直接拿它做 intent_mapping 的 dict-key 查找会 `TypeError: unhashable type:
-    'list'`(PR#51 实测 NRT_2 全表 sync 失败的根因)。先用 _direction_key 展平成
-    hashable 字符串 —— 与 方向(_direction_key)/状态(extract_tier 内部)共用同一套
-    Feishu-cell→str 逻辑;空 cell(展平为 "")视作无 intent → None。
+
+def map_intent(raw_intent: Any, mapping: dict) -> Optional[str]:
+    """把飞书「发布笔记」cell 映射成 notes.intent 合法 enum(或 None)。
+
+    两个坑一起处理:
+      1. Feishu 可能返回 list(多选 / list[str])或 {'text':...} dict —— 直接拿它做
+         intent_mapping 的 dict-key 查找会 `TypeError: unhashable type: 'list'`
+         (PR#51 NRT_2 全表 sync 失败根因)。先用 _direction_key 把每个元素展平成字符串。
+      2. notes.intent 有 CHECK(只准 traffic/conversion/educational/mixed/other)。
+         多选映射到【多个不同 intent】→ 收敛为 'mixed';有值但都没映射到合法 enum
+         → 'other'。绝不把原始中文 / 逗号拼接串写进 intent,否则撞 check constraint(PR#53)。
+    空 cell → None(intent 列 nullable)。
     """
     if raw_intent is None:
         return None
-    key = raw_intent if isinstance(raw_intent, str) else _direction_key(raw_intent)
-    if key == "":
+    raws = raw_intent if isinstance(raw_intent, list) else [raw_intent]
+    values = [k for k in (_direction_key(v) for v in raws) if k]
+    if not values:
         return None
-    return mapping.get(key, key)
+    mapped = set()
+    for v in values:
+        m = mapping.get(v, v)        # 按 yaml 映射;无映射退回原值(原值恰好是合法 enum 也接受)
+        if m in _INTENT_ENUM:
+            mapped.add(m)
+    if len(mapped) == 1:
+        return next(iter(mapped))
+    if len(mapped) >= 2:
+        return "mixed"               # 多选落到多个 intent → mixed
+    return "other"                   # 有值但都没落到合法 enum → other(不写非法字符串)
 
 
 # ─────────────────────────────────────────────────────────────────────────
