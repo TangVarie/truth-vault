@@ -602,17 +602,21 @@ WITH ranked AS (
 DELETE FROM truth_vault.undeclared_fields_quarantine
 WHERE quarantine_id IN (SELECT quarantine_id FROM ranked WHERE rn > 1);
 
--- 历史版本曾用 ADD CONSTRAINT UNIQUE (...); 但 SQL UNIQUE 把 NULL 视为不相等,
--- feishu_record_id 为 NULL 的行会无限堆积. 改成 partial UNIQUE INDEX,
--- 只在 feishu_record_id 非空时去重 (这正是有意义的场景). 匿名行 (NULL
--- feishu_record_id) 无法跨 run 关联, 重复是无害的且原本就不该出现.
+-- quarantine_record() 用 PostgREST upsert(on_conflict="project_id,feishu_record_id,reason")
+-- 做幂等。PostgREST 发的是 predicateless `ON CONFLICT (cols)` —— Postgres 用 PARTIAL index
+-- 做仲裁推断时【要求语句带上 partial 谓词】,而 PostgREST 不带 → partial index 会报 42P10
+-- 「no unique or exclusion constraint matching the ON CONFLICT specification」
+-- (实测:NRT_2 是首个有大量空文案行→触发 quarantine 的表,把这个潜伏问题炸出来)。
+-- 故必须用【非 partial】唯一索引;再加 NULLS NOT DISTINCT(PG15+)让 feishu_record_id 为
+-- NULL 的匿名行也按 (project_id, NULL, reason) 去重,保留原"不让 NULL 行无限堆积"的意图。
 ALTER TABLE truth_vault.undeclared_fields_quarantine
     DROP CONSTRAINT IF EXISTS uq_quarantine_project_record_reason;
+DROP INDEX IF EXISTS truth_vault.uq_quarantine_project_record_reason;
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_quarantine_project_record_reason
     ON truth_vault.undeclared_fields_quarantine
     (project_id, feishu_record_id, reason)
-    WHERE feishu_record_id IS NOT NULL;
+    NULLS NOT DISTINCT;
 
 
 -- ════════════════════════════════════════════════════════════════════
