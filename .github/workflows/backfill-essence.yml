@@ -106,8 +106,10 @@ jobs:
             # 单批最多试 3 次:worker 偶发重启 / 瞬断时,等一下重试 —— 标注幂等
             # (按 essence_annotated_at IS NULL 续作),重试只会接着标、不会重复烧已标的。
             # 实测:连续多批后 Railway worker 会重启一次(注解已落库但 HTTP 响应没回)→ 重试可续。
+            # 最多试 6 次、每次失败等 60s ≈ 5 分钟重试窗 —— 覆盖 Railway worker 重启
+            # (实测重启偶尔 >90s,旧的 3×30s 窗太短会提前放弃)。标注幂等,重试只接着标。
             ok=false; code=000
-            for attempt in 1 2 3; do
+            for attempt in 1 2 3 4 5 6; do
               code=$(curl -sS -w '%{http_code}' -o /tmp/b.json --max-time 900 \
                 -X POST "${WORKER_URL%/}/annotate-essence" \
                 -H "X-Worker-Key: $WORKER_API_KEY" -H 'content-type: application/json' \
@@ -116,9 +118,9 @@ jobs:
               echo "   [try $attempt] HTTP $code · ok=$ok · returncode=$(jq -r '.returncode // "?"' /tmp/b.json 2>/dev/null)"
               jq -r '.stdout_tail // ""' /tmp/b.json 2>/dev/null | tail -4
               { [ "$code" = "200" ] && [ "$ok" = "true" ]; } && break
-              echo "::warning::batch $i try $attempt 失败 (HTTP $code, ok=$ok);等 30s 重试(worker 可能在重启)"
+              echo "::warning::batch $i try $attempt 失败 (HTTP $code, ok=$ok);等 60s 重试(worker 可能在重启)"
               jq -r '.stderr_tail // ""' /tmp/b.json 2>/dev/null | tail -6
-              sleep 30
+              sleep 60
             done
             if [ "$code" != "200" ] || [ "$ok" != "true" ]; then
               echo "::error::worker 调用连续 3 次失败 (HTTP $code, ok=$ok) —— 停止 backfill。已标的不丢,修好后重跑接着灌。"
