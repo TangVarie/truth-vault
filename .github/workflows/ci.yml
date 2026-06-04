@@ -375,7 +375,24 @@ jobs:
           assert metric_a["interactions"] == 500
           print("  ✓ metric-only cols stripped from note payload, retained in metric snapshot")
 
-          print("\ntransform_row tier+metric: all 5 checks passed")
+          # Case F (PR#51/#52 regression): Feishu 可能把「发布笔记」返回成 LIST
+          # (多选 / list[str]) — map_intent 必须经 _direction_key 展平,不能直接拿
+          # list 做 dict-key 查找而 `TypeError: unhashable type: 'list'`
+          # (NRT_2 全表 sync 失败的根因)。
+          mapping_intent = {
+              "project_id": "TEST_I", "platform": "xiaohongshu",
+              "field_mapping": {"文案": "raw_content", "发布笔记": "_intent_raw"},
+              "intent_mapping": {"钓鱼帖": "traffic", "直给笔记": "conversion"},
+          }
+          note_f1, _, _ = s.transform_row(mapping_intent, "recF1", {"文案": "c", "发布笔记": ["钓鱼帖"]})
+          assert note_f1.get("intent") == "traffic", note_f1.get("intent")
+          note_f2, _, _ = s.transform_row(mapping_intent, "recF2", {"文案": "c", "发布笔记": [{"text": "直给笔记"}]})
+          assert note_f2.get("intent") == "conversion", note_f2.get("intent")
+          note_f3, _, _ = s.transform_row(mapping_intent, "recF3", {"文案": "c", "发布笔记": "钓鱼帖"})
+          assert note_f3.get("intent") == "traffic", note_f3.get("intent")
+          print("  ✓ list[str]/list[dict]/str 发布笔记 全部正常映射,无 unhashable-list 崩溃")
+
+          print("\ntransform_row tier+metric+intent: all 6 checks passed")
           PY
       - name: Supabase key validation self-check
         working-directory: scripts

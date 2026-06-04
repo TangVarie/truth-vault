@@ -199,11 +199,21 @@ def _default_tier(rules: list[dict]) -> Optional[str]:
     return None
 
 
-def map_intent(raw_intent: Optional[str], mapping: dict) -> Optional[str]:
-    """Apply intent_mapping from mapping yaml. None passes through."""
+def map_intent(raw_intent: Any, mapping: dict) -> Optional[str]:
+    """Apply intent_mapping from mapping yaml. None passes through.
+
+    Feishu 可能把「发布笔记」返回成 list(多选 / list[str])或 {'text':...} dict;
+    直接拿它做 intent_mapping 的 dict-key 查找会 `TypeError: unhashable type:
+    'list'`(PR#51 实测 NRT_2 全表 sync 失败的根因)。先用 _direction_key 展平成
+    hashable 字符串 —— 与 方向(_direction_key)/状态(extract_tier 内部)共用同一套
+    Feishu-cell→str 逻辑;空 cell(展平为 "")视作无 intent → None。
+    """
     if raw_intent is None:
         return None
-    return mapping.get(raw_intent, raw_intent)
+    key = raw_intent if isinstance(raw_intent, str) else _direction_key(raw_intent)
+    if key == "":
+        return None
+    return mapping.get(key, key)
 
 
 # ─────────────────────────────────────────────────────────────────────────
