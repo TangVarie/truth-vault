@@ -1,5 +1,6 @@
-# 接表 agent —— 手动触发:飞书表 → mapping.yaml 草稿 → 自动开 PR。
-# 见 docs/16-onboarding-agent.md。额度走中转站;产出是带 [待确认] 的草稿,人审 PR 才进库。
+# 接表 agent —— GitHub 按钮触发 → 调 Railway onboarder 端点起草 → 推草稿分支 + 给开 PR 链接。
+# 见 docs/16 / onboarder/README。Railway 跑 LLM(它连得上中转站,GitHub Actions 连不上);
+# GH 这边只做 git —— 拿回草稿、推分支。只需 contents:write,不碰"允许 Actions 开 PR"开关。
 name: 接表 agent (onboard a feishu table)
 
 on:
@@ -15,7 +16,7 @@ on:
         description: "飞书表 table_id (tbl...)"
         required: true
       sample_n:
-        description: "拉多少行样本"
+        description: "拉多少行文案样本"
         required: false
         default: "30"
 
@@ -23,48 +24,50 @@ jobs:
   onboard:
     runs-on: ubuntu-latest
     permissions:
-      contents: write          # 提交草稿到新分支
-      pull-requests: write      # 开 PR
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - name: 装 Claude Code CLI (agent SDK 底层驱动它)
-        run: npm install -g @anthropic-ai/claude-code
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - run: pip install -r onboarder/requirements.txt
-
-      - name: 起草 mapping(agent)
+      - name: 调 Railway onboarder 起草(Railway 连得上网关)
         env:
-          # 中转站(同 librarian);若网关要 bearer,改用 ANTHROPIC_AUTH_TOKEN
-          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          # 飞书 bot(与 daily-sync 同一对)
-          FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
-          FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+          ONBOARDER_URL: ${{ secrets.ONBOARDER_URL }}
+          ONBOARDER_API_KEY: ${{ secrets.ONBOARDER_API_KEY }}
         run: |
-          python -m onboarder.cli \
-            --project-id "${{ inputs.project_id }}" \
-            --app-token "${{ inputs.feishu_app_token }}" \
-            --table-id "${{ inputs.feishu_table_id }}" \
-            --sample-n "${{ inputs.sample_n }}" \
-            --budget-usd 2.0 \
-            --out-dir mappings
+          [ -n "$ONBOARDER_URL" ] || { echo "❌ 缺 secret ONBOARDER_URL(Railway 端点地址)"; exit 1; }
+          code=$(curl -sS -w "%{http_code}" -o /tmp/resp.json --max-time 220 \
+            -X POST "${ONBOARDER_URL%/}/onboard" \
+            -H "X-Onboarder-Key: $ONBOARDER_API_KEY" \
+            -H "content-type: application/json" \
+            -d "{\"project_id\":\"${{ inputs.project_id }}\",\"app_token\":\"${{ inputs.feishu_app_token }}\",\"table_id\":\"${{ inputs.feishu_table_id }}\",\"sample_n\":${{ inputs.sample_n }}}")
+          echo "HTTP $code"
+          [ "$code" = "200" ] || { echo "❌ 端点返回非 200:"; cat /tmp/resp.json; echo; exit 1; }
 
-      - name: 开 PR(草稿 + brief,待策略 lead 审)
-        uses: peter-evans/create-pull-request@v6
-        with:
-          branch: onboarder/draft-${{ inputs.project_id }}
-          title: "接表草稿: ${{ inputs.project_id }} (agent 起草, 待策略 lead 审)"
-          body-path: mappings/${{ inputs.project_id }}.brief.md
-          add-paths: |
-            mappings/${{ inputs.project_id }}.yaml
-            mappings/${{ inputs.project_id }}.brief.md
-          labels: |
-            onboarding
-            needs-strategy-review
+      - name: 写出草稿文件
+        run: |
+          jq -r '.mapping_yaml'  /tmp/resp.json > "mappings/${{ inputs.project_id }}.yaml"
+          jq -r '.review_brief'  /tmp/resp.json > "mappings/${{ inputs.project_id }}.brief.md"
+          echo "── 校验 ──"
+          echo "词表 errors:   $(jq -c '.errors'    /tmp/resp.json)"
+          echo "未覆盖列(D-021):$(jq -c '.uncovered' /tmp/resp.json)"
+          echo "待确认项:       $(jq -r '.pending | length' /tmp/resp.json) 项"
+
+      - name: 推草稿分支 + 给出开 PR 链接
+        run: |
+          git config user.name "onboarder-bot"
+          git config user.email "onboarder@users.noreply.github.com"
+          b="onboarder/draft-${{ inputs.project_id }}"
+          git checkout -b "$b"
+          git add "mappings/${{ inputs.project_id }}.yaml" "mappings/${{ inputs.project_id }}.brief.md"
+          git commit -m "接表草稿: ${{ inputs.project_id }}(agent 起草,待策略 lead 审)"
+          git push -f -u origin "$b"
+          echo "::notice title=草稿已就绪::分支 $b 已推送"
+          echo "👉 点这里开 PR: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/main...$b?expand=1"
+
+      - name: 校验门(草稿已推;有校验问题则让 run 变红,不静默放过)
+        run: |
+          if [ "$(jq -r '.is_error' /tmp/resp.json)" = "true" ]; then
+            echo "::error title=草稿有校验问题,需修复后再 merge::errors=$(jq -c '.errors' /tmp/resp.json) | uncovered(D-021)=$(jq -c '.uncovered' /tmp/resp.json)"
+            echo "(草稿已推到分支,可在该分支/PR 上直接改;但本次 run 标红提醒别直接 merge。)"
+            exit 1
+          fi
+          echo "✅ 词表 + D-021 校验通过。"

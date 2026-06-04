@@ -1,9 +1,9 @@
-# 接表 agent 依赖。
-# 运行时还需要 Claude Code CLI(agent SDK 在底层驱动它):
-#   npm install -g @anthropic-ai/claude-code
-# 见 .github/workflows/onboard-table.yml。
-claude-agent-sdk>=0.2,<1
+# 接表助手依赖(CLI 本地跑 + Railway 服务端点共用)。
+anthropic>=0.40
 requests>=2.28
 PyYAML>=6
+# Railway 服务端点(onboarder/app.py)用:
+fastapi>=0.110
+uvicorn>=0.29
 # 可选(仅当接 DB dry-run / agent_runs 记录时):
 # supabase>=2,<3

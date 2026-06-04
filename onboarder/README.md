@@ -1,62 +1,70 @@
-# onboarder/ · 接表 agent
+# onboarder/ · 接表助手
 
-飞书投放表 → `mappings/<project_id>.yaml` **草稿** 的自动起草 agent。
-设计/决策见 **[docs/16-onboarding-agent.md](../docs/16-onboarding-agent.md)**。
+飞书投放表 → `mappings/<project_id>.yaml` **草稿**。设计/决策见
+**[docs/16-onboarding-agent.md](../docs/16-onboarding-agent.md)**。
 
-agent 干「梳理 + 闭集抽取 + 起草」,判断权(方向拆解 / tier 阈值 / 合规)留给策略
-lead(README 原则 1)。产出永远是带 `[待确认]` 的草稿 + review brief,人审 PR 才进库。
+做「梳理 + 闭集抽取 + 起草」,判断权(方向拆解 / tier 阈值 / 合规)留给策略 lead;
+产出永远是带 `[待确认]` 的草稿 + review brief,人审 PR 才进库(README 原则 1)。
 
-## 流程
+## 架构
+
+**确定性取数 + 单次 Anthropic 调用**(librarian 同款,走中转站非流式 —— 已验证能透传)。
+`core.draft()` 是核心(不写盘),被两处复用:本地 CLI、Railway 端点。
 
 ```
-read_mapping_corpus   读词表+家族指纹+历史 mapping(跨表对齐、复用已有拆解)
-   → pull_feishu_table   拉列 + 样本行
-   → 起草整份 yaml(锁受控词表;判断项标 [待确认])
-   → recommend_thresholds 按互动量分布推荐阈值
-   → validate_mapping_yaml 自查(errors=0 且 D-021 列全覆盖)
-   → emit_draft          写 draft yaml + brief(再校验一次兜底)
+飞书 list_fields(权威列+选项) + N 行样本 + 全表 distinct(枚举型取全集)
+  + 历史 mapping/家族指纹/词表(corpus, 跨表对齐)
+  → 一次 call_anthropic → ===MAPPING_YAML=== / ===REVIEW_BRIEF===
+  → 词表 + D-021 校验 → 草稿
 ```
 
-护栏:`PreToolUse` hook 只放行 onboarder 工具(挡内建 Bash/Write);`emit_draft`
-词表 error / 未覆盖列 → 拒绝写盘;`max_budget_usd` + `max_turns` 封顶成本;
-`setting_sources=[]` 不读本机配置。
+## 部署:Railway 跑端点 + GitHub 按钮触发(推荐)
 
-## 额度
+实测 **GitHub Actions 连不上中转站**(海外 runner → 网关超时),但 **Railway 连得上**
+(librarian 就在上面)。所以:**Railway 跑 LLM,GitHub 只做 git**。
 
-走**中转站**(同 `librarian` 池子):CLI 读 `ANTHROPIC_BASE_URL` +
-`ANTHROPIC_API_KEY`(中转站若要 bearer 则用 `ANTHROPIC_AUTH_TOKEN`)。
-**不**用 Claude 订阅额度(每周封顶 + 交互专用,见 docs/16)。
+```
+GitHub「Run workflow」填表 ──HTTP──▶ Railway /onboard(连网关+飞书,出草稿)
+                                          │ 返回 {mapping_yaml, review_brief, ...}
+   GH Action 写文件 + 推 onboarder/draft-<id> 分支 ◀──┘ → 打印开 PR 链接 → 人审
+```
 
-## 本地跑
+**① Railway:新建一个 service**(与 librarian 并存,同一 repo):
+- root = repo 根;build `pip install -r onboarder/requirements.txt`;
+  start `uvicorn onboarder.app:app --host 0.0.0.0 --port $PORT`;healthcheck `/health`
+- env:`ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY`(**用能跑通的那条通道**)、
+  `FEISHU_APP_ID` + `FEISHU_APP_SECRET`、`ONBOARDER_API_KEY`(自己定个口令)、
+  可选 `ONBOARDER_MODEL`
+- 拿到公网域名,如 `https://onboarder-xxx.up.railway.app`
+
+**② GitHub:加 2 个 repo secret**(Settings → Secrets → Actions):
+- `ONBOARDER_URL` = 上面的 Railway 域名
+- `ONBOARDER_API_KEY` = 与 Railway 那个 `ONBOARDER_API_KEY` 一致
+
+**③ 跑**:Actions →「接表 agent」→ Run workflow,填 project_id + app_token + table_id
+→ 跑完日志里有「👉 点这里开 PR」链接,点开 merge 即审。
+
+## 本地跑(备用,只要 Python)
 
 ```bash
-# 1) 装依赖 + Claude Code CLI(agent SDK 底层驱动它)
 pip install -r onboarder/requirements.txt
-npm install -g @anthropic-ai/claude-code
-
-# 2) 只看 prompt/工具(不调 LLM、不连飞书):
-python -m onboarder.cli --project-id TXQ_phase1 --app-token x --table-id y --dry-run
-
-# 3) 真跑(需下面的环境变量):
-export ANTHROPIC_BASE_URL=...   ANTHROPIC_API_KEY=...      # 中转站
-export FEISHU_APP_ID=...        FEISHU_APP_SECRET=...      # 飞书 bot
-python -m onboarder.cli --project-id TXQ_phase1 --app-token bascnXXX --table-id tblXXX
+export ANTHROPIC_BASE_URL=... ANTHROPIC_API_KEY=... FEISHU_APP_ID=... FEISHU_APP_SECRET=...
+python -m onboarder.cli --project-id WTG_phase1 \
+  --app-token A2sybSE0pa5kcnsukAMcJ9TDngb --table-id tbliiz1N4m9bCRx2 --out-dir out
+# 只拼 prompt 不调 LLM/不连飞书:
+python -m onboarder.cli --project-id X --dry-run
 ```
-
-## CI / 运营
-
-GitHub Actions `workflow_dispatch`([.github/workflows/onboard-table.yml](../.github/workflows/onboard-table.yml)):
-填 `project_id` + 飞书 `app_token`/`table_id` → agent 起草 → **自动开 PR**(yaml + brief)
-→ 策略 lead 审 / 改 / merge。成本在中转站用量面板看。
+> Windows 看产物别用 `type`(乱码),用 `Get-Content -Encoding UTF8 out\WTG_phase1.yaml`。
 
 ## 验收 · WTG 金标准
 
 ```bash
-# 校验器 + 词表 + 金标准 三者自洽(现在就能跑,无需任何凭证):
-python -m onboarder.eval_wtg
-# agent 重跑 WTG 后,产出 vs 金标准结构对比:
-python -m onboarder.eval_wtg --against /tmp/WTG_phase1.yaml
+python -m onboarder.eval_wtg                              # 校验器/词表/金标准自洽(无需凭证)
+python -m onboarder.eval_wtg --against out/WTG_phase1.yaml  # 产出 vs 金标准结构对比
 ```
+WTG 只有**结构部分**定稿,eval 只比结构字段 + `[待确认]` 覆盖,**不**断言草稿判断值。
 
-通过判据:结构 diff=0(schema_family / field_mapping 列集 / raw_extra / tier 规则 /
-阈值 / 方向名),且 `[待确认]` 项 ⊇ 金标准。
+## 待办
+
+- sync 侧支持「多选 方向 拆成多个基础方向分别套用」(改 `scripts/sync_feishu_notes_to_truth_vault.py`,
+  单独、仔细做;只影响真正导入,不影响出草稿)。
