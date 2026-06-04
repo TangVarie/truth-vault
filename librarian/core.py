@@ -20,10 +20,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from typing import Any, Optional
 
 from .clients import call_anthropic, get_supabase, iso_now, parse_json
+
+logger = logging.getLogger("flywheel_librarian")
 
 
 LIBRARIAN_VERSION = "flywheel_librarian_v1"
@@ -290,11 +293,18 @@ def librarian_select(brief: dict, *, model: Optional[str] = None,
     try:
         selected = _select_via_llm(brief, cards, model)
     except Exception:
-        return []   # 降级: 绝不阻塞写稿
+        # 降级: 绝不阻塞写稿。但必须记日志 —— 否则 schema 缺列 / 解析全错这类真 bug
+        # 会被静默吞成 [],服务永远返回空、看不出问题(原审计标的"排障盲区")。
+        logger.exception(
+            "librarian_select LLM 选取失败,降级返回 [] (consumer=%s project_id=%s cards=%d)",
+            brief.get("consumer"), brief.get("project_id"), len(cards),
+        )
+        return []
 
     if use_cache:
         try:
             put_cache(sb, key, brief, lib_v, selected)
         except Exception:
-            pass    # 缓存写失败不影响本次返回
+            # 缓存写失败不影响本次返回,但记一条 warning 便于发现持续写不进的问题。
+            logger.warning("librarian 结果缓存写入失败 (key=%s); 不影响本次返回", key, exc_info=True)
     return selected

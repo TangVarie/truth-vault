@@ -10,13 +10,13 @@ Truth Vault 是帆谷的私有数据基础设施 —— 把每一次小红书种
 
 让发的越多 → 数据库越准 → 判断越精 → 后续投放命中率越高 —— 形成数据飞轮。
 
-具体来说，Truth Vault 通过**双通道直接 INSERT**（D-024 模式，不是 HTTP RPC）把真实爆款回流到两个现存系统的飞轮注入点：
+具体来说，Truth Vault 把真实爆款回流到两个现存系统的飞轮注入点 —— 通道 1 直接 INSERT（push，D-024），通道 2 改为写稿时 pull（D-038）；都不是 HTTP RPC：
 
 1. **sanshengliubu（三省六部）** —— Truth Vault 写入 `public.reference_samples`（v2 "证据包" 列：`post_title` / `post_body` / `top_comments` / `ai_analysis` / `quality_score`），sanshengliubu 的 `vibe_rewriter` 按 `platform + category` 检索并注入到 prompt 高权重位
-2. **autowriter（内容工作台）** —— Truth Vault 写入 `autowriter.items`（`example_label='positive'` + `external_source='truth_vault'`），autowriter 的 `build_system_prompt` 通过 `list_example_items` 自动装配到 system prompt
+2. **autowriter（内容工作台）** —— **通道 2 已由 push 改为 pull（D-038）**：TV 不再写 `autowriter.items`，而是把合格爆款策展成"经验卡"放进图书馆视图 `truth_vault.v_flywheel_lesson_cards`；autowriter 写稿时带 brief 调 **LLM 馆员服务**（`librarian/`，Railway）按相关性借阅，注入 system prompt 的 P2 会话层。〔历史 push 路径（写 `autowriter.items`，`example_label='positive'`）已退役，脚本保留备查〕
 3. **去中心化写手网络（未来阶段）** —— 写手网络 codebase 尚未启动；规划是写手提交时由 TV 提供"这条相比历史爆款的差异点"诊断（具体集成模式待 Sprint 2+ 设计，可能继续走双通道也可能加只读 RPC）
 
-> ⚠️ v1 spec（D-023）曾设计为 HTTP REST API，要求三个系统主动调用 TV 的 `/v1/anchor/query` 等端点；Session #7 后改为双通道 push 模式（D-024）以最小化对现存系统的改造。任何"调用 Truth Vault"的描述都属于过时表述。
+> ⚠️ v1 spec（D-023）曾设计为 HTTP REST API，要求三个系统主动调用 TV 的 `/v1/anchor/query` 等端点；Session #7 后改为双通道直插模式（D-024）以最小化对现存系统的改造；其后 D-038 又把**通道 2 从 push 改为 pull + LLM 馆员**（通道 1 仍为 push）。任何"三个系统调用 Truth Vault 的 HTTP API"的描述都属于过时表述。
 
 ## 不解决什么（边界）
 
@@ -142,7 +142,7 @@ truth-vault/
 │   ├── sync_comments_from_raw_extra.py                ← [5] 评论文本 → comments 表
 │   ├── annotate_essence_pass.py                       ← [6] LLM 标注独立 pass (D-028)
 │   ├── sync_truth_vault_baokuan_to_sanshengliubu.py   ← [2] TV → ssll 通道 1
-│   ├── sync_truth_vault_baokuan_to_autowriter_items.py ← [3] TV → autowriter 通道 2
+│   ├── sync_truth_vault_baokuan_to_autowriter_items.py ← [3] TV → autowriter 通道 2 (已退役 D-038·备查)
 │   └── extract_negative_examples_from_autowriter.py   ← [4] 负例候选挖掘 (一次性)
 │
 ├── sanshengliubu-patches/             ← 通道 1 集成包 (部署到 ssll 仓库)

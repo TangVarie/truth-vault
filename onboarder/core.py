@@ -52,6 +52,15 @@ mappings/<project_id>.yaml(结构对齐现有 mapping,尤其 mappings/WTG_phase1
              C 家族填 备注字段(映射成 _note_for_tier)。规则里的 tier 值用受控词表。
   5 阈值    : 看互动量分布给推荐,标 [待确认]
   6 合规    : 按 category 提模板 + 扫候选蓝词,标 [待确认]
+  ★ intent  : 仅当表里有【意图列】(如「发布笔记」,原值像 流量帖/直给笔记/科普贴)才写
+             intent_mapping(把该列原值映射成 traffic/conversion/educational/other)。
+             **没有意图列时 intent 留空**:既不写 intent_mapping(写了也是死配置,sync 不会用),
+             也【不要】给方向凭空造 intent_override —— WTG 金标准就是 intent=null。
+             ⚠️ intent_override 拿不准时【省略该键、或写 null】,**绝不要写 [待确认] 占位**:
+             sync 对确定性方向会把非 None 的 intent_override 直接写进 notes.intent,而
+             "[待确认]" 不在 intent 的 DB CHECK 闭集(traffic/conversion/educational/mixed/other)里
+             → 该方向每行 sync 都 CHECK 失败(其它判断字段标 [待确认] 由人审前填实值,intent 例外:
+             正确解常是"无值")。不确定只写进 review brief 让策略 lead 定;确有先例/源据才填实值。
 
 受控词表(闭集,只能从中取值,编造会被校验拒绝):
 {vocab.vocab_reference()}
@@ -126,6 +135,39 @@ def _split_output(raw: str) -> tuple[str, str]:
     return _strip_fence(raw), ""
 
 
+def _rewrite_sync_config(mapping_text: str, app_token: str, table_id: str) -> str:
+    """把已知的 app_token / table_id 写进草稿的 sync_config 段(§7-B)。
+
+    daily cron 遍历 mappings/*.yaml 时,sync_config.feishu_app_token/table_id 为 null
+    的项目会被【跳过】(视为从未 onboard)。接表时这俩值是已知输入 → 删掉模型可能输出的
+    sync_config 段,改追加一个带实值的规范段。这俩是【表标识、非密钥】;App ID/Secret
+    仍走 env / GitHub Secrets,不进 git。
+    """
+    out: list[str] = []
+    skip = False
+    for ln in (mapping_text or "").splitlines():
+        if skip:
+            # 跳到下一个顶层键(行首非空白、非注释)或文件尾,期间的块内行/注释一律丢弃
+            if ln and not ln[0].isspace() and not ln.lstrip().startswith("#"):
+                skip = False  # 本行是新的顶层键 → 不再跳过,正常往下处理
+            else:
+                continue
+        if ln.startswith("sync_config:"):
+            skip = True
+            continue
+        out.append(ln)
+    body = "\n".join(out).rstrip()
+    block = (
+        "sync_config:\n"
+        "  source_type: feishu_api\n"
+        f"  feishu_app_token: {app_token}   # 表标识(非密钥), 接表时已知\n"
+        f"  feishu_table_id: {table_id}\n"
+        "  feishu_view_id: null\n"
+        "  sync_interval: on_demand\n"
+    )
+    return f"{body}\n\n{block}"
+
+
 def draft(
     *,
     project_id: str,
@@ -163,6 +205,9 @@ def draft(
     mapping_text, brief = _split_output(raw)
     if not mapping_text.strip():
         return {"is_error": True, "reason": "模型没产出可解析的 mapping", "raw_head": (raw or "")[:1200]}
+
+    # §7-B: 把已知 app_token/table_id 写进 sync_config —— 否则 daily cron 见 null 会跳过该项目。
+    mapping_text = _rewrite_sync_config(mapping_text, app_token, table_id)
 
     try:
         mp = yaml.safe_load(mapping_text)
