@@ -16,13 +16,13 @@ on:
         description: "项目 (如 WTG_phase1)"
         required: true
       batch:
-        description: "每轮多少条 (≤60;单次受 worker 900s 约束)"
+        description: "每轮多少条。⚠️ 受 Railway 边缘【单请求 ~5min 超时】约束:一批必须 ~4min 内跑完否则 502。~12 条≈3min 稳;别超 15。"
         required: false
-        default: "50"
+        default: "12"
       max_batches:
-        description: "最多循环几轮 (安全上限,防意外死循环)"
+        description: "最多循环几轮。一轮上限≈batch×max_batches 条,且受 GitHub 6h job 上限(batch=12 时一轮约能灌 ~1400 条)。更大的表灌不完会在末尾警告→再触发一次接着灌(幂等)。"
         required: false
-        default: "40"
+        default: "120"
 
 # 同一项目同时只允许一个 backfill 在跑 —— 否则两个 run 会各自快照同一批未标注笔记、
 # 重复烧 LLM 且非确定性地互相覆盖 essence(codex PR#43 review r3355530533)。
@@ -70,6 +70,9 @@ jobs:
           case "$BATCH" in ''|*[!0-9]*) echo "::error::batch 必须是正整数,收到 '$BATCH'"; exit 1;; esac
           case "$MAXB"  in ''|*[!0-9]*) echo "::error::max_batches 必须是正整数,收到 '$MAXB'"; exit 1;; esac
           [ "$BATCH" -ge 1 ] || { echo "::error::batch 必须 ≥1"; exit 1; }
+          # batch 硬上限 15:Railway 边缘【单请求 ~5min 超时】,>15 条/批会跑超时 → 502。
+          # 别只写在描述里靠自觉,这里强制(codex review r3356930643)。
+          [ "$BATCH" -le 15 ] || { echo "::error::batch=$BATCH 太大 —— 上限 15(>15 会撞 Railway 边缘 ~5min 超时 → 502)。请用 ≤15。"; exit 1; }
           [ "$MAXB"  -ge 1 ] || { echo "::error::max_batches 必须 ≥1"; exit 1; }
           # project 必须是已知项目(有 mapping)。否则拼错的名字会查到 remaining=0 → 被当成
           # "已灌完"绿着退出、一条没处理(codex review r3355530520)。
@@ -106,8 +109,11 @@ jobs:
             # 单批最多试 3 次:worker 偶发重启 / 瞬断时,等一下重试 —— 标注幂等
             # (按 essence_annotated_at IS NULL 续作),重试只会接着标、不会重复烧已标的。
             # 实测:连续多批后 Railway worker 会重启一次(注解已落库但 HTTP 响应没回)→ 重试可续。
+            # 重试是【安全网】:把 batch 调到 ~12(每批 ~3min)< Railway 边缘单请求 ~5min 超时后,
+            # 正常每批就稳 200、不该再 502。但偶发边缘 502 / 网关瞬断仍可能 —— 等一下重试。
+            # ⚠️ 实测:502 时 worker【不崩】、后台仍把这批标完、注解照常落库(标注幂等);重试只接着标没标的。
             ok=false; code=000
-            for attempt in 1 2 3; do
+            for attempt in 1 2 3 4 5 6; do
               code=$(curl -sS -w '%{http_code}' -o /tmp/b.json --max-time 900 \
                 -X POST "${WORKER_URL%/}/annotate-essence" \
                 -H "X-Worker-Key: $WORKER_API_KEY" -H 'content-type: application/json' \
@@ -116,9 +122,9 @@ jobs:
               echo "   [try $attempt] HTTP $code · ok=$ok · returncode=$(jq -r '.returncode // "?"' /tmp/b.json 2>/dev/null)"
               jq -r '.stdout_tail // ""' /tmp/b.json 2>/dev/null | tail -4
               { [ "$code" = "200" ] && [ "$ok" = "true" ]; } && break
-              echo "::warning::batch $i try $attempt 失败 (HTTP $code, ok=$ok);等 30s 重试(worker 可能在重启)"
+              echo "::warning::batch $i try $attempt 失败 (HTTP $code, ok=$ok);等 60s 重试(边缘 502 / 网关瞬断;worker 不崩、注解仍会落库)"
               jq -r '.stderr_tail // ""' /tmp/b.json 2>/dev/null | tail -6
-              sleep 30
+              sleep 60
             done
             if [ "$code" != "200" ] || [ "$ok" != "true" ]; then
               echo "::error::worker 调用连续 3 次失败 (HTTP $code, ok=$ok) —— 停止 backfill。已标的不丢,修好后重跑接着灌。"
