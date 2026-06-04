@@ -1,0 +1,93 @@
+# 一键把【某个项目】的 essence 标注灌满 —— 内部循环调 Railway worker,直到该项目没有
+# 未标注笔记为止。解决"daily-sync 每天只标一批、大表标到天荒地老"的问题。
+#
+# 与 daily-sync 的分工:
+#   - daily-sync(每日 cron):稳态增量,每轮一小批(WORKER_LIMIT),处理每天新增的少量笔记。
+#   - 本工作流(手动):初次/补量,一次触发把整张表灌完(多轮循环)。
+#
+# 每轮是一次独立的 ≤900s HTTP 调用(worker 子进程也 900s),所以单轮 batch 别超 ~60 条;
+# 整张表靠循环多轮灌完。LLM 调用在 Railway worker 上跑(GitHub 连不上中转站)。
+name: Backfill essence (drain a project)
+
+on:
+  workflow_dispatch:
+    inputs:
+      project:
+        description: "项目 (如 WTG_phase1)"
+        required: true
+      batch:
+        description: "每轮多少条 (≤60;单次受 worker 900s 约束)"
+        required: false
+        default: "50"
+      max_batches:
+        description: "最多循环几轮 (安全上限,防意外死循环)"
+        required: false
+        default: "40"
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      WORKER_URL: ${{ secrets.WORKER_URL }}
+      WORKER_API_KEY: ${{ secrets.WORKER_API_KEY }}
+      PROJECT: ${{ github.event.inputs.project }}
+      BATCH: ${{ github.event.inputs.batch }}
+      MAXB: ${{ github.event.inputs.max_batches }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps (lockfile)
+        run: |
+          if [ -f scripts/requirements.lock ]; then
+            pip install -r scripts/requirements.lock
+          else
+            pip install -r scripts/requirements.txt
+          fi
+
+      - name: Guard secrets
+        run: |
+          [ -n "$WORKER_URL" ] || { echo "::error::缺 secret WORKER_URL(Railway worker 地址)"; exit 1; }
+          [ -n "$WORKER_API_KEY" ] || { echo "::error::缺 secret WORKER_API_KEY"; exit 1; }
+          [ -n "$SUPABASE_URL" ] || { echo "::error::缺 secret SUPABASE_URL"; exit 1; }
+          [ -n "$SUPABASE_SERVICE_ROLE_KEY" ] || { echo "::error::缺 secret SUPABASE_SERVICE_ROLE_KEY"; exit 1; }
+
+      - name: Loop worker until project essence is fully annotated
+        working-directory: scripts
+        run: |
+          prev=-1
+          for i in $(seq 1 "$MAXB"); do
+            rem=$(python count_unannotated_essence.py "$PROJECT") || { echo "::error::查 remaining 失败"; exit 1; }
+            echo "── batch $i/$MAXB · project=$PROJECT · remaining(before)=$rem ──"
+            if [ "$rem" = "0" ]; then
+              echo "✅ $PROJECT essence 已全部标注完。"
+              break
+            fi
+            # 两轮 remaining 没下降 = 这批全失败(余额耗尽 / 限流 / vocab 校验全挂)→ 停,别空转。
+            if [ "$rem" = "$prev" ]; then
+              echo "::error::remaining 连续两轮停在 $rem(没下降)→ 这批 essence 全失败。"
+              echo "常见原因:中转站余额耗尽 / 限流 / 词表校验。查 Railway worker 日志或 failed_essence_queue。"
+              exit 1
+            fi
+            prev=$rem
+            code=$(curl -sS -w '%{http_code}' -o /tmp/b.json --max-time 900 \
+              -X POST "${WORKER_URL%/}/annotate-essence" \
+              -H "X-Worker-Key: $WORKER_API_KEY" -H 'content-type: application/json' \
+              -d "{\"project\":\"$PROJECT\",\"limit\":${BATCH}}") || code=000
+            ok=$(jq -r '.ok // false' /tmp/b.json 2>/dev/null)
+            echo "   HTTP $code · ok=$ok · returncode=$(jq -r '.returncode // "?"' /tmp/b.json 2>/dev/null)"
+            jq -r '.stdout_tail // ""' /tmp/b.json 2>/dev/null | tail -4
+            if [ "$code" != "200" ] || [ "$ok" != "true" ]; then
+              echo "::error::worker 调用失败 (HTTP $code, ok=$ok) —— 停止 backfill。"
+              jq -r '.stderr_tail // ""' /tmp/b.json 2>/dev/null | tail -8
+              exit 1
+            fi
+          done
+          rem=$(python count_unannotated_essence.py "$PROJECT" 2>/dev/null || echo "?")
+          echo "── 结束 · project=$PROJECT · remaining(final)=$rem ──"
+          if [ "$rem" != "0" ] && [ "$rem" != "?" ]; then
+            echo "::warning::还剩 $rem 条未标注(到达 max_batches=$MAXB)。再触发一次本工作流接着灌,或调大 max_batches。"
+          fi
