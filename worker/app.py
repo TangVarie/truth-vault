@@ -37,6 +37,7 @@ import sys
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("tv-worker")
@@ -68,6 +69,11 @@ def _run(script: str, args: list[str]) -> dict:
     env 继承本进程(Railway 上配了 SUPABASE_* / ANTHROPIC_*)。脚本用
     `from _common import ...`,靠 sys.path[0]=脚本所在目录解析;mappings/ 由
     _common 的 `Path(__file__)...` 定位,与 cwd 无关。
+
+    ⚠️ 这是【阻塞】函数(subprocess.run 同步等子进程)。**必须经 run_in_threadpool
+    在线程里跑**,绝不能在 async 端点里直接调用 —— 否则一次几分钟的 essence 会把
+    事件循环堵死,/health 失联 → Railway 健康检查超时把容器重启 → 杀掉本次 run
+    (实测:50 条/轮在 ~301s 被重启,只标了 23 条)。
     """
     path = _SCRIPTS_DIR / script
     if not path.exists():
@@ -138,7 +144,8 @@ async def annotate_essence(
         args.append("--dry-run")
     if body.get("reannotate"):
         args.append("--reannotate")
-    res = _run("annotate_essence_pass.py", args)
+    # 线程池跑阻塞 subprocess,别堵事件循环(见 _run docstring)。
+    res = await run_in_threadpool(_run, "annotate_essence_pass.py", args)
     res["action"] = "annotate-essence"
     res["project"] = project
     return res
@@ -156,7 +163,8 @@ async def curate(
         args += ["--project", str(body["project"])]
     if body.get("dry_run"):
         args.append("--dry-run")
-    res = _run("curate_flywheel_lessons.py", args)
+    # 线程池跑阻塞 subprocess,别堵事件循环(见 _run docstring)。
+    res = await run_in_threadpool(_run, "curate_flywheel_lessons.py", args)
     res["action"] = "curate"
     res["project"] = body.get("project")
     return res
