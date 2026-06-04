@@ -1,167 +1,162 @@
-# ════════════════════════════════════════════════════════════════════
-# WTG_phase1 · Truth Vault Project Mapping
-# ════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════
+# WTG_phase1 · waytogo 第 1 期 Mapping Configuration · DRAFT v1
+# ════════════════════════════════════
 #
-# waytogo 个护洗护 (一次性洗脸巾/浴巾/手帕/内裤) · 小红书素人铺量
-# 数据源: ROC素人分发表 (670 行真实数据, 35 列)
+# 基于 WTG_1 真实数据 710 行，6 个基础方向（单选字段，但存在多选组合）
+# schema 演化标记：本表同时存在「笔记状态」和「流量状态」两列（A 家族变体）
+# 「流量状态」承载 tier 语义；「笔记状态」承载发布/期数管理语义
 #
-# ⚠️ 草稿状态 (2026-05-22): 结构部分 (field_mapping / raw_extra / tier /
-#    阈值) 已按真实数据定稿; 标 [待确认] 的部分需要 WTG 策略 lead 拍板:
-#      - 元数据: brand 中文名 / product 准确表述
-#      - direction_decomposition: 6 个方向的 content_format/target_audience/
-#        user_pain_point (我按方向名 + 文案样本给了草稿, 必须策略 review)
-#      - tier_thresholds: 数值兜底门槛 (按 670 行互动量分布给了推荐值)
+# ⚠️ schema 演化说明：
+#   - 传统 A 家族只有一列「状态」，WTG 拆成「笔记状态」+「流量状态」
+#   - 数据用"量"（曝光量/阅读量/互动量）而非"数"，但同时具备巡查/主页链接等 A 家族指纹
+#   - 判定为 A 家族（有巡查状态/最近检查时间/数据回收情况），标记 schema 演化
+#
+# 数据观察：
+#   - 710 行全部「无水花」或「风控中」，0 爆款（爆贴/大爆选项存在但本期无命中）
+#   - 互动量极低：283 行=0，201 行=1，最大值 335（仅 1 行）
+#   - 无独立 intent 列（无「发布笔记」/「流量帖」/「直给笔记」列）
+#   - 方向名自带 intent 语义（"产品直给型" vs "直播切片"/"破圈万用型"）
 # ════════════════════════════════════════════════════════════════════
 
 version: 1.0
-
-# ── 项目元数据 ──
 project_id: WTG_phase1
-brand: waytogo              # 品牌名就用 waytogo (确认)
-product: 一次性洗护用品       # 洗脸巾/浴巾/手帕 + 一次性内裤 (确认)
-category: 个护               # 受控词表合法值 (洗护属个护)
+brand: waytogo  # [待确认] 中文名不明确，飞书表/文案中均用英文 waytogo
+product: 一次性生活用纸品系列（吐司洗脸巾/沐浴柔巾/衣物清洁湿巾/经期安心内裤/绵柔浴巾）  # [待确认]
+category: 个护  # [待确认] 也可能归 FMCG
 platform: xiaohongshu
-schema_family: A            # 有 巡查状态/最近检查时间/主页链接/数据回收情况 → A 家族
-start_date: 2026-03-13      # 数据中最早 publish_time
-end_date: 2026-05-27        # 数据中最晚 (可留空/预估)
+schema_family: A  # schema 演化：状态拆两列（笔记状态+流量状态）
+start_date: auto_from_publish_time_min
+end_date: auto_from_publish_time_max
 
-# ════════════════════════════════════════════════════════════════════
-# 字段映射 — 35 列全部交代 (13 进 typed 列 + 22 进 raw_extra), 一条不丢
-# ════════════════════════════════════════════════════════════════════
-#
-# 左 = ROC素人分发表 飞书列名 (精确匹配); 右 = schema 字段 / 中间变量
-# _ 前缀 = 中间变量, 走二次处理
-
+# ── 字段映射 ──
+# 每一列都交代去向：field_mapping 或 project_specific_fields_to_raw_extra
 field_mapping:
-  # ── 标识 ──
-  素人编号: account_id              # → notes.account_id (FK to accounts)
-  # note_id 由 sync 脚本按 f"{project_id}_{feishu_record_id}" 自动生成
+  素人编号: account_id
+  发布时间: publish_time
+  反馈链接: publish_url
+  方向: _direction_raw
+  流量状态: _status_raw          # tier 来源列（A 家族用状态字段）
+  文案: raw_content
+  随贴评论: _comment_text
+  蓝词字段: hit_blue_keywords    # 本表列名与 NRT 系列不同（"蓝词字段" vs "蓝词记录"）
+  曝光量: impressions
+  阅读量: reads
+  互动量: interactions
 
-  # ── 内容 ──
-  文案: raw_content                 # → notes.raw_content [NOT NULL]
-  发布时间: publish_time            # → notes.publish_time (datetime, 干净)
-  反馈链接: publish_url             # → notes.publish_url (纯文本 URL, 非飞书 URL 字段 ✅)
+# WTG 无独立 intent 列，intent 由方向名推断
+# 以下 intent_mapping 基于方向名内含语义（非独立字段映射）
+intent_mapping:
+  # WTG 无「发布笔记」字段，intent 需从 _direction_raw 推断
+  # sync 脚本需特殊处理：按 direction → intent 规则
+  方向三 产品直给型: conversion
+  方向六 辐照消杀内裤: conversion
+  方向一 直播切片: traffic
+  方向二 佳琦关键词占位型: traffic
+  方向四 贴全面时代: traffic
+  方向五 破圈万用型: traffic
 
-  # ── tier 源 ⭐ ──
-  # WTG 把状态拆成两列: 笔记状态(发布工作流, 进 raw_extra) + 流量状态(表现, tier 源)
-  流量状态: _status_raw             # → tier_extraction → notes.tier
-
-  # ── 方向 ──
-  方向: _direction_raw              # → direction_decomposition (6 方向)
-
-  # ── 数据回收 (数字, str 形态, parse_numeric 自动转) ──
-  曝光量: impressions               # → notes.impressions
-  阅读量: reads                     # → notes.reads
-  互动量: interactions              # → notes.interactions
-
-  # ── 蓝词 (WTG 只有一列蓝词, 当作实际命中) ──
-  蓝词字段: hit_blue_keywords       # → notes.hit_blue_keywords (仅 21 行有值)
-
-  # ── 评论 ──
-  爆帖置顶评论: pinned_comment      # → notes.pinned_comment
-  随贴评论: _comment_text           # → comments 表 (Phase 2 LLM 解析)
-
-  # ── 数据健康度 (A 家族) ──
-  数据回收情况: data_quality_status # → notes.data_quality_status
-
-  # ── 观众分析 → 确定性解析进 actual_audience_data (sync 脚本 parse_audience_analysis) ──
-  观众分析: _audience_raw           # → notes.actual_audience_data (JSONB)
-
-  # ── 笔记状态 → 检测伪爆贴 ("关注" = 人工假数据) ──
-  # 不是 tier 源 (tier 看 流量状态); 这里只为提取 synthetic flag.
-  笔记状态: _note_status_raw        # → 含"关注"则 data_quality_flags.synthetic=true
-
-# ════════════════════════════════════════════════════════════════════
-# intent 映射
-# ════════════════════════════════════════════════════════════════════
-# WTG 飞书表【没有】「发布笔记」intent 列 → 不做意图分类, notes.intent 留空.
-# 如果以后加了 intent 列, 在这里补 intent_mapping 段 + field_mapping 加
-# `发布笔记: _intent_raw`.
-
-# ════════════════════════════════════════════════════════════════════
-# 方向拆解 [待确认 · 需 WTG 策略 lead review]
+# ════════════════════════════════════
+# 方向拆解 · WTG_phase1
 # ════════════════════════════════════════════════════════════════════
 #
-# 下面是我按「方向名 + 文案样本」给的草稿 (文案里看到"出差""健身完"等场景).
-# content_format 只能用受控词表 8 值: 情感叙事/认知重构/横评对比/教程攻略/
-#   直给推荐/场景植入/提问求助/反差破圈
-# target_audience 只能用 11 值: 年轻女性/中年女性/银发女性/年轻男性/中年男性/
-#   银发男性/学生党/宝妈/伴侣家人/病患家属/通用
+# 数据观察：
+# - 方向为单选字段，但 distinct 显示存在多选组合（用 " / " 分隔）
+# - 6 个基础方向 + 4 个组合出现
+# - 本期 0 爆款，无法从爆款分布验证策略假设
+# - 方向自带产品/内容策略语义，不同于 NRT 的身份/产品/内容三维度
 #
-# ⚠️ 每个方向的 3 个字段都要你确认/修正 (我不懂 WTG 投放策略, 这只是起点).
+# 设计：只为 6 个基础方向建条目，多选组合由 sync 拆分套用
 
 direction_decomposition:
 
-  "方向一 直播切片":
-    content_format: 直给推荐        # [待确认] 直播切片改编, 大概率直给
-    target_audience: ["通用"]       # [待确认]
-    user_pain_point: null           # [待确认]
+  "方向一 直播切片":  # 71 条
+    content_format: 场景植入  # [待确认] 直播切片 = 借李佳琦直播场景引流
+    intent_override: traffic
+    target_audience: ["年轻女性"]  # [待确认] 李佳琦受众画像
+    user_pain_point: 直播种草后的真实使用验证  # [待确认]
+    product_focus: null  # 不限定具体产品线
 
-  "方向二 佳琦关键词占位型":
-    content_format: 直给推荐        # [待确认] 蹭"李佳琦"关键词做 SEO 占位
-    target_audience: ["通用"]       # [待确认]
-    user_pain_point: null           # [待确认]
+  "方向二 佳琦关键词占位型":  # 72 条
+    content_format: 直给推荐  # [待确认] 关键词占位 = 搜索导流型内容
+    intent_override: traffic
+    target_audience: ["年轻女性"]  # [待确认]
+    user_pain_point: 搜索"李佳琦推荐"时的信息占位  # [待确认]
+    product_focus: null
 
-  "方向三 产品直给型":              # 数据里最多 (261 条)
-    content_format: 直给推荐        # [待确认]
-    target_audience: ["通用"]       # [待确认]
-    user_pain_point: null           # [待确认]
-
-  "方向四 贴全面时代":              # 确认: 全棉时代是竞品, 这是"贴着竞品"做对比内容
-    content_format: 横评对比        # 竞品对比 (全棉时代 vs waytogo)
-    target_audience: ["通用"]       # [待细化] 看竞品对比打的人群
-    user_pain_point: 全棉时代平替/对比
-
-  "方向五 破圈万用型":
-    content_format: 场景植入        # [待确认] "破圈万用" 多场景植入
-    target_audience: ["通用"]       # [待细化]
-    user_pain_point: null           # [待确认]
-
-  # 方向六: 不同产品线 (一次性内裤). 用 sub_directions 细分场景人群
-  # (月子/差旅/经期) —— 粗人群进 target_audience, 细场景进 sub_direction.
-  # sub_directions 需要 annotate_essence_pass LLM 按 detection_signal 分类.
-  # ⚠️ product_focus 必须写进【每个 sub_direction】: sync 对带 sub_directions 的
-  #    方向跳过父级字段提升, annotate_essence_pass 只拷选中 sub 上的字段, 父级
-  #    product_focus 不传播 (codex PR #19). 所以每条 sub 都重复 product_focus.
-  "方向六 辐照消杀内裤":
-    product_focus: 一次性内裤        # 父级仅文档说明; 实际生效靠下面每条 sub 重复
+  "方向三 产品直给型":  # 260 条（最大方向）
+    content_format: 直给推荐
+    intent_override: conversion
+    target_audience: ["年轻女性"]  # [待确认] 文案看主要面向年轻女性生活场景
+    user_pain_point: 日用纸品选购决策 / 使用场景痛点（出差/健身/带娃）  # [待确认]
+    product_focus: null  # 覆盖吐司洗脸巾/沐浴柔巾/衣物清洁湿巾等多个 SKU
     sub_directions:
-      - name: 内裤_月子人群
-        detection_signal: 文案提到 月子/产后/坐月子/恶露/哺乳
+      - name: 产品直给_吐司洗脸巾
+        detection_signal: |
+          文案中出现以下任一信号 → 归此类:
+          - 提及"吐司洗脸巾"/"洗脸巾"
+          - 场景：卸妆、护肤、擦脸
         content_format: 直给推荐
-        target_audience: ["宝妈"]
-        user_pain_point: 月子期一次性内裤卫生需求
-        product_focus: 一次性内裤
-      - name: 内裤_差旅人群
-        detection_signal: 文案提到 出差/旅行/差旅/酒店/出行
-        content_format: 场景植入
-        target_audience: ["通用"]
-        user_pain_point: 差旅一次性内裤便携需求
-        product_focus: 一次性内裤
-      - name: 内裤_经期人群
-        detection_signal: 文案提到 经期/姨妈/生理期/大姨妈
+        target_audience: ["年轻女性"]  # [待确认]
+        user_pain_point: 洗脸巾品质/便携性
+        product_focus: 吐司洗脸巾
+
+      - name: 产品直给_沐浴柔巾
+        detection_signal: |
+          文案中出现以下任一信号 → 归此类:
+          - 提及"沐浴柔巾"/"浴巾"
+          - 场景：洗澡、健身房、出差擦身
         content_format: 直给推荐
-        target_audience: ["年轻女性"]
-        user_pain_point: 经期一次性内裤需求
-        product_focus: 一次性内裤
-      - name: 内裤_其他
-        detection_signal: 上述都不匹配时归此 (fallback)
+        target_audience: ["年轻女性"]  # [待确认]
+        user_pain_point: 一次性浴巾需求（出差/健身/卫生顾虑）
+        product_focus: 沐浴柔巾
+
+      - name: 产品直给_衣物清洁湿巾
+        detection_signal: |
+          文案中出现以下任一信号 → 归此类:
+          - 提及"衣物清洁湿巾"/"口袋干洗店"
+          - 场景：火锅油渍、带娃弄脏衣服
         content_format: 直给推荐
-        target_audience: ["通用"]
-        user_pain_point: 一次性内裤通用需求
-        product_focus: 一次性内裤
+        target_audience: ["年轻女性", "宝妈"]  # [待确认]
+        user_pain_point: 外出衣物应急清洁
+        product_focus: 衣物清洁湿巾
+
+      - name: 产品直给_其他
+        detection_signal: 上述三类都不明确匹配时归此类
+        content_format: 直给推荐
+        target_audience: ["年轻女性"]  # [待确认]
+        user_pain_point: 日用纸品综合需求
+        product_focus: null
+
+  "方向四 贴全面时代":  # 72 条
+    content_format: 认知重构  # [待确认] "全面时代" = 品牌理念输出（一次性用品全面替代传统）
+    intent_override: traffic
+    target_audience: ["年轻女性"]  # [待确认]
+    user_pain_point: 传统毛巾/浴巾的卫生隐患认知  # [待确认]
+    product_focus: null
+
+  "方向五 破圈万用型":  # 40 条
+    content_format: 反差破圈  # [待确认] "破圈" = 非典型场景/非典型人群的意外用法
+    intent_override: traffic
+    target_audience: ["通用"]  # [待确认]
+    user_pain_point: 产品非典型使用场景发现  # [待确认]
+    product_focus: null
+
+  "方向六 辐照消杀内裤":  # 51 条（含组合）
+    content_format: 直给推荐  # [待确认] 经期安心内裤 = 直给推荐型
+    intent_override: conversion
+    target_audience: ["年轻女性"]  # [待确认]
+    user_pain_point: 经期卫生/一次性内裤需求  # [待确认]
+    product_focus: 经期安心内裤
 
 # ════════════════════════════════════════════════════════════════════
-# tier 抽取规则 (流量状态 → tier)
+# Tier 抽取规则
 # ════════════════════════════════════════════════════════════════════
-# WTG 流量状态真实取值: 无水花 / 风控中 / 评估中 / 爆贴预备 / 参考 (+ 组合).
-# 「参考」: 运营手动标 —— 够不上爆款但值得后续参考, 进飞轮(低权重)但不计爆款.
-# 标准规则直接适用 (match_contains). 组合值如"无水花,风控中"按规则顺序,
-# 风控 排在 无水花 前 → 取 风控 (风险优先, 合理).
-# 当前数据 0 条爆/大爆, 1 条爆贴预备 → 飞轮注入端暂时没料 (正常, 随投放积累).
+#
+# WTG 特殊：tier 来源是「流量状态」列（不是传统的「状态」）
+# 已映射 流量状态 → _status_raw，tier_extraction.source 仍用受控词"状态字段"
 
 tier_extraction:
-  source: 状态字段                  # 指示用 _status_raw (即 流量状态)
+  source: 状态字段
   rules:
     - match_contains: ["大爆"]
       tier: 大爆
@@ -169,105 +164,114 @@ tier_extraction:
       tier: 预备
     - match_contains: ["爆贴"]
       tier: 爆
-    - match_contains: ["参考"]      # 运营手动标: 够不上爆款但值得参考 → 也进飞轮(权重低), 不计爆款统计
-      tier: 参考
-    - match_contains: ["风控"]      # 匹配 "风控中"
+    - match_contains: ["风控"]
       tier: 风控
+    - match_contains: ["参考"]
+      tier: 参考
     - match_contains: ["无水花"]
       tier: 趴
     - match_contains: ["评估中"]
       tier: 未知
     - default: null
 
-# ════════════════════════════════════════════════════════════════════
-# tier 数值阈值 [待确认 · 已按 670 行互动量分布给推荐]
-# ════════════════════════════════════════════════════════════════════
-# WTG 互动量分布: 中位=1, P90=4, P95=6, P99=29, max=335 (洗护素人铺量, 极低).
-# NUC 的 100/1000 对 WTG 完全不适用.
-#
-# 重要: 数值阈值只是【兜底】—— 仅当 流量状态 为空时 (WTG 只 16/669 行) 才用
-# 来推断 tier. 且 v_autowriter_injection_candidates 会排除 tier_source='数值推断'
-# 的行, 所以数值推断的 tier 不会被注入飞轮, 只影响展示/统计. 低风险.
-#
-# 推荐起点 (策略可调): 爆=30 (≈P99), 大爆=100 (max 级别).
+# ── Tier 数值阈值 ──  [待确认]
+# 本期 0 爆款，互动量分布极低（max=335, P99≈46）
+# 暂参考同平台 NRT 阈值，待实际爆款出现后校准
 tier_thresholds:
-  爆: 30                            # [待确认] 互动量 >= 30 (P99 级) 视为爆
-  大爆: 100                         # [待确认] 互动量 >= 100
+  爆: 100  # [待确认] 本期无爆款验证，暂设偏低阈值
+  大爆: 500  # [待确认]
 
 # ════════════════════════════════════════════════════════════════════
-# 合规配置 [待确认]
-# ════════════════════════════════════════════════════════════════════
+# 合规  [待确认]
+# ════════════════════════════════════
+
 compliance:
-  base_template: null               # 个护无强制合规模板; 有客户红线再填
-  custom_red_flags: []              # [待确认] WTG 项目红线?
+  base_template: 个护  # [待确认] 若归 FMCG 则换模板
+  custom_red_flags:  # [待确认]
+    - "禁止虚假功效承诺（如'抑菌99.9%'无检测报告支撑）"
+    - "禁止暗示医疗级别清洁效果"
+    - "涉及经期内裤时避免敏感医疗表述"
+    - "禁止贬低竞品"
   blue_keyword_strategy:
-    primary: []                     # [待确认] 主推蓝词 (数据里出现: 吐司洗脸巾/waytogo/绵柔浴巾/手帕洗脸巾)
-    secondary: []
-    avoid: []
+    primary: ["waytogo", "吐司洗脸巾"]
+    secondary: ["沐浴柔巾", "衣物清洁湿巾", "经期安心内裤"]
+    avoid: []  # [待确认] 需策略 lead 补充
 
 # ════════════════════════════════════════════════════════════════════
-# 项目专属字段 → raw_extra (allowlist · 22 列, 全部保留不丢)
+# 数据补录
 # ════════════════════════════════════════════════════════════════════
-# 这些列不进 notes typed 列, 但全存进 notes.raw_extra JSONB. 将来需要时可
-# 跑 annotation pass 提拔成结构化 (如 观众分析 → actual_audience_data).
-# 未列入这里且未 map 的列 → 整行进 quarantine (D-021), 所以这里要列全.
+
+data_supplement_needed:
+  - field: account_followers
+    method: A 家族有主页链接列但本表实际为空，需通过 publish_url 补录
+    estimated_rows: 710
+
+# ════════════════════════════════════════════════════════════════════
+# 项目专属字段进 raw_extra
+# ════════════════════════════════════════════════════════════════════
 
 project_specific_fields_to_raw_extra:
-  - 合作码                # 合作码 (业务追踪)
-  - 是否发起口碑通         # 口碑通投放标记
-  - 笔记截图              # 图片 URL/附件
-  # 笔记状态 已移到 field_mapping (→ _note_status_raw, 提取 synthetic flag)
+  - 合作码
+  - 是否发起口碑通
+  - 笔记截图
+  - 笔记状态          # 发布/期数管理用，非 tier 来源
   - 内容配图
   - 评论配图
-  - 评论状态              # 显示评论/暂未显示
+  - 评论状态
+  - 爆帖置顶评论
   - 蓝词图片
   - 相关截图
+  - 数据回收情况
   - 是否巡查
-  - 巡查状态              # 正常/异常/风险 (A 家族巡查)
+  - 巡查状态
   - 已确认存活
-  - 最近检查时间          # A 家族巡查时间戳
+  - 最近检查时间
   - 备注
-  - 主页链接              # A 家族账号主页 (未来可扩到 accounts 表)
+  - 主页链接
   - 发布状态
   - 数据整理
-  # 观众分析 已移到 field_mapping (→ _audience_raw → actual_audience_data)
-  - 曝光副本              # 曝光量的 int 副本 (部分行)
+  - 观众分析
+  - 曝光副本
   - 阅读副本
   - 互动副本
-  - 父记录                # 飞书内部关联字段
+  - 父记录
 
 # ════════════════════════════════════════════════════════════════════
-# 数据补录需求
+# Sync
 # ════════════════════════════════════════════════════════════════════
-data_supplement_needed:
-  - field: actual_audience_data
-    method: 观众分析列已接 sync 确定性解析 (_common.parse_audience_analysis), sync 时自动结构化进 actual_audience_data JSONB. 无需额外补录.
-    estimated_rows: 268
 
-# ════════════════════════════════════════════════════════════════════
-# Sync 配置 [待确认 · WTG 飞书表凭证]
-# ════════════════════════════════════════════════════════════════════
 sync_config:
   source_type: feishu_api
-  feishu_app_token: A2sybSE0pa5kcnsukAMcJ9TDngb   # WTG 表标识 (非密钥)
-  feishu_table_id: tbliiz1N4m9bCRx2               # WTG 表标识 (非密钥)
-  feishu_view_id: null              # 留空 = 读全表 (机器人已授权, 不需要 view)
+  feishu_app_token: null
+  feishu_table_id: null
+  feishu_view_id: null
   sync_interval: on_demand
-  # ⚠️ App ID / App Secret 不在这里 — 走 env / GitHub Secrets:
-  #    FEISHU_APP_ID, FEISHU_APP_SECRET (密钥绝不进 git)
 
 # ════════════════════════════════════════════════════════════════════
+# Onboarding 元数据
+# ════════════════════════════════════════════════════════════════════
+
 onboarding_meta:
-  onboarded_at: 2026-05-22
-  onboarded_by: (待填)
-  strategy_lead: (待填)
+  onboarded_at: null
+  onboarded_by: Ziao + Kiro (Draft)
+  strategy_lead: Ziao
+  project_manager: null
   notes: |
-    WTG = waytogo 个护洗护素人铺量. 670 行真实数据从 ROC素人分发表 导出.
-    特点 vs NUC/NRT:
-      - 状态拆两列: 笔记状态(工作流) + 流量状态(tier 源)
-      - 无 intent(发布笔记)列
-      - 6 个方向, 方向六(辐照消杀内裤)是不同产品线
-      - 互动量极低(中位1), tier 几乎全 无水花, 当前 0 爆款
-      - 多了 观众分析列(半结构化受众数据, 268 行) → 待解析进 actual_audience_data
-    草稿待确认项: brand 中文名 / product / 6 方向拆解 / tier 阈值 / 合规 /
-    飞书凭证. 见文件内 [待确认] 标记.
+    WTG_phase1 初始草稿，基于 710 行数据 + 30 行样本文案。
+    
+    关键特征（vs NRT/NUC）:
+    1. schema 演化：「笔记状态」+「流量状态」双状态列（传统 A 家族只有一列）
+    2. 无独立 intent 列 —— intent 需从方向名推断（方向三/六=conversion，其余=traffic）
+    3. 本期 0 爆款（流量状态全是"无水花"/"风控中"/"评估中"/"参考"）
+    4. 方向字段虽为单选(type=4)，但 distinct 显示存在 " / " 分隔的多选组合
+    5. 产品线多元（洗脸巾/浴巾/湿巾/内裤），方向三覆盖多 SKU 需 sub_direction 细分
+    6. 蓝词字段命名不同于 NRT（"蓝词字段" vs "蓝词记录"），sync 需适配
+    7. 「主页链接」列存在但选项值异常（显示评论/没有显示/改评显示）—— 疑似飞书配置错误
+    
+    待策略 lead 拍板：
+    - brand 中文名（文案中无中文品牌名出现）
+    - category 归属（个护 vs FMCG）
+    - 各方向的 content_format / target_audience / user_pain_point
+    - tier_thresholds（本期无爆款，阈值无法从数据验证）
+    - 合规红线和蓝词策略
+    - intent 从方向推断的逻辑是否正确
