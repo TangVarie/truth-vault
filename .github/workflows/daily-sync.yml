@@ -56,9 +56,10 @@ jobs:
       # 未配 WORKER_URL → essence/curate 优雅跳过(不再因 GitHub 连不上网关而红)。
       WORKER_URL: ${{ secrets.WORKER_URL }}
       WORKER_API_KEY: ${{ secrets.WORKER_API_KEY }}
-      # 每轮 essence/curate 上限。默认压到 15:实测中转站 ~13s/条,15 条约 200s,
-      # 给 worker(线程池跑、不堵 /health)留足余量。backfill 想快可在 repo Variables
-      # 把 WORKER_LIMIT 调大(单次 ≤ curl --max-time 900s ≈ 60 条),靠多轮 cron 也会清完。
+      # essence 每日上限/项目。essence 步骤会【循环多个 ≤15 的子批】凑够这个数 —— 因为单个
+      # worker 请求受 Railway 边缘【~5min 超时】约束,每请求最多 ~15 条(≈3.5min;>15 会 502)。
+      # 想每天标更多就在 repo Variables 调大 WORKER_LIMIT(如 50 = 每天每项目最多 50,内部
+      # 自动拆成 ≤15 的多轮)。curate 待办是爆款数量级、远少,每请求封顶 15 不随之放大。
       WORKER_LIMIT: ${{ vars.WORKER_LIMIT || '15' }}
       # 只跑某项目 (workflow_dispatch 的 project 输入); 空 = 全部. cron 触发时为空.
       PROJECT_FILTER: ${{ github.event.inputs.project }}
@@ -139,7 +140,10 @@ jobs:
         working-directory: scripts
         run: |
           # LLM 调用搬到 Railway worker(GitHub 连不上中转站, D-038/docs/17 §7-D);这里只 curl 触发。
-          # --limit (WORKER_LIMIT, 默认 50) 每轮软上限;跑不完下轮 cron 续(脚本按 essence_annotated_at 续, 幂等)。
+          # ⚠️ 单个 worker 请求受 Railway 边缘【~5min 超时】:每请求最多 ~15 条(≈3.5min),>15 → 502。
+          # 要每天标更多(WORKER_LIMIT),就【循环多个 ≤15 的子批】凑够,而不是单请求塞大数。
+          # 标注按 essence_annotated_at IS NULL 续作、幂等;某项目标完(count_unannotated=0)即停、不空转。
+          ESS_REQ_MAX=15   # 单请求硬上限,别超(>15 撞边缘 5min → 502)
           DRY=false
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY=true
           fail_count=0
@@ -147,19 +151,25 @@ jobs:
             p=$(basename "$f" .yaml)
             [ "$p" = "_template" ] && continue
             [ -n "$PROJECT_FILTER" ] && [ "$p" != "$PROJECT_FILTER" ] && continue
-            echo "─── essence annotate (worker) · project=$p ───"
-            code=$(curl -sS -w '%{http_code}' -o /tmp/ess.json --max-time 900 \
-              -X POST "${WORKER_URL%/}/annotate-essence" \
-              -H "X-Worker-Key: $WORKER_API_KEY" -H 'content-type: application/json' \
-              -d "{\"project\":\"$p\",\"limit\":${WORKER_LIMIT},\"dry_run\":$DRY}") || code=000
-            ok=$(jq -r '.ok // false' /tmp/ess.json 2>/dev/null)
-            echo "HTTP $code · ok=$ok · returncode=$(jq -r '.returncode // "?"' /tmp/ess.json 2>/dev/null)"
-            jq -r '.stdout_tail // ""' /tmp/ess.json 2>/dev/null | tail -8
-            if [ "$code" != "200" ] || [ "$ok" != "true" ]; then
-              echo "::error::essence annotation failed for $p (HTTP $code, ok=$ok)"
-              jq -r '.stderr_tail // ""' /tmp/ess.json 2>/dev/null | tail -8
-              fail_count=$((fail_count + 1))
-            fi
+            echo "─── essence annotate (worker) · project=$p · 每日上限=$WORKER_LIMIT · 每请求≤$ESS_REQ_MAX ───"
+            budget=$WORKER_LIMIT
+            while [ "$budget" -gt 0 ]; do
+              rem=$(python count_unannotated_essence.py "$p" 2>/dev/null || echo "?")
+              [ "$rem" = "0" ] && { echo "  ✅ $p essence 已全部标完"; break; }
+              batch=$ESS_REQ_MAX; [ "$batch" -gt "$budget" ] && batch=$budget
+              code=$(curl -sS -w '%{http_code}' -o /tmp/ess.json --max-time 900 \
+                -X POST "${WORKER_URL%/}/annotate-essence" \
+                -H "X-Worker-Key: $WORKER_API_KEY" -H 'content-type: application/json' \
+                -d "{\"project\":\"$p\",\"limit\":${batch},\"dry_run\":$DRY}") || code=000
+              ok=$(jq -r '.ok // false' /tmp/ess.json 2>/dev/null)
+              echo "  HTTP $code · ok=$ok · $(jq -r '.stdout_tail // ""' /tmp/ess.json 2>/dev/null | grep -o 'Done:.*' | tail -1)"
+              if [ "$code" != "200" ] || [ "$ok" != "true" ]; then
+                echo "::error::essence annotation failed for $p (HTTP $code, ok=$ok)"
+                jq -r '.stderr_tail // ""' /tmp/ess.json 2>/dev/null | tail -8
+                fail_count=$((fail_count + 1)); break
+              fi
+              budget=$((budget - batch))
+            done
           done
           if [ $fail_count -gt 0 ]; then
             echo "::error::essence annotation failed for $fail_count project(s)"
@@ -176,9 +186,13 @@ jobs:
           # LLM 调用在 Railway worker 上跑(GitHub 连不上中转站);这里只 curl 触发。
           # 尊重 workflow 的 project 输入: 定向跑某项目时只策展该项目(PR#30 review r3338862087)。
           # 复用 skip_essence flag(同属 LLM 花费, 一起跳)。书架空时 0 卡, no-op。
+          # curate 同走 Railway 边缘(~5min/请求)。curate 待办是【爆款数】量级(远少于笔记),
+          # 15/天足够;单请求 >~15 张同样会撞 5min 超时。故每请求封顶 15、不随 WORKER_LIMIT 放大
+          # (避免 502);待办多时下轮 cron 续(is_curated=false 幂等)。
+          CUR_LIMIT=$WORKER_LIMIT; [ "$CUR_LIMIT" -gt 15 ] && CUR_LIMIT=15
           DRY=false
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY=true
-          BODY="{\"limit\":${WORKER_LIMIT},\"dry_run\":$DRY"
+          BODY="{\"limit\":${CUR_LIMIT},\"dry_run\":$DRY"
           [ -n "$PROJECT_FILTER" ] && BODY="$BODY,\"project\":\"$PROJECT_FILTER\""
           BODY="$BODY}"
           echo "─── curate (worker) ───"
