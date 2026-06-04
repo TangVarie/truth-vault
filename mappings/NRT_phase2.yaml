@@ -11,7 +11,7 @@ version: 1.0
 project_id: NRT_phase2
 brand: 力克雷
 product: NRT 系列戒烟产品（咀嚼胶/喷雾/戒烟贴）
-category: 处方药
+category: OTC药   # 2026-06-04 R-009 决议(策略 lead Ziao):力克雷 NRT 尼古丁贴片/咀嚼片国内按 OTC 销售
 platform: xiaohongshu
 schema_family: B
 start_date: null
