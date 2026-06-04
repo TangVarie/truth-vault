@@ -120,11 +120,18 @@ Codex 指出我那两个 polish 的标准映射提示**没分家族/格式**,会
 ### C. polish 合 main(= §7-0 修完后的合并动作)
 
 ### D. essence/curate 搬 Railway(齐全飞轮)
-essence(给笔记打 essence 层:情绪杠杆/原型/人群)+ curate(爆款→经验卡→喂 librarian 书架,供 autowriter/ssll 写稿借阅)。现因 GitHub 连不上网关跑不了。**搬到 Railway**(像 onboarder/librarian)即可转。搬完 GitHub 那俩步可停/删。
+> 🟡 **代码已就绪(2026-06-04,本分支)· 待部署**:新增 `worker/` 服务(FastAPI,subprocess 跑现有
+> `scripts/annotate_essence_pass.py` / `curate_flywheel_lessons.py`,不重写逻辑),`worker/railway.json` 就绪;
+> `daily-sync.yml` 的 essence/curate 两步已改为 **curl 调 worker**、gate 在 `WORKER_URL != ''`。
+> **剩部署动作**:Railway 新建第三个 service(Config file 指 `/worker/railway.json`)+ 配 env(见 `worker/README`),
+> GitHub 加 secret `WORKER_URL`/`WORKER_API_KEY`。部署完 essence/curate 才真跑(prod 现状 0 标注 / 0 经验卡)。
+
+essence(给笔记打 essence 层:情绪杠杆/原型/人群)+ curate(爆款→经验卡→喂 librarian 书架,供 autowriter/ssll 写稿借阅)。原因 GitHub 连不上网关跑不了 → 搬 Railway(像 onboarder/librarian)。
 
 ### E. daily-sync 变绿
-**临时**:删 GitHub `ANTHROPIC_API_KEY` → essence/curate 回到 skip → 绿。
-**根治**:随 D 把它俩迁 Railway 一起解决。
+> ✅ **根治路径已落地(代码侧)**:gate 从 `env.ANTHROPIC_API_KEY != ''` 改为 `env.WORKER_URL != ''`,
+> 且 `ANTHROPIC_*`/`ESSENCE_MODEL` 已从 GitHub env 移除。**未配 `WORKER_URL` → essence/curate 优雅跳过(绿)**;
+> 配了 worker → 真跑(LLM 在 Railway,GitHub 不再连网关,不会再因此变红)。配完 worker 后可删 GitHub 的 `ANTHROPIC_API_KEY`。
 
 ### F. 关闭 PR #39(测试用完)
 

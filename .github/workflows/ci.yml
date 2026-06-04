@@ -45,6 +45,16 @@ jobs:
             librarian/core.py \
             librarian/cli.py \
             librarian/app.py \
+            onboarder/__init__.py \
+            onboarder/app.py \
+            onboarder/cli.py \
+            onboarder/clients.py \
+            onboarder/core.py \
+            onboarder/corpus.py \
+            onboarder/vocab.py \
+            onboarder/eval_wtg.py \
+            worker/__init__.py \
+            worker/app.py \
             sanshengliubu-patches/import_truth_vault_baokuan.py
       - name: Comment parser unit tests
         working-directory: scripts

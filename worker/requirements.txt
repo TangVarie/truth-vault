@@ -1,0 +1,6 @@
+# Railway worker 依赖。subprocess 跑 scripts/annotate_essence_pass.py /
+# curate_flywheel_lessons.py,所以要装 scripts 的依赖(supabase/pyyaml/requests/anthropic)。
+-r ../scripts/requirements.txt
+# Railway 服务端点(worker/app.py)用:
+fastapi>=0.110
+uvicorn>=0.29
