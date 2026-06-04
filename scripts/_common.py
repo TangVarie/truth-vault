@@ -482,9 +482,13 @@ def quarantine_record(
 
     Idempotent on (project_id, feishu_record_id, reason) — repeated runs of
     sync_feishu on a row that still has undeclared fields don't pile up rows
-    in the quarantine table. The schema's UNIQUE constraint (added in
-    notes_v1_2.sql) backs this, and ignore_duplicates=True preserves any
-    reviewer state (status/review_decision/reviewed_by) that an operator
+    in the quarantine table. Backed by the NON-partial unique index
+    uq_quarantine_project_record_reason (notes_v1_2.sql): PostgREST emits a
+    predicateless `ON CONFLICT (cols)` which Postgres CANNOT match to a partial
+    index (raises 42P10), so the index must be non-partial. It uses the default
+    NULLS DISTINCT — non-null feishu_record_id rows dedup, while anonymous
+    (NULL feishu_record_id) rows are allowed to coexist. ignore_duplicates=True
+    preserves any reviewer state (status/review_decision/reviewed_by) an operator
     has already set on the first-seen quarantine row.
     """
     (
