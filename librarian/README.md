@@ -53,8 +53,14 @@ python -m librarian.cli --brief librarian/sample_brief.json
 
 repo 根 `railway.json` 已配好;在 Railway 建一个 service、root 指 repo 根、设环境变量
 (`SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` / `ANTHROPIC_API_KEY` / **`ANTHROPIC_BASE_URL`**
-(中转站/第三方网关, 可选, 不设走官方) / 可选 `FLYWHEEL_LIBRARIAN_MODEL` / 建议设
+(中转站/第三方网关, 可选, 不设走官方) / `FLYWHEEL_LIBRARIAN_MODEL`(见下方⚠️) / 建议设
 `LIBRARIAN_API_KEY` 鉴权)即可。healthcheck 走 `/health`。
+
+> ⚠️ **模型 env 名各服务不同(2026-06-04 踩过的坑)**:馆员读 **`FLYWHEEL_LIBRARIAN_MODEL`**(默认
+> `claude-sonnet-4-6`),而 worker 读 `ESSENCE_MODEL`、autowriter 读 `CLAUDE_MODEL` —— **三个名字都不一样**。
+> 如果你的中转站通道**不 serve 默认的 `claude-sonnet-4-6`**,却只给 worker/aw 设了能跑通的模型、忘了给馆员
+> 设 `FLYWHEEL_LIBRARIAN_MODEL`,馆员每次调用都会失败、**降级成 `{"selected":[]}`**(且 `flywheel_librarian_cache`
+> 一直 0,从外面 200 看不出错)。**换通道模型时,三个服务的模型 env 都要设成通道认的那个名字。**
 
 调用(消费方):
 ```

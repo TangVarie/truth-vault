@@ -5,8 +5,10 @@
 > 就差 aw 写稿时调一下馆员、把卡注入 prompt。
 > 设计/背景见 [docs/14](14-channel2-pull-librarian.md)(为什么 pull)/ [docs/15](15-autowriter-librarian-integration.md)(详细契约+落地反馈);本文是**可照做的精简版**。
 >
-> ✅ 验证现状(2026-06-04):馆员服务已上线、书架上已有 1 张真卡;但 `flywheel_librarian_cache` 调用数 = 0
-> —— **到现在没有任何消费方调用过馆员**。本文就是把这"0→1"接通。
+> ✅ 状态(2026-06-04 更新):**autowriter 已实现 R-032** —— `librarian_client.py`(`build_brief` + `fetch_flywheel_lessons`,
+> fail-open)+ `app.py` 两处调用(单条 + 批量生成)+ `memory.build_layered_system_prompt` 把卡注入 **P2 层(不缓存)**,
+> 注的正是 `structure` / `transferable_tactic` / `borrow_what` / `why_relevant`,与本文契约一致。
+> 曾因 **librarian 的模型 env 没设对**而返回 `[]`(见 §6 故障排查),修好后端到端可通。本文现作**契约参考 + 自测手段 + 故障排查**。
 
 ---
 
@@ -173,3 +175,30 @@ flywheel_block = build_flywheel_block(fetch_flywheel_cards(brief))
 - **selected 老是空**:书架现在只有 1 张卡(WTG 参考)。随运营在飞书标更多真爆款 + daily-sync 策展,卡会变多;跨品牌也能借到可迁移手法。先把管子接通,别等库满。
 - **会不会拖慢写稿**:不会。fail-open + 超时降级;且馆员有**结果缓存 + prompt 缓存**,同库同 brief 几乎零成本。
 - **要不要 ssll 也接**:可选(R-033),同契约;ssll 现有 `retrieve_reference_packs` 也可不动,只是少借一路飞轮料。
+
+---
+
+## 6. 故障排查
+
+### 自测 curl / 真跑都返回 `{"selected":[]}`,且 `flywheel_librarian_cache` 一直 0
+
+**最常见:librarian 的模型 env 没设对(2026-06-04 实锤)。** 三个 Railway 服务的"模型" env **变量名各不相同**:
+
+| 服务 | 模型 env 变量名 | 默认 |
+|---|---|---|
+| worker | `ESSENCE_MODEL` | `claude-sonnet-4-6` |
+| **librarian** | **`FLYWHEEL_LIBRARIAN_MODEL`** | `claude-sonnet-4-6` |
+| autowriter | `CLAUDE_MODEL` | `claude-sonnet-4-6` |
+
+如果你的中转站通道**不 serve 默认的 `claude-sonnet-4-6`**(于是你给 worker/aw 设了别的能跑通的模型),
+却**忘了给 librarian 设 `FLYWHEEL_LIBRARIAN_MODEL`** → 馆员每次 LLM 调用都失败、`except` 降级成 `[]`。
+从外面看是 `200 {"selected":[]}`(看不出错),`flywheel_librarian_cache` 也因没成功而留 **0**。
+
+**修:在 librarian 服务把 `FLYWHEEL_LIBRARIAN_MODEL` 设成你通道认的模型**(= worker 的 `ESSENCE_MODEL` / aw 的 `CLAUDE_MODEL`)→ 重部署 → 重跑自测,`selected` 出卡、`flywheel_librarian_cache` 0→1。
+
+> 想确认是不是它:看 librarian 服务的 **Railway Logs**,会有 `librarian_select LLM 选取失败` + 真错误
+> (典型 `no available channel for model ... under group ...` = 模型名不对)。
+
+### 其它
+- `401` → `X-Librarian-Key` 与 librarian 的 `LIBRARIAN_API_KEY` 不一致。
+- 模型/通道都对但仍空 → 书架暂无匹配的卡(库小时正常);先把管子接通,别等库满。
