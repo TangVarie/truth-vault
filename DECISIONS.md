@@ -1193,3 +1193,25 @@ WHERE NOT EXISTS (
 - `docs/13` 通道2 步骤（配 aw 映射 + 跑 push sync）加 deprecation 横幅。
 
 参见 [docs/14-channel2-pull-librarian.md](docs/14-channel2-pull-librarian.md)。
+
+---
+
+## D-039 · essence_annotation_mode 放宽为 nullable（合理偏离 D-017 的"必填"）
+
+**日期**: 2026-06-05（Session #17）
+
+**What**: [D-017](#d-017) 的 Implications 写 `notes.essence_annotation_mode` 字段**新增（必填，枚举: prediction_feature / posthoc_explanation）**。实际落地的 schema（`schemas/notes_v1_2.sql:255-256`）把它建成 **nullable**（只有 CHECK 约束枚举值，无 NOT NULL）。本条**正式记录这个偏离并确认它是对的**——不是 bug。（DECISIONS 只追加，不改 D-017 原文；读 D-017 看到"必填"时以本条为准。）
+
+**Why**:
+- sync 的写入时序是**先插入 note 行、后由独立 essence pass 异步标注**（[D-028](#d-028)：Mode A 标注与 tier/performance 严格隔离，`sync_feishu_notes` 不调 LLM）。若 `essence_annotation_mode` NOT NULL，每条新 note 在【还没标注】时就会卡住 INSERT —— 与"先入库、按 `essence_annotated_at IS NULL` 续标"的幂等管道直接冲突。
+- 字段语义本就是"**这条已被标注时，用的是哪种模式**"，未标注时为 NULL 是**正确的缺省**，不是缺数据。
+- D-017 防 label-leakage 的**核心保护仍然成立**：主 essence 走 Mode A（performance-blind），由 `annotate_essence_pass.py` 落地、写 `essence_annotation_mode='prediction_feature'`；训练查询按 `WHERE essence_annotation_mode = 'prediction_feature'` 过滤（NULL=未标注，自然被排除）。放宽 NOT NULL **不削弱**该隔离，只去掉一个与异步标注时序冲突的写入约束。
+
+**Rejected**:
+- "保持 NOT NULL，sync 插入时先写一个占位 mode" —— 拒绝。会污染语义（未标注的行被标成像已标注），且占位值要么撞 CHECK、要么需要再加一个"未标注"枚举值，得不偿失。
+- "改 D-017 原文把'必填'划掉" —— 拒绝。DECISIONS 是只追加的决策考古层；偏离用新条目记录，保留 D-017 当时的判断轨迹。
+
+**Implications**:
+- `notes.essence_annotation_mode` 维持 nullable + CHECK 枚举（现状，无需改 schema）。
+- 训练 / 下游过滤继续用 `essence_annotation_mode = 'prediction_feature'`（隐含排除 NULL 未标注行），见 D-017 Implications。
+- **连带欠账（本条不解决，登记备查）**：D-017 还要求 `prompts/essence_annotator.md` 拆成两个 prompt 模板（prediction_feature / posthoc_explanation），现仍只有 Mode A 一个模板；posthoc 复盘模式（`posthoc_analyses` 表）整体尚未启用，故拆模板无紧迫性。待真正要做 essence 复盘分析时一并补。
