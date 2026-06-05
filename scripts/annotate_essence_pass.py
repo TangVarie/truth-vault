@@ -646,6 +646,23 @@ def _annotate_with_retry(prompt: str, model: str
     return parsed2, [], raw2, True
 
 
+def _exit_code_for_stats(stats: dict) -> int:
+    """essence pass 退出码(对齐 curate #56「仅全军覆没才判失败」)。
+
+    - hygiene_failed(build_mode_a_prompt 卫生断言 = label-leakage / project context
+      漂移, D-017/D-028 头号不变量, 系统性 bug 而非 LLM 抽风)→ 任意一条都判失败。
+    - failed_after_retry(单条 essence LLM 偶发坏 JSON / 校验失败)是【幂等】的: 失败行
+      essence_annotated_at 仍 NULL, 下轮 daily-sync 自动续标 → 只有【全军覆没】(ok==0 却有
+      失败)才判失败(多半系统性: 模型 env / 余额 / 限流); 零星单条容忍, 不拖红整条 sync。
+    - 其余(含 no-op 空跑)→ 0。
+    """
+    if stats.get("hygiene_failed"):
+        return 1
+    if stats.get("failed_after_retry", 0) > 0 and stats.get("ok", 0) == 0:
+        return 1
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("project_id", help="e.g. NUC_phase1")
@@ -777,11 +794,21 @@ def main() -> int:
                     "underlying note + rerun, or feed the file back through "
                     "this script after correcting the prompt/vocab.",
                     failed_queue_path)
-    # Exit 0 unless something actually broke. A no-op run (no unannotated
-    # rows today) is success, not failure — otherwise cron / CI would treat
-    # it as red. Hygiene assertion failures count as real errors because
-    # they indicate prompt/build_project_context drift.
-    return 0 if not (stats["failed_after_retry"] or stats["hygiene_failed"]) else 1
+    # 返回码: 零星单条 essence 抽风(failed_after_retry, 幂等下轮续标)不该把整条 daily-sync
+    # 拖红(NUC_1 首跑 45 条里 1 条抽风就让整 workflow 红 + 发邮件, 即此症)。只有全军覆没 /
+    # hygiene 漂移才红。判定收敛到 _exit_code_for_stats(可单测)。
+    code = _exit_code_for_stats(stats)
+    if code != 0:
+        if stats["hygiene_failed"]:
+            logger.error("essence 卫生断言失败 %d 条 —— prompt/project context 漂移"
+                         "(label-leakage 风险), 需排查。", stats["hygiene_failed"])
+        else:
+            logger.error("essence 全部失败 (%d 条) —— 多半系统性(模型 env / 余额 / 限流), 需排查。",
+                         stats["failed_after_retry"])
+    elif stats["failed_after_retry"]:
+        logger.warning("essence 有 %d 条失败(已各重试一次), ok=%d;失败行下轮 daily-sync "
+                       "幂等续标, 不拖红本次。", stats["failed_after_retry"], stats["ok"])
+    return code
 
 
 def _append_failed_queue(path: Path, note: dict, project_id: str,

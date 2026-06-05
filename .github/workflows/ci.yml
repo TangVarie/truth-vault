@@ -211,6 +211,33 @@ jobs:
           print("  ✓ failed_queue writes valid JSONL")
           print("\nannotate_essence retry + failed_queue: all 5 checks passed")
           PY
+      - name: Essence pass exit-code tolerance self-check (单条抽风不拖红 daily-sync)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # 回归: NUC_1 首跑 45 条 essence 里 1 条 LLM 抽风(failed_after_retry=1)就让
+          # worker 返回 ok=false → 整条 daily-sync 红 + 发邮件。失败行幂等(下轮续标), 不该
+          # 拖红。对齐 curate #56「仅全军覆没才判失败」。但 hygiene_failed(label-leakage
+          # 卫生断言漂移, D-017/D-028)是系统性 → 任意一条都红。
+          import annotate_essence_pass as a
+          f = a._exit_code_for_stats
+
+          # 零星单条抽风(NUC_1 批3 实况 ok=14/failed=1)→ 容忍, 返回 0
+          assert f({"ok": 14, "failed_after_retry": 1, "hygiene_failed": 0}) == 0
+          print("  ✓ 零星 failed_after_retry(ok>0)容忍 → 0")
+          # 全军覆没(ok==0 却有失败)→ 系统性, 红
+          assert f({"ok": 0, "failed_after_retry": 5, "hygiene_failed": 0}) == 1
+          print("  ✓ 全军覆没(ok==0)→ 1")
+          # hygiene 任意一条 → 红(label-leakage 优先级最高, 即便有 ok)
+          assert f({"ok": 40, "failed_after_retry": 0, "hygiene_failed": 1}) == 1
+          assert f({"ok": 40, "failed_after_retry": 2, "hygiene_failed": 1}) == 1
+          print("  ✓ hygiene_failed 任意一条 → 1(label-leakage 系统性)")
+          # 干净成功 / no-op 空跑 → 0
+          assert f({"ok": 15, "failed_after_retry": 0, "hygiene_failed": 0}) == 0
+          assert f({"ok": 0, "failed_after_retry": 0, "hygiene_failed": 0}) == 0
+          print("  ✓ 干净成功 + no-op 空跑 → 0")
+          print("\nessence exit-code tolerance: all 6 checks passed")
+          PY
       - name: Essence annotator sub_direction classification self-check
         working-directory: scripts
         run: |
@@ -434,6 +461,64 @@ jobs:
           print("  ✓ tier_threshold_override: 单方向 + 含 sub_directions 粗方向都 honor 方向级阈值(普通用项目级)")
 
           print("\ntransform_row tier+metric+intent+threshold_override: all 7 checks passed")
+          PY
+      - name: transform_row autowriter lineage FK self-check (R-031)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # R-031: autowriter "AI 写→人审→发布→飞书回收" 闭环的 6 个 lineage 列必须:
+          #   (a) 不触发 D-021 整行 quarantine (列已全局声明);
+          #   (b) 两个 UUID 列提升进 notes 的 FK 列 source_autowriter_item_id/_version_id
+          #       (这俩填了 v_model_comparison 才 JOIN 得到 autowriter.versions);
+          #   (c) 其余 4 列留 raw_extra 留痕。
+          # 没有这条, 飞书表加 lineage 列会让【每一行】被 quarantine、拖垮 ingestion。
+          import sync_feishu_notes_to_truth_vault as s
+
+          mapping = {
+              "project_id": "TEST_LIN", "platform": "xiaohongshu",
+              "field_mapping": {"文案": "raw_content"},
+              "project_specific_fields_to_raw_extra": [],
+          }
+
+          # Case A: 全 6 列在 (item/version 是飞书富文本 list[dict], 其余 str/日期 epoch)
+          raw_a = {
+              "文案": "内容",
+              "_source_autowriter_item_id": [{"text": "11111111-1111-1111-1111-111111111111"}],
+              "_source_autowriter_version_id": "22222222-2222-2222-2222-222222222222",
+              "_source_autowriter_project_id": "proj-uuid",
+              "_source_autowriter_batch_id": "batch-uuid",
+              "_ai_engine": "claude-sonnet-4-6",
+              "_exported_at": 1733300000000,
+          }
+          note_a, _, undeclared_a = s.transform_row(mapping, "recA", raw_a)
+          assert note_a["source_autowriter_item_id"] == "11111111-1111-1111-1111-111111111111", note_a.get("source_autowriter_item_id")
+          assert note_a["source_autowriter_version_id"] == "22222222-2222-2222-2222-222222222222", note_a.get("source_autowriter_version_id")
+          assert note_a["raw_extra"]["_ai_engine"] == "claude-sonnet-4-6"
+          assert note_a["raw_extra"]["_source_autowriter_project_id"] == "proj-uuid"
+          assert undeclared_a == [], ("lineage 列不应进 quarantine", undeclared_a)
+          print("  ✓ 6 lineage 列: 2 UUID 提升进 FK 列, 4 列进 raw_extra, 0 quarantine")
+
+          # Case B: 无 lineage 列 → 不写 FK、不崩 (老项目不受影响)
+          note_b, _, undeclared_b = s.transform_row(mapping, "recB", {"文案": "内容"})
+          assert "source_autowriter_item_id" not in note_b
+          assert undeclared_b == []
+          print("  ✓ 无 lineage 列时不写 FK、老项目零影响")
+
+          # Case C: lineage 列在但空 (None/空串) → 不写 FK 列 (避免空 UUID 撞列类型)
+          note_c, _, _ = s.transform_row(
+              mapping, "recC",
+              {"文案": "内容", "_source_autowriter_item_id": "", "_source_autowriter_version_id": None},
+          )
+          assert "source_autowriter_item_id" not in note_c, note_c.get("source_autowriter_item_id")
+          assert "source_autowriter_version_id" not in note_c
+          print("  ✓ 空 lineage 值不写 FK 列")
+
+          # Case D: 真正未声明的列仍照常 quarantine (没把声明闸门开太大)
+          _, _, undeclared_d = s.transform_row(mapping, "recD", {"文案": "内容", "某个没声明的列": "x"})
+          assert undeclared_d == ["某个没声明的列"], undeclared_d
+          print("  ✓ 真正未声明列仍照常 quarantine")
+
+          print("\ntransform_row lineage FK (R-031): all 4 checks passed")
           PY
       - name: Supabase key validation self-check
         working-directory: scripts

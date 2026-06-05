@@ -201,6 +201,28 @@ class FeishuClient:
 # Mapping-driven row transformation
 # ═════════════════════════════════════════════════════════════════════════
 
+# R-031: autowriter 回灌 lineage 列 (docs/11 「lineage 元数据列」). autowriter "AI 写 →
+# 人工审 → 发布 → 飞书回收" 闭环里, 飞书表带 6 个 _source_autowriter_* / _ai_engine /
+# _exported_at 列。这些列必须:
+#   (a) 被【声明】, 否则 D-021 把每条带它们的行整行 quarantine (拖垮 ingestion);
+#   (b) 其中两个 UUID → 提升进 notes 的跨 schema FK 列 source_autowriter_item_id /
+#       source_autowriter_version_id (schema 已有, UUID), 这样 v_model_comparison /
+#       v_prompt_performance 才 JOIN 得到 autowriter.versions 出模型对比;
+#   (c) 其余 4 列 (project/batch id · ai_engine · exported_at) 留 raw_extra 留痕。
+# 列名固定 (不进 field_mapping, 按名特殊处理), 故对【所有】项目预声明、与具体 mapping 无关。
+_LINEAGE_FK_COLS = {
+    "_source_autowriter_item_id":    "source_autowriter_item_id",
+    "_source_autowriter_version_id": "source_autowriter_version_id",
+}
+_LINEAGE_RAW_EXTRA_COLS = (
+    "_source_autowriter_project_id",
+    "_source_autowriter_batch_id",
+    "_ai_engine",
+    "_exported_at",
+)
+_LINEAGE_COLS = tuple(_LINEAGE_FK_COLS) + _LINEAGE_RAW_EXTRA_COLS
+
+
 def transform_row(
     mapping: dict,
     feishu_record_id: str,
@@ -214,7 +236,8 @@ def transform_row(
     """
     field_mapping = mapping["field_mapping"]
     fields_to_raw_extra = set(mapping.get("project_specific_fields_to_raw_extra", []))
-    declared = set(field_mapping.keys()) | fields_to_raw_extra
+    # _LINEAGE_COLS (R-031) 全局预声明 → 飞书表加 autowriter 回灌列时不再整行 quarantine。
+    declared = set(field_mapping.keys()) | fields_to_raw_extra | set(_LINEAGE_COLS)
 
     # Allow control fields that are always present in Feishu API responses
     # but not user-defined columns
@@ -254,6 +277,18 @@ def transform_row(
             raw_extra[feishu_col] = raw_fields[feishu_col]
     if raw_extra:
         note["raw_extra"] = raw_extra
+
+    # ── R-031: autowriter 回灌 lineage 列 → FK 列 + raw_extra ──
+    # 两个 UUID 列提升进 notes 的跨 schema FK 列 (UUID 字符串直接写; 用 _direction_key 把飞书
+    # 富文本 list[dict{text}] / 单选 dict 展平成纯串, 同其它 cell 的处理)。其余 4 列留 raw_extra。
+    for feishu_col, fk_col in _LINEAGE_FK_COLS.items():
+        if feishu_col in raw_fields:
+            uuid_val = _direction_key(raw_fields[feishu_col]).strip()
+            if uuid_val:
+                note[fk_col] = uuid_val
+    for feishu_col in _LINEAGE_RAW_EXTRA_COLS:
+        if feishu_col in raw_fields and raw_fields[feishu_col] not in (None, "", []):
+            note.setdefault("raw_extra", {})[feishu_col] = raw_fields[feishu_col]
 
     # ── Secondary processing per mapping ──
     consumed_intermediates: set[str] = set()
