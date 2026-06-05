@@ -200,14 +200,24 @@ compliance:
 
 ### Step 7 · 保存 + 数据预导入（5 分钟）
 
-生成完整 mapping.yaml，保存到 `mappings/<project_id>.yaml`。
+生成完整 mapping.yaml，保存到 `mappings/<project_id>.yaml`（含 `sync_config` 飞书坐标）。
 
-试导入 10 条样本：
-- 看错误日志
-- 检查 tier 抽取是否正确
-- 检查方向拆解后的字段是否合理
+**先跑只读体检**（不写库、不调 LLM，几秒出报告）：
 
-无错误 → 整体导入。
+```bash
+FEISHU_APP_ID=… FEISHU_APP_SECRET=… python scripts/preflight_mapping.py <project_id>
+```
+
+preflight 复用真 `transform_row` 投影全表，一屏看清：
+- **未声明列** → 会被 D-021 整行 quarantine（NRT_2 曾因此丢 482 行真内容）；报告会标出"哪些列没声明、其中多少行有正文＝真笔记会丢"。
+- **品类是否在受控闭集**（否则 sync 撞 `notes.category` CHECK）。
+- **入库投影**：会 upsert 多少 / 空占位静默多少 / 因未声明列丢多少。
+- **分布**：tier（爆+大爆＝燃料)、intent（`other` 多＝intent_mapping 没覆盖)、**方向是否全部命中 `direction_decomposition`**。
+
+退出码 1 = 有该先修的阻断问题（未声明列丢真内容 / 品类非法）→ 按报告改 mapping，重跑到干净。
+**这一步把"在 prod 真跑→看炸什么→修"收敛成"接表前一键体检"。**
+
+体检干净 → PR → 合 → `Daily TV sync`（全名，先 dry_run）→ 实跑 → backfill essence。
 
 ---
 

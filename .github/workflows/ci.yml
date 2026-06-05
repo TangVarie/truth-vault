@@ -42,6 +42,7 @@ jobs:
             scripts/curate_flywheel_lessons.py \
             scripts/count_unannotated_essence.py \
             scripts/prune_librarian_cache.py \
+            scripts/preflight_mapping.py \
             librarian/__init__.py \
             librarian/clients.py \
             librarian/core.py \
@@ -519,6 +520,41 @@ jobs:
           print("  ✓ 真正未声明列仍照常 quarantine")
 
           print("\ntransform_row lineage FK (R-031): all 4 checks passed")
+          PY
+      - name: preflight_mapping projection self-check
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # preflight_mapping 是接新表前的只读体检(投影 = 真跑会 upsert/quarantine 多少)。
+          # 复用真 transform_row, 用真实 NUC_phase1 mapping + 合成记录 pin 住投影分类:
+          #   真笔记→upsert · 空占位/评论碎片→q_empty · 未声明列+正文→q_undeclared(且标记会丢)
+          #   · 未知方向→dirs_missing。
+          import preflight_mapping as pf
+          from _common import load_mapping
+          m = load_mapping("NUC_phase1")
+          records = [
+            {"record_id": "r1", "fields": {"文案": "糖尿病老人营养", "互动量": 1000,
+                                           "方向": "糖尿病相关", "状态": "爆贴大爆", "素人编号": "acc1"}},
+            {"record_id": "r2", "fields": {"父记录 2": [{"text": "link"}]}},
+            {"record_id": "r3", "fields": {"发布时间": 1733300000000, "随贴评论": "好用", "评论状态": "已评"}},
+            {"record_id": "r4", "fields": {"文案": "真内容", "某未声明列": "x"}},
+            {"record_id": "r5", "fields": {"文案": "内容b", "方向": "不存在的方向", "素人编号": "acc2"}},
+          ]
+          s = pf.project_rows(m, records, show_cap=8)
+          p = s["proj"]
+          assert s["n"] == 5, s["n"]
+          assert p["upsert"] == 2, dict(p)          # r1 + r5
+          assert p["q_empty"] == 2, dict(p)         # r2 空占位 + r3 评论碎片
+          assert p["q_undeclared"] == 1, dict(p)    # r4
+          assert dict(s["undeclared_cols"]) == {"某未声明列": 1}, s["undeclared_cols"]
+          assert dict(s["undeclared_with_content"]) == {"某未声明列": 1}, "有正文行被未声明列拖走=该标记会丢"
+          assert s["tiers"].get("大爆") == 1, dict(s["tiers"])
+          assert s["dirs_missing"].get("不存在的方向") == 1, dict(s["dirs_missing"])
+          assert s["dirs_seen"].get("糖尿病相关") == 1, dict(s["dirs_seen"])
+          print("  ✓ upsert=2 / q_empty=2 / q_undeclared=1")
+          print("  ✓ 未声明列被抓 + 标记'有正文会丢'")
+          print("  ✓ tier 大爆=1 / 未知方向标缺拆解")
+          print("\npreflight_mapping projection: all checks passed")
           PY
       - name: Supabase key validation self-check
         working-directory: scripts
