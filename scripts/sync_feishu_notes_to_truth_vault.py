@@ -222,6 +222,13 @@ _LINEAGE_RAW_EXTRA_COLS = (
 )
 _LINEAGE_COLS = tuple(_LINEAGE_FK_COLS) + _LINEAGE_RAW_EXTRA_COLS
 
+# 判"空关联行"用: 一条缺 raw_content 的行, 若 note 里除这些【结构键】外没有任何真信号
+# (content/metric/tier/url…), 就是飞书多维表格的父记录占位行(只有 父记录* 链接)。这类大量
+# 存在且每轮重复, 逐条 WARNING 刷屏无意义 → 静默计数、收尾汇总。raw_extra(放父记录链接)不算真信号。
+_STRUCTURAL_NOTE_KEYS = frozenset({
+    "note_id", "project_id", "platform", "feishu_record_id", "raw_extra",
+})
+
 
 def transform_row(
     mapping: dict,
@@ -799,7 +806,8 @@ def main() -> int:
     if not args.dry_run:
         ensure_project_exists(sb, mapping)
 
-    stats = {"total": 0, "upserted": 0, "quarantined": 0, "errors": 0}
+    stats = {"total": 0, "upserted": 0, "quarantined": 0,
+             "empty_placeholder": 0, "errors": 0}
     # Collect transformed rows, then write in batches after the loop (one
     # upsert per chunk instead of ~3 REST calls per record — see *_batch above).
     pending_notes: list[dict[str, Any]] = []
@@ -834,10 +842,19 @@ def main() -> int:
             REQUIRED_NOTE_FIELDS = ("raw_content",)
             missing = [c for c in REQUIRED_NOTE_FIELDS if not note.get(c)]
             if missing:
-                logger.warning(
-                    "record_id=%s missing required fields: %s → quarantine",
-                    feishu_record_id, missing,
+                # 纯空关联行(只缺 raw_content 且除结构键外无任何真信号)= 飞书父记录占位行,
+                # 大量且每轮重复 → 静默计数, 收尾出一行汇总, 不逐条刷 WARNING。
+                # 真有数据却缺 raw_content 的异常行 → 仍逐条 WARNING(值得排查)。
+                is_empty_placeholder = missing == ["raw_content"] and not any(
+                    k not in _STRUCTURAL_NOTE_KEYS and v for k, v in note.items()
                 )
+                if is_empty_placeholder:
+                    stats["empty_placeholder"] += 1
+                else:
+                    logger.warning(
+                        "record_id=%s missing required fields: %s → quarantine",
+                        feishu_record_id, missing,
+                    )
                 if not args.dry_run:
                     quarantine_record(
                         sb, mapping["project_id"], feishu_record_id,
@@ -881,6 +898,11 @@ def main() -> int:
             logger.warning("update_project_date_range failed for %s: %s",
                            mapping["project_id"], exc)
 
+    if stats["empty_placeholder"]:
+        logger.info(
+            "跳过 %d 行空关联行(只有父记录链接、无内容/指标信号; 已 quarantine 留档, 未逐条告警)",
+            stats["empty_placeholder"],
+        )
     logger.info("Done: %s", json.dumps(stats, ensure_ascii=False))
     return 0 if stats["errors"] == 0 else 1
 
