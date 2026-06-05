@@ -193,7 +193,8 @@ Truth Vault(Supabase prod `kduysqedrclrfevrxiie` · schema truth_vault)
 | `04-onboarding-sop` | 接新项目的 7 步 SOP(方向拆解 = 策略 lead 拍板) |
 | `05-controlled-vocab` | 受控词表(情绪杠杆/人性原型/tier/category/**衰减谱**) |
 | `06-essence-annotation` | essence 标注协议(Mode A/B label-leakage 隔离) |
-| `07-audience-data` | 受众层设计(**注:L3 尚未运行**) |
+| `07-audience-data` | 受众层设计(蒲公英接入 + 校准闭环) |
+| **`23-L3-audience-layer-plan`** | ⭐ **L3 落地方案**(现状 vs 07 设计的差距 + 分阶段;Phase 1 不符检测现在可跑) |
 | `08-evolution-roadmap` | 演进路线图 |
 | `09-system-integration` | 与 ssll/autowriter 的集成 |
 | `10-sister-repo-followups` | 跨仓待办(R-031 等) |

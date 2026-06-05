@@ -125,7 +125,7 @@
 ## 6. 待办 / 路线图(按优先级)
 
 - **P1 · 灌更多真燃料**:接表已被 preflight + cron 闸去险,后续表照 §4 SOP 走即可。
-- **P2 · L3 受众层**(最大的"设计齐全、代码空"):`audience_inferred = 0` 从没跑过;独立受众推断 pass + 蒲公英校准(docs/07)+ D-013 不符打 flag。**这是 L2 预测的输入前提。**
+- **P2 · L3 受众层**(最大的"设计齐全、代码空"):**落地方案见 [docs/23](23-L3-audience-layer-plan.md)**。摸底结论:推断**已有**(essence 副产品,1042 条满 profile),**真实蒲公英数据基本没拉进来**(观众分析列大多「无」)。→ **先做 Phase 1 D-013 不符检测**(纯代码、688 条现成、立刻抓人工标错的受众、把 `audience_inferred` 从 0 拉起来);校准闭环卡在"先把真实 age/gender/city 拉进来"(ops 瓶颈,非代码)。**这是 L2 预测的输入前提。**
 - **P3 · 设计-代码缺口**:D-009 surface 三级衰减虽 apply 但注入视图当前 0 行(push 退役、aw 走 pull),是 spec 摆正+预置;R-005 评论楼层重建;D-017 prompt 双模板(posthoc 未启用)。
 - **P3 · 跨产品负面飞轮(D-040 roadmap)**:从人工标的干净负例萃取避坑特征,**不碰 `趴`**。优先级低于 L3。
 - **P4 · 未来**:L2 Predictor(`prepublish_evaluations` 现空)· L4 Optimization。
