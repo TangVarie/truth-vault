@@ -341,7 +341,11 @@ def transform_row(
     # 飞书「观众分析」列映射成 _audience_raw 时, 解析半结构化文本
     # ("性别分布：男4%女96%；年龄分布：...；阅读时长：12.5秒") 进 JSONB.
     if "_audience_raw" in intermediates:
-        parsed_audience = parse_audience_analysis(intermediates["_audience_raw"])
+        # 飞书「观众分析」cell 可能是 list/dict(多选/富文本)而非纯文本 —— 先用 _direction_key
+        # 展平成字符串再解析。否则 parse_audience_analysis 收到非 str 直接 return None,
+        # 这条受众数据【静默丢失】(且已 consumed、连 raw_extra 都不进)。与 intent/方向/状态
+        # 同一套 Feishu-cell→str 展平(防 map_intent 那类 scalar-vs-list 坑的静默版)。
+        parsed_audience = parse_audience_analysis(_direction_key(intermediates["_audience_raw"]))
         if parsed_audience:
             note["actual_audience_data"] = parsed_audience
             note["audience_actual_synced_at"] = _iso_now()
