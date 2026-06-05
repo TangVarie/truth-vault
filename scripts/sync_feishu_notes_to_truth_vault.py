@@ -222,12 +222,14 @@ _LINEAGE_RAW_EXTRA_COLS = (
 )
 _LINEAGE_COLS = tuple(_LINEAGE_FK_COLS) + _LINEAGE_RAW_EXTRA_COLS
 
-# 判"空关联行"用: 一条缺 raw_content 的行, 若 note 里除这些【结构键】外没有任何真信号
-# (content/metric/tier/url…), 就是飞书多维表格的父记录占位行(只有 父记录* 链接)。这类大量
-# 存在且每轮重复, 逐条 WARNING 刷屏无意义 → 静默计数、收尾汇总。raw_extra(放父记录链接)不算真信号。
-_STRUCTURAL_NOTE_KEYS = frozenset({
-    "note_id", "project_id", "platform", "feishu_record_id", "raw_extra",
-})
+# 判"空占位行"用: 一条缺 raw_content 的行, 若【没有任何 note-like 实质信号】(账号/链接/曝光/
+# 阅读/互动/tier), 就不是真笔记, 而是飞书多维表格的占位行或评论碎片行(只有 父记录链接 / 随贴评论 /
+# 发布时间 / 蓝词 等)。NUC_1 实测这类 445 行(纯父记录占位 + 评论碎片), 每轮逐条 WARNING 刷屏无意义
+# → 静默计数、收尾出一行汇总。反之: 有这些信号却缺 raw_content = 真数据异常(本该是笔记却丢了正文)
+# → 仍逐条 WARNING。注: 发布时间/蓝词记录【不】算 note-like 信号(评论碎片也常带), 故不在此列。
+_NOTE_DATA_SIGNALS = (
+    "account_id", "publish_url", "impressions", "reads", "interactions", "tier",
+)
 
 
 def transform_row(
@@ -842,11 +844,11 @@ def main() -> int:
             REQUIRED_NOTE_FIELDS = ("raw_content",)
             missing = [c for c in REQUIRED_NOTE_FIELDS if not note.get(c)]
             if missing:
-                # 纯空关联行(只缺 raw_content 且除结构键外无任何真信号)= 飞书父记录占位行,
+                # 空占位/碎片行(只缺 raw_content 且无任何 note-like 实质信号)= 父记录占位 / 评论碎片,
                 # 大量且每轮重复 → 静默计数, 收尾出一行汇总, 不逐条刷 WARNING。
-                # 真有数据却缺 raw_content 的异常行 → 仍逐条 WARNING(值得排查)。
+                # 有 note-like 信号却缺 raw_content 的异常行 → 仍逐条 WARNING(本该是笔记却丢正文, 值得查)。
                 is_empty_placeholder = missing == ["raw_content"] and not any(
-                    k not in _STRUCTURAL_NOTE_KEYS and v for k, v in note.items()
+                    note.get(k) for k in _NOTE_DATA_SIGNALS
                 )
                 if is_empty_placeholder:
                     stats["empty_placeholder"] += 1
@@ -900,7 +902,7 @@ def main() -> int:
 
     if stats["empty_placeholder"]:
         logger.info(
-            "跳过 %d 行空关联行(只有父记录链接、无内容/指标信号; 已 quarantine 留档, 未逐条告警)",
+            "跳过 %d 行空占位/评论碎片行(无正文、无账号/指标/链接等实质信号; 已 quarantine 留档, 未逐条告警)",
             stats["empty_placeholder"],
         )
     logger.info("Done: %s", json.dumps(stats, ensure_ascii=False))
