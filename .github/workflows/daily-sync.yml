@@ -140,10 +140,12 @@ jobs:
         working-directory: scripts
         run: |
           # LLM 调用搬到 Railway worker(GitHub 连不上中转站, D-038/docs/17 §7-D);这里只 curl 触发。
-          # ⚠️ 单个 worker 请求受 Railway 边缘【~5min 超时】:每请求最多 ~15 条(≈3.5min),>15 → 502。
-          # 要每天标更多(WORKER_LIMIT),就【循环多个 ≤15 的子批】凑够,而不是单请求塞大数。
-          # 标注按 essence_annotated_at IS NULL 续作、幂等;某项目标完(count_unannotated=0)即停、不空转。
-          ESS_REQ_MAX=15   # 单请求硬上限,别超(>15 撞边缘 5min → 502)
+          # ⚠️ 单个 worker 请求受 Railway 边缘【~5min 超时】。带 sub_direction(D-014, 如 NUC)的项目
+          #    每条要【两次】LLM 调用(essence + 子方向分类)→ 单请求耗时翻倍, 15 条会撞 5min → 502
+          #    (NUC_1 首灌实测: 15 条/请求的第 3 批超时, body 非 JSON)。故每请求封顶 8 留余量,
+          #    不够靠多轮循环凑 WORKER_LIMIT。标注幂等(essence_annotated_at IS NULL 续作), 标完即停。
+          ESS_REQ_MAX=8    # 单请求硬上限。含 sub_direction 的项目每条 2 次 LLM, 8 条≈4min<5min;
+                           # 不带 sub_dir 的本可更大, 取保守统一值避免按项目分叉(够用, 靠循环补)。
           DRY=false
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY=true
           fail_count=0
@@ -153,6 +155,7 @@ jobs:
             [ -n "$PROJECT_FILTER" ] && [ "$p" != "$PROJECT_FILTER" ] && continue
             echo "─── essence annotate (worker) · project=$p · 每日上限=$WORKER_LIMIT · 每请求≤$ESS_REQ_MAX ───"
             budget=$WORKER_LIMIT
+            ok_batches=0   # 本项目本轮成功的子批数(>0 = 本轮已有进展)
             while [ "$budget" -gt 0 ]; do
               rem=$(python count_unannotated_essence.py "$p" 2>/dev/null || echo "?")
               [ "$rem" = "0" ] && { echo "  ✅ $p essence 已全部标完"; break; }
@@ -161,13 +164,25 @@ jobs:
                 -X POST "${WORKER_URL%/}/annotate-essence" \
                 -H "X-Worker-Key: $WORKER_API_KEY" -H 'content-type: application/json' \
                 -d "{\"project\":\"$p\",\"limit\":${batch},\"dry_run\":$DRY}") || code=000
-              ok=$(jq -r '.ok // false' /tmp/ess.json 2>/dev/null)
+              # ⚠️ `|| echo false` 必须有: 502/超时时 body 是 HTML(非 JSON), jq 解析失败退出码 5,
+              #    在 bash -e 下会【直接崩整步】(绕过下方 502 判断, NUC_1 首灌实测 exit 5)。守卫后降级 ok=false。
+              ok=$(jq -r '.ok // false' /tmp/ess.json 2>/dev/null || echo false)
               echo "  HTTP $code · ok=$ok · $(jq -r '.stdout_tail // ""' /tmp/ess.json 2>/dev/null | grep -o 'Done:.*' | tail -1)"
               if [ "$code" != "200" ] || [ "$ok" != "true" ]; then
-                echo "::error::essence annotation failed for $p (HTTP $code, ok=$ok)"
                 jq -r '.stderr_tail // ""' /tmp/ess.json 2>/dev/null | tail -8
-                fail_count=$((fail_count + 1)); break
+                # 批级容忍(对齐 curate #56 / _exit_code_for_stats「仅全军覆没才判失败」): 标注幂等、
+                # 下轮 cron 续标。本轮【已标过批】(ok_batches>0) → 多半是 Railway 边缘偶发超时/502,
+                # 已有进展 → 只告警停本项目, 不拖红。【第一批就失败】(ok_batches=0) → 多半系统性
+                # (worker 挂 / 模型 env / 鉴权 / 余额) → 判红排查。
+                if [ "$ok_batches" -gt 0 ]; then
+                  echo "::warning::essence $p 子批失败(HTTP $code, ok=$ok), 本轮已标 $ok_batches 批; 余量下轮 cron 续标, 不拖红。"
+                else
+                  echo "::error::essence annotation failed for $p on first batch (HTTP $code, ok=$ok) —— 多半系统性, 需排查。"
+                  fail_count=$((fail_count + 1))
+                fi
+                break
               fi
+              ok_batches=$((ok_batches + 1))
               budget=$((budget - batch))
             done
           done
@@ -200,8 +215,9 @@ jobs:
             -X POST "${WORKER_URL%/}/curate" \
             -H "X-Worker-Key: $WORKER_API_KEY" -H 'content-type: application/json' \
             -d "$BODY") || code=000
-          ok=$(jq -r '.ok // false' /tmp/cur.json 2>/dev/null)
-          echo "HTTP $code · ok=$ok · returncode=$(jq -r '.returncode // "?"' /tmp/cur.json 2>/dev/null)"
+          # || echo false: 同 essence 步, 防 502/超时的非 JSON body 让 jq(退出码 5)在 bash -e 下崩整步。
+          ok=$(jq -r '.ok // false' /tmp/cur.json 2>/dev/null || echo false)
+          echo "HTTP $code · ok=$ok · returncode=$(jq -r '.returncode // "?"' /tmp/cur.json 2>/dev/null || echo '?')"
           jq -r '.stdout_tail // ""' /tmp/cur.json 2>/dev/null | tail -8
           if [ "$code" != "200" ] || [ "$ok" != "true" ]; then
             echo "::error::curate failed (HTTP $code, ok=$ok)"
