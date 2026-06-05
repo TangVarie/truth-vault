@@ -312,7 +312,7 @@ sync_config:
   feishu_app_token: IKDabbT7HascF5szHrRciBe0ndg   # NRT_2 表标识 (非密钥)
   feishu_table_id: tblD33LZSDTOLCb8               # NRT_2 表标识 (非密钥)
   feishu_view_id: null              # 留空 = 读全表 (机器人需已授权为协作者)
-  sync_interval: on_demand
+  sync_interval: daily   # 已验证上线 → 进夜间 cron(on_demand 会被 cron 跳过, PR#67)
   # ⚠️ App ID / App Secret 不在这里 — 走 env / GitHub Secrets:
   #    FEISHU_APP_ID, FEISHU_APP_SECRET (密钥绝不进 git)
 

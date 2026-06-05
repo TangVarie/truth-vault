@@ -295,6 +295,9 @@ sync_config:
   feishu_app_token: IKDabbT7HascF5szHrRciBe0ndg   # NRT_3 表标识 (非密钥). 与 NRT_phase2/NUC_phase1 同一飞书 Base, 仅 table_id 不同
   feishu_table_id: tblGm8wymtA4Accg               # NRT_3 表标识 (非密钥). ⚠️ 不是 NRT_2 的 tblD33LZSDTOLCb8
   feishu_view_id: null              # 留空 = 读全表 (机器人需已授权为协作者; 同 Base 的 NRT_2 已通, 协作权天然满足)
+  # ⚠️ 保持 on_demand = 夜间 cron 不碰它(防 preflight 验证前被自动灌, PR#67)。
+  # 流程: 跑 Preflight workflow → 按报告补 raw_extra 白名单 → 显式 Daily TV sync(填 NRT_phase3)验证
+  #       → 验证 OK 后把这里改成 daily, 才进夜间 cron。
   sync_interval: on_demand
   # ⚠️ App ID / App Secret 不在这里 — 走 env / GitHub Secrets: FEISHU_APP_ID, FEISHU_APP_SECRET
 
