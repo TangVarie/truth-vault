@@ -276,6 +276,7 @@ project_specific_fields_to_raw_extra:
   - 是否留存
   - 理论金额结算
   - 数据整理
+  - 观众分析    # 2026-06-05 preflight 抓出: 此前漏声明, 596 行有正文会被整行 quarantine(同 NRT_2 #55 类)
   - 评论状态
   - 相关截图
   - 蓝词图片
