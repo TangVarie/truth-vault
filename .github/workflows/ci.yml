@@ -422,7 +422,16 @@ jobs:
           # 普通方向(无 override): 用项目级 爆=100 → 互动 200 升级到 爆
           note_g3, _, _ = s.transform_row(mapping_thr, "recG3", {"文案": "c", "方向": "普通方向", "互动量": 200})
           assert note_g3.get("tier") == "爆", note_g3.get("tier")
-          print("  ✓ tier_threshold_override: 方向级覆盖项目级(高门槛 200<500 不升/600 升; 普通方向用项目级)")
+          # 含 sub_directions 的【粗方向】也要 honor override(codex PR#60: 之前嵌在单方向守卫内 → 失效)
+          mapping_thr["direction_decomposition"]["粗方向"] = {
+              "tier_threshold_override": {"爆": 500},
+              "sub_directions": [{"name": "子A", "content_format": "情感叙事", "target_audience": ["通用"]}],
+          }
+          note_g4, _, _ = s.transform_row(mapping_thr, "recG4", {"文案": "c", "方向": "粗方向", "互动量": 200})
+          assert note_g4.get("tier") is None, ("含 sub_directions 的方向也应 honor override(200<500)", note_g4.get("tier"))
+          note_g5, _, _ = s.transform_row(mapping_thr, "recG5", {"文案": "c", "方向": "粗方向", "互动量": 600})
+          assert note_g5.get("tier") == "爆", note_g5.get("tier")
+          print("  ✓ tier_threshold_override: 单方向 + 含 sub_directions 粗方向都 honor 方向级阈值(普通用项目级)")
 
           print("\ntransform_row tier+metric+intent+threshold_override: all 7 checks passed")
           PY

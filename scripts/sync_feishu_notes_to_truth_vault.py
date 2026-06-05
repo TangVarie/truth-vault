@@ -311,10 +311,13 @@ def transform_row(
                     note[col] = val
             if decomposition.get("intent_override") is not None:
                 note["intent"] = decomposition["intent_override"]
-            # 方向级阈值覆盖(形如 {爆: N, 大爆: M}, 可部分)—— 下方数值兜底用它盖项目级。
-            # docs/04 Step 3 + _template 写了此项, 但此前从未被读取(设了也静默无效)。
-            if isinstance(decomposition.get("tier_threshold_override"), dict):
-                dir_threshold_override = decomposition["tier_threshold_override"]
+
+        # 方向级 tier_threshold_override: 与有没有 sub_directions 无关(它是【方向级】阈值)——
+        # 单方向 AND NUC 式粗方向(含 sub_directions)都该 honor, 故放 sub_directions 守卫【外面】。
+        # 只有 content_format/audience 等确定性 lift 才依赖单方向(codex PR#60 review)。
+        # 形如 {爆: N, 大爆: M}(可部分)—— 下方数值兜底用它盖项目级 tier_thresholds。
+        if decomposition and isinstance(decomposition.get("tier_threshold_override"), dict):
+            dir_threshold_override = decomposition["tier_threshold_override"]
 
         # Honor excluded_directions (NRT_phase3's "女性自发, 男性自发" anomaly):
         # mark as data-anomalous so downstream training queries filter it out
