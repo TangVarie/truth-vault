@@ -148,6 +148,18 @@ jobs:
                            # 不带 sub_dir 的本可更大, 取保守统一值避免按项目分叉(够用, 靠循环补)。
           DRY=false
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY=true
+          # 区分 worker 调用失败是【瞬时】(够到了 worker 但慢/被边缘掐断 → 幂等下轮续, 只告警)
+          # 还是【系统性】(配置/连通/鉴权坏 → 该红, 否则 curation 静默瘫痪还报绿; codex PR#65 review:
+          # 原来 `|| code=000` 把超时和 URL拼错/DNS失败/拒连混为一谈, 都只告警 = 漏掉真问题)。
+          # 据 curl 退出码区分(只有【够到 worker 但中断】算瞬时; 【没够到/配置坏】判系统性):
+          worker_fail_kind() {  # $1=curl_rc $2=http_code → echo transient|systemic
+            case "$1" in
+              28|52|56|18) echo transient; return ;;  # 28超时 52空回复 56接收重置 18传输不全 = 够到但中断
+              0) : ;;                                  # curl 本身成功, 看 http_code
+              *) echo systemic; return ;;             # 6 DNS / 7 拒连 / 3 URL格式 / 35,60 SSL = 没够到/配置坏
+            esac
+            case "$2" in 502|503|504) echo transient ;; *) echo systemic ;; esac  # 网关超时=瞬时; 4xx 等=系统性
+          }
           fail_count=0
           for f in ../mappings/*.yaml; do
             p=$(basename "$f" .yaml)
@@ -160,24 +172,32 @@ jobs:
               rem=$(python count_unannotated_essence.py "$p" 2>/dev/null || echo "?")
               [ "$rem" = "0" ] && { echo "  ✅ $p essence 已全部标完"; break; }
               batch=$ESS_REQ_MAX; [ "$batch" -gt "$budget" ] && batch=$budget
-              code=$(curl -sS -w '%{http_code}' -o /tmp/ess.json --max-time 900 \
+              # 捕获 curl 退出码(不再一律 code=000 掩盖)—— 用于区分超时 vs 配置/连通错(PR#65 review)。
+              if code=$(curl -sS -w '%{http_code}' -o /tmp/ess.json --max-time 900 \
                 -X POST "${WORKER_URL%/}/annotate-essence" \
                 -H "X-Worker-Key: $WORKER_API_KEY" -H 'content-type: application/json' \
-                -d "{\"project\":\"$p\",\"limit\":${batch},\"dry_run\":$DRY}") || code=000
+                -d "{\"project\":\"$p\",\"limit\":${batch},\"dry_run\":$DRY}"); then
+                curl_rc=0
+              else
+                curl_rc=$?; code=000   # curl 失败时 http_code 不可靠, 记 000; 真因看 curl_rc
+              fi
               # ⚠️ `|| echo false` 必须有: 502/超时时 body 是 HTML(非 JSON), jq 解析失败退出码 5,
               #    在 bash -e 下会【直接崩整步】(绕过下方 502 判断, NUC_1 首灌实测 exit 5)。守卫后降级 ok=false。
               ok=$(jq -r '.ok // false' /tmp/ess.json 2>/dev/null || echo false)
               echo "  HTTP $code · ok=$ok · $(jq -r '.stdout_tail // ""' /tmp/ess.json 2>/dev/null | grep -o 'Done:.*' | tail -1)"
               if [ "$code" != "200" ] || [ "$ok" != "true" ]; then
                 jq -r '.stderr_tail // ""' /tmp/ess.json 2>/dev/null | tail -8
-                # 批级容忍(对齐 curate #56 / _exit_code_for_stats「仅全军覆没才判失败」): 标注幂等、
-                # 下轮 cron 续标。本轮【已标过批】(ok_batches>0) → 多半是 Railway 边缘偶发超时/502,
-                # 已有进展 → 只告警停本项目, 不拖红。【第一批就失败】(ok_batches=0) → 多半系统性
-                # (worker 挂 / 模型 env / 鉴权 / 余额) → 判红排查。
-                if [ "$ok_batches" -gt 0 ]; then
-                  echo "::warning::essence $p 子批失败(HTTP $code, ok=$ok), 本轮已标 $ok_batches 批; 余量下轮 cron 续标, 不拖红。"
+                # 容忍策略(标注幂等: essence_annotated_at IS NULL, 下轮 cron 续标):
+                # - 瞬时(curl 超时/边缘掐断 · 502/503/504 网关)= worker 可能已提交 → 只告警不拖红, 下轮续。
+                # - 系统性但【本轮已标过批】(ok_batches>0)= 多半单条抽风/部分失败、有进展 → 也只告警。
+                # - 系统性且【第一批就失败】(ok_batches=0)= 配置/连通/鉴权坏 或 全军覆没 → 判红排查。
+                kind=$(worker_fail_kind "$curl_rc" "$code")
+                if [ "$kind" = "transient" ]; then
+                  echo "::warning::essence $p 瞬时失败(curl_rc=$curl_rc HTTP $code ok=$ok), 幂等下轮 cron 续标, 不拖红。"
+                elif [ "$ok_batches" -gt 0 ]; then
+                  echo "::warning::essence $p 子批失败(curl_rc=$curl_rc HTTP $code ok=$ok), 本轮已标 $ok_batches 批; 余量下轮续标, 不拖红。"
                 else
-                  echo "::error::essence annotation failed for $p on first batch (HTTP $code, ok=$ok) —— 多半系统性, 需排查。"
+                  echo "::error::essence $p 首批即系统性失败(curl_rc=$curl_rc HTTP $code ok=$ok) —— 配置/连通/鉴权 或 全军覆没, 需排查。"
                   fail_count=$((fail_count + 1))
                 fi
                 break
@@ -207,22 +227,44 @@ jobs:
           CUR_LIMIT=$WORKER_LIMIT; [ "$CUR_LIMIT" -gt 15 ] && CUR_LIMIT=15
           DRY=false
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY=true
+          # 同 essence 步: 区分瞬时(够到 worker 但慢/掐断)vs 系统性(配置/连通/鉴权坏)。PR#65 review。
+          worker_fail_kind() {  # $1=curl_rc $2=http_code → echo transient|systemic
+            case "$1" in
+              28|52|56|18) echo transient; return ;;  # 28超时 52空回复 56接收重置 18传输不全 = 够到但中断
+              0) : ;;                                  # curl 本身成功, 看 http_code
+              *) echo systemic; return ;;             # 6 DNS / 7 拒连 / 3 URL格式 / 35,60 SSL = 没够到/配置坏
+            esac
+            case "$2" in 502|503|504) echo transient ;; *) echo systemic ;; esac
+          }
           BODY="{\"limit\":${CUR_LIMIT},\"dry_run\":$DRY"
           [ -n "$PROJECT_FILTER" ] && BODY="$BODY,\"project\":\"$PROJECT_FILTER\""
           BODY="$BODY}"
           echo "─── curate (worker) ───"
-          code=$(curl -sS -w '%{http_code}' -o /tmp/cur.json --max-time 900 \
+          # 捕获 curl 退出码(不再一律 code=000 掩盖)—— 区分超时 vs 配置/连通错(PR#65 review)。
+          if code=$(curl -sS -w '%{http_code}' -o /tmp/cur.json --max-time 900 \
             -X POST "${WORKER_URL%/}/curate" \
             -H "X-Worker-Key: $WORKER_API_KEY" -H 'content-type: application/json' \
-            -d "$BODY") || code=000
-          # || echo false: 同 essence 步, 防 502/超时的非 JSON body 让 jq(退出码 5)在 bash -e 下崩整步。
+            -d "$BODY"); then
+            curl_rc=0
+          else
+            curl_rc=$?; code=000   # curl 失败时 http_code 不可靠, 记 000; 真因看 curl_rc
+          fi
+          # || echo false: 防 502/超时的非 JSON body 让 jq(退出码 5)在 bash -e 下崩整步。
           ok=$(jq -r '.ok // false' /tmp/cur.json 2>/dev/null || echo false)
-          echo "HTTP $code · ok=$ok · returncode=$(jq -r '.returncode // "?"' /tmp/cur.json 2>/dev/null || echo '?')"
+          echo "HTTP $code · curl_rc=$curl_rc · ok=$ok · returncode=$(jq -r '.returncode // "?"' /tmp/cur.json 2>/dev/null || echo '?')"
           jq -r '.stdout_tail // ""' /tmp/cur.json 2>/dev/null | tail -8
           if [ "$code" != "200" ] || [ "$ok" != "true" ]; then
-            echo "::error::curate failed (HTTP $code, ok=$ok)"
             jq -r '.stderr_tail // ""' /tmp/cur.json 2>/dev/null | tail -8
-            exit 1
+            # curate 是 best-effort 富集、幂等(is_curated=false 下轮续)。同 essence 的容忍:
+            # - 瞬时(curl 超时/边缘掐断 · 502/503/504 网关)= Railway 偶发 → 只告警不拖红
+            #   (NUC_1 实测: essence 跑满后紧接的 curate 撞 HTTP 000, 此前是它 exit 1 拖红整 run)。
+            # - 系统性(curl DNS/拒连/URL错 · 4xx 鉴权 · 200+ok=false=worker 真跑了但全军覆没 #56)→ 判红。
+            if [ "$(worker_fail_kind "$curl_rc" "$code")" = "transient" ]; then
+              echo "::warning::curate 瞬时失败(curl_rc=$curl_rc HTTP $code ok=$ok); 幂等下轮 cron 续, 不拖红。"
+            else
+              echo "::error::curate failed (curl_rc=$curl_rc HTTP $code ok=$ok) —— 配置/连通/鉴权 或 全军覆没, 需排查。"
+              exit 1
+            fi
           fi
 
       - name: TV 爆款 → sanshengliubu.reference_samples (通道 1)
