@@ -208,6 +208,8 @@ compliance:
 FEISHU_APP_ID=… FEISHU_APP_SECRET=… python scripts/preflight_mapping.py <project_id>
 ```
 
+> 没有本地飞书凭据时:**Actions → `Preflight mapping` → Run workflow → 填项目全名**(用仓库现成的 FEISHU secrets 跑,报告在 job 日志里看;退出码 1=有阻断问题=workflow 红)。
+
 preflight 复用真 `transform_row` 投影全表，一屏看清：
 - **未声明列** → 会被 D-021 整行 quarantine（NRT_2 曾因此丢 482 行真内容）；报告会标出"哪些列没声明、其中多少行有正文＝真笔记会丢"。
 - **品类是否在受控闭集**（否则 sync 撞 `notes.category` CHECK）。
