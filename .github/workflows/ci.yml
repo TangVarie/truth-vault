@@ -402,7 +402,38 @@ jobs:
               assert nf.get("intent") in _ENUM, nf.get("intent")
           print("  ✓ list[str]/list[dict]/str + 多选→mixed + 未知→other,intent 恒为合法 enum(不崩不撞 CHECK)")
 
-          print("\ntransform_row tier+metric+intent: all 6 checks passed")
+          # Case G (PR#60 / D-036 审计): 方向级 tier_threshold_override 覆盖项目级阈值
+          # (docs/04 + _template 写了此项, 但此前代码从不读 → 设了也静默无效)。
+          mapping_thr = {
+              "project_id": "TEST_THR", "platform": "xiaohongshu",
+              "field_mapping": {"文案": "raw_content", "互动量": "interactions", "方向": "_direction_raw"},
+              "tier_thresholds": {"爆": 100, "大爆": 1000},
+              "direction_decomposition": {
+                  "高门槛方向": {"content_format": "直给推荐", "target_audience": ["通用"],
+                              "tier_threshold_override": {"爆": 500}},
+                  "普通方向":   {"content_format": "直给推荐", "target_audience": ["通用"]},
+              },
+          }
+          # 高门槛方向: override 爆=500 → 互动 200 不升级, 600 升级到 爆
+          note_g1, _, _ = s.transform_row(mapping_thr, "recG1", {"文案": "c", "方向": "高门槛方向", "互动量": 200})
+          assert note_g1.get("tier") is None, ("override 应让 200<500 不 promote, got", note_g1.get("tier"))
+          note_g2, _, _ = s.transform_row(mapping_thr, "recG2", {"文案": "c", "方向": "高门槛方向", "互动量": 600})
+          assert note_g2.get("tier") == "爆", note_g2.get("tier")
+          # 普通方向(无 override): 用项目级 爆=100 → 互动 200 升级到 爆
+          note_g3, _, _ = s.transform_row(mapping_thr, "recG3", {"文案": "c", "方向": "普通方向", "互动量": 200})
+          assert note_g3.get("tier") == "爆", note_g3.get("tier")
+          # 含 sub_directions 的【粗方向】也要 honor override(codex PR#60: 之前嵌在单方向守卫内 → 失效)
+          mapping_thr["direction_decomposition"]["粗方向"] = {
+              "tier_threshold_override": {"爆": 500},
+              "sub_directions": [{"name": "子A", "content_format": "情感叙事", "target_audience": ["通用"]}],
+          }
+          note_g4, _, _ = s.transform_row(mapping_thr, "recG4", {"文案": "c", "方向": "粗方向", "互动量": 200})
+          assert note_g4.get("tier") is None, ("含 sub_directions 的方向也应 honor override(200<500)", note_g4.get("tier"))
+          note_g5, _, _ = s.transform_row(mapping_thr, "recG5", {"文案": "c", "方向": "粗方向", "互动量": 600})
+          assert note_g5.get("tier") == "爆", note_g5.get("tier")
+          print("  ✓ tier_threshold_override: 单方向 + 含 sub_directions 粗方向都 honor 方向级阈值(普通用项目级)")
+
+          print("\ntransform_row tier+metric+intent+threshold_override: all 7 checks passed")
           PY
       - name: Supabase key validation self-check
         working-directory: scripts

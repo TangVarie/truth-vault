@@ -283,6 +283,8 @@ def transform_row(
             mapping["intent_mapping"],
         )
         consumed_intermediates.add("_intent_raw")
+    # 方向级 tier 阈值覆盖(单方向配置可选, docs/04 Step 3)。默认 None → 数值兜底用项目级。
+    dir_threshold_override = None
     if "_direction_raw" in intermediates:
         raw_dir = intermediates["_direction_raw"]
         # Always keep the raw value in raw_extra for traceability/annotation
@@ -310,6 +312,13 @@ def transform_row(
             if decomposition.get("intent_override") is not None:
                 note["intent"] = decomposition["intent_override"]
 
+        # 方向级 tier_threshold_override: 与有没有 sub_directions 无关(它是【方向级】阈值)——
+        # 单方向 AND NUC 式粗方向(含 sub_directions)都该 honor, 故放 sub_directions 守卫【外面】。
+        # 只有 content_format/audience 等确定性 lift 才依赖单方向(codex PR#60 review)。
+        # 形如 {爆: N, 大爆: M}(可部分)—— 下方数值兜底用它盖项目级 tier_thresholds。
+        if decomposition and isinstance(decomposition.get("tier_threshold_override"), dict):
+            dir_threshold_override = decomposition["tier_threshold_override"]
+
         # Honor excluded_directions (NRT_phase3's "女性自发, 男性自发" anomaly):
         # mark as data-anomalous so downstream training queries filter it out
         # without losing the row.
@@ -328,7 +337,10 @@ def transform_row(
     # tier_source is overwritten to '数值推断' only when we actually promote.
     existing_tier = note.get("tier")
     if existing_tier in (None, "未知") and note.get("interactions") is not None:
-        thresholds = mapping.get("tier_thresholds") or {}
+        # 项目级阈值, 被该方向的 tier_threshold_override 覆盖(方向级 > 项目级)。
+        thresholds = dict(mapping.get("tier_thresholds") or {})
+        if dir_threshold_override:
+            thresholds.update(dir_threshold_override)
         n_interactions = note["interactions"]
         if "大爆" in thresholds and n_interactions >= thresholds["大爆"]:
             note["tier"] = "大爆"
