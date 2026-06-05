@@ -170,16 +170,23 @@ jobs:
               echo "  HTTP $code · ok=$ok · $(jq -r '.stdout_tail // ""' /tmp/ess.json 2>/dev/null | grep -o 'Done:.*' | tail -1)"
               if [ "$code" != "200" ] || [ "$ok" != "true" ]; then
                 jq -r '.stderr_tail // ""' /tmp/ess.json 2>/dev/null | tail -8
-                # 批级容忍(对齐 curate #56 / _exit_code_for_stats「仅全军覆没才判失败」): 标注幂等、
-                # 下轮 cron 续标。本轮【已标过批】(ok_batches>0) → 多半是 Railway 边缘偶发超时/502,
-                # 已有进展 → 只告警停本项目, 不拖红。【第一批就失败】(ok_batches=0) → 多半系统性
-                # (worker 挂 / 模型 env / 鉴权 / 余额) → 判红排查。
-                if [ "$ok_batches" -gt 0 ]; then
-                  echo "::warning::essence $p 子批失败(HTTP $code, ok=$ok), 本轮已标 $ok_batches 批; 余量下轮 cron 续标, 不拖红。"
-                else
-                  echo "::error::essence annotation failed for $p on first batch (HTTP $code, ok=$ok) —— 多半系统性, 需排查。"
-                  fail_count=$((fail_count + 1))
-                fi
+                # 容忍策略(标注幂等: essence_annotated_at IS NULL, 下轮 cron 续标):
+                # - transient(HTTP 000 = curl 连接错/超时 · 502/503/504 网关)= Railway 边缘偶发,
+                #   worker 可能已提交 → 只告警不拖红, 下轮续。
+                # - 非 transient 但【本轮已标过批】(ok_batches>0)= 单条抽风/部分失败、有进展 → 也只告警。
+                # - 非 transient 且【第一批就失败】(ok_batches=0)= 多半系统性(4xx 鉴权/坏请求 · 模型 env
+                #   配错 · 全军覆没)→ 判红排查。
+                case "$code" in
+                  000|502|503|504)
+                    echo "::warning::essence $p transient 失败(HTTP $code, ok=$ok), 幂等下轮 cron 续标, 不拖红。" ;;
+                  *)
+                    if [ "$ok_batches" -gt 0 ]; then
+                      echo "::warning::essence $p 子批失败(HTTP $code, ok=$ok), 本轮已标 $ok_batches 批; 余量下轮续标, 不拖红。"
+                    else
+                      echo "::error::essence annotation failed for $p on first batch (HTTP $code, ok=$ok) —— 多半系统性, 需排查。"
+                      fail_count=$((fail_count + 1))
+                    fi ;;
+                esac
                 break
               fi
               ok_batches=$((ok_batches + 1))
@@ -220,9 +227,18 @@ jobs:
           echo "HTTP $code · ok=$ok · returncode=$(jq -r '.returncode // "?"' /tmp/cur.json 2>/dev/null || echo '?')"
           jq -r '.stdout_tail // ""' /tmp/cur.json 2>/dev/null | tail -8
           if [ "$code" != "200" ] || [ "$ok" != "true" ]; then
-            echo "::error::curate failed (HTTP $code, ok=$ok)"
             jq -r '.stderr_tail // ""' /tmp/cur.json 2>/dev/null | tail -8
-            exit 1
+            # curate 是 best-effort 富集、幂等(is_curated=false 下轮续)。同 essence 的容忍:
+            # - transient(HTTP 000 curl 错/超时 · 502/503/504 网关)= Railway 边缘偶发 → 只告警不拖红
+            #   (NUC_1 实测: essence 跑满后紧接的 curate 撞 HTTP 000, 此前是它 exit 1 拖红整 run)。
+            # - 明确拒绝(4xx 鉴权/坏请求, 或 200+ok=false = worker 真跑了但策展全军覆没 #56)→ 判红。
+            case "$code" in
+              000|502|503|504)
+                echo "::warning::curate transient 失败(HTTP $code, ok=$ok); 幂等下轮 cron 续, 不拖红。" ;;
+              *)
+                echo "::error::curate failed (HTTP $code, ok=$ok)"
+                exit 1 ;;
+            esac
           fi
 
       - name: TV 爆款 → sanshengliubu.reference_samples (通道 1)
