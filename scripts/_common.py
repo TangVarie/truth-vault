@@ -391,6 +391,28 @@ def parse_feishu_date(value: Any) -> Optional[str]:
     return None
 
 
+def _audience_text(value: Any) -> str:
+    """把飞书「观众分析」cell 归一成 parse_audience_analysis 期望的【；分段】文本。
+
+    富文本/多段会返回 list[dict{text}] 或 list[str] —— 那是【一段连续文本的富文本 run】,
+    原文的 ；分段在文本内容里, 所以各段【直接拼接(空串连)】即还原, 解析器照常按 ； 切段。
+    绝不能用 _direction_key 的 ', ' 连 —— 逗号会破坏 ；分段 + 段内 ，pairs, 让后面的
+    年龄/城市/阅读时长段被丢(codex PR#59 review)。str 原样; dict 取 text; None → ''。
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return str(value.get("text", ""))
+    if isinstance(value, list):
+        return "".join(
+            (x.get("text", "") if isinstance(x, dict) else str(x if x is not None else ""))
+            for x in value
+        )
+    return str(value)
+
+
 def parse_audience_analysis(value: Any) -> Optional[dict]:
     """Parse 半结构化「观众分析」文本 → notes.actual_audience_data (文档约定形状).
 
@@ -408,9 +430,7 @@ def parse_audience_analysis(value: Any) -> Optional[dict]:
       - read_duration_sec 是秒数, 不归一化
     空段 ("性别分布：" / "性别分布：无") 跳过. 全空 / None / 非字符串 → None.
     """
-    if not value or not isinstance(value, str):
-        return None
-    text = value.strip()
+    text = _audience_text(value).strip()   # 归一 str/list/dict(富文本段空串拼接)→ ；分段文本
     if not text:
         return None
 
