@@ -175,7 +175,7 @@ def fetch_injection_candidates(sb, project_filter: str | None = None) -> list[di
     """Pull pending baokuan from the ranking view, ordered by score DESC.
 
     Reads `truth_vault.v_autowriter_injection_candidates` which has the
-    eligibility filters baked in (tier IN ('爆','大爆'), tier_source !=
+    eligibility filters baked in (tier IN ('爆','大爆','参考'), tier_source !=
     '数值推断', publish_time within 12 months, project has aw mapping).
     Adds `synced_to_aw_at IS NULL` here since the view doesn't filter on
     sync state (it's a candidate pool, not a queue).
@@ -769,7 +769,7 @@ def main() -> int:
     sb = get_supabase_client()
     candidates = fetch_injection_candidates(sb, project_filter=args.project)
     logger.info(
-        "Found %d eligible candidates (view-filtered: tier∈爆/大爆, tier_source!='数值推断', "
+        "Found %d eligible candidates (view-filtered: tier∈爆/大爆/参考, tier_source!='数值推断', "
         "publish_time within 12m, project has aw mapping)",
         len(candidates),
     )

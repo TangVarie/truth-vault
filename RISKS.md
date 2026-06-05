@@ -100,15 +100,17 @@
 - **缓解**: NUC pilot 后估算 LLM 重建成本 (Q21)；先用扁平版本上线
 - **Owner**: 工程师
 
-### R-006 · sub_directions LLM 子分类未实施
+### R-006 · sub_directions LLM 子分类 — ✅ 已实施 (2026-06 审计核实)
 
 - **是什么**: NUC_phase1 6 个 schema 子方向 (健身减脂 / 关心父母营养 / etc)
-  需要 LLM 在 ingest 时分类。当前 sync 只做单方向决定性 lookup
-- **后果**: 跨方向分析时 `target_audience` / `user_pain_point` 字段为 NULL，
-  必须等 LLM annotation pass 跑完才能查。统计 view 会显示数据 sparse
-- **缓解**: D-035 已落档为 Phase 2。配套 `ingest_classification_prompt`
-  在 NUC_phase1.yaml 已就绪，Sprint 1 可接通
-- **Owner**: 工程师
+  需要 LLM 在 ingest 时分类。
+- **状态**: **已实现**(原"未实施"描述过时)。`scripts/annotate_essence_pass.py`
+  (get_sub_directions_for_note / classify_sub_direction)读
+  `direction_decomposition.<dir>.sub_directions`、LLM 选 name、lift
+  content_format/target_audience/user_pain_point/product_focus + direction_subtype。
+  sync 在 ingest 时【按设计跳过】带 sub_directions 的方向 (transform_row:304),
+  留 raw 方向给标注 pass 解 —— 不再是"sync 只做单方向 lookup"。
+- **Owner**: 工程师 (2026-06 审计标为已解决)
 
 ### R-007 · prepublish_evaluations 永远空
 

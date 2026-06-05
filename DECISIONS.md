@@ -1151,6 +1151,21 @@ WHERE NOT EXISTS (
 
 ---
 
+## D-036 · autowriter 注入候选 + 飞轮打分（injection_score / rank_score）
+
+**日期**: 补记（原始决策讨论未入档；2026-06 审计从代码 + 多处 "D-036" 引用反向补，故 Why 仅记已知部分）
+
+**What**: 爆款进 autowriter 注入池 / 馆员书架前，按一个【打分公式】排序，让"借到的是好书且新"：
+`score = recency_weight + tier 加成(大爆 +0.5 / 爆 +0.3 / 参考 +0.15) + tier_source 加成(状态字段/备注字段/人工补录 +0.2) + account_bao_rate × 0.3`。
+
+**Why（已知部分）**: 单纯按 tier 取会让"老但高 tier"压过"新且相关"；打分把新鲜度 + 账号质量一起纳入。
+
+**Implements / Refs**: `v_autowriter_injection_candidates`（schemas/notes_v1_2 → v1_3）、`v_flywheel_lesson_cards`（notes_v1_4）、`sync_truth_vault_baokuan_to_autowriter_items.py`、`librarian/core.py`。注入(push)用 surface 线性衰减 + 12 个月窗；书架(pull, D-038)用 essence 半衰期 5 年(D-001)。
+
+**注**: D-037 在代码 / 文档中无任何引用，疑为跳号，未补。
+
+---
+
 ## D-038 · 通道2 改为 Pull / 图书馆 + LLM 馆员（取代 D-024 通道2 push）
 
 **日期**: 2026-06-01（Session #15）
