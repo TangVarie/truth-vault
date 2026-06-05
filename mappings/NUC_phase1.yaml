@@ -305,10 +305,12 @@ sync_config:
   # 走 feishu_api 路径；manual_xlsx 路径目前没有自动 ingest 脚本，需要人工
   # 导入或自己写。
   source_type: feishu_api
-  feishu_app_token: null     # 填飞书表 app_token, 例 bascnXXXXXXXX
-  feishu_table_id: null      # 填飞书表 table_id, 例 tblXXXXXXXX
-  feishu_view_id: null       # 可选, 不填用 default view
+  feishu_app_token: IKDabbT7HascF5szHrRciBe0ndg   # NUC_1 表标识 (非密钥). 与 NRT_phase2 同一个飞书 Base, 仅 table_id 不同
+  feishu_table_id: tblGK9Kjv7vHntGu               # NUC_1 表标识 (非密钥)
+  feishu_view_id: null              # 留空 = 读全表 (机器人需已授权为协作者; 同 Base 的 NRT_2 已通, 协作权天然满足)
   sync_interval: on_demand
+  # ⚠️ App ID / App Secret 不在这里 — 走 env / GitHub Secrets:
+  #    FEISHU_APP_ID, FEISHU_APP_SECRET (密钥绝不进 git)
 
 # ════════════════════════════════════════════════════════════════════
 # Onboarding 元数据
