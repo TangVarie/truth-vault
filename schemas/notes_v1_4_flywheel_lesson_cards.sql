@@ -67,13 +67,16 @@ WITH eligible AS (
         n.emotional_lever, n.target_audience, n.user_pain_point, n.content_format,
         n.hit_blue_keywords, n.data_quality_flags,
         p.brand, p.category,
-        -- essence 慢衰减 (D-001 / docs/01「穿越周期的算法机制」): 经验卡承载的是 essence
-        -- (why_it_worked / transferable_tactic / 情绪原型), 几乎不随时间过气 → 用 essence
-        -- 半衰期【5 年】的【指数】衰减, 而非 surface 的线性快衰减。exp 永不归零(老卡保留低权重、
-        -- 不丢): 1 年≈0.82 · 2 年≈0.67 · 5 年≈0.37。age_months = epoch/(86400*30); /60 = 半衰期 5 年。
-        -- 必须 ::double precision —— 保 recency_weight/rank_score 列类型不变 (CREATE OR REPLACE 要求)。
-        exp(- EXTRACT(epoch FROM now()::timestamp without time zone - n.publish_time)
-              / (86400.0 * 30.0 * 60.0))::double precision AS recency_weight
+        -- essence 慢衰减 (D-001 / docs/01「穿越周期的算法机制」+ docs/05:371 衰减谱):
+        -- 经验卡承载 essence (why_it_worked / transferable_tactic / 情绪原型), 几乎不过气 →
+        -- 用 essence【半衰期 5 年】= 0.5^(age_months/60), 与 docs/05 `essence_weight =
+        -- 0.5 ** (age_months/60)` 一字不差 (codex PR#58: 之前用 exp 是 e-folding、5 年掉到
+        -- 0.37、比"半衰期5年"衰减偏快)。永不归零(老卡留低权重、不丢):
+        --   1 年≈0.87 · 2 年≈0.76 · 5 年≈0.50 · 10 年≈0.25。
+        -- age_months = epoch/(86400*30)。必须 double precision 保列类型不变 (CREATE OR REPLACE)。
+        power(0.5::double precision,
+              (EXTRACT(epoch FROM now()::timestamp without time zone - n.publish_time)
+               / (86400.0 * 30.0 * 60.0))::double precision) AS recency_weight
     FROM truth_vault.notes n
     JOIN truth_vault.projects p ON p.project_id = n.project_id
     WHERE n.tier = ANY (ARRAY['爆', '大爆', '参考'])
