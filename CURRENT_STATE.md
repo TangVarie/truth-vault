@@ -1,8 +1,8 @@
 # Truth Vault · 当前状态
 
-**最后更新**: 2026-06-02 (Session #16 · 通道2 改 pull + LLM 馆员服务**已上线 Railway**)
-**当前阶段**: 通道1 已转起来; **通道2 重构为 pull / 图书馆 + LLM 馆员 (D-038), TV 侧全建完 + 馆员服务已部署上线** (v1.4/v1.5 已上 prod, `librarian/` 服务 live 在 `truth-vault-production.up.railway.app` `/health` OK, 走中转站 + prompt caching, 策展 pass + cron 已开); **待办 = R-032/R-033 sister-repo 接入 (接入说明见 [docs/15](docs/15-autowriter-librarian-integration.md)) + 真爆款进库** (详见下方 Session #16)
-**当前会话编号**: #16
+**最后更新**: 2026-06-05 (Session #17 · NRT_2 第二项目上线 + 9 根因修复 + 穿越周期衰减回归 D-001 + 全库审计 + 收尾)
+**当前阶段**: 飞轮已转起来 —— 2 项目入库 (WTG + NRT_2 = 1223 篇), 通道1(ssll)+ 通道2(pull/馆员)都 live, NRT_2 27 篇**真爆款**全同步 + 全策展上架 (书架 28 卡)。**当前状态/待办权威 = [docs/21-handover-2026-06-05.md](docs/21-handover-2026-06-05.md);从零到现在的完整对齐 = [docs/00-START-HERE.md](docs/00-START-HERE.md)**。
+**当前会话编号**: #17
 
 会话进度脉络:
 - Session #9 (2026-05-20): Sprint 0 三轮 review 完成, 主链路代码就绪
@@ -14,10 +14,11 @@
 - Session #14 (2026-05-29): 三仓集成审计 (5 路并行 agent) + 连生产库 (kduysqedrclrfevrxiie) 只读核对地面真相 + 仓内修复 (部署/CI 缺口 + 文档对齐 + 轻量健壮性)
 - Session #15 (2026-06-01): **通道1 首次端到端打通** —— WTG 运营标的第一条「参考」(MF65) 实跑进 ssll `reference_samples`; 落地 **synthetic 分级** (伪爆贴只挡爆/大爆、放行参考); 修正 `tier_source='人工补录'` DB 改法不持久 (飞书回灌覆盖); 连库确认 autowriter 侧零影响 (`efaf9c4`/`bd45656`, main PR #26)
 - Session #16 (2026-06-02): **通道2 改 pull + LLM 馆员服务建成并上线** —— D-038 把通道2 从 push 重构为 pull / 图书馆 + LLM 馆员; 建 v1.4 策展库 + v1.5 缓存 + `librarian/` 服务 + 策展 pass; v1.4/v1.5 已 apply 到 prod + advisor 核验无回归; **馆员服务部署上线 Railway** (`truth-vault-production.up.railway.app`, `/health` OK) + 接中转站 (`ANTHROPIC_BASE_URL`) + Anthropic prompt caching; **daily-sync cron 已开** (`0 2 * * *`) + 修未 onboard 项目优雅跳过; 起草 aw 接入说明 [docs/15](docs/15-autowriter-librarian-integration.md); 处理 PR #27..#32 review (分页 / synthetic / source_note_id / updated_at / feishu 半配置) (PR #27..#32 全合 main)
+- Session #17 (2026-06-04~05): **NRT_2 第二项目上线 + 飞轮首批真燃料 (27 真爆款) + 9 根因修复 + 穿越周期衰减回归 D-001 + 全库审计 + 收尾** —— 详见 [docs/21](docs/21-handover-2026-06-05.md);从零完整对齐 [docs/00](docs/00-START-HERE.md)
 
 ---
 
-## 🟢 Session #16 (2026-06-02) · 通道2 改 pull + LLM 馆员服务建成并上线 ⭐ 最新必读
+## 🟢 Session #16 (2026-06-02) · 通道2 改 pull + LLM 馆员服务建成并上线  （注:最新进展见上方 Session #17 / docs/21）
 
 > 通道2 从 push 重构为 pull / 图书馆 + LLM 馆员 的完整落地 —— **设计 → 建成 → 上 prod → 部署上线 Railway → 接中转站 + prompt caching → cron 开**,全打通。
 

@@ -2,6 +2,10 @@
 
 > 这个文档是项目宪法。它定义了 Truth Vault 是什么、不是什么、以及绝对不能违反的设计原则。一旦定稿不轻易修改。
 
+> 🧭 **第一次接手?** 先读 **[docs/00-START-HERE.md](docs/00-START-HERE.md)** —— 从零到最新迭代的完整对齐
+> (含"过时描述清单",避免被旧文档带偏)。最新当前状态见 **[docs/21](docs/21-handover-2026-06-05.md)**。
+> 本 README 是**稳定的设计宪法**(原则/边界);"现在跑到哪了"以 docs/00 + docs/21 为准。
+
 ## 一句话定位
 
 Truth Vault 是帆谷的私有数据基础设施 —— 把每一次小红书种草投放的真实结果沉淀下来，让"什么内容会爆、为什么"成为有数据支撑的事实判断，而不是经验直觉。
@@ -100,7 +104,7 @@ truth-vault/
 ├── ONBOARDING.md                      ← 新人第一周 checklist ⭐ 第一次接手必读
 ├── IMPLEMENTATION_GUIDE.md            ← 部署 + 集成实操手册 ⭐ 动手前必读
 ├── CURRENT_STATE.md                   ← 当前进度快照 · Sprint 0 scope
-├── DECISIONS.md                       ← 决策日志 D-001 ~ D-035 (只追加)
+├── DECISIONS.md                       ← 决策日志 D-001 ~ D-038 (只追加)
 ├── RISKS.md                           ← 生产风险登记
 │
 ├── .github/workflows/                 ← CI (Python compile + SQL apply + yaml lint)
@@ -124,9 +128,10 @@ truth-vault/
 │
 ├── mappings/                          ← 每项目映射 yaml
 │   ├── _template.yaml                 ← 新项目复制此模板
-│   ├── NUC_phase1.yaml                ← 大象 Nucare (第一个完整 onboard)
-│   ├── NRT_phase2.yaml                ← 力克雷 phase 2
-│   └── NRT_phase3.yaml                ← 力克雷 phase 3
+│   ├── WTG_phase1.yaml                ← waytogo 个护 (已上线 · 724 篇)
+│   ├── NRT_phase2.yaml                ← 力克雷 OTC药 (已上线 · 499 篇/27 爆款)
+│   ├── NRT_phase3.yaml                ← 力克雷 phase 3 (有 mapping · 待接)
+│   └── NUC_phase1.yaml                ← 大象 Nucare (有 mapping · 待接)
 │
 ├── prompts/                           ← LLM prompt 库
 │   ├── essence_annotator.md           ← Mode A/B 双模式 (D-028 物理隔离)
@@ -160,19 +165,25 @@ truth-vault/
     └── 10-project-audit.md            ← 10 个项目的初始数据审计
 ```
 
+> ⚠️ **此目录树是早期快照,有遗漏**。已新增但未列全:`docs/00` + `docs/10`~`21`;`schemas/` 的
+> `notes_v1_3`(参考 tier)/`v1_4`(书架)/`v1_5`(馆员缓存)/`v1_6`(sync_status);三个 Railway 服务
+> **`librarian/`(通道2 馆员)· `worker/`(essence+curate)· `onboarder/`(接表)**;`scripts/curate_flywheel_lessons.py`
+> 等。完整结构以仓库实际 + [docs/00 §9](docs/00-START-HERE.md) 为准。
+
 ## 文档导航（按角色）
 
 ### 新人 · 第一次接手项目
 
 | 顺序 | 文件 | 用途 |
 |---|---|---|
-| 0 ⭐ | [ONBOARDING.md](ONBOARDING.md) | **第一次接手必读** · 第一周 checklist + 找谁要凭证 + FAQ |
+| 0 ⭐⭐ | [docs/00-START-HERE.md](docs/00-START-HERE.md) | **从零到最新的完整对齐**(含过时描述清单)· 第一次接手从这读 |
+| 0 ⭐ | [ONBOARDING.md](ONBOARDING.md) | 第一周 checklist + 找谁要凭证 + FAQ |
 | 1 | 本文件 (README.md) | 项目边界、原则、栈、四层架构 |
 | 2 | [CURRENT_STATE.md](CURRENT_STATE.md) | 当前 sprint scope + 已知 gap |
 | 3 ⭐ | [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md) | **动手部署/集成时的实操手册** · step-by-step 命令 + 验证 + 排错矩阵 |
 | 4 | [docs/09-system-integration.md](docs/09-system-integration.md) ⭐ | 双通道集成 (核心理论) |
 | 5 | [docs/01-architecture.md](docs/01-architecture.md) | 三层架构 (Surface/Essence/Audience) |
-| 6 | [DECISIONS.md](DECISIONS.md) | D-001 ~ D-035 决策考古 |
+| 6 | [DECISIONS.md](DECISIONS.md) | D-001 ~ D-038 决策考古 |
 | 6 | [RISKS.md](RISKS.md) | 生产前会咬人的事 |
 
 ### 部署 / 实施 · 按需读
@@ -222,14 +233,16 @@ truth-vault/
 1. **本文件 (README.md)** · 30 秒 · 项目边界、原则、目录结构
 2. **[CURRENT_STATE.md](CURRENT_STATE.md)** · 2 分钟 · 当前 Sprint 0 能跑什么 / 不能跑什么
 3. **[docs/09-system-integration.md](docs/09-system-integration.md)** ⭐ · 5 分钟 · 双通道集成 (核心架构)
-4. **[DECISIONS.md](DECISIONS.md)** · 决策考古 D-001 ~ D-035 · 做任何调整前必读
+4. **[DECISIONS.md](DECISIONS.md)** · 决策考古 D-001 ~ D-038 · 做任何调整前必读
 
 > 工程实施时再按需读 schema / mappings / scripts 文档（见上方"部署/实施"分组）。
 
-## 当前阶段 (Session #9 后)
+## 当前阶段 (2026-06-05)
 
-✅ **已就绪**: 主链路 6 个 sync 脚本 + truth_vault schema + 双通道集成补丁包 + Mode A/B prompt + 受控词表 v0.2  
-🚧 **Sprint 0 实测中**: 飞书 → TV → 双通道的 dry-run + NUC_1 1102 行 pilot  
-📋 **Sprint 1+ 待启动**: sub_directions LLM 子分类 / autowriter Memory Manager UI / prepublish_evaluations 接通
+✅ **飞轮已转起来**: 2 个项目入库 (WTG + NRT_2 = 1223 篇)、通道1(ssll)+ 通道2(pull/馆员)都 live、
+   NRT_2 27 篇真爆款全同步 + 全策展上架 (书架 28 卡)。
+🚧 **进行中**: NRT_2 essence 标注 drain (daily-sync 50/天)。
+📋 **下一步**: 接 NRT_3/NUC 灌更多真燃料 → L3 受众层 (从没运行) → L2 预测。
 
-完整 scope 和 gap 见 [CURRENT_STATE.md](CURRENT_STATE.md) "Sprint 0 实测能跑什么 / 不能跑什么"。
+> 完整当前状态见 **[docs/21-handover-2026-06-05.md](docs/21-handover-2026-06-05.md)**;从零到现在的完整对齐见
+> **[docs/00-START-HERE.md](docs/00-START-HERE.md)**。(本节早期"Sprint 0 / NUC pilot"表述已过时。)
