@@ -11,8 +11,9 @@
 -- 与 push (v_autowriter_injection_candidates) 的关键差异:
 --   * 故意【不】要求 mapping_to_autowriter_project_id —— pull 不做 per-project
 --     预路由, 这正是 D-038 改 pull 要消灭的那一坨复杂度。
---   * rank_score 复用注入打分【同一公式】(recency + tier + tier_source +
---     account_bao_rate), 让馆员"借到的是好书且新"(吸收 D-036)。
+--   * rank_score 结构同注入 (recency + tier + tier_source + account_bao_rate), 但 recency
+--     用 essence 慢衰减(半衰期 5 年、不硬切老数据, D-001 / docs/01「穿越周期的算法机制」)——
+--     书架服务的是 essence(穿越周期), 与注入偏 surface 的快衰减/12 个月窗故意不同。
 --   * tier 纳入 爆/大爆/参考 (与 v1.3 一致; 参考权重 +0.15)。
 --   * synthetic(伪爆贴)只挡爆/大爆(指标型 tier), 参考放行 —— 参考是纯人工内容判断、
 --     与指标真假无关 (Session #15 运营拍板, 同通道1 ssll); 放行的卡带 synthetic 标记。
@@ -66,15 +67,25 @@ WITH eligible AS (
         n.emotional_lever, n.target_audience, n.user_pain_point, n.content_format,
         n.hit_blue_keywords, n.data_quality_flags,
         p.brand, p.category,
-        GREATEST(0::double precision,
-            (1.0 - EXTRACT(epoch FROM now()::timestamp without time zone - n.publish_time)
-                   / (86400.0 * 365.0))::double precision) AS recency_weight
+        -- essence 慢衰减 (D-001 / docs/01「穿越周期的算法机制」+ docs/05:371 衰减谱):
+        -- 经验卡承载 essence (why_it_worked / transferable_tactic / 情绪原型), 几乎不过气 →
+        -- 用 essence【半衰期 5 年】= 0.5^(age_months/60), 与 docs/05 `essence_weight =
+        -- 0.5 ** (age_months/60)` 一字不差 (codex PR#58: 之前用 exp 是 e-folding、5 年掉到
+        -- 0.37、比"半衰期5年"衰减偏快)。永不归零(老卡留低权重、不丢):
+        --   1 年≈0.87 · 2 年≈0.76 · 5 年≈0.50 · 10 年≈0.25。
+        -- age_months = epoch/(86400*30)。必须 double precision 保列类型不变 (CREATE OR REPLACE)。
+        power(0.5::double precision,
+              (EXTRACT(epoch FROM now()::timestamp without time zone - n.publish_time)
+               / (86400.0 * 30.0 * 60.0))::double precision) AS recency_weight
     FROM truth_vault.notes n
     JOIN truth_vault.projects p ON p.project_id = n.project_id
     WHERE n.tier = ANY (ARRAY['爆', '大爆', '参考'])
       AND n.tier_source IS DISTINCT FROM '数值推断'
       AND n.publish_time IS NOT NULL
-      AND n.publish_time > (now() - '1 year'::interval)::timestamp without time zone
+      -- ⚠️ 故意【不】按 publish_time 硬切老数据 (原 `AND publish_time > now()-1年` 已移除):
+      --    经验卡是 essence、穿越周期 (D-001)。老卡靠上面 essence 慢衰减 recency_weight 退到
+      --    低位、但永远留在书架, 不被丢弃 —— 正是"essence 几乎不衰减"的设计本意。
+      --    (注: ssll 推送/注入候选是 surface/审美消费方, 仍各自保留 12 个月窗, 不在此对齐。)
       -- synthetic(伪爆贴, 指标造假)只挡【指标型 tier】(爆/大爆) —— 它们的"爆"靠假数据
       -- 撑; 「参考」是纯人工内容判断、与指标真假无关, 放行(Session #15 运营拍板, 同通道1
       -- ssll 的 fetch_pending_baokuan: `synthetic AND tier IN (爆,大爆)` 才排除)。馆员借的
@@ -101,7 +112,8 @@ SELECT
     (la.note_id IS NOT NULL) AS is_curated,
     -- 原文片段供仿写 (截断防 prompt 爆)
     left(e.raw_content, 600) AS raw_excerpt,
-    -- rank_score: 复用注入打分公式 (recency + tier + tier_source + account_bao_rate)
+    -- rank_score: 结构同注入 (recency + tier + tier_source + account_bao_rate); 但 recency 是
+    -- essence 慢衰减(见上 eligible CTE), 不像注入用 surface 快衰减 —— 书架=essence(穿越周期)。
     e.recency_weight,
     COALESCE(a.personal_bao_rate, 0.3::double precision) AS account_bao_rate,
     e.recency_weight

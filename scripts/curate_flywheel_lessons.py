@@ -108,20 +108,24 @@ def validate_lesson(data) -> list[str]:
 
 
 def fetch_uncurated_cards(sb, project_id, recurate: bool) -> list[dict]:
-    """从策展库视图取合格爆款。默认只取 is_curated=false; --recurate 取全部。"""
+    """从策展库视图取合格爆款。默认只取 is_curated=false; --recurate 取全部。
+
+    按 rank_score 降序取 —— 去掉发布时间硬切后(PR#58 回归 D-001 穿越周期), 全历史都合格;
+    若不排序, daily-sync 每轮 ≤15 的策展预算可能花在任意老行上, 让高 rank 的新卡长期
+    is_curated=false、迟迟不上架(codex PR#58 review)。排序保证预算先策展最该上架的卡。"""
     q = (
         sb.schema("truth_vault")
         .table("v_flywheel_lesson_cards")
         .select(
             "source_note_id, project_id, tier, brand, category, "
-            "emotional_lever, target_audience, raw_excerpt, is_curated"
+            "emotional_lever, target_audience, raw_excerpt, is_curated, rank_score"
         )
     )
     if project_id:
         q = q.eq("project_id", project_id)
     if not recurate:
         q = q.eq("is_curated", False)
-    return fetch_all_pages(q)
+    return fetch_all_pages(q.order("rank_score", desc=True))
 
 
 def write_lesson_back(sb, note_id: str, model: str, parsed: dict, dry_run: bool) -> None:

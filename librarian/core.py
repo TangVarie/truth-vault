@@ -100,9 +100,17 @@ def fetch_candidates(sb, limit: int = CANDIDATE_CAP) -> list[dict]:
 
 
 def library_version(cards: list[dict]) -> str:
-    """f(候选数, max(curated_at)) —— 见模块 docstring。"""
+    """f(候选数, max(curated_at), 月份桶) —— 见模块 docstring。
+
+    去掉发布时间硬切 + essence 慢衰减后(PR#58), rank_score 会随时间连续重排, 即便没有
+    新策展(recency 项缓慢缩、tier/account 固定): 旧高 tier 卡可能慢慢反超新低 tier 卡。
+    缓存键若只含 (候选数, max curated_at) 会让旧排序的选择被长期命中(codex PR#58 review)。
+    加一个【月份桶】把陈旧上限收到 ≤1 个月 —— 半衰期 5 年下月内重排 ~1%, 月桶足够,
+    且几乎不掉缓存命中率(本就有 30 天 TTL prune)。"""
+    from datetime import datetime, timezone
+    month_bucket = datetime.now(timezone.utc).strftime("%Y-%m")
     max_curated = max((c.get("curated_at") or "" for c in cards), default="")
-    return f"{len(cards)}:{max_curated or 'none'}"
+    return f"{len(cards)}:{max_curated or 'none'}:{month_bucket}"
 
 
 # ── 缓存键 ───────────────────────────────────────────────────────────────
