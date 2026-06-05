@@ -1,4 +1,6 @@
 import { getSupabase } from "@/lib/supabase";
+import { NODES } from "@/config/flywheel";
+import LivePresence from "@/components/LivePresence";
 
 // ISR:每 60s 重新在服务端取数,给一点"实时"感(docs/24 §2)。
 export const revalidate = 60;
@@ -47,13 +49,16 @@ function Metric({ label, value, hint }: { label: string; value: number | string;
   );
 }
 
-function SystemDot({ name, alive }: { name: string; alive: boolean }) {
+function SystemDot({ name, alive, planned }: { name: string; alive: boolean; planned?: boolean }) {
   return (
     <div className="flex items-center gap-2 rounded-full bg-white/5 px-4 py-2 text-sm">
       <span
-        className={`inline-block h-2.5 w-2.5 rounded-full ${alive ? "bg-flywheel-accent" : "bg-slate-600"}`}
+        className={`inline-block h-2.5 w-2.5 rounded-full ${
+          alive ? "bg-flywheel-accent" : "bg-slate-600"
+        }`}
       />
       {name}
+      {planned ? <span className="text-xs text-slate-500">规划中</span> : null}
     </div>
   );
 }
@@ -84,15 +89,25 @@ export default async function Page() {
         <Metric label="馆员借阅" value={o.librarian} hint="通道2 缓存行" />
       </section>
 
-      {/* 系统"活着"灯(Phase 0:连库即视为在线;Phase 3 起接真实最近活动) */}
+      {/* 系统"活着"灯(config 驱动,docs/24 §5.5;Phase 3 起接真实最近活动) */}
       <section className="mt-10">
-        <h2 className="mb-3 text-sm font-medium text-slate-400">系统</h2>
+        <h2 className="mb-3 text-sm font-medium text-slate-400">系统 / 节点</h2>
         <div className="flex flex-wrap gap-3">
-          <SystemDot name="Truth Vault" alive={o.ok} />
-          <SystemDot name="autowriter" alive={o.ok} />
-          <SystemDot name="sanshengliubu" alive={o.ok} />
-          <SystemDot name="去中心化(规划中)" alive={false} />
+          {NODES.map((n) => (
+            <SystemDot
+              key={n.id}
+              name={n.label}
+              alive={n.status === "live" && o.ok}
+              planned={n.status === "planned"}
+            />
+          ))}
         </div>
+      </section>
+
+      {/* 实时"在线"卡(留好接口:去中心化 / 在线改稿人数;现在 stub→规划中) */}
+      <section className="mt-10">
+        <h2 className="mb-3 text-sm font-medium text-slate-400">实时</h2>
+        <LivePresence />
       </section>
 
       <footer className="mt-16 text-xs text-slate-600">

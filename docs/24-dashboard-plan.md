@@ -57,10 +57,13 @@
 
 ## 4. 看板内容设计(我帮你想的——板块/通道/环节/状态)
 
-### A. 全局态势 / Hero(公开 · 装逼核心)
-- **飞轮活体图**:节点=系统&服务(飞书/TV/通道1/通道2/ssll/aw/去中心化占位),边=数据流;边/节点带**"最近活动脉冲"**(最近 N 分钟有动 → 发光/绿)。一眼"它在转"。
-- **头部大数**(滚动/计数动画):项目数 · 总笔记 · **真爆款燃料** · 经验卡 · **馆员累计借阅** · essence 标注进度条。
-- **"活着"指示灯**:每个服务/通道一盏(绿=近活/黄=偏慢/灰=静默)。
+### A. 全局态势 / Hero(公开 · 装逼核心 · **更动态 / 更多数据**)
+- **飞轮活体图(动态)**:节点=系统&服务,边=数据流;**数据流沿边流动的脉冲动画**(每发生一次 sync/借卡/生成 → 一道光沿对应边跑),节点按"最近活动"明暗呼吸。一眼"它在转、在流"。用 framer-motion / SVG path 动画。
+- **大数 + 计数动画 + 趋势**:不只是静态总数,还有**速度/近况**——今日新增笔记、本周新爆款、今日馆员借阅、生成吞吐;每个大数配 **sparkline 迷你趋势**(count-up 动画)。
+- **实时活动流(ticker / feed)**:滚动播报最近事件——"刚刚 · aw 为某项目借了 5 张经验卡"、"NRT_3 同步 25 爆款"、"daily-sync 绿"。让人感觉**活的、在动**。
+- **"在线"实时卡(留接口)**:如"**当前在线改稿 N 人**"——现在是 stub,**去中心化分发上线后从同一接口接真数据**(见 §5.5)。
+- **"活着"指示灯**:每服务/通道一盏(绿=近活/黄=偏慢/灰=静默)+ "近 1 小时 X 个事件"。
+- **专业级观感**:深色 + 渐变 + 动效 + 好排版 + 响应式,适合投屏/对外展示。
 
 ### B. Truth Vault 面板(内部)
 - 4 项目卡:笔记/爆款/essence drain 进度条/`sync_interval`/最近 sync 时间。
@@ -93,14 +96,27 @@
 
 ---
 
+## 5.5 扩展性 / 留好接口(关键:为去中心化 + 实时指标预留)
+
+诉求:公开页要能**后期插入新数据源/新指标**——比如去中心化分发上线后,看"**当前线上同时多少人在改稿**"。
+所以看板**不写死**,而是 **config + 适配器(adapter)驱动**,加新东西 = 加一条注册,不动核心。三个接口:
+
+1. **指标适配器 `MetricAdapter`**(`dashboard/lib/metrics/types.ts`):每块数据 = 一个 adapter(`id / label / scope:"public"|"internal" / fetch() / realtime?`)。`fetch()` 服务端取数,**来源任意**:Supabase 任一 schema、外部 API、**未来去中心化节点上报**。加新指标 = 注册一个 adapter。`scope` 控制公开/内部(公开页只渲染 `scope:"public"` 的)。
+2. **飞轮图配置 `FlywheelNode/Edge`**(`dashboard/config/flywheel.ts`):节点/边是**配置**,不是硬编码。**去中心化分发 = 加一个 `status:"planned"` 的节点**(已预放),上线后改 `live` + 绑定 adapter 即出现在活体图里。
+3. **实时信号接口 `/api/live/presence`**(`dashboard/app/api/live/presence/route.ts`):**现在是 stub**(返回 `online:0, source:"stub"`),前端"在线改稿"卡显示"规划中"。未来"线上同时多少人改稿"从这里出,实现择一:**Supabase Realtime presence**(改稿会话加 presence)/ **heartbeat 表**(改稿端每 N 秒上报)/ **去中心化节点上报**。**前端组件 + API 契约现在就留好,接数据时不动 UI。**
+
+> 一句话:**"加未来模块"= 注册一个 adapter + 改一行 config + 把 stub API 换成真数据源**,核心和 UI 不动。去中心化/实时在线人数就是按这套接进来。
+
+---
+
 ## 6. 分阶段落地
 
 | Phase | 目标 | 产出 | 你需要给 |
 |---|---|---|---|
-| **0 · 骨架(本 PR)** | 仓里有个能部署的 Next.js 站 | `dashboard/`(Next.js 骨架 + 一个 overview 页查 TV 真实大数)+ 本计划 | — |
+| **0 · 骨架(本 PR)** | 仓里有个能部署的 Next.js 站 + **扩展性接口先留好** | `dashboard/`(overview 页查 TV 真实大数 + **adapter 类型 / 飞轮 config / stub 实时接口 `/api/live/presence`**)+ 本计划 | — |
 | **1 · 上线 MVP** | **有一个能打开的网址** | 部署到 Vercel + 配 Supabase env;overview 页跑通 | Vercel 账号接入 + Supabase URL/key |
 | **2 · 各系统面板** | TV/通道/aw/ssll 详细卡 + 图表 + 聚合视图 | `schemas/dashboard_views_*.sql` + 各面板 | — |
-| **3 · 装逼级** | 飞轮活体图 + 动画 + 公开/内部分离 + 美化 | hero 可视化 + auth-gate | 选 auth 方式 |
+| **3 · 装逼级(动态)** | 飞轮活体图**流动动画** + 计数动画 + sparkline 趋势 + **实时活动 ticker** + 实时在线卡接真数据 + 公开/内部分离 + 美化 | framer-motion hero + activity feed + 接 Realtime/heartbeat + auth-gate | 选 auth + 实时源 |
 | **4 · 域名 + 去中心化位** | 自定义域名 + 未来模块占位 + 告警/趋势 | Vercel 加域名 + 占位 + 历史趋势表 | 你的域名 |
 
 ---
