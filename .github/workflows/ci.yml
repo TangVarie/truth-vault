@@ -211,6 +211,33 @@ jobs:
           print("  ✓ failed_queue writes valid JSONL")
           print("\nannotate_essence retry + failed_queue: all 5 checks passed")
           PY
+      - name: Essence pass exit-code tolerance self-check (单条抽风不拖红 daily-sync)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # 回归: NUC_1 首跑 45 条 essence 里 1 条 LLM 抽风(failed_after_retry=1)就让
+          # worker 返回 ok=false → 整条 daily-sync 红 + 发邮件。失败行幂等(下轮续标), 不该
+          # 拖红。对齐 curate #56「仅全军覆没才判失败」。但 hygiene_failed(label-leakage
+          # 卫生断言漂移, D-017/D-028)是系统性 → 任意一条都红。
+          import annotate_essence_pass as a
+          f = a._exit_code_for_stats
+
+          # 零星单条抽风(NUC_1 批3 实况 ok=14/failed=1)→ 容忍, 返回 0
+          assert f({"ok": 14, "failed_after_retry": 1, "hygiene_failed": 0}) == 0
+          print("  ✓ 零星 failed_after_retry(ok>0)容忍 → 0")
+          # 全军覆没(ok==0 却有失败)→ 系统性, 红
+          assert f({"ok": 0, "failed_after_retry": 5, "hygiene_failed": 0}) == 1
+          print("  ✓ 全军覆没(ok==0)→ 1")
+          # hygiene 任意一条 → 红(label-leakage 优先级最高, 即便有 ok)
+          assert f({"ok": 40, "failed_after_retry": 0, "hygiene_failed": 1}) == 1
+          assert f({"ok": 40, "failed_after_retry": 2, "hygiene_failed": 1}) == 1
+          print("  ✓ hygiene_failed 任意一条 → 1(label-leakage 系统性)")
+          # 干净成功 / no-op 空跑 → 0
+          assert f({"ok": 15, "failed_after_retry": 0, "hygiene_failed": 0}) == 0
+          assert f({"ok": 0, "failed_after_retry": 0, "hygiene_failed": 0}) == 0
+          print("  ✓ 干净成功 + no-op 空跑 → 0")
+          print("\nessence exit-code tolerance: all 6 checks passed")
+          PY
       - name: Essence annotator sub_direction classification self-check
         working-directory: scripts
         run: |
