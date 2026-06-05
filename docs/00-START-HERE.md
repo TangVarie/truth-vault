@@ -7,7 +7,7 @@
 > (定义 TV 是什么 / 不是什么 / 不可违反的原则),本文是**阅读路线 + 演进脉络**,二者互补。
 >
 > **推荐阅读顺序**:本文 §1-§2 → `README.md`(宪法) → `docs/01`(三层架构的 why) →
-> 本文 §4(演进时间线)→ `docs/21`(当前状态最新快照)→ 按需深入。
+> 本文 §4(演进时间线)→ **`docs/22`(当前状态最新权威)**→ 按需深入。
 
 ---
 
@@ -109,7 +109,7 @@ Truth Vault(Supabase prod `kduysqedrclrfevrxiie` · schema truth_vault)
 **通道2 改 pull + LLM 馆员服务建成并上线 Railway**(Session #16,v1.4 书架 + v1.5 缓存 + `librarian/` +
 策展 pass + cron 已开)。详见 `CURRENT_STATE.md`。
 
-### 阶段 D · 上线 + 加固期(本轮,2026-06-04/05)⭐ 最新
+### 阶段 D · 上线 + 加固期(NRT_2,2026-06-04/05)
 - **NRT_phase2(力克雷,第 2 个项目)上线** —— 飞轮**第一次有真实燃料**:27 篇真爆款进库 + 全同步 ssll +
   全策展上架(书架 1→28 卡)。
 - NRT_2 上线**一口气炸出 9 个潜伏 bug,全部根治**(品类未决议 / sync 假绿 / intent list 崩 / quarantine 索引 /
@@ -117,7 +117,15 @@ Truth Vault(Supabase prod `kduysqedrclrfevrxiie` · schema truth_vault)
 - **最重要的设计回归**:书架 recency 之前误用 surface 的线性快衰减 + 1 年硬切,**违背 D-001 穿越周期**;
   已改回 **essence 半衰期 5 年、不硬切**(§2.2)。
 - **全库审计**(4 路并行 agent):确认没有别处"代码做了和设计相反的事";高风险区全 honored;收尾文档/日志卫生。
-- 产出本系列交接(`docs/20` → `docs/21` → 本文)。
+- 产出本系列交接(`docs/20` → `docs/21`)。
+
+### 阶段 E · 接表加固 + 飞轮拉通期(Session #18,2026-06-05 晚)⭐ 最新
+- **NUC_phase1(保健品)+ NRT_phase3(OTC药)上线** —— 飞轮 2→**4 个项目**(2478 篇 / 96 真爆款 / 87 经验卡)。
+- **接表 SOP 升级**:`preflight_mapping.py` 接表前只读体检 + `sync_interval` cron 安全闸(`on_demand` 新表 cron 不碰、验证后改 `daily`)。NRT_3 走新 SOP、**零 prod 试错**(preflight 拦下 596 行真内容丢失)。
+- **通道2(autowriter 飞轮)production 拉通** ⭐:autowriter 真在调 TV 馆员、借爆款经验卡注入 prompt(实测借 5 张)。
+- NUC(首个大规模 sub_direction 表)逼出并根治一串 essence/curate **健壮性 bug**(单条抽风 / Railway 超时 / bash 崩 / 瞬时-系统性区分),全是通用修复。
+- **负面机制澄清(D-040)**:TV 只送正面;负例 AW 本地人工标;**`趴` 不能当负面源**(正负不对称)。
+- 产出 **`docs/22`(当前状态最新权威,取代 docs/21)**。
 
 ---
 
@@ -125,7 +133,7 @@ Truth Vault(Supabase prod `kduysqedrclrfevrxiie` · schema truth_vault)
 
 - **4 个项目**:WTG_phase1(个护)· NRT_phase2(OTC药)· NUC_phase1(保健品)· NRT_phase3(OTC药)。**2478 篇笔记**。
 - **99 篇爆款**(WTG 3 = synthetic/数值推断,不进下游;**96 真实** = NRT_2 27 + NUC 44 + NRT_3 25,全部 →ssll)。
-- **书架 87 张经验卡**;馆员(D-038 拉取)通道验证可用。
+- **书架 87 张经验卡**;馆员(D-038 拉取)通道**已 production 拉通**(autowriter 真在调、借经验卡注入 P2,见 `docs/22` §2)。
 - essence 标了 1042/2478(各项目在 daily-sync 按 50/天 drain;`sync_interval` 均 `daily`)。
 - **L3 受众层从没运行**(`audience_inferred=0`);L2/L4 未启用。
 - _NUC/NRT_3 是 2026-06-05 用新 **preflight 体检 SOP**(docs/04 / `scripts/preflight_mapping.py` / Preflight workflow)接入的:接表前只读体检 → 改 mapping → 验证 → 翻 `daily` 入 cron。_
@@ -143,6 +151,9 @@ Truth Vault(Supabase prod `kduysqedrclrfevrxiie` · schema truth_vault)
 | "essence_annotation_mode 必填"(D-017) | 实际 schema **nullable**(sync 先插入、后标注;合理放宽)。 |
 | daily-sync 的 `project` 填简称(如 `NRT_2`) | **必须填全名**(`NRT_phase2`)—— 填错会**静默空跑还报绿**。 |
 | "essence 也按时间快衰减" | **不**。essence 穿越周期、几乎不衰减;只有 surface/审美快衰减。 |
+| "通道2 馆员只是自测可用 / 没真流量" | **已 production 拉通**(2026-06-05):autowriter `librarian_client` 真在调 `/librarian`、把借回的爆款经验卡注入 P2 层(实测一单借 5 张)。见 `docs/22` §2。 |
+| "TV 会给 AW 注入负面例子 / 用 `趴` 做负面飞轮" | **不**。TV **只送正面**爆款经验;负例是 **autowriter 自己人工标**(`example_label='negative'`),TV 不推负面。`趴` **不能**当负面源(撞流量墙/账号 → 污染),负例只人工标(正负不对称,**D-040**)。 |
+| "接新表填了坐标就会被 cron 自动灌" | **已加闸**。新表 `sync_interval` 留 `on_demand` 时夜间 cron **不碰**;先 `preflight` 体检 + 显式验证,再改 `daily` 才入 cron(`docs/22` §4)。 |
 
 ---
 
@@ -195,7 +206,8 @@ Truth Vault(Supabase prod `kduysqedrclrfevrxiie` · schema truth_vault)
 | `18-codebase-audit-2026-06-04` | 一次全库审计报告 |
 | `19-autowriter-librarian-quickstart` | autowriter 接馆员快速接入 + 自测 |
 | `20-handover-2026-06-04` | 上线**前**的交接快照(历史) |
-| **`21-handover-2026-06-05`** | **当前状态权威交接**(NRT_2 上线 + 审计后) |
+| `21-handover-2026-06-05` | NRT_2 上线 + 审计后的快照(历史;已被 22 取代) |
+| **`22-handover-2026-06-05-onboarding-hardened`** | ⭐ **当前状态最新权威**(4 项目 / preflight + cron 闸 / 通道2 拉通 / D-040 负面) |
 | `99-rejected-ideas` | 否决过的想法(别重复提) |
 
 ---
