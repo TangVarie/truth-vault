@@ -161,7 +161,7 @@ Truth Vault(Supabase prod `kduysqedrclrfevrxiie` · schema truth_vault)
 ## 8. 运行手册 / 文件地图
 
 详见 `docs/21` §8(文件地图)+ §9(运行手册速查)。最常用:
-- **接新表(已有 mapping)**:填 `sync_config` 坐标 → PR → 合 → `Daily TV sync`(填**全名**,先 dry_run)→ 实跑 → `Backfill essence`(batch=12)。
+- **接新表(已有 mapping)**:填 `sync_config` 坐标 → **`python scripts/preflight_mapping.py <项目全名>`(只读体检)** → 按报告改 mapping → PR → 合 → `Daily TV sync`(填**全名**,先 dry_run)→ 实跑 → `Backfill essence`(batch=12)。
 - **查飞轮状态**:`SELECT * FROM truth_vault.v_flywheel_sync_status;` · 书架厚度 `count(*) FROM flywheel_lesson_annotations`。
 
 ---
