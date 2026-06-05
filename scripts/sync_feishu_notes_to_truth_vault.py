@@ -341,6 +341,9 @@ def transform_row(
     # 飞书「观众分析」列映射成 _audience_raw 时, 解析半结构化文本
     # ("性别分布：男4%女96%；年龄分布：...；阅读时长：12.5秒") 进 JSONB.
     if "_audience_raw" in intermediates:
+        # parse_audience_analysis 内部已把 list/dict(富文本多段)归一成【；分段文本】再解析
+        # (见 _common._audience_text: 段空串拼接、保住 ；分段, 不像 _direction_key 用逗号连)——
+        # 飞书把「观众分析」返回成富文本 list 时也不再静默丢数据(codex PR#59)。
         parsed_audience = parse_audience_analysis(intermediates["_audience_raw"])
         if parsed_audience:
             note["actual_audience_data"] = parsed_audience

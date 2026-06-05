@@ -23,11 +23,11 @@ TARGET_AUDIENCES = (
     "学生党", "宝妈", "伴侣家人", "病患家属", "通用",
 )  # docs/04 line 123(11 值)
 
-TIERS = ("大爆", "爆", "预备", "参考", "风控", "趴", "未知", "删除")  # tier_extraction
+TIERS = ("大爆", "爆", "预备", "参考", "风控", "趴", "未知", "删除", "数据异常")  # docs/05 §10(9 值)= notes_v1_3 tier CHECK
 
 TIER_SOURCES = ("状态字段", "备注字段")  # tier_extraction.source 闭集(sync 只认这两个)
 
-INTENTS = ("traffic", "conversion", "educational", "other")  # docs/03 intent enum
+INTENTS = ("traffic", "conversion", "educational", "mixed", "other")  # docs/05 §1(5 值)= notes_v1_2 intent CHECK
 
 SCHEMA_FAMILIES = ("A", "B", "C")
 
@@ -133,9 +133,9 @@ def vocab_reference() -> str:
     return (
         "content_format(8): " + " / ".join(CONTENT_FORMATS) + "\n"
         "target_audience(11): " + " / ".join(TARGET_AUDIENCES) + "\n"
-        "tier(8): " + " / ".join(TIERS) + "\n"
+        "tier(9): " + " / ".join(TIERS) + "\n"
         "tier_extraction.source(只能二选一): " + " / ".join(TIER_SOURCES) + "\n"
-        "intent(4): " + " / ".join(INTENTS) + "\n"
+        "intent(5): " + " / ".join(INTENTS) + "\n"
         "schema_family: " + " / ".join(SCHEMA_FAMILIES) + "\n"
         "category: " + " / ".join(CATEGORIES)
     )
