@@ -208,6 +208,8 @@ compliance:
 FEISHU_APP_ID=… FEISHU_APP_SECRET=… python scripts/preflight_mapping.py <project_id>
 ```
 
+> 没有本地飞书凭据时:**Actions → `Preflight mapping` → Run workflow → 填项目全名**(用仓库现成的 FEISHU secrets 跑,报告在 job 日志里看;退出码 1=有阻断问题=workflow 红)。
+
 preflight 复用真 `transform_row` 投影全表，一屏看清：
 - **未声明列** → 会被 D-021 整行 quarantine（NRT_2 曾因此丢 482 行真内容）；报告会标出"哪些列没声明、其中多少行有正文＝真笔记会丢"。
 - **品类是否在受控闭集**（否则 sync 撞 `notes.category` CHECK）。
@@ -217,7 +219,9 @@ preflight 复用真 `transform_row` 投影全表，一屏看清：
 退出码 1 = 有该先修的阻断问题（未声明列丢真内容 / 品类非法）→ 按报告改 mapping，重跑到干净。
 **这一步把"在 prod 真跑→看炸什么→修"收敛成"接表前一键体检"。**
 
-体检干净 → PR → 合 → `Daily TV sync`（全名，先 dry_run）→ 实跑 → backfill essence。
+体检干净 → PR → 合 → **显式** `Daily TV sync`（全名，先 dry_run）→ 实跑验证 → **验证 OK 后把 `sync_config.sync_interval` 改 `daily`**（才进每日 02:00 cron）→ backfill essence。
+
+> ⚠️ **新表 `sync_interval` 留 `on_demand`**（onboarder 默认即如此）：夜间 cron【不碰】`on_demand` 项目（防 preflight 验证前被自动灌，PR#67）。只有显式 `Run workflow`（填 project）或改成 `daily` 才会同步。验证通过再翻 `daily` 入夜间 cron。
 
 ---
 

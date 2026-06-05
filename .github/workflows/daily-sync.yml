@@ -63,6 +63,10 @@ jobs:
       WORKER_LIMIT: ${{ vars.WORKER_LIMIT || '15' }}
       # 只跑某项目 (workflow_dispatch 的 project 输入); 空 = 全部. cron 触发时为空.
       PROJECT_FILTER: ${{ github.event.inputs.project }}
+      # schedule(夜间 cron)触发时为 'true' → feishu sync 跳过 sync_interval=on_demand 的【未启用】
+      # 项目(新接的表填了坐标但还没 preflight 验证, 不该被 cron 自动灌; codex PR#67 review)。
+      # 显式 Run workflow(workflow_dispatch)→ 'false' → 照常跑(包括 on_demand)。
+      TV_SCHEDULED_RUN: ${{ github.event_name == 'schedule' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

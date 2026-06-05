@@ -252,7 +252,7 @@ sync_config:
   feishu_app_token: A2sybSE0pa5kcnsukAMcJ9TDngb   # WTG 表标识 (非密钥)
   feishu_table_id: tbliiz1N4m9bCRx2               # WTG 表标识 (非密钥)
   feishu_view_id: null              # 留空 = 读全表 (机器人已授权, 不需要 view)
-  sync_interval: on_demand
+  sync_interval: daily   # 已验证上线 → 进夜间 cron(on_demand 会被 cron 跳过, PR#67)
   # ⚠️ App ID / App Secret 不在这里 — 走 env / GitHub Secrets:
   #    FEISHU_APP_ID, FEISHU_APP_SECRET (密钥绝不进 git)
 

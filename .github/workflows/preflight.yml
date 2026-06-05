@@ -1,0 +1,49 @@
+name: Preflight mapping
+
+# 接新表前的【只读体检】(scripts/preflight_mapping.py)。手动触发, 对某项目跑一遍:
+#   - 复用真 transform_row 投影全表: 会 upsert/quarantine 多少、哪些列没声明(D-021 整行丢)、
+#     品类是否合法、tier·intent 分布、方向是否全部命中 direction_decomposition。
+#   - 只读飞书(FEISHU_APP_ID/SECRET), 【不写 Supabase、不调 worker/LLM】。
+# 用法: Actions → Preflight mapping → Run workflow → 填项目全名(如 NRT_phase3)。
+# 退出码 1(有未声明列丢真内容 / 品类非法等阻断问题)→ workflow 红 = 该先改 mapping 再真跑。
+# 报告在本 job 日志里看。接表 SOP 第一步; 详见 docs/04 Step 7。
+
+on:
+  workflow_dispatch:
+    inputs:
+      project:
+        description: "项目全名 (如 NRT_phase3 / NUC_phase1)"
+        type: string
+        required: true
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    env:
+      # 只需飞书只读凭据 —— 不需要 SUPABASE / WORKER 任何 secret。
+      FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+      FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps (from lockfile for reproducibility)
+        run: |
+          if [ -f scripts/requirements.lock ]; then
+            pip install -r scripts/requirements.lock
+          else
+            pip install -r scripts/requirements.txt
+          fi
+      - name: Check Feishu secrets configured
+        run: |
+          if [ -z "$FEISHU_APP_ID" ] || [ -z "$FEISHU_APP_SECRET" ]; then
+            echo "::error::FEISHU_APP_ID / FEISHU_APP_SECRET 未配 —— preflight 需要只读飞书凭据。"
+            exit 1
+          fi
+      - name: Preflight
+        working-directory: scripts
+        env:
+          # 经 env 传入(不把 ${{ }} 直接拼进 shell, 防注入)。
+          PROJECT: ${{ github.event.inputs.project }}
+        run: python preflight_mapping.py "$PROJECT"

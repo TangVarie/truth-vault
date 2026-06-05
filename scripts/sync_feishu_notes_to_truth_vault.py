@@ -232,6 +232,18 @@ _NOTE_DATA_SIGNALS = (
 )
 
 
+def _skip_on_demand_on_cron(sync_interval: str | None, scheduled: bool) -> bool:
+    """夜间 cron(scheduled=True)是否应跳过该项目。
+
+    sync_interval=on_demand 的项目【只】在显式 dispatch / 改成 daily 后才进夜间 cron ——
+    防新接的表(填了飞书坐标但还没 preflight 验证)被 02:00 cron 自动灌、把未声明列的真内容行
+    quarantine(codex PR#67 review)。on_demand 是 onboarder 起草的安全默认: 接表填坐标 →
+    preflight → 显式跑验证 → 改 daily 入 cron。保守: 只有【确实 cron】且【确实 on_demand】才跳,
+    显式 dispatch / 本地手跑(scheduled=False)照跑(不挡人工操作)。
+    """
+    return scheduled and sync_interval == "on_demand"
+
+
 def transform_row(
     mapping: dict,
     feishu_record_id: str,
@@ -753,6 +765,19 @@ def main() -> int:
 
     mapping = load_mapping(args.project_id)
     sync_config = mapping.get("sync_config") or {}
+
+    # 夜间 cron 跳过未启用项目(sync_interval=on_demand): 防新接的表(填了坐标但还没 preflight
+    # 验证)被 02:00 cron 自动灌(codex PR#67 review)。daily-sync.yml 在 schedule 触发时置
+    # TV_SCHEDULED_RUN=true; 显式 Run workflow / 本地手跑不置 → 照常跑。验证 OK 后把
+    # sync_interval 改 daily 即进夜间 cron。
+    scheduled = os.environ.get("TV_SCHEDULED_RUN") == "true"
+    if _skip_on_demand_on_cron(sync_config.get("sync_interval"), scheduled):
+        logger.info(
+            "project %s: sync_interval=on_demand → 夜间 cron 跳过(未启用)。显式 Run workflow"
+            "(填 project)可手动跑; preflight 验证 OK 后把 sync_interval 改成 daily 入夜间 cron。",
+            args.project_id,
+        )
+        return 0
 
     # source_type discriminator: this script only handles feishu_api.
     # manual_xlsx ingest is not in scope — would require a different

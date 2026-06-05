@@ -556,6 +556,23 @@ jobs:
           print("  ✓ tier 大爆=1 / 未知方向标缺拆解")
           print("\npreflight_mapping projection: all checks passed")
           PY
+      - name: cron skip on_demand self-check (PR#67)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # 夜间 cron(schedule)应跳过 sync_interval=on_demand 的未启用项目(防新接的表在 preflight
+          # 验证前被自动灌); 显式 dispatch / 本地手跑(scheduled=False)照跑; daily 任何时候都跑。
+          import sync_feishu_notes_to_truth_vault as s
+          f = s._skip_on_demand_on_cron
+          assert f("on_demand", True) is True,  "cron + on_demand → 跳过"
+          assert f("on_demand", False) is False, "显式/本地 + on_demand → 照跑(不挡人工)"
+          assert f("daily", True) is False,      "cron + daily → 跑"
+          assert f("daily", False) is False,     "显式 + daily → 跑"
+          assert f(None, True) is False,         "无 sync_interval → 不跳(保守, 老 mapping 照跑)"
+          assert f("weekly", True) is False,     "非 on_demand → cron 跑"
+          print("  ✓ cron 跳 on_demand / 显式照跑 / daily 照跑 / None 保守不跳")
+          print("\ncron skip on_demand: all checks passed")
+          PY
       - name: Supabase key validation self-check
         working-directory: scripts
         run: |
