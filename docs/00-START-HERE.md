@@ -123,11 +123,12 @@ Truth Vault(Supabase prod `kduysqedrclrfevrxiie` · schema truth_vault)
 
 ## 5. 当前状态(快照;最新数字以 `docs/21` 为准)
 
-- **2 个项目**:WTG_phase1(个护)· NRT_phase2(OTC药)。**1223 篇笔记**。
-- **30 篇爆款**(WTG 3 = synthetic/数值推断,不进下游;**NRT_2 27 = 真实**)。
-- **书架 28 张经验卡**;馆员(D-038 拉取)通道验证可用。
-- essence 标了 825/1223(NRT_2 在 daily-sync 按 50/天 drain)。
+- **4 个项目**:WTG_phase1(个护)· NRT_phase2(OTC药)· NUC_phase1(保健品)· NRT_phase3(OTC药)。**2478 篇笔记**。
+- **99 篇爆款**(WTG 3 = synthetic/数值推断,不进下游;**96 真实** = NRT_2 27 + NUC 44 + NRT_3 25,全部 →ssll)。
+- **书架 87 张经验卡**;馆员(D-038 拉取)通道验证可用。
+- essence 标了 1042/2478(各项目在 daily-sync 按 50/天 drain;`sync_interval` 均 `daily`)。
 - **L3 受众层从没运行**(`audience_inferred=0`);L2/L4 未启用。
+- _NUC/NRT_3 是 2026-06-05 用新 **preflight 体检 SOP**(docs/04 / `scripts/preflight_mapping.py` / Preflight workflow)接入的:接表前只读体检 → 改 mapping → 验证 → 翻 `daily` 入 cron。_
 
 ---
 
@@ -199,5 +200,6 @@ Truth Vault(Supabase prod `kduysqedrclrfevrxiie` · schema truth_vault)
 
 ---
 
-_本入口写于 2026-06-05。当前里程碑:2 项目入库、飞轮首批真燃料(NRT_2 27 爆款)、穿越周期衰减回归 D-001、
-全库审计完成。下一步重心(见 `docs/21` §5):接 NRT_3/NUC 灌料 → L3 受众层 → L2 预测。_
+_本入口写于 2026-06-05。当前里程碑:**4 项目入库(2478 篇 / 96 真爆款 / 87 经验卡)** —— NUC + NRT_3 当日晚些用
+新 **preflight 体检 SOP** 顺利接入(接表前体检拦下 NRT_3 596 行真内容丢失);穿越周期衰减回归 D-001、全库审计完成。
+下一步重心(见 `docs/21` §5):L3 受众层 → L2 预测。_
