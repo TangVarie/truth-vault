@@ -126,9 +126,11 @@ user_pain_point 等多维度，可能还要配 LLM 子分类（见 NUC_phase1.ya
 
 ## lineage 元数据列（autowriter "AI 写 → 人工审 → 发布"流程）
 
-> 🚫 **当前先别加这 6 列**（除非按下面的临时办法处理）。原因见下方"⚠️ 重要限制"。
+> ✅ **已支持（R-031，2026-06-05）**。sync 脚本现在会【声明】这 6 列（不再
+> quarantine），并把两个 UUID 列**自动提升进** `notes` 的 FK 列。直接加即可，
+> 实现说明见下方"✅ 现状"。
 
-如果这张表会接收 autowriter 导出的内容，理论上要这 6 列让 TV 反向归因
+如果这张表会接收 autowriter 导出的内容，加这 6 列让 TV 反向归因
 （否则 `v_model_comparison` / `v_prompt_performance` 长期为空）：
 
 | 飞书列名 | 字段类型 | 用途 |
@@ -140,33 +142,20 @@ user_pain_point 等多维度，可能还要配 LLM 子分类（见 NUC_phase1.ya
 | `_ai_engine` | 文本 | 用了哪个 LLM |
 | `_exported_at` | 日期 | 导出时间 |
 
-### ⚠️ 重要限制（当前 sync 脚本未支持，照搬会搞坏 ingestion）
+### ✅ 现状（R-031 已落地，2026-06-05）
 
-`transform_row` (sync_feishu_notes_to_truth_vault.py:215/221) 把**任何不在
-`field_mapping` 也不在 `project_specific_fields_to_raw_extra` 的列**判为
-"未声明字段" → 整行进 `undeclared_fields_quarantine`（D-021）。当前所有
-mapping yaml + 脚本**都没声明这 6 列**，也没有把它们翻译到
-`notes.source_autowriter_item_id` / `source_autowriter_version_id` 的逻辑。
+`transform_row` (`sync_feishu_notes_to_truth_vault.py`) 现在对这 6 列做**专门处理**
+（实现见 `_LINEAGE_FK_COLS` / `_LINEAGE_RAW_EXTRA_COLS`）：
 
-**后果**：你飞书表只要加了这 6 列，**每一行**都会被 quarantine，连正常
-内容都进不了 `notes` 表 —— 不是"comparison view 为空"那么轻，是**整个
-ingestion 被它拖垮**。
+- 6 列名对**所有项目全局预声明** → 不再触发 `undeclared_fields_quarantine`（D-021）。
+  **不需要**再手动把它们列进 `project_specific_fields_to_raw_extra`。
+- `_source_autowriter_item_id` / `_source_autowriter_version_id` 两个 UUID **自动提升进**
+  `notes.source_autowriter_item_id` / `source_autowriter_version_id` FK 列（schema 已有，UUID）
+  → `v_model_comparison` / `v_prompt_performance` 能 JOIN 到 `autowriter.versions` 出模型对比。
+- 其余 4 列（project/batch id · `_ai_engine` · `_exported_at`）落 `notes.raw_extra` 留痕。
 
-**两个安全选项（二选一）**：
-
-1. **暂时别加这 6 列**（推荐）。`v_model_comparison` 留空，等下面的脚本支持
-   做完再加。当前飞轮主链路（飞书 → TV → ssll/aw 注入）不依赖 lineage。
-
-2. **如果你坚持现在就加**：必须把这 6 列名**全部列进**你项目 yaml 的
-   `project_specific_fields_to_raw_extra`，这样它们落进 `notes.raw_extra`
-   JSONB 而不是触发 quarantine。但注意：这只是"不报错"，它们**不会**自动填进
-   `notes.source_autowriter_*_id` FK 列，所以 `v_model_comparison` 仍然为空 ——
-   数据存了但归因没通。
-
-**真正打通需要脚本支持**（已登记 `docs/10-sister-repo-followups.md § R-031`）：
-sync 脚本要把 `_source_autowriter_item_id` / `_source_autowriter_version_id`
-特殊处理成 `notes.source_autowriter_item_id` / `source_autowriter_version_id`
-（这俩列 schema 已有，是 UUID）。在 R-031 落地前，按选项 1 或 2 走。
+**直接加这 6 列即可**，飞轮主链路（飞书 → TV → ssll/aw 注入）不受影响。CI 有
+`transform_row autowriter lineage FK self-check (R-031)` 守这条不被改回去。
 
 > ⚠️ 另一个独立的坑：autowriter 导出的 Excel 的 lineage 在隐藏列 G-L，**只有
 > "整表导入"才会跟着进飞书**。复制可见列粘贴 → 隐藏列丢失。详见
@@ -275,9 +264,9 @@ python sync_feishu_notes_to_truth_vault.py <项目名> --dry-run --limit 5
    `notes.publish_url` 存进去的是标签不是链接，下游审计/集成拿到的是没用的文本。
    **对策**：`反馈链接` 用**纯文本字段**，单元格里直接粘 URL（text == 真实 URL）。
    等脚本支持读 `link` 再改回 URL 字段。
-8. **加了 lineage 列（`_source_autowriter_*`）**：当前脚本未声明这些列 →
-   整行 quarantine，拖垮 ingestion。见上方"lineage 元数据列 · ⚠️ 重要限制"。
-   当前结论：先别加，或全列进 `project_specific_fields_to_raw_extra`。
+8. ~~加了 lineage 列会整行 quarantine~~ **已不是坑（R-031，2026-06-05）**：这 6 列
+   `_source_autowriter_*` / `_ai_engine` / `_exported_at` 现已全局声明 + 两个 UUID 自动
+   提升进 FK 列，直接加即可。见上方"lineage 元数据列 · ✅ 现状"。
 
 ---
 

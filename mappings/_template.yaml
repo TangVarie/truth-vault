@@ -224,6 +224,10 @@ project_specific_fields_to_raw_extra:
   - 观众分析
   - 巡查状态
   - 最近检查时间
+# 注: autowriter 回灌 lineage 列 (R-031) —— `_source_autowriter_project_id`/`_batch_id`/
+#     `_item_id`/`_version_id` · `_ai_engine` · `_exported_at` —— 【不用】列在这里。sync 脚本
+#     已对这 6 列全局特殊处理 (`_LINEAGE_FK_COLS`/`_LINEAGE_RAW_EXTRA_COLS`): 两个 UUID 自动进
+#     notes 的 FK 列、其余进 raw_extra、6 列都不会 quarantine。飞书表直接加即可, 详见 docs/11。
 
 # ════════════════════════════════════════════════════════════════════
 # 数据补录需求 [OPTIONAL]

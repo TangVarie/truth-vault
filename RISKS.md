@@ -477,7 +477,13 @@
   真正一直 unused 的 (比如某个从没被查的列) 再单独评估. 现在删等于自废武功.
 - **Owner**: 无需 action. 记录在案防止有人看到 advisor 就手贱删索引.
 
-### R-031 · 飞书 lineage 列未接通 notes FK (docs/11 文档化时发现) [2026-05-22]
+### R-031 · 飞书 lineage 列未接通 notes FK (docs/11 文档化时发现) [2026-05-22] · ✅ 已解决 [2026-06-05]
+
+> ✅ **已解决 (Session #17, 2026-06-05)**: 下游 autowriter 回灌闭环要上线, 触发条件已到。
+> `transform_row` 加 `_LINEAGE_FK_COLS` / `_LINEAGE_RAW_EXTRA_COLS`: 6 列全局预声明 (不再
+> quarantine) + 两个 UUID 自动提升进 `notes.source_autowriter_item_id` / `source_autowriter_version_id`
+> FK 列, 其余 4 列进 raw_extra。CI 守 `transform_row autowriter lineage FK self-check (R-031)`;
+> docs/11 lineage 段从"🚫 先别加"改为"✅ 现状"。下面为原始问题陈述 (历史)。
 
 - **是什么**: docs/11 描述 autowriter 回灌要在飞书表加 6 个 `_source_autowriter_*`
   lineage 列, 但当前 sync 脚本未声明这些列 → 加了会 quarantine 整行; 即使列进
