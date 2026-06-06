@@ -212,10 +212,39 @@ export default async function BoardPage() {
             </div>
           ))}
 
+          {/* ── 全域阵地 + 尤其擅长 ── */}
+          <section className="s12 bb-tile" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 14 }}>
+            <div>
+              <div style={{ fontFamily: mono, fontSize: 11, letterSpacing: "0.14em", color: MUTE, marginBottom: 10 }}>全域阵地 · CHANNELS</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {["小红书", "播客", "知乎", "今日头条", "微博"].map((c, i) => (
+                  <span key={c} style={{ display: "inline-flex", alignItems: "center", gap: 7, border: `1px solid ${BORD}`, borderRadius: 999, padding: "7px 14px", fontSize: 13, fontWeight: 600 }}><span style={{ width: 7, height: 7, borderRadius: 99, background: i === 0 ? LIME : "#5b606b" }} />{c}</span>
+                ))}
+              </div>
+            </div>
+            <div style={{ fontSize: 12.5, color: MUTE, maxWidth: 320, lineHeight: 1.6 }}>尤其擅长 · 传统投放受限、达人接广受制的品类</div>
+          </section>
+
           {/* ── 跑马灯(s12)── */}
           <section className="s12 bb-tile" style={{ padding: 0, overflow: "hidden" }}>
             <div style={{ display: "flex", width: "max-content", animation: "bb-marq 28s linear infinite", fontSize: 11.5, color: MUTE, fontFamily: mono, padding: "10px 0" }}>
               {[0, 1].map((r) => <div key={r} style={{ display: "flex", gap: 26, paddingLeft: 26 }}><span style={{ color: LIME }}>● 数据实时直连</span><span>累计曝光 {cnNum(o.impressions)}</span><span>命中率 {hitRate}%</span><span>{comma(o.baokuanReal)} 验证级爆款</span><span>{comma(o.notes)} 内容资产</span><span>{o.projects} 条战线</span><span>单月峰值 {cnNum(peakImp.impressions)}</span></div>)}
+            </div>
+          </section>
+          {/* ── 对外 CTA / 合作 ── */}
+          <section className="s12 bb-card" style={{ background: LIME, color: INKC, padding: "clamp(26px,4vw,44px)" }}>
+            <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "flex-end", gap: 20 }}>
+              <div>
+                <div style={{ fontFamily: mono, fontSize: 11, letterSpacing: "0.16em", opacity: 0.6 }}>LET&apos;S TALK</div>
+                <h2 style={{ fontSize: "clamp(26px,3.4vw,46px)", fontWeight: 800, letterSpacing: "-0.03em", lineHeight: 1.06, marginTop: 8 }}>把你的品类,做成下一个<br />可查证的真实战绩。</h2>
+              </div>
+              <Link href="/" style={{ background: INKC, color: "#fff", borderRadius: 999, padding: "13px 28px", fontSize: 15, fontWeight: 700, textDecoration: "none" }}>预约策略咨询 →</Link>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px 12px", marginTop: 22, fontSize: 13, fontWeight: 600 }}>
+              {["策略定制", "内容生产", "分发执行", "效果复盘"].map((s, i) => (
+                <span key={s} style={{ display: "inline-flex", alignItems: "center", gap: 12 }}>{i > 0 ? <span style={{ opacity: 0.4 }}>→</span> : null}<span style={{ background: "rgba(14,14,14,0.1)", borderRadius: 999, padding: "6px 14px" }}>{s}</span></span>
+              ))}
+              <span style={{ fontFamily: mono, fontSize: 12, opacity: 0.6, marginLeft: 4 }}>全链路交付 · 每轮独立验收</span>
             </div>
           </section>
         </div>
