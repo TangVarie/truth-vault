@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { checkPassword, createSessionToken, SESSION_COOKIE, SESSION_MAX_AGE } from "@/lib/auth";
 
 function sanitizeNext(n: string): string {
-  if (!n || !n.startsWith("/") || n.startsWith("//")) return "/console";
+  // 必须以单个 "/" 开头、且不含 "\\"(否则 new URL("/\\evil.com") 会规范化成 https://evil.com → 开放重定向)
+  if (!n || !n.startsWith("/") || n.startsWith("//") || n.includes("\\")) return "/console";
   return n;
 }
 
