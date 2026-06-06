@@ -102,11 +102,64 @@ where tier in ('趴','预备','爆','大爆','风控')
 group by project_id, tier;
 comment on view public.v_dash_project_tier is '看板深挖:分战线 tier 构成。';
 
+-- 8) 受众命中率(target_audience 数组 unnest)—— "通用/泛人群"是命中黑洞,具体共情受众胜出
+create or replace view public.v_dash_audience_perf with (security_invoker = false) as
+select
+  a                                                                    as audience,
+  count(*)                                                             as n,
+  count(*) filter (where n.tier in ('爆','大爆'))                      as hits,
+  round(100.0 * count(*) filter (where n.tier in ('爆','大爆')) / count(*), 1) as hit_rate,
+  round(avg(n.interactions))::int                                      as avg_inter
+from truth_vault.notes n, lateral unnest(n.target_audience) a
+where n.target_audience is not null
+group by a
+having count(*) >= 10
+order by hit_rate desc;
+comment on view public.v_dash_audience_perf is '看板深挖:受众命中率(n>=10)。';
+
+-- 9) 内容形态命中率 —— 情感叙事出爆款,直给推荐/横评对比不出
+create or replace view public.v_dash_format_perf with (security_invoker = false) as
+select
+  content_format                                                       as fmt,
+  count(*)                                                             as n,
+  count(*) filter (where tier in ('爆','大爆'))                        as hits,
+  round(100.0 * count(*) filter (where tier in ('爆','大爆')) / count(*), 1) as hit_rate,
+  round(avg(interactions))::int                                        as avg_inter
+from truth_vault.notes
+where content_format is not null and content_format <> ''
+group by content_format
+having count(*) >= 10
+order by hit_rate desc;
+comment on view public.v_dash_format_perf is '看板深挖:内容形态命中率(n>=10)。';
+
+-- 10) 触达集中度(幂律)—— 不到 4% 的爆款吃掉七成以上触达;单行
+create or replace view public.v_dash_reach_concentration with (security_invoker = false) as
+with base as (
+  select impressions, tier from truth_vault.notes where impressions is not null and impressions > 0
+),
+ranked as (
+  select impressions, tier,
+    ntile(100) over (order by impressions desc) as pct,
+    sum(impressions) over ()                    as total,
+    count(*) over ()                            as cnt
+  from base
+)
+select
+  max(cnt)                                                             as total_notes,
+  max(total)::bigint                                                   as total_imp,
+  round(100.0 * sum(impressions) filter (where pct <= 1) / max(total), 1)  as top1_share,
+  round(100.0 * sum(impressions) filter (where pct <= 5) / max(total), 1)  as top5_share,
+  round(100.0 * sum(impressions) filter (where pct <= 10) / max(total), 1) as top10_share,
+  round(100.0 * sum(impressions) filter (where tier in ('爆','大爆')) / max(total), 1) as hit_reach_share,
+  round(100.0 * count(*) filter (where tier in ('爆','大爆')) / max(cnt), 2) as hit_note_pct
+from ranked;
+comment on view public.v_dash_reach_concentration is '看板深挖:触达幂律(top1/5/10% 与爆款的触达占比)。';
+
 -- GRANT(包 IF EXISTS;裸 PG / CI 无这些角色,对齐 notes_v1_2.sql 约定)
 do $$
 declare v text; r text;
 begin
-  foreach v in array array['v_dash_lever_perf','v_dash_valence_matrix','v_dash_archetype_perf','v_dash_intent_perf','v_dash_tier_funnel','v_dash_project_perf','v_dash_project_tier'] loop
+  foreach v in array array['v_dash_lever_perf','v_dash_valence_matrix','v_dash_archetype_perf','v_dash_intent_perf','v_dash_tier_funnel','v_dash_project_perf','v_dash_project_tier','v_dash_audience_perf','v_dash_format_perf','v_dash_reach_concentration'] loop
     foreach r in array array['anon','authenticated','service_role'] loop
       if exists (select 1 from pg_roles where rolname = r) then
         execute format('grant select on public.%I to %I', v, r);

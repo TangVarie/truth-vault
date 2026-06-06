@@ -16,7 +16,7 @@ const card = "rounded-3xl border border-white/[0.10] p-6";
 const cardStyle = { background: "rgba(255,255,255,0.04)" } as const;
 
 export default function Mining({ data }: { data: DashboardData }) {
-  const { leverPerf, valence, archetypes, intent, funnel } = data;
+  const { leverPerf, valence, archetypes, intent, funnel, audience, formats, reach } = data;
   if (!leverPerf.length && !valence.length) {
     return null; // 无数据(本地未配 env)时不渲染
   }
@@ -39,6 +39,17 @@ export default function Mining({ data }: { data: DashboardData }) {
 
   const topArche = archetypes.slice(0, 8);
   const archeMax = Math.max(...topArche.map((a) => a.hit_rate), 1);
+
+  const topAud = audience.slice(0, 8);
+  const audMax = Math.max(...topAud.map((a) => a.hit_rate), 1);
+  const fmtMax = Math.max(...formats.map((f) => f.hit_rate), 1);
+  const concRows = reach
+    ? [
+        { label: "Top 1% 内容", share: reach.top1_share },
+        { label: "Top 5% 内容", share: reach.top5_share },
+        { label: `爆+大爆 ${reach.hit_note_pct}%`, share: reach.hit_reach_share },
+      ]
+    : [];
 
   return (
     <section className="mb-4">
@@ -167,6 +178,66 @@ export default function Mining({ data }: { data: DashboardData }) {
             ))}
           </div>
         </div>
+
+        {/* 受众命中率 */}
+        <div className={`${card} lg:col-span-4`} style={cardStyle}>
+          <h3 className="h2 text-white">受众 · 命中率 Top</h3>
+          <p className="mini mt-1 text-slate-500">具体共情受众胜出,"通用"是黑洞</p>
+          <div className="mt-5 space-y-2">
+            {topAud.map((a) => (
+              <div key={a.audience} className="grid grid-cols-[72px_1fr_44px] items-center gap-2.5">
+                <span className="mini truncate text-slate-300" title={a.audience}>{a.audience}</span>
+                <span className="relative h-2 overflow-hidden rounded-full" style={{ background: "rgba(255,255,255,0.06)" }}>
+                  <span className="absolute inset-y-0 left-0 rounded-full" style={{ width: `${Math.max(3, (a.hit_rate / audMax) * 100)}%`, background: "rgba(232,118,90,0.6)" }} />
+                </span>
+                <span className="num text-right text-xs font-bold text-slate-200">{a.hit_rate}%</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* 内容形态命中率 */}
+        <div className={`${card} lg:col-span-4`} style={cardStyle}>
+          <h3 className="h2 text-white">内容形态 · 命中率</h3>
+          <p className="mini mt-1 text-slate-500">情感叙事赢,直给推荐不出</p>
+          <div className="mt-5 space-y-2">
+            {formats.map((f) => (
+              <div key={f.fmt} className="grid grid-cols-[72px_1fr_44px] items-center gap-2.5">
+                <span className="mini truncate text-slate-300" title={f.fmt}>{f.fmt}</span>
+                <span className="relative h-2 overflow-hidden rounded-full" style={{ background: "rgba(255,255,255,0.06)" }}>
+                  <span className="absolute inset-y-0 left-0 rounded-full" style={{ width: `${Math.max(3, (f.hit_rate / fmtMax) * 100)}%`, background: "rgba(232,118,90,0.6)" }} />
+                </span>
+                <span className="num text-right text-xs font-bold text-slate-200">{f.hit_rate}%</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* 触达集中度(幂律)*/}
+        {reach ? (
+          <div className={`${card} lg:col-span-4`} style={cardStyle}>
+            <div className="flex items-baseline justify-between">
+              <h3 className="h2 text-white">触达集中度</h3>
+              <span className="tag text-slate-500">POWER LAW</span>
+            </div>
+            <p className="mini mt-1 text-slate-500">爆款即一切 · 少数内容吃掉多数曝光</p>
+            <div className="mt-4 flex items-baseline gap-2">
+              <span className="num font-bold text-coral" style={{ fontSize: "clamp(28px,3.2vw,46px)", lineHeight: 1, letterSpacing: "-0.03em" }}>{reach.hit_reach_share}%</span>
+              <span className="mini text-slate-500">的总触达,<br />来自 {reach.hit_note_pct}% 的爆款内容</span>
+            </div>
+            <div className="mt-4 space-y-2.5">
+              {concRows.map((c) => (
+                <div key={c.label} className="grid grid-cols-[98px_1fr_46px] items-center gap-2.5">
+                  <span className="mini text-slate-400">{c.label}</span>
+                  <span className="relative h-2 overflow-hidden rounded-full" style={{ background: "rgba(255,255,255,0.06)" }}>
+                    <span className="absolute inset-y-0 left-0 rounded-full" style={{ width: `${Math.min(100, c.share)}%`, background: "rgba(232,118,90,0.6)" }} />
+                  </span>
+                  <span className="num text-right text-xs font-bold text-slate-200">{c.share}%</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
       </div>
     </section>
   );

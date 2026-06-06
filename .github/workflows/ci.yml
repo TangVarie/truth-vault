@@ -1291,6 +1291,9 @@ jobs:
           psql -v ON_ERROR_STOP=1 -c "SELECT tier, avg_imp, read_rate, max_inter FROM public.v_dash_tier_funnel LIMIT 0;"
           psql -v ON_ERROR_STOP=1 -c "SELECT project_id, category, notes, hit_rate, total_imp FROM public.v_dash_project_perf LIMIT 0;"
           psql -v ON_ERROR_STOP=1 -c "SELECT project_id, tier, n FROM public.v_dash_project_tier LIMIT 0;"
+          psql -v ON_ERROR_STOP=1 -c "SELECT audience, n, hit_rate FROM public.v_dash_audience_perf LIMIT 0;"
+          psql -v ON_ERROR_STOP=1 -c "SELECT fmt, n, hit_rate FROM public.v_dash_format_perf LIMIT 0;"
+          psql -v ON_ERROR_STOP=1 -c "SELECT total_notes, top1_share, hit_reach_share, hit_note_pct FROM public.v_dash_reach_concentration LIMIT 0;"
       - name: Sanity-check v1.3 (参考 tier accepted + reference cols + discrepancy view)
         run: |
           psql -v ON_ERROR_STOP=1 <<'SQL'

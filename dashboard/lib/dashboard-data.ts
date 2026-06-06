@@ -19,6 +19,9 @@ export type IntentPerf = { intent: string; n: number; hits: number; hit_rate: nu
 export type TierFunnel = { tier: string; n: number; avg_imp: number; read_rate: number; inter_rate: number; avg_inter: number; max_inter: number };
 export type ProjectPerf = { project_id: string; category: string; notes: number; hits: number; hit_rate: number; avg_imp: number; total_imp: number; essence: number };
 export type ProjectTier = { project_id: string; tier: string; n: number };
+export type AudiencePerf = { audience: string; n: number; hits: number; hit_rate: number; avg_inter: number };
+export type FormatPerf = { fmt: string; n: number; hits: number; hit_rate: number; avg_inter: number };
+export type ReachConcentration = { total_notes: number; total_imp: number; top1_share: number; top5_share: number; top10_share: number; hit_reach_share: number; hit_note_pct: number };
 
 export type DashboardData = {
   o: Overview;
@@ -33,6 +36,9 @@ export type DashboardData = {
   funnel: TierFunnel[];
   projectPerf: ProjectPerf[];
   projectTier: ProjectTier[];
+  audience: AudiencePerf[];
+  formats: FormatPerf[];
+  reach: ReachConcentration | null;
 };
 
 const EMPTY: Overview = {
@@ -42,6 +48,7 @@ const EMPTY: Overview = {
 const EMPTY_DATA: DashboardData = {
   o: EMPTY, levers: [], projects: [], matrix: [], hits: [],
   leverPerf: [], valence: [], archetypes: [], intent: [], funnel: [], projectPerf: [], projectTier: [],
+  audience: [], formats: [], reach: null,
 };
 
 const num = (x: unknown) => (x == null ? 0 : Number(x));
@@ -50,7 +57,7 @@ export async function getDashboardData(): Promise<DashboardData> {
   const sb = getSupabase();
   if (!sb) return EMPTY_DATA;
   try {
-    const [ov, lv, pj, mx, th, lp, vm, ar, it, tf, pp, pt] = await Promise.all([
+    const [ov, lv, pj, mx, th, lp, vm, ar, it, tf, pp, pt, aud, fp, rc] = await Promise.all([
       sb.from("v_dash_overview").select("*").single(),
       sb.from("v_dash_levers").select("*").limit(12),
       sb.from("v_dash_projects").select("*"),
@@ -63,6 +70,9 @@ export async function getDashboardData(): Promise<DashboardData> {
       sb.from("v_dash_tier_funnel").select("*"),
       sb.from("v_dash_project_perf").select("*"),
       sb.from("v_dash_project_tier").select("*"),
+      sb.from("v_dash_audience_perf").select("*"),
+      sb.from("v_dash_format_perf").select("*"),
+      sb.from("v_dash_reach_concentration").select("*"),
     ]);
     const d: any = ov.data;
     if (!d) return EMPTY_DATA;
@@ -94,6 +104,12 @@ export async function getDashboardData(): Promise<DashboardData> {
       funnel: ((tf.data as any[]) ?? []).map((r) => ({ tier: r.tier, n: num(r.n), avg_imp: num(r.avg_imp), read_rate: num(r.read_rate), inter_rate: num(r.inter_rate), avg_inter: num(r.avg_inter), max_inter: num(r.max_inter) })),
       projectPerf: ((pp.data as any[]) ?? []).map((r) => ({ project_id: r.project_id, category: r.category, notes: num(r.notes), hits: num(r.hits), hit_rate: num(r.hit_rate), avg_imp: Math.round(num(r.avg_imp) * AMPLIFY.impressions), total_imp: Math.round(num(r.total_imp) * AMPLIFY.impressions), essence: num(r.essence) })),
       projectTier: ((pt.data as any[]) ?? []).map((r) => ({ project_id: r.project_id, tier: r.tier, n: num(r.n) })),
+      audience: ((aud.data as any[]) ?? []).map((r) => ({ audience: r.audience, n: num(r.n), hits: num(r.hits), hit_rate: num(r.hit_rate), avg_inter: num(r.avg_inter) })),
+      formats: ((fp.data as any[]) ?? []).map((r) => ({ fmt: r.fmt, n: num(r.n), hits: num(r.hits), hit_rate: num(r.hit_rate), avg_inter: num(r.avg_inter) })),
+      reach: (() => {
+        const r = (rc.data as any[])?.[0];
+        return r ? { total_notes: num(r.total_notes), total_imp: Math.round(num(r.total_imp) * AMPLIFY.impressions), top1_share: num(r.top1_share), top5_share: num(r.top5_share), top10_share: num(r.top10_share), hit_reach_share: num(r.hit_reach_share), hit_note_pct: num(r.hit_note_pct) } : null;
+      })(),
     };
   } catch {
     return EMPTY_DATA;
