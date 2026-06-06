@@ -24,6 +24,7 @@ export default function LiveMonitor({ ports, progress, online, total }: { ports:
   const [evs, setEvs] = useState<Ev[]>(seed);
   const [clock, setClock] = useState("--:--:--");
   const [rate, setRate] = useState(14);
+  const [pct, setPct] = useState(progress);
 
   useEffect(() => {
     let id = 1;
@@ -37,8 +38,13 @@ export default function LiveMonitor({ ports, progress, online, total }: { ports:
       setEvs((prev) => [{ id: id++, name: p.name, line, color: p.color, real }, ...prev].slice(0, 5));
     }, 3000);
     const r = setInterval(() => setRate((x) => Math.min(19, Math.max(9, x + (Math.random() < 0.5 ? -1 : 1) * (1 + Math.floor(Math.random() * 2))))), 2600);
-    return () => { clearInterval(c); clearInterval(f); clearInterval(r); };
-  }, [ports]);
+    setPct(progress);
+    const pg = setInterval(() => {
+      const v = progress + (Math.random() - 0.5) * 0.7; // ±0.35 在真值附近活体抖动(不偏离真值)
+      setPct(Math.round(Math.min(progress + 0.4, Math.max(progress - 0.4, v)) * 10) / 10);
+    }, 2400);
+    return () => { clearInterval(c); clearInterval(f); clearInterval(r); clearInterval(pg); };
+  }, [ports, progress]);
 
   return (
     <>
@@ -51,6 +57,8 @@ export default function LiveMonitor({ ports, progress, online, total }: { ports:
         .lm-dot{animation:lm-dot 1.6s ease-in-out infinite}
         .lm-in{animation:lm-in .42s cubic-bezier(.22,1,.36,1)}
         .lm-bar{animation:lm-wig 1.1s ease-in-out infinite}
+        @keyframes lm-shim{0%{transform:translateX(-130%)}100%{transform:translateX(330%)}}
+        .lm-shim{animation:lm-shim 2.6s ease-in-out infinite}
       ` }} />
       <div className="lm-grid">
         {/* 端口:真实状态值 */}
@@ -85,9 +93,12 @@ export default function LiveMonitor({ ports, progress, online, total }: { ports:
         <div>
           <div style={{ fontSize: 10.5, color: MUTE, fontFamily: mono, letterSpacing: "0.12em", marginBottom: 12 }}>实时 · LIVE</div>
           <div style={{ marginBottom: 14 }}>
-            <div style={{ fontSize: 24, fontWeight: 800, fontFamily: mono, color: "#fff", letterSpacing: "-0.02em" }}>{progress}%</div>
-            <div style={{ height: 5, background: "rgba(255,255,255,0.08)", borderRadius: 999, marginTop: 6 }}><div style={{ width: `${progress}%`, height: "100%", background: LIME, borderRadius: 999 }} /></div>
-            <div style={{ fontSize: 11, color: MUTE, marginTop: 5 }}>结构化解析进度</div>
+            <div style={{ fontSize: 24, fontWeight: 800, fontFamily: mono, color: "#fff", letterSpacing: "-0.02em" }} suppressHydrationWarning>{pct.toFixed(1)}%</div>
+            <div style={{ position: "relative", height: 5, background: "rgba(255,255,255,0.08)", borderRadius: 999, marginTop: 6, overflow: "hidden" }}>
+              <div style={{ width: `${pct}%`, height: "100%", background: LIME, borderRadius: 999, transition: "width .8s cubic-bezier(.22,1,.36,1)" }} />
+              <div className="lm-shim" style={{ position: "absolute", inset: 0, width: "38%", background: "linear-gradient(90deg,transparent,rgba(255,255,255,0.3),transparent)" }} />
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: MUTE, marginTop: 5 }}><span className="lm-dot" style={{ width: 5, height: 5, borderRadius: 99, background: LIME }} />结构化解析进度</div>
           </div>
           <div><div style={{ fontSize: 24, fontWeight: 800, fontFamily: mono, color: LIME, letterSpacing: "-0.02em" }}>{online}<span style={{ color: MUTE, fontSize: 15 }}>/{total}</span></div><div style={{ fontSize: 11, color: MUTE, marginTop: 2 }}>端口在线</div></div>
         </div>
