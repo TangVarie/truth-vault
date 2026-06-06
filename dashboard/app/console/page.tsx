@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { getDashboardData } from "@/lib/dashboard-data";
 import {
@@ -25,6 +26,8 @@ import Sparkline from "@/components/Sparkline";
  * /console = 暗色座舱「态势仪表」—— 一套语言贯穿全局(深暖黑 + coral 点睛 + 细发丝),克制统一。
  * 不再有生成式画布(神经花已弃)。前瞻"体征"指标 + 真·数据 viz,可控、可靠。
  */
+// 内部座舱:含机理挖掘,不对外索引(用户决定:对外只留洁净版 `/`)。
+export const metadata: Metadata = { robots: { index: false, follow: false } };
 export const dynamic = "force-dynamic";
 
 export default async function ConsolePage() {

@@ -11,10 +11,9 @@ import {
   derivedAiInferences,
   derivedStrategySpace,
   PROJECT_LABEL,
-  PROJECT_SHORT,
   TICKER_EVENTS,
 } from "@/config/showcase";
-import type { DashboardData, Matrix as MatrixT } from "@/lib/dashboard-data";
+import type { DashboardData } from "@/lib/dashboard-data";
 import SmoothScroll from "@/components/SmoothScroll";
 import Reveal from "@/components/Reveal";
 import CountUp from "@/components/CountUp";
@@ -32,12 +31,10 @@ const stagger = { hidden: {}, show: { transition: { staggerChildren: 0.1, delayC
 const rise = { hidden: { opacity: 0, y: 24 }, show: { opacity: 1, y: 0, transition: { duration: 0.85, ease } } };
 
 export default function Editorial({ data }: { data: DashboardData }) {
-  const { o, projects, matrix, hits } = data;
+  const { o, projects, hits } = data;
   const aiInferences = derivedAiInferences(o.notes);
   const strategySpace = derivedStrategySpace(o.levers, o.audiences);
   const hitRate = o.notes ? Math.round((o.baokuanReal / o.notes) * 1000) / 10 : 0;
-  const levOrder = uniqSortBy(matrix, "lever");
-  const audOrder = uniqSortBy(matrix, "audience");
 
   // 暖纸底铺到 overscroll(并切到 light 配色),离开页面还原
   useEffect(() => {
@@ -94,7 +91,7 @@ export default function Editorial({ data }: { data: DashboardData }) {
               <Link href="/console" className="btn-ink inline-flex items-center gap-2 px-7 py-4 text-base font-medium">
                 查看实时看板 →
               </Link>
-              <span className="ed-mini" style={{ color: "#8A7F6D" }}>实时态势 · 公开看板</span>
+              <span className="ed-mini" style={{ color: "#8A7F6D" }}>实时态势 · 实时直连</span>
             </motion.div>
           </motion.div>
           <ScrollCue />
@@ -147,11 +144,10 @@ export default function Editorial({ data }: { data: DashboardData }) {
                 <BigStat value={aiInferences} label="AI 推理深度" sub={`${AI_DIMS} 维 × ${comma(o.notes)} 内容资产`} />
               </Reveal>
             </div>
-            <Reveal delay={80} mountOnView className="mt-14 min-h-[300px]">
-              <div className="mn mb-4" style={{ fontSize: 11, color: "#8A7F6D", letterSpacing: "0.2em" }}>
-                深 → coral 表共振强度 · 描边格 = Top 3 命中区
-              </div>
-              <Matrix cells={matrix} levers={levOrder} audiences={audOrder} />
+            <Reveal delay={120}>
+              <p className="ed-lead mt-12 max-w-2xl" style={{ color: "#3D3A34" }}>
+                每条内容都被拆进多维策略坐标系,命中规律持续沉淀为<span className="u2">可复用资产</span> —— 越投越准。
+              </p>
             </Reveal>
           </div>
         </section>
@@ -219,7 +215,7 @@ export default function Editorial({ data }: { data: DashboardData }) {
                 <div className="relative px-7 py-8">
                   <div className="flex items-center gap-2">
                     <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ background: "#E8765A" }} />
-                    <span className="mn" style={{ fontSize: 11, color: "#9aa0aa", letterSpacing: "0.18em" }}>公众看板 · LIVE</span>
+                    <span className="mn" style={{ fontSize: 11, color: "#9aa0aa", letterSpacing: "0.18em" }}>实时座舱 · LIVE</span>
                   </div>
                   <div className="fr mt-6" style={{ color: "#f3f4f6", fontSize: 30, fontWeight: 500, letterSpacing: "-0.01em" }}>
                     进入控制台 →
@@ -309,29 +305,19 @@ function Leaderboard({ hits, topInteractions }: { hits: DashboardData["hits"]; t
   }
   return (
     <div>
-      <div className="mn mb-3 grid grid-cols-[36px_52px_1fr_92px_92px] items-center gap-3 px-1" style={{ fontSize: 10.5, color: "#8A7F6D", letterSpacing: "0.12em" }}>
+      <div className="mn mb-3 grid grid-cols-[36px_1fr_104px_104px] items-center gap-3 px-1" style={{ fontSize: 10.5, color: "#8A7F6D", letterSpacing: "0.12em" }}>
         <span>#</span>
         <span>战线</span>
-        <span>策略原型</span>
         <span className="text-right">互动</span>
         <span className="text-right">曝光</span>
       </div>
       {hits.slice(0, 5).map((h, i) => (
         <div
           key={i}
-          className="rule-ink grid grid-cols-[36px_52px_1fr_92px_92px] items-center gap-3 px-1 py-4"
+          className="rule-ink grid grid-cols-[36px_1fr_104px_104px] items-center gap-3 px-1 py-4"
         >
           <span className="fr" style={{ fontSize: 22, color: h.rank === 1 ? "#E8765A" : "#8A7F6D", fontWeight: 500 }}>{h.rank}</span>
-          <span className="mn inline-flex h-7 w-9 items-center justify-center rounded-md" style={{ background: "rgba(20,17,15,0.06)", fontSize: 13, color: "#14110F" }}>
-            {PROJECT_SHORT[h.project_id] ?? "·"}
-          </span>
-          <span className="flex items-center gap-2">
-            {h.lever ? (
-              <span className="rounded-full px-3 py-1 text-xs" style={{ background: "rgba(232,118,90,0.12)", color: "#7A2E22" }}>{h.lever}</span>
-            ) : (
-              <span className="mn rounded-full px-3 py-1" style={{ fontSize: 10.5, border: "1px solid rgba(20,17,15,0.15)", color: "#8A7F6D" }}>—</span>
-            )}
-          </span>
+          <span className="mn" style={{ fontSize: 13, color: "#14110F" }}>{PROJECT_LABEL[h.project_id] ?? h.project_id}</span>
           <span className="fr text-right" style={{ fontSize: 18, color: "#14110F" }}>
             <CountUp value={h.interactions} format="comma" duration={1200 + i * 100} />
           </span>
@@ -341,58 +327,6 @@ function Leaderboard({ hits, topInteractions }: { hits: DashboardData["hits"]; t
         </div>
       ))}
       <div className="mn mt-3" style={{ fontSize: 11, color: "#8A7F6D" }}>单篇最高 {comma(topInteractions)} 互动</div>
-    </div>
-  );
-}
-
-/* ── 编辑级共振矩阵(纸上 coral 浓淡)── */
-function Matrix({ cells, levers, audiences }: { cells: MatrixT[]; levers: string[]; audiences: string[] }) {
-  if (!cells.length) return <div className="ed-mini" style={{ color: "#8A7F6D" }}>共振矩阵数据准备中 —</div>;
-  const idx = new Map<string, number>();
-  cells.forEach((c) => idx.set(`${c.lever}|${c.audience}`, c.n));
-  const max = Math.max(1, ...cells.map((c) => c.n));
-  const top = new Set([...cells].sort((a, b) => b.n - a.n).slice(0, 3).map((c) => `${c.lever}|${c.audience}`));
-  const cs = 34;
-  const gap = 4;
-  return (
-    <div className="overflow-x-auto">
-      <div style={{ minWidth: audiences.length * (cs + gap) + 130 }}>
-        <div className="flex" style={{ paddingLeft: 118 }}>
-          {audiences.map((a) => (
-            <div key={a} className="mn truncate" style={{ width: cs + gap, textAlign: "center", fontSize: 10, color: "#8A7F6D" }} title={a}>{a}</div>
-          ))}
-        </div>
-        {levers.map((lev) => (
-          <div key={lev} className="flex items-center" style={{ marginTop: gap }}>
-            <div className="mn truncate pr-3 text-right" style={{ width: 118, fontSize: 11, color: "#3D3A34" }} title={lev}>{lev}</div>
-            {audiences.map((aud, ci) => {
-              const key = `${lev}|${aud}`;
-              const n = idx.get(key) ?? 0;
-              const ratio = n / max;
-              const isTop = top.has(key);
-              return (
-                <div
-                  key={aud}
-                  className="relative"
-                  style={{
-                    width: cs,
-                    height: cs,
-                    marginLeft: ci === 0 ? 0 : gap,
-                    borderRadius: 7,
-                    background: n === 0 ? "rgba(20,17,15,0.04)" : `rgba(232,118,90,${0.1 + ratio * 0.82})`,
-                    boxShadow: isTop ? "0 0 0 1.5px #14110F" : "none",
-                  }}
-                  title={`${lev} × ${aud}: ${n}`}
-                >
-                  {n > 0 && (
-                    <div className="absolute inset-0 flex items-center justify-center" style={{ fontSize: 10, fontWeight: 700, color: ratio > 0.5 ? "#F3EEE6" : "#7A2E22" }}>{n}</div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        ))}
-      </div>
     </div>
   );
 }
@@ -471,9 +405,4 @@ function HeroStat({ value, format, label, ctx }: { value: number; format: "cn" |
       <div className="ed-mini" style={{ color: "#3D3A34" }}>{ctx}</div>
     </div>
   );
-}
-
-function uniqSortBy(m: MatrixT[], key: "lever" | "audience"): string[] {
-  const total = (v: string) => m.filter((x) => x[key] === v).reduce((s, x) => s + x.n, 0);
-  return Array.from(new Set(m.map((x) => x[key]))).sort((a, b) => total(b) - total(a));
 }
