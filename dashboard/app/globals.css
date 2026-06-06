@@ -169,3 +169,69 @@ body { overflow-x: clip; }
     scroll-behavior: auto !important;
   }
 }
+
+/* ═════════════════════════════════════════════════════════════
+ * 「Bone & Ink」编辑级世界(仅 / 落地页;/console 仍是暗色座舱)
+ * 暖骨白纸底 + 暖墨黑 + coral 点睛 + 黄铜发丝线 · Fraunces 衬线 + Hanken 正文
+ * 灵感锚:Anthropic 暖纸 + 单点睛色 + 衬线/grotesque 配对
+ * ═════════════════════════════════════════════════════════════ */
+.editorial {
+  --bone:   #F3EEE6;   /* 纸底 */
+  --oat:    #EAE3D6;   /* 次级底 */
+  --ink:    #14110F;   /* 暖墨黑 */
+  --ink-soft:#3D3A34;  /* 次级文字 */
+  --ink-mute:#8A7F6D;  /* 弱文字 / mono 眉标 */
+  --coral:  #E8765A;   /* 点睛(品牌色) */
+  --oxblood:#7A2E22;   /* 深点睛(小字对比) */
+  --brass:  #B89B6A;   /* 黄铜发丝线 */
+  --brass-line:#CDBE9E;
+  --ink-line:rgba(20,17,15,0.14);
+
+  background: var(--bone);
+  color: var(--ink);
+  color-scheme: light;
+  font-family: var(--font-hanken), ui-sans-serif, system-ui, -apple-system, "PingFang SC", sans-serif;
+}
+.editorial ::selection { background: rgba(232,118,90,0.22); }
+
+/* 字族开关 */
+.fr  { font-family: var(--font-fraunces), Georgia, "Times New Roman", serif; font-optical-sizing: auto; }
+.mn  { font-family: var(--font-geist-mono), ui-monospace, "SFMono-Regular", monospace; }
+.cjk { font-family: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "STSong", "SimSun", serif; }
+
+/* 编辑级字阶(Fraunces 走中等字重更显高级) */
+.ed-wordmark { font-size: clamp(76px, 15vw, 230px); line-height: 0.84; letter-spacing: -0.045em; font-weight: 560; }
+.ed-numeral  { font-size: clamp(68px, 14vw, 210px); line-height: 0.86; letter-spacing: -0.04em;  font-weight: 480; }
+.ed-title    { font-size: clamp(33px, 5.4vw, 74px);  line-height: 0.99; letter-spacing: -0.025em; font-weight: 460; }
+.ed-h2       { font-size: clamp(21px, 2.5vw, 33px);  line-height: 1.1;  letter-spacing: -0.01em;  font-weight: 480; }
+.ed-lead     { font-size: clamp(18px, 2vw, 25px);    line-height: 1.5;  letter-spacing: -0.005em; }
+.ed-eyebrow  { font-size: 11px; letter-spacing: 0.24em; text-transform: uppercase; font-weight: 500; color: var(--ink-mute); }
+.ed-mini     { font-size: 12px; letter-spacing: 0.02em; color: var(--ink-soft); }
+
+/* 编辑级里 CountUp 的 tabular-nums 继承父字族(否则会变 mono),保留等宽数字对齐 */
+.editorial .tabular-nums { font-family: inherit; font-variant-numeric: tabular-nums; }
+
+/* Anthropic 式 双下划线强调(替代到处铺色) */
+.u2 { text-decoration: underline; text-decoration-color: var(--coral); text-decoration-style: double;
+      text-decoration-thickness: 2px; text-underline-offset: 7px; text-decoration-skip-ink: none; }
+
+/* 发丝分割线 */
+.rule-brass { border-top: 1px solid var(--brass-line); }
+.rule-ink   { border-top: 1px solid var(--ink-line); }
+
+/* 纸张颗粒(暖底上 multiply 变细噪;固定整屏,极弱) */
+.grain {
+  position: fixed; inset: 0; z-index: 2; pointer-events: none; opacity: 0.05; mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 200px 200px;
+}
+
+/* SVG path 描线(曲线/飞轮进场) */
+@keyframes ed-draw { to { stroke-dashoffset: 0; } }
+.ed-draw { animation: ed-draw 1.8s cubic-bezier(.22,1,.36,1) forwards; }
+
+/* coral 块按钮(纸上唯一实色) */
+.btn-ink { background: var(--ink); color: var(--bone); border-radius: 999px; transition: transform .3s cubic-bezier(.22,1,.36,1), background .3s; }
+.btn-ink:hover { transform: translateY(-2px); background: #000; }
+.btn-ghost { border: 1px solid rgba(20,17,15,0.2); border-radius: 999px; transition: border-color .3s, transform .3s; }
+.btn-ghost:hover { border-color: rgba(20,17,15,0.5); transform: translateY(-2px); }
