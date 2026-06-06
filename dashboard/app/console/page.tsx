@@ -66,10 +66,15 @@ export default async function ConsolePage() {
             <Tab href="#resonance">共振</Tab>
             <Tab href="#record">战绩</Tab>
           </div>
-          <span className="hidden items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 sm:flex">
-            <span className="dot" />
-            <span className="tag text-slate-300">全链路在线</span>
-          </span>
+          <div className="hidden items-center gap-3 sm:flex">
+            <span className="flex items-center gap-2 rounded-full border border-white/10 px-3 py-1.5">
+              <span className="dot" />
+              <span className="tag text-slate-300">全链路在线</span>
+            </span>
+            <form action="/api/auth/logout" method="POST">
+              <button type="submit" className="tag text-slate-400 transition hover:text-coral">登出</button>
+            </form>
+          </div>
         </div>
       </nav>
 
