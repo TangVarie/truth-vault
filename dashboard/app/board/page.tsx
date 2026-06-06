@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { cnNum, comma, PROJECT_LABEL } from "@/config/showcase";
 import { getDashboardData } from "@/lib/dashboard-data";
 import CountUp from "@/components/CountUp";
+import LiveMonitor from "@/components/LiveMonitor";
 
 /**
  * /board = 对外数据看板(公开、只读)。BOLD BLOCKS 设计体系 · 全部真实数据。
@@ -122,7 +123,12 @@ export default async function BoardPage() {
             <div style={{ position: "relative", flex: 1, minHeight: 190, marginTop: 10 }}>
               <svg viewBox="0 0 440 360" width="100%" height="100%" preserveAspectRatio="none" className="bb-streams" style={{ position: "absolute", inset: 0 }}>
                 <defs><linearGradient id="bb-st" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#F4A65C" stopOpacity="0" /><stop offset="35%" stopColor="#F4A65C" stopOpacity="0.5" /><stop offset="100%" stopColor="#F2542D" stopOpacity="0.92" /></linearGradient></defs>
-                {streams.map((p, i) => <path key={i} d={p} fill="none" stroke="url(#bb-st)" strokeWidth="0.8" opacity="0.5" />)}
+                {streams.map((p, i) => <path key={i} id={`bbs-${i}`} d={p} fill="none" stroke="url(#bb-st)" strokeWidth="0.8" opacity="0.5" />)}
+                {[5, 16, 28, 40, 52, 64].map((idx, k) => (
+                  <circle key={`p${k}`} r="1.9" fill="#FBD08A">
+                    <animateMotion dur={`${3 + k * 0.4}s`} begin={`${k * 0.45}s`} repeatCount="indefinite"><mpath href={`#bbs-${idx}`} /></animateMotion>
+                  </circle>
+                ))}
               </svg>
               <div style={{ position: "absolute", left: 0, bottom: 0 }}><div style={{ fontSize: 30, fontWeight: 800, letterSpacing: "-0.03em" }}>{comma(o.notes)}</div><div style={{ fontSize: 11, color: MUTE, fontFamily: mono }}>内容资产 → 收束 {comma(o.baokuanReal)} 爆款</div></div>
             </div>
@@ -139,6 +145,11 @@ export default async function BoardPage() {
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, fontWeight: 600, marginTop: 14 }}><span>{comma(p.notes)} 资产</span><span>{comma(p.baokuan)} 爆款</span></div>
             </section>
           ))}
+
+          {/* ── 实时监测条(对外动效层:端口脉冲 + 事件流 + 跳动计数)── */}
+          <section className="s12 bb-tile" style={{ padding: "18px 22px" }}>
+            <LiveMonitor daily={Math.round(o.notes / 28) + 11} online={5} />
+          </section>
 
           {/* ── 战役期峰值(s8) + 投放节奏 周几(s4)── */}
           <section className="s8 bb-tile" style={{ justifyContent: "space-between" }}>
