@@ -48,6 +48,46 @@ function streamPaths(n: number, W: number, H: number) {
     return `M ${x.toFixed(1)} ${y0.toFixed(1)} C ${x.toFixed(1)} ${(y0 + H * 0.34).toFixed(1)}, ${(fx + (x - fx) * 0.14).toFixed(1)} ${(fy - H * 0.4).toFixed(1)}, ${fx.toFixed(1)} ${fy.toFixed(1)}`;
   });
 }
+
+// ── 去中心化创作网络:确定性生成(SSR 稳定)—— 真实分散的多层真人节点,无中心。──
+function mulberry32(seed: number) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+type NetNode = { x: number; y: number; r: number; tier: 0 | 1 | 2; active: boolean };
+function bezLR(a: { x: number; y: number }, b: { x: number; y: number }) {
+  const mx = (a.x + b.x) / 2;
+  return `M ${a.x.toFixed(1)} ${a.y.toFixed(1)} C ${mx.toFixed(1)} ${a.y.toFixed(1)}, ${mx.toFixed(1)} ${b.y.toFixed(1)}, ${b.x.toFixed(1)} ${b.y.toFixed(1)}`;
+}
+function decentralNet() {
+  const rnd = mulberry32(20260606);
+  const X0 = 214, X1 = 686, Y0 = 62, Y1 = 310, N = 120;
+  const src = { x: 120, y: 186 }, foc = { x: 858, y: 186 };
+  const nodes: NetNode[] = [];
+  for (let i = 0; i < N; i++) {
+    const x = X0 + rnd() * (X1 - X0);
+    const y = Y0 + ((rnd() + rnd() + rnd()) / 3) * (Y1 - Y0); // 中聚正态感
+    const tk = rnd();
+    const tier: 0 | 1 | 2 = tk > 0.95 ? 2 : tk > 0.8 ? 1 : 0; // 精英~5% / 稳定~15% / 流动~80%
+    nodes.push({ x, y, r: tier === 2 ? 3.3 : tier === 1 ? 2.2 : 1.45, tier, active: tier === 2 && rnd() > 0.4 });
+  }
+  const disp = nodes.filter((_, i) => i % 2 === 0).map((n) => bezLR(src, n));
+  const elite = nodes.filter((n) => n.tier === 2);
+  const conv = elite.map((n) => bezLR(n, foc));
+  const links: [NetNode, NetNode][] = [];
+  for (let i = 0; i < N && links.length < 28; i++) {
+    for (let j = i + 1; j < N; j++) {
+      const a = nodes[i], b = nodes[j];
+      if ((a.x - b.x) ** 2 + (a.y - b.y) ** 2 < 900 && rnd() > 0.86) { links.push([a, b]); break; }
+    }
+  }
+  return { nodes, disp, conv, links, src, foc, elite };
+}
 function Pill({ children, dark = false }: { children: React.ReactNode; dark?: boolean }) {
   return <span style={{ display: "inline-flex", alignItems: "center", gap: 7, border: `1.5px solid ${dark ? "rgba(255,255,255,0.22)" : "rgba(0,0,0,0.42)"}`, color: dark ? "#fff" : INKC, borderRadius: 999, padding: "6px 14px", fontSize: 12.5, fontWeight: 600, alignSelf: "flex-start" }}>{children}</span>;
 }
@@ -69,6 +109,7 @@ export default async function BoardPage() {
   const dow = [1, 2, 3, 4, 5, 6, 7].map((dw) => activity.filter((a) => a.dow === dw).reduce((s, a) => s + a.n, 0));
   const dowMax = Math.max(...dow, 1);
   const streams = streamPaths(72, 440, 360);
+  const net = decentralNet();
   const months = monthly.map((m) => m.ym);
   const span = months.length ? `${months[0]?.replace("-", ".")} – ${months[months.length - 1]?.replace("-", ".")}` : "";
   const ymFmt = (ym: string) => ym.replace("-", ".");
@@ -166,51 +207,75 @@ export default async function BoardPage() {
             <LiveMonitor ports={livePorts} progress={annoPct} online={onlinePorts} total={7} />
           </section>
 
-          {/* ── 飞轮机制(纯可视化:策展库 → 馆员借阅 → 反哺 → 去中心化,闭环)── */}
-          <section className="s12 bb-tile" style={{ padding: "20px 24px" }}>
-            <span style={{ display: "inline-flex", border: `1.5px solid ${BORD}`, borderRadius: 999, padding: "6px 14px", fontSize: 12.5, fontWeight: 600 }}>飞轮机制 · FLYWHEEL</span>
-            <svg viewBox="0 0 1000 250" width="100%" style={{ display: "block", marginTop: 10 }}>
-              <defs><marker id="bb-ar" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill={MUTE} /></marker></defs>
+          {/* ── 飞轮机制:去中心化创作网络(已上线)—— AI 起草 ▸ 真实分散真人网络 ▸ 真实爆款 ▸ 经验回流 ── */}
+          <section className="s12 bb-tile" style={{ padding: "22px 26px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+              <Pill dark>飞轮机制 · FLYWHEEL</Pill>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 11.5, color: LIME, fontFamily: mono }}><span className="bb-dot" style={{ width: 7, height: 7, borderRadius: 99, background: LIME, boxShadow: `0 0 10px ${LIME}` }} />去中心化创作网络 · 已上线</span>
+            </div>
+            <svg viewBox="0 0 1000 360" width="100%" style={{ display: "block", marginTop: 8 }} role="img" aria-label="去中心化创作飞轮:AI 起草到真实分散真人网络到真实爆款,经验回流">
+              <defs>
+                <linearGradient id="bb-disp" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stopColor={LIME} stopOpacity="0.62" /><stop offset="100%" stopColor={LIME} stopOpacity="0" /></linearGradient>
+                <linearGradient id="bb-conv" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stopColor={CORAL} stopOpacity="0" /><stop offset="100%" stopColor={CORAL} stopOpacity="0.72" /></linearGradient>
+                <radialGradient id="bb-srcg"><stop offset="0%" stopColor={LIME} stopOpacity="0.85" /><stop offset="100%" stopColor={LIME} stopOpacity="0" /></radialGradient>
+                <radialGradient id="bb-focg"><stop offset="0%" stopColor={CORAL} stopOpacity="0.95" /><stop offset="100%" stopColor={CORAL} stopOpacity="0" /></radialGradient>
+                <filter id="bb-glow" x="-300%" y="-300%" width="700%" height="700%"><feGaussianBlur stdDeviation="2.6" /></filter>
+              </defs>
 
-              {/* 真实爆款 → 库 */}
-              <text x="28" y="92" style={{ fontSize: 11, fontWeight: 600, fill: "#cfd3da", fontFamily: sans }}>真实爆款</text>
-              {[112, 130, 148].map((y, k) => <line key={k} className="bb-flow" x1="28" y1={y} x2="170" y2={y} stroke={CORAL} strokeWidth="1.6" opacity="0.7" />)}
+              {/* 区位标签 */}
+              <text x={net.src.x} y="24" textAnchor="middle" style={{ fontSize: 12, fontWeight: 700, fill: "#fff", fontFamily: sans }}>AI 起草</text>
+              <text x="450" y="22" textAnchor="middle" style={{ fontSize: 13.5, fontWeight: 800, fill: "#fff", fontFamily: sans }}>去中心化创作网络</text>
+              <text x="450" y="40" textAnchor="middle" style={{ fontSize: 10.5, fill: MUTE, fontFamily: mono }}>真实分散 · 真人发布 · 无中心节点</text>
+              <text x={net.foc.x} y="24" textAnchor="middle" style={{ fontSize: 12, fontWeight: 700, fill: "#fff", fontFamily: sans }}>真实爆款</text>
 
-              {/* 经验卡库 grid(策展进库)*/}
-              {Array.from({ length: 48 }).map((_, i) => {
-                const col = i % 12, row = Math.floor(i / 12);
-                const x = 182 + col * 16.5, y = 100 + row * 16.5;
-                const bright = [9, 21, 30, 38, 44].includes(i);
-                const filled = (i * 7 + 3) % 10 < 6;
-                return <rect key={i} x={x} y={y} width="12" height="12" rx="2.5" className={bright ? "bb-cell" : undefined} fill={bright ? LIME : filled ? CORAL : "rgba(255,255,255,0.07)"} opacity={bright ? 1 : filled ? 0.5 : 1} />;
-              })}
-              <text x="278" y="184" textAnchor="middle" style={{ fontSize: 11, fontWeight: 700, fill: "#fff", fontFamily: sans }}>经验卡库 · {comma(o.cards)}</text>
+              {/* 稀疏网状连接(去中心、无枢纽)*/}
+              {net.links.map(([a, b], i) => <line key={`l${i}`} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="#fff" strokeWidth="0.5" opacity="0.06" />)}
 
-              {/* 馆员按需借阅 */}
-              {[112, 130, 148].map((y, k) => <line key={k} className="bb-flow" x1="376" y1={y} x2="454" y2="130" stroke={LIME} strokeWidth="1.6" opacity="0.85" />)}
-              <circle cx="472" cy="130" r="18" fill="none" stroke={LIME} strokeWidth="1.6" />
-              <text x="472" y="134" textAnchor="middle" style={{ fontSize: 10, fontWeight: 700, fill: LIME, fontFamily: sans }}>馆员</text>
-              <text x="472" y="174" textAnchor="middle" style={{ fontSize: 10, fill: MUTE, fontFamily: mono }}>按需借阅</text>
+              {/* 扩散流:AI 起草 → 网络(确定性贝塞尔 + 行进粒子)*/}
+              <g className="bb-streams">
+                {net.disp.map((d, i) => <path key={`d${i}`} id={`bbd-${i}`} d={d} className="bb-flow" fill="none" stroke="url(#bb-disp)" strokeWidth="0.7" opacity="0.4" />)}
+              </g>
+              {[4, 18, 30, 44, 56].map((idx, k) => net.disp[idx] ? (
+                <circle key={`po${k}`} r="1.8" fill="#d7f59a"><animateMotion dur={`${2.6 + k * 0.5}s`} begin={`${k * 0.4}s`} repeatCount="indefinite"><mpath href={`#bbd-${idx}`} /></animateMotion></circle>
+              ) : null)}
 
-              {/* 馆员 → 创作 → 命中 */}
-              <line className="bb-flow" x1="492" y1="130" x2="566" y2="130" stroke={MUTE} strokeWidth="1.5" markerEnd="url(#bb-ar)" />
-              <circle cx="596" cy="130" r="16" fill="rgba(255,255,255,0.06)" stroke={BORD} strokeWidth="1.4" />
-              <text x="596" y="133" textAnchor="middle" style={{ fontSize: 9.5, fontWeight: 700, fill: "#fff", fontFamily: sans }}>创作</text>
-              <text x="596" y="170" textAnchor="middle" style={{ fontSize: 10, fill: MUTE, fontFamily: mono }}>AI 反哺</text>
-              <line className="bb-flow" x1="616" y1="130" x2="678" y2="130" stroke={MUTE} strokeWidth="1.5" markerEnd="url(#bb-ar)" />
-              {[0, 1, 2].map((k) => <rect key={k} x={692 + k * 10} y={138 - k * 11} width="6" height={12 + k * 11} rx="1.5" fill={CORAL} />)}
-              <text x="702" y="174" textAnchor="middle" style={{ fontSize: 10, fill: MUTE, fontFamily: mono }}>命中↑</text>
+              {/* 再收束:精英节点 → 真实爆款 */}
+              {net.conv.map((d, i) => <path key={`c${i}`} id={`bbc-${i}`} d={d} className="bb-flow" fill="none" stroke="url(#bb-conv)" strokeWidth="1" opacity="0.55" />)}
+              {net.conv.slice(0, 4).map((_, k) => (
+                <circle key={`pi${k}`} r="2" fill={CORAL}><animateMotion dur={`${2.4 + k * 0.5}s`} begin={`${k * 0.5}s`} repeatCount="indefinite"><mpath href={`#bbc-${k}`} /></animateMotion></circle>
+              ))}
 
-              {/* → 去中心化 fan */}
-              <line className="bb-flow" x1="726" y1="130" x2="784" y2="130" stroke={MUTE} strokeWidth="1.5" markerEnd="url(#bb-ar)" />
-              <circle cx="802" cy="130" r="6" fill={CORAL} />
-              {[68, 92, 116, 140, 164, 188].map((y, k) => { const x = 894 + (k % 2) * 44; return <g key={k}><line x1="808" y1="130" x2={x} y2={y} stroke="rgba(255,255,255,0.12)" strokeDasharray="2 3" /><circle cx={x} cy={y} r="4" fill="#5b606b"><animate attributeName="opacity" values="0.4;1;0.4" dur={`${2 + k * 0.35}s`} repeatCount="indefinite" /></circle></g>; })}
-              <text x="872" y="214" textAnchor="middle" style={{ fontSize: 10, fill: MUTE, fontFamily: mono }}>去中心化分发 · 规划</text>
+              {/* 节点(三层:流动/稳定/精英,深度由大小+透明度)*/}
+              {net.nodes.map((n, i) => (
+                <circle key={`n${i}`} cx={n.x} cy={n.y} r={n.r} className={n.active ? "bb-cell" : undefined}
+                  fill={n.tier === 2 ? LIME : n.tier === 1 ? "#9aa0ac" : "#565b66"}
+                  opacity={n.tier === 0 ? 0.55 : n.tier === 1 ? 0.85 : 1}
+                  filter={n.tier === 2 ? "url(#bb-glow)" : undefined} />
+              ))}
+              {net.elite.map((n, i) => <circle key={`e${i}`} cx={n.x} cy={n.y} r={n.r * 0.62} fill={LIME} />)}
 
-              {/* 闭环:结果回流 + 行进粒子 */}
-              <path id="bb-loop" d="M 802 150 C 802 236, 130 236, 60 166" fill="none" stroke="rgba(255,255,255,0.14)" strokeWidth="1.4" strokeDasharray="3 5" />
-              <circle r="3.5" fill={CORAL}><animateMotion dur="5s" repeatCount="indefinite"><mpath href="#bb-loop" /></animateMotion></circle>
-              <text x="430" y="233" textAnchor="middle" style={{ fontSize: 10, fill: MUTE, fontFamily: mono }}>结果回流 →</text>
+              {/* AI 起草 源 */}
+              <circle cx={net.src.x} cy={net.src.y} r="20" fill="url(#bb-srcg)" />
+              <circle cx={net.src.x} cy={net.src.y} r="7" fill={LIME} />
+              <text x={net.src.x} y={net.src.y + 38} textAnchor="middle" style={{ fontSize: 10, fill: MUTE, fontFamily: mono }}>馆员借经验卡 {comma(o.cards)}</text>
+
+              {/* 真实爆款 焦点 */}
+              <circle cx={net.foc.x} cy={net.foc.y} r="22" fill="url(#bb-focg)" />
+              <circle cx={net.foc.x} cy={net.foc.y} r="8" fill={CORAL} />
+              <text x={net.foc.x} y={net.foc.y + 42} textAnchor="middle" style={{ fontSize: 19, fontWeight: 800, fill: "#fff", fontFamily: sans, letterSpacing: "-0.02em" }}>{comma(o.baokuanReal)}</text>
+              <text x={net.foc.x} y={net.foc.y + 58} textAnchor="middle" style={{ fontSize: 10, fill: MUTE, fontFamily: mono }}>验证级爆款</text>
+
+              {/* 经验回流环:爆款 → 经验 → AI 起草 */}
+              <path id="bb-loop2" d={`M ${net.foc.x} ${net.foc.y + 24} C ${net.foc.x} 332, ${net.src.x} 332, ${net.src.x} ${net.src.y + 24}`} fill="none" stroke="rgba(255,255,255,0.16)" strokeWidth="1.3" strokeDasharray="3 5" />
+              <circle r="3.2" fill={LIME}><animateMotion dur="5.5s" repeatCount="indefinite"><mpath href="#bb-loop2" /></animateMotion></circle>
+              <text x="490" y="326" textAnchor="middle" style={{ fontSize: 10.5, fill: MUTE, fontFamily: mono }}>经验回流 · 越转越准 ↺</text>
+
+              {/* 分层图例 */}
+              <g fontFamily={mono} fontSize="9.5" fill={MUTE}>
+                <circle cx="220" cy="348" r="3.2" fill={LIME} /><text x="230" y="351">精英</text>
+                <circle cx="278" cy="348" r="2.3" fill="#9aa0ac" /><text x="287" y="351">稳定</text>
+                <circle cx="333" cy="348" r="1.5" fill="#565b66" /><text x="341" y="351">流动</text>
+              </g>
             </svg>
           </section>
 
