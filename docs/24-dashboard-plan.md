@@ -149,6 +149,20 @@
 
 ## 9. 接力(开新窗口从这里直接继续)⭐
 
+**🆕 Phase 1 后端已就绪(2026-06-06 · 分支 `claude/focused-curie-hBGXn`)**:
+- **数据改走 `public` 安全聚合视图**(不再 service_role 直连 truth_vault):新建 `public.v_dash_overview`
+  (`schemas/dashboard_views_v1.sql`,`security_invoker=false` 以 owner 读 RLS-on 的 truth_vault、**只吐安全大数**,
+  `GRANT SELECT` 给 anon)——**已 apply prod**。看板(`lib/supabase.ts` + `app/console/page.tsx`)改用
+  **最小权限 anon key**(服务端 only)只读这一个视图,`/console` 改 `force-dynamic` 永远显实时真值。
+- **数据路径已实测**:`SET ROLE anon → select v_dash_overview` = 项目 4 / 笔记 2478 / 真爆款 96 / 卡 97 / essence 1192;`npm run build` 绿。
+- **只差最后一步(必须在 Vercel 网站做)**:本执行环境**网络策略封了 vercel.com + 无 Vercel token**,无法代部署。
+  你来:Vercel → Add New → Project → Import `TangVarie/truth-vault` → **Root Directory=`dashboard`** →
+  env 加 `SUPABASE_URL` + `SUPABASE_ANON_KEY` → Deploy(生产分支设为本分支,或先把本分支合进 main)。
+- ⚠️ **安全发现(待处理 · 见 §5)**:共享库 `public` schema(三生六部)当前 **RLS-off 且 anon 可读**
+  (`reference_samples`/`projects`/`pipeline_runs`/`outputs`/`stage_logs`,Supabase 安全 linter **ERROR** 级)。
+  故 anon key 仍属敏感:**只服务端用、勿提交进 git/勿发浏览器**。根治 = 给 ssll 的 public 表开 RLS
+  (属 ssll 域,改前确认不破坏 ssll 自身读路径)。看板用聚合视图 + 服务端 anon 已把暴露面收到最小。
+
 **已完成(Phase 0,在 PR #69,未合并)**:
 - 本计划 `docs/24` + `dashboard/` 骨架(Next.js14 + Tailwind + 服务端查 Supabase)。
 - overview 页**已查 TV 真实大数**(项目 4 / 笔记 2478 / 真爆款 96 / 经验卡 87 / 馆员借阅)+ 系统活着灯(config 驱动)。

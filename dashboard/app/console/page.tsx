@@ -3,8 +3,9 @@ import { getSupabase } from "@/lib/supabase";
 import { NODES } from "@/config/flywheel";
 import LivePresence from "@/components/LivePresence";
 
-// ISR:每 60s 在服务端重新取数(docs/24 §2)。
-export const revalidate = 60;
+// 公开看板始终在服务端拉实时大数(force-dynamic):保证数字永远是真值,
+// 不会在部署后短暂显示构建时占位 0。视图查询很轻(单次聚合)。docs/24 §2。
+export const dynamic = "force-dynamic";
 
 type Overview = {
   projects: number;
@@ -12,31 +13,32 @@ type Overview = {
   baokuan: number;
   cards: number;
   librarian: number;
+  essence: number;
   ok: boolean;
+};
+
+const EMPTY: Overview = {
+  projects: 0, notes: 0, baokuan: 0, cards: 0, librarian: 0, essence: 0, ok: false,
 };
 
 async function getOverview(): Promise<Overview> {
   const sb = getSupabase();
-  if (!sb) return { projects: 0, notes: 0, baokuan: 0, cards: 0, librarian: 0, ok: false };
-  const tv = sb.schema("truth_vault");
+  if (!sb) return EMPTY;
   try {
-    const count = async (q: any) => (await q).count ?? 0;
-    const [projects, notes, baokuan, cards, librarian] = await Promise.all([
-      count(tv.from("projects").select("*", { count: "exact", head: true })),
-      count(tv.from("notes").select("*", { count: "exact", head: true })),
-      count(
-        tv
-          .from("notes")
-          .select("*", { count: "exact", head: true })
-          .in("tier", ["爆", "大爆"])
-          .eq("tier_source", "状态字段")
-      ),
-      count(tv.from("flywheel_lesson_annotations").select("*", { count: "exact", head: true })),
-      count(tv.from("flywheel_librarian_cache").select("*", { count: "exact", head: true })),
-    ]);
-    return { projects, notes, baokuan, cards, librarian, ok: true };
+    // 只读 public 的安全聚合视图(docs/24 §3):一行大数,不直接碰 truth_vault 原始表。
+    const { data, error } = await sb.from("v_dash_overview").select("*").single();
+    if (error || !data) return EMPTY;
+    return {
+      projects: data.projects ?? 0,
+      notes: data.notes ?? 0,
+      baokuan: data.baokuan_real ?? 0,
+      cards: data.cards ?? 0,
+      librarian: data.librarian ?? 0,
+      essence: data.essence_done ?? 0,
+      ok: true,
+    };
   } catch {
-    return { projects: 0, notes: 0, baokuan: 0, cards: 0, librarian: 0, ok: false };
+    return EMPTY;
   }
 }
 
@@ -81,11 +83,12 @@ export default async function ConsolePage() {
         )}
       </header>
 
-      <section className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+      <section className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
         <Metric label="项目" value={o.projects} />
         <Metric label="笔记" value={o.notes} />
         <Metric label="真爆款燃料" value={o.baokuan} hint="状态字段权威" />
         <Metric label="经验卡" value={o.cards} hint="书架已策展" />
+        <Metric label="essence 已标" value={o.essence} hint="穿越周期内核" />
         <Metric label="馆员借阅" value={o.librarian} hint="通道2 缓存行" />
       </section>
 

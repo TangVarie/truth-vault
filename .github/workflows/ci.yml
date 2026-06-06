@@ -1267,6 +1267,15 @@ jobs:
       - name: Sanity-check v1.6 (v_flywheel_sync_status pending cols intact)
         run: |
           psql -v ON_ERROR_STOP=1 -c "SELECT pending_ssll_sync, pending_reference_ssll FROM truth_vault.v_flywheel_sync_status LIMIT 0;"
+      - name: Apply dashboard aggregate views (+ idempotency)
+        # public.v_dash_overview: 看板公开安全聚合 (docs/24 §3). CREATE OR REPLACE VIEW;
+        # GRANT 包在 IF EXISTS (裸 PG 无 anon/authenticated/service_role 角色). 两遍验幂等.
+        run: |
+          psql -v ON_ERROR_STOP=1 -f schemas/dashboard_views_v1.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/dashboard_views_v1.sql
+      - name: Sanity-check dashboard view (public.v_dash_overview selectable)
+        run: |
+          psql -v ON_ERROR_STOP=1 -c "SELECT projects, notes, baokuan_real, cards, librarian, essence_done FROM public.v_dash_overview;"
       - name: Sanity-check v1.3 (参考 tier accepted + reference cols + discrepancy view)
         run: |
           psql -v ON_ERROR_STOP=1 <<'SQL'
