@@ -30,6 +30,8 @@ export type SystemPulse = {
   audit_n: number; audit_last: string | null; projects_n: number;
   pipeline_runs_n: number; server_now: string | null;
 };
+export type Monthly = { ym: string; notes: number; impressions: number; hits: number; cum_impressions: number };
+export type Activity = { ym: string; dow: number; n: number };
 
 export type DashboardData = {
   o: Overview;
@@ -48,6 +50,8 @@ export type DashboardData = {
   formats: FormatPerf[];
   reach: ReachConcentration | null;
   pulse: SystemPulse | null;
+  monthly: Monthly[];
+  activity: Activity[];
 };
 
 const EMPTY: Overview = {
@@ -57,7 +61,7 @@ const EMPTY: Overview = {
 const EMPTY_DATA: DashboardData = {
   o: EMPTY, levers: [], projects: [], matrix: [], hits: [],
   leverPerf: [], valence: [], archetypes: [], intent: [], funnel: [], projectPerf: [], projectTier: [],
-  audience: [], formats: [], reach: null, pulse: null,
+  audience: [], formats: [], reach: null, pulse: null, monthly: [], activity: [],
 };
 
 const num = (x: unknown) => (x == null ? 0 : Number(x));
@@ -66,7 +70,7 @@ export async function getDashboardData(): Promise<DashboardData> {
   const sb = getSupabase();
   if (!sb) return EMPTY_DATA;
   try {
-    const [ov, lv, pj, mx, th, lp, vm, ar, it, tf, pp, pt, aud, fp, rc, ps] = await Promise.all([
+    const [ov, lv, pj, mx, th, lp, vm, ar, it, tf, pp, pt, aud, fp, rc, ps, mo, ac] = await Promise.all([
       sb.from("v_dash_overview").select("*").single(),
       sb.from("v_dash_levers").select("*").limit(12),
       sb.from("v_dash_projects").select("*"),
@@ -83,6 +87,8 @@ export async function getDashboardData(): Promise<DashboardData> {
       sb.from("v_dash_format_perf").select("*"),
       sb.from("v_dash_reach_concentration").select("*"),
       sb.from("v_dash_system_pulse").select("*"),
+      sb.from("v_dash_monthly").select("*"),
+      sb.from("v_dash_pub_activity").select("*"),
     ]);
     const d: any = ov.data;
     if (!d) return EMPTY_DATA;
@@ -133,6 +139,8 @@ export async function getDashboardData(): Promise<DashboardData> {
             }
           : null;
       })(),
+      monthly: ((mo.data as any[]) ?? []).map((r) => ({ ym: r.ym, notes: num(r.notes), impressions: Math.round(num(r.impressions) * AMPLIFY.impressions), hits: num(r.hits), cum_impressions: Math.round(num(r.cum_impressions) * AMPLIFY.impressions) })),
+      activity: ((ac.data as any[]) ?? []).map((r) => ({ ym: r.ym, dow: num(r.dow), n: num(r.n) })),
     };
   } catch {
     return EMPTY_DATA;

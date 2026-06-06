@@ -88,10 +88,10 @@ export default function Editorial({ data }: { data: DashboardData }) {
               <HeroStat value={o.baokuanReal} format="comma" label="验证级爆款" ctx={`命中率 ${hitRate}%`} />
             </motion.div>
             <motion.div variants={rise} className="mt-10 flex flex-wrap items-center gap-4">
-              <Link href="/console" className="btn-ink inline-flex items-center gap-2 px-7 py-4 text-base font-medium">
-                查看实时看板 →
+              <Link href="/board" className="btn-ink inline-flex items-center gap-2 px-7 py-4 text-base font-medium">
+                查看数据看板 →
               </Link>
-              <span className="ed-mini" style={{ color: "#8A7F6D" }}>实时态势 · 实时直连</span>
+              <Link href="/console" className="ed-mini transition hover:opacity-70" style={{ color: "#8A7F6D" }}>团队登录 →</Link>
             </motion.div>
           </motion.div>
           <ScrollCue />
@@ -215,12 +215,12 @@ export default function Editorial({ data }: { data: DashboardData }) {
                 <div className="relative px-7 py-8">
                   <div className="flex items-center gap-2">
                     <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ background: "#E8765A" }} />
-                    <span className="mn" style={{ fontSize: 11, color: "#9aa0aa", letterSpacing: "0.18em" }}>实时座舱 · LIVE</span>
+                    <span className="mn" style={{ fontSize: 11, color: "#9aa0aa", letterSpacing: "0.18em" }}>内部座舱 · 登录</span>
                   </div>
                   <div className="fr mt-6" style={{ color: "#f3f4f6", fontSize: 30, fontWeight: 500, letterSpacing: "-0.01em" }}>
-                    进入控制台 →
+                    团队登录 →
                   </div>
-                  <div className="mn mt-2" style={{ fontSize: 12, color: "#6b7280" }}>密集实时看板 · 暗色座舱</div>
+                  <div className="mn mt-2" style={{ fontSize: 12, color: "#6b7280" }}>登录后进入 · 含策略机理</div>
                 </div>
               </Link>
 
@@ -353,8 +353,8 @@ function Nav() {
     <div className="pointer-events-none fixed inset-x-0 top-0 z-40">
       <div className="mx-auto flex max-w-[1180px] items-center justify-between px-8 py-6">
         <span className="mn" style={{ fontSize: 12, color: "#14110F", letterSpacing: "0.1em" }}>BYWOOD · ROC</span>
-        <Link href="/console" className="mn pointer-events-auto" style={{ fontSize: 12, color: "#8A7F6D", letterSpacing: "0.08em" }}>
-          进入控制台 →
+        <Link href="/board" className="mn pointer-events-auto" style={{ fontSize: 12, color: "#8A7F6D", letterSpacing: "0.08em" }}>
+          数据看板 →
         </Link>
       </div>
     </div>
