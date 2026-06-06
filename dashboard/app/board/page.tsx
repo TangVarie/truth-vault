@@ -82,6 +82,18 @@ export default async function BoardPage() {
     { k: "受众维度", v: o.audiences, fmt: "comma" as const },
     { k: "情绪杠杆", v: o.levers, fmt: "comma" as const },
   ];
+  // 实时监测条:左栏端口/右栏计数全部真实(源自 pulse + overview)
+  const livePorts = [
+    { name: "飞书投放表", color: LIME, val: `已接入 ${comma(pulse?.feishu_n ?? o.notes)} 条` },
+    { name: "ssll 资产库", color: LIME, val: `已回流 ${comma(pulse?.ssll_n ?? 0)} 条` },
+    { name: "指标快照", color: LIME, val: `${comma(pulse?.snaps_n ?? 0)} 快照` },
+    { name: "essence 解析", color: LAV, val: `已标注 ${comma(pulse?.annotated_n ?? o.essence)}/${comma(o.notes)}` },
+    { name: "命中检测", color: CORAL, val: `${comma(o.baokuanReal)} 爆款判级` },
+    { name: "autowriter", color: "#F5A623", val: "已接 · 待流" },
+    { name: "内部座舱", color: LIME, val: `${comma(o.cards)} 策略卡` },
+  ];
+  const annoPct = o.notes ? Math.round(((pulse?.annotated_n ?? o.essence) / o.notes) * 100) : 0;
+  const onlinePorts = [pulse?.feishu_n, pulse?.ssll_n, pulse?.snaps_n, pulse?.annotated_n, o.baokuanReal, o.cards].filter((x) => (x ?? 0) > 0).length;
 
   return (
     <main style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: sans }}>
@@ -148,7 +160,7 @@ export default async function BoardPage() {
 
           {/* ── 实时监测条(对外动效层:端口脉冲 + 事件流 + 跳动计数)── */}
           <section className="s12 bb-tile" style={{ padding: "18px 22px" }}>
-            <LiveMonitor daily={Math.round(o.notes / 28) + 11} online={5} />
+            <LiveMonitor ports={livePorts} progress={annoPct} online={onlinePorts} total={7} />
           </section>
 
           {/* ── 战役期峰值(s8) + 投放节奏 周几(s4)── */}
