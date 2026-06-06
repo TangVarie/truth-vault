@@ -1899,6 +1899,16 @@ jobs:
         run: |
           psql -v ON_ERROR_STOP=1 -f schemas/security_revoke_anon_write_public_tables.sql
           psql -v ON_ERROR_STOP=1 -f schemas/security_revoke_anon_write_public_tables.sql
+      - name: Apply dashboard timeseries views v6 (+ idempotency)
+        # public.v_dash_monthly / v_dash_pub_activity:真实月度时间序列 + 投放热力(仅依赖 truth_vault.notes.publish_time)。
+        # CREATE OR REPLACE VIEW;GRANT 包 IF EXISTS。两遍验幂等。
+        run: |
+          psql -v ON_ERROR_STOP=1 -f schemas/dashboard_views_v6_timeseries.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/dashboard_views_v6_timeseries.sql
+      - name: Sanity-check timeseries views (selectable)
+        run: |
+          psql -v ON_ERROR_STOP=1 -c "SELECT ym, notes, impressions, hits, cum_impressions FROM public.v_dash_monthly LIMIT 0;"
+          psql -v ON_ERROR_STOP=1 -c "SELECT ym, dow, n FROM public.v_dash_pub_activity LIMIT 0;"
 
   yaml:
     name: Mapping yaml lint
