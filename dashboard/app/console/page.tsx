@@ -50,8 +50,8 @@ export default async function ConsolePage() {
   );
 
   return (
-    <main id="top" className="relative min-h-screen" style={{ background: "#07060a", color: "#e8e6e3" }}>
-      <nav className="sticky top-0 z-40 border-b border-white/8" style={{ background: "rgba(7,6,10,0.82)", backdropFilter: "blur(8px)" }}>
+    <main id="top" className="relative min-h-screen" style={{ background: "#0C0B10", color: "#e8e6e3" }}>
+      <nav className="sticky top-0 z-40 border-b border-white/10" style={{ background: "rgba(12,11,16,0.82)", backdropFilter: "blur(8px)" }}>
         <div className="mx-auto flex max-w-[1440px] items-center justify-between px-5 py-3.5">
           <Link href="/" className="tag text-slate-400 transition hover:text-coral">← BYWOOD · ROC</Link>
           <div className="hidden items-center gap-1 rounded-full border border-white/8 bg-white/[0.03] p-1 lg:flex">
@@ -188,8 +188,8 @@ function Cell({ children, className = "", id, glow = false }: { children: React.
   return (
     <section
       id={id}
-      className={`rounded-3xl border border-white/[0.07] p-6 ${className}`}
-      style={{ background: glow ? "radial-gradient(680px 220px at 28% 0%, rgba(232,118,90,0.08), transparent 70%), rgba(255,255,255,0.02)" : "rgba(255,255,255,0.02)" }}
+      className={`rounded-3xl border border-white/[0.10] p-6 ${className}`}
+      style={{ background: glow ? "radial-gradient(680px 220px at 28% 0%, rgba(232,118,90,0.09), transparent 70%), rgba(255,255,255,0.04)" : "rgba(255,255,255,0.04)" }}
     >
       {children}
     </section>

@@ -35,6 +35,7 @@ export default function Editorial({ data }: { data: DashboardData }) {
   const { o, projects, matrix, hits } = data;
   const aiInferences = derivedAiInferences(o.notes);
   const strategySpace = derivedStrategySpace(o.levers, o.audiences);
+  const hitRate = o.notes ? Math.round((o.baokuanReal / o.notes) * 1000) / 10 : 0;
   const levOrder = uniqSortBy(matrix, "lever");
   const audOrder = uniqSortBy(matrix, "audience");
 
@@ -59,7 +60,7 @@ export default function Editorial({ data }: { data: DashboardData }) {
         {/* ── 00 · 品牌 manifesto ── */}
         <section className="scene relative flex min-h-screen flex-col justify-center px-8">
           <motion.div variants={stagger} initial="hidden" animate="show" className="mx-auto w-full max-w-[1180px]">
-            <motion.div variants={rise} className="ed-eyebrow">§ BYWOOD STUDIO · 体系化增长服务商</motion.div>
+            <motion.div variants={rise} className="ed-eyebrow">§ BYWOOD STUDIO · 体系化增长服务商 · 小红书 / 播客 / 知乎 / 头条 / 微博</motion.div>
             <motion.div variants={rise} className="rule-brass mt-4 max-w-[120px]" />
             <motion.h1 variants={rise} className="ed-wordmark fr mt-8" style={{ color: "#14110F" }}>
               BYWOOD
@@ -67,18 +68,33 @@ export default function Editorial({ data }: { data: DashboardData }) {
             <motion.div
               variants={rise}
               className="cjk mt-1"
-              style={{ color: "#7A2E22", fontSize: "clamp(30px,6vw,68px)", fontWeight: 500, letterSpacing: "0.06em", lineHeight: 1 }}
+              style={{ color: "#7A2E22", fontSize: "clamp(28px,5.4vw,60px)", fontWeight: 500, letterSpacing: "0.06em", lineHeight: 1 }}
             >
               芭梧
             </motion.div>
-            <motion.h2 variants={rise} className="ed-title fr mt-10 max-w-3xl" style={{ color: "#14110F" }}>
-              把策略,变成<span className="u2">越用越准</span>的增长复利。
+            <motion.h2 variants={rise} className="ed-title fr mt-9 max-w-3xl" style={{ color: "#14110F" }}>
+              AI 驱动的<span className="u2">内容增长中台</span>。
             </motion.h2>
-            <motion.p variants={rise} className="ed-lead mt-6 max-w-2xl" style={{ color: "#3D3A34" }}>
-              一套结构化飞轮,照见从投放到决策到复利的每一环。
+            <motion.p variants={rise} className="ed-lead mt-5 max-w-2xl" style={{ color: "#3D3A34" }}>
+              把每一次投放,变成越投越准的策略复利。
             </motion.p>
-            <motion.div variants={rise} className="mn mt-10 flex flex-wrap items-center gap-x-4 gap-y-2" style={{ fontSize: 12, color: "#8A7F6D", letterSpacing: "0.08em" }}>
-              <span>全域阵地 · 小红书 / 播客 / 知乎 / 头条 / 微博</span>
+            <motion.div variants={rise} className="mn mt-6 flex flex-wrap items-center gap-x-2.5 gap-y-1" style={{ fontSize: 12, color: "#8A7F6D", letterSpacing: "0.02em" }}>
+              <span>投放数据</span><span style={{ color: "#B89B6A" }}>→</span>
+              <span>ROC 结构化分析</span><span style={{ color: "#B89B6A" }}>→</span>
+              <span>爆款策略沉淀</span><span style={{ color: "#B89B6A" }}>→</span>
+              <span>AI 辅助创作</span><span style={{ color: "#B89B6A" }}>→</span>
+              <span style={{ color: "#14110F" }}>命中率 ↑</span>
+            </motion.div>
+            <motion.div variants={rise} className="mt-10 grid max-w-2xl grid-cols-3 gap-6">
+              <HeroStat value={o.impressions} format="cn" label="累计曝光" ctx="跨 4 战线" />
+              <HeroStat value={o.notes} format="comma" label="内容资产" ctx="已结构化解析" />
+              <HeroStat value={o.baokuanReal} format="comma" label="验证级爆款" ctx={`命中率 ${hitRate}%`} />
+            </motion.div>
+            <motion.div variants={rise} className="mt-10 flex flex-wrap items-center gap-4">
+              <Link href="/console" className="btn-ink inline-flex items-center gap-2 px-7 py-4 text-base font-medium">
+                查看实时看板 →
+              </Link>
+              <span className="ed-mini" style={{ color: "#8A7F6D" }}>实时态势 · 公开看板</span>
             </motion.div>
           </motion.div>
           <ScrollCue />
@@ -213,9 +229,6 @@ export default function Editorial({ data }: { data: DashboardData }) {
               </Link>
 
               <div className="flex flex-col justify-center gap-3">
-                <button type="button" title="内部页 · 即将开放(接 auth)" className="btn-ghost px-7 py-4 text-left text-base font-medium" style={{ color: "#14110F" }}>
-                  登录 <span className="mn ml-1" style={{ fontSize: 11, color: "#8A7F6D" }}>内部 · 即将开放</span>
-                </button>
                 <p className="ed-mini max-w-[260px]" style={{ color: "#8A7F6D" }}>
                   这是品牌的门面;真正的机器,在门后的座舱里持续运转。
                 </p>
@@ -303,7 +316,7 @@ function Leaderboard({ hits, topInteractions }: { hits: DashboardData["hits"]; t
         <span className="text-right">互动</span>
         <span className="text-right">曝光</span>
       </div>
-      {hits.slice(0, 6).map((h, i) => (
+      {hits.slice(0, 5).map((h, i) => (
         <div
           key={i}
           className="rule-ink grid grid-cols-[36px_52px_1fr_92px_92px] items-center gap-3 px-1 py-4"
@@ -316,7 +329,7 @@ function Leaderboard({ hits, topInteractions }: { hits: DashboardData["hits"]; t
             {h.lever ? (
               <span className="rounded-full px-3 py-1 text-xs" style={{ background: "rgba(232,118,90,0.12)", color: "#7A2E22" }}>{h.lever}</span>
             ) : (
-              <span className="mn rounded-full px-3 py-1" style={{ fontSize: 10.5, border: "1px solid rgba(20,17,15,0.15)", color: "#8A7F6D" }}>AI 解析中</span>
+              <span className="mn rounded-full px-3 py-1" style={{ fontSize: 10.5, border: "1px solid rgba(20,17,15,0.15)", color: "#8A7F6D" }}>—</span>
             )}
           </span>
           <span className="fr text-right" style={{ fontSize: 18, color: "#14110F" }}>
@@ -444,6 +457,18 @@ function SmallStat({ value, label }: { value: number; label: string }) {
         <CountUp value={value} duration={1400} />
       </div>
       <div className="mn mt-2" style={{ fontSize: 11, color: "#8A7F6D", letterSpacing: "0.1em" }}>{label}</div>
+    </div>
+  );
+}
+
+function HeroStat({ value, format, label, ctx }: { value: number; format: "cn" | "comma"; label: string; ctx: string }) {
+  return (
+    <div>
+      <div className="fr" style={{ color: "#14110F", fontSize: "clamp(28px,3.4vw,46px)", fontWeight: 480, lineHeight: 1, letterSpacing: "-0.02em" }}>
+        <CountUp value={value} format={format} />
+      </div>
+      <div className="mn mt-2" style={{ fontSize: 11, color: "#8A7F6D", letterSpacing: "0.08em" }}>{label}</div>
+      <div className="ed-mini" style={{ color: "#3D3A34" }}>{ctx}</div>
     </div>
   );
 }

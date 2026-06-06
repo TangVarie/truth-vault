@@ -71,6 +71,10 @@ body {
 /* tabular nums(KPI 必须) */
 .num { font-variant-numeric: tabular-nums; }
 
+/* 数字 SSR 直出 + 一次极轻淡入(取代"从 0 数到目标";真值始终在 DOM 里) */
+@keyframes num-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.num-in { display: inline-block; animation: num-in .6s cubic-bezier(.22,1,.36,1) both; }
+
 /* 极简向上趋势箭头(coral 块上用 ink,深块上用 coral) */
 .arrow-up::after { content: "↗"; margin-left: 0.2em; font-weight: 700; }
 

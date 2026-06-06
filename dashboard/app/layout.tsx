@@ -18,9 +18,21 @@ const hanken = Hanken_Grotesk({
 });
 
 export const metadata: Metadata = {
-  title: "BYWOOD 芭梧 · ROC 增长智能中台",
+  title: "BYWOOD 芭梧 · AI 驱动的内容增长中台",
   description:
-    "把策略变成越用越准的增长复利 —— 一套结构化飞轮,照见从投放到决策到复利的每一环。",
+    "把每一次投放,变成越投越准的策略复利 —— 一套结构化飞轮,照见从投放到决策到复利的每一环。",
+  openGraph: {
+    title: "BYWOOD 芭梧 · AI 驱动的内容增长中台",
+    description: "把每一次投放,变成越投越准的策略复利。结构化策略库 · 数据飞轮 · 越用越强。",
+    type: "website",
+    locale: "zh_CN",
+    siteName: "BYWOOD 芭梧",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "BYWOOD 芭梧 · AI 驱动的内容增长中台",
+    description: "把每一次投放,变成越投越准的策略复利。",
+  },
 };
 
 export default function RootLayout({

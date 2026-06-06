@@ -19,7 +19,7 @@ export type TopHit = {
  * 每行:rank · 战线 chip(α/β/γ/δ)· 杠杆 chip(若无 → "AI 解析中")· 互动 / 阅读 / 曝光 三列大数。
  * 数据来自 public.v_dash_top_hits(只有 project/lever/指标,绝不暴露 title/body)。
  */
-export default function Leaderboard({ hits }: { hits: TopHit[] }) {
+export default function Leaderboard({ hits, max = 6 }: { hits: TopHit[]; max?: number }) {
   if (!hits.length) return <div className="text-sm text-slate-500">—</div>;
   return (
     <div className="space-y-2">
@@ -32,7 +32,7 @@ export default function Leaderboard({ hits }: { hits: TopHit[] }) {
         <span className="text-right">阅读</span>
         <span className="text-right">曝光</span>
       </div>
-      {hits.slice(0, 6).map((h, i) => {
+      {hits.slice(0, max).map((h, i) => {
         const isTop = h.rank === 1;
         return (
           <div
@@ -54,8 +54,8 @@ export default function Leaderboard({ hits }: { hits: TopHit[] }) {
                   {h.lever}
                 </span>
               ) : (
-                <span className="rounded-full border border-white/10 px-3 py-1 text-xs text-slate-500">
-                  AI 解析中
+                <span className="rounded-full border border-white/10 px-3 py-1 text-xs text-slate-600">
+                  —
                 </span>
               )}
               <span className="tag text-slate-500">{h.tier}</span>
