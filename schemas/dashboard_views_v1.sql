@@ -34,4 +34,18 @@ select
 comment on view public.v_dash_overview is
   '飞轮总看板公开聚合(docs/24 §3):只吐安全大数,供前端 anon 服务端 select。security_invoker=false 以读 RLS-on 的 truth_vault。';
 
-grant select on public.v_dash_overview to anon, authenticated, service_role;
+-- GRANT 给 Supabase 角色,包在 IF EXISTS 里:Supabase 上 anon/authenticated/service_role 必有,
+-- 裸 Postgres(CI / 自托管)没有这些角色,直接 GRANT 会 ERROR role does not exist。
+-- (对齐 notes_v1_2.sql 的既有约定;grant 本身幂等。)
+do $$
+begin
+  if exists (select 1 from pg_roles where rolname = 'anon') then
+    execute 'grant select on public.v_dash_overview to anon';
+  end if;
+  if exists (select 1 from pg_roles where rolname = 'authenticated') then
+    execute 'grant select on public.v_dash_overview to authenticated';
+  end if;
+  if exists (select 1 from pg_roles where rolname = 'service_role') then
+    execute 'grant select on public.v_dash_overview to service_role';
+  end if;
+end $$;
