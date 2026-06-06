@@ -36,6 +36,9 @@ const css = `
 .bb-bar{transform-origin:bottom;animation:bb-growy .9s cubic-bezier(.22,1,.36,1) both}
 .bb-dot{animation:bb-pulse 1.8s ease-in-out infinite}
 .bb-streams{animation:bb-breathe 6s ease-in-out infinite}
+@keyframes bb-flow{to{stroke-dashoffset:-20}}
+.bb-flow{stroke-dasharray:4 6;animation:bb-flow 1s linear infinite}
+.bb-cell{animation:bb-pulse 1.9s ease-in-out infinite}
 `;
 
 function streamPaths(n: number, W: number, H: number) {
@@ -161,6 +164,54 @@ export default async function BoardPage() {
           {/* ── 实时监测条(对外动效层:端口脉冲 + 事件流 + 跳动计数)── */}
           <section className="s12 bb-tile" style={{ padding: "18px 22px" }}>
             <LiveMonitor ports={livePorts} progress={annoPct} online={onlinePorts} total={7} />
+          </section>
+
+          {/* ── 飞轮机制(纯可视化:策展库 → 馆员借阅 → 反哺 → 去中心化,闭环)── */}
+          <section className="s12 bb-tile" style={{ padding: "20px 24px" }}>
+            <span style={{ display: "inline-flex", border: `1.5px solid ${BORD}`, borderRadius: 999, padding: "6px 14px", fontSize: 12.5, fontWeight: 600 }}>飞轮机制 · FLYWHEEL</span>
+            <svg viewBox="0 0 1000 250" width="100%" style={{ display: "block", marginTop: 10 }}>
+              <defs><marker id="bb-ar" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill={MUTE} /></marker></defs>
+
+              {/* 真实爆款 → 库 */}
+              <text x="28" y="92" style={{ fontSize: 11, fontWeight: 600, fill: "#cfd3da", fontFamily: sans }}>真实爆款</text>
+              {[112, 130, 148].map((y, k) => <line key={k} className="bb-flow" x1="28" y1={y} x2="170" y2={y} stroke={CORAL} strokeWidth="1.6" opacity="0.7" />)}
+
+              {/* 经验卡库 grid(策展进库)*/}
+              {Array.from({ length: 48 }).map((_, i) => {
+                const col = i % 12, row = Math.floor(i / 12);
+                const x = 182 + col * 16.5, y = 100 + row * 16.5;
+                const bright = [9, 21, 30, 38, 44].includes(i);
+                const filled = (i * 7 + 3) % 10 < 6;
+                return <rect key={i} x={x} y={y} width="12" height="12" rx="2.5" className={bright ? "bb-cell" : undefined} fill={bright ? LIME : filled ? CORAL : "rgba(255,255,255,0.07)"} opacity={bright ? 1 : filled ? 0.5 : 1} />;
+              })}
+              <text x="278" y="184" textAnchor="middle" style={{ fontSize: 11, fontWeight: 700, fill: "#fff", fontFamily: sans }}>经验卡库 · {comma(o.cards)}</text>
+
+              {/* 馆员按需借阅 */}
+              {[112, 130, 148].map((y, k) => <line key={k} className="bb-flow" x1="376" y1={y} x2="454" y2="130" stroke={LIME} strokeWidth="1.6" opacity="0.85" />)}
+              <circle cx="472" cy="130" r="18" fill="none" stroke={LIME} strokeWidth="1.6" />
+              <text x="472" y="134" textAnchor="middle" style={{ fontSize: 10, fontWeight: 700, fill: LIME, fontFamily: sans }}>馆员</text>
+              <text x="472" y="174" textAnchor="middle" style={{ fontSize: 10, fill: MUTE, fontFamily: mono }}>按需借阅</text>
+
+              {/* 馆员 → 创作 → 命中 */}
+              <line className="bb-flow" x1="492" y1="130" x2="566" y2="130" stroke={MUTE} strokeWidth="1.5" markerEnd="url(#bb-ar)" />
+              <circle cx="596" cy="130" r="16" fill="rgba(255,255,255,0.06)" stroke={BORD} strokeWidth="1.4" />
+              <text x="596" y="133" textAnchor="middle" style={{ fontSize: 9.5, fontWeight: 700, fill: "#fff", fontFamily: sans }}>创作</text>
+              <text x="596" y="170" textAnchor="middle" style={{ fontSize: 10, fill: MUTE, fontFamily: mono }}>AI 反哺</text>
+              <line className="bb-flow" x1="616" y1="130" x2="678" y2="130" stroke={MUTE} strokeWidth="1.5" markerEnd="url(#bb-ar)" />
+              {[0, 1, 2].map((k) => <rect key={k} x={692 + k * 10} y={138 - k * 11} width="6" height={12 + k * 11} rx="1.5" fill={CORAL} />)}
+              <text x="702" y="174" textAnchor="middle" style={{ fontSize: 10, fill: MUTE, fontFamily: mono }}>命中↑</text>
+
+              {/* → 去中心化 fan */}
+              <line className="bb-flow" x1="726" y1="130" x2="784" y2="130" stroke={MUTE} strokeWidth="1.5" markerEnd="url(#bb-ar)" />
+              <circle cx="802" cy="130" r="6" fill={CORAL} />
+              {[68, 92, 116, 140, 164, 188].map((y, k) => { const x = 894 + (k % 2) * 44; return <g key={k}><line x1="808" y1="130" x2={x} y2={y} stroke="rgba(255,255,255,0.12)" strokeDasharray="2 3" /><circle cx={x} cy={y} r="4" fill="#5b606b"><animate attributeName="opacity" values="0.4;1;0.4" dur={`${2 + k * 0.35}s`} repeatCount="indefinite" /></circle></g>; })}
+              <text x="872" y="214" textAnchor="middle" style={{ fontSize: 10, fill: MUTE, fontFamily: mono }}>去中心化分发 · 规划</text>
+
+              {/* 闭环:结果回流 + 行进粒子 */}
+              <path id="bb-loop" d="M 802 150 C 802 236, 130 236, 60 166" fill="none" stroke="rgba(255,255,255,0.14)" strokeWidth="1.4" strokeDasharray="3 5" />
+              <circle r="3.5" fill={CORAL}><animateMotion dur="5s" repeatCount="indefinite"><mpath href="#bb-loop" /></animateMotion></circle>
+              <text x="430" y="233" textAnchor="middle" style={{ fontSize: 10, fill: MUTE, fontFamily: mono }}>结果回流 →</text>
+            </svg>
           </section>
 
           {/* ── 战役期峰值(s8) + 投放节奏 周几(s4)── */}
