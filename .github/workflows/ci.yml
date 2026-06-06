@@ -1893,6 +1893,12 @@ jobs:
       - name: Sanity-check system pulse view (single row, cross-table subqueries execute)
         run: |
           psql -v ON_ERROR_STOP=1 -c "SELECT notes_total, feishu_n, annotated_n, ssll_n, aw_n, snaps_n, pipeline_runs_n, server_now FROM public.v_dash_system_pulse;"
+      - name: Apply security revoke (anon/authenticated write on public.* ) (+ idempotency)
+        # 撤 anon/authenticated 对 5 张 public 表的写权限(读保留,不开 RLS)。
+        # guarded:表/角色不存在则跳过 → 裸 PG / CI 为 no-op。REVOKE 幂等,两遍验。
+        run: |
+          psql -v ON_ERROR_STOP=1 -f schemas/security_revoke_anon_write_public_tables.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/security_revoke_anon_write_public_tables.sql
 
   yaml:
     name: Mapping yaml lint
