@@ -77,8 +77,8 @@ function Panel({
 }
 
 function Kpi({
-  label, value, format, accent,
-}: { label: string; value: number; format?: (n: number) => string; accent?: boolean }) {
+  label, value, format = "comma", accent,
+}: { label: string; value: number; format?: "cn" | "comma"; accent?: boolean }) {
   return (
     <div className="group relative overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-b from-white/[0.07] to-white/[0.015] p-5">
       <div className="pointer-events-none absolute -right-6 -top-8 h-20 w-20 rounded-full bg-flywheel-accent/10 blur-2xl transition group-hover:bg-flywheel-accent/20" />
@@ -136,11 +136,11 @@ export default async function ConsolePage() {
 
       {/* KPI 大数条(滚动计数) */}
       <section className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-        <Kpi label="累计内容曝光" value={o.impressions} format={cnNum} accent />
-        <Kpi label="累计阅读" value={o.reads} format={cnNum} />
-        <Kpi label="累计互动" value={o.interactions} format={cnNum} />
-        <Kpi label="内容资产" value={o.notes} format={comma} />
-        <Kpi label="验证级爆款" value={o.baokuanReal} format={comma} />
+        <Kpi label="累计内容曝光" value={o.impressions} format="cn" accent />
+        <Kpi label="累计阅读" value={o.reads} format="cn" />
+        <Kpi label="累计互动" value={o.interactions} format="cn" />
+        <Kpi label="内容资产" value={o.notes} format="comma" />
+        <Kpi label="验证级爆款" value={o.baokuanReal} format="comma" />
       </section>
 
       {/* 主区:飞轮 + 增长趋势 */}
@@ -164,7 +164,7 @@ export default async function ConsolePage() {
                 ].map(([k, v]) => (
                   <div key={k as string}>
                     <div className="text-xl font-bold tabular-nums text-white">
-                      <CountUp value={v as number} format={comma} />
+                      <CountUp value={v as number} format="comma" />
                     </div>
                     <div className="text-xs text-slate-500">{k as string}</div>
                   </div>
@@ -176,7 +176,7 @@ export default async function ConsolePage() {
 
         <Panel title="累计曝光趋势" sub="复利上扬">
           <div className="mb-4 text-3xl font-extrabold text-white">
-            <CountUp value={o.impressions} format={cnNum} />
+            <CountUp value={o.impressions} format="cn" />
             <span className="ml-2 align-middle text-sm font-medium text-flywheel-accent">↗ 复利</span>
           </div>
           <BarChart data={trend} accentIndex={trend.length - 1} height={150} />

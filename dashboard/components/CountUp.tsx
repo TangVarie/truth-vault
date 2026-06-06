@@ -1,19 +1,21 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { cnNum, comma } from "@/config/showcase";
 
 /**
- * 数字滚动计数(easeOutCubic),进场从 0 涨到目标值。让大数"涨上来"= 动效。
- * format 可把数值实时格式化(如紧凑万/亿)。
+ * 数字滚动计数(easeOutCubic),进场从 0 涨到目标值。
+ * format 是字符串而不是函数 —— 因为 Server Components 不能往 Client Components 传函数;
+ * 用 "cn"(中文紧凑万/亿) 或 "comma"(千分位),在 client 端内部决定怎么格式化。
  */
 export default function CountUp({
   value,
   duration = 1500,
-  format,
+  format = "comma",
 }: {
   value: number;
   duration?: number;
-  format?: (n: number) => string;
+  format?: "cn" | "comma";
 }) {
   const [n, setN] = useState(0);
   const started = useRef(false);
@@ -33,6 +35,6 @@ export default function CountUp({
     return () => cancelAnimationFrame(id);
   }, [value, duration]);
 
-  const fmt = format ?? ((x: number) => Math.round(x).toLocaleString("en-US"));
+  const fmt = format === "cn" ? cnNum : comma;
   return <span className="tabular-nums">{fmt(n)}</span>;
 }
