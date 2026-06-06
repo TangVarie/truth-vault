@@ -9,7 +9,6 @@ import {
   derivedTransferPaths,
   PROJECT_LABEL,
 } from "@/config/showcase";
-import NeuralBloom from "@/components/NeuralBloom";
 import Sankey from "@/components/Sankey";
 import CountUp from "@/components/CountUp";
 import Donut from "@/components/Donut";
@@ -20,9 +19,8 @@ import Leaderboard from "@/components/Leaderboard";
 import Sparkline from "@/components/Sparkline";
 
 /**
- * /console = 暗色座舱「活体仪表」—— 一套语言贯穿全局(深暖黑 + coral 点睛 + 细发丝),
- * 而非"活体花 + 一堆彩色砖"。bloom 是沉浸式 hero(中心生长、四周渐隐),其余面板全部克制统一。
- * 与 / 编辑级纸面"同一个生命体、反语法"。
+ * /console = 暗色座舱「态势仪表」—— 一套语言贯穿全局(深暖黑 + coral 点睛 + 细发丝),克制统一。
+ * 不再有生成式画布(神经花已弃)。前瞻"体征"指标 + 真·数据 viz,可控、可靠。
  */
 export const dynamic = "force-dynamic";
 
@@ -53,63 +51,63 @@ export default async function ConsolePage() {
 
   return (
     <main id="top" className="relative min-h-screen" style={{ background: "#07060a", color: "#e8e6e3" }}>
-      {/* ── 顶部 pill 导航 ── */}
       <nav className="sticky top-0 z-40 border-b border-white/8" style={{ background: "rgba(7,6,10,0.82)", backdropFilter: "blur(8px)" }}>
         <div className="mx-auto flex max-w-[1440px] items-center justify-between px-5 py-3.5">
           <Link href="/" className="tag text-slate-400 transition hover:text-coral">← BYWOOD · ROC</Link>
           <div className="hidden items-center gap-1 rounded-full border border-white/8 bg-white/[0.03] p-1 lg:flex">
-            <Tab href="#top" active>活体</Tab>
+            <Tab href="#top" active>态势</Tab>
             <Tab href="#flow">数据流</Tab>
             <Tab href="#resonance">共振</Tab>
             <Tab href="#record">战绩</Tab>
           </div>
           <span className="hidden items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 sm:flex">
             <span className="dot" />
-            <span className="tag text-slate-300">实时生长</span>
+            <span className="tag text-slate-300">全链路在线</span>
           </span>
         </div>
       </nav>
 
       <div className="mx-auto max-w-[1440px] px-5 pb-16 pt-5">
-        {/* ── 活体飞轮 hero(沉浸式:中心生长、四周渐隐)── */}
-        <section className="relative mb-5 overflow-hidden rounded-[28px] border border-white/[0.06]">
-          <NeuralBloom data={data} theme="neon" className="h-[460px] w-full sm:h-[620px]" />
-          {/* 暗角聚焦 + 上/下渐隐,保证文字可读 */}
-          <div className="pointer-events-none absolute inset-0" style={{ background: "radial-gradient(120% 90% at 50% 46%, transparent 38%, rgba(7,6,10,0.55) 78%, rgba(7,6,10,0.95) 100%)" }} />
-          <div className="pointer-events-none absolute inset-x-0 top-0 h-28" style={{ background: "linear-gradient(to bottom, rgba(7,6,10,0.8), transparent)" }} />
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-2/5" style={{ background: "linear-gradient(to top, rgba(7,6,10,0.92), transparent)" }} />
-
-          <div className="absolute inset-0 flex flex-col justify-between p-6 sm:p-9">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <span className="tag text-coral">活体飞轮 · LIVING FLYWHEEL</span>
-                <h1 className="mt-2 max-w-md font-light text-white" style={{ fontSize: "clamp(22px,2.6vw,38px)", lineHeight: 1.1, letterSpacing: "-0.015em" }}>
-                  整座生态,作为一个会生长的生命体
-                </h1>
-              </div>
-              <div className="text-right">
-                <div className="num text-white" style={{ fontSize: "clamp(26px,2.8vw,44px)", fontWeight: 800, letterSpacing: "-0.03em" }}>
-                  <CountUp value={o.notes} format="cn" duration={2000} />
-                </div>
-                <div className="mini text-slate-400">内容资产 · 飞轮核心</div>
-              </div>
+        {/* ── 态势 hero:标题 + 飞轮核心 + 前瞻体征(无画布)── */}
+        <Cell className="mb-4" glow>
+          <div className="flex flex-wrap items-end justify-between gap-6">
+            <div>
+              <span className="tag text-coral">飞轮态势 · LIVE SYSTEM</span>
+              <h1 className="mt-2 text-white" style={{ fontSize: "clamp(30px,4.2vw,58px)", fontWeight: 800, letterSpacing: "-0.03em", lineHeight: 1 }}>
+                实时全链路,<span className="text-coral">越用越强</span>。
+              </h1>
+              <p className="mt-3 max-w-md text-sm text-slate-400">{o.projects} 条战线 · 投放真实结果实时回流 · 结构化策略库持续沉淀。</p>
             </div>
-
-            <div className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-4">
-              <Vital label="飞轮动量" value={momentum} sub="每资产带动互动" />
-              <Vital label="蓄势待爆" value={igniting} sub="已解析 · 待引爆候选" />
-              <Vital label="验证级命中率" value={hitRate} suffix="%" sub="爆款 / 内容资产" />
-              <Vital label="情绪光谱" value={o.levers} sub="活跃策略杠杆" />
+            <div className="text-right">
+              <div className="num text-white" style={{ fontSize: "clamp(40px,5vw,84px)", fontWeight: 800, letterSpacing: "-0.035em", lineHeight: 0.9 }}>
+                <CountUp value={o.impressions} format="cn" duration={2000} />
+              </div>
+              <div className="mini mt-1 text-slate-400">累计内容曝光 · CUMULATIVE IMPRESSIONS</div>
             </div>
           </div>
-        </section>
+          <div className="mt-7 grid grid-cols-2 gap-x-6 gap-y-5 border-t border-white/8 pt-6 sm:grid-cols-4">
+            <Vital label="飞轮动量" value={momentum} sub="每资产带动互动" />
+            <Vital label="蓄势待爆" value={igniting} sub="已解析 · 待引爆候选" />
+            <Vital label="验证级命中率" value={hitRate} suffix="%" sub="爆款 / 内容资产" />
+            <Vital label="情绪光谱" value={o.levers} sub="活跃策略杠杆" />
+          </div>
+        </Cell>
 
-        {/* ── 统一克制网格(一套语言)── */}
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
           <Readout label="已部署 AI 决策" value={o.cards} sub="策略经验卡 · 实时调用注入" seed={3} className="lg:col-span-3" />
           <Readout label="策略组合空间" value={strategySpace} sub={`${o.levers}×${o.audiences}×${ARCHETYPES} 维`} seed={5} className="lg:col-span-3" />
           <Readout label="跨品类迁移路径" value={transferPaths} sub={`${o.projects} 战线 · 双向`} seed={11} className="lg:col-span-3" />
           <Readout label="结构化策略内核" value={o.essence} sub="已解析受众画像" seed={13} className="lg:col-span-3" />
+
+          <Cell id="flow" className="lg:col-span-12" glow>
+            <div className="flex items-baseline justify-between">
+              <h2 className="h2 text-white">生态数据流 <span className="text-coral">/</span> FLYWHEEL STREAM</h2>
+              <span className="tag flex items-center gap-2 text-slate-400"><span className="dot" /> 实时</span>
+            </div>
+            <div className="mt-6">
+              <Sankey impressions={o.impressions} notes={o.notes} baokuan={o.baokuanReal} cards={o.cards} />
+            </div>
+          </Cell>
 
           <Cell className="lg:col-span-5">
             <GrowthCurve total={o.impressions} />
@@ -128,16 +126,6 @@ export default async function ConsolePage() {
             </div>
           </Cell>
           <Readout label="AI 推理深度" value={aiInferences} sub={`${AI_DIMS} 维 × ${comma(o.notes)} 资产`} seed={7} className="lg:col-span-3" />
-
-          <Cell id="flow" className="lg:col-span-12" glow>
-            <div className="flex items-baseline justify-between">
-              <h2 className="h2 text-white">生态数据流 <span className="text-coral">/</span> FLYWHEEL STREAM</h2>
-              <span className="tag flex items-center gap-2 text-slate-400"><span className="dot" /> 实时</span>
-            </div>
-            <div className="mt-6">
-              <Sankey impressions={o.impressions} notes={o.notes} baokuan={o.baokuanReal} cards={o.cards} />
-            </div>
-          </Cell>
 
           <Cell id="resonance" className="lg:col-span-7">
             <div className="flex items-baseline justify-between">
@@ -160,7 +148,6 @@ export default async function ConsolePage() {
             </div>
           </Cell>
 
-          {/* 4 战线:同一套克制读数(不再彩色砖) */}
           {projects.map((p, i) => (
             <Cell key={p.project_id} className="lg:col-span-3">
               <div className="flex items-center justify-between">
@@ -197,7 +184,6 @@ export default async function ConsolePage() {
   );
 }
 
-/* ── 统一的克制单元(一套语言)── */
 function Cell({ children, className = "", id, glow = false }: { children: React.ReactNode; className?: string; id?: string; glow?: boolean }) {
   return (
     <section

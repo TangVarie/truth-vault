@@ -18,7 +18,6 @@ import type { DashboardData, Matrix as MatrixT } from "@/lib/dashboard-data";
 import SmoothScroll from "@/components/SmoothScroll";
 import Reveal from "@/components/Reveal";
 import CountUp from "@/components/CountUp";
-import NeuralBloom from "@/components/NeuralBloom";
 import EditorialFlywheel from "@/components/EditorialFlywheel";
 import EditorialCurve from "@/components/EditorialCurve";
 
@@ -57,15 +56,9 @@ export default function Editorial({ data }: { data: DashboardData }) {
         <div className="grain" aria-hidden />
         <Nav />
 
-        {/* ── 00 · 品牌 manifesto(活体飞轮 ink 背景) ── */}
-        <section className="scene relative flex min-h-screen flex-col justify-center overflow-hidden px-8">
-          <NeuralBloom data={data} theme="ink" className="absolute inset-0 z-0" />
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-0 z-0"
-            style={{ background: "radial-gradient(820px 560px at 34% 46%, #F3EEE6 0%, rgba(243,238,230,0.72) 46%, rgba(243,238,230,0) 78%)" }}
-          />
-          <motion.div variants={stagger} initial="hidden" animate="show" className="relative z-10 mx-auto w-full max-w-[1180px]">
+        {/* ── 00 · 品牌 manifesto ── */}
+        <section className="scene relative flex min-h-screen flex-col justify-center px-8">
+          <motion.div variants={stagger} initial="hidden" animate="show" className="mx-auto w-full max-w-[1180px]">
             <motion.div variants={rise} className="ed-eyebrow">§ BYWOOD STUDIO · 体系化增长服务商</motion.div>
             <motion.div variants={rise} className="rule-brass mt-4 max-w-[120px]" />
             <motion.h1 variants={rise} className="ed-wordmark fr mt-8" style={{ color: "#14110F" }}>
