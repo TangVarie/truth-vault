@@ -43,9 +43,10 @@ intent_mapping:
   小红书下单: conversion
   科普贴: educational
 
-# ── 方向拆解 ── [已据 preflight(show=50)实测「方向」取值重写]
-# preflight 报本表真实方向 5 种(此前草稿的 持妆/年龄 不在数据里, 已删):
-#   妆效问题 84 / 经济考虑 18 / 场景需求 12 / 功能需求 2 / 季节气候问题 1
+# ── 方向拆解 ── [已据 preflight 实测「方向」取值重写, 覆盖全部 7 种]
+# preflight 报本表真实方向 7 种(声明列补全、202 行入库后全部显形):
+#   妆效问题 84 / 年龄问题 25 / 经济考虑 18 / 持妆问题 16 / 场景需求 12 / 功能需求 2 / 季节气候问题 1
+#   (持妆/年龄 此前在 quarantine 行里没显形, 现确认是真方向, 与 docs/04 HXZ 前例吻合)
 # content_format / target_audience 受 docs/05 v0.2 闭集约束(format 8 值 / audience 11 值)。
 # ⚠️ 下列为【按方向名 + 品类常识】的保守草稿, 须策略 lead(Ziao/周哥)review:
 #   - content_format 标 [待review] 的项需读文案样本定夺(流量向变体可能落 情感叙事/场景植入);
@@ -72,6 +73,14 @@ direction_decomposition:
     content_format: 场景植入          # [待review]
     target_audience: ["通用"]         # [待细化]
     user_pain_point: 季节/气候适配(夏季出油/换季干燥等)
+  "年龄问题":                         # 25 行: 熟龄肌/显年轻/不显老(docs/04 前例: 衰老焦虑)
+    content_format: 情感叙事          # [待review] 年龄角度多走情感叙事; 也可能场景植入
+    target_audience: ["通用"]         # [待细化] 方向名指向熟龄肌, likely 中年女性/银发女性, 待策略确认
+    user_pain_point: 年龄/熟龄肌妆容焦虑(显老/卡纹/不服帖)
+  "持妆问题":                         # 16 行: 脱妆/持久度(docs/04 前例: 持妆需求)
+    content_format: 场景植入          # [待review] 持妆常以全天场景呈现
+    target_audience: ["通用"]         # [待细化]
+    user_pain_point: 持妆/脱妆问题(出油脱妆、持久度不足)
 
 tier_extraction:
   source: 状态字段
@@ -152,9 +161,10 @@ onboarding_meta:
        - category=美妆 合法; schema_family=B 确认(表无巡查/检查/主页链接 → 非 A)
        - 未声明列 10 个全部声明进 raw_extra(quarantine 应归零, 找回 ~965 行有正文)
        - field_mapping 删 3 个表中不存在的空映射(爆帖置顶评论/帐号昵称/粉丝数)
-       - direction_decomposition 重写为真实 5 方向(妆效/经济/场景/功能/季节气候)
-       - intent 全命中(traffic 156 / conversion 7, 无 other)
-       - tier 分布正常(趴140/爆2/大爆1/预备4 等; tier_source 状态字段为主)
+       - direction_decomposition 覆盖真实 7 方向(妆效/年龄/经济/持妆/场景/功能/季节气候), 100% 命中
+       - intent 全命中(traffic 178 / conversion 7, 无 other)
+       - tier 分布正常(趴140/大爆3/爆2/预备5 等; tier_source 状态字段为主)
+       - 会入库(有正文)202 行; quarantine=0; 裁决 ✅ 无阻断问题, 可真跑
     ⏳ 待策略 lead(Ziao/周哥)定 / 不阻断 sync:
        - direction_decomposition 里标 [待review]/[待细化] 的 content_format 与 target_audience
          (人群定向是策略事实, 未臆造; essence 层会逐条细化)
