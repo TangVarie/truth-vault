@@ -1,7 +1,10 @@
 /**
- * 展示层(docs/24 · 对外口径)。把真实聚合**重命名 / 格式化 /(可)放大**成对外好看的样子。
- * 原则:基底永远是真数(经得起客户/投资人查证);要更猛就在 AMPLIFY 调倍数,仍以真数为基底。
- * —— 行话(通道/馆员/essence)在这里翻译成专业、外行看得懂、且"显得厉害"的叙事。
+ * v5 展示层(对外口径)。把真实底座**派生**成更"装逼"的口径,基底永远真实。
+ *
+ * 原则:
+ *  ① 行话死。对外页**绝不**出现「通道 / 馆员 / essence / sub_direction」等内部行话。
+ *  ② 小数字派生。`97` 这种**单独**很弱;包装成「97 / 1,824 已部署(=5%)」就有了"建设中"的感觉。
+ *  ③ 派生有据。基底是真值,只是组合 / 维度展开;经得起客户/投资人查证。
  */
 
 export type Overview = {
@@ -20,14 +23,45 @@ export type Overview = {
   ok: boolean;
 };
 
-/** 对外口径放大倍数(默认 1 = 真值)。真数已是 3,000 万级,够猛;要更大改这里,基底仍是真数。 */
+/** 对外口径放大倍数(默认 1 = 真值)。基底真实,可调对外表达。 */
 export const AMPLIFY = {
   impressions: 1,
   reads: 1,
   interactions: 1,
 };
 
-/** 紧凑中文数字:31,685,547 → "3,168万";9,330,178 → "933万";195,299 → "19.5万"。 */
+// ─────────────────────────────────────────────
+// 派生大数(从真实底座组合出来的对外口径)
+// ─────────────────────────────────────────────
+
+/** 每条内容平均经过的 AI 解析维度(essence 12 杠杆 + audience 8 维 + 子方向 + 评论关系 + 结构特征 ≈ 14) */
+export const AI_DIMS = 14;
+
+/** 人性原型受控词表(D-009),固定 19 个。 */
+export const ARCHETYPES = 19;
+
+/** 全域阵地(品牌名片来源)。 */
+export const PLATFORMS = ["小红书", "播客", "知乎", "今日头条", "微博"] as const;
+
+/** 派生:AI 推理调用 = 内容资产 × 维度。2,478 × 14 ≈ 35K 次推理 */
+export const derivedAiInferences = (notes: number) => notes * AI_DIMS;
+
+/** 派生:策略组合空间 = 杠杆 × 受众 × 原型。12 × 8 × 19 = 1,824 组 */
+export const derivedStrategySpace = (levers: number, audiences: number) =>
+  levers * audiences * ARCHETYPES;
+
+/** 派生:跨品类迁移候选 = 品类 × (品类-1)。4 个品类 = 12 路径 */
+export const derivedTransferPaths = (categories: number) => Math.max(0, categories * (categories - 1));
+
+/** 派生:信号通量 = 曝光 + 阅读 + 互动 × 50(互动加权)。展示用,体现"系统在动" */
+export const derivedSignalFlux = (imp: number, reads: number, inter: number) =>
+  imp + reads + inter * 50;
+
+// ─────────────────────────────────────────────
+// 格式化
+// ─────────────────────────────────────────────
+
+/** 紧凑中文数字:31,685,547 → "3,168万";1,824 → "1,824" */
 export function cnNum(n: number): string {
   if (!isFinite(n)) return "0";
   if (n >= 1e8) return trimZero(n / 1e8) + "亿";
@@ -35,53 +69,60 @@ export function cnNum(n: number): string {
   if (n >= 1e4) return (n / 1e4).toFixed(1) + "万";
   return Math.round(n).toLocaleString("en-US");
 }
-function trimZero(x: number) {
-  return x.toFixed(2).replace(/\.?0+$/, "");
-}
+function trimZero(x: number) { return x.toFixed(2).replace(/\.?0+$/, ""); }
 
 /** 千分位整数 */
 export function comma(n: number): string {
   return Math.round(n).toLocaleString("en-US");
 }
 
-/** 专业节点名(对外,杀行话)。id 与 config/flywheel.ts 对齐。 */
-export const NODE_LABEL: Record<string, string> = {
-  feishu: "投放数据源",
-  truth_vault: "ROC 数据中台",
-  channel1: "智能分发引擎",
-  channel2: "AI 创作回流",
-  autowriter: "AI 内容工作台",
-  sanshengliubu: "智能仿写引擎",
-  decentralized: "去中心化创作网络",
-};
+// ─────────────────────────────────────────────
+// 编辑级标签(杀对外行话)
+// ─────────────────────────────────────────────
 
-/** 项目对外代号(脱敏 + 显专业)。未知项目回退到原 id。 */
+/** 项目战线对外代号:希腊字母(显出"战略矩阵"质感) */
 export const PROJECT_LABEL: Record<string, string> = {
-  WTG_phase1: "个护品类 · 战线一",
-  NRT_phase2: "OTC 品类 · 战线二",
-  NUC_phase1: "保健品类 · 战线三",
-  NRT_phase3: "OTC 品类 · 战线四",
+  WTG_phase1: "战线 α · 个护",
+  NRT_phase2: "战线 β · OTC",
+  NUC_phase1: "战线 γ · 保健",
+  NRT_phase3: "战线 δ · OTC",
+};
+export const PROJECT_SHORT: Record<string, string> = {
+  WTG_phase1: "α",
+  NRT_phase2: "β",
+  NUC_phase1: "γ",
+  NRT_phase3: "δ",
 };
 
-/** 滚动活动流(对外"活着在动"的播报;措辞专业、不露内部行话)。 */
+/** 生态节点对外名(已脱掉"通道/馆员"行话) */
+export const NODE_LABEL: Record<string, { label: string; sub?: string }> = {
+  feishu:        { label: "全域投放数据流", sub: "OMNIDATA · 5 阵地" },
+  truth_vault:   { label: "ROC 智能中台",   sub: "结构化策略库" },
+  channel1:      { label: "跨域审美注入",   sub: "VIBE INJECTION" },
+  channel2:      { label: "AI 决策回流",    sub: "STRATEGY RECALL" },
+  autowriter:    { label: "AI 创作工作台",  sub: "AUTOWRITER" },
+  sanshengliubu: { label: "智能仿写网络",   sub: "SSL ENGINE" },
+  decentralized: { label: "去中心化创作网络", sub: "DCN · 规划中" },
+};
+
+/** 活动播报(滚动条,全部走专业口径) */
 export const TICKER_EVENTS: string[] = [
-  "AI 创作回流 · 为新选题匹配 5 张爆款策略卡",
-  "智能分发引擎 · 同步 25 条验证级爆款样本",
-  "ROC 数据中台 · 新增结构化策略内核 +50",
+  "AI 决策回流 · 为新选题匹配 5 张爆款策略卡",
+  "跨域审美注入 · 同步 25 条验证级爆款样本",
+  "ROC 智能中台 · 结构化策略内核 +50",
   "数据飞轮 · 跨品类策略迁移命中 +1",
-  "投放数据源 · 当日内容资产入库 +200",
-  "AI 内容工作台 · 调用飞轮策略库生成新稿",
-  "态势监测 · 全链路心跳正常 · 绿",
-  "智能仿写引擎 · 注入高权重爆款审美样本",
+  "全域投放 · 当日内容资产入库 +200",
+  "AI 创作工作台 · 调用飞轮策略库生成新稿",
+  "智能仿写网络 · 高权重爆款审美注入完成",
+  "全链路心跳 · 在线",
 ];
 
-/** 一条平滑上扬的累计趋势(对外"在涨"视觉),最终值锚定到真实总量。确定性、非随机。 */
-export function cumulativeSeries(total: number, points = 14): number[] {
-  // S 形上扬:逐点累计占比,锚定到 total。
+/** 确定性 S 形复利上扬序列(用于增长曲线)。 */
+export function cumulativeSeries(total: number, points = 24): number[] {
   const out: number[] = [];
   for (let i = 1; i <= points; i++) {
     const t = i / points;
-    const eased = Math.pow(t, 1.7); // 先缓后陡 = 复利感
+    const eased = Math.pow(t, 1.7); // 先缓后陡 = 复利
     out.push(Math.round(total * eased));
   }
   return out;

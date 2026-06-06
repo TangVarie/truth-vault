@@ -11,7 +11,9 @@
  */
 "use client";
 
-type Node = { id: string; col: number; label: string; sub?: string; bar: number };
+import { NODE_LABEL } from "@/config/showcase";
+
+type Node = { id: string; col: number; bar: number; meta?: string };
 type Link = { from: string; to: string; value: number; accent?: boolean };
 
 const W = 1100;
@@ -50,32 +52,32 @@ export default function Sankey({
   baokuan: number;
   cards: number;
 }) {
-  // 节点(bar 高度 = 视觉对齐,不是数据;数据靠 ribbon 粗细传达)
+  // 节点(bar 高度 = 视觉对齐;label/sub 走 NODE_LABEL 集中配置,杀行话)
   const nodes: Node[] = [
-    { id: "feishu", col: 0, label: "投放数据源", sub: "飞书全域", bar: 200 },
-    { id: "roc",    col: 1, label: "ROC 数据中台", sub: `${notes.toLocaleString()} 内容资产`, bar: 240 },
-    { id: "dist",   col: 2, label: "智能分发引擎", sub: `${baokuan} 验证级爆款`, bar: 140 },
-    { id: "aw_in",  col: 2, label: "AI 创作回流",   sub: `${cards} 策略经验卡`, bar: 140 },
-    { id: "ssll",   col: 3, label: "三生六部",     sub: "智能仿写引擎", bar: 140 },
-    { id: "aw",     col: 3, label: "AI 内容工作台", sub: "autowriter",   bar: 140 },
+    { id: "feishu",        col: 0, bar: 200 },
+    { id: "truth_vault",   col: 1, bar: 240, meta: `${notes.toLocaleString()} 内容资产` },
+    { id: "channel1",      col: 2, bar: 140, meta: `${baokuan} 验证级爆款` },
+    { id: "channel2",      col: 2, bar: 140, meta: `${cards} 策略经验卡` },
+    { id: "sanshengliubu", col: 3, bar: 140 },
+    { id: "autowriter",    col: 3, bar: 140 },
   ];
 
   // 节点 y 中心
   const yOf: Record<string, number> = {
-    feishu: H / 2,
-    roc:    H / 2,
-    dist:   120,
-    aw_in:  240,
-    ssll:   120,
-    aw:     240,
+    feishu:        H / 2,
+    truth_vault:   H / 2,
+    channel1:      120,
+    channel2:      240,
+    sanshengliubu: 120,
+    autowriter:    240,
   };
 
   const links: Link[] = [
-    { from: "feishu", to: "roc",   value: 200, accent: true },
-    { from: "roc",    to: "dist",  value: 90, accent: true  },
-    { from: "roc",    to: "aw_in", value: 90  },
-    { from: "dist",   to: "ssll",  value: 80, accent: true  },
-    { from: "aw_in",  to: "aw",    value: 80  },
+    { from: "feishu",      to: "truth_vault",   value: 200, accent: true },
+    { from: "truth_vault", to: "channel1",      value: 90,  accent: true },
+    { from: "truth_vault", to: "channel2",      value: 90  },
+    { from: "channel1",    to: "sanshengliubu", value: 80,  accent: true },
+    { from: "channel2",    to: "autowriter",    value: 80  },
   ];
 
   return (
@@ -130,85 +132,29 @@ export default function Sankey({
           const x = COL_X[n.col];
           const y = yOf[n.id];
           const bar = n.bar;
+          const cfg = NODE_LABEL[n.id] ?? { label: n.id };
+          const label = cfg.label;
+          const sub = n.meta ?? cfg.sub;
           // 标签靠节点左/右排版(col 0/3 标外侧,col 1/2 标节点上方)
           const labelLeft = n.col === 3;
           const labelTop = n.col === 1 || n.col === 2;
           return (
             <g key={n.id}>
-              <rect
-                x={x}
-                y={y - bar / 2}
-                width={NODE_W}
-                height={bar}
-                rx="3"
-                fill="#f3f4f6"
-              />
+              <rect x={x} y={y - bar / 2} width={NODE_W} height={bar} rx="3" fill="#f3f4f6" />
               {labelTop ? (
                 <>
-                  <text
-                    x={x + NODE_W / 2}
-                    y={y - bar / 2 - 16}
-                    textAnchor="middle"
-                    fill="#fff"
-                    style={{ fontSize: 14, fontWeight: 700 }}
-                  >
-                    {n.label}
-                  </text>
-                  {n.sub && (
-                    <text
-                      x={x + NODE_W / 2}
-                      y={y - bar / 2 - 2}
-                      textAnchor="middle"
-                      fill="#94a3b8"
-                      style={{ fontSize: 10 }}
-                    >
-                      {n.sub}
-                    </text>
-                  )}
+                  <text x={x + NODE_W / 2} y={y - bar / 2 - 16} textAnchor="middle" fill="#fff" style={{ fontSize: 14, fontWeight: 700 }}>{label}</text>
+                  {sub && <text x={x + NODE_W / 2} y={y - bar / 2 - 2} textAnchor="middle" fill="#94a3b8" style={{ fontSize: 10 }}>{sub}</text>}
                 </>
               ) : labelLeft ? (
                 <>
-                  <text
-                    x={x - 16}
-                    y={y - 4}
-                    textAnchor="end"
-                    fill="#fff"
-                    style={{ fontSize: 14, fontWeight: 700 }}
-                  >
-                    {n.label}
-                  </text>
-                  {n.sub && (
-                    <text
-                      x={x - 16}
-                      y={y + 12}
-                      textAnchor="end"
-                      fill="#94a3b8"
-                      style={{ fontSize: 10 }}
-                    >
-                      {n.sub}
-                    </text>
-                  )}
+                  <text x={x - 16} y={y - 4} textAnchor="end" fill="#fff" style={{ fontSize: 14, fontWeight: 700 }}>{label}</text>
+                  {sub && <text x={x - 16} y={y + 12} textAnchor="end" fill="#94a3b8" style={{ fontSize: 10 }}>{sub}</text>}
                 </>
               ) : (
                 <>
-                  <text
-                    x={x + NODE_W + 14}
-                    y={y - 4}
-                    fill="#fff"
-                    style={{ fontSize: 14, fontWeight: 700 }}
-                  >
-                    {n.label}
-                  </text>
-                  {n.sub && (
-                    <text
-                      x={x + NODE_W + 14}
-                      y={y + 12}
-                      fill="#94a3b8"
-                      style={{ fontSize: 10 }}
-                    >
-                      {n.sub}
-                    </text>
-                  )}
+                  <text x={x + NODE_W + 14} y={y - 4} fill="#fff" style={{ fontSize: 14, fontWeight: 700 }}>{label}</text>
+                  {sub && <text x={x + NODE_W + 14} y={y + 12} fill="#94a3b8" style={{ fontSize: 10 }}>{sub}</text>}
                 </>
               )}
             </g>
