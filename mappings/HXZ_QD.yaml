@@ -1,0 +1,176 @@
+# ════════════════════════════════════════════════════════════════════
+# 花西子气垫 · HXZ_QD —— Onboarding 草稿(DRAFT)
+# ════════════════════════════════════════════════════════════════════
+# ⚠️ 这是草稿:field_mapping / schema_family / direction_decomposition 的真实取值
+#    需用 preflight 拉真表校正(见文件尾 onboarding_meta.notes)。
+#    feishu 坐标、品类、HXZ 方向/阈值前例(docs/04)已据实预填。
+# ════════════════════════════════════════════════════════════════════
+
+version: 1.0
+
+# ── 项目元数据 ──
+project_id: HXZ_QD
+brand: 花西子
+product: 气垫
+category: 美妆                  # ✓ 已确认在 projects_category_check 闭集内
+platform: xiaohongshu
+schema_family: B               # preflight 确认表中【无】巡查状态/最近检查时间/主页链接 → 非 A 家族, B 成立
+start_date: 2025-XX-XX         # 待填
+end_date: 2026-XX-XX           # 待填
+
+# ── 字段映射 ── [已用 preflight(run 27071343680, 读 644 行)校正到真实列名]
+# 删去的列(爆帖置顶评论 / 帐号昵称 / 粉丝数)preflight 报"声明了但表里没有" —— 本表无此列, 留着是空映射, 故移除。
+field_mapping:
+  素人编号: account_id
+  文案: raw_content
+  发布时间: publish_time
+  反馈链接: publish_url
+  状态: _status_raw              # → tier_extraction
+  方向: _direction_raw           # → direction_decomposition
+  曝光量: impressions
+  阅读量: reads
+  互动量: interactions
+  关键词: target_blue_keywords
+  蓝词记录: hit_blue_keywords
+  发布笔记: _intent_raw
+  随贴评论: _comment_text
+  随贴评论素人: _comment_text_persona
+
+intent_mapping:
+  流量帖: traffic
+  钓鱼帖: traffic
+  直给笔记: conversion
+  小红书下单: conversion
+  科普贴: educational
+
+# ── 方向拆解 ── [已据 preflight 实测「方向」取值重写, 覆盖全部 7 种]
+# preflight 报本表真实方向 7 种(声明列补全、202 行入库后全部显形):
+#   妆效问题 84 / 年龄问题 25 / 经济考虑 18 / 持妆问题 16 / 场景需求 12 / 功能需求 2 / 季节气候问题 1
+#   (持妆/年龄 此前在 quarantine 行里没显形, 现确认是真方向, 与 docs/04 HXZ 前例吻合)
+# content_format / target_audience 受 docs/05 v0.2 闭集约束(format 8 值 / audience 11 值)。
+# ⚠️ 下列为【按方向名 + 品类常识】的保守草稿, 须策略 lead(Ziao/周哥)review:
+#   - content_format 标 [待review] 的项需读文案样本定夺(流量向变体可能落 情感叙事/场景植入);
+#   - target_audience 一律先给 ["通用"] [待细化] —— 按 D-010"反映实际策略意图, 不臆造人群",
+#     真实人群定向由策略确认 + essence 层(LLM)逐条细化, 不在此凭空填年龄性别。
+direction_decomposition:
+  "妆效问题":                         # 84 行(主力角度): 服帖/持妆/遮瑕/卡粉/光泽
+    content_format: 直给推荐          # [待review] 妆效=产品卖点, 倾向直给; 流量向变体可能 场景植入/情感叙事
+    target_audience: ["通用"]         # [待细化]
+    user_pain_point: 妆效不满意(卡粉/不服帖/遮瑕力不足/持妆差)
+  "经济考虑":                         # 18 行: 平价/性价比/平替
+    content_format: 横评对比          # [待review] 性价比常以对比/平替呈现; 也可能直给推荐
+    target_audience: ["通用"]         # [待细化] 或为 学生党/年轻女性, 待策略确认
+    user_pain_point: 预算有限/追求高性价比平替
+  "场景需求":                         # 12 行: 方向名即场景(通勤/约会/出油季等)
+    content_format: 场景植入          # 方向语义即"场景", 直接对应
+    target_audience: ["通用"]         # [待细化]
+    user_pain_point: 特定使用场景下的妆容需求
+  "功能需求":                         # 2 行: 遮瑕/控油/防晒/养肤等具体功能
+    content_format: 直给推荐          # [待review]
+    target_audience: ["通用"]         # [待细化]
+    user_pain_point: 特定功能需求(遮瑕/控油/防晒/养肤等)
+  "季节气候问题":                     # 1 行: 夏季出油/换季干燥等
+    content_format: 场景植入          # [待review]
+    target_audience: ["通用"]         # [待细化]
+    user_pain_point: 季节/气候适配(夏季出油/换季干燥等)
+  "年龄问题":                         # 25 行: 熟龄肌/显年轻/不显老(docs/04 前例: 衰老焦虑)
+    content_format: 情感叙事          # [待review] 年龄角度多走情感叙事; 也可能场景植入
+    target_audience: ["通用"]         # [待细化] 方向名指向熟龄肌, likely 中年女性/银发女性, 待策略确认
+    user_pain_point: 年龄/熟龄肌妆容焦虑(显老/卡纹/不服帖)
+  "持妆问题":                         # 16 行: 脱妆/持久度(docs/04 前例: 持妆需求)
+    content_format: 场景植入          # [待review] 持妆常以全天场景呈现
+    target_audience: ["通用"]         # [待细化]
+    user_pain_point: 持妆/脱妆问题(出油脱妆、持久度不足)
+
+tier_extraction:
+  source: 状态字段
+  rules:
+    - match_contains: ["大爆"]
+      tier: 大爆
+    - match_contains: ["爆贴预备"]
+      tier: 预备
+    - match_contains: ["爆贴"]
+      tier: 爆
+    - match_contains: ["参考"]
+      tier: 参考
+    - match_contains: ["风控"]
+      tier: 风控
+    - match_contains: ["无水花"]
+      tier: 趴
+    - match_contains: ["评估中"]
+      tier: 未知
+    - default: null
+
+# 阈值取自 docs/04 HXZ_QD 前例(爆=30 / 大爆=1000)—— 跑 50 条后可再校
+tier_thresholds:
+  爆: 30
+  大爆: 1000
+
+compliance:
+  base_template: 美妆
+  custom_red_flags:
+    - "功效宣称需可备案/可证实,禁绝对化(最/第一/100%)"
+    - "禁医疗化表述(治疗/修复屏障等需谨慎)"
+  blue_keyword_strategy:
+    primary: []                  # 待策略 lead 填(如 花西子气垫 / 持妆气垫)
+    secondary: []
+    avoid: []
+
+# 项目专属字段(进 raw_extra)—— 据 preflight(run 27071343680)实测列声明, 避免 D-021 整行 quarantine。
+# ⚠️ 不声明 = 出现即整行 quarantine, 会丢真笔记(本表实测 10 个未声明列共 965 行有正文会丢)。
+project_specific_fields_to_raw_extra:
+  # —— 实有业务列(preflight 确认在表中, 非未声明)——
+  - 父记录 2
+  - 父记录 3
+  - 父记录 4
+  - 观众分析
+  # —— preflight 报"未声明列"(副本/截图/状态等旁列)→ 一律收进 raw_extra ——
+  - 数据汇总
+  - 曝光量副本
+  - 阅读量副本
+  - 互动量副本
+  - 评论状态
+  - 相关截图
+  - 评论配图
+  - 蓝词图片
+  - 临时-评论修改对比      # show=50 复跑点名(19 行)
+  - 爆帖控评置顶          # show=50 复跑点名(3 行)
+  # ✅ 至此 10 个未声明列全部声明(8 + 2), preflight 复跑 quarantine 应归零。
+
+data_supplement_needed:
+  - field: account_followers
+    # 本表【无】粉丝数/帐号昵称列(preflight 确认), 故 _account_name/_account_followers 无来源。
+    method: 通过 publish_url 调小红书 API 或人工补录
+    estimated_rows: 0
+
+# ── Sync 配置 ── (飞书坐标已据用户提供填入)
+sync_config:
+  source_type: feishu_api
+  feishu_app_token: IKDabbT7HascF5szHrRciBe0ndg
+  feishu_table_id: tblYUAvcWU8IZDQh
+  feishu_view_id: null
+  sync_interval: on_demand        # 默认:夜间 cron 不碰;preflight + 显式验证 OK 后再翻 daily
+
+onboarding_meta:
+  onboarded_at: 2026-06-06
+  onboarded_by: (待填)
+  strategy_lead: Ziao / 周哥
+  notes: |
+    preflight 已校正(2026-06-06, run 27071343680 + show=50 复跑):
+    ✅ 已据真表修完:
+       - category=美妆 合法; schema_family=B 确认(表无巡查/检查/主页链接 → 非 A)
+       - 未声明列 10 个全部声明进 raw_extra(quarantine 应归零, 找回 ~965 行有正文)
+       - field_mapping 删 3 个表中不存在的空映射(爆帖置顶评论/帐号昵称/粉丝数)
+       - direction_decomposition 覆盖真实 7 方向(妆效/年龄/经济/持妆/场景/功能/季节气候), 100% 命中
+       - intent 全命中(traffic 178 / conversion 7, 无 other)
+       - tier 分布正常(趴140/大爆3/爆2/预备5 等; tier_source 状态字段为主)
+       - 会入库(有正文)202 行; quarantine=0; 裁决 ✅ 无阻断问题, 可真跑
+    ⏳ 待策略 lead(Ziao/周哥)定 / 不阻断 sync:
+       - direction_decomposition 里标 [待review]/[待细化] 的 content_format 与 target_audience
+         (人群定向是策略事实, 未臆造; essence 层会逐条细化)
+       - blue_keyword_strategy.primary/secondary/avoid 仍空, 待填
+       - 注: 表中约 383 行"有 note 信号但无文案"(运营追踪壳行, 非数据丢失), 真跑会逐条记 anomaly
+    注:autowriter 映射(mapping_to_autowriter_project_id)【不需要配】——
+       通道2 push 已于 2026-06-01 退役(D-038), 改 pull/馆员模型。
+    下一步:preflight 复跑确认 quarantine=0 → PR → 显式 Daily TV sync(dry_run)→ 实跑
+       → 翻 sync_interval=daily → backfill essence。
