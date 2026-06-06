@@ -29,8 +29,12 @@
 
 html, body { background: var(--ink); color: #e5e7eb; }
 body {
+  font-family: var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
   font-feature-settings: "ss01", "cv11", "tnum";
+  -webkit-font-smoothing: antialiased;
 }
+/* 大数 / 等宽数字走 Geist Mono(更"仪表"质感) */
+.num, .huge, .title { font-family: var(--font-geist-sans), var(--font-geist-mono), sans-serif; }
 
 /* ── 编辑级排版工具(极端字阶) ── */
 .huge   { font-size: clamp(72px, 14vw, 200px); line-height: 0.86; letter-spacing: -0.04em; font-weight: 900; }
@@ -92,16 +96,19 @@ body {
 }
 .donut-in { transform-origin: center; animation: donut-in .9s cubic-bezier(.22,1,.36,1) both; }
 
-/* heatmap 单元格进场(stagger 由 animation-delay 驱动) */
+/* heatmap 单元格进场:默认可见(JS 关也不瞎);.play 时(滚到视口)才逐格点亮 */
 @keyframes heat-in {
   from { opacity: 0; transform: scale(0.6); }
   to   { opacity: 1; transform: scale(1); }
 }
-.heat-cell {
-  opacity: 0;
-  transform: scale(0.6);
+.heat-grid.play .heat-cell {
   animation: heat-in .55s cubic-bezier(.22,1,.36,1) both;
 }
+
+/* 叙事站:满屏章节 + 滚动提示 */
+.screen { min-height: 100svh; display: flex; flex-direction: column; justify-content: center; }
+@keyframes scroll-hint { 0%,100% { transform: translateY(0); opacity:.35 } 50% { transform: translateY(7px); opacity:.9 } }
+.scroll-hint { animation: scroll-hint 1.8s ease-in-out infinite; }
 
 /* 跑马灯(底部活动流) */
 @keyframes marquee {

@@ -1,5 +1,8 @@
 "use client";
 
+import { useRef } from "react";
+import { useInView } from "framer-motion";
+
 /**
  * 策略 × 受众 共振矩阵热力图 —— 编辑级深度视图。
  *
@@ -35,9 +38,12 @@ export default function Heatmap({
   const cellSize = 38; // px
   const gap = 4;
 
+  const ref = useRef<HTMLDivElement>(null);
+  const inView = useInView(ref, { once: true, margin: "0px 0px -12% 0px" });
+
   return (
-    <div className="overflow-x-auto">
-      <div style={{ minWidth: audiences.length * (cellSize + gap) + 140 }}>
+    <div className="overflow-x-auto" ref={ref}>
+      <div className={`heat-grid ${inView ? "play" : ""}`} style={{ minWidth: audiences.length * (cellSize + gap) + 140 }}>
         {/* 顶部列标签 */}
         <div className="flex" style={{ paddingLeft: 120 }}>
           {audiences.map((a) => (
