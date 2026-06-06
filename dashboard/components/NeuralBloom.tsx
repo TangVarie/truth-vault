@@ -19,8 +19,8 @@ type Ember = { x: number; y: number; vx: number; vy: number; hue: number };
 const TAU = Math.PI * 2;
 
 const THEMES = {
-  neon: { bg: [7, 6, 10] as [number, number, number], fade: 0.12, comp: "lighter" as GlobalCompositeOperation, light: 62, sat: 92, inkStroke: false, node: "255,255,255", ember: 0.9 },
-  ink: { bg: [243, 238, 230] as [number, number, number], fade: 0.16, comp: "source-over" as GlobalCompositeOperation, light: 18, sat: 55, inkStroke: true, node: "232,118,90", ember: 0.45 },
+  neon: { bg: [7, 6, 10] as [number, number, number], fade: 0.1, comp: "lighter" as GlobalCompositeOperation, light: 60, sat: 84, inkStroke: false, node: "255,255,255", ember: 0.5 },
+  ink: { bg: [243, 238, 230] as [number, number, number], fade: 0.16, comp: "source-over" as GlobalCompositeOperation, light: 18, sat: 55, inkStroke: true, node: "232,118,90", ember: 0.38 },
 };
 
 function mulberry(seed: number) {
@@ -111,8 +111,8 @@ export default function NeuralBloom({
       o.globalCompositeOperation = T.comp;
       o.lineCap = "round";
       for (const s of tree.segs) {
-        const a = 0.5 - s.rev * 0.28;
-        o.strokeStyle = T.inkStroke ? `rgba(20,17,15,${(a * 0.85).toFixed(3)})` : `hsla(${s.hue}, ${T.sat}%, ${T.light}%, ${a.toFixed(3)})`;
+        const a = 0.3 - s.rev * 0.2;
+        o.strokeStyle = T.inkStroke ? `rgba(20,17,15,${(a * 0.95).toFixed(3)})` : `hsla(${s.hue}, ${T.sat}%, ${T.light}%, ${a.toFixed(3)})`;
         o.lineWidth = s.w;
         o.beginPath();
         o.moveTo(s.x1, s.y1);
@@ -149,7 +149,7 @@ export default function NeuralBloom({
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       tree = buildTree(spec, W, H);
       renderOffscreen();
-      const count = Math.min(360, Math.max(80, Math.round((W * H) / 5200)));
+      const count = Math.min(200, Math.max(50, Math.round((W * H) / 7800)));
       const er = mulberry(spec.seed ^ 0x55aa);
       embers = Array.from({ length: count }, () => ({
         x: er() * W,
@@ -188,9 +188,9 @@ export default function NeuralBloom({
         else if (e.x > W) e.x -= W;
         if (e.y < 0) e.y += H;
         else if (e.y > H) e.y -= H;
-        ctx.fillStyle = T.inkStroke ? `rgba(232,118,90,${0.5 * T.ember})` : `hsla(${e.hue},95%,68%,${T.ember})`;
+        ctx.fillStyle = T.inkStroke ? `rgba(232,118,90,${0.5 * T.ember})` : `hsla(${e.hue},90%,66%,${T.ember})`;
         ctx.beginPath();
-        ctx.arc(e.x, e.y, T.inkStroke ? 0.9 : 1.2, 0, TAU);
+        ctx.arc(e.x, e.y, T.inkStroke ? 0.8 : 0.95, 0, TAU);
         ctx.fill();
       }
       ctx.globalCompositeOperation = "source-over";

@@ -67,9 +67,10 @@ export function buildBloomSpec(data: DashboardData): BloomSpec {
   const impTotal = Math.max(1, base.reduce((s, p) => s + p.impressions, 0));
   const filamentBudget = clampFilaments(o.notes || notesTotal);
 
-  // 情绪杠杆 → 色相光谱(Neurones 彩虹;暖橙 18° → 冷品红 318°,留出 coral 主调)
-  const nHue = Math.max(5, Math.min(12, base.length * 2));
-  const hues = Array.from({ length: nHue }, (_, i) => (18 + (i / nHue) * 300) % 360);
+  // 暖色和谐带(玫瑰 → 珊瑚 → 琥珀;不再彩虹,避免杂乱、求高级)
+  const warm = [350, 358, 6, 14, 22, 30, 38];
+  const nHue = Math.max(5, Math.min(warm.length, base.length * 2));
+  const hues = Array.from({ length: nHue }, (_, i) => warm[i % warm.length]);
 
   const branches: BloomBranch[] = base.map((p, i) => {
     const angle = (i / base.length) * Math.PI * 2 - Math.PI / 2 + (r() - 0.5) * 0.45;
