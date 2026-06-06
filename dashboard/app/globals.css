@@ -7,18 +7,45 @@
 }
 
 body {
-  background: #0a0e1a;
+  background:
+    radial-gradient(1100px 520px at 78% -120px, rgba(27, 79, 209, 0.20), transparent 60%),
+    radial-gradient(900px 520px at 0% 110%, rgba(94, 234, 212, 0.07), transparent 55%),
+    #070b18;
   color: #e2e8f0;
 }
 
-/* 开篇视效:流动渐变深底(BYWOOD 蓝 → 深) */
-.bywood-bg {
-  background: radial-gradient(1200px 600px at 50% -10%, rgba(27, 79, 209, 0.35), transparent 60%),
-    linear-gradient(125deg, #070b18 0%, #0a1024 35%, #0b1840 60%, #070b18 100%);
-  background-size: 100% 100%, 200% 200%;
+/* 细网格底纹(科技感),用在 relative+overflow-hidden 容器上 */
+.grid-bg::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+  background-size: 44px 44px;
+  -webkit-mask-image: radial-gradient(circle at 50% 30%, black, transparent 78%);
+  mask-image: radial-gradient(circle at 50% 30%, black, transparent 78%);
+  pointer-events: none;
 }
 
-/* 入场:逐项淡入上移(配 animation-delay 做 stagger,无需 JS) */
+/* 玻璃卡片 */
+.glass {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.012));
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+
+/* 开篇视效:流动渐变深底(BYWOOD 蓝 → 深 + 一点红) */
+.bywood-bg {
+  background:
+    radial-gradient(1200px 620px at 50% -12%, rgba(27, 79, 209, 0.40), transparent 62%),
+    radial-gradient(820px 520px at 85% 18%, rgba(204, 33, 40, 0.12), transparent 55%),
+    linear-gradient(125deg, #070b18 0%, #0a1024 35%, #0b1840 60%, #070b18 100%);
+  background-size: 100% 100%, 100% 100%, 200% 200%;
+}
+
+/* 入场:逐项淡入上移(CSS-only,JS 失败也最终可见) */
 @keyframes rise {
   from {
     opacity: 0;
@@ -26,7 +53,7 @@ body {
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: none;
   }
 }
 .rise {
@@ -47,4 +74,12 @@ body {
   background-clip: text;
   color: transparent;
   animation: shimmer 4s linear infinite;
+}
+
+/* 发光辅助 */
+.text-glow {
+  text-shadow: 0 0 20px rgba(94, 234, 212, 0.35);
+}
+.ring-glow {
+  filter: drop-shadow(0 0 10px rgba(27, 79, 209, 0.45));
 }
