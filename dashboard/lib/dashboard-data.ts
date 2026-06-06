@@ -22,6 +22,14 @@ export type ProjectTier = { project_id: string; tier: string; n: number };
 export type AudiencePerf = { audience: string; n: number; hits: number; hit_rate: number; avg_inter: number };
 export type FormatPerf = { fmt: string; n: number; hits: number; hit_rate: number; avg_inter: number };
 export type ReachConcentration = { total_notes: number; total_imp: number; top1_share: number; top5_share: number; top10_share: number; hit_reach_share: number; hit_note_pct: number };
+export type SystemPulse = {
+  notes_total: number; last_update: string | null; last_ingest: string | null;
+  feishu_n: number; annotated_n: number; annotated_last: string | null;
+  ssll_n: number; ssll_last: string | null; aw_n: number; aw_last: string | null;
+  accounts_n: number; snaps_n: number; snaps_last: string | null;
+  audit_n: number; audit_last: string | null; projects_n: number;
+  pipeline_runs_n: number; server_now: string | null;
+};
 
 export type DashboardData = {
   o: Overview;
@@ -39,6 +47,7 @@ export type DashboardData = {
   audience: AudiencePerf[];
   formats: FormatPerf[];
   reach: ReachConcentration | null;
+  pulse: SystemPulse | null;
 };
 
 const EMPTY: Overview = {
@@ -48,7 +57,7 @@ const EMPTY: Overview = {
 const EMPTY_DATA: DashboardData = {
   o: EMPTY, levers: [], projects: [], matrix: [], hits: [],
   leverPerf: [], valence: [], archetypes: [], intent: [], funnel: [], projectPerf: [], projectTier: [],
-  audience: [], formats: [], reach: null,
+  audience: [], formats: [], reach: null, pulse: null,
 };
 
 const num = (x: unknown) => (x == null ? 0 : Number(x));
@@ -57,7 +66,7 @@ export async function getDashboardData(): Promise<DashboardData> {
   const sb = getSupabase();
   if (!sb) return EMPTY_DATA;
   try {
-    const [ov, lv, pj, mx, th, lp, vm, ar, it, tf, pp, pt, aud, fp, rc] = await Promise.all([
+    const [ov, lv, pj, mx, th, lp, vm, ar, it, tf, pp, pt, aud, fp, rc, ps] = await Promise.all([
       sb.from("v_dash_overview").select("*").single(),
       sb.from("v_dash_levers").select("*").limit(12),
       sb.from("v_dash_projects").select("*"),
@@ -73,6 +82,7 @@ export async function getDashboardData(): Promise<DashboardData> {
       sb.from("v_dash_audience_perf").select("*"),
       sb.from("v_dash_format_perf").select("*"),
       sb.from("v_dash_reach_concentration").select("*"),
+      sb.from("v_dash_system_pulse").select("*"),
     ]);
     const d: any = ov.data;
     if (!d) return EMPTY_DATA;
@@ -109,6 +119,19 @@ export async function getDashboardData(): Promise<DashboardData> {
       reach: (() => {
         const r = (rc.data as any[])?.[0];
         return r ? { total_notes: num(r.total_notes), total_imp: Math.round(num(r.total_imp) * AMPLIFY.impressions), top1_share: num(r.top1_share), top5_share: num(r.top5_share), top10_share: num(r.top10_share), hit_reach_share: num(r.hit_reach_share), hit_note_pct: num(r.hit_note_pct) } : null;
+      })(),
+      pulse: (() => {
+        const r = (ps.data as any[])?.[0];
+        return r
+          ? {
+              notes_total: num(r.notes_total), last_update: r.last_update ?? null, last_ingest: r.last_ingest ?? null,
+              feishu_n: num(r.feishu_n), annotated_n: num(r.annotated_n), annotated_last: r.annotated_last ?? null,
+              ssll_n: num(r.ssll_n), ssll_last: r.ssll_last ?? null, aw_n: num(r.aw_n), aw_last: r.aw_last ?? null,
+              accounts_n: num(r.accounts_n), snaps_n: num(r.snaps_n), snaps_last: r.snaps_last ?? null,
+              audit_n: num(r.audit_n), audit_last: r.audit_last ?? null, projects_n: num(r.projects_n),
+              pipeline_runs_n: num(r.pipeline_runs_n), server_now: r.server_now ?? null,
+            }
+          : null;
       })(),
     };
   } catch {

@@ -11,6 +11,7 @@ import {
 } from "@/config/showcase";
 import Mining from "@/components/Mining";
 import ByFront from "@/components/ByFront";
+import SystemStatus from "@/components/SystemStatus";
 import Sankey from "@/components/Sankey";
 import CountUp from "@/components/CountUp";
 import Donut from "@/components/Donut";
@@ -110,9 +111,12 @@ export default async function ConsolePage() {
           <Cell id="flow" className="lg:col-span-12" glow>
             <div className="flex items-baseline justify-between">
               <h2 className="h2 text-white">生态数据流 <span className="text-coral">/</span> FLYWHEEL STREAM</h2>
-              <span className="tag flex items-center gap-2 text-slate-400"><span className="dot" /> 实时</span>
+              <span className="tag text-slate-500">接口状态 · 实时直连</span>
             </div>
-            <div className="mt-6">
+            <div className="mt-5">
+              <SystemStatus pulse={data.pulse} />
+            </div>
+            <div className="mt-6 border-t border-white/8 pt-6">
               <Sankey impressions={o.impressions} notes={o.notes} baokuan={o.baokuanReal} cards={o.cards} />
             </div>
           </Cell>

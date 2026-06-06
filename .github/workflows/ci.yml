@@ -1883,6 +1883,16 @@ jobs:
                   r.dominant_lever_ratio;
           END $$;
           SQL
+      - name: Apply dashboard system pulse view v5 (+ idempotency)
+        # public.v_dash_system_pulse: 接口状态 / 数据新鲜度单行视图。跨 truth_vault.notes /
+        # metric_snapshots / audit_log / projects + public.pipeline_runs(上面 cross-schema 步骤
+        # 已 stub),故置于 pipeline_runs 建好之后。CREATE OR REPLACE VIEW;GRANT 包 IF EXISTS。两遍验幂等。
+        run: |
+          psql -v ON_ERROR_STOP=1 -f schemas/dashboard_views_v5_pulse.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/dashboard_views_v5_pulse.sql
+      - name: Sanity-check system pulse view (single row, cross-table subqueries execute)
+        run: |
+          psql -v ON_ERROR_STOP=1 -c "SELECT notes_total, feishu_n, annotated_n, ssll_n, aw_n, snaps_n, pipeline_runs_n, server_now FROM public.v_dash_system_pulse;"
 
   yaml:
     name: Mapping yaml lint
