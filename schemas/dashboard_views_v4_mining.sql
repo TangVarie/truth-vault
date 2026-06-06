@@ -77,11 +77,36 @@ where tier in ('趴','预备','爆','大爆')
 group by tier;
 comment on view public.v_dash_tier_funnel is '看板深挖:tier 漏斗(各层曝光/读完率/互动)。';
 
+-- 6) 分战线表现(规模+命中)—— 对齐既有公开口径:只露 project_id + 品类,不露品牌/产品名
+create or replace view public.v_dash_project_perf with (security_invoker = false) as
+select
+  n.project_id,
+  p.category,
+  p.platform,
+  count(n.note_id)                                                     as notes,
+  count(*) filter (where n.tier in ('爆','大爆'))                      as hits,
+  round(100.0 * count(*) filter (where n.tier in ('爆','大爆')) / nullif(count(n.note_id), 0), 1) as hit_rate,
+  round(avg(n.impressions))::int                                       as avg_imp,
+  coalesce(sum(n.impressions), 0)::bigint                              as total_imp,
+  count(*) filter (where n.emotional_lever is not null and n.emotional_lever <> '') as essence
+from truth_vault.notes n
+join truth_vault.projects p on p.project_id = n.project_id
+group by n.project_id, p.category, p.platform;
+comment on view public.v_dash_project_perf is '看板深挖:分战线规模/命中率/总触达(不露品牌)。';
+
+-- 7) 分战线 tier 构成 —— 各线各自的爆款金字塔(随真数据/新增战线自动扩展)
+create or replace view public.v_dash_project_tier with (security_invoker = false) as
+select project_id, tier, count(*) as n
+from truth_vault.notes
+where tier in ('趴','预备','爆','大爆','风控')
+group by project_id, tier;
+comment on view public.v_dash_project_tier is '看板深挖:分战线 tier 构成。';
+
 -- GRANT(包 IF EXISTS;裸 PG / CI 无这些角色,对齐 notes_v1_2.sql 约定)
 do $$
 declare v text; r text;
 begin
-  foreach v in array array['v_dash_lever_perf','v_dash_valence_matrix','v_dash_archetype_perf','v_dash_intent_perf','v_dash_tier_funnel'] loop
+  foreach v in array array['v_dash_lever_perf','v_dash_valence_matrix','v_dash_archetype_perf','v_dash_intent_perf','v_dash_tier_funnel','v_dash_project_perf','v_dash_project_tier'] loop
     foreach r in array array['anon','authenticated','service_role'] loop
       if exists (select 1 from pg_roles where rolname = r) then
         execute format('grant select on public.%I to %I', v, r);

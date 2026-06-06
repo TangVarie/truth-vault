@@ -10,6 +10,7 @@ import {
   PROJECT_LABEL,
 } from "@/config/showcase";
 import Mining from "@/components/Mining";
+import ByFront from "@/components/ByFront";
 import Sankey from "@/components/Sankey";
 import CountUp from "@/components/CountUp";
 import Donut from "@/components/Donut";
@@ -96,6 +97,9 @@ export default async function ConsolePage() {
 
         {/* ── 深度挖掘:什么在驱动爆款(真实规律,非大数展示)── */}
         <Mining data={data} />
+
+        {/* ── 分战线下钻:同一套方法,每条线结果天差地别 ── */}
+        <ByFront data={data} />
 
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
           <Readout label="已部署 AI 决策" value={o.cards} sub="策略经验卡 · 实时调用注入" seed={3} className="lg:col-span-3" />

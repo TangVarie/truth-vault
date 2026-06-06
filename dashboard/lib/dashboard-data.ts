@@ -17,6 +17,8 @@ export type ValenceCell = { valence: string; intensity: string; n: number; hits:
 export type ArchetypePerf = { archetype: string; n: number; hits: number; hit_rate: number; avg_inter: number };
 export type IntentPerf = { intent: string; n: number; hits: number; hit_rate: number; read_rate: number; inter_rate: number };
 export type TierFunnel = { tier: string; n: number; avg_imp: number; read_rate: number; inter_rate: number; avg_inter: number; max_inter: number };
+export type ProjectPerf = { project_id: string; category: string; notes: number; hits: number; hit_rate: number; avg_imp: number; total_imp: number; essence: number };
+export type ProjectTier = { project_id: string; tier: string; n: number };
 
 export type DashboardData = {
   o: Overview;
@@ -29,6 +31,8 @@ export type DashboardData = {
   archetypes: ArchetypePerf[];
   intent: IntentPerf[];
   funnel: TierFunnel[];
+  projectPerf: ProjectPerf[];
+  projectTier: ProjectTier[];
 };
 
 const EMPTY: Overview = {
@@ -37,7 +41,7 @@ const EMPTY: Overview = {
 };
 const EMPTY_DATA: DashboardData = {
   o: EMPTY, levers: [], projects: [], matrix: [], hits: [],
-  leverPerf: [], valence: [], archetypes: [], intent: [], funnel: [],
+  leverPerf: [], valence: [], archetypes: [], intent: [], funnel: [], projectPerf: [], projectTier: [],
 };
 
 const num = (x: unknown) => (x == null ? 0 : Number(x));
@@ -46,7 +50,7 @@ export async function getDashboardData(): Promise<DashboardData> {
   const sb = getSupabase();
   if (!sb) return EMPTY_DATA;
   try {
-    const [ov, lv, pj, mx, th, lp, vm, ar, it, tf] = await Promise.all([
+    const [ov, lv, pj, mx, th, lp, vm, ar, it, tf, pp, pt] = await Promise.all([
       sb.from("v_dash_overview").select("*").single(),
       sb.from("v_dash_levers").select("*").limit(12),
       sb.from("v_dash_projects").select("*"),
@@ -57,6 +61,8 @@ export async function getDashboardData(): Promise<DashboardData> {
       sb.from("v_dash_archetype_perf").select("*"),
       sb.from("v_dash_intent_perf").select("*"),
       sb.from("v_dash_tier_funnel").select("*"),
+      sb.from("v_dash_project_perf").select("*"),
+      sb.from("v_dash_project_tier").select("*"),
     ]);
     const d: any = ov.data;
     if (!d) return EMPTY_DATA;
@@ -86,6 +92,8 @@ export async function getDashboardData(): Promise<DashboardData> {
       archetypes: ((ar.data as any[]) ?? []).map((r) => ({ archetype: r.archetype, n: num(r.n), hits: num(r.hits), hit_rate: num(r.hit_rate), avg_inter: num(r.avg_inter) })),
       intent: ((it.data as any[]) ?? []).map((r) => ({ intent: r.intent, n: num(r.n), hits: num(r.hits), hit_rate: num(r.hit_rate), read_rate: num(r.read_rate), inter_rate: num(r.inter_rate) })),
       funnel: ((tf.data as any[]) ?? []).map((r) => ({ tier: r.tier, n: num(r.n), avg_imp: num(r.avg_imp), read_rate: num(r.read_rate), inter_rate: num(r.inter_rate), avg_inter: num(r.avg_inter), max_inter: num(r.max_inter) })),
+      projectPerf: ((pp.data as any[]) ?? []).map((r) => ({ project_id: r.project_id, category: r.category, notes: num(r.notes), hits: num(r.hits), hit_rate: num(r.hit_rate), avg_imp: Math.round(num(r.avg_imp) * AMPLIFY.impressions), total_imp: Math.round(num(r.total_imp) * AMPLIFY.impressions), essence: num(r.essence) })),
+      projectTier: ((pt.data as any[]) ?? []).map((r) => ({ project_id: r.project_id, tier: r.tier, n: num(r.n) })),
     };
   } catch {
     return EMPTY_DATA;
