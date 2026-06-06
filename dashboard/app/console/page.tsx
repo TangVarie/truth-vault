@@ -9,6 +9,7 @@ import {
   derivedTransferPaths,
   PROJECT_LABEL,
 } from "@/config/showcase";
+import Mining from "@/components/Mining";
 import Sankey from "@/components/Sankey";
 import CountUp from "@/components/CountUp";
 import Donut from "@/components/Donut";
@@ -92,6 +93,9 @@ export default async function ConsolePage() {
             <Vital label="情绪光谱" value={o.levers} sub="活跃策略杠杆" />
           </div>
         </Cell>
+
+        {/* ── 深度挖掘:什么在驱动爆款(真实规律,非大数展示)── */}
+        <Mining data={data} />
 
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
           <Readout label="已部署 AI 决策" value={o.cards} sub="策略经验卡 · 实时调用注入" seed={3} className="lg:col-span-3" />

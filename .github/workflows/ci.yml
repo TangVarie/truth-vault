@@ -1276,6 +1276,19 @@ jobs:
       - name: Sanity-check dashboard view (public.v_dash_overview selectable)
         run: |
           psql -v ON_ERROR_STOP=1 -c "SELECT projects, notes, baokuan_real, cards, librarian, essence_done FROM public.v_dash_overview;"
+      - name: Apply dashboard deep-mining views v4 (+ idempotency)
+        # public.v_dash_lever_perf / valence_matrix / archetype_perf / intent_perf / tier_funnel:
+        # 看板「深度挖掘」安全聚合 (docs/24). CREATE OR REPLACE VIEW; GRANT 包 IF EXISTS. 两遍验幂等.
+        run: |
+          psql -v ON_ERROR_STOP=1 -f schemas/dashboard_views_v4_mining.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/dashboard_views_v4_mining.sql
+      - name: Sanity-check deep-mining views (selectable)
+        run: |
+          psql -v ON_ERROR_STOP=1 -c "SELECT lever, n, hit_rate, avg_inter FROM public.v_dash_lever_perf LIMIT 0;"
+          psql -v ON_ERROR_STOP=1 -c "SELECT valence, intensity, hit_rate FROM public.v_dash_valence_matrix LIMIT 0;"
+          psql -v ON_ERROR_STOP=1 -c "SELECT archetype, hit_rate FROM public.v_dash_archetype_perf LIMIT 0;"
+          psql -v ON_ERROR_STOP=1 -c "SELECT intent, hit_rate, read_rate, inter_rate FROM public.v_dash_intent_perf LIMIT 0;"
+          psql -v ON_ERROR_STOP=1 -c "SELECT tier, avg_imp, read_rate, max_inter FROM public.v_dash_tier_funnel LIMIT 0;"
       - name: Sanity-check v1.3 (参考 tier accepted + reference cols + discrepancy view)
         run: |
           psql -v ON_ERROR_STOP=1 <<'SQL'
