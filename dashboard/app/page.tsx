@@ -5,171 +5,151 @@ import { motion } from "framer-motion";
 import { BRAND } from "@/config/brand";
 
 /**
- * 开篇视效 / 落地页(docs/24 §A-intro)。BYWOOD 芭梧 品牌动态介绍 +
- * 两个入口:进入公众看板(免登录)/ 登录(内部,待开放)。
- * 信息取自公司名片 PDF;设计=动态编排(framer-motion 入场 + 发光旋转飞轮 + 浮动光斑)。
+ * 落地页 v4 编辑级 —— 同 /console 一套 DNA(brutalist 色块 + 极端字阶 + 唯一 coral 点睛色)。
+ * 信息源 config/brand.ts(公司名片);设计语言走 Saving Goal / TransGlobal 编辑级,
+ * 不再用旋转 spinner / 全屏 glow。两入口:进入公众看板(coral,主)/ 登录(轮廓 ghost,占位)。
  */
 
-const container = {
+const stagger = {
   hidden: {},
-  show: { transition: { staggerChildren: 0.1, delayChildren: 0.12 } },
+  show: { transition: { staggerChildren: 0.08, delayChildren: 0.1 } },
 };
-const item = {
-  hidden: { opacity: 0, y: 18 },
+const rise = {
+  hidden: { opacity: 0, y: 22 },
   show: { opacity: 1, y: 0, transition: { duration: 0.7, ease: [0.22, 1, 0.36, 1] } },
 };
 
-function HeroBackdrop() {
-  return (
-    <div className="pointer-events-none absolute inset-0 overflow-hidden">
-      {/* 旋转发光环(呼应"数据飞轮·越用越强") */}
-      <div className="absolute inset-0 flex items-center justify-center">
-        <svg
-          className="ring-glow animate-spin-slow opacity-60"
-          width="860"
-          height="860"
-          viewBox="0 0 860 860"
-        >
-          <defs>
-            <linearGradient id="hr" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0%" stopColor="#5eead4" />
-              <stop offset="50%" stopColor="#1b4fd1" />
-              <stop offset="100%" stopColor="#cc2128" />
-            </linearGradient>
-          </defs>
-          <circle cx="430" cy="430" r="412" fill="none" stroke="url(#hr)" strokeOpacity="0.4" strokeWidth="1.5" strokeDasharray="2 16" />
-          <circle cx="430" cy="430" r="336" fill="none" stroke="#1b4fd1" strokeOpacity="0.22" strokeWidth="1" strokeDasharray="1 20" />
-        </svg>
-      </div>
-      <div className="absolute inset-0 flex items-center justify-center">
-        <svg className="animate-spin-rev opacity-40" width="580" height="580" viewBox="0 0 580 580">
-          <circle cx="290" cy="290" r="272" fill="none" stroke="#5eead4" strokeOpacity="0.28" strokeWidth="1.2" strokeDasharray="48 28" />
-        </svg>
-      </div>
-      {/* 浮动光斑 */}
-      <div className="absolute left-[11%] top-[20%] h-44 w-44 rounded-full bg-bywood-blue/20 blur-3xl animate-float" />
-      <div
-        className="absolute right-[12%] bottom-[16%] h-52 w-52 rounded-full bg-flywheel-accent/10 blur-3xl animate-float"
-        style={{ animationDelay: "1.6s" }}
-      />
-    </div>
-  );
-}
-
 export default function Landing() {
   return (
-    <main className="bywood-bg grid-bg animate-gradient relative min-h-screen overflow-hidden">
-      <HeroBackdrop />
-
+    <main className="bg-landing relative min-h-screen overflow-hidden">
       {/* 顶栏 */}
-      <div className="relative mx-auto flex max-w-6xl items-center justify-between px-6 py-6 text-xs tracking-widest text-slate-400">
-        <span className="font-medium">§ {BRAND.studio}</span>
-        <span className="hidden sm:block">
-          {BRAND.tagline} · {BRAND.taglineEn}
-        </span>
+      <div className="mx-auto flex max-w-[1320px] items-center justify-between px-8 py-6">
+        <span className="tag text-slate-300">§ {BRAND.studio}</span>
+        <span className="tag hidden text-slate-500 sm:block">{BRAND.taglineEn}</span>
       </div>
 
       <motion.section
-        variants={container}
+        variants={stagger}
         initial="hidden"
         animate="show"
-        className="relative mx-auto flex max-w-4xl flex-col items-center px-6 pb-24 pt-12 text-center"
+        className="mx-auto max-w-[1320px] px-8 pt-10"
       >
-        {/* 品牌 */}
-        <motion.div variants={item} className="flex items-end gap-4">
-          <span className="text-glow text-6xl font-black tracking-tight text-white sm:text-8xl">
-            {BRAND.name}
-          </span>
-          <span className="mb-2 text-3xl font-bold text-bywood-blue sm:text-4xl">{BRAND.nameCn}</span>
-        </motion.div>
-        <motion.div variants={item} className="mt-3 text-xs tracking-[0.4em] text-slate-400 sm:text-sm">
-          {BRAND.taglineEn}
+        {/* 品牌大字(编辑级,顶满) */}
+        <motion.div variants={rise}>
+          <div className="title text-coral">{BRAND.nameCn}</div>
+          <h1 className="huge mt-2 text-white">{BRAND.name}</h1>
+          <div className="tag mt-4 text-slate-400">{BRAND.tagline} · {BRAND.taglineEn}</div>
         </motion.div>
 
-        {/* headline */}
-        <motion.h1
-          variants={item}
-          className="mt-9 text-3xl font-bold leading-snug text-white sm:text-5xl"
-        >
-          {BRAND.headlineLead}
-          <span className="text-bywood-red">{BRAND.headlineAccent}</span>。
-        </motion.h1>
-        <motion.p
-          variants={item}
-          className="mt-5 max-w-2xl text-sm leading-relaxed text-slate-400 sm:text-base"
-        >
-          {BRAND.whatWeDo}
-        </motion.p>
+        {/* headline + what */}
+        <motion.div variants={rise} className="mt-14 grid gap-10 lg:grid-cols-[1.4fr_1fr]">
+          <h2 className="title text-white">
+            从策略到执行到效果<br />
+            一站式 <span className="text-coral">{BRAND.headlineAccent}</span>。
+          </h2>
+          <p className="self-end text-base leading-relaxed text-slate-300">
+            {BRAND.whatWeDo}
+          </p>
+        </motion.div>
 
-        {/* 增长链路:心智 → 决策 → 复利 */}
-        <motion.div variants={item} className="mt-12 flex flex-wrap items-center justify-center gap-3">
-          {BRAND.growthLink.map((g, i) => (
-            <div key={g.id} className="flex items-center gap-3">
-              <div className="glass rounded-2xl px-5 py-3 text-left transition hover:-translate-y-0.5 hover:border-bywood-blue/40">
-                <div className="flex items-baseline gap-2">
-                  <span className="text-xl font-bold text-white">{g.cn}</span>
-                  <span className="text-[10px] tracking-widest text-slate-500">{g.en}</span>
-                </div>
-                <div className="mt-0.5 text-xs text-slate-400">{g.sub}</div>
-              </div>
-              {i < BRAND.growthLink.length - 1 && (
-                <span className="text-lg text-bywood-blue">→</span>
-              )}
+        {/* 增长链路 —— brutalist 三色块(心智 → 决策 → 复利)*/}
+        <motion.div variants={rise} className="mt-16">
+          <div className="tag mb-4 text-slate-500">GROWTH LINK · 增长链路</div>
+          <div className="grid gap-4 sm:grid-cols-3">
+            {/* 01 · 心智 / sage(浅) */}
+            <div className="brut brut-sage relative overflow-hidden">
+              <span className="tag opacity-60">01 / {BRAND.growthLink[0].en}</span>
+              <div className="title mt-3">{BRAND.growthLink[0].cn}</div>
+              <div className="mt-3 text-sm opacity-75">{BRAND.growthLink[0].sub}</div>
             </div>
-          ))}
+            {/* 02 · 决策 / lavender */}
+            <div className="brut brut-lavender relative overflow-hidden">
+              <span className="tag opacity-60">02 / {BRAND.growthLink[1].en}</span>
+              <div className="title mt-3">{BRAND.growthLink[1].cn}</div>
+              <div className="mt-3 text-sm opacity-75">{BRAND.growthLink[1].sub}</div>
+            </div>
+            {/* 03 · 复利 / coral(主) */}
+            <div className="brut brut-coral relative overflow-hidden">
+              <span className="tag opacity-70">03 / {BRAND.growthLink[2].en}</span>
+              <div className="title mt-3">{BRAND.growthLink[2].cn}</div>
+              <div className="mt-3 text-sm opacity-80">{BRAND.growthLink[2].sub}</div>
+            </div>
+          </div>
         </motion.div>
 
-        {/* 扶摇 ROC */}
-        <motion.div
-          variants={item}
-          className="mt-9 w-full max-w-2xl rounded-3xl border border-bywood-blue/30 bg-bywood-blue/10 p-6 backdrop-blur"
-        >
-          <div className="mb-4 flex items-center justify-between">
-            <span className="text-lg font-semibold text-white">{BRAND.roc.title}</span>
-            <span className="text-xs tracking-widest text-slate-400">{BRAND.roc.note}</span>
+        {/* 扶摇 ROC —— 三步编辑式陈列 */}
+        <motion.div variants={rise} className="mt-16">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <div>
+              <span className="tag text-slate-500">METHODOLOGY</span>
+              <h3 className="h1 mt-1 text-white">{BRAND.roc.title}</h3>
+            </div>
+            <span className="mini text-slate-500">{BRAND.roc.note}</span>
           </div>
-          <div className="grid gap-3 sm:grid-cols-3">
-            {BRAND.roc.steps.map((s) => (
-              <div key={s.k} className="rounded-2xl bg-black/25 p-4 text-left">
-                <div className="flex items-center gap-2">
-                  <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-bywood-blue text-sm font-bold text-white shadow-[0_0_14px_rgba(27,79,209,0.6)]">
-                    {s.k}
-                  </span>
-                  <span className="text-sm font-medium text-white">{s.act}</span>
+          <p className="mt-2 max-w-3xl text-sm leading-relaxed text-slate-400">
+            {BRAND.roc.subtitle}
+          </p>
+          <div className="mt-6 grid gap-4 sm:grid-cols-3">
+            {BRAND.roc.steps.map((s, i) => (
+              <div key={s.k} className="brut brut-carbon relative">
+                <div className="flex items-center gap-4">
+                  <span className="title text-coral">{s.k}</span>
+                  <div>
+                    <div className="tag text-slate-400">{`0${i + 1}`} / {s.name}</div>
+                    <div className="h2 mt-1 text-white">{s.act}</div>
+                  </div>
                 </div>
-                <div className="mt-1.5 text-[11px] text-slate-400">{s.name}</div>
+                <p className="mt-4 text-sm leading-relaxed text-slate-400">{s.detail}</p>
               </div>
             ))}
           </div>
         </motion.div>
 
-        {/* tagline */}
-        <motion.div variants={item} className="mt-12 text-2xl font-bold text-white sm:text-3xl">
-          {BRAND.footerLead}
-          <span className="text-glow text-bywood-blue">{BRAND.footerAccent}</span>
+        {/* 为什么是我们 —— 三段陈述 */}
+        <motion.div variants={rise} className="mt-16">
+          <div className="tag mb-4 text-slate-500">WHY US</div>
+          <div className="grid gap-8 sm:grid-cols-3">
+            {BRAND.whyUs.map((w) => (
+              <div key={w.t}>
+                <div className="h2 text-white">{w.h}</div>
+                <div className="tag mt-1 text-coral">{w.t}</div>
+                <p className="mt-3 text-sm leading-relaxed text-slate-400">{w.d}</p>
+              </div>
+            ))}
+          </div>
         </motion.div>
 
-        {/* 入口 */}
-        <motion.div variants={item} className="mt-10 flex flex-wrap items-center justify-center gap-4">
-          <Link
-            href="/console"
-            className="group rounded-full bg-white px-8 py-3.5 text-sm font-semibold text-bywood-navy shadow-[0_0_30px_rgba(94,234,212,0.25)] transition hover:bg-flywheel-accent hover:shadow-[0_0_40px_rgba(94,234,212,0.5)]"
-          >
-            进入公众看板{" "}
-            <span className="inline-block transition group-hover:translate-x-1">→</span>
-          </Link>
-          <button
-            type="button"
-            title="内部页 · 即将开放(Phase 3 接 auth)"
-            className="rounded-full border border-white/20 px-8 py-3.5 text-sm font-medium text-slate-300 transition hover:border-white/40"
-          >
-            登录 <span className="text-slate-500">（内部 · 即将开放）</span>
-          </button>
+        {/* footer line + 入口 */}
+        <motion.div variants={rise} className="mt-20">
+          <div className="title text-white">
+            {BRAND.footerLead}<span className="text-coral">{BRAND.footerAccent}</span>
+          </div>
+          <div className="mt-10 flex flex-wrap items-stretch gap-4">
+            <Link
+              href="/console"
+              className="brut brut-coral inline-flex items-center gap-3 px-7 py-5 text-base font-bold transition hover:brightness-105"
+              style={{ borderRadius: 999 }}
+            >
+              进入公众看板 →
+            </Link>
+            <button
+              type="button"
+              title="内部页 · 即将开放(Phase 3 接 auth)"
+              className="inline-flex items-center gap-2 rounded-full border border-white/15 px-7 py-5 text-base font-medium text-slate-200 transition hover:border-white/35"
+            >
+              登录 <span className="tag text-slate-500">内部 · 即将开放</span>
+            </button>
+          </div>
         </motion.div>
 
-        <motion.div variants={item} className="mt-9 text-xs text-slate-500">
-          全域阵地 · {BRAND.fields}
+        <motion.div variants={rise} className="mt-16">
+          <div className="hr-thin opacity-40" />
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
+            <span>全域阵地 · {BRAND.fields}</span>
+            <span>BYWOOD STUDIO · 体系化增长服务商</span>
+          </div>
         </motion.div>
+        <div className="h-16" />
       </motion.section>
     </main>
   );

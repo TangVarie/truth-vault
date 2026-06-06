@@ -1,8 +1,9 @@
 "use client";
 
+// v4 编辑级 palette:coral 为主,其余取自 brutalist 色板(沉静、不抢戏)
 const PALETTE = [
-  "#5eead4", "#1b4fd1", "#38bdf8", "#a78bfa", "#f472b6", "#fb923c",
-  "#facc15", "#34d399", "#60a5fa", "#f87171", "#c084fc", "#2dd4bf",
+  "#E8765A", "#A6A2D8", "#C8D4B8", "#9A9750", "#EFE9DC", "#3a4458",
+  "#C9523A", "#7a7a96", "#a8b598", "#cbb56a", "#d6cdb8", "#5a677d",
 ];
 
 /**
