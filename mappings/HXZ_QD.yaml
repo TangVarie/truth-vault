@@ -1,0 +1,134 @@
+# ════════════════════════════════════════════════════════════════════
+# 花西子气垫 · HXZ_QD —— Onboarding 草稿(DRAFT)
+# ════════════════════════════════════════════════════════════════════
+# ⚠️ 这是草稿:field_mapping / schema_family / direction_decomposition 的真实取值
+#    需用 preflight 拉真表校正(见文件尾 onboarding_meta.notes)。
+#    feishu 坐标、品类、HXZ 方向/阈值前例(docs/04)已据实预填。
+# ════════════════════════════════════════════════════════════════════
+
+version: 1.0
+
+# ── 项目元数据 ──
+project_id: HXZ_QD
+brand: 花西子
+product: 气垫
+category: 美妆                  # ✓ 已确认在 projects_category_check 闭集内
+platform: xiaohongshu
+schema_family: B               # 暂定 B;preflight 看真实字段命名再定 A/B(有"巡查状态/最近检查时间/主页链接"→A)
+start_date: 2025-XX-XX         # 待填
+end_date: 2026-XX-XX           # 待填
+
+# ── 字段映射 ── [待 preflight 用真表列名校正]
+# 下面是 B 家族标准映射;花西子表实际列名以 preflight 报告为准,逐列校正。
+field_mapping:
+  素人编号: account_id
+  文案: raw_content
+  发布时间: publish_time
+  反馈链接: publish_url
+  状态: _status_raw              # → tier_extraction
+  方向: _direction_raw           # → direction_decomposition
+  曝光量: impressions
+  阅读量: reads
+  互动量: interactions
+  关键词: target_blue_keywords
+  蓝词记录: hit_blue_keywords
+  发布笔记: _intent_raw
+  爆帖置顶评论: pinned_comment
+  随贴评论: _comment_text
+  随贴评论素人: _comment_text_persona
+  帐号昵称: _account_name
+  粉丝数: _account_followers
+
+intent_mapping:
+  流量帖: traffic
+  钓鱼帖: traffic
+  直给笔记: conversion
+  小红书下单: conversion
+  科普贴: educational
+
+# ── 方向拆解 ── [待 preflight 列出真实「方向」取值后补全]
+# 下面两个方向取自 docs/04 的 HXZ 前例(场景植入 · 中年女性);
+# 真实方向取值以 preflight 输出为准,逐个补映射(确保 100% 命中,否则会落 'other')。
+direction_decomposition:
+  "持妆问题":
+    content_format: 场景植入
+    target_audience: ["中年女性"]
+    user_pain_point: 持妆需求
+  "年龄问题":
+    content_format: 场景植入
+    target_audience: ["中年女性"]
+    user_pain_point: 衰老焦虑
+
+tier_extraction:
+  source: 状态字段
+  rules:
+    - match_contains: ["大爆"]
+      tier: 大爆
+    - match_contains: ["爆贴预备"]
+      tier: 预备
+    - match_contains: ["爆贴"]
+      tier: 爆
+    - match_contains: ["参考"]
+      tier: 参考
+    - match_contains: ["风控"]
+      tier: 风控
+    - match_contains: ["无水花"]
+      tier: 趴
+    - match_contains: ["评估中"]
+      tier: 未知
+    - default: null
+
+# 阈值取自 docs/04 HXZ_QD 前例(爆=30 / 大爆=1000)—— 跑 50 条后可再校
+tier_thresholds:
+  爆: 30
+  大爆: 1000
+
+compliance:
+  base_template: 美妆
+  custom_red_flags:
+    - "功效宣称需可备案/可证实,禁绝对化(最/第一/100%)"
+    - "禁医疗化表述(治疗/修复屏障等需谨慎)"
+  blue_keyword_strategy:
+    primary: []                  # 待策略 lead 填(如 花西子气垫 / 持妆气垫)
+    secondary: []
+    avoid: []
+
+# 项目专属字段(进 raw_extra)—— 待 preflight 报"未声明列"后据实补全
+project_specific_fields_to_raw_extra:
+  - 父记录 2
+  - 父记录 3
+  - 父记录 4
+  - 项目阶段
+  - 打款金额
+  - 观众分析
+  - 巡查状态
+  - 最近检查时间
+
+data_supplement_needed:
+  - field: account_followers
+    method: 通过 publish_url 调小红书 API 或人工补录
+    estimated_rows: 0
+
+# ── Sync 配置 ── (飞书坐标已据用户提供填入)
+sync_config:
+  source_type: feishu_api
+  feishu_app_token: IKDabbT7HascF5szHrRciBe0ndg
+  feishu_table_id: tblYUAvcWU8IZDQh
+  feishu_view_id: null
+  sync_interval: on_demand        # 默认:夜间 cron 不碰;preflight + 显式验证 OK 后再翻 daily
+
+onboarding_meta:
+  onboarded_at: 2026-06-06
+  onboarded_by: (待填)
+  strategy_lead: Ziao / 周哥
+  notes: |
+    DRAFT —— 接表前必做:
+    1) 跑 preflight(Actions → Preflight mapping → HXZ_QD)拉真表,据报告校正:
+       - field_mapping 的真实列名(B 家族标准已铺,逐列对齐)
+       - schema_family A/B 最终判断
+       - 「方向」字段的全部真实取值 → 逐个补 direction_decomposition(确保全命中)
+       - 「未声明列」→ 补进 project_specific_fields_to_raw_extra(避免整行 quarantine 丢真内容)
+       - 品类 已确认合法(美妆)
+    2) 注:autowriter 映射(mapping_to_autowriter_project_id)【不需要配】——
+       通道2 push 已于 2026-06-01 退役(D-038),改 pull/馆员模型。
+    3) preflight 干净 → PR → 显式 Daily TV sync(dry_run)→ 实跑 → 翻 sync_interval=daily → backfill essence。
