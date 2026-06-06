@@ -113,6 +113,28 @@ export default async function ConsolePage() {
             <LiveMonitor ports={livePorts} progress={annoPct} online={onlinePorts} total={7} />
           </section>
 
+          {/* 口径说明:怎么读这个看板 */}
+          <section className="s12 ct" style={{ background: "rgba(255,255,255,0.02)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 14 }}>
+              <span style={{ fontSize: 14 }}>💡</span><h3 style={{ fontSize: 15, fontWeight: 800 }}>怎么读这个看板 · 口径说明</h3>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))", gap: "12px 24px" }}>
+              {[
+                { t: "命中率", d: "爆款(爆 / 大爆)占内容资产的比例 —— 条越长,该维度越容易出爆款" },
+                { t: "爆款分级 tier", d: "按互动量分级:大爆 > 爆 > 预备 > 参考 …" },
+                { t: "触达集中度", d: "极少数爆款吃掉绝大多数曝光(幂律)—— 右侧 % = 占总触达比例" },
+                { t: "意图分野", d: "种草 = 引流帖 / 转化 = 直给推荐;右侧数字 = 命中率 · 篇数" },
+                { t: "tier 漏斗", d: "层级越高,读完率 / 互动率 / 篇均曝光越高(右侧为篇均曝光)" },
+                { t: "实时接口", d: "左侧端口状态来自真实 pulse;中间事件流为活动示意(非逐条真事件)" },
+              ].map((g) => (
+                <div key={g.t} style={{ display: "flex", gap: 10, alignItems: "baseline" }}>
+                  <span style={{ flexShrink: 0, fontSize: 12.5, fontWeight: 700, color: LIME, fontFamily: mono, minWidth: 88 }}>{g.t}</span>
+                  <span style={{ fontSize: 12.5, lineHeight: 1.55, color: "#aeb4bd" }}>{g.d}</span>
+                </div>
+              ))}
+            </div>
+          </section>
+
           {/* 核心洞察:最常用 ≠ 最有效 */}
           {byUse && byEff && (
             <section className="s12 cc" style={{ background: CORAL, color: INKC }}>
