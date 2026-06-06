@@ -1,251 +1,188 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { getDashboardData } from "@/lib/dashboard-data";
-import {
-  AI_DIMS,
-  ARCHETYPES,
-  comma,
-  derivedAiInferences,
-  derivedStrategySpace,
-  derivedTransferPaths,
-  PROJECT_LABEL,
-} from "@/config/showcase";
-import Mining from "@/components/Mining";
-import ByFront from "@/components/ByFront";
-import SystemStatus from "@/components/SystemStatus";
-import Sankey from "@/components/Sankey";
+import { cnNum, comma, PROJECT_LABEL } from "@/config/showcase";
 import CountUp from "@/components/CountUp";
-import Donut from "@/components/Donut";
-import Ticker from "@/components/Ticker";
-import Heatmap from "@/components/Heatmap";
-import GrowthCurve from "@/components/GrowthCurve";
-import Leaderboard from "@/components/Leaderboard";
-import Sparkline from "@/components/Sparkline";
+import LiveMonitor from "@/components/LiveMonitor";
 
 /**
- * /console = 暗色座舱「态势仪表」—— 一套语言贯穿全局(深暖黑 + coral 点睛 + 细发丝),克制统一。
- * 不再有生成式画布(神经花已弃)。前瞻"体征"指标 + 真·数据 viz,可控、可靠。
+ * /console = 内部座舱(登录后)。BOLD BLOCKS 设计体系 · 含策略机理(深度挖掘)。
+ * 数据全部来自真库聚合视图;接口监测接真 pulse。
  */
-// 内部座舱:含机理挖掘,不对外索引(用户决定:对外只留洁净版 `/`)。
-export const metadata: Metadata = { robots: { index: false, follow: false } };
+export const metadata: Metadata = { robots: { index: false, follow: false }, title: "内部座舱 · BYWOOD" };
 export const dynamic = "force-dynamic";
 
-export default async function ConsolePage() {
-  const data = await getDashboardData();
-  const { o, levers, projects, matrix, hits } = data;
-  const leverData = levers.map((l) => ({ label: l.lever, value: l.n }));
+const BG = "#0A0A0B", PANEL = "#141416", BORD = "rgba(255,255,255,0.08)";
+const SAGE = "#DDE6D6", OLIVE = "#B0A41C", LAV = "#BFB9E6", CORAL = "#F2542D", LIME = "#C6F24E", INKC = "#0E0E0E", MUTE = "#8A8F98";
+const FRONT = [CORAL, OLIVE, LAV, LIME];
+const sans = "var(--font-geist-sans)", mono = "var(--font-geist-mono)";
 
-  const aiInferences = derivedAiInferences(o.notes);
-  const strategySpace = derivedStrategySpace(o.levers, o.audiences);
-  const transferPaths = derivedTransferPaths(o.projects);
+const css = `
+.cw{max-width:1280px;margin:0 auto;padding:18px 20px 56px}
+.cg{display:grid;grid-template-columns:repeat(12,1fr);gap:16px;align-items:stretch}
+.cg>*{min-width:0}
+.s12{grid-column:span 12}.s8{grid-column:span 8}.s6{grid-column:span 6}.s4{grid-column:span 4}.s3{grid-column:span 3}
+.cc{border-radius:24px;padding:22px 24px;display:flex;flex-direction:column}
+.ct{background:${PANEL};border:1px solid ${BORD};border-radius:20px;padding:18px 20px}
+@media(max-width:920px){.cg{grid-template-columns:repeat(6,1fr)}.s12,.s8{grid-column:span 6}.s6{grid-column:span 6}.s4,.s3{grid-column:span 3}}
+@media(max-width:560px){.cg{grid-template-columns:repeat(2,1fr);gap:12px}.s12,.s8,.s6,.s4,.s3{grid-column:span 2}}
+@keyframes c-grow{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+.c-bar{transform-origin:left;animation:c-grow .9s cubic-bezier(.22,1,.36,1) both}
+`;
 
-  // 体征(前瞻"物理"口径,基底真实)
-  const momentum = o.notes ? Math.round(o.interactions / o.notes) : 0;
-  const igniting = Math.max(0, o.essence - o.baokuanReal);
-  const hitRate = o.notes ? Math.round((o.baokuanReal / o.notes) * 1000) / 10 : 0;
-
-  const levOrder = Array.from(new Set(matrix.map((m) => m.lever))).sort(
-    (a, b) =>
-      matrix.filter((m) => m.lever === b).reduce((s, m) => s + m.n, 0) -
-      matrix.filter((m) => m.lever === a).reduce((s, m) => s + m.n, 0)
-  );
-  const audOrder = Array.from(new Set(matrix.map((m) => m.audience))).sort(
-    (a, b) =>
-      matrix.filter((m) => m.audience === b).reduce((s, m) => s + m.n, 0) -
-      matrix.filter((m) => m.audience === a).reduce((s, m) => s + m.n, 0)
-  );
-
+type Row = { label: string; n: number; rate: number };
+function HitList({ title, sub, items, color, className }: { title: string; sub: string; items: Row[]; color: string; className: string }) {
+  const max = Math.max(...items.map((i) => i.rate), 1);
   return (
-    <main id="top" className="relative min-h-screen" style={{ background: "#0C0B10", color: "#e8e6e3" }}>
-      <nav className="sticky top-0 z-40 border-b border-white/10" style={{ background: "rgba(12,11,16,0.82)", backdropFilter: "blur(8px)" }}>
-        <div className="mx-auto flex max-w-[1440px] items-center justify-between px-5 py-3.5">
-          <Link href="/" className="tag text-slate-400 transition hover:text-coral">← BYWOOD · ROC</Link>
-          <div className="hidden items-center gap-1 rounded-full border border-white/8 bg-white/[0.03] p-1 lg:flex">
-            <Tab href="#top" active>态势</Tab>
-            <Tab href="#flow">数据流</Tab>
-            <Tab href="#resonance">共振</Tab>
-            <Tab href="#record">战绩</Tab>
+    <section className={`${className} ct`}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}><h3 style={{ fontSize: 16, fontWeight: 800 }}>{title}</h3><span style={{ fontSize: 10.5, color: MUTE, fontFamily: mono }}>命中率</span></div>
+      <p style={{ fontSize: 11.5, color: MUTE, marginTop: 4, marginBottom: 14 }}>{sub}</p>
+      <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+        {items.slice(0, 7).map((it, i) => (
+          <div key={it.label} style={{ display: "grid", gridTemplateColumns: "78px 1fr 42px", gap: 10, alignItems: "center" }}>
+            <span style={{ fontSize: 12, color: "#cfd3da", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={it.label}>{it.label}</span>
+            <span style={{ height: 8, background: "rgba(255,255,255,0.06)", borderRadius: 999, overflow: "hidden" }}><span className="c-bar" style={{ display: "block", height: "100%", width: `${Math.max(3, (it.rate / max) * 100)}%`, background: color, borderRadius: 999, animationDelay: `${i * 0.05}s` }} /></span>
+            <span style={{ fontFamily: mono, fontSize: 12, fontWeight: 700, textAlign: "right" }}>{it.rate}%</span>
           </div>
-          <div className="hidden items-center gap-3 sm:flex">
-            <span className="flex items-center gap-2 rounded-full border border-white/10 px-3 py-1.5">
-              <span className="dot" />
-              <span className="tag text-slate-300">全链路在线</span>
-            </span>
-            <form action="/api/auth/logout" method="POST">
-              <button type="submit" className="tag text-slate-400 transition hover:text-coral">登出</button>
-            </form>
-          </div>
-        </div>
-      </nav>
-
-      <div className="mx-auto max-w-[1440px] px-5 pb-16 pt-5">
-        {/* ── 态势 hero:标题 + 飞轮核心 + 前瞻体征(无画布)── */}
-        <Cell className="mb-4" glow>
-          <div className="flex flex-wrap items-end justify-between gap-6">
-            <div>
-              <span className="tag text-coral">飞轮态势 · LIVE SYSTEM</span>
-              <h1 className="mt-2 text-white" style={{ fontSize: "clamp(30px,4.2vw,58px)", fontWeight: 800, letterSpacing: "-0.03em", lineHeight: 1 }}>
-                实时全链路,<span className="text-coral">越用越强</span>。
-              </h1>
-              <p className="mt-3 max-w-md text-sm text-slate-400">{o.projects} 条战线 · 投放真实结果实时回流 · 结构化策略库持续沉淀。</p>
-            </div>
-            <div className="text-right">
-              <div className="num text-white" style={{ fontSize: "clamp(40px,5vw,84px)", fontWeight: 800, letterSpacing: "-0.035em", lineHeight: 0.9 }}>
-                <CountUp value={o.impressions} format="cn" duration={2000} />
-              </div>
-              <div className="mini mt-1 text-slate-400">累计内容曝光 · CUMULATIVE IMPRESSIONS</div>
-            </div>
-          </div>
-          <div className="mt-7 grid grid-cols-2 gap-x-6 gap-y-5 border-t border-white/8 pt-6 sm:grid-cols-4">
-            <Vital label="飞轮动量" value={momentum} sub="每资产带动互动" />
-            <Vital label="蓄势待爆" value={igniting} sub="已解析 · 待引爆候选" />
-            <Vital label="验证级命中率" value={hitRate} suffix="%" sub="爆款 / 内容资产" />
-            <Vital label="情绪光谱" value={o.levers} sub="活跃策略杠杆" />
-          </div>
-        </Cell>
-
-        {/* ── 深度挖掘:什么在驱动爆款(真实规律,非大数展示)── */}
-        <Mining data={data} />
-
-        {/* ── 分战线下钻:同一套方法,每条线结果天差地别 ── */}
-        <ByFront data={data} />
-
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
-          <Readout label="已部署 AI 决策" value={o.cards} sub="策略经验卡 · 实时调用注入" seed={3} className="lg:col-span-3" />
-          <Readout label="策略组合空间" value={strategySpace} sub={`${o.levers}×${o.audiences}×${ARCHETYPES} 维`} seed={5} className="lg:col-span-3" />
-          <Readout label="跨品类迁移路径" value={transferPaths} sub={`${o.projects} 战线 · 双向`} seed={11} className="lg:col-span-3" />
-          <Readout label="结构化策略内核" value={o.essence} sub="已解析受众画像" seed={13} className="lg:col-span-3" />
-
-          <Cell id="flow" className="lg:col-span-12" glow>
-            <div className="flex items-baseline justify-between">
-              <h2 className="h2 text-white">生态数据流 <span className="text-coral">/</span> FLYWHEEL STREAM</h2>
-              <span className="tag text-slate-500">接口状态 · 实时直连</span>
-            </div>
-            <div className="mt-5">
-              <SystemStatus pulse={data.pulse} />
-            </div>
-            <div className="mt-6 border-t border-white/8 pt-6">
-              <Sankey impressions={o.impressions} notes={o.notes} baokuan={o.baokuanReal} cards={o.cards} />
-            </div>
-          </Cell>
-
-          <Cell className="lg:col-span-5">
-            <GrowthCurve total={o.impressions} />
-          </Cell>
-          <Cell className="lg:col-span-4">
-            <div className="flex items-baseline justify-between">
-              <h2 className="h2 text-white">策略原型分布</h2>
-              <span className="tag text-slate-500">{o.levers} 类</span>
-            </div>
-            <div className="mt-5">
-              {leverData.length ? (
-                <Donut data={leverData} centerTop={String(o.levers)} centerSub="策略原型" />
-              ) : (
-                <div className="flex h-36 items-center text-sm text-slate-500">—</div>
-              )}
-            </div>
-          </Cell>
-          <Readout label="AI 推理深度" value={aiInferences} sub={`${AI_DIMS} 维 × ${comma(o.notes)} 资产`} seed={7} className="lg:col-span-3" />
-
-          <Cell id="resonance" className="lg:col-span-7">
-            <div className="flex items-baseline justify-between">
-              <h2 className="h2 text-white">策略 × 受众 · 共振矩阵</h2>
-              <span className="tag text-slate-500">RESONANCE</span>
-            </div>
-            <p className="mini mt-1 text-slate-500">深 → coral 表共振强度;描边格 = Top 3 命中区</p>
-            <div className="mt-5">
-              <Heatmap cells={matrix} levers={levOrder} audiences={audOrder} />
-            </div>
-          </Cell>
-          <Cell id="record" className="lg:col-span-5">
-            <div className="flex items-baseline justify-between">
-              <h2 className="h2 text-white">Top 爆款拆解</h2>
-              <span className="tag text-slate-500">TOP HITS</span>
-            </div>
-            <p className="mini mt-1 text-slate-500">单篇最高 {comma(o.topInteractions)} 互动</p>
-            <div className="mt-4">
-              <Leaderboard hits={hits} />
-            </div>
-          </Cell>
-
-          {projects.map((p, i) => (
-            <Cell key={p.project_id} className="lg:col-span-3">
-              <div className="flex items-center justify-between">
-                <span className="tag text-slate-500">{PROJECT_LABEL[p.project_id] ?? p.project_id}</span>
-                <span className="tag text-slate-600">α{i + 1}</span>
-              </div>
-              <div className="num mt-2 text-coral" style={{ fontSize: "clamp(30px,2.6vw,46px)", lineHeight: 0.95, letterSpacing: "-0.03em", fontWeight: 800 }}>
-                <CountUp value={p.impressions} format="cn" duration={1400 + i * 100} />
-              </div>
-              <div className="mini text-slate-500">累计曝光</div>
-              <div className="mt-3 flex gap-4 text-[11px] text-slate-400">
-                <span>{comma(p.notes)} 资产</span>
-                <span>{comma(p.baokuan)} 爆款</span>
-                <span>{comma(p.essence)} 解析</span>
-              </div>
-              <div className="mt-3 -mb-1"><Sparkline color="#E8765A" seed={20 + i} /></div>
-            </Cell>
-          ))}
-
-          <div className="lg:col-span-12">
-            <Ticker />
-          </div>
-        </div>
-
-        <footer className="mt-10">
-          <div className="hr-thin mb-4 opacity-40" />
-          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-600">
-            <span>BYWOOD · ROC 增长智能中台</span>
-            <span>实时全链路 · 数据飞轮 · 越用越强</span>
-          </div>
-        </footer>
+        ))}
       </div>
-    </main>
-  );
-}
-
-function Cell({ children, className = "", id, glow = false }: { children: React.ReactNode; className?: string; id?: string; glow?: boolean }) {
-  return (
-    <section
-      id={id}
-      className={`rounded-3xl border border-white/[0.10] p-6 ${className}`}
-      style={{ background: glow ? "radial-gradient(680px 220px at 28% 0%, rgba(232,118,90,0.09), transparent 70%), rgba(255,255,255,0.04)" : "rgba(255,255,255,0.04)" }}
-    >
-      {children}
     </section>
   );
 }
 
-function Readout({ label, value, sub, seed, className = "" }: { label: string; value: number; sub?: string; seed?: number; className?: string }) {
-  return (
-    <Cell className={className}>
-      <div className="tag text-slate-500">{label}</div>
-      <div className="num mt-2 text-coral" style={{ fontSize: "clamp(34px,3.2vw,56px)", fontWeight: 800, letterSpacing: "-0.03em", lineHeight: 0.95 }}>
-        <CountUp value={value} format="comma" duration={1500} />
-      </div>
-      {sub && <div className="mini mt-1 text-slate-500">{sub}</div>}
-      {seed != null && <div className="mt-4 -mb-1"><Sparkline color="#E8765A" seed={seed} /></div>}
-    </Cell>
-  );
-}
+export default async function ConsolePage() {
+  const d = await getDashboardData();
+  const { o, leverPerf, archetypes, audience, formats, reach, intent, funnel, projectPerf, pulse } = d;
+  const hitRate = o.notes ? Math.round((o.baokuanReal / o.notes) * 1000) / 10 : 0;
 
-function Tab({ href, children, active = false }: { href: string; children: React.ReactNode; active?: boolean }) {
-  return (
-    <a href={href} className={`tag rounded-full px-4 py-1.5 transition ${active ? "bg-white/10 text-white" : "text-slate-400 hover:text-slate-200"}`}>
-      {children}
-    </a>
-  );
-}
+  const byUse = [...leverPerf].sort((a, b) => b.n - a.n)[0];
+  const byEff = [...leverPerf].filter((l) => l.n >= 20).sort((a, b) => b.hit_rate - a.hit_rate)[0] ?? leverPerf[0];
 
-function Vital({ label, value, sub, suffix }: { label: string; value: number; sub: string; suffix?: string }) {
+  const livePorts = [
+    { name: "飞书投放表", color: LIME, val: `已接入 ${comma(pulse?.feishu_n ?? o.notes)} 条` },
+    { name: "ssll 资产库", color: LIME, val: `已回流 ${comma(pulse?.ssll_n ?? 0)} 条` },
+    { name: "指标快照", color: LIME, val: `${comma(pulse?.snaps_n ?? 0)} 快照` },
+    { name: "essence 解析", color: LAV, val: `已标注 ${comma(pulse?.annotated_n ?? o.essence)}/${comma(o.notes)}` },
+    { name: "命中检测", color: CORAL, val: `${comma(o.baokuanReal)} 爆款判级` },
+    { name: "autowriter", color: "#F5A623", val: "已接 · 待流" },
+  ];
+  const annoPct = o.notes ? Math.round(((pulse?.annotated_n ?? o.essence) / o.notes) * 100) : 0;
+  const onlinePorts = [pulse?.feishu_n, pulse?.ssll_n, pulse?.snaps_n, pulse?.annotated_n, o.baokuanReal, o.cards].filter((x) => (x ?? 0) > 0).length;
+
+  const vitals = [
+    { k: "命中率", v: hitRate + "%" },
+    { k: "内容资产", v: comma(o.notes) },
+    { k: "验证级爆款", v: comma(o.baokuanReal) },
+    { k: "情绪杠杆", v: comma(o.levers) },
+    { k: "受众维度", v: comma(o.audiences) },
+  ];
+
   return (
-    <div>
-      <div className="tag text-slate-400">{label}</div>
-      <div className="num text-white" style={{ fontSize: "clamp(26px,2.4vw,40px)", fontWeight: 800, letterSpacing: "-0.025em", lineHeight: 1 }}>
-        <CountUp value={value} format="comma" duration={1600} />
-        {suffix && <span style={{ fontSize: "0.5em", fontWeight: 700 }} className="ml-0.5 text-coral">{suffix}</span>}
+    <main style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: sans }}>
+      <style dangerouslySetInnerHTML={{ __html: css }} />
+      <div className="cw">
+        {/* nav */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <Link href="/" style={{ fontWeight: 800, fontSize: 18, color: "#fff", textDecoration: "none" }}>BYWOOD <span style={{ color: "#6b7280" }}>· ROC 座舱</span></Link>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12, color: CORAL, border: `1px solid ${BORD}`, borderRadius: 999, padding: "5px 12px" }}>RESTRICTED · 含策略机理</span>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <Link href="/board" style={{ border: "1.5px solid rgba(255,255,255,0.22)", borderRadius: 999, padding: "6px 14px", fontSize: 12.5, fontWeight: 600, color: "#fff", textDecoration: "none" }}>数据看板</Link>
+            <form action="/api/auth/logout" method="POST"><button type="submit" style={{ border: "1.5px solid rgba(255,255,255,0.22)", borderRadius: 999, padding: "6px 14px", fontSize: 12.5, fontWeight: 600, color: "#fff", background: "transparent", cursor: "pointer" }}>登出</button></form>
+          </div>
+        </div>
+
+        <div className="cg">
+          {/* hero vitals */}
+          <section className="s12 cc" style={{ background: SAGE, color: INKC }}>
+            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-end", justifyContent: "space-between", gap: 24 }}>
+              <div>
+                <span style={{ display: "inline-flex", border: "1.5px solid rgba(0,0,0,0.4)", borderRadius: 999, padding: "6px 14px", fontSize: 12.5, fontWeight: 600 }}>态势 · 飞轮总览</span>
+                <div style={{ fontWeight: 800, letterSpacing: "-0.045em", lineHeight: 0.86, fontSize: "clamp(46px,7vw,104px)", marginTop: 16 }}><CountUp value={o.impressions} format="cn" duration={2000} /></div>
+                <div style={{ fontSize: 13, fontWeight: 600, opacity: 0.6, marginTop: 6 }}>累计内容曝光 · {o.projects} 条战线</div>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(96px,1fr))", gap: "16px 22px", maxWidth: 520 }}>
+                {vitals.map((v) => <div key={v.k}><div style={{ fontSize: "clamp(22px,2.2vw,32px)", fontWeight: 800, letterSpacing: "-0.02em" }}>{v.v}</div><div style={{ fontFamily: mono, fontSize: 10.5, opacity: 0.55, marginTop: 4 }}>{v.k}</div></div>)}
+              </div>
+            </div>
+          </section>
+
+          {/* 实时接口监测(真 pulse 端口)*/}
+          <section className="s12 ct" style={{ padding: "18px 22px" }}>
+            <LiveMonitor ports={livePorts} progress={annoPct} online={onlinePorts} total={7} />
+          </section>
+
+          {/* 核心洞察:最常用 ≠ 最有效 */}
+          {byUse && byEff && (
+            <section className="s12 cc" style={{ background: CORAL, color: INKC }}>
+              <span style={{ display: "inline-flex", border: "1.5px solid rgba(0,0,0,0.4)", borderRadius: 999, padding: "6px 14px", fontSize: 12.5, fontWeight: 600, alignSelf: "flex-start" }}>核心洞察 · WHY IT HITS</span>
+              <p style={{ fontSize: "clamp(18px,2.2vw,28px)", fontWeight: 700, lineHeight: 1.4, marginTop: 16, maxWidth: 980 }}>
+                最常用的「{byUse.lever}」用了 <b>{comma(byUse.n)}</b> 篇,命中仅 <b>{byUse.hit_rate}%</b>;而「{byEff.lever}」命中 <b>{byEff.hit_rate}%</b> —— 你投得最多的,往往不是最有效的。
+              </p>
+            </section>
+          )}
+
+          {/* 情绪杠杆 + 人性原型 */}
+          <HitList className="s6" title="情绪杠杆 · 命中率" sub="高强度负面/羞耻系胜出,泛共鸣不出" color={CORAL} items={leverPerf.map((l) => ({ label: l.lever, n: l.n, rate: l.hit_rate }))} />
+          <HitList className="s6" title="人性原型 · 命中率" sub="焦虑/冲突系胜出" color={LAV} items={archetypes.map((a) => ({ label: a.archetype, n: a.n, rate: a.hit_rate }))} />
+
+          {/* 受众 + 内容形态 + 触达集中度 */}
+          <HitList className="s4" title="受众 · 命中率" sub="具体共情受众胜出,通用是黑洞" color={OLIVE} items={audience.map((a) => ({ label: a.audience, n: a.n, rate: a.hit_rate }))} />
+          <HitList className="s4" title="内容形态 · 命中率" sub="情感叙事赢,直给推销不出" color={LIME} items={formats.map((f) => ({ label: f.fmt, n: f.n, rate: f.hit_rate }))} />
+          {reach && (
+            <section className="s4 ct">
+              <h3 style={{ fontSize: 16, fontWeight: 800 }}>触达集中度</h3>
+              <p style={{ fontSize: 11.5, color: MUTE, marginTop: 4 }}>爆款即一切 · 二八之上</p>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 14 }}><span style={{ fontSize: "clamp(34px,4vw,52px)", fontWeight: 800, color: CORAL, letterSpacing: "-0.03em" }}>{reach.hit_reach_share}%</span><span style={{ fontSize: 12, color: MUTE }}>的触达<br />来自 {reach.hit_note_pct}% 爆款</span></div>
+              <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 8 }}>
+                {[{ l: "Top 1% 内容", v: reach.top1_share }, { l: "Top 5% 内容", v: reach.top5_share }, { l: `爆+大爆 ${reach.hit_note_pct}%`, v: reach.hit_reach_share }].map((r) => (
+                  <div key={r.l} style={{ display: "grid", gridTemplateColumns: "92px 1fr 42px", gap: 8, alignItems: "center" }}>
+                    <span style={{ fontSize: 11, color: "#cfd3da" }}>{r.l}</span><span style={{ height: 8, background: "rgba(255,255,255,0.06)", borderRadius: 999 }}><span style={{ display: "block", height: "100%", width: `${Math.min(100, r.v)}%`, background: CORAL, borderRadius: 999 }} /></span><span style={{ fontFamily: mono, fontSize: 12, fontWeight: 700, textAlign: "right" }}>{r.v}%</span>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* 意图 + tier 漏斗 */}
+          <section className="s6 ct">
+            <h3 style={{ fontSize: 16, fontWeight: 800 }}>意图分野</h3>
+            <p style={{ fontSize: 11.5, color: MUTE, marginTop: 4, marginBottom: 14 }}>种草出爆款,转化几乎不出</p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {intent.map((it) => (
+                <div key={it.intent} style={{ display: "grid", gridTemplateColumns: "84px 1fr 70px", gap: 10, alignItems: "center" }}>
+                  <span style={{ fontSize: 13, color: "#cfd3da" }}>{it.intent === "traffic" ? "种草 traffic" : it.intent === "conversion" ? "转化 conversion" : it.intent}</span>
+                  <span style={{ height: 10, background: "rgba(255,255,255,0.06)", borderRadius: 999 }}><span style={{ display: "block", height: "100%", width: `${Math.max(2, Math.min(100, it.hit_rate * 8))}%`, background: LIME, borderRadius: 999 }} /></span>
+                  <span style={{ fontFamily: mono, fontSize: 12, textAlign: "right" }}>{it.hit_rate}% · {comma(it.n)}</span>
+                </div>
+              ))}
+            </div>
+          </section>
+          <section className="s6 ct">
+            <h3 style={{ fontSize: 16, fontWeight: 800 }}>爆款漏斗 · tier</h3>
+            <p style={{ fontSize: 11.5, color: MUTE, marginTop: 4, marginBottom: 14 }}>层级越高,读完率/曝光指数级抬升</p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {funnel.map((f) => (
+                <div key={f.tier} style={{ display: "grid", gridTemplateColumns: "60px 1fr 90px", gap: 10, alignItems: "center" }}>
+                  <span style={{ fontSize: 13, color: "#cfd3da" }}>{f.tier}</span>
+                  <span style={{ fontFamily: mono, fontSize: 11, color: MUTE }}>读完 {f.read_rate}% · 互动 {f.inter_rate}%</span>
+                  <span style={{ fontFamily: mono, fontSize: 12, color: CORAL, textAlign: "right" }}>{cnNum(f.avg_imp)}</span>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          {/* 分战线(含命中率,内部口径)*/}
+          {projectPerf.slice(0, 4).map((p, i) => (
+            <section key={p.project_id} className="s3 cc" style={{ background: FRONT[i % 4], color: INKC, justifyContent: "space-between", minHeight: 150 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}><span style={{ fontSize: 13, fontWeight: 700 }}>{PROJECT_LABEL[p.project_id] ?? p.project_id}</span><span style={{ fontSize: 11, opacity: 0.6 }}>{p.category}</span></div>
+              <div style={{ marginTop: 12 }}><div style={{ fontSize: "clamp(30px,3vw,44px)", fontWeight: 800, letterSpacing: "-0.03em", lineHeight: 0.9 }}>{p.hit_rate}%</div><div style={{ fontSize: 12, fontWeight: 600, opacity: 0.6, marginTop: 3 }}>命中率</div></div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 600, marginTop: 12 }}><span>{comma(p.notes)} 资产</span><span>{cnNum(p.total_imp)} 曝光</span></div>
+            </section>
+          ))}
+        </div>
       </div>
-      <div className="mini mt-1 text-slate-500">{sub}</div>
-    </div>
+    </main>
   );
 }
