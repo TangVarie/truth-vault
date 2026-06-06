@@ -58,10 +58,6 @@ export default async function ConsolePage() {
 
   const byUse = [...leverPerf].sort((a, b) => b.n - a.n)[0];
   const byEff = [...leverPerf].filter((l) => l.n >= 20).sort((a, b) => b.hit_rate - a.hit_rate)[0] ?? leverPerf[0];
-  const maxRate = <T extends { n: number; hit_rate: number }>(a: T[], min = 15): T | undefined => [...a].filter((x) => x.n >= min).sort((x, y) => y.hit_rate - x.hit_rate)[0];
-  const mostUsed = <T extends { n: number }>(a: T[]): T | undefined => [...a].sort((x, y) => y.n - x.n)[0];
-  const addL = maxRate(leverPerf), addA = maxRate(audience), addF = maxRate(formats), addAr = maxRate(archetypes);
-  const cutL = mostUsed(leverPerf), cutI = [...intent].sort((a, b) => a.hit_rate - b.hit_rate)[0], cutA = mostUsed(audience), cutF = [...formats].sort((a, b) => a.hit_rate - b.hit_rate)[0];
 
   const tot = (k: "lever" | "audience", v: string) => matrix.filter((m) => m[k] === v).reduce((s, m) => s + m.n, 0);
   const levOrder = Array.from(new Set(matrix.map((m) => m.lever))).sort((a, b) => tot("lever", b) - tot("lever", a)).slice(0, 8);
@@ -87,9 +83,6 @@ export default async function ConsolePage() {
     { k: "命中率", v: hitRate + "%" }, { k: "内容资产", v: comma(o.notes) }, { k: "验证级爆款", v: comma(o.baokuanReal) },
     { k: "情绪杠杆", v: comma(o.levers) }, { k: "受众维度", v: comma(o.audiences) },
   ];
-  const Chip = ({ t, r, good }: { t: string; r: number; good: boolean }) => (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, borderRadius: 999, padding: "5px 12px", fontSize: 12.5, fontWeight: 600, background: good ? "rgba(198,242,78,0.14)" : "rgba(255,255,255,0.05)", color: good ? LIME : "#cfd3da", border: `1px solid ${good ? "rgba(198,242,78,0.4)" : BORD}` }}>{t}<span style={{ fontFamily: mono, opacity: 0.8 }}>{r}%</span></span>
-  );
 
   return (
     <main style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: sans }}>
@@ -99,7 +92,7 @@ export default async function ConsolePage() {
         <div style={{ maxWidth: 1280, margin: "0 auto", padding: "12px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <Link href="/" style={{ fontWeight: 800, fontSize: 17, color: "#fff", textDecoration: "none" }}>BYWOOD <span style={{ color: "#6b7280" }}>· ROC 座舱</span></Link>
-            <div style={{ display: "flex", gap: 6 }}>{[["#态势", "态势"], ["#建议", "建议"], ["#挖掘", "挖掘"], ["#战线", "战线"]].map(([h, t]) => <a key={h} href={h} style={{ fontSize: 12.5, fontWeight: 600, color: MUTE, textDecoration: "none", padding: "4px 9px" }}>{t}</a>)}</div>
+            <div style={{ display: "flex", gap: 6 }}>{[["#态势", "态势"], ["#挖掘", "挖掘"], ["#战线", "战线"]].map(([h, t]) => <a key={h} href={h} style={{ fontSize: 12.5, fontWeight: 600, color: MUTE, textDecoration: "none", padding: "4px 9px" }}>{t}</a>)}</div>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
             <Link href="/board" style={navPill()}>数据看板</Link>
@@ -124,40 +117,6 @@ export default async function ConsolePage() {
             </div>
           </section>
           <section className="s12 ct" style={{ padding: "18px 22px" }}><LiveMonitor ports={livePorts} progress={annoPct} online={onlinePorts} total={7} /></section>
-          <section className="s12 ct" style={{ background: "rgba(255,255,255,0.02)" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 14 }}><span style={{ fontSize: 14 }}>💡</span><h3 style={{ fontSize: 15, fontWeight: 800 }}>怎么读这个看板 · 口径说明</h3></div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))", gap: "12px 24px" }}>
-              {[["命中率", "爆款(爆/大爆)占内容资产的比例 —— 条越长越易出爆款"], ["爆款分级 tier", "按互动量:大爆 > 爆 > 预备 > 参考 …"], ["触达集中度", "极少数爆款吃掉绝大多数曝光(幂律)· %=占总触达"], ["意图分野", "种草=引流 / 转化=直给;数字=命中率·篇数"], ["共振矩阵", "策略×受众 组合的内容密度,深=该组合用得多"], ["实时接口", "端口状态来自真 pulse;事件流为活动示意"]].map(([t, dd]) => (
-                <div key={t} style={{ display: "flex", gap: 10, alignItems: "baseline" }}><span style={{ flexShrink: 0, fontSize: 12.5, fontWeight: 700, color: LIME, fontFamily: mono, minWidth: 88 }}>{t}</span><span style={{ fontSize: 12.5, lineHeight: 1.55, color: "#aeb4bd" }}>{dd}</span></div>
-              ))}
-            </div>
-          </section>
-
-          {/* ── 建议 ── */}
-          <section id="建议" className="s12 cc canchor" style={{ background: PANEL, border: `1px solid ${BORD}` }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 9 }}><span style={{ fontSize: 16 }}>🎯</span><h3 style={{ fontSize: 17, fontWeight: 800 }}>策略建议 · 从真数据推得</h3></div>
-            <p style={{ fontSize: 11.5, color: MUTE, marginTop: 4 }}>同一悖论:投得最多的,往往不是最有效的。据此加码 / 收缩。</p>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))", gap: 18, marginTop: 16 }}>
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: LIME, marginBottom: 10 }}>✅ 加码(高命中,值得放大)</div>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  {addL && <Chip t={`杠杆·${addL.lever}`} r={addL.hit_rate} good />}
-                  {addA && <Chip t={`受众·${addA.audience}`} r={addA.hit_rate} good />}
-                  {addF && <Chip t={`形态·${addF.fmt}`} r={addF.hit_rate} good />}
-                  {addAr && <Chip t={`原型·${addAr.archetype}`} r={addAr.hit_rate} good />}
-                </div>
-              </div>
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: "#cfd3da", marginBottom: 10 }}>⛔ 收缩(用得多却不出,该砍)</div>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  {cutL && <Chip t={`杠杆·${cutL.lever}(${comma(cutL.n)}篇)`} r={cutL.hit_rate} good={false} />}
-                  {cutI && <Chip t={`意图·${cutI.intent === "conversion" ? "转化" : cutI.intent === "traffic" ? "种草" : cutI.intent}`} r={cutI.hit_rate} good={false} />}
-                  {cutA && <Chip t={`受众·${cutA.audience}`} r={cutA.hit_rate} good={false} />}
-                  {cutF && <Chip t={`形态·${cutF.fmt}`} r={cutF.hit_rate} good={false} />}
-                </div>
-              </div>
-            </div>
-          </section>
 
           {/* ── 挖掘 ── */}
           <div id="挖掘" className="s12 canchor" style={{ height: 0 }} />
