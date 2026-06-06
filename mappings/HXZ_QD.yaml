@@ -14,12 +14,12 @@ brand: 花西子
 product: 气垫
 category: 美妆                  # ✓ 已确认在 projects_category_check 闭集内
 platform: xiaohongshu
-schema_family: B               # 暂定 B;preflight 看真实字段命名再定 A/B(有"巡查状态/最近检查时间/主页链接"→A)
+schema_family: B               # preflight 确认表中【无】巡查状态/最近检查时间/主页链接 → 非 A 家族, B 成立
 start_date: 2025-XX-XX         # 待填
 end_date: 2026-XX-XX           # 待填
 
-# ── 字段映射 ── [待 preflight 用真表列名校正]
-# 下面是 B 家族标准映射;花西子表实际列名以 preflight 报告为准,逐列校正。
+# ── 字段映射 ── [已用 preflight(run 27071343680, 读 644 行)校正到真实列名]
+# 删去的列(爆帖置顶评论 / 帐号昵称 / 粉丝数)preflight 报"声明了但表里没有" —— 本表无此列, 留着是空映射, 故移除。
 field_mapping:
   素人编号: account_id
   文案: raw_content
@@ -33,11 +33,8 @@ field_mapping:
   关键词: target_blue_keywords
   蓝词记录: hit_blue_keywords
   发布笔记: _intent_raw
-  爆帖置顶评论: pinned_comment
   随贴评论: _comment_text
   随贴评论素人: _comment_text_persona
-  帐号昵称: _account_name
-  粉丝数: _account_followers
 
 intent_mapping:
   流量帖: traffic
@@ -93,16 +90,24 @@ compliance:
     secondary: []
     avoid: []
 
-# 项目专属字段(进 raw_extra)—— 待 preflight 报"未声明列"后据实补全
+# 项目专属字段(进 raw_extra)—— 据 preflight(run 27071343680)实测列声明, 避免 D-021 整行 quarantine。
+# ⚠️ 不声明 = 出现即整行 quarantine, 会丢真笔记(本表实测 10 个未声明列共 965 行有正文会丢)。
 project_specific_fields_to_raw_extra:
+  # —— 实有业务列(preflight 确认在表中, 非未声明)——
   - 父记录 2
   - 父记录 3
   - 父记录 4
-  - 项目阶段
-  - 打款金额
   - 观众分析
-  - 巡查状态
-  - 最近检查时间
+  # —— preflight 报"未声明列"(副本/截图/状态等旁列)→ 一律收进 raw_extra ——
+  - 数据汇总
+  - 曝光量副本
+  - 阅读量副本
+  - 互动量副本
+  - 评论状态
+  - 相关截图
+  - 评论配图
+  - 蓝词图片
+  # NOTE: preflight 默认只列 top-8, 实测共 10 个未声明列 → 还有 2 列待 `show=50` 的复跑点名后补全。
 
 data_supplement_needed:
   - field: account_followers

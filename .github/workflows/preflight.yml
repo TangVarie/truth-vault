@@ -15,6 +15,11 @@ on:
         description: "项目全名 (如 NRT_phase3 / NUC_phase1)"
         type: string
         required: true
+      show:
+        description: "清单(未声明列/缺方向等)最多展示几项 —— 接表首跑建议设大(如 50)看全未声明列, 一次声明干净"
+        type: string
+        required: false
+        default: "8"
 
 jobs:
   preflight:
@@ -46,4 +51,5 @@ jobs:
         env:
           # 经 env 传入(不把 ${{ }} 直接拼进 shell, 防注入)。
           PROJECT: ${{ github.event.inputs.project }}
-        run: python preflight_mapping.py "$PROJECT"
+          SHOW: ${{ github.event.inputs.show }}
+        run: python preflight_mapping.py "$PROJECT" --show "${SHOW:-8}"
