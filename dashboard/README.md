@@ -3,8 +3,13 @@
 帆谷飞轮生态(**Truth Vault / autowriter / sanshengliubu** + 未来去中心化)的在线状态看板。
 两个用途:**对外装逼**(让人一眼看到飞轮活着、在转、有护城河)+ **对内自监测**(哪条管道卡了/红了)。
 
-> 完整设计与分阶段计划见 **[`../docs/24-dashboard-plan.md`](../docs/24-dashboard-plan.md)**。本目录是 **Phase 0 骨架**:
-> 一个 Next.js(App Router)站 + 一个 overview 页,服务端查共享 Supabase 的 Truth Vault 真实大数。
+> 完整设计与分阶段计划见 **[`../docs/24-dashboard-plan.md`](../docs/24-dashboard-plan.md)**。本目录是 **Phase 0 骨架**。
+
+## 路由
+- `/` — **开篇视效 / 落地页**:BYWOOD 芭梧 品牌动态介绍(framer-motion 入场 + 旋转飞轮)+ 两入口(**进入公众看板** 免登录 / **登录** 内部待开放)。信息源 `config/brand.ts`(公司名片 PDF)。
+- `/console` — **公众看板**:服务端查共享 Supabase 的 Truth Vault 真实大数 + 系统节点 + 实时卡。
+- `/api/live/presence` — 实时"在线"信号(stub;留给去中心化/在线改稿人数)。
+- 未来 `/internal` — 登录后运维页(Phase 3 接 auth)。
 
 ## 技术栈
 Next.js 14(App Router)· React · TypeScript · Tailwind · `@supabase/supabase-js`(**服务端**查库)· 部署 Vercel。

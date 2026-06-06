@@ -1,118 +1,138 @@
-import { getSupabase } from "@/lib/supabase";
-import { NODES } from "@/config/flywheel";
-import LivePresence from "@/components/LivePresence";
+"use client";
 
-// ISR:每 60s 重新在服务端取数,给一点"实时"感(docs/24 §2)。
-export const revalidate = 60;
+import Link from "next/link";
+import { motion } from "framer-motion";
+import { BRAND } from "@/config/brand";
 
-type Overview = {
-  projects: number;
-  notes: number;
-  baokuan: number;
-  cards: number;
-  librarian: number;
-  ok: boolean;
+/**
+ * 开篇视效 / 落地页(docs/24 §A-intro)。BYWOOD 芭梧 品牌动态介绍 +
+ * 两个入口:进入公众看板(免登录)/ 登录(内部,待开放)。
+ * 信息取自公司名片 PDF;设计=动态编排(framer-motion 入场 + 旋转飞轮)。
+ */
+
+const container = {
+  hidden: {},
+  show: { transition: { staggerChildren: 0.11, delayChildren: 0.15 } },
+};
+const item = {
+  hidden: { opacity: 0, y: 18 },
+  show: { opacity: 1, y: 0, transition: { duration: 0.7, ease: [0.22, 1, 0.36, 1] } },
 };
 
-async function getOverview(): Promise<Overview> {
-  const sb = getSupabase();
-  if (!sb) return { projects: 0, notes: 0, baokuan: 0, cards: 0, librarian: 0, ok: false };
-  const tv = sb.schema("truth_vault");
-  try {
-    const count = async (q: any) => (await q).count ?? 0;
-    const [projects, notes, baokuan, cards, librarian] = await Promise.all([
-      count(tv.from("projects").select("*", { count: "exact", head: true })),
-      count(tv.from("notes").select("*", { count: "exact", head: true })),
-      count(
-        tv
-          .from("notes")
-          .select("*", { count: "exact", head: true })
-          .in("tier", ["爆", "大爆"])
-          .eq("tier_source", "状态字段")
-      ),
-      count(tv.from("flywheel_lesson_annotations").select("*", { count: "exact", head: true })),
-      count(tv.from("flywheel_librarian_cache").select("*", { count: "exact", head: true })),
-    ]);
-    return { projects, notes, baokuan, cards, librarian, ok: true };
-  } catch {
-    return { projects: 0, notes: 0, baokuan: 0, cards: 0, librarian: 0, ok: false };
-  }
-}
-
-function Metric({ label, value, hint }: { label: string; value: number | string; hint?: string }) {
+function FlywheelRings() {
+  // 背景旋转飞轮(呼应"数据飞轮·越用越强")
   return (
-    <div className="rounded-2xl bg-flywheel-card border border-white/5 p-6">
-      <div className="text-sm text-slate-400">{label}</div>
-      <div className="mt-2 text-4xl font-semibold text-flywheel-accent tabular-nums">{value}</div>
-      {hint ? <div className="mt-1 text-xs text-slate-500">{hint}</div> : null}
+    <div className="pointer-events-none absolute inset-0 flex items-center justify-center overflow-hidden">
+      <svg className="animate-spin-slow opacity-[0.13]" width="900" height="900" viewBox="0 0 900 900">
+        <circle cx="450" cy="450" r="430" fill="none" stroke="#1b4fd1" strokeWidth="1.5" strokeDasharray="2 14" />
+        <circle cx="450" cy="450" r="360" fill="none" stroke="#5eead4" strokeWidth="1" strokeDasharray="1 22" />
+      </svg>
+      <svg className="absolute animate-spin-rev opacity-[0.10]" width="640" height="640" viewBox="0 0 640 640">
+        <circle cx="320" cy="320" r="300" fill="none" stroke="#1b4fd1" strokeWidth="1.5" strokeDasharray="60 30" />
+      </svg>
     </div>
   );
 }
 
-function SystemDot({ name, alive, planned }: { name: string; alive: boolean; planned?: boolean }) {
+export default function Landing() {
   return (
-    <div className="flex items-center gap-2 rounded-full bg-white/5 px-4 py-2 text-sm">
-      <span
-        className={`inline-block h-2.5 w-2.5 rounded-full ${
-          alive ? "bg-flywheel-accent" : "bg-slate-600"
-        }`}
-      />
-      {name}
-      {planned ? <span className="text-xs text-slate-500">规划中</span> : null}
-    </div>
-  );
-}
+    <main className="bywood-bg animate-gradient relative min-h-screen overflow-hidden">
+      <FlywheelRings />
 
-export default async function Page() {
-  const o = await getOverview();
-  return (
-    <main className="mx-auto max-w-5xl px-6 py-12">
-      <header className="mb-10">
-        <h1 className="text-2xl font-bold">飞轮总看板</h1>
-        <p className="mt-1 text-slate-400">
-          帆谷飞轮生态 · Truth Vault / autowriter / sanshengliubu 实时态势
-        </p>
-        {!o.ok && (
-          <p className="mt-3 rounded-lg bg-flywheel-warn/10 px-4 py-2 text-sm text-flywheel-warn">
-            ⚠️ 未连到 Supabase(本地/部署需配 <code>SUPABASE_URL</code> +{" "}
-            <code>SUPABASE_SERVICE_ROLE_KEY</code>)。当前显示占位 0。
-          </p>
-        )}
-      </header>
+      {/* 顶栏 */}
+      <div className="relative mx-auto flex max-w-6xl items-center justify-between px-6 py-6 text-xs tracking-widest text-slate-400">
+        <span>§ {BRAND.studio}</span>
+        <span>{BRAND.tagline} · {BRAND.taglineEn}</span>
+      </div>
 
-      {/* 头部大数(Phase 0:TV 真实聚合;Phase 2 起补 aw/ssll/通道) */}
-      <section className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-        <Metric label="项目" value={o.projects} />
-        <Metric label="笔记" value={o.notes} />
-        <Metric label="真爆款燃料" value={o.baokuan} hint="状态字段权威" />
-        <Metric label="经验卡" value={o.cards} hint="书架已策展" />
-        <Metric label="馆员借阅" value={o.librarian} hint="通道2 缓存行" />
-      </section>
+      <motion.section
+        variants={container}
+        initial="hidden"
+        animate="show"
+        className="relative mx-auto flex max-w-4xl flex-col items-center px-6 pb-20 pt-10 text-center"
+      >
+        {/* 品牌 */}
+        <motion.div variants={item} className="flex items-end gap-4">
+          <span className="text-6xl font-black tracking-tight text-white sm:text-7xl">{BRAND.name}</span>
+          <span className="mb-2 text-3xl font-bold text-bywood-blue sm:text-4xl">{BRAND.nameCn}</span>
+        </motion.div>
+        <motion.div variants={item} className="mt-2 text-sm tracking-[0.3em] text-slate-400">
+          {BRAND.taglineEn}
+        </motion.div>
 
-      {/* 系统"活着"灯(config 驱动,docs/24 §5.5;Phase 3 起接真实最近活动) */}
-      <section className="mt-10">
-        <h2 className="mb-3 text-sm font-medium text-slate-400">系统 / 节点</h2>
-        <div className="flex flex-wrap gap-3">
-          {NODES.map((n) => (
-            <SystemDot
-              key={n.id}
-              name={n.label}
-              alive={n.status === "live" && o.ok}
-              planned={n.status === "planned"}
-            />
+        {/* headline */}
+        <motion.h1 variants={item} className="mt-8 text-3xl font-bold leading-snug text-white sm:text-4xl">
+          {BRAND.headlineLead}
+          <span className="text-bywood-red">{BRAND.headlineAccent}</span>。
+        </motion.h1>
+        <motion.p variants={item} className="mt-4 max-w-2xl text-sm leading-relaxed text-slate-400">
+          {BRAND.whatWeDo}
+        </motion.p>
+
+        {/* 增长链路:心智 → 决策 → 复利 */}
+        <motion.div variants={item} className="mt-10 flex flex-wrap items-center justify-center gap-3">
+          {BRAND.growthLink.map((g, i) => (
+            <div key={g.id} className="flex items-center gap-3">
+              <div className="rounded-2xl border border-white/10 bg-white/5 px-5 py-3 text-left">
+                <div className="flex items-baseline gap-2">
+                  <span className="text-xl font-bold text-white">{g.cn}</span>
+                  <span className="text-[10px] tracking-widest text-slate-500">{g.en}</span>
+                </div>
+                <div className="mt-0.5 text-xs text-slate-400">{g.sub}</div>
+              </div>
+              {i < BRAND.growthLink.length - 1 && <span className="text-bywood-blue">→</span>}
+            </div>
           ))}
-        </div>
-      </section>
+        </motion.div>
 
-      {/* 实时"在线"卡(留好接口:去中心化 / 在线改稿人数;现在 stub→规划中) */}
-      <section className="mt-10">
-        <h2 className="mb-3 text-sm font-medium text-slate-400">实时</h2>
-        <LivePresence />
-      </section>
+        {/* 扶摇 ROC 紧凑条 */}
+        <motion.div variants={item} className="mt-8 w-full max-w-2xl rounded-2xl border border-bywood-blue/30 bg-bywood-blue/10 p-5">
+          <div className="mb-3 flex items-center justify-between">
+            <span className="text-lg font-semibold text-white">{BRAND.roc.title}</span>
+            <span className="text-xs tracking-widest text-slate-400">{BRAND.roc.note}</span>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-3">
+            {BRAND.roc.steps.map((s) => (
+              <div key={s.k} className="rounded-xl bg-black/20 p-3 text-left">
+                <div className="flex items-center gap-2">
+                  <span className="flex h-6 w-6 items-center justify-center rounded-md bg-bywood-blue text-xs font-bold text-white">
+                    {s.k}
+                  </span>
+                  <span className="text-sm font-medium text-white">{s.act}</span>
+                </div>
+                <div className="mt-1 text-[11px] text-slate-400">{s.name}</div>
+              </div>
+            ))}
+          </div>
+        </motion.div>
 
-      <footer className="mt-16 text-xs text-slate-600">
-        Phase 0 骨架 · 设计见 <code>docs/24-dashboard-plan.md</code> · 服务端 ISR 60s
-      </footer>
+        {/* tagline */}
+        <motion.div variants={item} className="mt-10 text-2xl font-bold text-white sm:text-3xl">
+          {BRAND.footerLead}
+          <span className="text-bywood-blue">{BRAND.footerAccent}</span>
+        </motion.div>
+
+        {/* 入口 */}
+        <motion.div variants={item} className="mt-9 flex flex-wrap items-center justify-center gap-4">
+          <Link
+            href="/console"
+            className="group rounded-full bg-white px-7 py-3 text-sm font-semibold text-bywood-navy transition hover:bg-bywood-accent"
+          >
+            进入公众看板 <span className="transition group-hover:translate-x-1 inline-block">→</span>
+          </Link>
+          <button
+            type="button"
+            title="内部页 · 即将开放(Phase 3 接 auth)"
+            className="rounded-full border border-white/20 px-7 py-3 text-sm font-medium text-slate-300 transition hover:border-white/40"
+          >
+            登录 <span className="text-slate-500">（内部 · 即将开放）</span>
+          </button>
+        </motion.div>
+
+        <motion.div variants={item} className="mt-8 text-xs text-slate-500">
+          全域阵地 · {BRAND.fields}
+        </motion.div>
+      </motion.section>
     </main>
   );
 }
