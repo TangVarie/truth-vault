@@ -130,6 +130,10 @@
 - **P3 · 跨产品负面飞轮(D-040 roadmap)**:从人工标的干净负例萃取避坑特征,**不碰 `趴`**。优先级低于 L3。
 - **P4 · 未来**:L2 Predictor(`prepublish_evaluations` 现空)· L4 Optimization。
 
+### 并行新方向(Session #18 起头,独立于灌料/补层主线)
+- **飞轮总看板(在线网站)** —— 见 **[docs/24](24-dashboard-plan.md)**。对外装逼 + 对内自监测,Vercel + Next.js + 共享 Supabase 照见 aw/tv/ssll(+未来去中心化)全生态。**Phase 0 骨架 + 扩展接口已落**(`dashboard/`,在 PR #69);Phase 1 上线需接入 Vercel + Supabase key。开新窗口接力从 docs/24 §9。
+- **L3 受众层** —— 见 **[docs/23](23-L3-audience-layer-plan.md)**(同 P2)。
+
 ---
 
 ## 7. 不可违反的不变量 / 雷区(务必记住)

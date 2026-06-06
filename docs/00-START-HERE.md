@@ -195,6 +195,7 @@ Truth Vault(Supabase prod `kduysqedrclrfevrxiie` · schema truth_vault)
 | `06-essence-annotation` | essence 标注协议(Mode A/B label-leakage 隔离) |
 | `07-audience-data` | 受众层设计(蒲公英接入 + 校准闭环) |
 | **`23-L3-audience-layer-plan`** | ⭐ **L3 落地方案**(现状 vs 07 设计的差距 + 分阶段;Phase 1 不符检测现在可跑) |
+| **`24-dashboard-plan`** | ⭐ **飞轮总看板**(在线网站:对外装逼 + 对内自监测;Vercel+Next.js+共享 Supabase;§9 接力) |
 | `08-evolution-roadmap` | 演进路线图 |
 | `09-system-integration` | 与 ssll/autowriter 的集成 |
 | `10-sister-repo-followups` | 跨仓待办(R-031 等) |

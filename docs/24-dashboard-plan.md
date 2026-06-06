@@ -138,4 +138,28 @@
 
 ---
 
-_本计划 2026-06-05。本 PR 落 Phase 0(骨架 + 计划);Phase 1 上线需你接入 Vercel + 给 Supabase key。_
+## 9. 接力(开新窗口从这里直接继续)⭐
+
+**已完成(Phase 0,在 PR #69,未合并)**:
+- 本计划 `docs/24` + `dashboard/` 骨架(Next.js14 + Tailwind + 服务端查 Supabase)。
+- overview 页**已查 TV 真实大数**(项目 4 / 笔记 2478 / 真爆款 96 / 经验卡 87 / 馆员借阅)+ 系统活着灯(config 驱动)。
+- **扩展接口已留成代码**:`lib/metrics/types.ts`(MetricAdapter/FlywheelNode/LiveSignal)· `config/flywheel.ts`(节点边,去中心化预放 `planned`)· `app/api/live/presence/route.ts`(实时在线 stub)· `components/LivePresence.tsx`(轮询实时卡)。
+
+**关键上下文(新窗口必读)**:
+- 三系统(aw/tv/ssll)**共用一个 Supabase**:`kduysqedrclrfevrxiie`,schema 分别 `autowriter` / `truth_vault` / `public`。一个连接照见全生态。
+- 看板 = **config + adapter 驱动**:加新数据源/新指标 = 注册 adapter + 改一行 config + 换 stub 数据源,核心/UI 不动(§5.5)。
+- "**在线同时多少人改稿**"等去中心化实时指标:`/api/live/presence` 接口 + `LivePresence` 组件已就位(现 stub→"规划中");接真数据 = 把 stub 换成 Supabase Realtime presence / heartbeat 表 / 节点上报,**前端不动**。
+- 本地跑:`cd dashboard && npm install && cp .env.example .env.local`(填 Supabase URL/key)`&& npm run dev`。
+
+**待拍板(见 §8,已给默认)**:① 托管 Vercel ② 公开页露多少 ③ 位置 `truth-vault/dashboard/` vs 独立仓 ④ 内部页 auth。
+
+**下一步三选一**:
+1. **部署上线 MVP**(最快见网址)→ 需:接入 Vercel 账号 + Supabase `SERVICE_ROLE_KEY`(配进 Vercel env)。有 Vercel MCP 可代部署。
+2. **写 Phase 2 聚合视图**(`truth-vault/schemas/dashboard_views_*.sql`:aw/ssll/通道真实数据)→ 部署后满屏数据。
+3. **Phase 3 装逼级动效**(飞轮流动动画 framer-motion + 活动 ticker + 实时卡接真数据)。
+
+**装逼级动效(framer-motion / SVG path 动画)= Phase 3**,Phase 0 骨架先把数据接口和结构搭好、部署 MVP 保持轻。
+
+---
+
+_本计划 2026-06-05。本 PR(#69)落 Phase 0(骨架 + 计划 + 扩展接口);Phase 1 上线需接入 Vercel + 给 Supabase key。_
