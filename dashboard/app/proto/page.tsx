@@ -4,6 +4,7 @@ import type { Metadata } from "next";
 export const metadata: Metadata = { robots: { index: false, follow: false }, title: "设计原型对比 · BYWOOD" };
 
 const protos = [
+  { href: "/proto/bold", name: "⭐ BOLD BLOCKS(选定方向)", ref: "Saving Goal ① + AI-BL 柠檬绿 + Sci-Am 数据艺术", accent: "#F2542D", bg: "#0A0A0B", fg: "#DDE6D6", desc: "近黑底 + 大圆角高饱和色卡 + 巨号数字 + 胶囊控件 + 渐隐大列表(你的参考①)" },
   { href: "/proto/terminal-x", name: "⚡ 情报终端 · 张力版", ref: "Bloomberg/Grafana + 辉光/数据流/动效", accent: "#36F1CD", bg: "#06070A", fg: "#36F1CD", desc: "深底辉光 + 桑基数据流 hero + 巨号发光数字 + 跑马灯(强视觉张力)" },
   { href: "/proto/ledger-x", name: "⚡ 数据编辑 · 张力版", ref: "Pentagram/IBM + 巨号/多色/动效", accent: "#E2402A", bg: "#F4F1E9", fg: "#15140E", desc: "超大数字 + 多色粗柱生长 + 重磅双线排版(强视觉张力)" },
   { href: "/proto/terminal", name: "情报终端 · 基础版", ref: "Bloomberg / Grafana / Tremor", accent: "#9EFF00", bg: "#0A0A0B", fg: "#c8cdd2", desc: "深底密集面板 + 状态灯(克制对照版)" },
