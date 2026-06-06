@@ -84,12 +84,13 @@ export default function Sankey({
     <svg viewBox={`0 0 ${W} ${H}`} className="block h-auto w-full">
       <defs>
         <linearGradient id="sk-accent" x1="0" x2="1">
-          <stop offset="0%"  stopColor="#E8765A" stopOpacity="0.85" />
-          <stop offset="100%" stopColor="#E8765A" stopOpacity="0.35" />
+          <stop offset="0%"   stopColor="#F4A65C" stopOpacity="0.92" />
+          <stop offset="55%"  stopColor="#E8765A" stopOpacity="0.70" />
+          <stop offset="100%" stopColor="#C9523A" stopOpacity="0.40" />
         </linearGradient>
         <linearGradient id="sk-muted" x1="0" x2="1">
-          <stop offset="0%"  stopColor="#3a4458" stopOpacity="0.7" />
-          <stop offset="100%" stopColor="#3a4458" stopOpacity="0.25" />
+          <stop offset="0%"   stopColor="#8b8fb5" stopOpacity="0.55" />
+          <stop offset="100%" stopColor="#8b8fb5" stopOpacity="0.20" />
         </linearGradient>
         <filter id="sk-glow" x="-50%" y="-50%" width="200%" height="200%">
           <feGaussianBlur stdDeviation="2" result="b" />
@@ -114,10 +115,15 @@ export default function Sankey({
           return (
             <g key={i}>
               <path d={d} fill={l.accent ? "url(#sk-accent)" : "url(#sk-muted)"} />
-              {/* 流光脉冲沿中线跑 */}
+              {/* 流光脉冲沿中线跑(双粒子 = 更"在流") */}
               <path id={`sk-mid-${i}`} d={midD} fill="none" stroke="none" />
-              <circle r="3.2" fill="#fff" filter="url(#sk-glow)">
+              <circle r="3.4" fill="#fff" filter="url(#sk-glow)">
                 <animateMotion dur={`${5 + i * 0.6}s`} begin={`${i * 0.7}s`} repeatCount="indefinite">
+                  <mpath href={`#sk-mid-${i}`} />
+                </animateMotion>
+              </circle>
+              <circle r="2.4" fill="#F4A65C" filter="url(#sk-glow)">
+                <animateMotion dur={`${5 + i * 0.6}s`} begin={`${i * 0.7 + 2.5}s`} repeatCount="indefinite">
                   <mpath href={`#sk-mid-${i}`} />
                 </animateMotion>
               </circle>
