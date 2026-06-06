@@ -5,7 +5,7 @@ export const metadata: Metadata = { robots: { index: false, follow: false }, tit
 export const dynamic = "force-dynamic";
 
 function sanitizeNext(n?: string): string {
-  if (!n || !n.startsWith("/") || n.startsWith("//")) return "/console";
+  if (!n || !n.startsWith("/") || n.startsWith("//") || n.includes("\\")) return "/console";
   return n;
 }
 

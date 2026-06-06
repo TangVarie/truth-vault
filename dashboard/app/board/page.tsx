@@ -89,7 +89,7 @@ export default async function BoardPage() {
     { name: "指标快照", color: LIME, val: `${comma(pulse?.snaps_n ?? 0)} 快照` },
     { name: "essence 解析", color: LAV, val: `已标注 ${comma(pulse?.annotated_n ?? o.essence)}/${comma(o.notes)}` },
     { name: "命中检测", color: CORAL, val: `${comma(o.baokuanReal)} 爆款判级` },
-    { name: "autowriter", color: "#F5A623", val: "已接 · 待流" },
+    { name: "autowriter · 馆员", color: LIME, val: `${comma(o.cards)} 经验卡可借` },
     { name: "内部座舱", color: LIME, val: `${comma(o.cards)} 策略卡` },
   ];
   const annoPct = o.notes ? Math.round(((pulse?.annotated_n ?? o.essence) / o.notes) * 100) : 0;

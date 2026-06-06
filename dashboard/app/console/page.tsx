@@ -75,13 +75,17 @@ export default async function ConsolePage() {
     { name: "指标快照", color: LIME, val: `${comma(pulse?.snaps_n ?? 0)} 快照` },
     { name: "essence 解析", color: LAV, val: `已标注 ${comma(pulse?.annotated_n ?? o.essence)}/${comma(o.notes)}` },
     { name: "命中检测", color: CORAL, val: `${comma(o.baokuanReal)} 爆款判级` },
-    { name: "autowriter", color: "#F5A623", val: "已接 · 待流" },
+    { name: "autowriter · 馆员", color: LIME, val: `${comma(o.cards)} 经验卡可借` },
   ];
   const annoPct = o.notes ? Math.round(((pulse?.annotated_n ?? o.essence) / o.notes) * 100) : 0;
   const onlinePorts = [pulse?.feishu_n, pulse?.ssll_n, pulse?.snaps_n, pulse?.annotated_n, o.baokuanReal, o.cards].filter((x) => (x ?? 0) > 0).length;
   const vitals = [
     { k: "命中率", v: hitRate + "%" }, { k: "内容资产", v: comma(o.notes) }, { k: "验证级爆款", v: comma(o.baokuanReal) },
     { k: "情绪杠杆", v: comma(o.levers) }, { k: "受众维度", v: comma(o.audiences) },
+  ];
+  const loop = [
+    { t: "真实投放", c: CORAL }, { t: "结果回流", c: OLIVE }, { t: "爆款策展", c: LAV },
+    { t: "馆员借阅", c: LIME }, { t: "反哺创作", c: CORAL }, { t: "命中率↑", c: OLIVE },
   ];
 
   return (
@@ -92,7 +96,7 @@ export default async function ConsolePage() {
         <div style={{ maxWidth: 1280, margin: "0 auto", padding: "12px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <Link href="/" style={{ fontWeight: 800, fontSize: 17, color: "#fff", textDecoration: "none" }}>BYWOOD <span style={{ color: "#6b7280" }}>· ROC 座舱</span></Link>
-            <div style={{ display: "flex", gap: 6 }}>{[["#态势", "态势"], ["#挖掘", "挖掘"], ["#战线", "战线"]].map(([h, t]) => <a key={h} href={h} style={{ fontSize: 12.5, fontWeight: 600, color: MUTE, textDecoration: "none", padding: "4px 9px" }}>{t}</a>)}</div>
+            <div style={{ display: "flex", gap: 6 }}>{[["#态势", "态势"], ["#机制", "机制"], ["#挖掘", "挖掘"], ["#战线", "战线"]].map(([h, t]) => <a key={h} href={h} style={{ fontSize: 12.5, fontWeight: 600, color: MUTE, textDecoration: "none", padding: "4px 9px" }}>{t}</a>)}</div>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
             <Link href="/board" style={navPill()}>数据看板</Link>
@@ -117,6 +121,47 @@ export default async function ConsolePage() {
             </div>
           </section>
           <section className="s12 ct" style={{ padding: "18px 22px" }}><LiveMonitor ports={livePorts} progress={annoPct} online={onlinePorts} total={7} /></section>
+
+          {/* ── 机制:飞轮 / 馆员 / 去中心化 ── */}
+          <section id="机制" className="s12 cc canchor" style={{ background: PANEL, border: `1px solid ${BORD}` }}>
+            <span style={{ display: "inline-flex", border: `1.5px solid ${BORD}`, borderRadius: 999, padding: "6px 14px", fontSize: 12.5, fontWeight: 600, color: "#fff", alignSelf: "flex-start" }}>飞轮机制 · 越用越强</span>
+            <h2 style={{ fontSize: "clamp(24px,3vw,40px)", fontWeight: 800, letterSpacing: "-0.03em", lineHeight: 1.12, marginTop: 14 }}>数据是数据。机制,是<span style={{ color: CORAL }}>另一种力量</span>。</h2>
+            <p style={{ fontSize: 14, lineHeight: 1.65, color: "#aeb4bd", marginTop: 10, maxWidth: 720 }}>真实结果回流 → 爆款被策展进库 → 写稿时 LLM 馆员按 brief 来「借」最匹配的经验 → 反哺创作。被筛掉的内容也成训练素材。体系越用越准,而不是靠堆人头。</p>
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(0,320px) minmax(0,1fr)", gap: 22, marginTop: 18, alignItems: "center" }}>
+              {/* 飞轮环(轨道脉冲)*/}
+              <svg viewBox="0 0 320 320" width="100%" style={{ maxWidth: 320, margin: "0 auto" }}>
+                <defs><radialGradient id="fw-core"><stop offset="0%" stopColor={CORAL} stopOpacity="0.55" /><stop offset="100%" stopColor={CORAL} stopOpacity="0" /></radialGradient></defs>
+                <circle cx="160" cy="160" r="112" fill="none" stroke="rgba(255,255,255,0.12)" strokeWidth="1.5" strokeDasharray="3 6" />
+                <circle cx="160" cy="160" r="46" fill="url(#fw-core)" />
+                <text x="160" y="156" textAnchor="middle" style={{ fontSize: 16, fontWeight: 800, fill: "#fff" }}>飞轮</text>
+                <text x="160" y="173" textAnchor="middle" style={{ fontSize: 9, fill: MUTE, fontFamily: mono, letterSpacing: "0.12em" }}>COMPOUND</text>
+                {loop.map((n, i) => {
+                  const a = (-90 + i * 60) * Math.PI / 180;
+                  const x = 160 + 112 * Math.cos(a), y = 160 + 112 * Math.sin(a);
+                  const lx = 160 + 140 * Math.cos(a), ly = 160 + 140 * Math.sin(a);
+                  const anc = Math.abs(Math.cos(a)) < 0.35 ? "middle" : Math.cos(a) > 0 ? "start" : "end";
+                  return (<g key={n.t}><circle cx={x} cy={y} r="6" fill={n.c} /><text x={lx} y={ly + 3} textAnchor={anc} style={{ fontSize: 11, fontWeight: 600, fill: "#cfd3da" }}>{n.t}</text></g>);
+                })}
+                <circle cx="160" cy="48" r="5" fill={LIME} style={{ filter: `drop-shadow(0 0 6px ${LIME})` }}><animateTransform attributeName="transform" type="rotate" from="0 160 160" to="360 160 160" dur="6s" repeatCount="indefinite" /></circle>
+                <circle cx="160" cy="48" r="3" fill="#fff"><animateTransform attributeName="transform" type="rotate" from="150 160 160" to="510 160 160" dur="6s" repeatCount="indefinite" /></circle>
+              </svg>
+              {/* 馆员 + 去中心化 */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                <div style={{ border: `1px solid rgba(198,242,78,0.3)`, borderRadius: 16, padding: "16px 18px", background: "rgba(198,242,78,0.05)" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}><span style={{ fontSize: 15, fontWeight: 800 }}>📚 馆员模式 · 已上线</span><span style={{ fontFamily: mono, fontSize: 20, fontWeight: 800, color: LIME }}>{comma(o.cards)}</span></div>
+                  <p style={{ fontSize: 12.5, color: "#aeb4bd", marginTop: 8, lineHeight: 1.6 }}>不把爆款硬塞给写手 —— <b style={{ color: "#fff" }}>{comma(o.cards)} 条</b>策展经验卡进库,LLM 馆员写稿时按 brief 来借最匹配的。合作越久、库越厚、命中越高。</p>
+                </div>
+                <div style={{ border: `1px dashed ${BORD}`, borderRadius: 16, padding: "16px 18px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}><span style={{ fontSize: 15, fontWeight: 800 }}>🌐 去中心化分发 · 规划中</span><span style={{ fontFamily: mono, fontSize: 10.5, color: MUTE, border: `1px solid ${BORD}`, borderRadius: 999, padding: "2px 8px" }}>ROADMAP</span></div>
+                  <p style={{ fontSize: 12.5, color: "#aeb4bd", marginTop: 8, lineHeight: 1.6 }}>一份策略,由全国不同真人节点各自表达 —— 一百个真实声音,不是一百篇同质内容。分发去中心化,占位更难被复制。</p>
+                  <svg viewBox="0 0 240 60" width="100%" height="50" style={{ marginTop: 8 }} aria-hidden>
+                    {[0, 1, 2, 3, 4, 5, 6].map((i) => { const x = 22 + i * 32.6, y = i % 2 ? 16 : 44; return (<g key={i}><line x1="120" y1="30" x2={x} y2={y} stroke="rgba(255,255,255,0.12)" strokeDasharray="2 3" /><circle cx={x} cy={y} r="4" fill={i === 3 ? CORAL : "#5b606b"}><animate attributeName="opacity" values="0.35;1;0.35" dur={`${2 + i * 0.3}s`} repeatCount="indefinite" /></circle></g>); })}
+                    <circle cx="120" cy="30" r="7" fill={CORAL} />
+                  </svg>
+                </div>
+              </div>
+            </div>
+          </section>
 
           {/* ── 挖掘 ── */}
           <div id="挖掘" className="s12 canchor" style={{ height: 0 }} />

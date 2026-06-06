@@ -46,7 +46,8 @@ export async function createSessionToken(): Promise<string> {
 }
 
 export async function verifySessionToken(token?: string | null): Promise<boolean> {
-  if (!token || !secret()) return false;
+  // fail-closed:口令未配(即便 AUTH_SECRET 还在)→ 拒绝所有会话,移除口令即锁死座舱
+  if (!token || !isAuthConfigured() || !secret()) return false;
   const dot = token.lastIndexOf(".");
   if (dot < 0) return false;
   const exp = token.slice(0, dot);
