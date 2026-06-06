@@ -1,17 +1,13 @@
 import Link from "next/link";
-import { getSupabase } from "@/lib/supabase";
+import { getDashboardData } from "@/lib/dashboard-data";
 import {
-  AMPLIFY,
   AI_DIMS,
   ARCHETYPES,
-  cnNum,
   comma,
   derivedAiInferences,
   derivedStrategySpace,
   derivedTransferPaths,
   PROJECT_LABEL,
-  PROJECT_SHORT,
-  type Overview,
 } from "@/config/showcase";
 import Sankey from "@/components/Sankey";
 import CountUp from "@/components/CountUp";
@@ -19,63 +15,14 @@ import Donut from "@/components/Donut";
 import Ticker from "@/components/Ticker";
 import Heatmap from "@/components/Heatmap";
 import GrowthCurve from "@/components/GrowthCurve";
-import Leaderboard, { type TopHit } from "@/components/Leaderboard";
+import Leaderboard from "@/components/Leaderboard";
 
 export const dynamic = "force-dynamic";
-
-type Lever = { lever: string; n: number };
-type Project = { project_id: string; notes: number; baokuan: number; essence: number; impressions: number };
-type Matrix = { lever: string; audience: string; n: number };
-
-const EMPTY: Overview = {
-  projects: 0, notes: 0, baokuanReal: 0, cards: 0, librarian: 0, essence: 0,
-  impressions: 0, reads: 0, interactions: 0, topInteractions: 0, levers: 0, audiences: 0, ok: false,
-};
-
-async function getData() {
-  const sb = getSupabase();
-  if (!sb) return { o: EMPTY, levers: [] as Lever[], projects: [] as Project[], matrix: [] as Matrix[], hits: [] as TopHit[] };
-  try {
-    const [ov, lv, pj, mx, th] = await Promise.all([
-      sb.from("v_dash_overview").select("*").single(),
-      sb.from("v_dash_levers").select("*").limit(12),
-      sb.from("v_dash_projects").select("*"),
-      sb.from("v_dash_matrix").select("*"),
-      sb.from("v_dash_top_hits").select("*"),
-    ]);
-    const d: any = ov.data;
-    if (!d) return { o: EMPTY, levers: [] as Lever[], projects: [] as Project[], matrix: [] as Matrix[], hits: [] as TopHit[] };
-    const o: Overview = {
-      projects: d.projects ?? 0,
-      notes: d.notes ?? 0,
-      baokuanReal: d.baokuan_real ?? 0,
-      cards: d.cards ?? 0,
-      librarian: d.librarian ?? 0,
-      essence: d.essence_done ?? 0,
-      impressions: Math.round((d.impressions ?? 0) * AMPLIFY.impressions),
-      reads: Math.round((d.reads ?? 0) * AMPLIFY.reads),
-      interactions: Math.round((d.interactions ?? 0) * AMPLIFY.interactions),
-      topInteractions: d.top_interactions ?? 0,
-      levers: d.levers ?? 0,
-      audiences: d.audiences ?? 0,
-      ok: true,
-    };
-    return {
-      o,
-      levers: (lv.data as Lever[]) ?? [],
-      projects: (pj.data as Project[]) ?? [],
-      matrix: (mx.data as Matrix[]) ?? [],
-      hits: (th.data as TopHit[]) ?? [],
-    };
-  } catch {
-    return { o: EMPTY, levers: [] as Lever[], projects: [] as Project[], matrix: [] as Matrix[], hits: [] as TopHit[] };
-  }
-}
 
 const PROJECT_COLOR = ["brut-coral", "brut-lavender", "brut-olive", "brut-sage"];
 
 export default async function ConsolePage() {
-  const { o, levers, projects, matrix, hits } = await getData();
+  const { o, levers, projects, matrix, hits } = await getDashboardData();
   const leverData = levers.map((l) => ({ label: l.lever, value: l.n }));
 
   // 派生大数(对外口径,基底真实)

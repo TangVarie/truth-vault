@@ -125,3 +125,47 @@ body {
     radial-gradient(700px 400px at 0% 100%, rgba(166,162,216,0.07), transparent 60%),
     var(--ink);
 }
+
+/* ─────────────────────────────────────────────
+ * v6 滚动数据叙事站 —— 真字体(Geist) + 章节呼吸 + 科技网格
+ * ─────────────────────────────────────────── */
+
+/* 真字体:Geist(self-hosted via next/font,无构建期网络)。标题/正文走 Sans,数字/标签走 Mono。 */
+body {
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system,
+    "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+.huge, .title, .h1, .h2 {
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+}
+.num, .tag, .mini, .tabular-nums {
+  font-family: var(--font-geist-mono), ui-monospace, "SFMono-Regular", monospace;
+}
+
+/* 平滑滚动(CTA 锚点 + 整体顺滑);body 横向 clip 防巨字溢出(clip 不破坏 sticky)。 */
+html { scroll-behavior: smooth; }
+body { overflow-x: clip; }
+
+/* 章节:满屏高 + 大留白(呼吸取代"塞满")。snap 锚点已留,默认不强制吸附(避免长场被困)。 */
+.scene { scroll-snap-align: start; }
+
+/* 科技网格底(极淡,叠在 bg-landing 上,顶部渐隐) */
+.grid-bg::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none; opacity: 0.6;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px);
+  background-size: 64px 64px;
+  -webkit-mask-image: radial-gradient(125% 80% at 50% 0%, #000 28%, transparent 76%);
+  mask-image: radial-gradient(125% 80% at 50% 0%, #000 28%, transparent 76%);
+}
+
+/* 尊重 prefers-reduced-motion:停掉无限/进场动画 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
