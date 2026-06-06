@@ -18,6 +18,7 @@ import type { DashboardData, Matrix as MatrixT } from "@/lib/dashboard-data";
 import SmoothScroll from "@/components/SmoothScroll";
 import Reveal from "@/components/Reveal";
 import CountUp from "@/components/CountUp";
+import NeuralBloom from "@/components/NeuralBloom";
 import EditorialFlywheel from "@/components/EditorialFlywheel";
 import EditorialCurve from "@/components/EditorialCurve";
 
@@ -56,9 +57,15 @@ export default function Editorial({ data }: { data: DashboardData }) {
         <div className="grain" aria-hidden />
         <Nav />
 
-        {/* ── 00 · 品牌 manifesto ── */}
-        <section className="scene relative flex min-h-screen flex-col justify-center px-8">
-          <motion.div variants={stagger} initial="hidden" animate="show" className="mx-auto w-full max-w-[1180px]">
+        {/* ── 00 · 品牌 manifesto(活体飞轮 ink 背景) ── */}
+        <section className="scene relative flex min-h-screen flex-col justify-center overflow-hidden px-8">
+          <NeuralBloom data={data} theme="ink" className="absolute inset-0 z-0" />
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-0 z-0"
+            style={{ background: "radial-gradient(820px 560px at 34% 46%, #F3EEE6 0%, rgba(243,238,230,0.72) 46%, rgba(243,238,230,0) 78%)" }}
+          />
+          <motion.div variants={stagger} initial="hidden" animate="show" className="relative z-10 mx-auto w-full max-w-[1180px]">
             <motion.div variants={rise} className="ed-eyebrow">§ BYWOOD STUDIO · 体系化增长服务商</motion.div>
             <motion.div variants={rise} className="rule-brass mt-4 max-w-[120px]" />
             <motion.h1 variants={rise} className="ed-wordmark fr mt-8" style={{ color: "#14110F" }}>
@@ -416,7 +423,7 @@ function Nav() {
 
 function ScrollCue() {
   return (
-    <div className="absolute inset-x-0 bottom-10 flex justify-center">
+    <div className="absolute inset-x-0 bottom-10 z-10 flex justify-center">
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 1.1 }} className="flex flex-col items-center gap-2" style={{ color: "#8A7F6D" }}>
         <span className="ed-eyebrow">向下滚动</span>
         <motion.span animate={{ y: [0, 8, 0] }} transition={{ duration: 1.8, repeat: Infinity, ease: "easeInOut" }} style={{ color: "#E8765A" }}>↓</motion.span>
