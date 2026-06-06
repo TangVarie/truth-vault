@@ -2,49 +2,240 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ─────────────────────────────────────────────
+ * v4 编辑级设计 · brutalist 色块 + 极端字阶 + 一个点睛色(coral)
+ * 灵感锚:⑥ Saving Goal(色块+巨字)/ ② Energy(真 Sankey)/ ① TransGlobal(节奏)
+ * ─────────────────────────────────────────── */
+
 :root {
   color-scheme: dark;
+
+  /* 底 / 中性 */
+  --ink:   #0a0a0f;
+  --paper: #f4f1ea;        /* 奶油底(用于浅色 hero block) */
+  --line:  rgba(255,255,255,0.08);
+
+  /* 唯一点睛色(coral),不再全屏 teal glow */
+  --coral: #E8765A;
+  --coral-deep: #C9523A;
+
+  /* brutalist 色块(Saving Goal palette;只用在 hero / project block,不到处铺) */
+  --sage:     #C8D4B8;
+  --olive:    #9A9750;
+  --lavender: #A6A2D8;
+  --bone:     #EFE9DC;
+  --carbon:   #1c1c22;
 }
 
+html, body { background: var(--ink); color: #e5e7eb; }
 body {
-  background: #0a0e1a;
-  color: #e2e8f0;
+  font-feature-settings: "ss01", "cv11", "tnum";
 }
 
-/* 开篇视效:流动渐变深底(BYWOOD 蓝 → 深) */
-.bywood-bg {
-  background: radial-gradient(1200px 600px at 50% -10%, rgba(27, 79, 209, 0.35), transparent 60%),
-    linear-gradient(125deg, #070b18 0%, #0a1024 35%, #0b1840 60%, #070b18 100%);
-  background-size: 100% 100%, 200% 200%;
+/* ── 编辑级排版工具(极端字阶) ── */
+.huge   { font-size: clamp(72px, 14vw, 200px); line-height: 0.86; letter-spacing: -0.04em; font-weight: 900; }
+.title  { font-size: clamp(36px, 6vw, 84px);   line-height: 0.92; letter-spacing: -0.03em; font-weight: 900; }
+.h1     { font-size: clamp(28px, 4vw, 48px);   line-height: 1;    letter-spacing: -0.02em; font-weight: 800; }
+.h2     { font-size: clamp(20px, 2.4vw, 28px); line-height: 1.1;  font-weight: 700; }
+.tag    { font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; font-weight: 600; }
+.mini   { font-size: 11px; letter-spacing: 0.04em; }
+
+/* ── brutalist 色块 ── */
+.brut          { border-radius: 28px; padding: 28px; }
+.brut-coral    { background: var(--coral);    color: var(--ink); }
+.brut-sage     { background: var(--sage);     color: var(--ink); }
+.brut-olive    { background: var(--olive);    color: var(--ink); }
+.brut-lavender { background: var(--lavender); color: var(--ink); }
+.brut-bone     { background: var(--bone);     color: var(--ink); }
+.brut-carbon   { background: var(--carbon);   color: #f3f4f6; }
+.brut-ink      { background: #131319;          color: #f3f4f6; border: 1px solid var(--line); }
+
+/* hover 微动 */
+.brut, .panel { transition: transform .35s cubic-bezier(.22,1,.36,1), box-shadow .35s; }
+.brut:hover  { transform: translateY(-2px); }
+
+/* 内部"线 / 上线"圆点指示 */
+.dot {
+  display: inline-block; height: 6px; width: 6px; border-radius: 999px; background: var(--coral);
+  box-shadow: 0 0 0 4px rgba(232,118,90,0.18);
+  animation: pulse-coral 1.8s ease-in-out infinite;
+}
+@keyframes pulse-coral {
+  0%,100% { box-shadow: 0 0 0 4px rgba(232,118,90,0.18); }
+  50%     { box-shadow: 0 0 0 10px rgba(232,118,90,0); }
 }
 
-/* 入场:逐项淡入上移(配 animation-delay 做 stagger,无需 JS) */
+/* hairline 分隔线(编辑版式标志) */
+.hr-thin { border-top: 1px solid var(--line); }
+
+/* tabular nums(KPI 必须) */
+.num { font-variant-numeric: tabular-nums; }
+
+/* 数字 SSR 直出 + 一次极轻淡入(取代"从 0 数到目标";真值始终在 DOM 里) */
+@keyframes num-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.num-in { display: inline-block; animation: num-in .6s cubic-bezier(.22,1,.36,1) both; }
+
+/* 极简向上趋势箭头(coral 块上用 ink,深块上用 coral) */
+.arrow-up::after { content: "↗"; margin-left: 0.2em; font-weight: 700; }
+
+/* 进场动效:逐项上移淡入(staggered 用 animation-delay) */
 @keyframes rise {
-  from {
-    opacity: 0;
-    transform: translateY(16px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: none; }
 }
-.rise {
+.rise { opacity: 0; animation: rise .7s cubic-bezier(.22,1,.36,1) forwards; }
+
+/* bar 进场生长(对外趋势柱) */
+@keyframes bar-grow { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+.bar-grow { transform-origin: bottom; animation: bar-grow .8s cubic-bezier(.22,1,.36,1) both; }
+
+/* 环形进场 */
+@keyframes donut-in {
+  from { opacity: 0; transform: rotate(-20deg) scale(0.92); }
+  to   { opacity: 1; transform: none; }
+}
+.donut-in { transform-origin: center; animation: donut-in .9s cubic-bezier(.22,1,.36,1) both; }
+
+/* heatmap 单元格进场(stagger 由 animation-delay 驱动) */
+@keyframes heat-in {
+  from { opacity: 0; transform: scale(0.6); }
+  to   { opacity: 1; transform: scale(1); }
+}
+.heat-cell {
   opacity: 0;
-  animation: rise 0.7s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  transform: scale(0.6);
+  animation: heat-in .55s cubic-bezier(.22,1,.36,1) both;
 }
 
-/* 蓝词流光:关键文字扫光 */
-@keyframes shimmer {
-  to {
-    background-position: 200% center;
+/* 跑马灯(底部活动流) */
+@keyframes marquee {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+.marquee { animation: marquee 48s linear infinite; }
+
+/* 背景:粗颗粒杂色(编辑级质感),不再大面积 glow */
+.noise::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none; opacity: 0.05;
+  background-image: radial-gradient(circle at 25% 25%, rgba(255,255,255,0.4) 1px, transparent 1px),
+                    radial-gradient(circle at 75% 75%, rgba(255,255,255,0.3) 1px, transparent 1px);
+  background-size: 5px 5px, 9px 9px;
+}
+
+/* 落地页背景:深底 + 极弱 coral 光晕(克制,不喧宾) */
+.bg-landing {
+  background:
+    radial-gradient(900px 500px at 90% 0%, rgba(232,118,90,0.10), transparent 60%),
+    radial-gradient(700px 400px at 0% 100%, rgba(166,162,216,0.07), transparent 60%),
+    var(--ink);
+}
+
+/* ─────────────────────────────────────────────
+ * v6 滚动数据叙事站 —— 真字体(Geist) + 章节呼吸 + 科技网格
+ * ─────────────────────────────────────────── */
+
+/* 真字体:Geist(self-hosted via next/font,无构建期网络)。标题/正文走 Sans,数字/标签走 Mono。 */
+body {
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system,
+    "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+.huge, .title, .h1, .h2 {
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+}
+.num, .tag, .mini, .tabular-nums {
+  font-family: var(--font-geist-mono), ui-monospace, "SFMono-Regular", monospace;
+}
+
+/* 平滑滚动(CTA 锚点 + 整体顺滑);body 横向 clip 防巨字溢出(clip 不破坏 sticky)。 */
+html { scroll-behavior: smooth; }
+body { overflow-x: clip; }
+
+/* 章节:满屏高 + 大留白(呼吸取代"塞满")。snap 锚点已留,默认不强制吸附(避免长场被困)。 */
+.scene { scroll-snap-align: start; }
+
+/* 科技网格底(极淡,叠在 bg-landing 上,顶部渐隐) */
+.grid-bg::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none; opacity: 0.6;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px);
+  background-size: 64px 64px;
+  -webkit-mask-image: radial-gradient(125% 80% at 50% 0%, #000 28%, transparent 76%);
+  mask-image: radial-gradient(125% 80% at 50% 0%, #000 28%, transparent 76%);
+}
+
+/* 尊重 prefers-reduced-motion:停掉无限/进场动画 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+    scroll-behavior: auto !important;
   }
 }
-.shimmer {
-  background: linear-gradient(90deg, #93c5fd 0%, #ffffff 50%, #93c5fd 100%);
-  background-size: 200% auto;
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  animation: shimmer 4s linear infinite;
+
+/* ═════════════════════════════════════════════════════════════
+ * 「Bone & Ink」编辑级世界(仅 / 落地页;/console 仍是暗色座舱)
+ * 暖骨白纸底 + 暖墨黑 + coral 点睛 + 黄铜发丝线 · Fraunces 衬线 + Hanken 正文
+ * 灵感锚:Anthropic 暖纸 + 单点睛色 + 衬线/grotesque 配对
+ * ═════════════════════════════════════════════════════════════ */
+.editorial {
+  --bone:   #F3EEE6;   /* 纸底 */
+  --oat:    #EAE3D6;   /* 次级底 */
+  --ink:    #14110F;   /* 暖墨黑 */
+  --ink-soft:#3D3A34;  /* 次级文字 */
+  --ink-mute:#8A7F6D;  /* 弱文字 / mono 眉标 */
+  --coral:  #E8765A;   /* 点睛(品牌色) */
+  --oxblood:#7A2E22;   /* 深点睛(小字对比) */
+  --brass:  #B89B6A;   /* 黄铜发丝线 */
+  --brass-line:#CDBE9E;
+  --ink-line:rgba(20,17,15,0.14);
+
+  background: var(--bone);
+  color: var(--ink);
+  color-scheme: light;
+  font-family: var(--font-hanken), ui-sans-serif, system-ui, -apple-system, "PingFang SC", sans-serif;
 }
+.editorial ::selection { background: rgba(232,118,90,0.22); }
+
+/* 字族开关 */
+.fr  { font-family: var(--font-fraunces), Georgia, "Times New Roman", serif; font-optical-sizing: auto; }
+.mn  { font-family: var(--font-geist-mono), ui-monospace, "SFMono-Regular", monospace; }
+.cjk { font-family: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "STSong", "SimSun", serif; }
+
+/* 编辑级字阶(Fraunces 走中等字重更显高级) */
+.ed-wordmark { font-size: clamp(76px, 15vw, 230px); line-height: 0.84; letter-spacing: -0.045em; font-weight: 560; }
+.ed-numeral  { font-size: clamp(68px, 14vw, 210px); line-height: 0.86; letter-spacing: -0.04em;  font-weight: 480; }
+.ed-title    { font-size: clamp(33px, 5.4vw, 74px);  line-height: 0.99; letter-spacing: -0.025em; font-weight: 460; }
+.ed-h2       { font-size: clamp(21px, 2.5vw, 33px);  line-height: 1.1;  letter-spacing: -0.01em;  font-weight: 480; }
+.ed-lead     { font-size: clamp(18px, 2vw, 25px);    line-height: 1.5;  letter-spacing: -0.005em; }
+.ed-eyebrow  { font-size: 11px; letter-spacing: 0.24em; text-transform: uppercase; font-weight: 500; color: var(--ink-mute); }
+.ed-mini     { font-size: 12px; letter-spacing: 0.02em; color: var(--ink-soft); }
+
+/* 编辑级里 CountUp 的 tabular-nums 继承父字族(否则会变 mono),保留等宽数字对齐 */
+.editorial .tabular-nums { font-family: inherit; font-variant-numeric: tabular-nums; }
+
+/* Anthropic 式 双下划线强调(替代到处铺色) */
+.u2 { text-decoration: underline; text-decoration-color: var(--coral); text-decoration-style: double;
+      text-decoration-thickness: 2px; text-underline-offset: 7px; text-decoration-skip-ink: none; }
+
+/* 发丝分割线 */
+.rule-brass { border-top: 1px solid var(--brass-line); }
+.rule-ink   { border-top: 1px solid var(--ink-line); }
+
+/* 纸张颗粒(暖底上 multiply 变细噪;固定整屏,极弱) */
+.grain {
+  position: fixed; inset: 0; z-index: 2; pointer-events: none; opacity: 0.05; mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 200px 200px;
+}
+
+/* SVG path 描线(曲线/飞轮进场) */
+@keyframes ed-draw { to { stroke-dashoffset: 0; } }
+.ed-draw { animation: ed-draw 1.8s cubic-bezier(.22,1,.36,1) forwards; }
+
+/* coral 块按钮(纸上唯一实色) */
+.btn-ink { background: var(--ink); color: var(--bone); border-radius: 999px; transition: transform .3s cubic-bezier(.22,1,.36,1), background .3s; }
+.btn-ink:hover { transform: translateY(-2px); background: #000; }
+.btn-ghost { border: 1px solid rgba(20,17,15,0.2); border-radius: 999px; transition: border-color .3s, transform .3s; }
+.btn-ghost:hover { border-color: rgba(20,17,15,0.5); transform: translateY(-2px); }

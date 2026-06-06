@@ -1276,6 +1276,24 @@ jobs:
       - name: Sanity-check dashboard view (public.v_dash_overview selectable)
         run: |
           psql -v ON_ERROR_STOP=1 -c "SELECT projects, notes, baokuan_real, cards, librarian, essence_done FROM public.v_dash_overview;"
+      - name: Apply dashboard deep-mining views v4 (+ idempotency)
+        # public.v_dash_lever_perf / valence_matrix / archetype_perf / intent_perf / tier_funnel:
+        # 看板「深度挖掘」安全聚合 (docs/24). CREATE OR REPLACE VIEW; GRANT 包 IF EXISTS. 两遍验幂等.
+        run: |
+          psql -v ON_ERROR_STOP=1 -f schemas/dashboard_views_v4_mining.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/dashboard_views_v4_mining.sql
+      - name: Sanity-check deep-mining views (selectable)
+        run: |
+          psql -v ON_ERROR_STOP=1 -c "SELECT lever, n, hit_rate, avg_inter FROM public.v_dash_lever_perf LIMIT 0;"
+          psql -v ON_ERROR_STOP=1 -c "SELECT valence, intensity, hit_rate FROM public.v_dash_valence_matrix LIMIT 0;"
+          psql -v ON_ERROR_STOP=1 -c "SELECT archetype, hit_rate FROM public.v_dash_archetype_perf LIMIT 0;"
+          psql -v ON_ERROR_STOP=1 -c "SELECT intent, hit_rate, read_rate, inter_rate FROM public.v_dash_intent_perf LIMIT 0;"
+          psql -v ON_ERROR_STOP=1 -c "SELECT tier, avg_imp, read_rate, max_inter FROM public.v_dash_tier_funnel LIMIT 0;"
+          psql -v ON_ERROR_STOP=1 -c "SELECT project_id, category, notes, hit_rate, total_imp FROM public.v_dash_project_perf LIMIT 0;"
+          psql -v ON_ERROR_STOP=1 -c "SELECT project_id, tier, n FROM public.v_dash_project_tier LIMIT 0;"
+          psql -v ON_ERROR_STOP=1 -c "SELECT audience, n, hit_rate FROM public.v_dash_audience_perf LIMIT 0;"
+          psql -v ON_ERROR_STOP=1 -c "SELECT fmt, n, hit_rate FROM public.v_dash_format_perf LIMIT 0;"
+          psql -v ON_ERROR_STOP=1 -c "SELECT total_notes, top1_share, hit_reach_share, hit_note_pct FROM public.v_dash_reach_concentration LIMIT 0;"
       - name: Sanity-check v1.3 (参考 tier accepted + reference cols + discrepancy view)
         run: |
           psql -v ON_ERROR_STOP=1 <<'SQL'
@@ -1865,6 +1883,22 @@ jobs:
                   r.dominant_lever_ratio;
           END $$;
           SQL
+      - name: Apply dashboard system pulse view v5 (+ idempotency)
+        # public.v_dash_system_pulse: 接口状态 / 数据新鲜度单行视图。跨 truth_vault.notes /
+        # metric_snapshots / audit_log / projects + public.pipeline_runs(上面 cross-schema 步骤
+        # 已 stub),故置于 pipeline_runs 建好之后。CREATE OR REPLACE VIEW;GRANT 包 IF EXISTS。两遍验幂等。
+        run: |
+          psql -v ON_ERROR_STOP=1 -f schemas/dashboard_views_v5_pulse.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/dashboard_views_v5_pulse.sql
+      - name: Sanity-check system pulse view (single row, cross-table subqueries execute)
+        run: |
+          psql -v ON_ERROR_STOP=1 -c "SELECT notes_total, feishu_n, annotated_n, ssll_n, aw_n, snaps_n, pipeline_runs_n, server_now FROM public.v_dash_system_pulse;"
+      - name: Apply security revoke (anon/authenticated write on public.* ) (+ idempotency)
+        # 撤 anon/authenticated 对 5 张 public 表的写权限(读保留,不开 RLS)。
+        # guarded:表/角色不存在则跳过 → 裸 PG / CI 为 no-op。REVOKE 幂等,两遍验。
+        run: |
+          psql -v ON_ERROR_STOP=1 -f schemas/security_revoke_anon_write_public_tables.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/security_revoke_anon_write_public_tables.sql
 
   yaml:
     name: Mapping yaml lint

@@ -8,21 +8,19 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        // BYWOOD 芭梧 品牌色(取自名片)
-        bywood: {
-          blue: "#1b4fd1", // 主蓝(扶摇 ROC 区块)
-          navy: "#0a1024", // 深底
-          ink: "#0a0e1a",
-          red: "#cc2128", // 强调红
-        },
-        // 看板主题
-        flywheel: {
-          bg: "#0a0e1a",
-          card: "#121829",
-          accent: "#5eead4",
-          warn: "#fbbf24",
-          danger: "#f87171",
-        },
+        // v4 编辑级 brutalist 调色(Saving Goal 灵感 + 1 个 coral 点睛色)
+        ink:      "#0a0a0f",
+        paper:    "#f4f1ea",
+        coral:    "#E8765A",   // ⭐ 唯一点睛色(不是 teal)
+        "coral-deep": "#C9523A",
+        sage:     "#C8D4B8",
+        olive:    "#9A9750",
+        lavender: "#A6A2D8",
+        bone:     "#EFE9DC",
+        carbon:   "#1c1c22",
+        // 兼容旧引用(组件内部还有用到的)
+        bywood:   { blue: "#1b4fd1", navy: "#0a1024", ink: "#0a0e1a", red: "#cc2128" },
+        flywheel: { bg: "#0a0a0f", card: "#131319", accent: "#E8765A", warn: "#fbbf24", danger: "#f87171" },
       },
       animation: {
         "spin-slow": "spin-slow 26s linear infinite",

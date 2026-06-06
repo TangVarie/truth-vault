@@ -1,9 +1,38 @@
 import type { Metadata } from "next";
+import { GeistSans } from "geist/font/sans";
+import { GeistMono } from "geist/font/mono";
+import { Fraunces, Hanken_Grotesk } from "next/font/google";
 import "./globals.css";
 
+/** 编辑级显示衬线(Bone & Ink 世界的大标题 + 巨号数字)。 */
+const fraunces = Fraunces({
+  subsets: ["latin"],
+  display: "swap",
+  variable: "--font-fraunces",
+});
+/** 暖灰正文 grotesque(编辑级正文/UI)。 */
+const hanken = Hanken_Grotesk({
+  subsets: ["latin"],
+  display: "swap",
+  variable: "--font-hanken",
+});
+
 export const metadata: Metadata = {
-  title: "飞轮总看板 · Flywheel Dashboard",
-  description: "帆谷飞轮生态(Truth Vault / autowriter / sanshengliubu)实时态势",
+  title: "BYWOOD 芭梧 · AI 驱动的内容增长中台",
+  description:
+    "把每一次投放,变成越投越准的策略复利 —— 一套结构化飞轮,照见从投放到决策到复利的每一环。",
+  openGraph: {
+    title: "BYWOOD 芭梧 · AI 驱动的内容增长中台",
+    description: "把每一次投放,变成越投越准的策略复利。结构化策略库 · 数据飞轮 · 越用越强。",
+    type: "website",
+    locale: "zh_CN",
+    siteName: "BYWOOD 芭梧",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "BYWOOD 芭梧 · AI 驱动的内容增长中台",
+    description: "把每一次投放,变成越投越准的策略复利。",
+  },
 };
 
 export default function RootLayout({
@@ -12,7 +41,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="zh-CN">
+    <html
+      lang="zh-CN"
+      className={`${GeistSans.variable} ${GeistMono.variable} ${fraunces.variable} ${hanken.variable}`}
+    >
       <body className="min-h-screen antialiased">{children}</body>
     </html>
   );
