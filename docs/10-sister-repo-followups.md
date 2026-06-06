@@ -1611,6 +1611,13 @@ TV 维护者. **工时**: 2-3 小时 (改 transform_row + 测试 + 更新 docs/1
 
 ## R-032 · autowriter 通道2 改 pull：调 LLM 馆员 + 注入飞轮经验
 
+> ✅ **已解决 · production 拉通(2026-06-05 实证)**:autowriter `librarian_client.py`(`build_brief` +
+> `fetch_flywheel_lessons` → `POST /librarian` + 降级)已接进 `app.py:_queue_worker_impl` 生成主路径,
+> `memory.py:build_layered_system_prompt` 注入 P2 层飞轮 section。**实测一单真生成借回 5 张经验卡、
+> 馆员缓存出现真实流量行。** env(在 aw 部署 secrets):`LIBRARIAN_URL` / `LIBRARIAN_API_KEY`(= TV 侧 key)/
+> `LIBRARIAN_TIMEOUT_SEC`(默认 8,建议 20)。⚠️ R-018 Phase-2 把生成搬进 worker.py 时要把这段接线一并搬过去。
+> 下面为原设计(已照此落地,保留作背景)。
+
 ### 背景
 
 通道2 从 push 改为 pull / 图书馆 + LLM 馆员（[D-038](../DECISIONS.md#d-038)，完整设计
@@ -1754,5 +1761,5 @@ WHERE sl.stage_name = 'r022_flywheel_audit'
 | R-028 | sanshengliubu stage-level resume | ssll | ⏳ P3 backlog | 1-2 天 + schema 改动. 触发条件 (sanshengliubu `docs/architecture.md`): matrix > 30 cells 时 resume 成本显著. |
 | R-029 | autowriter RLS auth.uid() 每行重算 | aw | ✅ 完成 | TV 即时修 (2 policy) 已应用 + aw 源码同步 (全 10 表 11 处 RLS policy 包 `(select auth.uid())` + 8 个 FK 覆盖索引). advisor auth_rls_initplan + unindexed_fk(autowriter) 均清零. |
 | R-031 | 飞书 lineage 列 → notes.source_autowriter_*_id 脚本支持 | TV | ✅ 已解决 (2026-06-05) | `transform_row` 加 `_LINEAGE_FK_COLS`/`_LINEAGE_RAW_EXTRA_COLS`: 6 列全局声明不再 quarantine + 2 UUID 自动进 FK 列, 其余 4 列进 raw_extra. CI 守 R-031 self-check; docs/11 改"✅ 现状". 见本文 § R-031. |
-| R-032 | autowriter 通道2 改 pull (调 LLM 馆员 + 注入) | TV + aw | ⏳ 待执行 | [D-038](../DECISIONS.md#d-038) / [docs/14](14-channel2-pull-librarian.md) 的落地. docs/14 §6 已拍板 (纯LLM/brief含system_prompt/FastAPI+Railway/缓存). 待 TV 馆员服务就绪后 aw 出调用 + 注入. 取代旧 push 路由那一坨. |
+| R-032 | autowriter 通道2 改 pull (调 LLM 馆员 + 注入) | TV + aw | ✅ 已解决 · production 拉通 (2026-06-05) | aw `librarian_client.py` + `app.py:_queue_worker_impl` fetch + `memory.py` 注入 P2; 实测一单借回 5 张经验卡、馆员缓存有真实流量. env 在 aw 部署 secrets (LIBRARIAN_URL/API_KEY/TIMEOUT_SEC). 见本文 § R-032 + docs/22 §2. |
 | R-033 | ssll 通道1 切到 LLM 馆员 (可选升级) | ssll | ⏳ 可选 | R-022 的 category-filter 已能用; 馆员(D-038)上线后 ssll 可升级共用同一馆员. 不阻塞, 降级回退现有 retrieve_reference_packs. |

@@ -1,5 +1,9 @@
 # 07 · 蒲公英后台数据接入
 
+> ⚠️ **落地方案见 [docs/23-L3-audience-layer-plan.md](23-L3-audience-layer-plan.md)**(现状 vs 本文设计的差距 + 分阶段)。
+> 摸底结论(2026-06-05):LLM 推断已有(essence 副产品,1042 条);**真实蒲公英 age/gender/city 基本没拉进来**
+> (观众分析列大多「无」)→ 校准闭环卡在"先拉真实数据"(ops),**先做的是 D-013 受众不符检测**(纯代码、688 条可跑)。
+
 ## 为什么存在
 
 Schema v1 包含 `actual_audience_data` 字段（[02-schema-v1.md](02-schema-v1.md)），用来存小红书蒲公英 / 创作中心后台拉到的真实观众数据。这个文档定义如何接入这些数据、怎么和 LLM 推断的 audience profile 对齐。
