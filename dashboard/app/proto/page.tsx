@@ -4,9 +4,11 @@ import type { Metadata } from "next";
 export const metadata: Metadata = { robots: { index: false, follow: false }, title: "设计原型对比 · BYWOOD" };
 
 const protos = [
-  { href: "/proto/blueprint", name: "蓝图网格 · Blueprint", ref: "Vercel / Linear / Stripe", accent: "#E8765A", bg: "#ffffff", fg: "#0a0a0a", desc: "高对比单色 + 网格肌理 + 等宽数字,系统化骨架" },
-  { href: "/proto/terminal", name: "情报终端 · Terminal", ref: "Bloomberg / Grafana / Tremor", accent: "#9EFF00", bg: "#0A0A0B", fg: "#c8cdd2", desc: "深底密集面板 + 状态灯 + 实时跳动" },
-  { href: "/proto/ledger", name: "数据编辑 · Data-Editorial", ref: "Pentagram / IBM / Deloitte", accent: "#C0492F", bg: "#FAFAF7", fg: "#16150f", desc: "粗体排版 + 账本网格 + 权威报告感" },
+  { href: "/proto/terminal-x", name: "⚡ 情报终端 · 张力版", ref: "Bloomberg/Grafana + 辉光/数据流/动效", accent: "#36F1CD", bg: "#06070A", fg: "#36F1CD", desc: "深底辉光 + 桑基数据流 hero + 巨号发光数字 + 跑马灯(强视觉张力)" },
+  { href: "/proto/ledger-x", name: "⚡ 数据编辑 · 张力版", ref: "Pentagram/IBM + 巨号/多色/动效", accent: "#E2402A", bg: "#F4F1E9", fg: "#15140E", desc: "超大数字 + 多色粗柱生长 + 重磅双线排版(强视觉张力)" },
+  { href: "/proto/terminal", name: "情报终端 · 基础版", ref: "Bloomberg / Grafana / Tremor", accent: "#9EFF00", bg: "#0A0A0B", fg: "#c8cdd2", desc: "深底密集面板 + 状态灯(克制对照版)" },
+  { href: "/proto/ledger", name: "数据编辑 · 基础版", ref: "Pentagram / IBM / Deloitte", accent: "#C0492F", bg: "#FAFAF7", fg: "#16150f", desc: "粗体排版 + 账本网格(克制对照版)" },
+  { href: "/proto/blueprint", name: "蓝图网格 · Blueprint", ref: "Vercel / Linear / Stripe", accent: "#E8765A", bg: "#ffffff", fg: "#0a0a0a", desc: "高对比单色 + 网格肌理 + 等宽数字" },
   { href: "/proto/editorial", name: "编辑奢华 · Editorial", ref: "Anthropic / Stripe Press", accent: "#B08D57", bg: "#F5F1E8", fg: "#15130f", desc: "暖纸 + 衬线巨标 + 大留白" },
 ];
 
