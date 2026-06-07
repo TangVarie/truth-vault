@@ -86,12 +86,14 @@ export const PROJECT_LABEL: Record<string, string> = {
   NRT_phase2: "战线 β · OTC",
   NUC_phase1: "战线 γ · 保健",
   NRT_phase3: "战线 δ · OTC",
+  HXZ_QD: "战线 ε · 美妆",
 };
 export const PROJECT_SHORT: Record<string, string> = {
   WTG_phase1: "α",
   NRT_phase2: "β",
   NUC_phase1: "γ",
   NRT_phase3: "δ",
+  HXZ_QD: "ε",
 };
 
 /** 生态节点对外名(已脱掉"通道/馆员"行话) */
