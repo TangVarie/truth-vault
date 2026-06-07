@@ -80,19 +80,31 @@ export function comma(n: number): string {
 // 编辑级标签(杀对外行话)
 // ─────────────────────────────────────────────
 
-/** 项目战线对外代号:希腊字母(显出"战略矩阵"质感) */
-export const PROJECT_LABEL: Record<string, string> = {
-  WTG_phase1: "战线 α · 个护",
-  NRT_phase2: "战线 β · OTC",
-  NUC_phase1: "战线 γ · 保健",
-  NRT_phase3: "战线 δ · OTC",
-};
-export const PROJECT_SHORT: Record<string, string> = {
-  WTG_phase1: "α",
-  NRT_phase2: "β",
-  NUC_phase1: "γ",
-  NRT_phase3: "δ",
-};
+/**
+ * 项目战线对外代号 —— 数据驱动,新表零改前端自动接入。
+ * 战线全称 = 希腊字母[注册序 seq] · 品类(seq + category 来自 v_dash_projects)。
+ * 注册序由 projects.created_at 决定(append-stable):新表入库即自动拿到下一个希腊字母,无需改前端。
+ * 下面两个 map 仅作【可选覆盖】(想给某条战线起特殊对外名时填;留空 = 全自动)。
+ */
+export const PROJECT_LABEL: Record<string, string> = {};
+export const PROJECT_SHORT: Record<string, string> = {};
+
+const GREEK = ["α", "β", "γ", "δ", "ε", "ζ", "η", "θ", "ι", "κ", "λ", "μ", "ν", "ξ", "ο", "π"];
+/** 品类对外简写(代号更紧凑;未列则用原值)。 */
+const CAT_SHORT: Record<string, string> = { "OTC药": "OTC", "保健品": "保健", "食品饮料": "食饮", "医疗器械": "医械", "3C数码": "3C", "家居家电": "家电", "服饰鞋包": "服饰" };
+
+export type FrontMeta = { project_id: string; seq?: number; category?: string };
+function greekOf(seq?: number): string { return seq && seq >= 1 ? GREEK[(seq - 1) % GREEK.length] : "·"; }
+/** 对外战线全称:战线 ε · 美妆(覆盖优先;否则按 注册序 seq + 品类自动生成)。 */
+export function frontLabel(p: FrontMeta): string {
+  if (PROJECT_LABEL[p.project_id]) return PROJECT_LABEL[p.project_id];
+  if (p.seq && p.seq >= 1) return `战线 ${greekOf(p.seq)} · ${CAT_SHORT[p.category ?? ""] ?? p.category ?? "—"}`;
+  return p.project_id;
+}
+/** 对外战线短号:ε。 */
+export function frontShort(p: FrontMeta): string {
+  return PROJECT_SHORT[p.project_id] ?? greekOf(p.seq);
+}
 
 /** 生态节点对外名(已脱掉"通道/馆员"行话) */
 export const NODE_LABEL: Record<string, { label: string; sub?: string }> = {

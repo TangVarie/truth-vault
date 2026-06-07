@@ -9,7 +9,7 @@ import type { TopHit } from "@/components/Leaderboard";
  */
 
 export type Lever = { lever: string; n: number };
-export type Project = { project_id: string; notes: number; baokuan: number; essence: number; impressions: number };
+export type Project = { project_id: string; notes: number; baokuan: number; essence: number; impressions: number; category: string; seq: number };
 export type Matrix = { lever: string; audience: string; n: number };
 
 export type LeverPerf = { lever: string; n: number; hits: number; hit_rate: number; avg_inter: number };
