@@ -10,8 +10,8 @@ export const metadata: Metadata = { robots: { index: false, follow: false }, tit
 export const dynamic = "force-dynamic";
 
 const BG = "#0A0A0B", PANEL = "#141416", BORD = "rgba(255,255,255,0.08)";
-const SAGE = "#DDE6D6", OLIVE = "#B0A41C", LAV = "#BFB9E6", CORAL = "#F2542D", LIME = "#C6F24E", INKC = "#0E0E0E", MUTE = "#8A8F98";
-const FRONT = [CORAL, OLIVE, LAV, LIME, SAGE];
+const SAGE = "#DDE6D6", OLIVE = "#B0A41C", LAV = "#BFB9E6", CORAL = "#F2542D", LIME = "#C6F24E", INKC = "#0E0E0E", MUTE = "#8A8F98", ROSE = "#E89BB9";
+const FRONT = [CORAL, OLIVE, LAV, LIME, ROSE];
 const sans = "var(--font-geist-sans)", mono = "var(--font-geist-mono)";
 const VAL: Record<string, string> = { negative: "负向", positive: "正向", neutral: "中性", mixed: "复合" };
 const INT: Record<string, string> = { high: "高强度", medium: "中强度", mid: "中强度", low: "低强度" };
@@ -191,7 +191,7 @@ export default async function ConsolePage() {
 
           {/* ── 战线 ── */}
           <div id="战线" className="s12 canchor" style={{ height: 0 }} />
-          {projectPerf.slice(0, 8).map((p, i) => (
+          {projectPerf.map((p, i) => (
             <section key={p.project_id} className="s3 cc" style={{ background: FRONT[i % FRONT.length], color: INKC, justifyContent: "space-between", minHeight: 150 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}><span style={{ fontSize: 13, fontWeight: 700 }}>{flabel(p.project_id)}</span><span style={{ fontSize: 11, opacity: 0.6 }}>{p.category}</span></div>
               <div style={{ marginTop: 12 }}><div style={{ fontSize: "clamp(30px,3vw,44px)", fontWeight: 800, letterSpacing: "-0.03em", lineHeight: 0.9 }}>{p.hit_rate}%</div><div style={{ fontSize: 12, fontWeight: 600, opacity: 0.6, marginTop: 3 }}>命中率</div></div>

@@ -15,8 +15,8 @@ export const metadata: Metadata = { title: "数据看板 · BYWOOD", description
 export const dynamic = "force-dynamic";
 
 const BG = "#0A0A0B", PANEL = "#141416", BORD = "rgba(255,255,255,0.08)";
-const SAGE = "#DDE6D6", OLIVE = "#B0A41C", LAV = "#BFB9E6", CORAL = "#F2542D", LIME = "#C6F24E", INKC = "#0E0E0E", MUTE = "#8A8F98";
-const FRONT = [CORAL, OLIVE, LAV, LIME, SAGE]; // 战线语义色(按位取色,支持 5+ 条)
+const SAGE = "#DDE6D6", OLIVE = "#B0A41C", LAV = "#BFB9E6", CORAL = "#F2542D", LIME = "#C6F24E", INKC = "#0E0E0E", MUTE = "#8A8F98", ROSE = "#E89BB9";
+const FRONT = [CORAL, OLIVE, LAV, LIME, ROSE]; // 战线语义色(按位取色,支持 5+ 条;第5色用 ROSE 不用 SAGE —— SAGE 是 hero 面板底色,会让图例/堆叠条不可见)
 const sans = "var(--font-geist-sans)", mono = "var(--font-geist-mono)";
 
 const css = `
