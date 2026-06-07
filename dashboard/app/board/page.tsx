@@ -39,6 +39,8 @@ const css = `
 @keyframes bb-flow{to{stroke-dashoffset:-20}}
 .bb-flow{stroke-dasharray:4 6;animation:bb-flow 1s linear infinite}
 .bb-cell{animation:bb-pulse 1.9s ease-in-out infinite}
+@keyframes bx-tw{0%,100%{opacity:.4}50%{opacity:1}}
+.bx-tw{animation:bx-tw 2.2s ease-in-out infinite}
 `;
 
 function streamPaths(n: number, W: number, H: number) {
@@ -59,34 +61,34 @@ function mulberry32(seed: number) {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
-type NetNode = { x: number; y: number; r: number; tier: 0 | 1 | 2; active: boolean };
-function bezLR(a: { x: number; y: number }, b: { x: number; y: number }) {
-  const mx = (a.x + b.x) / 2;
-  return `M ${a.x.toFixed(1)} ${a.y.toFixed(1)} C ${mx.toFixed(1)} ${a.y.toFixed(1)}, ${mx.toFixed(1)} ${b.y.toFixed(1)}, ${b.x.toFixed(1)} ${b.y.toFixed(1)}`;
+// ── 视觉解构素材(确定性, SSR 稳定)──
+const ESSENCE: { k: string; v: string }[] = [
+  { k: "情绪杠杆", v: "焦虑撬动" },
+  { k: "人性原型", v: "同辈比较" },
+  { k: "目标受众", v: "中年女性" },
+  { k: "内容形态", v: "情感叙事" },
+];
+type LatNode = { x: number; y: number; r: number; kind: 0 | 1 | 2 };
+function libraryBars() {
+  const r = mulberry32(7);
+  return Array.from({ length: 20 }, (_, i) => ({ h: 30 + Math.round(r() * 108), lime: i % 6 === 3 }));
 }
-function decentralNet() {
-  const rnd = mulberry32(20260606);
-  const X0 = 214, X1 = 686, Y0 = 62, Y1 = 310, N = 120;
-  const src = { x: 120, y: 186 }, foc = { x: 858, y: 186 };
-  const nodes: NetNode[] = [];
-  for (let i = 0; i < N; i++) {
-    const x = X0 + rnd() * (X1 - X0);
-    const y = Y0 + ((rnd() + rnd() + rnd()) / 3) * (Y1 - Y0); // 中聚正态感
-    const tk = rnd();
-    const tier: 0 | 1 | 2 = tk > 0.95 ? 2 : tk > 0.8 ? 1 : 0; // 精英~5% / 稳定~15% / 流动~80%
-    nodes.push({ x, y, r: tier === 2 ? 3.3 : tier === 1 ? 2.2 : 1.45, tier, active: tier === 2 && rnd() > 0.4 });
-  }
-  const disp = nodes.filter((_, i) => i % 2 === 0).map((n) => bezLR(src, n));
-  const elite = nodes.filter((n) => n.tier === 2);
-  const conv = elite.map((n) => bezLR(n, foc));
-  const links: [NetNode, NetNode][] = [];
-  for (let i = 0; i < N && links.length < 28; i++) {
-    for (let j = i + 1; j < N; j++) {
-      const a = nodes[i], b = nodes[j];
-      if ((a.x - b.x) ** 2 + (a.y - b.y) ** 2 < 900 && rnd() > 0.86) { links.push([a, b]); break; }
+function latticeNodes(): LatNode[] {
+  const r = mulberry32(99);
+  const X0 = 812, X1 = 1150, Y0 = 158, Y1 = 386, step = 25;
+  const cx = (X0 + X1) / 2, cy = (Y0 + Y1) / 2, maxd = Math.hypot(X1 - cx, Y1 - cy);
+  const out: LatNode[] = [];
+  for (let y = Y0; y <= Y1; y += step) {
+    for (let x = X0; x <= X1; x += step) {
+      const jx = x + (r() - 0.5) * 9, jy = y + (r() - 0.5) * 9;
+      const dens = 1 - Math.hypot(jx - cx, jy - cy) / maxd; // 中密边疏 = 全国分布感
+      if (r() > 0.24 + dens * 0.58) continue;
+      const k = r();
+      const kind: 0 | 1 | 2 = jx > X1 - 54 && k > 0.6 ? 2 : k > 0.92 ? 1 : 0; // 右缘结晶为爆款 / 少量活跃
+      out.push({ x: jx, y: jy, r: kind === 2 ? 3 : kind === 1 ? 2.4 : 1.5, kind });
     }
   }
-  return { nodes, disp, conv, links, src, foc, elite };
+  return out;
 }
 function Pill({ children, dark = false }: { children: React.ReactNode; dark?: boolean }) {
   return <span style={{ display: "inline-flex", alignItems: "center", gap: 7, border: `1.5px solid ${dark ? "rgba(255,255,255,0.22)" : "rgba(0,0,0,0.42)"}`, color: dark ? "#fff" : INKC, borderRadius: 999, padding: "6px 14px", fontSize: 12.5, fontWeight: 600, alignSelf: "flex-start" }}>{children}</span>;
@@ -109,7 +111,8 @@ export default async function BoardPage() {
   const dow = [1, 2, 3, 4, 5, 6, 7].map((dw) => activity.filter((a) => a.dow === dw).reduce((s, a) => s + a.n, 0));
   const dowMax = Math.max(...dow, 1);
   const streams = streamPaths(72, 440, 360);
-  const net = decentralNet();
+  const lib = libraryBars();
+  const lat = latticeNodes();
   const months = monthly.map((m) => m.ym);
   const span = months.length ? `${months[0]?.replace("-", ".")} – ${months[months.length - 1]?.replace("-", ".")}` : "";
   const ymFmt = (ym: string) => ym.replace("-", ".");
@@ -207,75 +210,87 @@ export default async function BoardPage() {
             <LiveMonitor ports={livePorts} progress={annoPct} online={onlinePorts} total={7} />
           </section>
 
-          {/* ── 飞轮机制:去中心化创作网络(已上线)—— AI 起草 ▸ 真实分散真人网络 ▸ 真实爆款 ▸ 经验回流 ── */}
-          <section className="s12 bb-tile" style={{ padding: "22px 26px" }}>
+          {/* ── 系统解构:双引擎 · 一个 AI 管理员(视觉解构,已上线)── */}
+          <section className="s12 bb-tile" style={{ padding: "22px 26px 16px" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
-              <Pill dark>飞轮机制 · FLYWHEEL</Pill>
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 11.5, color: LIME, fontFamily: mono }}><span className="bb-dot" style={{ width: 7, height: 7, borderRadius: 99, background: LIME, boxShadow: `0 0 10px ${LIME}` }} />去中心化创作网络 · 已上线</span>
+              <Pill dark>核心机制 · 解构</Pill>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 11.5, color: LIME, fontFamily: mono }}><span className="bb-dot" style={{ width: 7, height: 7, borderRadius: 99, background: LIME, boxShadow: `0 0 10px ${LIME}` }} />双引擎 · 一个 AI 管理员 · 已上线</span>
             </div>
-            <svg viewBox="0 0 1000 360" width="100%" style={{ display: "block", marginTop: 8 }} role="img" aria-label="去中心化创作飞轮:AI 起草到真实分散真人网络到真实爆款,经验回流">
+            <svg viewBox="0 0 1200 500" width="100%" style={{ display: "block", marginTop: 6 }} role="img" aria-label="系统解构:爆款解构成经验卡进入大书库,AI 管理员借阅判级修正,调度去中心化全国真人网络,新爆款复利回流">
               <defs>
-                <linearGradient id="bb-disp" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stopColor={LIME} stopOpacity="0.62" /><stop offset="100%" stopColor={LIME} stopOpacity="0" /></linearGradient>
-                <linearGradient id="bb-conv" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stopColor={CORAL} stopOpacity="0" /><stop offset="100%" stopColor={CORAL} stopOpacity="0.72" /></linearGradient>
-                <radialGradient id="bb-srcg"><stop offset="0%" stopColor={LIME} stopOpacity="0.85" /><stop offset="100%" stopColor={LIME} stopOpacity="0" /></radialGradient>
-                <radialGradient id="bb-focg"><stop offset="0%" stopColor={CORAL} stopOpacity="0.95" /><stop offset="100%" stopColor={CORAL} stopOpacity="0" /></radialGradient>
-                <filter id="bb-glow" x="-300%" y="-300%" width="700%" height="700%"><feGaussianBlur stdDeviation="2.6" /></filter>
+                <radialGradient id="bx-admin"><stop offset="0%" stopColor={LAV} stopOpacity="0.85" /><stop offset="100%" stopColor={LAV} stopOpacity="0" /></radialGradient>
+                <filter id="bx-glow" x="-300%" y="-300%" width="700%" height="700%"><feGaussianBlur stdDeviation="2.2" /></filter>
               </defs>
 
-              {/* 区位标签 */}
-              <text x={net.src.x} y="24" textAnchor="middle" style={{ fontSize: 12, fontWeight: 700, fill: "#fff", fontFamily: sans }}>AI 起草</text>
-              <text x="450" y="22" textAnchor="middle" style={{ fontSize: 13.5, fontWeight: 800, fill: "#fff", fontFamily: sans }}>去中心化创作网络</text>
-              <text x="450" y="40" textAnchor="middle" style={{ fontSize: 10.5, fill: MUTE, fontFamily: mono }}>真实分散 · 真人发布 · 无中心节点</text>
-              <text x={net.foc.x} y="24" textAnchor="middle" style={{ fontSize: 12, fontWeight: 700, fill: "#fff", fontFamily: sans }}>真实爆款</text>
+              {/* 蓝图标题块 */}
+              <text x="40" y="32" style={{ fontSize: 13, fontWeight: 800, fill: "#fff", fontFamily: sans, letterSpacing: "0.04em" }}>系统解构</text>
+              <text x="40" y="47" style={{ fontSize: 9, fill: MUTE, fontFamily: mono, letterSpacing: "0.16em" }}>TWO ENGINES · ONE BRAIN</text>
+              <line x1="40" y1="56" x2="1160" y2="56" stroke="rgba(255,255,255,0.08)" />
 
-              {/* 稀疏网状连接(去中心、无枢纽)*/}
-              {net.links.map(([a, b], i) => <line key={`l${i}`} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="#fff" strokeWidth="0.5" opacity="0.06" />)}
+              {/* ① 解构:爆款 → 结构件 */}
+              <circle cx="74" cy="92" r="9" fill="none" stroke={CORAL} strokeWidth="1.2" /><text x="74" y="95.5" textAnchor="middle" style={{ fontSize: 10, fontWeight: 700, fill: CORAL, fontFamily: mono }}>1</text>
+              <text x="92" y="96" style={{ fontSize: 11, fontWeight: 700, fill: "#fff", fontFamily: sans }}>解构 · 爆款拆成结构件</text>
+              <rect x="70" y="116" width="152" height="40" rx="9" fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.18)" />
+              <text x="82" y="133" style={{ fontSize: 9.5, fill: "#cfd3da", fontFamily: mono }}>一条验证级爆款</text>
+              <rect x="82" y="140" width="116" height="2" rx="1" fill="rgba(255,255,255,0.16)" /><rect x="82" y="145" width="78" height="2" rx="1" fill="rgba(255,255,255,0.10)" />
+              {ESSENCE.map((e, i) => { const y = 190 + i * 48; return (
+                <g key={`es${i}`}>
+                  <line x1="146" y1="156" x2="80" y2={y + 16} stroke={MUTE} strokeWidth="0.7" opacity="0.28" />
+                  <rect x="78" y={y} width="150" height="32" rx="7" fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.10)" />
+                  <text x="90" y={y + 20} style={{ fontSize: 9.5, fill: MUTE, fontFamily: mono }}>{e.k}</text>
+                  <rect x="166" y={y + 7} width="54" height="18" rx="9" fill="rgba(198,242,78,0.12)" />
+                  <text x="193" y={y + 19.5} textAnchor="middle" style={{ fontSize: 9.5, fill: LIME, fontFamily: sans }}>{e.v}</text>
+                </g>
+              ); })}
+              <text x="150" y="404" textAnchor="middle" style={{ fontSize: 9, fill: MUTE, fontFamily: mono }}>情绪 × 原型 × 受众 × 形态</text>
 
-              {/* 扩散流:AI 起草 → 网络(确定性贝塞尔 + 行进粒子)*/}
-              <g className="bb-streams">
-                {net.disp.map((d, i) => <path key={`d${i}`} id={`bbd-${i}`} d={d} className="bb-flow" fill="none" stroke="url(#bb-disp)" strokeWidth="0.7" opacity="0.4" />)}
-              </g>
-              {[4, 18, 30, 44, 56].map((idx, k) => net.disp[idx] ? (
-                <circle key={`po${k}`} r="1.8" fill="#d7f59a"><animateMotion dur={`${2.6 + k * 0.5}s`} begin={`${k * 0.4}s`} repeatCount="indefinite"><mpath href={`#bbd-${idx}`} /></animateMotion></circle>
-              ) : null)}
+              {/* ② 大书库 */}
+              <circle cx="300" cy="92" r="9" fill="none" stroke={LIME} strokeWidth="1.2" /><text x="300" y="95.5" textAnchor="middle" style={{ fontSize: 10, fontWeight: 700, fill: LIME, fontFamily: mono }}>2</text>
+              <text x="318" y="96" style={{ fontSize: 11, fontWeight: 700, fill: "#fff", fontFamily: sans }}>大书库 · 经验卡 {comma(o.cards)}</text>
+              {[210, 258, 306].map((y, k) => <line key={`f${k}`} x1="228" y1={y} x2="300" y2="350" stroke={MUTE} strokeWidth="0.7" opacity="0.22" />)}
+              {lib.map((b, i) => { const x = 300 + i * 8.4; return <rect key={`lb${i}`} x={x} y={360 - b.h} width="7" height={b.h} rx="1.5" fill={b.lime ? LIME : "rgba(255,255,255,0.14)"} opacity={b.lime ? 0.9 : 0.7} />; })}
+              <line x1="296" y1="361" x2="476" y2="361" stroke="rgba(255,255,255,0.14)" />
+              <text x="386" y="378" textAnchor="middle" style={{ fontSize: 9, fill: MUTE, fontFamily: mono }}>结构化经验卡 · 越用越厚</text>
 
-              {/* 再收束:精英节点 → 真实爆款 */}
-              {net.conv.map((d, i) => <path key={`c${i}`} id={`bbc-${i}`} d={d} className="bb-flow" fill="none" stroke="url(#bb-conv)" strokeWidth="1" opacity="0.55" />)}
-              {net.conv.slice(0, 4).map((_, k) => (
-                <circle key={`pi${k}`} r="2" fill={CORAL}><animateMotion dur={`${2.4 + k * 0.5}s`} begin={`${k * 0.5}s`} repeatCount="indefinite"><mpath href={`#bbc-${k}`} /></animateMotion></circle>
-              ))}
+              {/* 借阅:库 → 管理员 */}
+              <path id="bx-borrow" d="M476 250 L540 250" fill="none" stroke={LIME} strokeWidth="1" opacity="0.5" />
+              <circle r="2" fill={LIME}><animateMotion dur="2.8s" repeatCount="indefinite"><mpath href="#bx-borrow" /></animateMotion></circle>
+              <text x="508" y="242" textAnchor="middle" style={{ fontSize: 9, fill: LIME, fontFamily: mono }}>借阅</text>
 
-              {/* 节点(三层:流动/稳定/精英,深度由大小+透明度)*/}
-              {net.nodes.map((n, i) => (
-                <circle key={`n${i}`} cx={n.x} cy={n.y} r={n.r} className={n.active ? "bb-cell" : undefined}
-                  fill={n.tier === 2 ? LIME : n.tier === 1 ? "#9aa0ac" : "#565b66"}
-                  opacity={n.tier === 0 ? 0.55 : n.tier === 1 ? 0.85 : 1}
-                  filter={n.tier === 2 ? "url(#bb-glow)" : undefined} />
-              ))}
-              {net.elite.map((n, i) => <circle key={`e${i}`} cx={n.x} cy={n.y} r={n.r * 0.62} fill={LIME} />)}
+              {/* ③ AI 管理员(大脑)*/}
+              <circle cx="600" cy="166" r="9" fill="none" stroke={LAV} strokeWidth="1.2" /><text x="600" y="169.5" textAnchor="middle" style={{ fontSize: 10, fontWeight: 700, fill: LAV, fontFamily: mono }}>3</text>
+              <circle cx="600" cy="250" r="62" fill="none" stroke={LAV} strokeWidth="1" opacity="0.16" />
+              <circle cx="600" cy="250" r="46" fill="none" stroke={LAV} strokeWidth="1" opacity="0.3" />
+              <circle cx="600" cy="250" r="30" fill="url(#bx-admin)" opacity="0.5" />
+              <circle cx="600" cy="250" r="30" fill="none" stroke={LAV} strokeWidth="1.3" opacity="0.7" />
+              <circle cx="600" cy="250" r="30" fill="none" stroke={LAV} strokeWidth="1"><animate attributeName="r" values="30;64" dur="3.6s" repeatCount="indefinite" /><animate attributeName="opacity" values="0.55;0" dur="3.6s" repeatCount="indefinite" /></circle>
+              <rect x="590" y="240" width="20" height="20" rx="3" transform="rotate(45 600 250)" fill="#141416" stroke="#fff" strokeWidth="1.3" />
+              <circle cx="600" cy="250" r="3.2" fill="#fff" />
+              <text x="600" y="336" textAnchor="middle" style={{ fontSize: 12.5, fontWeight: 800, fill: "#fff", fontFamily: sans }}>AI 管理员</text>
+              <text x="600" y="352" textAnchor="middle" style={{ fontSize: 9.5, fill: MUTE, fontFamily: mono }}>借阅 · 判爆率 · 修正拟合</text>
 
-              {/* AI 起草 源 */}
-              <circle cx={net.src.x} cy={net.src.y} r="20" fill="url(#bb-srcg)" />
-              <circle cx={net.src.x} cy={net.src.y} r="7" fill={LIME} />
-              <text x={net.src.x} y={net.src.y + 38} textAnchor="middle" style={{ fontSize: 10, fill: MUTE, fontFamily: mono }}>馆员借经验卡 {comma(o.cards)}</text>
+              {/* 调度 ⇄ 判级:管理员 ↔ 网络 */}
+              <path id="bx-disp" d="M662 244 L808 244" fill="none" stroke={LAV} strokeWidth="1" opacity="0.45" />
+              <circle r="2" fill={LAV}><animateMotion dur="3s" repeatCount="indefinite"><mpath href="#bx-disp" /></animateMotion></circle>
+              <text x="735" y="236" textAnchor="middle" style={{ fontSize: 9, fill: LAV, fontFamily: mono }}>调度 →</text>
+              <path id="bx-chk" d="M808 258 L662 258" fill="none" stroke="rgba(255,255,255,0.16)" strokeWidth="1" strokeDasharray="3 4" />
+              <circle r="2" fill={CORAL}><animateMotion dur="3.4s" repeatCount="indefinite"><mpath href="#bx-chk" /></animateMotion></circle>
+              <text x="735" y="272" textAnchor="middle" style={{ fontSize: 9, fill: MUTE, fontFamily: mono }}>← 检查效果 · 判级</text>
 
-              {/* 真实爆款 焦点 */}
-              <circle cx={net.foc.x} cy={net.foc.y} r="22" fill="url(#bb-focg)" />
-              <circle cx={net.foc.x} cy={net.foc.y} r="8" fill={CORAL} />
-              <text x={net.foc.x} y={net.foc.y + 42} textAnchor="middle" style={{ fontSize: 19, fontWeight: 800, fill: "#fff", fontFamily: sans, letterSpacing: "-0.02em" }}>{comma(o.baokuanReal)}</text>
-              <text x={net.foc.x} y={net.foc.y + 58} textAnchor="middle" style={{ fontSize: 10, fill: MUTE, fontFamily: mono }}>验证级爆款</text>
+              {/* ④ 去中心化 · 全国真人网络 */}
+              <circle cx="820" cy="92" r="9" fill="none" stroke={CORAL} strokeWidth="1.2" /><text x="820" y="95.5" textAnchor="middle" style={{ fontSize: 10, fontWeight: 700, fill: CORAL, fontFamily: mono }}>4</text>
+              <text x="838" y="92" style={{ fontSize: 11, fontWeight: 700, fill: "#fff", fontFamily: sans }}>去中心化 · 全国真人网络</text>
+              <text x="838" y="108" style={{ fontSize: 9, fill: MUTE, fontFamily: mono }}>分布式修稿发稿 · 脱离本地制约 · 超越个体创作极限</text>
+              {lat.filter((n) => n.x < 884).slice(0, 7).map((n, i) => <line key={`df${i}`} x1="808" y1="250" x2={n.x} y2={n.y} stroke={LAV} strokeWidth="0.6" opacity="0.16" />)}
+              {lat.map((n, i) => <circle key={`ln${i}`} cx={n.x} cy={n.y} r={n.r} className={n.kind === 1 ? "bx-tw" : undefined} fill={n.kind === 2 ? CORAL : n.kind === 1 ? LIME : "#565b66"} opacity={n.kind === 0 ? 0.5 : 1} filter={n.kind ? "url(#bx-glow)" : undefined} />)}
+              {lat.filter((n) => n.kind === 2).map((n, i) => <circle key={`lc${i}`} cx={n.x} cy={n.y} r={n.r * 0.58} fill={CORAL} />)}
+              <text x="1150" y="148" textAnchor="end" style={{ fontSize: 9.5, fill: CORAL, fontFamily: mono }}>新爆款结晶 →</text>
 
-              {/* 经验回流环:爆款 → 经验 → AI 起草 */}
-              <path id="bb-loop2" d={`M ${net.foc.x} ${net.foc.y + 24} C ${net.foc.x} 332, ${net.src.x} 332, ${net.src.x} ${net.src.y + 24}`} fill="none" stroke="rgba(255,255,255,0.16)" strokeWidth="1.3" strokeDasharray="3 5" />
-              <circle r="3.2" fill={LIME}><animateMotion dur="5.5s" repeatCount="indefinite"><mpath href="#bb-loop2" /></animateMotion></circle>
-              <text x="490" y="326" textAnchor="middle" style={{ fontSize: 10.5, fill: MUTE, fontFamily: mono }}>经验回流 · 越转越准 ↺</text>
-
-              {/* 分层图例 */}
-              <g fontFamily={mono} fontSize="9.5" fill={MUTE}>
-                <circle cx="220" cy="348" r="3.2" fill={LIME} /><text x="230" y="351">精英</text>
-                <circle cx="278" cy="348" r="2.3" fill="#9aa0ac" /><text x="287" y="351">稳定</text>
-                <circle cx="333" cy="348" r="1.5" fill="#565b66" /><text x="341" y="351">流动</text>
-              </g>
+              {/* ⑤ 复利回流 */}
+              <path id="bx-loop" d="M 1128 388 C 1090 466, 560 478, 360 360" fill="none" stroke="rgba(255,255,255,0.14)" strokeWidth="1.2" strokeDasharray="3 5" />
+              <circle r="3" fill={CORAL}><animateMotion dur="6s" repeatCount="indefinite"><mpath href="#bx-loop" /></animateMotion></circle>
+              <circle cx="576" cy="470" r="9" fill="none" stroke={LIME} strokeWidth="1.2" /><text x="576" y="473.5" textAnchor="middle" style={{ fontSize: 10, fontWeight: 700, fill: LIME, fontFamily: mono }}>5</text>
+              <text x="598" y="474" style={{ fontSize: 10, fontWeight: 600, fill: "#cfd3da", fontFamily: mono }}>新爆款 · 复利回流 · 越用越准 ↺</text>
             </svg>
           </section>
 
