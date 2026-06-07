@@ -45,20 +45,30 @@ order by count(*) desc;
 
 comment on view public.v_dash_levers is '看板:情绪杠杆分布(可迁移策略内核占比)。';
 
--- 3) 项目维度(给项目卡):笔记/爆款/策略内核/曝光
+-- 3) 项目维度(给项目卡):笔记/爆款/策略内核/曝光 + 品类 + 战线序号(注册序,前端据此自动生成对外代号)
+--    seq = 按 projects.created_at 的注册序(append-stable);前端 战线 = 希腊字母[seq] · 品类,
+--    新表入库即自动获得下一个代号,无需改前端。
 create or replace view public.v_dash_projects
   with (security_invoker = false) as
+with ranked as (
+  select project_id, category,
+         (row_number() over (order by created_at))::int as seq
+  from truth_vault.projects
+)
 select
-  project_id,
+  n.project_id,
   count(*)                                                                       as notes,
-  count(*) filter (where tier in ('爆','大爆') and tier_source = '状态字段')      as baokuan,
-  count(*) filter (where inferred_audience_profile is not null)                  as essence,
-  coalesce(sum(impressions),0)                                                   as impressions
-from truth_vault.notes
-group by project_id
+  count(*) filter (where n.tier in ('爆','大爆') and n.tier_source = '状态字段')  as baokuan,
+  count(*) filter (where n.inferred_audience_profile is not null)                as essence,
+  coalesce(sum(n.impressions),0)                                                 as impressions,
+  r.category                                                                     as category,
+  r.seq                                                                          as seq
+from truth_vault.notes n
+join ranked r on r.project_id = n.project_id
+group by n.project_id, r.category, r.seq
 order by count(*) desc;
 
-comment on view public.v_dash_projects is '看板:项目维度(笔记/验证级爆款/策略内核/曝光)。';
+comment on view public.v_dash_projects is '看板:项目维度(笔记/验证级爆款/策略内核/曝光/品类/战线序号 seq)。';
 
 -- 4) GRANT 给 Supabase 角色,包 IF EXISTS(裸 PG / CI 无这些角色;对齐 notes_v1_2.sql 约定)
 do $$

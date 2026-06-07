@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { getDashboardData } from "@/lib/dashboard-data";
-import { cnNum, comma, PROJECT_LABEL } from "@/config/showcase";
+import { cnNum, comma, frontLabel } from "@/config/showcase";
 import CountUp from "@/components/CountUp";
 import LiveMonitor from "@/components/LiveMonitor";
 
@@ -53,7 +53,8 @@ function navPill(): React.CSSProperties { return { border: "1.5px solid rgba(255
 
 export default async function ConsolePage() {
   const d = await getDashboardData();
-  const { o, matrix, valence, leverPerf, archetypes, audience, formats, reach, intent, funnel, projectPerf, pulse } = d;
+  const { o, projects, matrix, valence, leverPerf, archetypes, audience, formats, reach, intent, funnel, projectPerf, pulse } = d;
+  const flabel = (id: string) => frontLabel(projects.find((p) => p.project_id === id) ?? { project_id: id });
   const hitRate = o.notes ? Math.round((o.baokuanReal / o.notes) * 1000) / 10 : 0;
 
   const byUse = [...leverPerf].sort((a, b) => b.n - a.n)[0];
@@ -192,7 +193,7 @@ export default async function ConsolePage() {
           <div id="战线" className="s12 canchor" style={{ height: 0 }} />
           {projectPerf.slice(0, 4).map((p, i) => (
             <section key={p.project_id} className="s3 cc" style={{ background: FRONT[i % 4], color: INKC, justifyContent: "space-between", minHeight: 150 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}><span style={{ fontSize: 13, fontWeight: 700 }}>{PROJECT_LABEL[p.project_id] ?? p.project_id}</span><span style={{ fontSize: 11, opacity: 0.6 }}>{p.category}</span></div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}><span style={{ fontSize: 13, fontWeight: 700 }}>{flabel(p.project_id)}</span><span style={{ fontSize: 11, opacity: 0.6 }}>{p.category}</span></div>
               <div style={{ marginTop: 12 }}><div style={{ fontSize: "clamp(30px,3vw,44px)", fontWeight: 800, letterSpacing: "-0.03em", lineHeight: 0.9 }}>{p.hit_rate}%</div><div style={{ fontSize: 12, fontWeight: 600, opacity: 0.6, marginTop: 3 }}>命中率</div></div>
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 600, marginTop: 12 }}><span>{comma(p.notes)} 资产</span><span>{cnNum(p.total_imp)} 曝光</span></div>
             </section>

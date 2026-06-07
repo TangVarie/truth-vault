@@ -1,6 +1,6 @@
 import Link from "next/link";
 import type { Metadata } from "next";
-import { cnNum, comma, PROJECT_LABEL } from "@/config/showcase";
+import { cnNum, comma, frontLabel, frontShort } from "@/config/showcase";
 import { getDashboardData } from "@/lib/dashboard-data";
 import CountUp from "@/components/CountUp";
 import LiveMonitor from "@/components/LiveMonitor";
@@ -65,6 +65,7 @@ export default async function BoardPage() {
   const { o, projects, hits, monthly, activity, pulse } = await getDashboardData();
   const hitRate = o.notes ? Math.round((o.baokuanReal / o.notes) * 1000) / 10 : 0;
   const fronts = [...projects].sort((a, b) => b.impressions - a.impressions);
+  const flabel = (id: string) => frontLabel(projects.find((p) => p.project_id === id) ?? { project_id: id });
   const totalImp = fronts.reduce((s, p) => s + p.impressions, 0) || 1;
   const zero = { ym: "", impressions: 0, hits: 0, notes: 0, cum_impressions: 0 };
   const peakImp = monthly.reduce((m, x) => (x.impressions > m.impressions ? x : m), monthly[0] ?? zero);
@@ -128,7 +129,7 @@ export default async function BoardPage() {
               <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 18px", marginTop: 12 }}>
                 {fronts.map((p, i) => (
                   <span key={p.project_id} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 600 }}>
-                    <span style={{ width: 9, height: 9, borderRadius: 3, background: FRONT[i % 4] }} />{PROJECT_LABEL[p.project_id] ?? p.project_id}<span style={{ opacity: 0.55 }}>{Math.round((p.impressions / totalImp) * 100)}%</span>
+                    <span style={{ width: 9, height: 9, borderRadius: 3, background: FRONT[i % 4] }} />{frontLabel(p)}<span style={{ opacity: 0.55 }}>{Math.round((p.impressions / totalImp) * 100)}%</span>
                   </span>
                 ))}
               </div>
@@ -154,7 +155,7 @@ export default async function BoardPage() {
           {/* ── 按战线分段:4 个语义色块卡(s3 each)── */}
           {fronts.map((p, i) => (
             <section key={p.project_id} className="s3 bb-card" style={{ background: FRONT[i % 4], color: INKC, justifyContent: "space-between", minHeight: 168 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}><Pill>{PROJECT_LABEL[p.project_id] ?? p.project_id}</Pill><span style={{ fontSize: 11, fontWeight: 700, opacity: 0.6 }}>α{i + 1}</span></div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}><Pill>{frontLabel(p)}</Pill><span style={{ fontSize: 11, fontWeight: 700, opacity: 0.6 }}>{frontShort(p)}</span></div>
               <div style={{ marginTop: 14 }}>
                 <div style={{ fontWeight: 800, letterSpacing: "-0.04em", lineHeight: 0.9, fontSize: "clamp(32px,3.4vw,48px)" }}>{cnNum(p.impressions)}</div>
                 <div style={{ fontSize: 12, fontWeight: 600, opacity: 0.6, marginTop: 4 }}>累计曝光</div>
@@ -204,7 +205,7 @@ export default async function BoardPage() {
             {hits.slice(0, 8).map((h, i) => (
               <div key={i} style={{ display: "grid", gridTemplateColumns: "44px 1fr 130px 150px 70px", gap: 12, alignItems: "center", padding: "11px 0", borderBottom: `1px solid ${BORD}`, fontSize: 14.5 }}>
                 <span style={{ fontWeight: 800, color: h.rank === 1 ? CORAL : "#fff" }}>{h.rank}</span>
-                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{PROJECT_LABEL[h.project_id] ?? h.project_id}</span>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{flabel(h.project_id)}</span>
                 <span style={{ textAlign: "right", fontFamily: mono }}>{comma(h.interactions)}</span>
                 <span style={{ textAlign: "right", fontFamily: mono, color: CORAL }}>{cnNum(h.impressions)}</span>
                 <span style={{ textAlign: "right" }}><span style={{ fontSize: 11, fontWeight: 700, color: LIME, border: `1px solid ${LIME}66`, borderRadius: 999, padding: "2px 9px" }}>爆</span></span>
