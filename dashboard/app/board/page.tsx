@@ -169,7 +169,7 @@ export default async function BoardPage() {
           </section>
 
           {/* ── 系统解构:双引擎 · 一个 AI 管理员(视觉解构,实时运行)── */}
-          <SystemDeconstruct cards={o.cards} hitRate={hitRate} notes={o.notes} />
+          <SystemDeconstruct />
 
           {/* ── 战役期峰值(s8) + 投放节奏 周几(s4)── */}
           <section className="s8 bb-tile" style={{ justifyContent: "space-between" }}>

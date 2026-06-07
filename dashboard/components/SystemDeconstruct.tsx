@@ -3,21 +3,26 @@
 import { useEffect, useState } from "react";
 
 /**
- * 系统解构(视觉解构,看板版 —— 偏"真实运行"而非"介绍怎么运行"):
- *  静态结构是蓝图式解构(① 爆款拆件 ② 大书库 ③ AI 管理员大脑 ④ 全国去中心化真人点阵 ⑤ 复利回流),
- *  叠加一套轻量拟真:解构层的结构件实时换批、库存实时入库、管理员实时判级(序号+命中率推进)、
- *  网络点阵活动扫掠、本会话发稿递增 —— 让它"在跑",不是一张说明图。
+ * 系统解构(视觉解构,看板版 —— 偏"真实运行")。
+ * 关键:不写任何会累积的数据(否则每次进来都从原始值重刷,很怪)。
+ * 全部"活"的都是【触发式文字事件 + 视觉活动】,纯循环、无状态累积:
+ *  ① 解构层结构件实时流转(受控词表真值轮换)  ② 大书库偶发"入库"触发
+ *  ③ AI 管理员实时触发 判级/借阅/修正拟合      ④ 全国真人网络触发 写稿/改稿/发稿 · IP 城市 + 点阵扫掠
  */
 
 const LIME = "#C6F24E", LAV = "#BFB9E6", CORAL = "#F2542D", MUTE = "#8A8F98";
 const sans = "var(--font-geist-sans)", mono = "var(--font-geist-mono)";
 
-// 受控词表(真实取值)—— 解构层实时换批用
+// 受控词表(真实取值)—— 解构层结构件实时流转
 const VEMO = ["焦虑撬动", "认同感建立", "好奇驱动", "虚荣撬动", "共鸣释放", "恐惧撬动"];
 const VARCH = ["同辈比较", "自我形象维护", "时间流逝感", "身份认同", "健康焦虑", "经济焦虑"];
 const VAUD = ["中年女性", "年轻女性", "宝妈", "学生党", "银发女性", "通用"];
 const VFMT = ["情感叙事", "场景植入", "直给推荐", "横评对比", "教程攻略", "认知重构"];
 const EK = ["情绪杠杆", "人性原型", "目标受众", "内容形态"];
+// 触发式事件素材
+const CITIES = ["杭州", "成都", "广州", "西安", "武汉", "长沙", "重庆", "郑州", "南京", "青岛", "合肥", "佛山", "东莞", "沈阳", "昆明", "厦门"];
+const NET = ["真人写稿", "真人改稿", "真人发稿", "流转解析", "真人互动"];
+const MGR = ["判级 · 爆", "判级 · 趴", "判级 · 预备", "借阅经验卡", "修正拟合 ✓", "判级 · 参考"];
 
 function mulberry32(seed: number) {
   let a = seed >>> 0;
@@ -48,29 +53,21 @@ function latticeNodes(): LatNode[] {
 const LIB = libraryBars();
 const LAT = latticeNodes();
 
-export default function SystemDeconstruct({ cards, hitRate, notes }: { cards: number; hitRate: number; notes: number }) {
-  const [chips, setChips] = useState([VEMO[0], VARCH[0], VAUD[0], VFMT[0]]);
-  const [stock, setStock] = useState(cards);
-  const [seq, setSeq] = useState(notes);
-  const [hit, setHit] = useState(Math.round(hitRate * 10) / 10);
-  const [posts, setPosts] = useState(0);
-  const [sweep, setSweep] = useState(0);
-
+export default function SystemDeconstruct() {
+  const [tick, setTick] = useState(0);
   useEffect(() => {
-    let t = 0, ck = 0;
-    const id = setInterval(() => {
-      t += 1;
-      setSweep(t);
-      setSeq((s) => s + 1 + (t % 3 === 0 ? 1 : 0));
-      setHit(Math.round((hitRate + 1.3 * Math.sin(t * 0.21)) * 10) / 10);
-      if (t % 3 === 0) setPosts((p) => p + 1);
-      if (t % 13 === 6) setStock((c) => c + 1);
-      if (t % 5 === 0) { ck += 1; setChips([VEMO[ck % VEMO.length], VARCH[(ck * 2 + 1) % VARCH.length], VAUD[(ck * 3) % VAUD.length], VFMT[(ck * 5 + 2) % VFMT.length]]); }
-    }, 1100);
+    const id = setInterval(() => setTick((t) => t + 1), 1300);
     return () => clearInterval(id);
-  }, [hitRate]);
+  }, []);
 
-  const gain = stock - cards;
+  // 全部由 tick 纯函数派生(无累积):每次进来都一样的循环,不"从原始值重刷"
+  const k = Math.floor(tick / 4);
+  const chips = [VEMO[k % VEMO.length], VARCH[(k * 2 + 1) % VARCH.length], VAUD[(k * 3) % VAUD.length], VFMT[(k * 5 + 2) % VFMT.length]];
+  const net = NET[tick % NET.length];
+  const city = CITIES[(tick * 3) % CITIES.length];
+  const mgr = MGR[Math.floor(tick / 2) % MGR.length];
+  const flash = tick % 7 === 3;
+  const sweep = tick;
 
   return (
     <section className="s12 bb-tile" style={{ padding: "22px 26px 16px" }}>
@@ -90,37 +87,37 @@ export default function SystemDeconstruct({ cards, hitRate, notes }: { cards: nu
         <text x="40" y="47" style={{ fontSize: 9, fill: MUTE, fontFamily: mono, letterSpacing: "0.16em" }}>TWO ENGINES · ONE BRAIN · LIVE</text>
         <line x1="40" y1="56" x2="1160" y2="56" stroke="rgba(255,255,255,0.08)" />
 
-        {/* ① 解构:爆款 → 结构件(实时换批) */}
+        {/* ① 解构:爆款 → 结构件(实时流转) */}
         <circle cx="74" cy="92" r="9" fill="none" stroke={CORAL} strokeWidth="1.2" /><text x="74" y="95.5" textAnchor="middle" style={{ fontSize: 10, fontWeight: 700, fill: CORAL, fontFamily: mono }}>1</text>
         <text x="92" y="96" style={{ fontSize: 11, fontWeight: 700, fill: "#fff", fontFamily: sans }}>解构</text>
-        <text x="125" y="96" style={{ fontSize: 9, fill: LIME, fontFamily: mono }} suppressHydrationWarning>● 解构中 · 第 {(seq + 1).toLocaleString()} 篇</text>
+        <text x="125" y="96" style={{ fontSize: 9, fill: LIME, fontFamily: mono }}>● 解构中 · 流转解析</text>
         <rect x="70" y="116" width="152" height="40" rx="9" fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.18)" />
         <text x="82" y="133" style={{ fontSize: 9.5, fill: "#cfd3da", fontFamily: mono }}>一条验证级爆款</text>
         <rect x="82" y="140" width="116" height="2" rx="1" fill="rgba(255,255,255,0.16)" /><rect x="82" y="145" width="78" height="2" rx="1" fill="rgba(255,255,255,0.10)" />
-        {EK.map((k, i) => { const y = 190 + i * 48; return (
+        {EK.map((label, i) => { const y = 190 + i * 48; return (
           <g key={`es${i}`}>
             <line x1="146" y1="156" x2="80" y2={y + 16} stroke={MUTE} strokeWidth="0.7" opacity="0.28" />
             <rect x="78" y={y} width="150" height="32" rx="7" fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.10)" />
-            <text x="90" y={y + 20} style={{ fontSize: 9.5, fill: MUTE, fontFamily: mono }}>{k}</text>
+            <text x="90" y={y + 20} style={{ fontSize: 9.5, fill: MUTE, fontFamily: mono }}>{label}</text>
             <rect x="160" y={y + 7} width="60" height="18" rx="9" fill="rgba(198,242,78,0.12)" />
             <text x="190" y={y + 19.5} textAnchor="middle" style={{ fontSize: 9.5, fill: LIME, fontFamily: sans }} suppressHydrationWarning>{chips[i]}</text>
           </g>
         ); })}
 
-        {/* ② 大书库(实时入库) */}
+        {/* ② 大书库(偶发入库触发) */}
         <circle cx="300" cy="92" r="9" fill="none" stroke={LIME} strokeWidth="1.2" /><text x="300" y="95.5" textAnchor="middle" style={{ fontSize: 10, fontWeight: 700, fill: LIME, fontFamily: mono }}>2</text>
-        <text x="318" y="96" style={{ fontSize: 11, fontWeight: 700, fill: "#fff", fontFamily: sans }} suppressHydrationWarning>大书库 · 经验卡 {stock.toLocaleString()}</text>
-        {[210, 258, 306].map((y, k) => <line key={`f${k}`} x1="228" y1={y} x2="300" y2="350" stroke={MUTE} strokeWidth="0.7" opacity="0.22" />)}
+        <text x="318" y="96" style={{ fontSize: 11, fontWeight: 700, fill: "#fff", fontFamily: sans }}>大书库 · 经验卡库</text>
+        {[210, 258, 306].map((y, kk) => <line key={`f${kk}`} x1="228" y1={y} x2="300" y2="350" stroke={MUTE} strokeWidth="0.7" opacity="0.22" />)}
         {LIB.map((b, i) => { const x = 300 + i * 8.4; return <rect key={`lb${i}`} x={x} y={360 - b.h} width="7" height={b.h} rx="1.5" fill={b.lime ? LIME : "rgba(255,255,255,0.14)"} opacity={b.lime ? 0.9 : 0.7} />; })}
         <line x1="296" y1="361" x2="476" y2="361" stroke="rgba(255,255,255,0.14)" />
-        {gain > 0 ? <text x="386" y="378" textAnchor="middle" style={{ fontSize: 9, fill: LIME, fontFamily: mono }} suppressHydrationWarning>本会话入库 +{gain}</text> : null}
+        <text x="386" y="378" textAnchor="middle" style={{ fontSize: 9, fill: flash ? LIME : MUTE, fontFamily: mono }} suppressHydrationWarning>{flash ? "● 经验卡入库 ✓" : "结构化经验卡"}</text>
 
         {/* 借阅:库 → 管理员 */}
         <path id="sx-borrow" d="M476 250 L540 250" fill="none" stroke={LIME} strokeWidth="1" opacity="0.5" />
         <circle r="2" fill={LIME}><animateMotion dur="2.8s" repeatCount="indefinite"><mpath href="#sx-borrow" /></animateMotion></circle>
         <text x="508" y="242" textAnchor="middle" style={{ fontSize: 9, fill: LIME, fontFamily: mono }}>借阅</text>
 
-        {/* ③ AI 管理员(大脑,实时判级) */}
+        {/* ③ AI 管理员(大脑,实时触发判级/借阅/修正) */}
         <circle cx="600" cy="166" r="9" fill="none" stroke={LAV} strokeWidth="1.2" /><text x="600" y="169.5" textAnchor="middle" style={{ fontSize: 10, fontWeight: 700, fill: LAV, fontFamily: mono }}>3</text>
         <circle cx="600" cy="250" r="62" fill="none" stroke={LAV} strokeWidth="1" opacity="0.16" />
         <circle cx="600" cy="250" r="46" fill="none" stroke={LAV} strokeWidth="1" opacity="0.3" />
@@ -130,7 +127,7 @@ export default function SystemDeconstruct({ cards, hitRate, notes }: { cards: nu
         <rect x="590" y="240" width="20" height="20" rx="3" transform="rotate(45 600 250)" fill="#141416" stroke="#fff" strokeWidth="1.3" />
         <circle cx="600" cy="250" r="3.2" fill="#fff" />
         <text x="600" y="334" textAnchor="middle" style={{ fontSize: 12.5, fontWeight: 800, fill: "#fff", fontFamily: sans }}>AI 管理员</text>
-        <text x="600" y="350" textAnchor="middle" style={{ fontSize: 9.5, fill: LAV, fontFamily: mono }} suppressHydrationWarning>判级中 · 第 {seq.toLocaleString()} 篇 · 命中 {hit.toFixed(1)}%</text>
+        <text x="600" y="350" textAnchor="middle" style={{ fontSize: 9.5, fill: LAV, fontFamily: mono }} suppressHydrationWarning>● {mgr}</text>
 
         {/* 调度 ⇄ 判级:管理员 ↔ 网络 */}
         <path id="sx-disp" d="M662 244 L808 244" fill="none" stroke={LAV} strokeWidth="1" opacity="0.45" />
@@ -140,10 +137,10 @@ export default function SystemDeconstruct({ cards, hitRate, notes }: { cards: nu
         <circle r="2" fill={CORAL}><animateMotion dur="3.4s" repeatCount="indefinite"><mpath href="#sx-chk" /></animateMotion></circle>
         <text x="735" y="272" textAnchor="middle" style={{ fontSize: 9, fill: MUTE, fontFamily: mono }}>← 检查效果 · 判级</text>
 
-        {/* ④ 去中心化 · 全国真人网络(活动扫掠 + 本会话发稿) */}
+        {/* ④ 去中心化 · 全国真人网络(触发 写稿/改稿/发稿 · IP 城市 + 活动扫掠) */}
         <circle cx="820" cy="92" r="9" fill="none" stroke={CORAL} strokeWidth="1.2" /><text x="820" y="95.5" textAnchor="middle" style={{ fontSize: 10, fontWeight: 700, fill: CORAL, fontFamily: mono }}>4</text>
         <text x="838" y="92" style={{ fontSize: 11, fontWeight: 700, fill: "#fff", fontFamily: sans }}>去中心化 · 全国真人网络</text>
-        <text x="838" y="108" style={{ fontSize: 9, fill: LIME, fontFamily: mono }} suppressHydrationWarning>● 实时修稿发稿 · 本会话 +{posts}</text>
+        <text x="838" y="108" style={{ fontSize: 9.5, fill: LIME, fontFamily: mono }} suppressHydrationWarning>● {net} · {city}</text>
         {LAT.filter((n) => n.x < 884).slice(0, 7).map((n, i) => <line key={`df${i}`} x1="808" y1="250" x2={n.x} y2={n.y} stroke={LAV} strokeWidth="0.6" opacity="0.16" />)}
         {LAT.map((n, i) => {
           const lit = (i * 3 + sweep) % 19 < 2;
