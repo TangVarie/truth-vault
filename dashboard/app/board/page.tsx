@@ -4,6 +4,7 @@ import { cnNum, comma, PROJECT_LABEL } from "@/config/showcase";
 import { getDashboardData } from "@/lib/dashboard-data";
 import CountUp from "@/components/CountUp";
 import LiveMonitor from "@/components/LiveMonitor";
+import SystemDeconstruct from "@/components/SystemDeconstruct";
 
 /**
  * /board = 对外数据看板(公开、只读)。BOLD BLOCKS 设计体系 · 全部真实数据。
@@ -36,6 +37,9 @@ const css = `
 .bb-bar{transform-origin:bottom;animation:bb-growy .9s cubic-bezier(.22,1,.36,1) both}
 .bb-dot{animation:bb-pulse 1.8s ease-in-out infinite}
 .bb-streams{animation:bb-breathe 6s ease-in-out infinite}
+@keyframes bb-flow{to{stroke-dashoffset:-20}}
+.bb-flow{stroke-dasharray:4 6;animation:bb-flow 1s linear infinite}
+.bb-cell{animation:bb-pulse 1.9s ease-in-out infinite}
 `;
 
 function streamPaths(n: number, W: number, H: number) {
@@ -45,6 +49,8 @@ function streamPaths(n: number, W: number, H: number) {
     return `M ${x.toFixed(1)} ${y0.toFixed(1)} C ${x.toFixed(1)} ${(y0 + H * 0.34).toFixed(1)}, ${(fx + (x - fx) * 0.14).toFixed(1)} ${(fy - H * 0.4).toFixed(1)}, ${fx.toFixed(1)} ${fy.toFixed(1)}`;
   });
 }
+
+// ── 去中心化创作网络:确定性生成(SSR 稳定)—— 真实分散的多层真人节点,无中心。──
 function Pill({ children, dark = false }: { children: React.ReactNode; dark?: boolean }) {
   return <span style={{ display: "inline-flex", alignItems: "center", gap: 7, border: `1.5px solid ${dark ? "rgba(255,255,255,0.22)" : "rgba(0,0,0,0.42)"}`, color: dark ? "#fff" : INKC, borderRadius: 999, padding: "6px 14px", fontSize: 12.5, fontWeight: 600, alignSelf: "flex-start" }}>{children}</span>;
 }
@@ -89,10 +95,9 @@ export default async function BoardPage() {
     { name: "指标快照", color: LIME, val: `${comma(pulse?.snaps_n ?? 0)} 快照` },
     { name: "essence 解析", color: LAV, val: `已标注 ${comma(pulse?.annotated_n ?? o.essence)}/${comma(o.notes)}` },
     { name: "命中检测", color: CORAL, val: `${comma(o.baokuanReal)} 爆款判级` },
-    { name: "autowriter", color: "#F5A623", val: "已接 · 待流" },
+    { name: "autowriter · 馆员", color: LIME, val: `${comma(o.cards)} 经验卡可借` },
     { name: "内部座舱", color: LIME, val: `${comma(o.cards)} 策略卡` },
   ];
-  const annoPct = o.notes ? Math.round(((pulse?.annotated_n ?? o.essence) / o.notes) * 100) : 0;
   const onlinePorts = [pulse?.feishu_n, pulse?.ssll_n, pulse?.snaps_n, pulse?.annotated_n, o.baokuanReal, o.cards].filter((x) => (x ?? 0) > 0).length;
 
   return (
@@ -160,8 +165,11 @@ export default async function BoardPage() {
 
           {/* ── 实时监测条(对外动效层:端口脉冲 + 事件流 + 跳动计数)── */}
           <section className="s12 bb-tile" style={{ padding: "18px 22px" }}>
-            <LiveMonitor ports={livePorts} progress={annoPct} online={onlinePorts} total={7} />
+            <LiveMonitor ports={livePorts} annotated={pulse?.annotated_n ?? o.essence} notes={o.notes} online={onlinePorts} total={7} />
           </section>
+
+          {/* ── 系统解构:双引擎 · 一个 AI 管理员(视觉解构,实时运行)── */}
+          <SystemDeconstruct />
 
           {/* ── 战役期峰值(s8) + 投放节奏 周几(s4)── */}
           <section className="s8 bb-tile" style={{ justifyContent: "space-between" }}>

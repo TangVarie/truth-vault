@@ -75,9 +75,8 @@ export default async function ConsolePage() {
     { name: "指标快照", color: LIME, val: `${comma(pulse?.snaps_n ?? 0)} 快照` },
     { name: "essence 解析", color: LAV, val: `已标注 ${comma(pulse?.annotated_n ?? o.essence)}/${comma(o.notes)}` },
     { name: "命中检测", color: CORAL, val: `${comma(o.baokuanReal)} 爆款判级` },
-    { name: "autowriter", color: "#F5A623", val: "已接 · 待流" },
+    { name: "autowriter · 馆员", color: LIME, val: `${comma(o.cards)} 经验卡可借` },
   ];
-  const annoPct = o.notes ? Math.round(((pulse?.annotated_n ?? o.essence) / o.notes) * 100) : 0;
   const onlinePorts = [pulse?.feishu_n, pulse?.ssll_n, pulse?.snaps_n, pulse?.annotated_n, o.baokuanReal, o.cards].filter((x) => (x ?? 0) > 0).length;
   const vitals = [
     { k: "命中率", v: hitRate + "%" }, { k: "内容资产", v: comma(o.notes) }, { k: "验证级爆款", v: comma(o.baokuanReal) },
@@ -116,7 +115,7 @@ export default async function ConsolePage() {
               </div>
             </div>
           </section>
-          <section className="s12 ct" style={{ padding: "18px 22px" }}><LiveMonitor ports={livePorts} progress={annoPct} online={onlinePorts} total={7} /></section>
+          <section className="s12 ct" style={{ padding: "18px 22px" }}><LiveMonitor ports={livePorts} annotated={pulse?.annotated_n ?? o.essence} notes={o.notes} online={onlinePorts} total={7} /></section>
 
           {/* ── 挖掘 ── */}
           <div id="挖掘" className="s12 canchor" style={{ height: 0 }} />
