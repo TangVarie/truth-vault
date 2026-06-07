@@ -16,7 +16,7 @@ export const dynamic = "force-dynamic";
 
 const BG = "#0A0A0B", PANEL = "#141416", BORD = "rgba(255,255,255,0.08)";
 const SAGE = "#DDE6D6", OLIVE = "#B0A41C", LAV = "#BFB9E6", CORAL = "#F2542D", LIME = "#C6F24E", INKC = "#0E0E0E", MUTE = "#8A8F98";
-const FRONT = [CORAL, OLIVE, LAV, LIME]; // 4 条战线的语义色
+const FRONT = [CORAL, OLIVE, LAV, LIME, SAGE]; // 战线语义色(按位取色,支持 5+ 条)
 const sans = "var(--font-geist-sans)", mono = "var(--font-geist-mono)";
 
 const css = `
@@ -124,12 +124,12 @@ export default async function BoardPage() {
             </div>
             <div style={{ marginTop: 20 }}>
               <div style={{ display: "flex", height: 16, borderRadius: 999, overflow: "hidden", gap: 2 }}>
-                {fronts.map((p, i) => <div key={p.project_id} className="bb-seg" style={{ width: `${Math.max(2, (p.impressions / totalImp) * 100)}%`, background: FRONT[i % 4], animationDelay: `${i * 0.12}s` }} />)}
+                {fronts.map((p, i) => <div key={p.project_id} className="bb-seg" style={{ width: `${Math.max(2, (p.impressions / totalImp) * 100)}%`, background: FRONT[i % FRONT.length], animationDelay: `${i * 0.12}s` }} />)}
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 18px", marginTop: 12 }}>
                 {fronts.map((p, i) => (
                   <span key={p.project_id} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 600 }}>
-                    <span style={{ width: 9, height: 9, borderRadius: 3, background: FRONT[i % 4] }} />{frontLabel(p)}<span style={{ opacity: 0.55 }}>{Math.round((p.impressions / totalImp) * 100)}%</span>
+                    <span style={{ width: 9, height: 9, borderRadius: 3, background: FRONT[i % FRONT.length] }} />{frontLabel(p)}<span style={{ opacity: 0.55 }}>{Math.round((p.impressions / totalImp) * 100)}%</span>
                   </span>
                 ))}
               </div>
@@ -154,7 +154,7 @@ export default async function BoardPage() {
 
           {/* ── 按战线分段:4 个语义色块卡(s3 each)── */}
           {fronts.map((p, i) => (
-            <section key={p.project_id} className="s3 bb-card" style={{ background: FRONT[i % 4], color: INKC, justifyContent: "space-between", minHeight: 168 }}>
+            <section key={p.project_id} className="s3 bb-card" style={{ background: FRONT[i % FRONT.length], color: INKC, justifyContent: "space-between", minHeight: 168 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}><Pill>{frontLabel(p)}</Pill><span style={{ fontSize: 11, fontWeight: 700, opacity: 0.6 }}>{frontShort(p)}</span></div>
               <div style={{ marginTop: 14 }}>
                 <div style={{ fontWeight: 800, letterSpacing: "-0.04em", lineHeight: 0.9, fontSize: "clamp(32px,3.4vw,48px)" }}>{cnNum(p.impressions)}</div>
