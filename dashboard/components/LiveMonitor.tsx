@@ -1,50 +1,79 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /**
- * 实时监测条 —— 真假参半,经得起盯:
- *  · 左栏端口/右栏计数 = 真实数据(来自 props,源自真 pulse/overview)
- *  · 中间事件流 = 真锚点(复述真数,与全站一致)+ 无数字的"…中"活动(只表"在动",不编数)
- *  · 吞吐速率在小区间浮动(永不暴涨);走秒时钟真实
- * 唯一"模拟"的是事件流入的节奏与选取 —— 不产生任何与真实总数冲突的数字。
+ * 实时监测条 —— 拟真模拟,不是范围随机:
+ *  · 左栏端口 = 真实状态值(props,源自真 pulse/overview)
+ *  · 一套吞吐模型驱动全部"活"的量:平滑双正弦吞吐(条/分,ebb/flow)→ 累积已解析条数
+ *    → 结构化解析进度沿真值缓慢爬升(会话内有上限,不暴涨)→ 待解析篇数随之递减
+ *  · 事件流 = 每"完成一条"按序号生成(第 N 篇 ✓ / 判级 / 回流…),内容随序号推进,不重复空转
+ * 唯一"模拟"的是这套处理节奏;核心总数(曝光/爆款/经验卡)在别处都是真值。
  */
 
-const MUTE = "#8A8F98", BORD = "rgba(255,255,255,0.08)", LIME = "#C6F24E";
+const MUTE = "#8A8F98", BORD = "rgba(255,255,255,0.08)", LIME = "#C6F24E", LAV = "#BFB9E6", CORAL = "#F2542D";
 const mono = "var(--font-geist-mono)";
 
 export type Port = { name: string; color: string; val: string };
-const GEN = ["扫描中…", "校验中…", "对齐中…", "采集中…", "索引中…", "标注中…", "判级中…"];
+type Ev = { id: number; name: string; line: string; color: string };
 
-type Ev = { id: number; name: string; line: string; color: string; real: boolean };
+const TIERS = ["趴", "趴", "趴", "预备", "爆"];
+// 确定性伪随机(按序号),让事件类型分布稳定但不重复
+function frac(n: number) { return ((n * 9301 + 49297) % 233280) / 233280; }
+function makeEvent(id: number, seq: number): Ev {
+  const r = frac(seq);
+  if (r < 0.70) return { id, name: "essence 解析", line: `第 ${seq.toLocaleString()} 篇 ✓`, color: LAV };
+  if (r < 0.82) return { id, name: "命中检测", line: `判级 · ${TIERS[seq % TIERS.length]}`, color: CORAL };
+  if (r < 0.90) return { id, name: "ssll 回流", line: "爆款入库 +1", color: LIME };
+  if (r < 0.96) return { id, name: "指标快照", line: "采集窗口 · 同步", color: LIME };
+  return { id, name: "autowriter·馆员", line: `借阅经验卡 ×${2 + (seq % 4)}`, color: LIME };
+}
 
-export default function LiveMonitor({ ports, progress, online, total }: { ports: Port[]; progress: number; online: number; total: number }) {
-  // 确定性种子(SSR/首帧一致):取真实端口状态
-  const seed: Ev[] = ports.slice(0, 5).map((p, i) => ({ id: -i, name: p.name, line: p.val, color: p.color, real: true }));
+export default function LiveMonitor({ ports, annotated, notes, online, total }: { ports: Port[]; annotated: number; notes: number; online: number; total: number }) {
+  const base = notes > 0 ? (annotated / notes) * 100 : 0;
+  const ceiling = Math.min(100, base + 3.2);          // 会话内进度上限(拟真:追到近实时边再持平)
+  const ceilCount = Math.round((ceiling / 100) * notes);
+  const seed: Ev[] = ports.slice(0, 5).map((p, i) => ({ id: -i - 1, name: p.name, line: p.val, color: p.color }));
+
   const [evs, setEvs] = useState<Ev[]>(seed);
   const [clock, setClock] = useState("--:--:--");
-  const [rate, setRate] = useState(14);
-  const [pct, setPct] = useState(progress);
+  const [rate, setRate] = useState(15);
+  const [pct, setPct] = useState(Math.round(base * 10) / 10);
+  const [done, setDone] = useState(annotated);
+
+  const acc = useRef(0);
+  const last = useRef(0);
+  const start = useRef(0);
+  const eid = useRef(1);
 
   useEffect(() => {
-    let id = 1;
-    const tick = () => setClock(new Date().toLocaleTimeString("zh-CN", { hour12: false }));
-    tick();
-    const c = setInterval(tick, 1000);
-    const f = setInterval(() => {
-      const p = ports[Math.floor(Math.random() * ports.length)];
-      const real = Math.random() < 0.6;
-      const line = real ? p.val : GEN[Math.floor(Math.random() * GEN.length)];
-      setEvs((prev) => [{ id: id++, name: p.name, line, color: p.color, real }, ...prev].slice(0, 5));
-    }, 3000);
-    const r = setInterval(() => setRate((x) => Math.min(19, Math.max(9, x + (Math.random() < 0.5 ? -1 : 1) * (1 + Math.floor(Math.random() * 2))))), 2600);
-    setPct(progress);
-    const pg = setInterval(() => {
-      const v = progress + (Math.random() - 0.5) * 0.7; // ±0.35 在真值附近活体抖动(不偏离真值)
-      setPct(Math.round(Math.min(progress + 0.4, Math.max(progress - 0.4, v)) * 10) / 10);
-    }, 2400);
-    return () => { clearInterval(c); clearInterval(f); clearInterval(r); clearInterval(pg); };
-  }, [ports, progress]);
+    start.current = Date.now(); last.current = Date.now(); acc.current = 0;
+    const tickClock = () => setClock(new Date().toLocaleTimeString("zh-CN", { hour12: false }));
+    tickClock();
+    const c = setInterval(tickClock, 1000);
+    const sim = setInterval(() => {
+      const now = Date.now();
+      const dt = Math.min(2, (now - last.current) / 1000); last.current = now;
+      const t = (now - start.current) / 1000;
+      // 平滑吞吐(条/分):双正弦 ebb/flow,而非每次范围随机
+      const r = 15 + 3.6 * Math.sin(t * 0.08) + 1.9 * Math.sin(t * 0.31 + 1.3);
+      setRate(Math.round(r));
+      const before = Math.floor(acc.current);
+      acc.current += (r / 60) * dt;                    // 条/分 → 条/秒 累积
+      const after = Math.floor(acc.current);
+      const annot = Math.min(ceilCount, annotated + acc.current);
+      setPct(Math.round((annot / notes) * 1000) / 10);
+      setDone(Math.round(annot));
+      if (after > before) {
+        const add: Ev[] = [];
+        for (let s = before + 1; s <= after; s++) add.unshift(makeEvent(eid.current++, annotated + s));
+        setEvs((prev) => [...add, ...prev].slice(0, 5));
+      }
+    }, 850);
+    return () => { clearInterval(c); clearInterval(sim); };
+  }, [annotated, notes, ceilCount]);
+
+  const remaining = Math.max(0, notes - done);
 
   return (
     <>
@@ -75,21 +104,21 @@ export default function LiveMonitor({ ports, progress, online, total }: { ports:
             </div>
           ))}
         </div>
-        {/* 事件流:真事实 + "…中"活动 */}
+        {/* 事件流:每完成一条按序号生成 */}
         <div className="lm-mid" style={{ borderLeft: `1px solid ${BORD}`, borderRight: `1px solid ${BORD}`, paddingLeft: 18, paddingRight: 18 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, color: MUTE, fontFamily: mono, letterSpacing: "0.1em", marginBottom: 12 }}><span>实时事件流 · 吞吐 ≈{rate} 条/分</span><span style={{ color: LIME }} suppressHydrationWarning>{clock}</span></div>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, color: MUTE, fontFamily: mono, letterSpacing: "0.1em", marginBottom: 12 }}><span suppressHydrationWarning>实时事件流 · 吞吐 ≈{rate} 条/分</span><span style={{ color: LIME }} suppressHydrationWarning>{clock}</span></div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {evs.map((e, i) => (
               <div key={e.id} className={i === 0 ? "lm-in" : undefined} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12.5, fontFamily: mono, opacity: 1 - i * 0.16 }}>
                 <span style={{ width: 6, height: 6, borderRadius: 99, background: e.color, flexShrink: 0 }} />
                 <span style={{ color: "#cfd3da", minWidth: 92, flexShrink: 0 }}>{e.name}</span>
-                <span style={{ color: e.real ? "#aeb4bd" : MUTE, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontStyle: e.real ? "normal" : "italic" }}>{e.line}</span>
-                <span style={{ color: e.color, opacity: e.real ? 0.9 : 0.4, flexShrink: 0 }}>{e.real ? "✓" : "◷"}</span>
+                <span style={{ color: "#aeb4bd", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.line}</span>
+                <span style={{ color: e.color, opacity: 0.9, flexShrink: 0 }}>✓</span>
               </div>
             ))}
           </div>
         </div>
-        {/* 计数:真值 + 有界 */}
+        {/* 计数:真值锚 + 拟真推进 */}
         <div>
           <div style={{ fontSize: 10.5, color: MUTE, fontFamily: mono, letterSpacing: "0.12em", marginBottom: 12 }}>实时 · LIVE</div>
           <div style={{ marginBottom: 14 }}>
@@ -98,7 +127,7 @@ export default function LiveMonitor({ ports, progress, online, total }: { ports:
               <div style={{ width: `${pct}%`, height: "100%", background: LIME, borderRadius: 999, transition: "width .8s cubic-bezier(.22,1,.36,1)" }} />
               <div className="lm-shim" style={{ position: "absolute", inset: 0, width: "38%", background: "linear-gradient(90deg,transparent,rgba(255,255,255,0.3),transparent)" }} />
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: MUTE, marginTop: 5 }}><span className="lm-dot" style={{ width: 5, height: 5, borderRadius: 99, background: LIME }} />结构化解析进度</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: MUTE, marginTop: 5 }}><span className="lm-dot" style={{ width: 5, height: 5, borderRadius: 99, background: LIME }} /><span suppressHydrationWarning>结构化解析 · 待 {remaining.toLocaleString()} 篇</span></div>
           </div>
           <div><div style={{ fontSize: 24, fontWeight: 800, fontFamily: mono, color: LIME, letterSpacing: "-0.02em" }}>{online}<span style={{ color: MUTE, fontSize: 15 }}>/{total}</span></div><div style={{ fontSize: 11, color: MUTE, marginTop: 2 }}>端口在线</div></div>
         </div>
