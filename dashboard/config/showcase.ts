@@ -84,10 +84,21 @@ export function comma(n: number): string {
  * 项目战线对外代号 —— 数据驱动,新表零改前端自动接入。
  * 战线全称 = 希腊字母[注册序 seq] · 品类(seq + category 来自 v_dash_projects)。
  * 注册序由 projects.created_at 决定(append-stable):新表入库即自动拿到下一个希腊字母,无需改前端。
- * 下面两个 map 仅作【可选覆盖】(想给某条战线起特殊对外名时填;留空 = 全自动)。
+ * 下面两个 map 是【覆盖 / 兜底】:已知 4 条战线写死代号,保证即便看板库里 v_dash_projects 还没
+ * seq/category(如指向旧库)也能正确显示;新表(库里有 seq)则全自动,无需在此登记。
  */
-export const PROJECT_LABEL: Record<string, string> = {};
-export const PROJECT_SHORT: Record<string, string> = {};
+export const PROJECT_LABEL: Record<string, string> = {
+  WTG_phase1: "战线 α · 个护",
+  NRT_phase2: "战线 β · OTC",
+  NUC_phase1: "战线 γ · 保健",
+  NRT_phase3: "战线 δ · OTC",
+};
+export const PROJECT_SHORT: Record<string, string> = {
+  WTG_phase1: "α",
+  NRT_phase2: "β",
+  NUC_phase1: "γ",
+  NRT_phase3: "δ",
+};
 
 const GREEK = ["α", "β", "γ", "δ", "ε", "ζ", "η", "θ", "ι", "κ", "λ", "μ", "ν", "ξ", "ο", "π"];
 /** 品类对外简写(代号更紧凑;未列则用原值)。 */
