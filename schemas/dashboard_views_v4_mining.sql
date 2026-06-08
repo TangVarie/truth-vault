@@ -99,6 +99,12 @@ create or replace view public.v_dash_project_tier with (security_invoker = false
 select project_id, tier, count(*) as n
 from truth_vault.notes
 where tier in ('趴','预备','爆','大爆','风控')
+  -- 伪爆贴(状态标爆/大爆但源头无曝光数据,data_quality_flags.synthetic=true)不进爆款金字塔。
+  -- 精准命中「状态字段 + 爆/大爆 + synthetic」才剔:不动数值推断爆款、不动非爆 tier、不动别的战线
+  -- (现有 synthetic 多是 WTG 的「趴/数值推断爆」, 此条件对它们零影响)。
+  and not (tier in ('爆','大爆')
+           and tier_source = '状态字段'
+           and (data_quality_flags->>'synthetic') is not distinct from 'true')
 group by project_id, tier;
 comment on view public.v_dash_project_tier is '看板深挖:分战线 tier 构成。';
 

@@ -458,6 +458,21 @@ def transform_row(
         note["data_quality_flags"] = flags
         consumed_intermediates.add("_note_status_raw")
 
+    # ── 伪爆贴(无曝光数据型): 状态标爆/大爆 但 impressions 缺失 → 不可验证 → 标 synthetic ──
+    # yaml opt-in(默认关; 仅 RIO 这类「源头曝光量本身就是 / 」的表开):
+    #   data_quality: { unmeasured_status_baokuan_is_synthetic: true }
+    # 语义:「验证级爆款」需 状态标 + 至少有可测曝光。只标了状态却无曝光数 = 运营断言但无法核 = 伪爆贴。
+    # 效果:① 沿用既有 synthetic 语义 → 排除出 autowriter 种草飞轮;② 看板 v_dash_*(project_tier/
+    # projects/overview)已把「状态字段+爆/大爆+synthetic」剔出爆款数。须放在 tier/impressions 都定后。
+    if (mapping.get("data_quality") or {}).get("unmeasured_status_baokuan_is_synthetic") \
+            and note.get("tier") in ("爆", "大爆") \
+            and note.get("tier_source") == "状态字段" \
+            and note.get("impressions") is None:
+        _flags = dict(note.get("data_quality_flags") or {})
+        _flags["synthetic"] = True
+        _flags["synthetic_reason"] = "状态标爆但源头无曝光数据(曝光量=/), 不可验证 → 伪爆贴"
+        note["data_quality_flags"] = _flags
+
     # Any intermediate that wasn't consumed above (e.g. _account_name,
     # _account_followers, _comment_text, _comment_text_persona) goes to
     # raw_extra so it doesn't get silently dropped.  Future code can
