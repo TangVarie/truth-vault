@@ -1,0 +1,100 @@
+# ════════════════════════════════════════════════════════════════════
+# TGV · 维他命 —— Onboarding 草稿(DRAFT · discovery)
+# ════════════════════════════════════════════════════════════════════
+# ⚠️ 早期遗产表(C 家族), 结构与文档里的 TGV_1 模板【对不上】, 以【实际导出表】为准:
+#    实际列 = 笔记标题/笔记内容/评论数/笔记链接/账号id/话题标签/发布日期/ip发布地址/
+#             点赞数/收藏数/分享数/笔记阶段/父记录。
+#    与既有 A/B 家族的关键差异:
+#      - 没有「状态」「备注」—— tier 唯一候选是【笔记阶段】, 但导出里 100% 为空;
+#      - 没有「曝光量/阅读量」—— 只有 点赞/收藏/分享/评论 这类互动信号(无单一"互动量");
+#      - 没有「方向」「发布笔记(intent)」列。
+#    本草稿仅用于 preflight 拉【活表】校正(导出≠全量, 活表可能有 笔记阶段 值/更多列)。
+# ════════════════════════════════════════════════════════════════════
+
+version: 1.0
+
+project_id: TGV_phase1
+brand: TGV                       # [待确认] 实际品牌名未知(TGV 为内部代号)
+product: 维他命
+category: 保健品                 # [待确认] 维他命=保健品;但内容全是育儿场景, 若为儿童营养品或可 母婴
+platform: xiaohongshu
+schema_family: C                 # 最老格式(文档记 TGV 属 C 家族)
+start_date: 2025-XX-XX           # 待填(发布日期 ~2025)
+end_date: 2026-XX-XX             # 待填
+
+# ── 字段映射 ── [据实际导出列;待 preflight 拉活表校正]
+field_mapping:
+  笔记标题: title
+  笔记内容: raw_content
+  笔记链接: publish_url
+  账号id: account_id              # 实为账号【昵称】(莫妮卡/Atro…), account_id 是 text, OK
+  发布日期: publish_time
+  笔记阶段: _status_raw           # tier 源(导出里空 → 看活表是否有值;见 tier_extraction)
+
+intent_mapping: {}               # 本表无「发布笔记」intent 列 → intent 一律 null
+
+# ── tier 抽取 ──
+# 本表无「状态/备注」, 唯一候选是【笔记阶段】(导出 0/156 空)。先按文档 TGV「新爆/淘汰/删0」
+# 词表起草(改 match_contains, 因引擎只认 contains); 活表若 笔记阶段 有值, preflight 会显示真实取值再对齐。
+# ⚠️ 若活表也无 tier 标 → TGV 仅作内容入库, 无验证级爆款(除非后续把某互动列映 interactions 做数值推断)。
+tier_extraction:
+  source: 状态字段
+  rules:
+    - match_contains: ["新爆"]
+      tier: 爆
+    - match_contains: ["淘汰"]
+      tier: 趴
+    - match_contains: ["删0", "他自己删了"]
+      tier: 删除
+    - default: null
+
+compliance:
+  base_template: 保健品
+  custom_red_flags:
+    - "保健品禁疾病治疗/预防宣称;维他命功效需可证实、禁绝对化(最/第一/100%)"
+  blue_keyword_strategy:
+    primary: []                  # 待策略 lead 填
+    secondary: []
+    avoid: []
+
+# 项目专属字段(进 raw_extra)—— 早期表无对应 schema 列, 先留痕, 待定:
+#   - 互动指标(点赞/收藏/分享/评论): 本表无单一"互动量", 也无曝光/阅读。是否把某列(如点赞)映成
+#     notes.interactions 以支持 数值推断 tier + 看板展示, 留作【决策点】, 暂全进 raw_extra(interactions=null)。
+#   - 话题标签: ; 分隔多标签, 暂留 raw_extra(未来可拆成 hashtags TEXT[])。
+#   - ip发布地址 / 父记录: 无对应列, 留痕。
+project_specific_fields_to_raw_extra:
+  - 评论数
+  - 点赞数
+  - 收藏数
+  - 分享数
+  - 话题标签
+  - ip发布地址
+  - 父记录
+
+data_supplement_needed:
+  - field: impressions, reads
+    method: 该表无曝光/阅读数据 —— 早期表未回收, 大概率永久缺失
+    estimated_rows: 0
+  - field: tier(爆款标注)
+    method: 笔记阶段 列空 —— 需确认真实爆款标在哪(活表/另一张表/需人工补)
+    estimated_rows: 0
+
+# ── Sync 配置 ── (用户提供:已给本表加机器人)
+sync_config:
+  source_type: feishu_api
+  feishu_app_token: SWkdwJXxDi2VhkkwVJScghOwnNR
+  feishu_table_id: tblRkIj4TS6rDGah
+  feishu_view_id: null
+  sync_interval: on_demand        # 夜间 cron 不碰;preflight + 显式验证 OK 再议
+
+onboarding_meta:
+  onboarded_at: 2026-06-08
+  onboarded_by: (待填)
+  strategy_lead: Ziao / 周哥
+  notes: |
+    DRAFT(discovery)。早期 C 家族表, 实际结构异于文档 TGV_1 模板。
+    待 preflight 拉【活表 tblRkIj4TS6rDGah】校正:
+      1) 真实列对齐(导出≠全量, 活表可能多列/有 笔记阶段 值);
+      2) 确认 tier 标注到底在哪(笔记阶段 活表是否有值 / 新爆等标在别处);
+      3) 互动指标如何落库(是否映 interactions 支持数值推断)、品类(保健品/母婴)、品牌名;
+      4) 无曝光/阅读/方向/intent —— 接受为早期表常态, 以内容 + 互动 + (若有)tier 入库。
