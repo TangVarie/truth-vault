@@ -234,9 +234,9 @@ jobs:
           # 同 essence 步: 区分瞬时(够到 worker 但慢/掐断)vs 系统性(配置/连通/鉴权坏)。PR#65 review。
           worker_fail_kind() {  # $1=curl_rc $2=http_code → echo transient|systemic
             case "$1" in
-              28|52|56|18) echo transient; return ;;  # 28超时 52空回复 56接收重置 18传输不全 = 够到但中断
+              6|7|28|52|56|18) echo transient; return ;;  # curate 是 best-effort 富集: 6 DNS/7 拒连(worker 临时挂/冷启/重启)也按【瞬时】—— 幂等下轮 cron 续, 不拖红整跑。同一跑里 essence 先连通已兜住"URL/鉴权配置错"(真错 essence 会报红)。28超时/52空回复/56重置/18传输不全 = 够到但中断。
               0) : ;;                                  # curl 本身成功, 看 http_code
-              *) echo systemic; return ;;             # 6 DNS / 7 拒连 / 3 URL格式 / 35,60 SSL = 没够到/配置坏
+              *) echo systemic; return ;;             # 3 URL格式 / 35,60 SSL 等 = 配置坏(罕见, 仍判红)
             esac
             case "$2" in 502|503|504) echo transient ;; *) echo systemic ;; esac
           }
