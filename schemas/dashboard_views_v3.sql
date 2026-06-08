@@ -29,6 +29,8 @@ select
   impressions
 from truth_vault.notes
 where tier in ('爆','大爆') and tier_source = '状态字段'
+  -- 伪爆贴(synthetic=true)不进 Top 爆款拆解榜 —— 状态标爆但源头无可测曝光, 不可验证。
+  and (data_quality_flags->>'synthetic') is distinct from 'true'
   and interactions is not null
 order by interactions desc nulls last
 limit 8;

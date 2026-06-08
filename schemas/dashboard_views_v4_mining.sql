@@ -2,6 +2,12 @@
 -- 把 truth_vault.notes 的真实规律挖出来:情绪杠杆命中率 / 效价×强度矩阵 / 人性原型 / 意图 / tier 漏斗。
 -- 仍是 public 只读安全聚合:只吐 类别标签 + count/rate,绝不吐 title/body/account 等明细。
 -- security_invoker=false:以 owner 读 RLS-on 的 truth_vault;create or replace 幂等。
+--
+-- 伪爆贴约定(data_quality_flags.synthetic=true = 状态标爆但无可测曝光, 不可验证 → 不算爆款):
+--   下列命中率视图的 hits/hit_rate 用「爆/大爆 + 状态字段 + synthetic」精准剔除(不动数值推断爆)。
+--   只需 project_perf / audience_perf / format_perf —— lever/valence/archetype/intent 依赖 essence
+--   衍生字段(emotional_lever/human_truth_archetype/intent), 开了 opt-in 的 RIO(skip_essence)伪爆贴
+--   在那些视图里本就不存在;reach_concentration 过滤 impressions>0 也天然排除空曝光伪爆贴。
 
 -- 1) 情绪杠杆表现(命中率排行 + 漏斗)—— 揭示"最常用 ≠ 最有效"
 create or replace view public.v_dash_lever_perf with (security_invoker = false) as
@@ -84,8 +90,10 @@ select
   p.category,
   p.platform,
   count(n.note_id)                                                     as notes,
-  count(*) filter (where n.tier in ('爆','大爆'))                      as hits,
-  round(100.0 * count(*) filter (where n.tier in ('爆','大爆')) / nullif(count(n.note_id), 0), 1) as hit_rate,
+  count(*) filter (where n.tier in ('爆','大爆')
+    and not (n.tier_source = '状态字段' and (n.data_quality_flags->>'synthetic') is not distinct from 'true')) as hits,
+  round(100.0 * count(*) filter (where n.tier in ('爆','大爆')
+    and not (n.tier_source = '状态字段' and (n.data_quality_flags->>'synthetic') is not distinct from 'true')) / nullif(count(n.note_id), 0), 1) as hit_rate,
   round(avg(n.impressions))::int                                       as avg_imp,
   coalesce(sum(n.impressions), 0)::bigint                              as total_imp,
   count(*) filter (where n.emotional_lever is not null and n.emotional_lever <> '') as essence
@@ -113,8 +121,10 @@ create or replace view public.v_dash_audience_perf with (security_invoker = fals
 select
   a                                                                    as audience,
   count(*)                                                             as n,
-  count(*) filter (where n.tier in ('爆','大爆'))                      as hits,
-  round(100.0 * count(*) filter (where n.tier in ('爆','大爆')) / count(*), 1) as hit_rate,
+  count(*) filter (where n.tier in ('爆','大爆')
+    and not (n.tier_source = '状态字段' and (n.data_quality_flags->>'synthetic') is not distinct from 'true')) as hits,
+  round(100.0 * count(*) filter (where n.tier in ('爆','大爆')
+    and not (n.tier_source = '状态字段' and (n.data_quality_flags->>'synthetic') is not distinct from 'true')) / count(*), 1) as hit_rate,
   round(avg(n.interactions))::int                                      as avg_inter
 from truth_vault.notes n, lateral unnest(n.target_audience) a
 where n.target_audience is not null
@@ -128,8 +138,10 @@ create or replace view public.v_dash_format_perf with (security_invoker = false)
 select
   content_format                                                       as fmt,
   count(*)                                                             as n,
-  count(*) filter (where tier in ('爆','大爆'))                        as hits,
-  round(100.0 * count(*) filter (where tier in ('爆','大爆')) / count(*), 1) as hit_rate,
+  count(*) filter (where tier in ('爆','大爆')
+    and not (tier_source = '状态字段' and (data_quality_flags->>'synthetic') is not distinct from 'true')) as hits,
+  round(100.0 * count(*) filter (where tier in ('爆','大爆')
+    and not (tier_source = '状态字段' and (data_quality_flags->>'synthetic') is not distinct from 'true')) / count(*), 1) as hit_rate,
   round(avg(interactions))::int                                        as avg_inter
 from truth_vault.notes
 where content_format is not null and content_format <> ''
