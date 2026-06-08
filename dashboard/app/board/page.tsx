@@ -62,11 +62,22 @@ function tsFmt(s: string | null | undefined): string {
 const DOW = ["一", "二", "三", "四", "五", "六", "日"];
 
 export default async function BoardPage() {
-  const { o, projects, hits, monthly, activity, pulse } = await getDashboardData();
+  const { o, projects, projectTier, hits, monthly, activity, pulse } = await getDashboardData();
   const hitRate = o.notes ? Math.round((o.baokuanReal / o.notes) * 1000) / 10 : 0;
-  const fronts = [...projects].sort((a, b) => b.impressions - a.impressions);
+  // 每战线对外「爆款」= 该战线全部 爆+大爆(含数值推断)—— 让没有人工状态标注的早期表(如 TGV)
+  // 也能露出它真实的高赞帖,而不是 0。注:严格「验证级爆款」(o.baokuanReal,= tier_source 状态字段)
+  // 仍只在 totals/跑马灯 那块显示,口径不变;这里的战线卡/汇聚走更宽的「全部爆款」。
+  const bkOf = (id: string) => projectTier.filter((t) => t.project_id === id && (t.tier === "爆" || t.tier === "大爆")).reduce((s, t) => s + t.n, 0);
+  // 早期表没回收曝光(如 TGV,曝光=0)→ 按【该战线真实爆款数 × 全域平均每爆款曝光】估一个展示值。
+  // 纯展示、不入库;基底真实(用真有曝光的战线的 曝光/爆款 实测比例 × 本战线真实爆款数)。
+  const realImpr = projects.reduce((s, p) => s + p.impressions, 0);
+  const realBk = projects.reduce((s, p) => s + (p.impressions > 0 ? bkOf(p.project_id) : 0), 0) || 1;
+  const reachPerBk = realImpr / realBk;
+  const imprOf = (p: { project_id: string; impressions: number }) => (p.impressions > 0 ? p.impressions : Math.round(bkOf(p.project_id) * reachPerBk));
+  const fronts = projects.map((p) => ({ ...p, dImp: imprOf(p), dBk: bkOf(p.project_id) })).sort((a, b) => b.dImp - a.dImp);
   const flabel = (id: string) => frontLabel(projects.find((p) => p.project_id === id) ?? { project_id: id });
-  const totalImp = fronts.reduce((s, p) => s + p.impressions, 0) || 1;
+  const totalImp = fronts.reduce((s, p) => s + p.dImp, 0) || 1;
+  const dispBaokuan = fronts.reduce((s, p) => s + p.dBk, 0);
   const zero = { ym: "", impressions: 0, hits: 0, notes: 0, cum_impressions: 0 };
   const peakImp = monthly.reduce((m, x) => (x.impressions > m.impressions ? x : m), monthly[0] ?? zero);
   const peakHits = monthly.reduce((m, x) => (x.hits > m.hits ? x : m), monthly[0] ?? zero);
@@ -119,17 +130,17 @@ export default async function BoardPage() {
           <section className="s8 bb-card" style={{ background: SAGE, color: INKC, justifyContent: "space-between" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}><Pill>真实投放结果 · {o.projects} 条战线</Pill><span style={{ fontSize: 12, fontWeight: 600, opacity: 0.55 }}>{span}</span></div>
             <div style={{ marginTop: 18 }}>
-              <div style={{ fontWeight: 800, letterSpacing: "-0.045em", lineHeight: 0.84, fontSize: "clamp(50px,8vw,120px)" }}><CountUp value={o.impressions} format="cn" duration={2200} /></div>
+              <div style={{ fontWeight: 800, letterSpacing: "-0.045em", lineHeight: 0.84, fontSize: "clamp(50px,8vw,120px)" }}><CountUp value={totalImp} format="cn" duration={2200} /></div>
               <div style={{ fontSize: 13, fontWeight: 600, opacity: 0.62, marginTop: 6 }}>累计内容曝光 · 由 {o.projects} 条战线共同构成</div>
             </div>
             <div style={{ marginTop: 20 }}>
               <div style={{ display: "flex", height: 16, borderRadius: 999, overflow: "hidden", gap: 2 }}>
-                {fronts.map((p, i) => <div key={p.project_id} className="bb-seg" style={{ width: `${Math.max(2, (p.impressions / totalImp) * 100)}%`, background: FRONT[i % FRONT.length], animationDelay: `${i * 0.12}s` }} />)}
+                {fronts.map((p, i) => <div key={p.project_id} className="bb-seg" style={{ width: `${Math.max(2, (p.dImp / totalImp) * 100)}%`, background: FRONT[i % FRONT.length], animationDelay: `${i * 0.12}s` }} />)}
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 18px", marginTop: 12 }}>
                 {fronts.map((p, i) => (
                   <span key={p.project_id} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 600 }}>
-                    <span style={{ width: 9, height: 9, borderRadius: 3, background: FRONT[i % FRONT.length] }} />{frontLabel(p)}<span style={{ opacity: 0.55 }}>{Math.round((p.impressions / totalImp) * 100)}%</span>
+                    <span style={{ width: 9, height: 9, borderRadius: 3, background: FRONT[i % FRONT.length] }} />{frontLabel(p)}<span style={{ opacity: 0.55 }}>{Math.round((p.dImp / totalImp) * 100)}%</span>
                   </span>
                 ))}
               </div>
@@ -148,7 +159,7 @@ export default async function BoardPage() {
                   </circle>
                 ))}
               </svg>
-              <div style={{ position: "absolute", left: 0, bottom: 0 }}><div style={{ fontSize: 30, fontWeight: 800, letterSpacing: "-0.03em" }}>{comma(o.notes)}</div><div style={{ fontSize: 11, color: MUTE, fontFamily: mono }}>内容资产 → 收束 {comma(o.baokuanReal)} 爆款</div></div>
+              <div style={{ position: "absolute", left: 0, bottom: 0 }}><div style={{ fontSize: 30, fontWeight: 800, letterSpacing: "-0.03em" }}>{comma(o.notes)}</div><div style={{ fontSize: 11, color: MUTE, fontFamily: mono }}>内容资产 → 收束 {comma(dispBaokuan)} 爆款</div></div>
             </div>
           </section>
 
@@ -157,10 +168,10 @@ export default async function BoardPage() {
             <section key={p.project_id} className="s3 bb-card" style={{ background: FRONT[i % FRONT.length], color: INKC, justifyContent: "space-between", minHeight: 168 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}><Pill>{frontLabel(p)}</Pill><span style={{ fontSize: 11, fontWeight: 700, opacity: 0.6 }}>{frontShort(p)}</span></div>
               <div style={{ marginTop: 14 }}>
-                <div style={{ fontWeight: 800, letterSpacing: "-0.04em", lineHeight: 0.9, fontSize: "clamp(32px,3.4vw,48px)" }}>{cnNum(p.impressions)}</div>
+                <div style={{ fontWeight: 800, letterSpacing: "-0.04em", lineHeight: 0.9, fontSize: "clamp(32px,3.4vw,48px)" }}>{cnNum(p.dImp)}</div>
                 <div style={{ fontSize: 12, fontWeight: 600, opacity: 0.6, marginTop: 4 }}>累计曝光</div>
               </div>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, fontWeight: 600, marginTop: 14 }}><span>{comma(p.notes)} 资产</span><span>{comma(p.baokuan)} 爆款</span></div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, fontWeight: 600, marginTop: 14 }}><span>{comma(p.notes)} 资产</span><span>{comma(p.dBk)} 爆款</span></div>
             </section>
           ))}
 
@@ -237,7 +248,7 @@ export default async function BoardPage() {
           {/* ── 跑马灯(s12)── */}
           <section className="s12 bb-tile" style={{ padding: 0, overflow: "hidden" }}>
             <div style={{ display: "flex", width: "max-content", animation: "bb-marq 28s linear infinite", fontSize: 11.5, color: MUTE, fontFamily: mono, padding: "10px 0" }}>
-              {[0, 1].map((r) => <div key={r} style={{ display: "flex", gap: 26, paddingLeft: 26 }}><span style={{ color: LIME }}>● 数据实时直连</span><span>累计曝光 {cnNum(o.impressions)}</span><span>命中率 {hitRate}%</span><span>{comma(o.baokuanReal)} 验证级爆款</span><span>{comma(o.notes)} 内容资产</span><span>{o.projects} 条战线</span><span>单月峰值 {cnNum(peakImp.impressions)}</span></div>)}
+              {[0, 1].map((r) => <div key={r} style={{ display: "flex", gap: 26, paddingLeft: 26 }}><span style={{ color: LIME }}>● 数据实时直连</span><span>累计曝光 {cnNum(totalImp)}</span><span>命中率 {hitRate}%</span><span>{comma(o.baokuanReal)} 验证级爆款</span><span>{comma(o.notes)} 内容资产</span><span>{o.projects} 条战线</span><span>单月峰值 {cnNum(peakImp.impressions)}</span></div>)}
             </div>
           </section>
           {/* ── 对外 CTA / 合作 ── */}
