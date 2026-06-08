@@ -18,5 +18,12 @@ export function getSupabase() {
   if (!url || !key) return null;
   return createClient(url, key, {
     auth: { persistSession: false, autoRefreshToken: false },
+    global: {
+      // 看板是实时面板:强制每次请求都重新查库。
+      // 否则 Next/Vercel 会把 v_dash_* 的 GET 响应进 Data Cache,且该缓存【跨部署持久】——
+      // 哪怕页面是 force-dynamic、哪怕改了库/换了 env,前端也会一直吐被冻住的旧快照。
+      // no-store = 既不读也不写缓存 → 永远拿 kduysqedr 当前真值(配合实时视图,前端零运维自动跟新)。
+      fetch: (input, init) => fetch(input, { ...init, cache: "no-store" }),
+    },
   });
 }
