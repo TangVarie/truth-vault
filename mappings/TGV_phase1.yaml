@@ -16,7 +16,7 @@ version: 1.0
 project_id: TGV_phase1
 brand: TGV                       # [待确认] 实际品牌名未知(TGV 为内部代号)
 product: 维他命
-category: 保健品                 # [待确认] 维他命=保健品;但内容全是育儿场景, 若为儿童营养品或可 母婴
+category: 保健品                 # ✓ 维他命=保健品(产品本位;内容虽育儿场景, 品类按产品定)
 platform: xiaohongshu
 schema_family: C                 # 最老格式(文档记 TGV 属 C 家族)
 start_date: 2025-XX-XX           # 待填(发布日期 ~2025)
@@ -33,6 +33,13 @@ field_mapping:
 
 intent_mapping: {}               # 本表无「发布笔记」intent 列 → intent 一律 null
 
+# ── 合成互动量 ── 本表无单一「互动量」, 只有 点赞/收藏/分享/评论 分列。
+# 求和写进 notes.interactions —— 支撑 数值推断 tier(本表唯一 tier 信号)+ 看板互动展示。
+# 源四列仍在 raw_extra 声明并留分项明细(见下)。需引擎 computed_fields 支持(本次随表加)。
+computed_fields:
+  interactions:
+    sum: [点赞数, 收藏数, 分享数, 评论数]
+
 # ── tier 抽取 ──
 # 本表无「状态/备注」, 唯一候选是【笔记阶段】(导出 0/156 空)。先按文档 TGV「新爆/淘汰/删0」
 # 词表起草(改 match_contains, 因引擎只认 contains); 活表若 笔记阶段 有值, preflight 会显示真实取值再对齐。
@@ -47,6 +54,14 @@ tier_extraction:
     - match_contains: ["删0", "他自己删了"]
       tier: 删除
     - default: null
+
+# ── 数值推断阈值 ── TGV 无人工 tier 标注 → 用合成互动量按阈值推断(tier_source=数值推断,
+# 【不计入验证级爆款】, 只为浮出高互动帖供语料/飞轮)。据导出实测分布(median=10, p90≈505,
+# max≈3973):爆=500(≈top10%, ~14条) / 大爆=2000(top~4%, ~5条)。
+# ⚠️ [待校准] 入库后跑 scripts/recommend_tier_thresholds.py 复核。
+tier_thresholds:
+  爆: 500
+  大爆: 2000
 
 compliance:
   base_template: 保健品
