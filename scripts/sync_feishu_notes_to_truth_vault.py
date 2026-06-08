@@ -292,6 +292,26 @@ def transform_row(
         else:
             note[schema_target] = _coerce_value(schema_target, value)
 
+    # ── computed_fields: 合成数值列(早期表无单一「互动量」, 只有 点赞/收藏/分享/评论 分列)──
+    #   yaml:  computed_fields: { interactions: { sum: [点赞数, 收藏数, 分享数, 评论数] } }
+    # 把多列 parse_numeric 后求和写进目标数值列 —— 支持 TGV 这类无聚合互动量的表做 数值推断
+    # tier + 看板互动展示。注意:① 源列仍须在 field_mapping/raw_extra 声明(否则 D-021 整行
+    # quarantine), 求和只读不消费, 源分项照常进 raw_extra 留痕;② 仅当目标列【还没被 field_mapping
+    # 显式赋值】时才写, 不覆盖直接映射的真值;③ 全空 → 不写(保持 None, 不写 0 冒充有数据)。
+    for target_col, spec in (mapping.get("computed_fields") or {}).items():
+        if not isinstance(spec, dict) or not spec.get("sum"):
+            continue
+        if note.get(target_col) is not None:
+            continue
+        total, seen = 0.0, False
+        for src_col in spec["sum"]:
+            v = parse_numeric(raw_fields.get(src_col))
+            if v is not None:
+                total += v
+                seen = True
+        if seen:
+            note[target_col] = int(total) if target_col in _NUMERIC_COLS else total
+
     # Project-specific allowlist → raw_extra
     for feishu_col in fields_to_raw_extra:
         if feishu_col in raw_fields:
