@@ -1,0 +1,167 @@
+# ════════════════════════════════════════════════════════════════════
+# 花西子粉饼 · HXZ_FB —— Onboarding 草稿(DRAFT)
+# ════════════════════════════════════════════════════════════════════
+# ⚠️ 本草稿【沿用同 app 的 HXZ_QD(气垫)结构】作起点(同品牌/同运营模板, 列大概率接近),
+#    但 field_mapping / direction_decomposition / 未声明列 的真实取值需用 preflight 拉【粉饼表】校正:
+#    - 粉饼表若有 HXZ_QD 没有的列 → preflight 报"未声明列"→ 补进 raw_extra;
+#    - HXZ_QD 有而粉饼没有的列 → preflight 报"声明了但表里没有"→ 删掉;
+#    - 「方向」取值粉饼可能与气垫不同 → 按 preflight 实测重写 direction_decomposition。
+#    feishu 坐标、品类已据实预填。流程同 HXZ_QD。
+# ════════════════════════════════════════════════════════════════════
+
+version: 1.0
+
+# ── 项目元数据 ──
+project_id: HXZ_FB
+brand: 花西子
+product: 粉饼
+category: 美妆                  # ✓ 在 projects_category_check 闭集内(同 HXZ_QD)
+platform: xiaohongshu
+schema_family: B               # 沿用 HXZ_QD(同 app, 大概率同 B 家族)—— preflight 看真实字段确认
+start_date: 2025-XX-XX         # 待填
+end_date: 2026-XX-XX           # 待填
+
+# ── 字段映射 ── [沿用 HXZ_QD 真实列;待 preflight 拉粉饼表逐列校正]
+field_mapping:
+  素人编号: account_id
+  文案: raw_content
+  发布时间: publish_time
+  反馈链接: publish_url
+  状态: _status_raw              # → tier_extraction
+  方向: _direction_raw           # → direction_decomposition
+  曝光量: impressions
+  阅读量: reads
+  互动量: interactions
+  关键词: target_blue_keywords
+  蓝词记录: hit_blue_keywords
+  发布笔记: _intent_raw
+  随贴评论: _comment_text
+  随贴评论素人: _comment_text_persona
+
+intent_mapping:
+  流量帖: traffic
+  钓鱼帖: traffic
+  直给笔记: conversion
+  小红书下单: conversion
+  科普贴: educational
+
+# ── 方向拆解 ── [沿用 HXZ_QD 的 7 方向作起点;粉饼真实「方向」取值以 preflight 为准重写]
+# ⚠️ 粉饼方向可能与气垫不同(如更偏 年龄/经济 —— docs/05 前例"55岁求好用又实惠的粉饼")。
+# content_format / target_audience 受 docs/05 v0.2 闭集约束(format 8 值 / audience 11 值);
+# 标 [待review]/[待细化], 人群一律先给 ["通用"](按 D-010 不臆造人群), 待策略 lead(Ziao/周哥)定。
+direction_decomposition:
+  "妆效问题":
+    content_format: 直给推荐          # [待review]
+    target_audience: ["通用"]         # [待细化]
+    user_pain_point: 妆效不满意(卡粉/不服帖/遮瑕力不足/持妆差)
+  "经济考虑":
+    content_format: 横评对比          # [待review]
+    target_audience: ["通用"]         # [待细化] 粉饼平价向可能 学生党/银发女性, 待策略确认
+    user_pain_point: 预算有限/追求高性价比平替
+  "年龄问题":
+    content_format: 情感叙事          # [待review] 粉饼熟龄向常见, 多走情感叙事
+    target_audience: ["通用"]         # [待细化] likely 中年女性/银发女性, 待策略确认
+    user_pain_point: 年龄/熟龄肌妆容焦虑(显老/卡纹/浮粉)
+  "持妆问题":
+    content_format: 场景植入          # [待review]
+    target_audience: ["通用"]         # [待细化]
+    user_pain_point: 持妆/脱妆问题(出油脱妆、持久度不足)
+  "场景需求":
+    content_format: 场景植入
+    target_audience: ["通用"]         # [待细化]
+    user_pain_point: 特定使用场景下的妆容需求
+  "功能需求":
+    content_format: 直给推荐          # [待review]
+    target_audience: ["通用"]         # [待细化]
+    user_pain_point: 特定功能需求(遮瑕/控油/定妆/养肤等)
+  "季节气候问题":
+    content_format: 场景植入          # [待review]
+    target_audience: ["通用"]         # [待细化]
+    user_pain_point: 季节/气候适配(夏季出油/换季干燥等)
+  "持妆问题, 妆效问题":               # preflight: 1 行飞书多选方向(持妆+妆效合并值)
+    content_format: 直给推荐          # [待review];注:多选方向理想应在 transform_row 按逗号拆分(未来)
+    target_audience: ["通用"]         # [待细化]
+    user_pain_point: 持妆 + 妆效综合(脱妆/卡粉/不服帖/持久度不足)
+
+tier_extraction:
+  source: 状态字段
+  rules:
+    - match_contains: ["大爆"]
+      tier: 大爆
+    - match_contains: ["爆贴预备"]
+      tier: 预备
+    - match_contains: ["爆贴"]
+      tier: 爆
+    - match_contains: ["参考"]
+      tier: 参考
+    - match_contains: ["风控"]
+      tier: 风控
+    - match_contains: ["无水花"]
+      tier: 趴
+    - match_contains: ["评估中"]
+      tier: 未知
+    - default: null
+
+# 阈值沿用 HXZ_QD(爆=30 / 大爆=1000)起步 —— ⚠️ 爆=30 经验偏低, 入库 50+ 条后用
+# scripts/recommend_tier_thresholds.py 校准(数值推断 tier 才用得到, 状态字段优先)。
+tier_thresholds:
+  爆: 30
+  大爆: 1000
+
+compliance:
+  base_template: 美妆
+  custom_red_flags:
+    - "功效宣称需可备案/可证实,禁绝对化(最/第一/100%)"
+    - "禁医疗化表述(治疗/修复屏障等需谨慎)"
+  blue_keyword_strategy:
+    primary: []                  # 待策略 lead 填(如 花西子粉饼 / 控油粉饼)
+    secondary: []
+    avoid: []
+
+# 项目专属字段(进 raw_extra)—— 沿用 HXZ_QD 实测列作起点;待 preflight 报粉饼表"未声明列"后据实增删。
+# ⚠️ 不声明 = 出现即整行 quarantine(D-021), 会丢真笔记。
+project_specific_fields_to_raw_extra:
+  - 父记录 2
+  - 父记录 3
+  - 父记录 4
+  - 观众分析
+  - 数据汇总
+  - 曝光量副本
+  - 阅读量副本
+  - 互动量副本
+  - 评论状态
+  - 相关截图
+  - 评论配图
+  - 蓝词图片
+  - 临时-评论修改对比
+  - 爆帖置顶评论          # preflight: 粉饼表实有此列(气垫无);气垫的"爆帖控评置顶"粉饼表无, 已去
+  # ✅ preflight(读 293 行)确认:仅此一列与气垫不同, 其余克隆列均在表中;声明后 quarantine 应归零。
+
+data_supplement_needed:
+  - field: account_followers
+    method: 通过 publish_url 调小红书 API 或人工补录
+    estimated_rows: 0
+
+# ── Sync 配置 ── (飞书坐标据用户提供:同 app, 粉饼表)
+sync_config:
+  source_type: feishu_api
+  feishu_app_token: IKDabbT7HascF5szHrRciBe0ndg
+  feishu_table_id: tbls5t2nRnqDuDmW
+  feishu_view_id: null
+  sync_interval: on_demand        # 夜间 cron 不碰;preflight + 显式验证 OK 再翻 daily
+
+onboarding_meta:
+  onboarded_at: 2026-06-08
+  onboarded_by: (待填)
+  strategy_lead: Ziao / 周哥
+  notes: |
+    DRAFT —— 沿用 HXZ_QD(气垫, 同 app)结构作起点, 待 preflight 拉【粉饼表】校正:
+    1) 跑 preflight(Actions → Preflight mapping → HXZ_FB, show=50)拉真表, 据报告:
+       - field_mapping 真实列名对齐(删表里没有的、改名错的)
+       - schema_family A/B 确认
+       - 未声明列 → 补进 project_specific_fields_to_raw_extra(避免整行 quarantine)
+       - 「方向」真实取值 → 逐个补/改 direction_decomposition(确保全命中, 粉饼方向可能异于气垫)
+       - 品类 已确认合法(美妆)
+    2) 注:autowriter 映射【不需要配】—— 通道2 push 已退役(D-038), 改 pull/馆员。
+    3) preflight 干净 → PR → 显式 Daily TV sync(dry_run)→ 实跑 → 翻 daily → backfill essence。
+    4) 入库后会自动成为对外看板第 6 条战线(战线 ζ · 美妆, 由 v_dash_projects.seq 自动生成, 零改前端)。
