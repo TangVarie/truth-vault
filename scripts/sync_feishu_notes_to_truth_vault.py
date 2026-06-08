@@ -52,6 +52,7 @@ from _common import (
     parse_numeric,
     parse_feishu_date,
     parse_audience_analysis,
+    parse_metrics_text,
     quarantine_record,
     setup_logger,
     update_project_date_range,
@@ -333,6 +334,15 @@ def transform_row(
 
     # ── Secondary processing per mapping ──
     consumed_intermediates: set[str] = set()
+
+    # ── 数据整理(半结构化"曝光量：X；阅读量：Y；互动量：Z")→ 拆进 impressions/reads/interactions ──
+    # RIO 这类表真实指标在【数据整理】单列文本里, 不在独立的曝光量/阅读量/互动量列(那些稀疏)。
+    # 映射 `数据整理: _metrics_raw` 即触发;须在【数值推断 tier / metric_snapshot】之前完成。
+    # setdefault: 不覆盖已由直接列映射赋的值(若某表同时还有独立列)。
+    if "_metrics_raw" in intermediates:
+        for _mcol, _mval in parse_metrics_text(intermediates["_metrics_raw"]).items():
+            note.setdefault(_mcol, _mval)
+        consumed_intermediates.add("_metrics_raw")
 
     # tier_extraction: A/B families map 「状态」→ _status_raw; C family (TGV/QSHG)
     # maps 「备注」→ _note_for_tier. Pick the intermediate based on the yaml's

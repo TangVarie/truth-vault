@@ -461,6 +461,32 @@ def _audience_text(value: Any) -> str:
     return str(value)
 
 
+# RIO 这类表把指标塞在单列「数据整理」文本里(曝光量：X；阅读量：Y；互动量：Z), 不在独立
+# 曝光量/阅读量/互动量列(那些稀疏)。与 parse_audience_analysis 同属"半结构化单列→多 typed 列"。
+_METRIC_TEXT_LABELS = {"曝光量": "impressions", "阅读量": "reads", "互动量": "interactions"}
+
+
+def parse_metrics_text(value: Any) -> dict:
+    """解析「数据整理」半结构化文本 → {impressions, reads, interactions}(int)。
+    格式: "曝光量：979；阅读量：687；互动量：856"(；分段, ：分键值)。
+    值为 / 或缺(parse_numeric→None)→ 跳过该列(留 null)。空 / None / 非串 → {}。"""
+    text = _direction_key(value).strip()
+    out: dict = {}
+    if not text:
+        return out
+    for sec in re.split(r"[；;]", text):
+        parts = re.split(r"[：:]", sec.strip(), maxsplit=1)
+        if len(parts) != 2:
+            continue
+        col = _METRIC_TEXT_LABELS.get(parts[0].strip())
+        if not col:
+            continue
+        num = parse_numeric(parts[1].strip())
+        if num is not None:
+            out[col] = int(num)
+    return out
+
+
 def parse_audience_analysis(value: Any) -> Optional[dict]:
     """Parse 半结构化「观众分析」文本 → notes.actual_audience_data (文档约定形状).
 
