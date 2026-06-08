@@ -438,40 +438,39 @@ def transform_row(
             note["audience_actual_synced_at"] = _iso_now()
         consumed_intermediates.add("_audience_raw")
 
-    # ── 伪爆贴标记 (WTG · 「笔记状态」含"关注" = 人工伪造的假数据) ──
-    # 这种数据指标做不得真, 但代表运营认为这篇有潜力. 标 data_quality_flags
-    # 让下游 (v_autowriter_injection_candidates) 排除, 防假爆款污染飞轮.
-    if "_note_status_raw" in intermediates:
+    # ── 伪爆贴标记(synthetic)—— 两个来源, 取并集写进同一个 data_quality_flags.synthetic ──
+    #   A) WTG 式:「笔记状态」含"关注" = 人工伪造假数据(指标不可信但有潜力信号)。
+    #   B) opt-in(RIO, data_quality.unmeasured_status_baokuan_is_synthetic):状态标 爆/大爆
+    #      却无可测曝光(impressions 为空)= 运营断言但无法验证。须放在 tier/impressions 都定稿后。
+    # 任一成立 → synthetic=true:① 排除出 autowriter 种草飞轮(v_autowriter_injection_candidates);
+    #   ② 看板 v_dash_* 把 synthetic 爆款剔出爆款数/命中率。
+    # 清除路径(关键): 只要本次能判定 synthetic(笔记状态在场, 或项目开了 B opt-in)就【显式写】
+    #   true/false —— 否则 upsert 漏列保留 DB 旧值, 后续补了曝光/改了 tier 后旧 synthetic=true 会
+    #   永久残留, 行被错误地一直排除(codex PR #19 / PR #91 review)。非 opt-in 项目行为完全不变。
+    syn_reasons: list[str] = []
+    note_status_seen = "_note_status_raw" in intermediates
+    if note_status_seen:
         nsr = str(intermediates["_note_status_raw"] or "")
         note.setdefault("raw_extra", {})["_note_status_raw"] = nsr
-        flags = dict(note.get("data_quality_flags") or {})
+        consumed_intermediates.add("_note_status_raw")
         if "关注" in nsr:
+            syn_reasons.append("笔记状态含'关注'=人工伪爆贴; 指标不可信但有潜力信号")
+    opt_in_unmeasured = bool(
+        (mapping.get("data_quality") or {}).get("unmeasured_status_baokuan_is_synthetic")
+    )
+    if (opt_in_unmeasured and note.get("tier") in ("爆", "大爆")
+            and note.get("tier_source") == "状态字段" and note.get("impressions") is None):
+        syn_reasons.append("状态标爆但源头无曝光数据(曝光量=/), 不可验证 → 伪爆贴")
+    # 写条件 = 本次可判定: 非 opt-in 项目仅当笔记状态在场时写(行为同旧版); opt-in 项目恒写(清除路径)。
+    if note_status_seen or opt_in_unmeasured:
+        flags = dict(note.get("data_quality_flags") or {})
+        if syn_reasons:
             flags["synthetic"] = True
-            flags["synthetic_reason"] = "笔记状态含'关注'=人工伪爆贴; 指标不可信但有潜力信号"
+            flags["synthetic_reason"] = "; ".join(syn_reasons)
         else:
-            # resync 时若状态从"关注"改回正常, 必须显式清除旧 synthetic 标记 ——
-            # upsert 只 SET payload 里出现的列, 不写 data_quality_flags 会让 DB
-            # 里的旧 true 残留, 行被 v_autowriter_injection_candidates 永久排除
-            # (codex PR #19 review). 显式写 false + 去掉 reason.
             flags["synthetic"] = False
             flags.pop("synthetic_reason", None)
         note["data_quality_flags"] = flags
-        consumed_intermediates.add("_note_status_raw")
-
-    # ── 伪爆贴(无曝光数据型): 状态标爆/大爆 但 impressions 缺失 → 不可验证 → 标 synthetic ──
-    # yaml opt-in(默认关; 仅 RIO 这类「源头曝光量本身就是 / 」的表开):
-    #   data_quality: { unmeasured_status_baokuan_is_synthetic: true }
-    # 语义:「验证级爆款」需 状态标 + 至少有可测曝光。只标了状态却无曝光数 = 运营断言但无法核 = 伪爆贴。
-    # 效果:① 沿用既有 synthetic 语义 → 排除出 autowriter 种草飞轮;② 看板 v_dash_*(project_tier/
-    # projects/overview)已把「状态字段+爆/大爆+synthetic」剔出爆款数。须放在 tier/impressions 都定后。
-    if (mapping.get("data_quality") or {}).get("unmeasured_status_baokuan_is_synthetic") \
-            and note.get("tier") in ("爆", "大爆") \
-            and note.get("tier_source") == "状态字段" \
-            and note.get("impressions") is None:
-        _flags = dict(note.get("data_quality_flags") or {})
-        _flags["synthetic"] = True
-        _flags["synthetic_reason"] = "状态标爆但源头无曝光数据(曝光量=/), 不可验证 → 伪爆贴"
-        note["data_quality_flags"] = _flags
 
     # Any intermediate that wasn't consumed above (e.g. _account_name,
     # _account_followers, _comment_text, _comment_text_persona) goes to
