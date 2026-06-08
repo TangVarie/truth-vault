@@ -115,7 +115,10 @@ export default async function BoardPage() {
     { name: "autowriter · 馆员", color: LIME, val: `${comma(o.cards)} 经验卡可借` },
     { name: "内部座舱", color: LIME, val: `${comma(o.cards)} 策略卡` },
   ];
-  const onlinePorts = [pulse?.feishu_n, pulse?.ssll_n, pulse?.snaps_n, pulse?.annotated_n, o.baokuanReal, o.cards].filter((x) => (x ?? 0) > 0).length;
+  // 端口在线数 = 与上方 7 个端口一一对应的底层信号 >0 的个数。autowriter·馆员 与 内部座舱
+  // 两个端口都看「策略卡 o.cards」→ 这里 o.cards 出现两次;之前只列 6 个信号却有 7 个端口,
+  // 导致全健康时也只显示 6/7、永远到不了 7/7(此修复)。端口 1/4 与显示一致带 ?? 兜底。
+  const onlinePorts = [pulse?.feishu_n ?? o.notes, pulse?.ssll_n, pulse?.snaps_n, pulse?.annotated_n ?? o.essence, o.baokuanReal, o.cards, o.cards].filter((x) => (x ?? 0) > 0).length;
 
   return (
     <main style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: sans }}>
