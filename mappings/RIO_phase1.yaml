@@ -1,0 +1,178 @@
+# ════════════════════════════════════════════════════════════════════
+# RIO 轻享 · RIO_phase1 —— Onboarding 草稿(DRAFT · A 家族)
+# ════════════════════════════════════════════════════════════════════
+# 起点 = docs/03 家族 A「RIO_1 示例」字段名 + WTG_phase1(完整 A 家族)骨架。
+# 真实列名 / 方向取值 / 未声明列 待 preflight 拉【RIO 轻享活表】校正:
+#   - A 家族数值列是【曝光数/阅读数/互动数】(注意"数"不是"量", 与 B 家族 HXZ/NRT 不同);
+#   - tier 源是【状态】列(RIO_1 文档如此);若活表叫「流量状态」(像 WTG)→ preflight 报后改名;
+#   - RIO 方向是【内容形式】(喝酒感受 / 反差破圈 等, DECISIONS D-003)—— 真实取值以 preflight 为准重写;
+#   - 账号列(帐号昵称/粉丝数/主页链接)+ A 家族巡查列 → 先进 raw_extra 留痕(原名可追溯)。
+# 品类 酒类、飞书坐标已据实预填。流程同 HXZ/TGV。
+# ════════════════════════════════════════════════════════════════════
+
+version: 1.0
+
+# ── 项目元数据 ──
+project_id: RIO_phase1
+brand: RIO                     # 锐澳 RIO(预调鸡尾酒)
+product: 轻享                  # RIO 轻享(低度/微醺线)
+category: 酒类                 # ✓ 在受控闭集内(vocab.py)
+platform: xiaohongshu
+schema_family: A               # 最新格式(DECISIONS D-006: RIO/WTG/TXQ = A 家族)。preflight 看是否有 巡查/检查/主页链接 列确认
+start_date: 2025-XX-XX         # 待填
+end_date: 2026-XX-XX           # 待填
+
+# ── 字段映射 ── [已用 preflight(run 27135943981, 读 391 行)校正到活表真实列名]
+# 活表是 WTG 式结构(非 docs RIO_1 模板):流量状态=表现/tier 源, 笔记状态=工作流,
+# 曝光量/阅读量/互动量(用「量」不是「数」), 数据回收状态, 观众分析, 随贴评论。
+field_mapping:
+  素人编号: account_id
+  文案: raw_content
+  发布时间: publish_time
+  反馈链接: publish_url
+  方向: _direction_raw            # → direction_decomposition
+  流量状态: _status_raw           # tier 源(WTG 式;非「状态」)
+  曝光量: impressions             # 本表用「量」非「数」(已校正)
+  阅读量: reads
+  互动量: interactions
+  数据回收状态: data_quality_status   # A 家族数据健康列(本表名「数据回收状态」)
+  笔记状态: _note_status_raw       # 检测伪爆贴(含"关注"=人工假数据;非 tier 源)
+  观众分析: _audience_raw          # → actual_audience_data(sync 确定性解析)
+  随贴评论: _comment_text          # → comments 表(Phase2 LLM 解析)
+
+# RIO 飞书表【大概率无】「发布笔记」intent 列(RIO 方向是内容形式, 非 intent 导向)→ 不做意图分类。
+# 若 preflight 报有 intent 列, 再补 field_mapping `发布笔记: _intent_raw` + intent_mapping 段。
+
+# ── 方向拆解 ── [占位草稿;RIO 真实「方向」取值以 preflight 为准重写]
+# DECISIONS D-003: RIO_1 方向是【内容形式】(喝酒感受 / 反差与破圈)。真实取值待 preflight 全列出。
+# content_format / target_audience 受 docs/05 v0.2 闭集约束(format 8 值 / audience 11 值);
+# 标 [待review], 人群一律先给 ["通用"](D-010 不臆造), 待策略 lead 定。
+direction_decomposition:
+  # —— 6 个基础方向(内容形式)+「赠送反差内容」跨向标(可单独, 或与基础方向飞书多选组合)——
+  # content_format/target_audience 标 [待review]/[待细化], 人群一律 ["通用"](D-010 不臆造), 待策略 lead 定。
+  "方向一 喝酒感受":
+    content_format: 情感叙事          # [待review] 微醺体验/喝酒感受 → 情感叙事
+    target_audience: ["通用"]         # [待细化] RIO 轻享 likely 年轻女性
+    user_pain_point: 微醺放松/情绪价值/小酌仪式感
+  "方向二 便利店调酒":
+    content_format: 教程攻略          # [待review] 便利店自调 → 教程攻略
+    target_audience: ["通用"]
+    user_pain_point: 低门槛自制微醺饮品
+  "方向三 反差与破圈":
+    content_format: 反差破圈          # 方向名即对应受控值
+    target_audience: ["通用"]
+    user_pain_point: 打破刻板印象/制造记忆点撬动流量
+  "方向四 提问与红黑榜":
+    content_format: 横评对比          # [待review] 红黑榜=榜单对比
+    target_audience: ["通用"]
+    user_pain_point: 选购决策/口味红黑榜参考
+  "方向五 对比真露":
+    content_format: 横评对比          # 对比竞品(真露 soju)
+    target_audience: ["通用"]
+    user_pain_point: 与真露等竞品对比/平替决策
+  "方向六 热门剧集":
+    content_format: 场景植入          # [待review] 借热门剧集场景植入
+    target_audience: ["通用"]
+    user_pain_point: 追剧小酌场景/借势热点
+  "赠送反差内容":
+    content_format: 反差破圈          # [待review] 赠送 + 反差
+    target_audience: ["通用"]
+    user_pain_point: 赠送装/反差制造记忆点
+  # —— 飞书多选组合值(基础方向 + 赠送反差内容;取基础方向的 content_format)——
+  # 注:多选理想应在 transform_row 按逗号拆分(未来);现按精确组合键各列一条确保全命中。
+  "方向一 喝酒感受, 赠送反差内容": { content_format: 情感叙事, target_audience: ["通用"], user_pain_point: 微醺体验 + 赠送反差 }
+  "方向二 便利店调酒, 赠送反差内容": { content_format: 教程攻略, target_audience: ["通用"], user_pain_point: 便利店自调 + 赠送反差 }
+  "方向三 反差与破圈, 赠送反差内容": { content_format: 反差破圈, target_audience: ["通用"], user_pain_point: 反差破圈 + 赠送 }
+  "方向四 提问与红黑榜, 赠送反差内容": { content_format: 横评对比, target_audience: ["通用"], user_pain_point: 红黑榜 + 赠送反差 }
+  "赠送反差内容, 方向四 提问与红黑榜": { content_format: 横评对比, target_audience: ["通用"], user_pain_point: 红黑榜 + 赠送反差 }
+  "方向五 对比真露, 赠送反差内容": { content_format: 横评对比, target_audience: ["通用"], user_pain_point: 对比真露 + 赠送反差 }
+  "赠送反差内容, 方向五 对比真露": { content_format: 横评对比, target_audience: ["通用"], user_pain_point: 对比真露 + 赠送反差 }
+  "方向六 热门剧集, 赠送反差内容": { content_format: 场景植入, target_audience: ["通用"], user_pain_point: 追剧场景 + 赠送反差 }
+
+tier_extraction:
+  source: 状态字段                  # 指示用 _status_raw(即「状态」列)
+  rules:
+    - match_contains: ["大爆"]
+      tier: 大爆
+    - match_contains: ["爆贴预备"]
+      tier: 预备
+    - match_contains: ["爆贴"]
+      tier: 爆
+    - match_contains: ["参考"]
+      tier: 参考
+    - match_contains: ["风控"]
+      tier: 风控
+    - match_contains: ["无水花"]
+      tier: 趴
+    - match_contains: ["评估中"]
+      tier: 未知
+    - default: null
+
+# ── 数值推断阈值 —— 仅对【无状态】帖子兜底(状态字段优先)。
+# DECISIONS D-001: RIO 一期 爆款互动 500+、趴帖互动 3。故起点 爆=100 / 大爆=500。
+# ⚠️ [待校准] 入库后跑 scripts/recommend_tier_thresholds.py 复核。
+tier_thresholds:
+  爆: 100
+  大爆: 500
+
+compliance:
+  base_template: null               # 酒类无强制合规模板;有客户红线再填
+  custom_red_flags:
+    - "酒类:禁向未成年人营销;禁诱导过量饮酒;按平台酒类内容规范"
+  blue_keyword_strategy:
+    primary: []                     # 待策略 lead 填(如 RIO轻享 / 微醺 等)
+    secondary: []
+    avoid: []
+
+# 项目专属字段(进 raw_extra)—— docs/03 RIO_1 + WTG A 家族常见列作起点;
+# 待 preflight 报活表"未声明列"后据实增删(不声明 = 出现即整行 quarantine, 丢真笔记 D-021)。
+project_specific_fields_to_raw_extra:
+  # —— preflight(读 391 行)实测未声明列, 全收进 raw_extra(否则整行 quarantine, D-021 丢真笔记)——
+  - 数据整理
+  - 是否巡查
+  - 相关截图
+  - 发布具体时间        # 另一时间列(主时间走「发布时间」→ publish_time)
+  - 笔记截图
+  - 内容配图
+  - 合作码
+  - 评论配图
+  - 评论状态
+  - 评论铺设情况
+  - 互动副本            # 互动量的 int 副本(部分行)
+  - 阅读副本
+  - 曝光副本
+  # —— 以下 preflight 未报缺失 = 表中存在, 保留留痕 ——
+  - 巡查状态
+  - 最近检查时间
+  - 已确认存活
+  - 备注
+  # ✅ 已删表中不存在的列(帐号昵称/粉丝数/主页链接/发布状态/口碑通是否发起授权/客户反馈/客户状态筛选)。
+  # 声明后 21 个未声明列应全部归零 → quarantine=0。
+
+data_supplement_needed:
+  - field: account_followers
+    method: 本表【无】粉丝数/帐号昵称列(preflight 确认)→ 需通过 publish_url 调小红书 API 或人工补录。
+    estimated_rows: 0
+
+# ── Sync 配置 ── (飞书坐标据用户提供)
+sync_config:
+  source_type: feishu_api
+  feishu_app_token: IYRRbhvwta38V1sy9JMcXRYonoc
+  feishu_table_id: tblW6UgoWQ9QZ82a
+  feishu_view_id: null
+  sync_interval: on_demand        # 夜间 cron 不碰;preflight + 显式验证 OK 再翻 daily
+
+onboarding_meta:
+  onboarded_at: 2026-06-08
+  onboarded_by: (待填)
+  strategy_lead: Ziao / 周哥
+  notes: |
+    DRAFT —— A 家族, 起点 = docs/03 RIO_1 模板 + WTG 骨架。待 preflight 拉【活表 tblW6UgoWQ9QZ82a, show=50】校正:
+      1) field_mapping 真实列名对齐(曝光数/阅读数/互动数/状态 确认;表里没有的删、改名错的改);
+      2) schema_family A 确认(有 巡查状态/最近检查时间/主页链接 → A 成立);
+      3) 未声明列 → 补进 project_specific_fields_to_raw_extra(避免整行 quarantine);
+      4) 「方向」真实取值(内容形式)→ 逐个补/改 direction_decomposition(确保全命中);
+      5) 品类 已确认合法(酒类)。
+    autowriter 映射不需配(D-038 通道2 退役)。
+    preflight 干净 → PR → 显式 Daily TV sync(dry_run → 实跑)→ 翻 daily → backfill essence。
+    入库后自动成为对外看板下一条战线(希腊字母 + 酒类, seq 自动生成, 零改前端)。
