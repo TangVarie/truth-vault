@@ -48,14 +48,46 @@ field_mapping:
 # content_format / target_audience 受 docs/05 v0.2 闭集约束(format 8 值 / audience 11 值);
 # 标 [待review], 人群一律先给 ["通用"](D-010 不臆造), 待策略 lead 定。
 direction_decomposition:
-  "喝酒感受":
-    content_format: 情感叙事          # [待review] 喝酒感受/微醺体验多走情感叙事
-    target_audience: ["通用"]         # [待细化] RIO 轻享 likely 年轻女性, 待策略确认
+  # —— 6 个基础方向(内容形式)+「赠送反差内容」跨向标(可单独, 或与基础方向飞书多选组合)——
+  # content_format/target_audience 标 [待review]/[待细化], 人群一律 ["通用"](D-010 不臆造), 待策略 lead 定。
+  "方向一 喝酒感受":
+    content_format: 情感叙事          # [待review] 微醺体验/喝酒感受 → 情感叙事
+    target_audience: ["通用"]         # [待细化] RIO 轻享 likely 年轻女性
     user_pain_point: 微醺放松/情绪价值/小酌仪式感
-  "反差破圈":
-    content_format: 反差破圈          # [待review] 方向名即对应受控词表「反差破圈」
-    target_audience: ["通用"]         # [待细化]
+  "方向二 便利店调酒":
+    content_format: 教程攻略          # [待review] 便利店自调 → 教程攻略
+    target_audience: ["通用"]
+    user_pain_point: 低门槛自制微醺饮品
+  "方向三 反差与破圈":
+    content_format: 反差破圈          # 方向名即对应受控值
+    target_audience: ["通用"]
     user_pain_point: 打破刻板印象/制造记忆点撬动流量
+  "方向四 提问与红黑榜":
+    content_format: 横评对比          # [待review] 红黑榜=榜单对比
+    target_audience: ["通用"]
+    user_pain_point: 选购决策/口味红黑榜参考
+  "方向五 对比真露":
+    content_format: 横评对比          # 对比竞品(真露 soju)
+    target_audience: ["通用"]
+    user_pain_point: 与真露等竞品对比/平替决策
+  "方向六 热门剧集":
+    content_format: 场景植入          # [待review] 借热门剧集场景植入
+    target_audience: ["通用"]
+    user_pain_point: 追剧小酌场景/借势热点
+  "赠送反差内容":
+    content_format: 反差破圈          # [待review] 赠送 + 反差
+    target_audience: ["通用"]
+    user_pain_point: 赠送装/反差制造记忆点
+  # —— 飞书多选组合值(基础方向 + 赠送反差内容;取基础方向的 content_format)——
+  # 注:多选理想应在 transform_row 按逗号拆分(未来);现按精确组合键各列一条确保全命中。
+  "方向一 喝酒感受, 赠送反差内容": { content_format: 情感叙事, target_audience: ["通用"], user_pain_point: 微醺体验 + 赠送反差 }
+  "方向二 便利店调酒, 赠送反差内容": { content_format: 教程攻略, target_audience: ["通用"], user_pain_point: 便利店自调 + 赠送反差 }
+  "方向三 反差与破圈, 赠送反差内容": { content_format: 反差破圈, target_audience: ["通用"], user_pain_point: 反差破圈 + 赠送 }
+  "方向四 提问与红黑榜, 赠送反差内容": { content_format: 横评对比, target_audience: ["通用"], user_pain_point: 红黑榜 + 赠送反差 }
+  "赠送反差内容, 方向四 提问与红黑榜": { content_format: 横评对比, target_audience: ["通用"], user_pain_point: 红黑榜 + 赠送反差 }
+  "方向五 对比真露, 赠送反差内容": { content_format: 横评对比, target_audience: ["通用"], user_pain_point: 对比真露 + 赠送反差 }
+  "赠送反差内容, 方向五 对比真露": { content_format: 横评对比, target_audience: ["通用"], user_pain_point: 对比真露 + 赠送反差 }
+  "方向六 热门剧集, 赠送反差内容": { content_format: 场景植入, target_audience: ["通用"], user_pain_point: 追剧场景 + 赠送反差 }
 
 tier_extraction:
   source: 状态字段                  # 指示用 _status_raw(即「状态」列)
