@@ -24,7 +24,10 @@ end_date: 2026-XX-XX           # 待填
 
 # ── 字段映射 ── [已用 preflight(run 27135943981, 读 391 行)校正到活表真实列名]
 # 活表是 WTG 式结构(非 docs RIO_1 模板):流量状态=表现/tier 源, 笔记状态=工作流,
-# 曝光量/阅读量/互动量(用「量」不是「数」), 数据回收状态, 观众分析, 随贴评论。
+# 数据回收状态, 观众分析, 随贴评论。
+# ⚠️ 真实指标在【数据整理】单列半结构化文本里("曝光量：X；阅读量：Y；互动量：Z"), 391/391 行齐全;
+#    独立的【曝光量/阅读量/互动量】列只有 24/391 行(稀疏废列)→ 进 raw_extra 留痕, 不做指标源。
+#    故 metric 唯一源 = 数据整理 → _metrics_raw → sync 的 parse_metrics_text 确定性拆成三列。
 field_mapping:
   素人编号: account_id
   文案: raw_content
@@ -32,9 +35,7 @@ field_mapping:
   反馈链接: publish_url
   方向: _direction_raw            # → direction_decomposition
   流量状态: _status_raw           # tier 源(WTG 式;非「状态」)
-  曝光量: impressions             # 本表用「量」非「数」(已校正)
-  阅读量: reads
-  互动量: interactions
+  数据整理: _metrics_raw          # 真实指标单列文本 → parse_metrics_text 拆 impressions/reads/interactions
   数据回收状态: data_quality_status   # A 家族数据健康列(本表名「数据回收状态」)
   笔记状态: _note_status_raw       # 检测伪爆贴(含"关注"=人工假数据;非 tier 源)
   观众分析: _audience_raw          # → actual_audience_data(sync 确定性解析)
@@ -128,7 +129,7 @@ compliance:
 # 待 preflight 报活表"未声明列"后据实增删(不声明 = 出现即整行 quarantine, 丢真笔记 D-021)。
 project_specific_fields_to_raw_extra:
   # —— preflight(读 391 行)实测未声明列, 全收进 raw_extra(否则整行 quarantine, D-021 丢真笔记)——
-  - 数据整理
+  # 注:【数据整理】不在此 —— 它是 metric 唯一源(field_mapping → _metrics_raw), 不进 raw_extra。
   - 是否巡查
   - 相关截图
   - 发布具体时间        # 另一时间列(主时间走「发布时间」→ publish_time)
@@ -138,6 +139,10 @@ project_specific_fields_to_raw_extra:
   - 评论配图
   - 评论状态
   - 评论铺设情况
+  # —— 稀疏独立指标列(只 24/391 行)+ 其 int 副本 —— 留痕, 真值走【数据整理】解析 ——
+  - 曝光量              # 稀疏废列(非指标源;指标源=数据整理)
+  - 阅读量
+  - 互动量
   - 互动副本            # 互动量的 int 副本(部分行)
   - 阅读副本
   - 曝光副本
