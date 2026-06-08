@@ -100,7 +100,7 @@ sync_config:
   feishu_app_token: SWkdwJXxDi2VhkkwVJScghOwnNR
   feishu_table_id: tblRkIj4TS6rDGah
   feishu_view_id: null
-  sync_interval: on_demand        # 夜间 cron 不碰;preflight + 显式验证 OK 再议
+  sync_interval: daily            # ✅ 已验证上线(2026-06-08 实跑入库 144 条)→ 进夜间 cron
 
 onboarding_meta:
   onboarded_at: 2026-06-08
