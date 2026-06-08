@@ -234,9 +234,9 @@ jobs:
           # 同 essence 步: 区分瞬时(够到 worker 但慢/掐断)vs 系统性(配置/连通/鉴权坏)。PR#65 review。
           worker_fail_kind() {  # $1=curl_rc $2=http_code → echo transient|systemic
             case "$1" in
-              6|7|28|52|56|18) echo transient; return ;;  # curate 是 best-effort 富集: 6 DNS/7 拒连(worker 临时挂/冷启/重启)也按【瞬时】—— 幂等下轮 cron 续, 不拖红整跑。同一跑里 essence 先连通已兜住"URL/鉴权配置错"(真错 essence 会报红)。28超时/52空回复/56重置/18传输不全 = 够到但中断。
+              28|52|56|18) echo transient; return ;;  # 28超时 52空回复 56接收重置 18传输不全 = 够到但中断
               0) : ;;                                  # curl 本身成功, 看 http_code
-              *) echo systemic; return ;;             # 3 URL格式 / 35,60 SSL 等 = 配置坏(罕见, 仍判红)
+              *) echo systemic; return ;;             # 6 DNS / 7 拒连 / 3 URL格式 / 35,60 SSL = 没够到/配置坏(已退避重试仍失败才到这 → 判红, 不掩盖坏 WORKER_URL; PR#86 review)
             esac
             case "$2" in 502|503|504) echo transient ;; *) echo systemic ;; esac
           }
@@ -245,16 +245,28 @@ jobs:
           BODY="$BODY}"
           echo "─── curate (worker) ───"
           # 捕获 curl 退出码(不再一律 code=000 掩盖)—— 区分超时 vs 配置/连通错(PR#65 review)。
-          if code=$(curl -sS -w '%{http_code}' -o /tmp/cur.json --max-time 900 \
-            -X POST "${WORKER_URL%/}/curate" \
-            -H "X-Worker-Key: $WORKER_API_KEY" -H 'content-type: application/json' \
-            -d "$BODY"); then
-            curl_rc=0
-          else
-            curl_rc=$?; code=000   # curl 失败时 http_code 不可靠, 记 000; 真因看 curl_rc
-          fi
-          # || echo false: 防 502/超时的非 JSON body 让 jq(退出码 5)在 bash -e 下崩整步。
-          ok=$(jq -r '.ok // false' /tmp/cur.json 2>/dev/null || echo false)
+          # PR#86 review: curate 是这跑里【唯一/最后】碰 worker 的步骤(稳态下 essence 无待办、不发 curl,
+          # 不校验 URL)→ 不能把"连不上"一律降级,否则坏 WORKER_URL 静默漏过。改为【连接级失败退避重试】:
+          # Railway worker 临时挂/冷启/重启 → 重试骑过(变绿);真坏(DNS拼错/拒连/URL错)三次都失败 → 仍判红。
+          for attempt in 1 2 3; do
+            if code=$(curl -sS -w '%{http_code}' -o /tmp/cur.json --max-time 900 \
+              -X POST "${WORKER_URL%/}/curate" \
+              -H "X-Worker-Key: $WORKER_API_KEY" -H 'content-type: application/json' \
+              -d "$BODY"); then
+              curl_rc=0
+            else
+              curl_rc=$?; code=000   # curl 失败时 http_code 不可靠, 记 000; 真因看 curl_rc
+            fi
+            # || echo false: 防 502/超时的非 JSON body 让 jq(退出码 5)在 bash -e 下崩整步。
+            ok=$(jq -r '.ok // false' /tmp/cur.json 2>/dev/null || echo false)
+            { [ "$code" = "200" ] && [ "$ok" = "true" ]; } && break
+            [ "$attempt" -ge 3 ] && break
+            # 仅对【连接级 / 网关 5xx】退避重试(够到但中断 6/7 临时不可达 28/52/56/18 + 502/503/504);
+            # 4xx/200+ok=false 等是确定性结果, 立即往下判, 不浪费重试。
+            case "$curl_rc" in 6|7|28|52|56|18) echo "  curate worker 不可达(curl_rc=$curl_rc), 第 ${attempt}/3 次退避重试…"; sleep $((attempt * 20)); continue ;; esac
+            case "$code" in 502|503|504) echo "  curate worker 网关 $code, 第 ${attempt}/3 次退避重试…"; sleep $((attempt * 20)); continue ;; esac
+            break
+          done
           echo "HTTP $code · curl_rc=$curl_rc · ok=$ok · returncode=$(jq -r '.returncode // "?"' /tmp/cur.json 2>/dev/null || echo '?')"
           jq -r '.stdout_tail // ""' /tmp/cur.json 2>/dev/null | tail -8
           if [ "$code" != "200" ] || [ "$ok" != "true" ]; then
