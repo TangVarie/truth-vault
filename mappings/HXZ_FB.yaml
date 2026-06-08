@@ -78,6 +78,10 @@ direction_decomposition:
     content_format: 场景植入          # [待review]
     target_audience: ["通用"]         # [待细化]
     user_pain_point: 季节/气候适配(夏季出油/换季干燥等)
+  "持妆问题, 妆效问题":               # preflight: 1 行飞书多选方向(持妆+妆效合并值)
+    content_format: 直给推荐          # [待review];注:多选方向理想应在 transform_row 按逗号拆分(未来)
+    target_audience: ["通用"]         # [待细化]
+    user_pain_point: 持妆 + 妆效综合(脱妆/卡粉/不服帖/持久度不足)
 
 tier_extraction:
   source: 状态字段
@@ -130,7 +134,8 @@ project_specific_fields_to_raw_extra:
   - 评论配图
   - 蓝词图片
   - 临时-评论修改对比
-  - 爆帖控评置顶
+  - 爆帖置顶评论          # preflight: 粉饼表实有此列(气垫无);气垫的"爆帖控评置顶"粉饼表无, 已去
+  # ✅ preflight(读 293 行)确认:仅此一列与气垫不同, 其余克隆列均在表中;声明后 quarantine 应归零。
 
 data_supplement_needed:
   - field: account_followers
