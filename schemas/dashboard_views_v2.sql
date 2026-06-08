@@ -12,7 +12,9 @@ select
   (select count(*) from truth_vault.notes
      where tier in ('爆','大爆'))                                               as baokuan_all,
   (select count(*) from truth_vault.notes
-     where tier in ('爆','大爆') and tier_source = '状态字段')                  as baokuan_real,
+     where tier in ('爆','大爆') and tier_source = '状态字段'
+       -- 伪爆贴(synthetic=true)不计入验证级爆款 —— 状态标爆但源头无曝光数据,不可验证。
+       and (data_quality_flags->>'synthetic') is distinct from 'true')          as baokuan_real,
   (select count(*) from truth_vault.flywheel_lesson_annotations)                as cards,
   (select count(*) from truth_vault.v_flywheel_lesson_cards)                    as borrowable_cards,
   (select count(*) from truth_vault.flywheel_librarian_cache)                   as librarian,
@@ -58,7 +60,8 @@ with ranked as (
 select
   n.project_id,
   count(*)                                                                       as notes,
-  count(*) filter (where n.tier in ('爆','大爆') and n.tier_source = '状态字段')  as baokuan,
+  count(*) filter (where n.tier in ('爆','大爆') and n.tier_source = '状态字段'
+                     and (n.data_quality_flags->>'synthetic') is distinct from 'true') as baokuan,
   count(*) filter (where n.inferred_audience_profile is not null)                as essence,
   coalesce(sum(n.impressions),0)                                                 as impressions,
   r.category                                                                     as category,
