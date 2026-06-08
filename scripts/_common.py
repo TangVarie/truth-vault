@@ -175,21 +175,69 @@ def load_mapping(project_id: str) -> dict:
 # Tier / intent / direction rule engines
 # ─────────────────────────────────────────────────────────────────────────
 
-def extract_tier(raw_status: Any, rules: list[dict]) -> Optional[str]:
-    """Apply tier_extraction.rules from mapping yaml to a raw 状态 value."""
-    if raw_status is None:
-        return _default_tier(rules)
-    # 飞书「状态」/「流量状态」列可能是多选 list 或 {'text': ...} 单元格, 不是纯
-    # 字符串. 用 _direction_key 展平成 "值1, 值2" 再做 match_contains, 而不是
-    # str(['风控中']) → "['风控中']" 那种靠 Python repr 巧合命中 (元素顺序或特殊
-    # 字符一变就漏判). 与 transform_row 处理「方向」列共用同一展平逻辑保持一致.
-    text = _direction_key(raw_status)
+# 状态【等级】优先级 —— 多选状态栏同时挂多个状态时, 取等级最高的那个为准。
+# 数值只表相对大小; 顺序对齐既有规则表(大爆>爆>预备>参考>风控>趴>未知), 唯一修正是把
+# 【爆】提到【预备】之上: 爆贴预备升成爆贴/大爆后, 不能再被列序里靠前的「预备」规则截胡
+# (那会把已验证的爆款错判成预备、漏出爆款口径 —— 见本次修复)。所有 mapping 共用此表。
+_TIER_RANK = {"大爆": 7, "爆": 6, "预备": 5, "参考": 4, "风控": 3, "趴": 2, "未知": 1}
+
+
+def _status_tokens(raw_status: Any) -> list[str]:
+    """飞书「状态/流量状态」cell → 各【独立状态标】列表。
+
+    - 多选字段(list)→ 每个选项一个 token(再按 ，,、/| 兜底拆一次, 防一格塞多状态)。
+      这是本次修复的关键: 多选时必须逐标判级再取最高, 不能把 "爆贴预备, 爆贴" 拼成一
+      整串靠规则列序命中(那样「预备」永远先于「爆」命中)。
+    - 单值(str/dict)→ 整串当一个 token, 保持旧的整串子串匹配语义不变。C 家族「备注字段」
+      判级是长文本, 不能乱拆, 故只对多选 list 做拆分。
+    """
+    if isinstance(raw_status, list):
+        toks: list[str] = []
+        for x in raw_status:
+            s = str(x.get("text", "")) if isinstance(x, dict) else str(x)
+            for sep in ("，", "、", "/", "|"):
+                s = s.replace(sep, ",")
+            for part in s.split(","):
+                p = part.strip()
+                if p:
+                    toks.append(p)
+        return toks
+    s = _direction_key(raw_status)
+    return [s] if s else []
+
+
+def _first_matching_tier(text: str, rules: list[dict]) -> Optional[str]:
+    """单个状态值按 yaml 规则【顺序】取首个命中的 tier。
+
+    规则列序在这里只负责【单值内消歧】: "爆贴预备" ⊃ "爆贴", 预备规则列在爆规则之前 →
+    纯预备标正确判预备(不会被爆规则的子串命中误升)。跨多个状态值的择优交给
+    _TIER_RANK(取最高级), 不再依赖规则列序 —— 这正是修复点。
+    """
     for rule in rules:
         if "match_contains" in rule:
             for needle in rule["match_contains"]:
                 if needle in text:
                     return rule.get("tier")
-    return _default_tier(rules)
+    return None
+
+
+def extract_tier(raw_status: Any, rules: list[dict]) -> Optional[str]:
+    """把飞书「状态」cell 判成 notes.tier。
+
+    多选状态栏(list)同时挂多个状态时, 取【等级最高】的那个(_TIER_RANK):
+      爆贴预备 + 爆贴  → 爆     (旧逻辑误判成 预备 —— 列序里 预备 在 爆 之前先命中)
+      爆贴预备 + 大爆  → 大爆
+    单选 / 单值 cell 行为与旧版完全一致。None / 空 → default。
+    """
+    if raw_status is None:
+        return _default_tier(rules)
+    tokens = _status_tokens(raw_status)
+    if not tokens:
+        return _default_tier(rules)
+    hits = [t for t in (_first_matching_tier(tok, rules) for tok in tokens) if t is not None]
+    if not hits:
+        return _default_tier(rules)
+    return max(hits, key=lambda t: _TIER_RANK.get(t, 0))
 
 
 def _default_tier(rules: list[dict]) -> Optional[str]:
