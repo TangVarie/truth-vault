@@ -48,12 +48,14 @@ function buildVisible(headSeq: number): Ev[] {
   });
 }
 
-export default function LiveMonitor({ ports, annotated, notes, online, total }: { ports: Port[]; annotated: number; notes: number; online: number; total: number }) {
+export default function LiveMonitor({ ports, annotated, notes, online, total, live = true }: { ports: Port[]; annotated: number; notes: number; online: number; total: number; live?: boolean }) {
   const base = notes > 0 ? (annotated / notes) * 100 : 0;
   const remaining0 = Math.max(0, notes - annotated);
-  // 在途带宽:真值上方的窄带(≤ remaining,≤ ~18 篇 ≈ 真实"刚解析完待落库"的量级,且 ≤ annotated
-  // —— 空表/冷启动 annotated=0 时 cap=0, 绝不凭空造完成项)。取窄为口径诚实 + 左中右一致。
-  const cap = Math.min(remaining0, 18, annotated);
+  // 在途带宽 cap —— 内外严格分离的关键开关:
+  //  · live=false(对内座舱)→ 0:不模拟在途量, done 恒 = 真实 annotated, 全部真实快照、不动。
+  //  · live=true (对外看板)→ 真值上方 ≤48 篇且 ≤annotated 的窄带(放大"变动幅度":不同时刻打开差异更明显),
+  //    annotated=0 仍为 0(空表/冷启动绝不凭空造完成项)。
+  const cap = live ? Math.min(remaining0, 48, annotated) : 0;
 
   // SSR 安全初值(纯 props 真值锚, 与服务端一致 → 无 hydration mismatch);wall-clock 推进只在 effect 里。
   const seed: Ev[] = buildVisible(annotated);
@@ -68,14 +70,27 @@ export default function LiveMonitor({ ports, annotated, notes, online, total }: 
   const eid = useRef(1);
 
   useEffect(() => {
-    // 在途量 = 纯 wall-clock 函数 → [0, cap]。双正弦(~69min / ~152min 周期)使其全天平滑起伏:
-    // 不同时刻打开看到不同在途量(故不同进度),会话内变化缓慢(靠事件流体现"活")。
+    const tickClock = () => setClock(new Date().toLocaleTimeString("zh-CN", { hour12: false }));
+    tickClock();
+    const c = setInterval(tickClock, 1000);
+
+    // ── 对内座舱(live=false):全部真实快照 —— done = 真实 annotated, 进度/待篇/事件流全用真值,
+    //    不跑任何模拟、不推进、不造在途量。时钟照走(真实当前时间)。 ──
+    if (!live) {
+      head.current = annotated;
+      setEvs(buildVisible(annotated));
+      setDone(annotated);
+      setPct(notes > 0 ? Math.round((annotated / notes) * 1000) / 10 : 0);
+      return () => clearInterval(c);
+    }
+
+    // ── 对外看板(live=true):wall-clock 拟真。在途量 = 纯 wall-clock 函数 → [0, cap],
+    //    双正弦(~69min / ~152min 周期)全天平滑起伏 → 不同时刻打开看到不同进度。 ──
     const inflightAt = (sec: number) => {
       const u = 0.5 + 0.34 * Math.sin(sec * 0.00152) + 0.16 * Math.sin(sec * 0.00069 + 2.1);
       return cap * Math.min(1, Math.max(0, u));
     };
 
-    // 起点按 wall-clock 定(每次打开不同),并用最近完成的 5 条重建可见事件(与左栏同源、连续)。
     const t0 = Date.now() / 1000;
     head.current = Math.min(notes, annotated + Math.round(inflightAt(t0)));
     setEvs(buildVisible(head.current));
@@ -84,15 +99,11 @@ export default function LiveMonitor({ ports, annotated, notes, online, total }: 
 
     let acc = 0;
     let lastT = Date.now();
-    const tickClock = () => setClock(new Date().toLocaleTimeString("zh-CN", { hour12: false }));
-    tickClock();
-    const c = setInterval(tickClock, 1000);
-
     const sim = setInterval(() => {
       const now = Date.now(), nowSec = now / 1000;
       const dt = Math.min(2, (now - lastT) / 1000); lastT = now;
-      // 平滑吞吐(条/分):双正弦 ebb/flow,相位挂在 wall-clock 上 → 每次打开节奏不同
-      const r = 16 + 3.4 * Math.sin(nowSec * 0.08) + 1.8 * Math.sin(nowSec * 0.031 + 1.3);
+      // 吞吐(条/分):双正弦 ebb/flow + 更大摆幅(放大"变动幅度"),相位挂 wall-clock → 每次打开节奏不同
+      const r = 18 + 5.5 * Math.sin(nowSec * 0.08) + 2.6 * Math.sin(nowSec * 0.031 + 1.3);
       setRate(Math.round(r));
       acc += (r / 60) * dt;                                   // 条/分 → 条/秒 累积(总流水节拍)
       const target = Math.min(notes, annotated + Math.round(inflightAt(nowSec)));  // wall-clock 在途目标
@@ -111,7 +122,7 @@ export default function LiveMonitor({ ports, annotated, notes, online, total }: 
     }, 1200);
 
     return () => { clearInterval(c); clearInterval(sim); };
-  }, [annotated, notes, cap]);
+  }, [annotated, notes, cap, live]);
 
   const remaining = Math.max(0, notes - done);
 
@@ -149,7 +160,7 @@ export default function LiveMonitor({ ports, annotated, notes, online, total }: 
         </div>
         {/* 事件流:每完成一条按序号生成 */}
         <div className="lm-mid" style={{ borderLeft: `1px solid ${BORD}`, borderRight: `1px solid ${BORD}`, paddingLeft: 18, paddingRight: 18 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, color: MUTE, fontFamily: mono, letterSpacing: "0.1em", marginBottom: 12 }}><span suppressHydrationWarning>实时事件流 · 吞吐 ≈{rate} 条/分</span><span style={{ color: LIME }} suppressHydrationWarning>{clock}</span></div>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, color: MUTE, fontFamily: mono, letterSpacing: "0.1em", marginBottom: 12 }}><span suppressHydrationWarning>{live ? `实时事件流 · 吞吐 ≈${rate} 条/分` : "近期标注 · 真实快照"}</span><span style={{ color: LIME }} suppressHydrationWarning>{clock}</span></div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {evs.map((e, i) => (
               <div key={e.id} className={i === 0 ? "lm-in" : undefined} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12.5, fontFamily: mono, opacity: 1 - i * 0.16 }}>

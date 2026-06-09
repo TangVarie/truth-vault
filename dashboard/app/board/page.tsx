@@ -185,7 +185,7 @@ export default async function BoardPage() {
 
           {/* ── 实时监测条(对外动效层:端口脉冲 + 事件流 + 跳动计数)── */}
           <section className="s12 bb-tile" style={{ padding: "18px 22px" }}>
-            <LiveMonitor ports={livePorts} annotated={pulse?.annotated_n ?? o.essence} notes={o.notes} online={onlinePorts} total={7} />
+            <LiveMonitor ports={livePorts} annotated={pulse?.annotated_n ?? o.essence} notes={o.notes} online={onlinePorts} total={7} live={true} />
           </section>
 
           {/* ── 系统解构:双引擎 · 一个 AI 管理员(视觉解构,实时运行)── */}
