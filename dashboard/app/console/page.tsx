@@ -116,7 +116,7 @@ export default async function ConsolePage() {
               </div>
             </div>
           </section>
-          <section className="s12 ct" style={{ padding: "18px 22px" }}><LiveMonitor ports={livePorts} annotated={pulse?.annotated_n ?? o.essence} notes={o.notes} online={onlinePorts} total={7} /></section>
+          <section className="s12 ct" style={{ padding: "18px 22px" }}><LiveMonitor ports={livePorts} annotated={pulse?.annotated_n ?? o.essence} notes={o.notes} online={onlinePorts} total={7} live={false} /></section>
 
           {/* ── 挖掘 ── */}
           <div id="挖掘" className="s12 canchor" style={{ height: 0 }} />
