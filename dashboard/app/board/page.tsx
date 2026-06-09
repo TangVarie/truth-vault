@@ -2,16 +2,17 @@ import Link from "next/link";
 import type { Metadata } from "next";
 import { AMPLIFY, cnNum, comma, frontLabel, frontShort } from "@/config/showcase";
 import { getDashboardData } from "@/lib/dashboard-data";
+import { applyPublicBoardAdjustments } from "@/lib/public-board-adjustments";
 import CountUp from "@/components/CountUp";
 import LiveMonitor from "@/components/LiveMonitor";
 import SystemDeconstruct from "@/components/SystemDeconstruct";
 
 /**
- * /board = 对外数据看板(公开、只读)。BOLD BLOCKS 设计体系 · 全部真实数据。
+ * /board = 对外数据看板(公开、只读)。BOLD BLOCKS 设计体系 · 公开展示口径。
  * 口径:强调「战役组合 + 峰值」(不讲会下滑的时间线)。颜色 = 战线(语义化)。
  * 仅露体量/结果,无任何策略机理。
  */
-export const metadata: Metadata = { title: "数据看板 · BYWOOD", description: "真实投放结果速览" };
+export const metadata: Metadata = { title: "数据看板 · BYWOOD", description: "公开战绩组合速览" };
 export const dynamic = "force-dynamic";
 
 const BG = "#0A0A0B", PANEL = "#141416", BORD = "rgba(255,255,255,0.08)";
@@ -62,10 +63,10 @@ function tsFmt(s: string | null | undefined): string {
 const DOW = ["一", "二", "三", "四", "五", "六", "日"];
 
 export default async function BoardPage() {
-  const { o, projects, projectTier, hits, monthly, activity, pulse } = await getDashboardData();
+  const { o, projects, projectTier, hits, monthly, activity, pulse } = applyPublicBoardAdjustments(await getDashboardData());
   const hitRate = o.notes ? Math.round((o.baokuanReal / o.notes) * 1000) / 10 : 0;
   // 每战线对外「爆款」= 该战线全部 爆+大爆(含数值推断)—— 让没有人工状态标注的早期表(如 TGV)
-  // 也能露出它真实的高赞帖,而不是 0。注:严格「验证级爆款」(o.baokuanReal,= tier_source 状态字段)
+  // 也能露出它真实的高赞帖,而不是 0。注:严格「展示爆款」(o.baokuanReal,= tier_source 状态字段)
   // 仍只在 totals/跑马灯 那块显示,口径不变;这里的战线卡/汇聚走更宽的「全部爆款」。
   const bkOf = (id: string) => projectTier.filter((t) => t.project_id === id && (t.tier === "爆" || t.tier === "大爆")).reduce((s, t) => s + t.n, 0);
   // 早期表没回收曝光(如 TGV,曝光=0)→ 按【该战线真实爆款数 × 全域平均每爆款曝光】估一个展示值。
@@ -99,7 +100,7 @@ export default async function BoardPage() {
   ];
   const totals = [
     { k: "内容资产", v: o.notes, fmt: "comma" as const },
-    { k: "验证级爆款", v: o.baokuanReal, fmt: "comma" as const },
+    { k: "展示爆款", v: o.baokuanReal, fmt: "comma" as const },
     { k: "策略经验卡", v: o.cards, fmt: "comma" as const },
     { k: "结构化内核", v: o.essence, fmt: "comma" as const },
     { k: "受众维度", v: o.audiences, fmt: "comma" as const },
@@ -136,7 +137,7 @@ export default async function BoardPage() {
         <div className="bb-grid">
           {/* ── hero(s8):巨号 + 战线构成堆叠条 ── + 汇聚流(s4) ── */}
           <section className="s8 bb-card" style={{ background: SAGE, color: INKC, justifyContent: "space-between" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}><Pill>真实投放结果 · {o.projects} 条战线</Pill><span style={{ fontSize: 12, fontWeight: 600, opacity: 0.55 }}>{span}</span></div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}><Pill>公开战绩组合 · {o.projects} 条战线</Pill><span style={{ fontSize: 12, fontWeight: 600, opacity: 0.55 }}>{span}</span></div>
             <div style={{ marginTop: 18 }}>
               <div style={{ fontWeight: 800, letterSpacing: "-0.045em", lineHeight: 0.84, fontSize: "clamp(50px,8vw,120px)" }}><CountUp value={totalImp} format="cn" duration={2200} /></div>
               <div style={{ fontSize: 13, fontWeight: 600, opacity: 0.62, marginTop: 6 }}>累计内容曝光 · 由 {o.projects} 条战线共同构成</div>
@@ -217,9 +218,9 @@ export default async function BoardPage() {
             </div>
           </section>
 
-          {/* ── Top 爆款明细(s12,满宽)── */}
+          {/* ── Top 爆款样本(s12,满宽)── */}
           <section className="s12 bb-tile">
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}><Pill dark>Top 爆款 · 明细</Pill><span style={{ fontSize: 11, color: MUTE, fontFamily: mono }}>共 {comma(o.baokuanReal)} 条 · 单篇最高 {comma(o.topInteractions)} 互动</span></div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}><Pill dark>Top 爆款 · 样本</Pill><span style={{ fontSize: 11, color: MUTE, fontFamily: mono }}>共 {comma(o.baokuanReal)} 条 · 单篇最高 {comma(o.topInteractions)} 互动</span></div>
             <div style={{ display: "grid", gridTemplateColumns: "44px 1fr 130px 150px 70px", gap: 12, fontSize: 10.5, color: MUTE, fontFamily: mono, letterSpacing: "0.08em", paddingBottom: 8, borderBottom: `1px solid ${BORD}` }}><span>#</span><span>战线</span><span style={{ textAlign: "right" }}>互动</span><span style={{ textAlign: "right" }}>曝光</span><span style={{ textAlign: "right" }}>态</span></div>
             {hits.slice(0, 8).map((h, i) => (
               <div key={i} style={{ display: "grid", gridTemplateColumns: "44px 1fr 130px 150px 70px", gap: 12, alignItems: "center", padding: "11px 0", borderBottom: `1px solid ${BORD}`, fontSize: 14.5 }}>
@@ -256,7 +257,7 @@ export default async function BoardPage() {
           {/* ── 跑马灯(s12)── */}
           <section className="s12 bb-tile" style={{ padding: 0, overflow: "hidden" }}>
             <div style={{ display: "flex", width: "max-content", animation: "bb-marq 28s linear infinite", fontSize: 11.5, color: MUTE, fontFamily: mono, padding: "10px 0" }}>
-              {[0, 1].map((r) => <div key={r} style={{ display: "flex", gap: 26, paddingLeft: 26 }}><span style={{ color: LIME }}>● 数据实时直连</span><span>累计曝光 {cnNum(totalImp)}</span><span>命中率 {hitRate}%</span><span>{comma(o.baokuanReal)} 验证级爆款</span><span>{comma(o.notes)} 内容资产</span><span>{o.projects} 条战线</span><span>单月峰值 {cnNum(peakImp.impressions)}</span></div>)}
+              {[0, 1].map((r) => <div key={r} style={{ display: "flex", gap: 26, paddingLeft: 26 }}><span style={{ color: LIME }}>● 公开展示口径</span><span>累计曝光 {cnNum(totalImp)}</span><span>命中率 {hitRate}%</span><span>{comma(o.baokuanReal)} 展示爆款</span><span>{comma(o.notes)} 内容资产</span><span>{o.projects} 条战线</span><span>单月峰值 {cnNum(peakImp.impressions)}</span></div>)}
             </div>
           </section>
           {/* ── 对外 CTA / 合作 ── */}
@@ -278,7 +279,7 @@ export default async function BoardPage() {
         </div>
 
         <footer style={{ marginTop: 26, display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, fontSize: 11, color: "#5b606b" }}>
-          <span>BYWOOD · ROC 增长智能中台 · 公开数据看板</span><span>数据实时直连 · 结果可查证</span>
+          <span>BYWOOD · ROC 增长智能中台 · 公开数据看板</span><span>公开展示口径 · 内部真实验收</span>
         </footer>
       </div>
     </main>
