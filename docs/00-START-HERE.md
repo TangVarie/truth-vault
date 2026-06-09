@@ -129,14 +129,16 @@ Truth Vault(Supabase prod `kduysqedrclrfevrxiie` · schema truth_vault)
 
 ---
 
-## 5. 当前状态(快照;最新数字以 `docs/21` 为准)
+## 5. 当前状态(快照 2026-06-09 实测;最新数字 + 变更明细以 `docs/26` 为准)
 
-- **4 个项目**:WTG_phase1(个护)· NRT_phase2(OTC药)· NUC_phase1(保健品)· NRT_phase3(OTC药)。**2478 篇笔记**。
-- **99 篇爆款**(WTG 3 = synthetic/数值推断,不进下游;**96 真实** = NRT_2 27 + NUC 44 + NRT_3 25,全部 →ssll)。
-- **书架 87 张经验卡**;馆员(D-038 拉取)通道**已 production 拉通**(autowriter 真在调、借经验卡注入 P2,见 `docs/22` §2)。
-- essence 标了 1042/2478(各项目在 daily-sync 按 50/天 drain;`sync_interval` 均 `daily`)。
-- **L3 受众层从没运行**(`audience_inferred=0`);L2/L4 未启用。
-- _NUC/NRT_3 是 2026-06-05 用新 **preflight 体检 SOP**(docs/04 / `scripts/preflight_mapping.py` / Preflight workflow)接入的:接表前只读体检 → 改 mapping → 验证 → 翻 `daily` 入 cron。_
+- **8 个项目**:WTG(个护)· NRT_2/NRT_3(OTC药)· NUC(保健品)· HXZ_QD/HXZ_FB(美妆)· TGV(保健品)· RIO(酒类)。**3,407 篇笔记**。
+- **验证级爆款 200**(全量 224,剔除数值推断 + 伪爆贴 24;全部 →ssll)。
+- **书架 118 张经验卡**(可借 201);馆员(D-038 拉取)通道**已 production 拉通**(autowriter 真在调、借经验卡注入 P2,见 `docs/22` §2)。
+- essence 标了 1,816/3,407(各项目在 daily-sync 增量 drain)。
+- **⚠️ 只有 WTG 在 daily 夜间 cron**;其余 7 项目源数据已停更(末贴 >3mo)→ `on_demand`,essence 仍增量补标。飞轮"日常新燃料"现实上只剩 WTG。
+- **L3 受众层从没运行**(`audience_tracked=0`);L2/L4 未启用。
+- **对外看板已上线 Vercel**(`truth-vault-ten.vercel.app`):`/console` 全真、`/board` 真实底座 + 合成展示战线(口径见 `docs/26` §3)。
+- _新表(HXZ/TGV/RIO)均走 **preflight 体检 SOP**(docs/04)接入,`sync_interval` 留 `on_demand`(源已停更不进 cron)。_
 
 ---
 
@@ -209,7 +211,9 @@ Truth Vault(Supabase prod `kduysqedrclrfevrxiie` · schema truth_vault)
 | `19-autowriter-librarian-quickstart` | autowriter 接馆员快速接入 + 自测 |
 | `20-handover-2026-06-04` | 上线**前**的交接快照(历史) |
 | `21-handover-2026-06-05` | NRT_2 上线 + 审计后的快照(历史;已被 22 取代) |
-| **`22-handover-2026-06-05-onboarding-hardened`** | ⭐ **当前状态最新权威**(4 项目 / preflight + cron 闸 / 通道2 拉通 / D-040 负面) |
+| `22-handover-2026-06-05-onboarding-hardened` | 4 项目 / preflight + cron 闸 / 通道2 拉通 / D-040 负面(历史;已被 25/26 取代) |
+| `25-handover-2026-06-07` | 5 项目 / 基础设施纠错(看板读错库)/ 战线代号数据驱动(历史) |
+| **`26-handover-2026-06-09`** | ⭐ **当前状态最新权威**(8 项目 / TGV·RIO·HXZ_FB / 伪爆贴 DQ / dashboard 上线 + 内外分离 + 对外展示口径) |
 | `99-rejected-ideas` | 否决过的想法(别重复提) |
 
 ---

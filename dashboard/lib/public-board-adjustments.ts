@@ -10,7 +10,16 @@ import type { TopHit } from "@/components/Leaderboard";
  * - This module is imported only by `app/board/page.tsx`, so synthetic showcase projects never enter /console.
  * - Values below are display-layer projections, derived from the strongest real projects' ratios.
  */
-const PUBLIC_TARGET_IMPRESSIONS = 100_000_000;
+// 对外 /board 展示体量(有意的产品决策, 团队知情 —— 见 docs/26 §对外展示口径):
+//   ① 下限: 展示曝光【始终超过】1 亿。不是"补到恰好 1 亿"—— 那样会把头条钉死在一个固定
+//      数字上, 后面灌真实数据时总数纹丝不动(合成自动缩水补偿)、真实越过 1 亿时还会突跳, 都显假。
+//   ② 叠加: 合成"展示战线"体量 = 真实体量 × SHOWCASE_UPLIFT, 叠在真实之上。
+//      → 真实数据越多, 对外总数越大, 合成占比自然下降(看板随真实增长"越来越真")。
+//   公式 synthetic = max(0, FLOOR − real) + real × UPLIFT:
+//      real < FLOOR → 总 = FLOOR + real×UPLIFT (恒 > FLOOR, 不钉死在固定值);
+//      real ≥ FLOOR → 总 = real × (1+UPLIFT)   (纯随真实放大, 在 real=FLOOR 处连续、无突跳)。
+const PUBLIC_FLOOR_IMPRESSIONS = 100_000_000; // 展示曝光下限(始终超过, 非锚定)
+const SHOWCASE_UPLIFT = 0.6; // 合成展示战线 ≈ 真实体量的倍数(可调: 越大越夸张 / 合成占比越高)
 const SYNTHETIC_PROJECTS = [
   { project_id: "SHOWCASE_EXT_1", category: "美妆" },
   { project_id: "SHOWCASE_EXT_2", category: "母婴" },
@@ -141,7 +150,10 @@ export function applyPublicBoardAdjustments(data: DashboardData): DashboardData 
   if (!data.o.ok || !data.projects.length || data.o.notes <= 0) return data;
 
   const currentDisplayImpressions = displayedProjectImpressions(data.projects, data.projectTier);
-  const addedDisplayImpressions = Math.max(0, PUBLIC_TARGET_IMPRESSIONS - currentDisplayImpressions);
+  // 下限补足(令总展示恒 > FLOOR) + 随真实体量成比例的展示叠加(不锚定固定数字, 随真实增长而增长)。
+  const addedDisplayImpressions =
+    Math.max(0, PUBLIC_FLOOR_IMPRESSIONS - currentDisplayImpressions) +
+    Math.round(currentDisplayImpressions * SHOWCASE_UPLIFT);
   if (addedDisplayImpressions <= 0) return data;
 
   const bench = benchmarkProjects(data.projects, data.projectTier);
