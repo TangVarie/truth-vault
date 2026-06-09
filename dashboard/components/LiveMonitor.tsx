@@ -21,7 +21,7 @@ type Ev = { id: number; name: string; line: string; color: string };
 
 const TIERS = ["趴", "趴", "趴", "预备", "爆"];
 // 确定性伪随机(按序号),让事件类型分布稳定但不重复
-function frac(n: number) { return ((n * 9301 + 49297) % 233280) / 233280; }
+function frac(n: number) { const x = ((n * 9301 + 49297) % 233280) / 233280; return x < 0 ? x + 1 : x; }
 // 锚定到真实 essence 序号的混合事件(seed/前进时用):多数 essence「第 N 篇」, 夹杂其它流水
 function makeEvent(id: number, seq: number): Ev {
   const r = frac(seq);
@@ -39,17 +39,24 @@ function activityEvent(id: number, seed: number): Ev {
   if (r < 0.83) return { id, name: "指标快照", line: "采集窗口 · 同步", color: LIME };
   return { id, name: "autowriter·馆员", line: `借阅经验卡 ×${2 + (seed % 4)}`, color: LIME };
 }
+// 按头部序号生成 5 条可见事件:真实完成项(seq≥1)→ essence「第 N 篇」; 不足的槽位 → 活动事件兜底。
+// 绝不把缺失槽位夹成「第 1 篇」凭空捏造完成项 —— 空表 / 冷启动 / Supabase 不可用时保持诚实(PR#93 review)。
+function buildVisible(headSeq: number): Ev[] {
+  return Array.from({ length: 5 }, (_, k) => {
+    const seq = headSeq - k;
+    return seq >= 1 ? makeEvent(-k - 1, seq) : activityEvent(-k - 1, 31 * (k + 1) + 7);
+  });
+}
 
 export default function LiveMonitor({ ports, annotated, notes, online, total }: { ports: Port[]; annotated: number; notes: number; online: number; total: number }) {
   const base = notes > 0 ? (annotated / notes) * 100 : 0;
   const remaining0 = Math.max(0, notes - annotated);
-  // 在途带宽:真值上方的窄带(≤ remaining,且不超 ~18 篇 ≈ 真实"刚解析完待落库"的量级)。
-  // 取窄是为口径诚实(done/% 始终贴近真值)+ 左中右一致(不再出现 1507 vs 1531 的割裂)。
-  const cap = Math.min(remaining0, 18);
+  // 在途带宽:真值上方的窄带(≤ remaining,≤ ~18 篇 ≈ 真实"刚解析完待落库"的量级,且 ≤ annotated
+  // —— 空表/冷启动 annotated=0 时 cap=0, 绝不凭空造完成项)。取窄为口径诚实 + 左中右一致。
+  const cap = Math.min(remaining0, 18, annotated);
 
   // SSR 安全初值(纯 props 真值锚, 与服务端一致 → 无 hydration mismatch);wall-clock 推进只在 effect 里。
-  const seed: Ev[] = [];
-  for (let k = 0; k < 5; k++) seed.push(makeEvent(-k - 1, Math.max(1, annotated - k)));
+  const seed: Ev[] = buildVisible(annotated);
 
   const [evs, setEvs] = useState<Ev[]>(seed);
   const [clock, setClock] = useState("--:--:--");
@@ -71,9 +78,9 @@ export default function LiveMonitor({ ports, annotated, notes, online, total }: 
     // 起点按 wall-clock 定(每次打开不同),并用最近完成的 5 条重建可见事件(与左栏同源、连续)。
     const t0 = Date.now() / 1000;
     head.current = Math.min(notes, annotated + Math.round(inflightAt(t0)));
-    setEvs(Array.from({ length: 5 }, (_, k) => makeEvent(-k - 1, Math.max(1, head.current - k))));
+    setEvs(buildVisible(head.current));
     setDone(head.current);
-    setPct(Math.round((head.current / notes) * 1000) / 10);
+    setPct(notes > 0 ? Math.round((head.current / notes) * 1000) / 10 : 0);
 
     let acc = 0;
     let lastT = Date.now();
@@ -100,7 +107,7 @@ export default function LiveMonitor({ ports, annotated, notes, online, total }: 
           setEvs((prev) => [activityEvent(eid.current++, Math.floor(nowSec) + n), ...prev].slice(0, 5));
         }
       }
-      if (n > 0) { setDone(head.current); setPct(Math.round((head.current / notes) * 1000) / 10); }
+      if (n > 0) { setDone(head.current); setPct(notes > 0 ? Math.round((head.current / notes) * 1000) / 10 : 0); }
     }, 1200);
 
     return () => { clearInterval(c); clearInterval(sim); };
