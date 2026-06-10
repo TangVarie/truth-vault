@@ -39,6 +39,15 @@ field_mapping:
   笔记状态: _note_status_raw       # 检测伪爆贴(含"关注"=人工假数据;非 tier 源)
   观众分析: _audience_raw          # → actual_audience_data(sync 确定性解析)
   随贴评论: _comment_text          # → comments 表(Phase2 LLM 解析)
+  # —— 表2(HwDJ…/tblgNOMO…)专属列名 —— 同期第二张表用 docs/03 RIO_1 模板式命名
+  #    (「数」不是「量」、tier 源叫「状态」)。表1 无这些列、表2 无上面的「量」列 → 按列名
+  #    寻址互不干扰;万一某行两套列名同时在场, 后声明者覆盖(transform 按声明序)= 本表2 命名优先。
+  #    [preflight run 27253186257 实测: 表2 315 行全因这些列未声明被 quarantine, 故补映]
+  状态: _status_raw               # 表2 tier 源(表1 是「流量状态」)
+  曝光数: impressions             # 表2 用「数」(表1 用「量」)
+  阅读数: reads
+  互动数: interactions
+  数据回收情况: data_quality_status  # 表2 名(表1 是「数据回收状态」)
 
 # RIO 飞书表【大概率无】「发布笔记」intent 列(RIO 方向是内容形式, 非 intent 导向)→ 不做意图分类。
 # 若 preflight 报有 intent 列, 再补 field_mapping `发布笔记: _intent_raw` + intent_mapping 段。
@@ -156,6 +165,20 @@ project_specific_fields_to_raw_extra:
   - 备注
   # ✅ 已删表中不存在的列(帐号昵称/粉丝数/主页链接/发布状态/口碑通是否发起授权/客户反馈/客户状态筛选)。
   # 声明后 21 个未声明列应全部归零 → quarantine=0。
+  # —— 表2(HwDJ…/tblgNOMO…)未声明列 [preflight run 27253186257, 读 707 行实测] ——
+  #    注: 帐号昵称/粉丝数/主页链接/发布状态/口碑通/客户反馈/客户状态筛选 当初因【表1】没有
+  #    而删;【表2】有 → 重新声明(进 raw_extra 留痕, 原名可追溯)。
+  - 发布状态
+  - 客户反馈
+  - （梨响确认）文案预审状态
+  - 主页链接
+  - 帐号昵称
+  - 粉丝数
+  - 发布截图
+  - 口碑通是否发起授权
+  - 预估发布时间
+  - 客户状态筛选
+  - 爆帖置顶评论
 
 data_supplement_needed:
   - field: account_followers
