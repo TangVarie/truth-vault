@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getDashboardData } from "@/lib/dashboard-data";
+import { applyPublicBoardAdjustments } from "@/lib/public-board-adjustments";
 import { cnNum, comma } from "@/config/showcase";
 
 /**
@@ -43,12 +44,14 @@ const WHY = [
 ];
 
 export default async function Page() {
-  const { o } = await getDashboardData();
+  // 首页是公开页 → 与 /board 同口径(对外展示层 = 真实底座 + 合成展示战线)。
+  // 内部真实数只在 /console 显示(/console 直接用 getDashboardData(), 不套此层)。
+  const { o } = applyPublicBoardAdjustments(await getDashboardData());
   const hitRate = o.notes ? Math.round((o.baokuanReal / o.notes) * 1000) / 10 : 0;
   const proof = [
     { k: "累计内容曝光", v: cnNum(o.impressions) },
     { k: "内容资产", v: comma(o.notes) },
-    { k: "验证级爆款", v: comma(o.baokuanReal) },
+    { k: "展示爆款", v: comma(o.baokuanReal) },
     { k: "命中率", v: hitRate + "%" },
   ];
 

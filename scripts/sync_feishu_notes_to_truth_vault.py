@@ -439,15 +439,18 @@ def transform_row(
             note["audience_actual_synced_at"] = _iso_now()
         consumed_intermediates.add("_audience_raw")
 
-    # ── 伪爆贴标记(synthetic)—— 两个来源, 取并集写进同一个 data_quality_flags.synthetic ──
-    #   A) WTG 式:「笔记状态」含"关注" = 人工伪造假数据(指标不可信但有潜力信号)。
-    #   B) opt-in(RIO, data_quality.unmeasured_status_baokuan_is_synthetic):状态标 爆/大爆
-    #      却无可测曝光(impressions 为空)= 运营断言但无法验证。须放在 tier/impressions 都定稿后。
-    # 任一成立 → synthetic=true:① 排除出 autowriter 种草飞轮(v_autowriter_injection_candidates);
-    #   ② 看板 v_dash_* 把 synthetic 爆款剔出爆款数/命中率。
-    # 清除路径(关键): 只要本次能判定 synthetic(笔记状态在场, 或项目开了 B opt-in)就【显式写】
-    #   true/false —— 否则 upsert 漏列保留 DB 旧值, 后续补了曝光/改了 tier 后旧 synthetic=true 会
-    #   永久残留, 行被错误地一直排除(codex PR #19 / PR #91 review)。非 opt-in 项目行为完全不变。
+    # ── 伪爆贴标记(synthetic)= 运营人工判定的"假爆款", 指标不可信 → 【最高优先级】不算爆款 ──
+    #   两个【真实信号】(任一成立 → synthetic=true, 写同一个 data_quality_flags.synthetic):
+    #   A) 笔记状态(_note_status_raw)含「关注」—— WTG 式人工伪爆贴标记。
+    #   C) tier 源(流量状态/状态/备注)值含「伪爆贴」—— RIO 式:运营直接在状态列写「伪爆贴500」等。
+    #      ⚠️ tier 规则 match_contains「爆贴」会把「伪爆贴」误读成 爆;synthetic 在此【独立】按原始
+    #      tier 源字串判定、与最终 tier 取值无关 —— 确保假爆款【不论 tier 怎么定】都被剔出爆款/飞轮。
+    #   synthetic=true → ① 排除出种草飞轮(通道1 ssll + 通道2 书架, 含 ssll 自愈回收);
+    #     ② 看板 v_dash_* 把 synthetic 爆/大爆剔出爆款数/命中率(全局, 不分 tier_source)。
+    #   清除路径(关键): 只要本次能判定(笔记状态在场 或 tier 源在场)就【显式写】true/false —— 否则
+    #     upsert 漏列保留 DB 旧值, 运营事后改状态后旧 synthetic 会永久残留(codex PR #19 / PR #91 review)。
+    #   〔历史:曾用"无曝光 opt-in"(unmeasured_status_baokuan_is_synthetic)判 RIO 伪爆贴 —— 标准错误
+    #     (与曝光有无无关, 2026-06-10 用户纠正), 改为读 tier 源的「伪爆贴」字样, opt-in 已废。〕
     syn_reasons: list[str] = []
     note_status_seen = "_note_status_raw" in intermediates
     if note_status_seen:
@@ -455,15 +458,16 @@ def transform_row(
         note.setdefault("raw_extra", {})["_note_status_raw"] = nsr
         consumed_intermediates.add("_note_status_raw")
         if "关注" in nsr:
-            syn_reasons.append("笔记状态含'关注'=人工伪爆贴; 指标不可信但有潜力信号")
-    opt_in_unmeasured = bool(
-        (mapping.get("data_quality") or {}).get("unmeasured_status_baokuan_is_synthetic")
-    )
-    if (opt_in_unmeasured and note.get("tier") in ("爆", "大爆")
-            and note.get("tier_source") == "状态字段" and note.get("impressions") is None):
-        syn_reasons.append("状态标爆但源头无曝光数据(曝光量=/), 不可验证 → 伪爆贴")
-    # 写条件 = 本次可判定: 非 opt-in 项目仅当笔记状态在场时写(行为同旧版); opt-in 项目恒写(清除路径)。
-    if note_status_seen or opt_in_unmeasured:
+            syn_reasons.append("笔记状态含「关注」= 人工伪爆贴; 指标不可信")
+    # tier 源原始字串(流量状态/状态/备注): 留痕进 raw_extra(此前被 tier 消费掉、库里不可见,
+    # 排查伪爆贴困难)+ 用于「伪爆贴」检测。tier_intermediate_key 见上方 tier_extraction 段。
+    tier_src_seen = tier_intermediate_key in intermediates
+    tier_src_str = str(intermediates.get(tier_intermediate_key) or "") if tier_src_seen else ""
+    if tier_src_seen:
+        note.setdefault("raw_extra", {})["_tier_source_raw"] = tier_src_str
+        if "伪爆贴" in tier_src_str:
+            syn_reasons.append("流量状态/状态标注「伪爆贴」= 运营人工判定的假爆款; 指标不可信")
+    if note_status_seen or tier_src_seen:
         flags = dict(note.get("data_quality_flags") or {})
         if syn_reasons:
             flags["synthetic"] = True
