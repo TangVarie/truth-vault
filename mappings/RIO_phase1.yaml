@@ -163,12 +163,22 @@ data_supplement_needed:
     estimated_rows: 0
 
 # ── Sync 配置 ── (飞书坐标据用户提供)
+# 多表合并(2026-06-09): RIO 同一期【两张飞书表】合进同一个 project RIO_phase1。
+#   note_id = RIO_phase1_{record} 仍唯一;看板只出一条 RIO 战线。
+#   ⚠️ 表2 是【另一个 base】(HwDJ…)→ 飞书机器人 FEISHU_APP_ID 必须也被加为该 base 协作者,
+#      否则读表 0 行(见 docs/11 授权机器人)。
+#   ⚠️ 两表共用本 mapping 的 field_mapping / raw_extra 白名单 → 接入前对【表2】单独 preflight:
+#      若列名与表1不一致, 先补 project_specific_fields_to_raw_extra / 对齐列名(否则 D-021 丢真笔记)。
 sync_config:
   source_type: feishu_api
-  feishu_app_token: IYRRbhvwta38V1sy9JMcXRYonoc
-  feishu_table_id: tblW6UgoWQ9QZ82a
-  feishu_view_id: null
   sync_interval: on_demand        # 夜间 cron 不碰;preflight + 显式验证 OK 再翻 daily
+  tables:
+    - feishu_app_token: IYRRbhvwta38V1sy9JMcXRYonoc   # 表1(已 preflight 391 行)
+      feishu_table_id: tblW6UgoWQ9QZ82a
+      feishu_view_id: null
+    - feishu_app_token: HwDJbqIjTarwaCszZthc8Fofnih   # 表2(同期第二张, 待 preflight)
+      feishu_table_id: tblgNOMOPo8m83Eo
+      feishu_view_id: null
 
 onboarding_meta:
   onboarded_at: 2026-06-08

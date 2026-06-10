@@ -293,6 +293,39 @@ def make_note_id(project_id: str, feishu_record_id: str) -> str:
     return f"{project_id}_{feishu_record_id}"
 
 
+def resolve_feishu_tables(sync_config: Optional[dict]) -> list[dict]:
+    """把 sync_config 归一成"飞书表定位符列表",支持两种形态:
+
+      · 多表(new): sync_config['tables'] = [
+            {feishu_app_token, feishu_table_id, feishu_view_id?}, ... ]
+        → 同一 project 合并多张飞书表(如 RIO 同期两表),全部写进 mapping['project_id'];
+          note_id = {project_id}_{record} 仍唯一(record_id 跨表碰撞概率可忽略)。
+      · 单表(legacy): sync_config 顶层 feishu_app_token / feishu_table_id / feishu_view_id
+        (app_token/table_id 可被环境变量 FEISHU_APP_TOKEN / FEISHU_TABLE_ID 兜底)。
+
+    返回 [{'app_token','table_id','view_id'}, ...]。**只做形状归一、不判合法性** ——
+    空 / 半配置(只填一半)由调用方按各自退出码语义处理(sync: 占位→0 / 半配→2)。
+    """
+    sc = sync_config or {}
+    raw = sc.get("tables")
+    if raw:
+        return [
+            {
+                "app_token": (t or {}).get("feishu_app_token"),
+                "table_id": (t or {}).get("feishu_table_id"),
+                "view_id": (t or {}).get("feishu_view_id"),
+            }
+            for t in raw
+        ]
+    return [
+        {
+            "app_token": sc.get("feishu_app_token") or os.environ.get("FEISHU_APP_TOKEN"),
+            "table_id": sc.get("feishu_table_id") or os.environ.get("FEISHU_TABLE_ID"),
+            "view_id": sc.get("feishu_view_id"),
+        }
+    ]
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # Value coercion · numeric + date
 # ─────────────────────────────────────────────────────────────────────────

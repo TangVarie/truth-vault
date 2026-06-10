@@ -251,6 +251,18 @@ sync_config:
   feishu_app_token: null                # 飞书表 app_token, 例 bascnXXXXX
   feishu_table_id: null                 # 飞书表 table_id, 例 tblXXXXX
   feishu_view_id: null                  # 可选
+  # ── 多表合并 [OPTIONAL] ──────────────────────────────────────────────
+  # 同一 project 要合并【多张飞书表】(如同一期分两张表)时, 改用 tables: 列表(与上面单表
+  # 的 feishu_app_token/table_id 二选一; 填了 tables 就以 tables 为准)。两表都写进本
+  # project_id, note_id={project_id}_{record} 仍唯一, 看板只出一条战线。各表【共用】本
+  # mapping 的 field_mapping/raw_extra → 列结构须一致(对每张表都 preflight, 见 RIO_phase1)。
+  # tables:
+  #   - feishu_app_token: bascnAAAA
+  #     feishu_table_id: tblAAAA
+  #     feishu_view_id: null
+  #   - feishu_app_token: bascnBBBB        # 可为另一个 base(机器人须是该 base 协作者)
+  #     feishu_table_id: tblBBBB
+  #     feishu_view_id: null
   # sync_interval: on_demand = 夜间 cron【不碰】(安全默认, 接表填坐标后先 preflight + 显式跑验证,
   #   验证 OK 再改 daily 才进夜间 cron, PR#67)。daily = 每日 02:00 cron 自动同步。
   sync_interval: on_demand              # on_demand(默认, cron 跳过) / daily(进夜间 cron) / weekly
