@@ -163,8 +163,7 @@ def retract_stale_synthetic_from_ssll(
     """自愈回收:把【已同步 ssll 但【现在】是 synthetic 爆/大爆】的样本从 ssll 撤回。
 
     为什么需要:synthetic 标记可能在【同步之后】才打上 —— 运营事后在飞书把「笔记状态」标
-    「关注」(WTG 式人工假指标), 或项目后来开了 `data_quality.unmeasured_status_baokuan_is_synthetic`
-    opt-in(RIO 实例:2026-06-08 先同步、当天晚些 opt-in 才把 2 条状态标爆判 synthetic)。
+    「关注」(WTG 式), 或在【流量状态】写「伪爆贴」(RIO 式), 而该帖此前已作为"真爆款"同步进 ssll。
     push 侧 `fetch_pending_baokuan` 的 synthetic 过滤只挡【新】同步, 不回收旧的 —— 旧的会以
     高权重停留在 ssll `reference_samples`, 污染 vibe 仿写。本函数与 push 过滤【完全对称】
     (`synthetic AND tier∈(爆,大爆)` 才撤;参考放行、不动), 每次 sync 跑一遍即自愈。

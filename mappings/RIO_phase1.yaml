@@ -126,12 +126,11 @@ tier_thresholds:
   大爆: 500
 
 # ── 数据质量策略 ──
-# RIO 活表【源头】曝光量大量是 / (缺失): 个别帖运营按【流量状态】标了「爆贴」, 但曝光量在
-# standalone 列和「数据整理」单列里都是 / —— 只录了互动量。这种"状态标爆却无可测曝光"无法
-# 验证 → 当伪爆贴(synthetic): 既排除出 autowriter 种草飞轮, 也不计入看板验证级爆款。
-# (用户 2026-06-08 决策: 只 RIO 开此策略、不全库统一; NRT/NUC 同类先维持原样。)
-data_quality:
-  unmeasured_status_baokuan_is_synthetic: true
+# 伪爆贴(synthetic)判定走【通用规则】(见 sync_feishu transform_row), 无需项目级 opt-in:
+#   RIO 运营直接在【流量状态】列写「伪爆贴500」等 —— transform_row 读 tier 源字串含「伪爆贴」
+#   即判 synthetic(与曝光有无无关)。preflight 实测:流量状态取值含「伪爆贴500」约 10 条。
+# 〔已废:2026-06-08 曾设 `unmeasured_status_baokuan_is_synthetic`(无曝光=伪爆贴), 标准错误,
+#   2026-06-10 用户纠正后移除 —— 真信号是状态列的「伪爆贴」字样, 不是曝光有无。〕
 
 compliance:
   base_template: null               # 酒类无强制合规模板;有客户红线再填
