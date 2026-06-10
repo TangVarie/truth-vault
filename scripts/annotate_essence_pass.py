@@ -446,6 +446,7 @@ def call_claude(prompt: str, model: str, *, cached_system: str | None = None,
       prompt caching), `prompt` 作 user message —— 稳定大前缀(essence 词表/schema)跨请求命中
       缓存, 省 ~90% input token/延迟(同 librarian)。不给(默认)→ 老行为:prompt 作单条 user
       message、无 system 块(curate / sub_direction / comment_threading 复用本函数, 行为不变)。
+      网关不支持 cache_control 时自动降级成纯 system 重试(见下), 只损失缓存、不让标注失败。
 
     Lazy-imports anthropic so --dry-run works without the SDK installed.
 
@@ -479,37 +480,56 @@ def call_claude(prompt: str, model: str, *, cached_system: str | None = None,
     )
     _retryable_substrings = ("429", "503", "504", "timeout", "connection")
 
-    _create_kwargs: dict = {
-        "model": model,
-        "max_tokens": 2000,
-        "messages": [{"role": "user", "content": prompt}],
-    }
-    if cached_system:
-        # 稳定大块进 system + cache_control(prompt caching, 同 librarian build_system_blocks)。
-        _create_kwargs["system"] = [{
-            "type": "text",
-            "text": cached_system,
-            "cache_control": {"type": "ephemeral"},
-        }]
-    for attempt in range(max_attempts):
-        try:
-            msg = client.messages.create(**_create_kwargs)
-            # Concatenate text blocks. Mode A responses are JSON, never tool calls.
-            parts = [b.text for b in msg.content if getattr(b, "type", None) == "text"]
-            return "".join(parts)
-        except Exception as exc:
-            is_retryable = (
-                (_retryable and isinstance(exc, _retryable))
-                or any(s in str(exc).lower() for s in _retryable_substrings)
-            )
-            if not is_retryable or attempt == max_attempts - 1:
-                raise
-            wait = 2 ** (attempt + 1)
-            logger.warning(
-                "call_claude attempt %d/%d failed (%s); retrying after %ds",
-                attempt + 1, max_attempts, type(exc).__name__, wait,
-            )
-            time.sleep(wait)
+    def _run(system_payload) -> str:
+        create_kwargs: dict = {
+            "model": model,
+            "max_tokens": 2000,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if system_payload is not None:
+            create_kwargs["system"] = system_payload
+        for attempt in range(max_attempts):
+            try:
+                msg = client.messages.create(**create_kwargs)
+                # Concatenate text blocks. Mode A responses are JSON, never tool calls.
+                parts = [b.text for b in msg.content if getattr(b, "type", None) == "text"]
+                return "".join(parts)
+            except Exception as exc:
+                is_retryable = (
+                    (_retryable and isinstance(exc, _retryable))
+                    or any(s in str(exc).lower() for s in _retryable_substrings)
+                )
+                if not is_retryable or attempt == max_attempts - 1:
+                    raise
+                wait = 2 ** (attempt + 1)
+                logger.warning(
+                    "call_claude attempt %d/%d failed (%s); retrying after %ds",
+                    attempt + 1, max_attempts, type(exc).__name__, wait,
+                )
+                time.sleep(wait)
+        raise RuntimeError("call_claude exhausted retries without raising")
+
+    if not cached_system:
+        return _run(None)  # 老行为:无 system 块(curate / sub_direction / comment_threading)
+
+    # 稳定大块进 system + cache_control(prompt caching, 同 librarian build_system_blocks)。
+    cached_block = [{
+        "type": "text",
+        "text": cached_system,
+        "cache_control": {"type": "ephemeral"},
+    }]
+    try:
+        return _run(cached_block)
+    except Exception:
+        # cache_control 降级(同 librarian/clients.py call_anthropic): 很多中转站/转卖通道
+        # 【不支持 Anthropic prompt caching】, 透传 cache_control 会 400/被通道吞 —— 去掉缓存块、
+        # 用纯 system 再试一次。只损失缓存省钱, 不改内容/结果;真错误(余额/鉴权/模型不存在)纯
+        # system 也会同样失败 → 仍抛出, 不被本降级掩盖。这避免"加了缓存反把能跑的网关跑挂"。
+        logger.warning(
+            "essence 带 cache_control 的调用失败, 去掉缓存块用纯 system 重试一次"
+            "(疑似该中转站通道不支持 prompt caching;只损失缓存、不影响标注)"
+        )
+        return _run(cached_system)  # 纯字符串 system(无 cache_control)
     # Unreachable: the final attempt always either returns or raises.
     raise RuntimeError("call_claude exhausted retries without raising")
 
