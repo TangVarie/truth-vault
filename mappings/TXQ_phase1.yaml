@@ -39,10 +39,40 @@ field_mapping:
   观众分析: _audience_raw          # → actual_audience_data(sync 确定性解析)
   随贴评论: _comment_text          # → comments 表(Phase2 LLM 解析)
 
-# ── 方向拆解 ── [占位: 审计说 TXQ 方向=「内容形式」3 种, 真实取值待 preflight dirs_missing 报告]
-# preflight 后逐个补: content_format 用 docs/05 闭集, 人群一律先给 ["通用"](D-010 不臆造),
-# 标 [待review] 待策略 lead 定。
-direction_decomposition: {}
+# ── 方向拆解 ── [preflight(run 27254999861)实测 8 种取值(审计时 3 种, 表后扩充), 全覆盖]
+# content_format 用 docs/05 闭集(8 值), 保守草稿标 [待review];人群一律先 ["通用"]
+# (D-010 不臆造, 唐小轻 likely 控糖/减脂人群+家庭, 待策略 lead 定)。方向五/六 未在活表出现, 暂不建。
+direction_decomposition:
+  "方向一 控糖早餐":
+    content_format: 场景植入          # [待review] 控糖早餐场景
+    target_audience: ["通用"]         # [待细化] likely 控糖/血糖管理人群
+    user_pain_point: 控糖人群早餐主食选择难/低GI替代
+  "方向二 健康饮食":
+    content_format: 认知重构          # [待review] 健康饮食观念重塑
+    target_audience: ["通用"]
+    user_pain_point: 日常饮食不健康的焦虑/改善路径
+  "方向三 测评分享":
+    content_format: 横评对比          # 测评=对比口径
+    target_audience: ["通用"]
+    user_pain_point: 低GI主食选购决策/口感顾虑
+  "方向四 配料表反思":
+    content_format: 认知重构          # [待review] 看配料表=重构选购认知
+    target_audience: ["通用"]
+    user_pain_point: 配料表添加剂/隐形糖焦虑
+  "方向七 代谢焦虑":
+    content_format: 情感叙事          # [待review] 代谢/血糖焦虑情绪叙事
+    target_audience: ["通用"]
+    user_pain_point: 代谢下降/血糖波动焦虑
+  "方向八 家庭购买":
+    content_format: 场景植入          # [待review] 家庭采购场景
+    target_audience: ["通用"]         # [待细化] likely 宝妈/伴侣家人
+    user_pain_point: 给家人选健康主食/家庭囤货
+  "方向九 血糖研究":
+    content_format: 认知重构          # [待review] 血糖知识/研究科普向
+    target_audience: ["通用"]
+    user_pain_point: 血糖知识盲区/控糖方法论
+  # —— 飞书多选组合值(取基础方向口径, 同 RIO 先例)——
+  "方向九 血糖研究, 方向八 家庭购买": { content_format: 认知重构, target_audience: ["通用"], user_pain_point: 血糖科普 + 家庭购买 }
 
 tier_extraction:
   source: 状态字段                  # 审计确认 TXQ tier 来源=状态字段
