@@ -38,6 +38,8 @@ field_mapping:
   笔记状态: _note_status_raw       # 检测伪爆贴(含"关注"=人工假数据;非 tier 源)
   观众分析: _audience_raw          # → actual_audience_data(sync 确定性解析)
   随贴评论: _comment_text          # → comments 表(Phase2 LLM 解析)
+  蓝词字段: hit_blue_keywords      # → notes.hit_blue_keywords(类型化列, WTG 同名先例;4 行有值)
+  爆帖置顶评论: pinned_comment     # → notes.pinned_comment(模板/WTG/NRT 先例;raw_extra 路径不提置顶)
 
 # ── 方向拆解 ── [preflight(run 27254999861)实测 8 种取值(审计时 3 种, 表后扩充), 全覆盖]
 # content_format 用 docs/05 闭集(8 值), 保守草稿标 [待review];人群一律先 ["通用"]
@@ -128,9 +130,8 @@ project_specific_fields_to_raw_extra:
   - 互动副本
   - 阅读副本
   - 曝光副本
-  - 爆帖置顶评论
-  - 蓝词图片            # preflight 实测未声明列(4 行)
-  - 蓝词字段            # preflight 实测未声明列(4 行)
+  - 蓝词图片            # preflight 实测未声明列(4 行);图片留痕(WTG 同例)
+  # (蓝词字段/爆帖置顶评论 已上移 field_mapping 类型化列 —— codex PR#97 review)
 
 data_supplement_needed: []
 

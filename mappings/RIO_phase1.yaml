@@ -48,6 +48,7 @@ field_mapping:
   阅读数: reads
   互动数: interactions
   数据回收情况: data_quality_status  # 表2 名(表1 是「数据回收状态」)
+  爆帖置顶评论: pinned_comment     # 表2 列(1 行)→ 类型化列(模板/WTG 先例;同 codex PR#97 review)
 
 # RIO 飞书表【大概率无】「发布笔记」intent 列(RIO 方向是内容形式, 非 intent 导向)→ 不做意图分类。
 # 若 preflight 报有 intent 列, 再补 field_mapping `发布笔记: _intent_raw` + intent_mapping 段。
@@ -178,7 +179,7 @@ project_specific_fields_to_raw_extra:
   - 口碑通是否发起授权
   - 预估发布时间
   - 客户状态筛选
-  - 爆帖置顶评论
+  # (爆帖置顶评论 已上移 field_mapping → pinned_comment —— 同 codex PR#97 review 口径)
 
 data_supplement_needed:
   - field: account_followers
