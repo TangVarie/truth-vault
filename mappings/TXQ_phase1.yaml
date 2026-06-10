@@ -1,0 +1,144 @@
+# ════════════════════════════════════════════════════════════════════
+# 唐小轻 · TXQ_phase1 —— Onboarding 草稿(DRAFT · A 家族)
+# ════════════════════════════════════════════════════════════════════
+# 起点 = data-analysis/10-project-audit.md 的 TXQ_1 审计(63 行小样本 · A 家族 ·
+# tier=状态字段(趴38/预备2/爆4/大爆1/未知18)· 方向=「内容形式」3 种)+ RIO/WTG A 家族骨架。
+# 真实列名 / 方向取值 / 未声明列 → preflight 拉活表校正(同 RIO/TGV 流程):
+#   - A 家族指标列有两套命名先例(RIO 表1「量」/ RIO 表2「数」)→ 两套都先声明, 按 preflight 修剪;
+#   - tier 源「流量状态」(WTG/RIO 表1 式)与「状态」(RIO 表2 式)同理两套都声明;
+#   - 方向真实取值(内容形式 3 种)以 preflight dirs_missing 报告为准逐个补 decomposition。
+# 品类: 审计 = 食品(低 GI 吐司)→ 受控闭集「食品饮料」。飞书坐标已据用户提供预填。
+# ════════════════════════════════════════════════════════════════════
+
+version: 1.0
+
+# ── 项目元数据 ──
+project_id: TXQ_phase1
+brand: 唐小轻                  # 唐小轻(低 GI 健康食品)
+product: 低GI吐司              # 一期主推(审计口径); 若实际多品待策略 lead 补
+category: 食品饮料             # ✓ 受控闭集(审计: 食品·低GI吐司)
+platform: xiaohongshu
+schema_family: A               # 最新格式(DECISIONS D-006: RIO/WTG/TXQ = A 家族)
+start_date: auto_from_publish_time_min
+end_date: auto_from_publish_time_max
+
+# ── 字段映射 ── [DRAFT: A 家族超集(两套命名先例都声明), 待 preflight 按活表修剪]
+# 按列名寻址: 声明了但表里没有的列只是 warning(不阻断/不写数据);表里有但没声明的列
+# 才是 D-021 整行 quarantine 风险 → preflight 后据实增删。
+field_mapping:
+  素人编号: account_id
+  文案: raw_content
+  发布时间: publish_time
+  反馈链接: publish_url
+  方向: _direction_raw            # → direction_decomposition(内容形式, 审计 3 种)
+  # —— tier 源(两套先例): WTG/RIO表1 用「流量状态」, RIO表2 用「状态」——
+  流量状态: _status_raw
+  状态: _status_raw
+  # —— 指标列(两套先例): 「量」(RIO表1/WTG) vs 「数」(RIO表2/docs RIO_1 模板) ——
+  曝光量: impressions
+  阅读量: reads
+  互动量: interactions
+  曝光数: impressions
+  阅读数: reads
+  互动数: interactions
+  # —— 数据健康 / 伪爆贴检测 / 观众 / 评论(A 家族常见)——
+  数据回收状态: data_quality_status
+  数据回收情况: data_quality_status
+  笔记状态: _note_status_raw       # 检测伪爆贴(含"关注"=人工假数据;非 tier 源)
+  观众分析: _audience_raw          # → actual_audience_data(sync 确定性解析)
+  随贴评论: _comment_text          # → comments 表(Phase2 LLM 解析)
+
+# ── 方向拆解 ── [占位: 审计说 TXQ 方向=「内容形式」3 种, 真实取值待 preflight dirs_missing 报告]
+# preflight 后逐个补: content_format 用 docs/05 闭集, 人群一律先给 ["通用"](D-010 不臆造),
+# 标 [待review] 待策略 lead 定。
+direction_decomposition: {}
+
+tier_extraction:
+  source: 状态字段                  # 审计确认 TXQ tier 来源=状态字段
+  rules:
+    - match_contains: ["大爆"]
+      tier: 大爆
+    - match_contains: ["爆贴预备"]
+      tier: 预备
+    - match_contains: ["爆贴"]
+      tier: 爆
+    - match_contains: ["参考"]
+      tier: 参考
+    - match_contains: ["风控"]
+      tier: 风控
+    - match_contains: ["无水花"]
+      tier: 趴
+    - match_contains: ["评估中"]
+      tier: 未知
+    - default: null
+
+# ── 数值推断阈值 —— 仅对【无状态】帖子兜底(状态字段优先)。
+# ⚠️ [待校准] TXQ 小样本(审计 63 行)无既往互动规模数据;入库后跑
+# scripts/recommend_tier_thresholds.py 复核。起点沿用 RIO 保守值。
+tier_thresholds:
+  爆: 100
+  大爆: 500
+
+compliance:
+  base_template: null
+  custom_red_flags:
+    - "食品:禁疾病治疗功效宣称(低GI≠降糖药);健康声称按平台食品内容规范"
+  blue_keyword_strategy:
+    primary: []                     # 待策略 lead 填(如 低GI / 控糖主食 等)
+    secondary: []
+    avoid: []
+
+# 项目专属字段(进 raw_extra)—— A 家族常见工作流列超集(RIO 表1+表2 实测先例),
+# 待 preflight 报「未声明列」/「声明了但表里没有」后据实增删。
+project_specific_fields_to_raw_extra:
+  - 数据整理
+  - 是否巡查
+  - 巡查状态
+  - 最近检查时间
+  - 已确认存活
+  - 备注
+  - 相关截图
+  - 发布具体时间
+  - 笔记截图
+  - 内容配图
+  - 合作码
+  - 评论配图
+  - 评论状态
+  - 评论铺设情况
+  - 互动副本
+  - 阅读副本
+  - 曝光副本
+  - 发布状态
+  - 客户反馈
+  - 主页链接
+  - 帐号昵称
+  - 粉丝数
+  - 发布截图
+  - 口碑通是否发起授权
+  - 预估发布时间
+  - 客户状态筛选
+  - 爆帖置顶评论
+
+data_supplement_needed: []
+
+# ── Sync 配置 ── (飞书坐标据用户提供 2026-06-10)
+sync_config:
+  source_type: feishu_api
+  feishu_app_token: II7GbazobaLftcsddgMc88Gjn0d
+  feishu_table_id: tblGCICmXkHwxoJV
+  feishu_view_id: null
+  sync_interval: on_demand        # 夜间 cron 不碰;preflight + 显式验证 OK 再翻 daily
+
+onboarding_meta:
+  onboarded_at: 2026-06-10
+  onboarded_by: Claude(会话起草) + Ziao(坐标/拍板)
+  strategy_lead: Ziao / 周哥
+  notes: |
+    DRAFT —— A 家族, 起点 = 10-project-audit TXQ_1 + RIO/WTG 骨架。流程同 RIO/TGV:
+      1) preflight 拉活表(show=50)→ 修 field_mapping(删表里没有的两套命名冗余项)+
+         补「未声明列」进 raw_extra;
+      2) 「方向」真实取值(内容形式 3 种)→ 补 direction_decomposition([待review], 人群先「通用」);
+      3) tier 取值核对(审计先例: 趴/预备/爆/大爆/未知);
+      4) preflight 干净 → PR → 显式 Daily TV sync(dry_run → 实跑)→ backfill essence。
+    autowriter 映射不需配(D-038 通道2 退役)。
+    入库后自动成为对外看板下一条战线(希腊字母 + 食品饮料, seq 自动生成, 零改前端)。
