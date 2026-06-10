@@ -155,6 +155,55 @@ def fetch_pending_baokuan(
     ]
 
 
+def retract_stale_synthetic_from_ssll(
+    sb,
+    project_filter: str | None = None,
+    dry_run: bool = False,
+) -> int:
+    """自愈回收:把【已同步 ssll 但【现在】是 synthetic 爆/大爆】的样本从 ssll 撤回。
+
+    为什么需要:synthetic 标记可能在【同步之后】才打上 —— 运营事后在飞书把「笔记状态」标
+    「关注」(WTG 式人工假指标), 或项目后来开了 `data_quality.unmeasured_status_baokuan_is_synthetic`
+    opt-in(RIO 实例:2026-06-08 先同步、当天晚些 opt-in 才把 2 条状态标爆判 synthetic)。
+    push 侧 `fetch_pending_baokuan` 的 synthetic 过滤只挡【新】同步, 不回收旧的 —— 旧的会以
+    高权重停留在 ssll `reference_samples`, 污染 vibe 仿写。本函数与 push 过滤【完全对称】
+    (`synthetic AND tier∈(爆,大爆)` 才撤;参考放行、不动), 每次 sync 跑一遍即自愈。
+    删 `public.reference_samples` 里 TV 推的对应行(只按 source_truth_vault_note_id 命中, 不碰
+    ssll 原生样本)+ 清 TV 侧 `synced_to_ssll_at`(账对齐;若日后去 synthetic 化, push 会重新纳入)。
+    """
+    q = (
+        sb.schema("truth_vault")
+        .table("notes")
+        .select("note_id, tier, synced_to_ssll_at, data_quality_flags")
+        .in_("tier", ["爆", "大爆"])
+    )
+    if project_filter:
+        q = q.eq("project_id", project_filter)
+    # synced 判定 + synthetic 判定都在 Python 端(JSONB ->>'synthetic' 的 PostgREST not-null
+    # 过滤对 NULL 行不稳, 同 fetch_pending_baokuan 的处理)。
+    stale = [
+        r["note_id"] for r in fetch_all_pages(q)
+        if r.get("synced_to_ssll_at")
+        and isinstance(r.get("data_quality_flags"), dict)
+        and r["data_quality_flags"].get("synthetic") is True
+    ]
+    if not stale:
+        return 0
+    if dry_run:
+        logger.info("[dry-run] would retract %d stale-synthetic baokuan from ssll: %s",
+                    len(stale), stale[:10])
+        return len(stale)
+    for note_id in stale:
+        # 只删 TV 推的那行(source_truth_vault_note_id 命中);不碰 ssll 原生 reference_samples。
+        sb.schema("public").table("reference_samples").delete().eq(
+            "source_truth_vault_note_id", note_id).execute()
+        sb.schema("truth_vault").table("notes").update(
+            {"synced_to_ssll_at": None, "synced_ssll_reference_sample_id": None}
+        ).eq("note_id", note_id).execute()
+        logger.warning("Retracted stale-synthetic baokuan from ssll (伪爆贴不污染飞轮): %s", note_id)
+    return len(stale)
+
+
 def fetch_top_comments(sb, note_id: str, limit: int = 5) -> list[dict[str, Any]]:
     """Pull top N comments to embed as evidence in the reference pack.
 
@@ -468,10 +517,12 @@ def main() -> int:
     sb = get_supabase_client()
     if not args.dry_run:
         preflight_check(sb)
+    # 先自愈回收【已同步但现在是 synthetic 爆/大爆】的(伪爆贴最高优先级, 不污染飞轮);再推新爆款。
+    retracted = retract_stale_synthetic_from_ssll(sb, project_filter=args.project, dry_run=args.dry_run)
     pending = fetch_pending_baokuan(sb, project_filter=args.project)
     logger.info("Found %d baokuan pending sync to sanshengliubu", len(pending))
 
-    stats = {"synced": 0, "recovered": 0, "errors": 0}
+    stats = {"synced": 0, "recovered": 0, "retracted": retracted, "errors": 0}
     for i, note in enumerate(pending):
         if args.limit and i >= args.limit:
             break
