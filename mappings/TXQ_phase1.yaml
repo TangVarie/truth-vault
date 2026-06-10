@@ -42,15 +42,15 @@ field_mapping:
   爆帖置顶评论: pinned_comment     # → notes.pinned_comment(模板/WTG/NRT 先例;raw_extra 路径不提置顶)
 
 # ── 方向拆解 ── [preflight(run 27254999861)实测 8 种取值(审计时 3 种, 表后扩充), 全覆盖]
-# content_format 用 docs/05 闭集(8 值), 保守草稿标 [待review];人群一律先 ["通用"]
-# (D-010 不臆造, 唐小轻 likely 控糖/减脂人群+家庭, 待策略 lead 定)。方向五/六 未在活表出现, 暂不建。
+# ✅ 2026-06-10 策略 lead(Ziao)确认: content_format 全部按草稿定稿;人群保持 ["通用"]
+# (D-010 不臆造;后续要细化人群时再改)。方向五/六 未在活表出现, 暂不建。
 direction_decomposition:
   "方向一 控糖早餐":
-    content_format: 场景植入          # [待review] 控糖早餐场景
-    target_audience: ["通用"]         # [待细化] likely 控糖/血糖管理人群
+    content_format: 场景植入          # 控糖早餐场景
+    target_audience: ["通用"]         # 已确认 通用(候选: 控糖/血糖管理人群)
     user_pain_point: 控糖人群早餐主食选择难/低GI替代
   "方向二 健康饮食":
-    content_format: 认知重构          # [待review] 健康饮食观念重塑
+    content_format: 认知重构          # 健康饮食观念重塑
     target_audience: ["通用"]
     user_pain_point: 日常饮食不健康的焦虑/改善路径
   "方向三 测评分享":
@@ -58,19 +58,19 @@ direction_decomposition:
     target_audience: ["通用"]
     user_pain_point: 低GI主食选购决策/口感顾虑
   "方向四 配料表反思":
-    content_format: 认知重构          # [待review] 看配料表=重构选购认知
+    content_format: 认知重构          # 看配料表=重构选购认知
     target_audience: ["通用"]
     user_pain_point: 配料表添加剂/隐形糖焦虑
   "方向七 代谢焦虑":
-    content_format: 情感叙事          # [待review] 代谢/血糖焦虑情绪叙事
+    content_format: 情感叙事          # 代谢/血糖焦虑情绪叙事
     target_audience: ["通用"]
     user_pain_point: 代谢下降/血糖波动焦虑
   "方向八 家庭购买":
-    content_format: 场景植入          # [待review] 家庭采购场景
-    target_audience: ["通用"]         # [待细化] likely 宝妈/伴侣家人
+    content_format: 场景植入          # 家庭采购场景
+    target_audience: ["通用"]         # 已确认 通用(候选: 宝妈/伴侣家人)
     user_pain_point: 给家人选健康主食/家庭囤货
   "方向九 血糖研究":
-    content_format: 认知重构          # [待review] 血糖知识/研究科普向
+    content_format: 认知重构          # 血糖知识/研究科普向
     target_audience: ["通用"]
     user_pain_point: 血糖知识盲区/控糖方法论
   # —— 飞书多选组合值(取基础方向口径, 同 RIO 先例)——
@@ -151,7 +151,7 @@ onboarding_meta:
     DRAFT —— A 家族, 起点 = 10-project-audit TXQ_1 + RIO/WTG 骨架。流程同 RIO/TGV:
       1) preflight 拉活表(show=50)→ 修 field_mapping(删表里没有的两套命名冗余项)+
          补「未声明列」进 raw_extra;
-      2) 「方向」真实取值(内容形式 3 种)→ 补 direction_decomposition([待review], 人群先「通用」);
+      2) 「方向」真实取值(内容形式, 实测 8 种)→ 已补全 direction_decomposition(2026-06-10 策略 lead 确认按草稿定稿, 人群保持「通用」);
       3) tier 取值核对(审计先例: 趴/预备/爆/大爆/未知);
       4) preflight 干净 → PR → 显式 Daily TV sync(dry_run → 实跑)→ backfill essence。
     autowriter 映射不需配(D-038 通道2 退役)。
