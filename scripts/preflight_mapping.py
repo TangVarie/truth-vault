@@ -63,6 +63,11 @@ def project_rows(mapping: dict, records, show_cap: int) -> dict:
     dirdecomp = mapping.get("direction_decomposition") or {}
     excluded_dirs = {e.get("direction") for e in (mapping.get("excluded_directions") or [])}
     dir_col = next((k for k, v in fm.items() if v == "_direction_raw"), None)
+    status_cols = {k for k, v in fm.items() if v == "_status_raw"}        # tier 源列(可多张表多列)
+    note_status_cols = {k for k, v in fm.items() if v == "_note_status_raw"}  # 伪爆贴检测列(含「关注」)
+
+    def _flatval(x):
+        return " / ".join(map(str, x)) if isinstance(x, list) else str(x)
 
     s = {
         "n": 0,
@@ -75,6 +80,8 @@ def project_rows(mapping: dict, records, show_cap: int) -> dict:
         "intents": Counter(),
         "dirs_seen": Counter(),
         "dirs_missing": Counter(),
+        "status_vals": Counter(),          # tier 源列原始取值分布(看「伪爆贴」等是否在 tier 源里)
+        "note_status_vals": Counter(),     # 笔记状态原始取值分布(看「关注」伪爆贴标记是否存在)
         "has_dir_col": dir_col is not None,
         "declared": declared,
         "fm_and_allow": set(fm) | raw_extra_allow,
@@ -87,6 +94,12 @@ def project_rows(mapping: dict, records, show_cap: int) -> dict:
         for k in raw:
             if k not in _IGNORED_META_KEYS:
                 s["present_cols"][k] += 1
+        for col in status_cols:
+            if col in raw and raw[col] not in (None, ""):
+                s["status_vals"][_flatval(raw[col])] += 1
+        for col in note_status_cols:
+            if col in raw and raw[col] not in (None, ""):
+                s["note_status_vals"][_flatval(raw[col])] += 1
         try:
             note, _metric, undeclared = transform_row(mapping, rid, raw)
         except Exception as exc:  # 真 sync 也是 try/except 计 errors; 这里同样不让一行毁报告
@@ -239,6 +252,15 @@ def main() -> int:
     bao = s["tiers"].get("爆", 0) + s["tiers"].get("大爆", 0)
     print(f"  tier        : {dict(s['tiers'].most_common())}  → 爆+大爆(燃料)={bao}")
     print(f"  tier_source : {dict(s['tier_src'].most_common())}")
+    if s["status_vals"]:
+        print(f"  tier源原始取值 : {dict(s['status_vals'].most_common(args.show))}")
+        # 伪爆贴若藏在 tier 源里(如「伪爆贴」含子串「爆贴」会被误读成 爆)→ 提示
+        if any("伪爆" in v for v in s["status_vals"]):
+            print("     ⚠️ tier 源里出现「伪爆」字样 —— 注意 tier 规则 match_contains 顺序(伪爆贴含「爆贴」会误判成 爆!),且应判 synthetic")
+            warnings.append("tier 源含「伪爆贴」(需 tier 规则前置 + 判 synthetic)")
+    if s["note_status_vals"]:
+        print(f"  笔记状态取值 : {dict(s['note_status_vals'].most_common(args.show))}")
+        print(f"     含「关注」(伪爆贴标记)行数 = {sum(c for v, c in s['note_status_vals'].items() if '关注' in v)}")
     print(f"  intent      : {dict(s['intents'].most_common())}")
     if s["intents"].get("other"):
         print(f"     ⚠️ intent='other' {s['intents']['other']} 行(发布笔记里有 "
