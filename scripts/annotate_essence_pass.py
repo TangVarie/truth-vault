@@ -100,19 +100,9 @@ CONTENT_FORMATS = {
 # template used for the actual API call.
 # ─────────────────────────────────────────────────────────────────────────
 
-MODE_A_PROMPT_TEMPLATE = """你是一个内容营销分析师，专精小红书种草笔记的深度分析。基于内容本身（不基于结果数据）输出严格 JSON 标注。
+MODE_A_SYSTEM_TEMPLATE = """你是一个内容营销分析师，专精小红书种草笔记的深度分析。基于内容本身（不基于结果数据）输出严格 JSON 标注。
 
-═══════════════════════════════════════════════
-项目上下文
-═══════════════════════════════════════════════
-{project_context}
-
-═══════════════════════════════════════════════
-笔记内容
-═══════════════════════════════════════════════
-标题: {title}
-正文: {body}
-话题标签: {hashtags}
+下面是【标注 schema 与闭集词表】（每条笔记都相同）。用户消息会给你【项目上下文 + 一条笔记内容】，据此按下面的 schema 输出标注。
 
 ═══════════════════════════════════════════════
 你的任务
@@ -164,6 +154,21 @@ reasoning (字符串, 100-200 字): 关键标注的依据 (边界 case 必须说
 5. 信号不足时降 audience.confidence (<0.5)
 """
 
+# 变动块(进 user message;每条笔记不同 → 不缓存)。项目上下文 + 笔记内容。
+MODE_A_USER_TEMPLATE = """═══════════════════════════════════════════════
+项目上下文
+═══════════════════════════════════════════════
+{project_context}
+
+═══════════════════════════════════════════════
+笔记内容
+═══════════════════════════════════════════════
+标题: {title}
+正文: {body}
+话题标签: {hashtags}
+
+按上方 system 给定的 JSON schema 与约束, 对这条笔记输出严格 JSON 标注(无 markdown 包装)。"""
+
 
 def build_project_context(project: dict, note: dict) -> str:
     """Render the project_context block. Performance fields are EXCLUDED."""
@@ -175,7 +180,14 @@ def build_project_context(project: dict, note: dict) -> str:
 - 项目级方向 (如有): {note.get('raw_extra', {}).get('_direction_raw') or '(项目未定义方向)'}"""
 
 
-def build_mode_a_prompt(project: dict, note: dict) -> str:
+def build_mode_a_prompt(project: dict, note: dict) -> tuple[str, str]:
+    """返回 (system_prompt, user_prompt)。
+
+    system_prompt = 稳定的角色 + 任务 schema + 闭集词表 + 约束(跨所有笔记/项目相同)→
+      调用方作为带 cache_control: ephemeral 的 system 块发送, prompt caching 命中大前缀、
+      省 input token(词表是大头)。
+    user_prompt = 本条笔记的项目上下文 + 内容(每条变, 不缓存)。
+    """
     project_context = build_project_context(project, note)
 
     # D-028 hygiene checks — see prompts/essence_annotator.md.
@@ -187,8 +199,9 @@ def build_mode_a_prompt(project: dict, note: dict) -> str:
         "{performance", "{tier", "{interactions", "{reads", "{impressions",
     )
     for placeholder in TEMPLATE_LEAK_PLACEHOLDERS:
-        assert placeholder not in MODE_A_PROMPT_TEMPLATE, (
-            f"MODE_A_PROMPT_TEMPLATE has a performance placeholder: {placeholder!r}. "
+        assert (placeholder not in MODE_A_SYSTEM_TEMPLATE
+                and placeholder not in MODE_A_USER_TEMPLATE), (
+            f"Mode A template has a performance placeholder: {placeholder!r}. "
             "This breaks D-028 — Mode A must be performance-blind."
         )
     for kw in PERFORMANCE_KEYWORDS:
@@ -199,16 +212,19 @@ def build_mode_a_prompt(project: dict, note: dict) -> str:
         )
 
     body = note.get("body") or note.get("raw_content") or ""
-    return MODE_A_PROMPT_TEMPLATE.format(
-        project_context=project_context,
-        title=note.get("title") or note.get("raw_content", "")[:60],
-        body=body[:1500] + ("...（截断）" if len(body) > 1500 else ""),
-        hashtags=", ".join(note.get("hashtags") or []) or "无",
+    system_prompt = MODE_A_SYSTEM_TEMPLATE.format(
         emotional_levers_block="  " + " / ".join(sorted(EMOTIONAL_LEVERS)),
         archetypes_block="  " + " / ".join(sorted(HUMAN_TRUTH_ARCHETYPES)),
         trend_deps_block="  " + " / ".join(sorted(TREND_DEPENDENCIES)),
         content_formats_block="  " + " / ".join(sorted(CONTENT_FORMATS)),
     )
+    user_prompt = MODE_A_USER_TEMPLATE.format(
+        project_context=project_context,
+        title=note.get("title") or note.get("raw_content", "")[:60],
+        body=body[:1500] + ("...（截断）" if len(body) > 1500 else ""),
+        hashtags=", ".join(note.get("hashtags") or []) or "无",
+    )
+    return system_prompt, user_prompt
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -422,8 +438,15 @@ def build_retry_prompt(original_prompt: str, raw_first_attempt: str,
 # Anthropic call (deferred import so --dry-run works without the SDK)
 # ─────────────────────────────────────────────────────────────────────────
 
-def call_claude(prompt: str, model: str, *, max_attempts: int = 3) -> str:
+def call_claude(prompt: str, model: str, *, cached_system: str | None = None,
+                max_attempts: int = 3) -> str:
     """Single Mode A call with exponential-backoff retry on transient errors.
+
+    cached_system: 若给定, 作为带 `cache_control: ephemeral` 的 system 块发送(Anthropic
+      prompt caching), `prompt` 作 user message —— 稳定大前缀(essence 词表/schema)跨请求命中
+      缓存, 省 ~90% input token/延迟(同 librarian)。不给(默认)→ 老行为:prompt 作单条 user
+      message、无 system 块(curate / sub_direction / comment_threading 复用本函数, 行为不变)。
+      网关不支持 cache_control 时自动降级成纯 system 重试(见下), 只损失缓存、不让标注失败。
 
     Lazy-imports anthropic so --dry-run works without the SDK installed.
 
@@ -457,29 +480,56 @@ def call_claude(prompt: str, model: str, *, max_attempts: int = 3) -> str:
     )
     _retryable_substrings = ("429", "503", "504", "timeout", "connection")
 
-    for attempt in range(max_attempts):
-        try:
-            msg = client.messages.create(
-                model=model,
-                max_tokens=2000,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            # Concatenate text blocks. Mode A responses are JSON, never tool calls.
-            parts = [b.text for b in msg.content if getattr(b, "type", None) == "text"]
-            return "".join(parts)
-        except Exception as exc:
-            is_retryable = (
-                (_retryable and isinstance(exc, _retryable))
-                or any(s in str(exc).lower() for s in _retryable_substrings)
-            )
-            if not is_retryable or attempt == max_attempts - 1:
-                raise
-            wait = 2 ** (attempt + 1)
-            logger.warning(
-                "call_claude attempt %d/%d failed (%s); retrying after %ds",
-                attempt + 1, max_attempts, type(exc).__name__, wait,
-            )
-            time.sleep(wait)
+    def _run(system_payload) -> str:
+        create_kwargs: dict = {
+            "model": model,
+            "max_tokens": 2000,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if system_payload is not None:
+            create_kwargs["system"] = system_payload
+        for attempt in range(max_attempts):
+            try:
+                msg = client.messages.create(**create_kwargs)
+                # Concatenate text blocks. Mode A responses are JSON, never tool calls.
+                parts = [b.text for b in msg.content if getattr(b, "type", None) == "text"]
+                return "".join(parts)
+            except Exception as exc:
+                is_retryable = (
+                    (_retryable and isinstance(exc, _retryable))
+                    or any(s in str(exc).lower() for s in _retryable_substrings)
+                )
+                if not is_retryable or attempt == max_attempts - 1:
+                    raise
+                wait = 2 ** (attempt + 1)
+                logger.warning(
+                    "call_claude attempt %d/%d failed (%s); retrying after %ds",
+                    attempt + 1, max_attempts, type(exc).__name__, wait,
+                )
+                time.sleep(wait)
+        raise RuntimeError("call_claude exhausted retries without raising")
+
+    if not cached_system:
+        return _run(None)  # 老行为:无 system 块(curate / sub_direction / comment_threading)
+
+    # 稳定大块进 system + cache_control(prompt caching, 同 librarian build_system_blocks)。
+    cached_block = [{
+        "type": "text",
+        "text": cached_system,
+        "cache_control": {"type": "ephemeral"},
+    }]
+    try:
+        return _run(cached_block)
+    except Exception:
+        # cache_control 降级(同 librarian/clients.py call_anthropic): 很多中转站/转卖通道
+        # 【不支持 Anthropic prompt caching】, 透传 cache_control 会 400/被通道吞 —— 去掉缓存块、
+        # 用纯 system 再试一次。只损失缓存省钱, 不改内容/结果;真错误(余额/鉴权/模型不存在)纯
+        # system 也会同样失败 → 仍抛出, 不被本降级掩盖。这避免"加了缓存反把能跑的网关跑挂"。
+        logger.warning(
+            "essence 带 cache_control 的调用失败, 去掉缓存块用纯 system 重试一次"
+            "(疑似该中转站通道不支持 prompt caching;只损失缓存、不影响标注)"
+        )
+        return _run(cached_system)  # 纯字符串 system(无 cache_control)
     # Unreachable: the final attempt always either returns or raises.
     raise RuntimeError("call_claude exhausted retries without raising")
 
@@ -590,7 +640,7 @@ def write_essence_back(
 # Main
 # ─────────────────────────────────────────────────────────────────────────
 
-def _annotate_with_retry(prompt: str, model: str
+def _annotate_with_retry(prompt: str, model: str, cached_system: str | None = None
                          ) -> tuple[Optional[dict], list[str], str, bool]:
     """Run Mode A once; if validation fails, retry once with a correction
     prompt. Returns (parsed_or_None, last_errors, last_raw_response, used_retry).
@@ -604,8 +654,14 @@ def _annotate_with_retry(prompt: str, model: str
     the retry, retry validation still fails) all return parsed=None with
     a populated errors list; the caller logs to failed_queue.
     """
+    def _call(p: str) -> str:
+        # 仅在 cached_system 非空时传该 kwarg —— CI 把 call_claude monkeypatch 成 2 参
+        # lambda(p, m), 传 kwarg 会 TypeError;essence 真跑 cached_system 非空 → 走带缓存路径。
+        return (call_claude(p, model, cached_system=cached_system)
+                if cached_system is not None else call_claude(p, model))
+
     try:
-        raw = call_claude(prompt, model)
+        raw = _call(prompt)
     except Exception as exc:
         return None, [f"api_error: {exc!r}"], "", False
 
@@ -616,7 +672,7 @@ def _annotate_with_retry(prompt: str, model: str
             prompt, raw, ["上一次回复不是合法 JSON / 含 markdown 包装"]
         )
         try:
-            raw2 = call_claude(retry_prompt, model)
+            raw2 = _call(retry_prompt)
         except Exception as exc:
             return None, [f"retry_api_error: {exc!r}"], raw, True
         parsed2 = parse_claude_json(raw2)
@@ -634,7 +690,7 @@ def _annotate_with_retry(prompt: str, model: str
     # Validation failed on first attempt — retry with correction prompt
     retry_prompt = build_retry_prompt(prompt, raw, errors)
     try:
-        raw2 = call_claude(retry_prompt, model)
+        raw2 = _call(retry_prompt)
     except Exception as exc:
         return None, [f"retry_api_error: {exc!r}"], raw, True
     parsed2 = parse_claude_json(raw2)
@@ -704,7 +760,7 @@ def main() -> int:
         # Inject project info one level up so prompt builder can read it
         project_info = note.pop("projects", {}) or {}
         try:
-            prompt = build_mode_a_prompt(project_info, note)
+            system_prompt, user_prompt = build_mode_a_prompt(project_info, note)
         except AssertionError as exc:
             logger.error("Hygiene assertion failed on %s: %s", note["note_id"], exc)
             stats["hygiene_failed"] += 1
@@ -715,8 +771,9 @@ def main() -> int:
             continue
 
         if args.dry_run:
-            logger.info("[dry-run] note %s prompt length: %d chars",
-                        note["note_id"], len(prompt))
+            logger.info("[dry-run] note %s prompt length: %d chars (system %d + user %d)",
+                        note["note_id"], len(system_prompt) + len(user_prompt),
+                        len(system_prompt), len(user_prompt))
             stats["ok"] += 1
             continue
 
@@ -750,7 +807,10 @@ def main() -> int:
             time.sleep(sleep_s)  # respect QPS between back-to-back LLM calls
 
         # Pass 2 · essence (try once + retry-with-correction on failure)
-        parsed, errors, last_raw, used_retry = _annotate_with_retry(prompt, model)
+        # essence 走 prompt caching:稳定的 system_prompt(词表/schema)作缓存块, 每条只发变动的
+        # user_prompt(项目上下文+笔记)→ 同库连续标注命中大前缀缓存, 省 input token。
+        parsed, errors, last_raw, used_retry = _annotate_with_retry(
+            user_prompt, model, cached_system=system_prompt)
         if parsed is None:
             logger.warning("Failed after retry for %s: %s", note["note_id"], errors)
             stats["failed_after_retry"] += 1
