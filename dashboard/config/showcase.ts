@@ -118,6 +118,25 @@ export function frontShort(p: FrontMeta): string {
   return PROJECT_SHORT[p.project_id] ?? "·";
 }
 
+/**
+ * 【仅对内 /console 用】真实战线名 —— 明确标到具体项目/品牌,不做对外的希腊代号遮罩。
+ * 对外页(/ 与 /board)严禁用本函数;新项目缺登记时回落 project_id(仍明确,如 TXQ_phase1)。
+ */
+export const PROJECT_NAME: Record<string, string> = {
+  WTG_phase1: "waytogo",
+  NRT_phase2: "力克雷·二期",
+  NRT_phase3: "力克雷·三期",
+  NUC_phase1: "大象 Nucare",
+  HXZ_QD: "花西子·气垫",
+  HXZ_FB: "花西子·粉饼",
+  TGV_phase1: "TGV 维他命",
+  RIO_phase1: "RIO 轻享",
+  TXQ_phase1: "唐小轻",
+};
+export function consoleLabel(p: FrontMeta): string {
+  return PROJECT_NAME[p.project_id] ?? p.project_id;
+}
+
 /** 生态节点对外名(已脱掉"通道/馆员"行话) */
 export const NODE_LABEL: Record<string, { label: string; sub?: string }> = {
   feishu:        { label: "全域投放数据流", sub: "OMNIDATA · 5 阵地" },

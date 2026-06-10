@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { getDashboardData } from "@/lib/dashboard-data";
-import { cnNum, comma, frontLabel } from "@/config/showcase";
+import { cnNum, comma, consoleLabel } from "@/config/showcase";
 import CountUp from "@/components/CountUp";
 import LiveMonitor from "@/components/LiveMonitor";
 
@@ -54,7 +54,10 @@ function navPill(): React.CSSProperties { return { border: "1.5px solid rgba(255
 export default async function ConsolePage() {
   const d = await getDashboardData();
   const { o, projects, matrix, valence, leverPerf, archetypes, audience, formats, reach, intent, funnel, projectPerf, pulse } = d;
-  const flabel = (id: string) => frontLabel(projects.find((p) => p.project_id === id) ?? { project_id: id });
+  const flabel = (id: string) => consoleLabel({ project_id: id });
+  // 对内诚实口径:验证级爆款=运营在飞书人工标「爆贴/大爆」(tier_source=状态字段, 已剔伪爆贴);
+  // 数值推断=互动量过阈值推断、未经人工确认(= project_perf.hits − 验证级, perf.hits 本就剔了 synthetic)。
+  const verifiedOf = new Map(projects.map((p) => [p.project_id, p.baokuan]));
   const hitRate = o.notes ? Math.round((o.baokuanReal / o.notes) * 1000) / 10 : 0;
 
   const byUse = [...leverPerf].sort((a, b) => b.n - a.n)[0];
@@ -191,13 +194,25 @@ export default async function ConsolePage() {
 
           {/* ── 战线 ── */}
           <div id="战线" className="s12 canchor" style={{ height: 0 }} />
-          {projectPerf.map((p, i) => (
-            <section key={p.project_id} className="s3 cc" style={{ background: FRONT[i % FRONT.length], color: INKC, justifyContent: "space-between", minHeight: 150 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}><span style={{ fontSize: 13, fontWeight: 700 }}>{flabel(p.project_id)}</span><span style={{ fontSize: 11, opacity: 0.6 }}>{p.category}</span></div>
-              <div style={{ marginTop: 12 }}><div style={{ fontSize: "clamp(30px,3vw,44px)", fontWeight: 800, letterSpacing: "-0.03em", lineHeight: 0.9 }}>{p.hit_rate}%</div><div style={{ fontSize: 12, fontWeight: 600, opacity: 0.6, marginTop: 3 }}>命中率</div></div>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 600, marginTop: 12 }}><span>{comma(p.notes)} 资产</span><span>{cnNum(p.total_imp)} 曝光</span></div>
-            </section>
-          ))}
+          <div className="s12" style={{ fontSize: 11.5, color: MUTE, fontFamily: mono, lineHeight: 1.5 }}>
+            战线 · 真实项目代号(对内明示)。<b style={{ color: "#cfd3da" }}>验证级爆款</b> = 运营在飞书人工标「爆贴/大爆」(状态字段,已剔伪爆贴);
+            <b style={{ color: "#cfd3da" }}>数值推断</b> = 互动量过阈值的推断,<b style={{ color: "#cfd3da" }}>未经人工确认</b>,不进飞轮、不对外。
+          </div>
+          {projectPerf.map((p, i) => {
+            const verified = verifiedOf.get(p.project_id) ?? 0;
+            const inferred = Math.max(0, p.hits - verified);
+            return (
+              <section key={p.project_id} className="s3 cc" style={{ background: FRONT[i % FRONT.length], color: INKC, justifyContent: "space-between", minHeight: 150 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}><span style={{ fontSize: 13, fontWeight: 700 }}>{flabel(p.project_id)}</span><span style={{ fontSize: 11, opacity: 0.6, whiteSpace: "nowrap" }}>{p.category}</span></div>
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ fontSize: "clamp(30px,3vw,44px)", fontWeight: 800, letterSpacing: "-0.03em", lineHeight: 0.9 }}>{comma(verified)}</div>
+                  <div style={{ fontSize: 12, fontWeight: 600, opacity: 0.6, marginTop: 3 }}>验证级爆款 · 人工确认</div>
+                  <div style={{ fontSize: 11, fontWeight: 600, opacity: 0.55, marginTop: 5 }}>{inferred > 0 ? `+${comma(inferred)} 数值推断` : "无数值推断"} · 命中 {p.hit_rate}%</div>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 600, marginTop: 12 }}><span>{comma(p.notes)} 资产</span><span>{cnNum(p.total_imp)} 曝光</span></div>
+              </section>
+            );
+          })}
         </div>
       </div>
     </main>
