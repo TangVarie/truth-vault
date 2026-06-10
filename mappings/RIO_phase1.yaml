@@ -195,7 +195,7 @@ data_supplement_needed:
 #      若列名与表1不一致, 先补 project_specific_fields_to_raw_extra / 对齐列名(否则 D-021 丢真笔记)。
 sync_config:
   source_type: feishu_api
-  sync_interval: on_demand        # 夜间 cron 不碰;preflight + 显式验证 OK 再翻 daily
+  sync_interval: daily            # 2026-06-10 已验证上线 + 表仍在更新 → 进夜间 02:00 cron(用户拍板翻 daily)
   tables:
     - feishu_app_token: IYRRbhvwta38V1sy9JMcXRYonoc   # 表1(已 preflight 391 行)
       feishu_table_id: tblW6UgoWQ9QZ82a
