@@ -11,7 +11,10 @@ with m as (
     date_trunc('month', publish_time)                       as mon,
     count(*)                                                as notes,
     coalesce(sum(impressions), 0)::bigint                   as impressions,
-    count(*) filter (where tier in ('爆','大爆'))            as hits
+    -- 伪爆贴(synthetic)不计入月度爆款(对齐 v4 全局口径:最高优先级剔除, 不分 tier_source),
+    -- 否则 /board 月度/峰值月爆款会含假爆款而虚高(codex PR#98 review)。
+    count(*) filter (where tier in ('爆','大爆')
+                     and (data_quality_flags->>'synthetic') is distinct from 'true')  as hits
   from truth_vault.notes
   where publish_time is not null
   group by 1

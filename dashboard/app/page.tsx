@@ -51,7 +51,7 @@ export default async function Page() {
   const proof = [
     { k: "累计内容曝光", v: cnNum(o.impressions) },
     { k: "内容资产", v: comma(o.notes) },
-    { k: "验证级爆款", v: comma(o.baokuanReal) },
+    { k: "展示爆款", v: comma(o.baokuanReal) },
     { k: "命中率", v: hitRate + "%" },
   ];
 

@@ -160,15 +160,19 @@ def retract_stale_synthetic_from_ssll(
     project_filter: str | None = None,
     dry_run: bool = False,
 ) -> int:
-    """自愈回收:把【已同步 ssll 但【现在】是 synthetic 爆/大爆】的样本从 ssll 撤回。
+    """自愈回收:把【现在是 synthetic 爆/大爆】却仍有 ssll 样本/同步标记的, 从 ssll 撤回。
 
     为什么需要:synthetic 标记可能在【同步之后】才打上 —— 运营事后在飞书把「笔记状态」标
     「关注」(WTG 式), 或在【流量状态】写「伪爆贴」(RIO 式), 而该帖此前已作为"真爆款"同步进 ssll。
     push 侧 `fetch_pending_baokuan` 的 synthetic 过滤只挡【新】同步, 不回收旧的 —— 旧的会以
-    高权重停留在 ssll `reference_samples`, 污染 vibe 仿写。本函数与 push 过滤【完全对称】
+    高权重停留在 ssll `reference_samples`, 污染 vibe 仿写。本函数与 push 过滤【对称】
     (`synthetic AND tier∈(爆,大爆)` 才撤;参考放行、不动), 每次 sync 跑一遍即自愈。
-    删 `public.reference_samples` 里 TV 推的对应行(只按 source_truth_vault_note_id 命中, 不碰
-    ssll 原生样本)+ 清 TV 侧 `synced_to_ssll_at`(账对齐;若日后去 synthetic 化, push 会重新纳入)。
+
+    候选 = synthetic 爆/大爆【全部】(不只看 synced_to_ssll_at)—— 因为存在 orphan 行:
+    insert_reference_sample 成功但 mark_synced 失败时, ssll 有样本而 TV 侧 synced_to_ssll_at
+    仍为 NULL(见 existing_ssll_sample_id docstring);只看 synced 标记会漏掉它们(codex PR#98 review)。
+    对每条用 existing_ssll_sample_id 走【顶层列 + ai_analysis fallback 键】双路查到样本 id 再按 id 删
+    —— 覆盖回填 source_truth_vault_note_id 之前同步的 legacy 行(同 review)。最后清 synced_to_ssll_at。
     """
     q = (
         sb.schema("truth_vault")
@@ -178,29 +182,35 @@ def retract_stale_synthetic_from_ssll(
     )
     if project_filter:
         q = q.eq("project_id", project_filter)
-    # synced 判定 + synthetic 判定都在 Python 端(JSONB ->>'synthetic' 的 PostgREST not-null
-    # 过滤对 NULL 行不稳, 同 fetch_pending_baokuan 的处理)。
-    stale = [
-        r["note_id"] for r in fetch_all_pages(q)
-        if r.get("synced_to_ssll_at")
-        and isinstance(r.get("data_quality_flags"), dict)
+    # synthetic 判定在 Python 端(JSONB ->>'synthetic' 的 PostgREST 过滤对 NULL 行不稳, 同
+    # fetch_pending_baokuan)。不再用 synced_to_ssll_at 预筛 —— orphan 行该标记为 NULL 也要回收。
+    candidates = [
+        r for r in fetch_all_pages(q)
+        if isinstance(r.get("data_quality_flags"), dict)
         and r["data_quality_flags"].get("synthetic") is True
     ]
-    if not stale:
-        return 0
-    if dry_run:
-        logger.info("[dry-run] would retract %d stale-synthetic baokuan from ssll: %s",
-                    len(stale), stale[:10])
-        return len(stale)
-    for note_id in stale:
-        # 只删 TV 推的那行(source_truth_vault_note_id 命中);不碰 ssll 原生 reference_samples。
-        sb.schema("public").table("reference_samples").delete().eq(
-            "source_truth_vault_note_id", note_id).execute()
+    retracted = 0
+    for r in candidates:
+        note_id = r["note_id"]
+        # 双键查 ssll 样本(顶层 source_truth_vault_note_id + 旧行的 ai_analysis->>_truth_vault_note_id)。
+        sample_id = existing_ssll_sample_id(sb, note_id)
+        if sample_id is None and not r.get("synced_to_ssll_at"):
+            continue  # ssll 无样本、TV 也没标 synced → 本就不在飞轮, 无需动作
+        if dry_run:
+            logger.info("[dry-run] would retract stale-synthetic baokuan from ssll: %s (sample=%s)",
+                        note_id, sample_id)
+            retracted += 1
+            continue
+        if sample_id is not None:
+            # 按 id 删(双键已解析到具体行)—— 不碰 ssll 原生样本(它们无 TV lineage 键)。
+            sb.schema("public").table("reference_samples").delete().eq("id", sample_id).execute()
         sb.schema("truth_vault").table("notes").update(
             {"synced_to_ssll_at": None, "synced_ssll_reference_sample_id": None}
         ).eq("note_id", note_id).execute()
-        logger.warning("Retracted stale-synthetic baokuan from ssll (伪爆贴不污染飞轮): %s", note_id)
-    return len(stale)
+        logger.warning("Retracted stale-synthetic baokuan from ssll (伪爆贴不污染飞轮): %s (sample=%s)",
+                       note_id, sample_id)
+        retracted += 1
+    return retracted
 
 
 def fetch_top_comments(sb, note_id: str, limit: int = 5) -> list[dict[str, Any]]:
