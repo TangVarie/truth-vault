@@ -28,7 +28,7 @@ import os
 import sys
 from collections import Counter
 
-from _common import load_mapping, _direction_key
+from _common import load_mapping, resolve_feishu_tables, _direction_key
 from sync_feishu_notes_to_truth_vault import (
     FeishuClient,
     transform_row,
@@ -164,10 +164,11 @@ def main() -> int:
         warnings.append("缺 intent_mapping")
 
     sc = mapping.get("sync_config") or {}
-    app_token = sc.get("feishu_app_token") or os.environ.get("FEISHU_APP_TOKEN")
-    table_id = sc.get("feishu_table_id") or os.environ.get("FEISHU_TABLE_ID")
-    view_id = sc.get("feishu_view_id")
-    if not app_token or not table_id:
+    # 多表合并(sync_config.tables)时逐表都体检 —— 列覆盖/分布在所有表上聚合, 否则只查
+    # 第一张表会漏掉第二张表的未声明列(D-021 整行 quarantine 丢真笔记)。
+    specs = resolve_feishu_tables(sc)
+    configured = [sp for sp in specs if sp["app_token"] and sp["table_id"]]
+    if not configured:
         print("  ❌ sync_config 缺 feishu_app_token / feishu_table_id → 还没 onboard, 无法读表")
         return 2
     app_id = os.environ.get("FEISHU_APP_ID")
@@ -178,8 +179,15 @@ def main() -> int:
 
     # ── 2. 读飞书(只读)+ 逐行投影 ──
     _hr("2. 读飞书 + 投影(transform_row, 不写库/不调 LLM)")
+    if len(configured) > 1:
+        print(f"  多表合并: {len(configured)} 张飞书表 → 同一 project(列覆盖/分布在所有表上聚合)")
     fs = FeishuClient(app_id, app_secret)
-    records = fs.list_records(app_token, table_id, view_id)
+
+    def _iter_all_records():
+        for sp in configured:
+            yield from fs.list_records(sp["app_token"], sp["table_id"], sp["view_id"])
+
+    records = _iter_all_records()
     if args.limit:
         records = (r for i, r in enumerate(records) if i < args.limit)
     s = project_rows(mapping, records, args.show)

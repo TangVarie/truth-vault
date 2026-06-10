@@ -53,6 +53,7 @@ from _common import (
     parse_feishu_date,
     parse_audience_analysis,
     quarantine_record,
+    resolve_feishu_tables,
     setup_logger,
     update_project_date_range,
     _direction_key,
@@ -827,28 +828,36 @@ def main() -> int:
         )
         return 2
 
-    app_token = sync_config.get("feishu_app_token") or os.environ.get("FEISHU_APP_TOKEN")
-    table_id  = sync_config.get("feishu_table_id")  or os.environ.get("FEISHU_TABLE_ID")
-    view_id   = sync_config.get("feishu_view_id")
-    if not app_token and not table_id:
-        # 两个定位符【都】空 = 占位、该项目【还没 onboard】→ 优雅跳过(非错误, exit 0)。
+    # ── 解析要同步的飞书表(支持单表 legacy + 多表 sync_config.tables → 同一 project 合并)──
+    # 多表: 同一期多张飞书表都写进 mapping['project_id'](如 RIO 同期两表); 共用 field_mapping。
+    specs = resolve_feishu_tables(sync_config)
+    half       = [sp for sp in specs if bool(sp["app_token"]) != bool(sp["table_id"])]
+    configured = [sp for sp in specs if sp["app_token"] and sp["table_id"]]
+    if half:
+        # 某张表只配了【一半】定位符(漏填/拼错)= 配置写错, 不是"未 onboard" → 报错暴露,
+        # 别假装成功却漏同步 (PR#32 review r3339895103)。
+        logger.error(
+            "project %s 的 feishu sync_config 有表只配了一半 (app_token/table_id 一个空一个有) "
+            "— 配置错误。请检查 mappings/%s.yaml 的 sync_config 是否漏填或拼错。",
+            args.project_id, args.project_id,
+        )
+        return 2
+    if not configured:
+        # 所有表定位符【都】空 = 占位、该项目【还没 onboard】→ 优雅跳过(非错误, exit 0)。
         # 否则 daily-sync 跑全量时, 任何尚未 onboard 的占位项目都会拖垮整个 cron
         # (2026-06-02 实测: NUC/NRT 占位 → cron 全红)。接入: 在 mappings/<project>.yaml
-        # 的 sync_config 同时填 feishu_app_token + feishu_table_id。
+        # 的 sync_config 填 feishu_app_token + feishu_table_id(或 tables: 列表)。
         logger.warning(
-            "project %s 未配 feishu sync_config (app_token + table_id 都为空) "
+            "project %s 未配 feishu sync_config (无任何表定位符) "
             "→ 尚未 onboard, 跳过(非错误)。接入请在 mappings/%s.yaml 填 sync_config。",
             args.project_id, args.project_id,
         )
         return 0
-    if not app_token or not table_id:
-        # 只配了【一半】= 配置写错(漏填/拼错), 不是"未 onboard" → 仍报错暴露, 别假装
-        # 成功却一行都不同步 (PR#32 review r3339895103)。
+    if len(specs) > len(configured):
+        # 多表列表里混着【空表项】(列了表却没填坐标)= 写错了 → 报错, 别漏同步那张表。
         logger.error(
-            "project %s 的 feishu sync_config 只配了一半 "
-            "(feishu_app_token 有=%s / feishu_table_id 有=%s) — 这是配置错误、不是未 onboard。"
-            "请检查 mappings/%s.yaml 的 sync_config 是否漏填或拼错。",
-            args.project_id, bool(app_token), bool(table_id), args.project_id,
+            "project %s 的 sync_config.tables 有空表项 (列了但没填 app_token/table_id)。",
+            args.project_id,
         )
         return 2
 
@@ -874,7 +883,17 @@ def main() -> int:
     pending_notes: list[dict[str, Any]] = []
     pending_metrics: list[dict[str, Any]] = []
     account_platforms: dict[str, str] = {}
-    for item in fs.list_records(app_token, table_id, view_id):
+
+    # 多表合并: 把所有已配置飞书表的记录串成一个迭代器喂给下方逐行循环 —— 循环体一行不改,
+    # note_id 仍 = {project_id}_{record}, 全部落到同一个 project(--limit 跨所有表合计)。
+    if len(configured) > 1:
+        logger.info("多表合并: project=%s 同步 %d 张飞书表", mapping["project_id"], len(configured))
+
+    def _iter_all_records():
+        for _sp in configured:
+            yield from fs.list_records(_sp["app_token"], _sp["table_id"], _sp["view_id"])
+
+    for item in _iter_all_records():
         if args.limit and stats["total"] >= args.limit:
             break
         stats["total"] += 1
