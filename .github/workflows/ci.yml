@@ -226,9 +226,17 @@ jobs:
           # 零星单条抽风(NUC_1 批3 实况 ok=14/failed=1)→ 容忍, 返回 0
           assert f({"ok": 14, "failed_after_retry": 1, "hygiene_failed": 0}) == 0
           print("  ✓ 零星 failed_after_retry(ok>0)容忍 → 0")
-          # 全军覆没(ok==0 却有失败)→ 系统性, 红
-          assert f({"ok": 0, "failed_after_retry": 5, "hygiene_failed": 0}) == 1
-          print("  ✓ 全军覆没(ok==0)→ 1")
+          # 纯校验抽风(坏 JSON/越界词表, 无 api_failed)即便 ok==0 也容忍 → 0(幂等续标)。
+          # 修 #55 误判红:近乎标完的项目只剩 1 条卡壳笔记 → 批 ok=0, 但只是单条内容抽风、非系统性。
+          assert f({"ok": 0, "failed_after_retry": 1, "hygiene_failed": 0}) == 0
+          assert f({"ok": 0, "failed_after_retry": 5, "hygiene_failed": 0}) == 0
+          print("  ✓ 纯校验失败(ok==0, 无 api_failed)容忍 → 0(修 #55 误判红)")
+          # 基础设施失败(api_error = 余额/限流/鉴权/连不上)且无任何成功 → 系统性, 红(保留 #56 本意)
+          assert f({"ok": 0, "failed_after_retry": 5, "api_failed": 5, "hygiene_failed": 0}) == 1
+          print("  ✓ api_failed 全军覆没(ok==0)→ 1")
+          # 有成功(ok>0)则即便夹带 api_failed 也不红(基础设施基本健康 / 瞬时单条)
+          assert f({"ok": 14, "failed_after_retry": 1, "api_failed": 1, "hygiene_failed": 0}) == 0
+          print("  ✓ ok>0 时 api_failed 不拖红 → 0")
           # hygiene 任意一条 → 红(label-leakage 优先级最高, 即便有 ok)
           assert f({"ok": 40, "failed_after_retry": 0, "hygiene_failed": 1}) == 1
           assert f({"ok": 40, "failed_after_retry": 2, "hygiene_failed": 1}) == 1
@@ -237,7 +245,7 @@ jobs:
           assert f({"ok": 15, "failed_after_retry": 0, "hygiene_failed": 0}) == 0
           assert f({"ok": 0, "failed_after_retry": 0, "hygiene_failed": 0}) == 0
           print("  ✓ 干净成功 + no-op 空跑 → 0")
-          print("\nessence exit-code tolerance: all 6 checks passed")
+          print("\nessence exit-code tolerance: all checks passed")
           PY
       - name: Essence annotator sub_direction classification self-check
         working-directory: scripts

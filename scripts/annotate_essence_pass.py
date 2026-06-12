@@ -707,14 +707,18 @@ def _exit_code_for_stats(stats: dict) -> int:
 
     - hygiene_failed(build_mode_a_prompt 卫生断言 = label-leakage / project context
       漂移, D-017/D-028 头号不变量, 系统性 bug 而非 LLM 抽风)→ 任意一条都判失败。
-    - failed_after_retry(单条 essence LLM 偶发坏 JSON / 校验失败)是【幂等】的: 失败行
-      essence_annotated_at 仍 NULL, 下轮 daily-sync 自动续标 → 只有【全军覆没】(ok==0 却有
-      失败)才判失败(多半系统性: 模型 env / 余额 / 限流); 零星单条容忍, 不拖红整条 sync。
+    - api_failed(失败原因是 api_error/连通类 = 基础设施: 余额耗尽 / 限流 / 鉴权 / 中转站连不上):
+      若【无任何成功】(ok==0)→ 判失败(系统性, 该告警排查)。这保留 #56 抓"全军覆没"的本意。
+    - failed_after_retry 里【纯校验类】失败(坏 JSON / 越界词表 = 单条内容级抽风)是【幂等】的:
+      失败行 essence_annotated_at 仍 NULL, 下轮自动续标 → 【不判失败】, 即便 ok==0 也不红。
+      否则近乎标完的项目只剩 1 条卡壳笔记时(批 ok=0)会被误判"全军覆没"每晚拖红(实测 HXZ_QD/
+      TXQ 各剩 1 条校验抽风的真实笔记把 #55 整条 sync 判红)。api_failed 与校验失败的区分让
+      "余额/限流(该红)"和"单条脏抽风(容忍)"不再被一视同仁。
     - 其余(含 no-op 空跑)→ 0。
     """
     if stats.get("hygiene_failed"):
         return 1
-    if stats.get("failed_after_retry", 0) > 0 and stats.get("ok", 0) == 0:
+    if stats.get("api_failed", 0) > 0 and stats.get("ok", 0) == 0:
         return 1
     return 0
 
@@ -753,6 +757,7 @@ def main() -> int:
 
     failed_queue_path = Path(args.failed_queue).resolve()
     stats = {"ok": 0, "ok_after_retry": 0, "failed_after_retry": 0,
+             "api_failed": 0,
              "hygiene_failed": 0,
              "sub_dir_ok": 0, "sub_dir_failed": 0, "sub_dir_not_applicable": 0}
     sleep_s = 1.0 / args.qps if args.qps > 0 else 0
@@ -814,6 +819,10 @@ def main() -> int:
         if parsed is None:
             logger.warning("Failed after retry for %s: %s", note["note_id"], errors)
             stats["failed_after_retry"] += 1
+            # 区分失败性质: api_error/连通类 = 基础设施(余额/限流/鉴权/连不上 → 系统性, 计 api_failed);
+            # 其余(json_parse / 越界词表)= 单条内容级抽风(幂等, 不计系统性)。见 _exit_code_for_stats。
+            if any(str(e).startswith(("api_error", "retry_api_error")) for e in errors):
+                stats["api_failed"] += 1
             _append_failed_queue(
                 failed_queue_path, note, args.project_id, errors, last_raw
             )
