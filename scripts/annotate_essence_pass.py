@@ -705,16 +705,21 @@ def _annotate_with_retry(prompt: str, model: str, cached_system: str | None = No
 def _exit_code_for_stats(stats: dict) -> int:
     """essence pass 退出码(对齐 curate #56「仅全军覆没才判失败」)。
 
+    判红 = ① hygiene_failed(任意一条)或 ② systemic_failed>0 且 ok==0。
     - hygiene_failed(build_mode_a_prompt 卫生断言 = label-leakage / project context
-      漂移, D-017/D-028 头号不变量, 系统性 bug 而非 LLM 抽风)→ 任意一条都判失败。
-    - failed_after_retry(单条 essence LLM 偶发坏 JSON / 校验失败)是【幂等】的: 失败行
-      essence_annotated_at 仍 NULL, 下轮 daily-sync 自动续标 → 只有【全军覆没】(ok==0 却有
-      失败)才判失败(多半系统性: 模型 env / 余额 / 限流); 零星单条容忍, 不拖红整条 sync。
+      漂移, D-017/D-028 头号不变量, 系统性 bug)→ 任意一条都判失败。
+    - systemic_failed = 【非内容校验类】失败: api_error/连通(余额/限流/鉴权/中转站连不上)
+      + write_rejected(payload 超限 / 写入端结构·schema 拒绝)+ 其它未归类。若【无任何成功】
+      (ok==0)→ 判失败。这既保留 #56 抓"全军覆没(余额耗尽等)"的本意, 又覆盖写入端/schema 持续
+      回归(否则所有笔记都被 write_essence_back 拒绝时会每晚静默绿过、一条不标; codex PR#100 review)。
+    - 仅【纯校验类】失败(坏 JSON / 越界词表 = 单条 LLM 内容抽风)是【幂等】的(下轮续标), 即便
+      ok==0 也【不判失败】—— 否则近乎标完的项目只剩 1 条卡壳笔记(批 ok=0)被误判"全军覆没"每晚
+      拖红(#55 实测 HXZ_QD/TXQ 各剩 1 条)。【只】豁免它, 其余一律计 systemic(fail-safe)。
     - 其余(含 no-op 空跑)→ 0。
     """
     if stats.get("hygiene_failed"):
         return 1
-    if stats.get("failed_after_retry", 0) > 0 and stats.get("ok", 0) == 0:
+    if stats.get("systemic_failed", 0) > 0 and stats.get("ok", 0) == 0:
         return 1
     return 0
 
@@ -753,6 +758,7 @@ def main() -> int:
 
     failed_queue_path = Path(args.failed_queue).resolve()
     stats = {"ok": 0, "ok_after_retry": 0, "failed_after_retry": 0,
+             "systemic_failed": 0,
              "hygiene_failed": 0,
              "sub_dir_ok": 0, "sub_dir_failed": 0, "sub_dir_not_applicable": 0}
     sleep_s = 1.0 / args.qps if args.qps > 0 else 0
@@ -814,6 +820,11 @@ def main() -> int:
         if parsed is None:
             logger.warning("Failed after retry for %s: %s", note["note_id"], errors)
             stats["failed_after_retry"] += 1
+            # 失败归类(见 _exit_code_for_stats):只豁免【纯校验类】(json_parse / 越界词表 =
+            # 单条 LLM 内容抽风, 幂等);api_error/连通(余额/限流/鉴权/连不上)= 基础设施 → 计 systemic。
+            # _annotate_with_retry 返回闭集(api_error/retry_api_error 或 json/vocab), 故"非 api 即校验类"。
+            if any(str(e).startswith(("api_error", "retry_api_error")) for e in errors):
+                stats["systemic_failed"] += 1
             _append_failed_queue(
                 failed_queue_path, note, args.project_id, errors, last_raw
             )
@@ -829,6 +840,10 @@ def main() -> int:
             logger.warning("write_essence_back rejected %s: %s",
                            note["note_id"], exc)
             stats["failed_after_retry"] += 1
+            # 写入端拒绝(payload 超限 / 结构/schema 后校验)= 非内容校验类 → 计 systemic:
+            # 若所有笔记都因此被拒(ok==0), 必须判红, 否则 schema/payload 持续回归会每晚静默
+            # 绿过、一条不标(codex PR#100 review)。
+            stats["systemic_failed"] += 1
             _append_failed_queue(
                 failed_queue_path, note, args.project_id,
                 [f"write_rejected: {exc}"], last_raw,
