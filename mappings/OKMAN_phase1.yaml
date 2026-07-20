@@ -1,0 +1,195 @@
+# ════════════════════════════════════════════════════════════════════
+# OKMAN · OKMAN_phase1 —— Onboarding 草稿(DRAFT · A 家族)
+# ════════════════════════════════════════════════════════════════════
+# 产品: 西地那非口溶膜(男性健康 OTC/处方药, 品牌 OKMAN/艾时达/科伦)
+# 投放策略: 小红书素人铺量, 以情感/两性场景切入, 评论区引导产品认知
+# 真实列名 / 方向取值 / 未声明列 已据 preflight 样本(202 行)起草, 待 preflight 实跑校正。
+# ════════════════════════════════════════════════════════════════════
+
+version: 1.0
+
+# ── 项目元数据 ──
+project_id: OKMAN_phase1
+brand: OKMAN                    # [待确认] 飞书蓝词含 okman/艾时达/科伦西地那非, 品牌名待策略 lead 定
+product: 西地那非口溶膜          # [待确认] 核心产品(蓝词: 西地那非口溶膜/快充口溶膜/艾时达口溶膜)
+category: 处方药                # [待确认] 西地那非按国内分类属处方药(部分渠道 OTC 争议, 待策略确认)
+platform: xiaohongshu
+schema_family: A               # 有「巡查状态」「最近检查时间」「数据回收情况」「是否巡查」→ A 家族确认
+start_date: auto_from_publish_time_min
+end_date: auto_from_publish_time_max
+
+# ── 字段映射 ── [据 preflight 样本 30 列全覆盖]
+field_mapping:
+  素人编号: account_id
+  文案: raw_content
+  发布时间: publish_time
+  反馈链接: publish_url
+  方向: _direction_raw            # → direction_decomposition(11 种取值)
+  流量状态: _status_raw           # tier 源(WTG/RIO 表1 式)
+  曝光量: impressions
+  阅读量: reads
+  互动量: interactions
+  数据回收情况: data_quality_status
+  观众分析: _audience_raw          # → actual_audience_data(sync 确定性解析; 样本 98 行有值, 格式符合)
+  随贴评论: _comment_text          # → comments 表(Phase2 LLM 解析)
+  蓝词字段: hit_blue_keywords      # → notes.hit_blue_keywords(事后命中蓝词)
+  笔记状态: _note_status_raw       # 工作流状态(非 tier 源; 可检测异常)
+
+# ── intent ──
+# 本表【无】「发布笔记」intent 列 → 不做意图分类, notes.intent 留空(WTG 金标准 intent=null)。
+
+# ── 方向拆解 ──
+# 飞书「方向」11 种取值(含「测试版」早期方向)。全部为单选, 无多选组合值。
+# content_format / target_audience 受闭集约束; 标 [待确认], 人群先给保守值(D-010 不臆造)。
+direction_decomposition:
+
+  "测试版":                           # 7 条; 早期测试内容(多种角度混杂: 异地奔现/二婚/暗示等)
+    content_format: 情感叙事          # [待确认] 样本全为情感叙事
+    target_audience: ["通用"]         # [待确认]
+    user_pain_point: 早期测试方向(两性情感场景, 暗示男性功能需求)
+
+  "D1-物拟人双关":                    # 3 条; 用物品/食物双关暗示产品
+    content_format: 反差破圈          # [待确认] 双关/谐音梗制造反差记忆点
+    target_audience: ["通用"]         # [待确认]
+    user_pain_point: 以物拟人双关撬动流量(隐晦暗示男性需求)
+
+  "D2-第三方目击":                    # 6 条; 第三者视角(室友/同事/朋友)目击/发现产品
+    content_format: 情感叙事          # [待确认] 第三方叙事
+    target_audience: ["通用"]         # [待确认]
+    user_pain_point: 第三方视角发现/目击(降低广告感, 增加可信度)
+
+  "D5-兄弟暗语":                      # 1 条; 男性之间的暗语推荐
+    content_format: 情感叙事          # [待确认]
+    target_audience: ["年轻男性"]     # [待确认] 兄弟间暗语 → 男性受众
+    user_pain_point: 男性社交场景中的隐晦推荐(兄弟间的默契)
+
+  "D6-家属代查":                      # 3 条; 妻子/女友视角代为查询/发现
+    content_format: 情感叙事          # [待确认] 家属情感叙事
+    target_audience: ["伴侣家人"]     # [待确认] 妻子/女友 → 伴侣视角
+    user_pain_point: 伴侣发现另一半状态问题, 代为寻找解决方案
+
+  "D7-男性crush":                     # 20 条; 男性视角暗恋/追求, 为"表现"做准备
+    content_format: 情感叙事          # [待确认] 暗恋/心动情感叙事
+    target_audience: ["年轻男性"]     # [待确认]
+    user_pain_point: 暗恋/追求中的表现焦虑(怕关键时刻掉链子)
+
+  "D8-男性奔现":                      # 8 条; 异地恋/网恋奔现场景
+    content_format: 情感叙事          # [待确认] 奔现情感叙事
+    target_audience: ["年轻男性"]     # [待确认]
+    user_pain_point: 异地奔现/久别重逢的表现焦虑
+
+  "D9-男性被评价":                    # 36 条; 被女性评价"不行"/被比较
+    content_format: 情感叙事          # [待确认] 被评价的情感痛点
+    target_audience: ["年轻男性", "中年男性"]  # [待确认] 男性被评价
+    user_pain_point: 被伴侣/前任评价表现差的自尊焦虑
+
+  "D10-产品贴":                       # 33 条; 直接产品介绍/科普
+    content_format: 直给推荐          # [待确认] 产品直给
+    target_audience: ["通用"]         # [待确认]
+    user_pain_point: "直接产品认知(口溶膜剂型优势: 15分钟起效/不用等)"
+
+  "硬核民间专家":                     # 5 条; 以"专家"/过来人口吻科普
+    content_format: 认知重构          # [待确认] 专家科普 → 认知重构
+    target_audience: ["通用"]         # [待确认]
+    user_pain_point: 男性健康知识盲区/用药认知误区
+
+  "真实体验与求问":                   # 80 条(最多); 以真实经历求助/分享体验
+    content_format: 提问求助          # [待确认] 求问/求推荐格式
+    target_audience: ["通用"]         # [待确认] 样本男女视角都有
+    user_pain_point: 真实两性场景中的功能焦虑/求助(不想等/状态差/怕不行)
+
+tier_extraction:
+  source: 状态字段                  # 指示用 _status_raw(即「流量状态」列)
+  rules:
+    - match_contains: ["大爆"]
+      tier: 大爆
+    - match_contains: ["爆帖预备"]    # 注: 飞书选项写「爆帖预备」(帖, 非贴)
+      tier: 预备
+    - match_contains: ["爆贴"]        # 飞书选项「爆贴」+ 实际多选含「爆贴」
+      tier: 爆
+    - match_contains: ["小爆"]        # OKMAN 独有状态「小爆」→ 映射为 爆(受控词表无"小爆")
+      tier: 爆
+    - match_contains: ["蓝词"]        # OKMAN 独有: 纯蓝词命中(表现尚可但非爆) → 参考
+      tier: 参考
+    - match_contains: ["风控"]
+      tier: 风控
+    - match_contains: ["无水花"]
+      tier: 趴
+    - match_contains: ["评估中"]
+      tier: 未知
+    - default: null
+
+# ── 数值推断阈值 ──
+# 据互动副本分布: median≈2, P90≈14, P99≈274, max=3737。
+# 爆贴样本(流量状态含"爆贴"): 互动 374(77066 曝光)级别。
+# 推荐起点: 爆=100 / 大爆=1000。[待确认]
+tier_thresholds:
+  爆: 100                            # [待确认]
+  大爆: 1000                         # [待确认]
+
+# ── 合规 ──
+compliance:
+  base_template: 处方药              # [待确认] 西地那非=处方药级合规
+  custom_red_flags:                  # [待确认]
+    - "禁止直接出现'西地那非'药名(需用暗语/品牌名替代)"
+    - "禁止剂量数字(mg)出现在正文(仅评论区可提)"
+    - "禁止'治疗ED''壮阳''伟哥'等直接医疗/违禁表述"
+    - "禁止向未成年人暗示"
+    - "禁止绝对化功效承诺('根治''永久'等)"
+    - "内容需以情感/生活场景为主, 产品露出控制在评论区"
+  blue_keyword_strategy:
+    primary: ["艾时达口溶膜", "西地那非口溶膜", "快充口溶膜"]    # [待确认]
+    secondary: ["okman口溶膜", "小超人口溶膜", "科伦西地那非"]   # [待确认]
+    avoid: ["伟哥", "壮阳", "治疗", "ED"]                       # [待确认]
+
+# ── 项目专属字段(进 raw_extra) ──
+project_specific_fields_to_raw_extra:
+  - 内容配图
+  - 评论配图
+  - 评论状态
+  - 相关截图
+  - 蓝词图片
+  - 数据整理
+  - 是否巡查
+  - 巡查状态
+  - 已确认存活
+  - 最近检查时间
+  - 曝光副本
+  - 阅读副本
+  - 互动副本
+  - 父记录
+
+data_supplement_needed:
+  - field: account_followers
+    method: 本表无粉丝数/帐号昵称/主页链接列 → 需通过 publish_url 调小红书 API 或人工补录
+    estimated_rows: 0
+
+# ── Sync 配置 ── (飞书坐标待用户提供)
+onboarding_meta:
+  onboarded_at: 2026-07-20
+  onboarded_by: 接表 agent 起草 + 结构审校(待策略 lead 拍板 [待确认] 项)
+  strategy_lead: Ziao / 周哥
+  notes: |
+    DRAFT —— A 家族(有巡查/检查/数据回收列), 结构近 WTG/RIO 表1。
+    特殊点:
+      1) 产品=西地那非口溶膜(男性健康处方药), 合规要求极高;
+      2) 无 intent 列(同 WTG 金标准, intent=null);
+      3) 方向 11 种全单选(无多选组合), 含「测试版」早期方向;
+      4) 流量状态含非标值「小爆」「蓝词」(其它表没有) → tier 规则已特殊映射;
+      5) 蓝词字段有值(49 行), 蓝词丰富(27 种选项);
+      6) 观众分析格式与 WTG 一致(可解析), 98 行有值。
+    待 preflight 实跑校正:
+      - 确认 30 列全覆盖(无漏声明 → quarantine=0);
+      - 确认方向 11 种全命中;
+      - 确认 tier 规则覆盖所有多选组合值(14 种);
+      - 飞书坐标(app_token / table_id)待用户提供。
+    autowriter 映射不需配(D-038 通道2 退役)。
+    preflight 干净 → PR → 显式 Daily TV sync(dry_run → 实跑) → 翻 daily → backfill essence。
+
+sync_config:
+  source_type: feishu_api
+  feishu_app_token: HWEJbJhJRaAE3fsTcw2cqm14nfb   # 表标识(非密钥), 接表时已知
+  feishu_table_id: tbliYIqSrgTkLA2h
+  feishu_view_id: null
+  sync_interval: on_demand
+
