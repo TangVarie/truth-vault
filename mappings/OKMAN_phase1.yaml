@@ -197,5 +197,5 @@ sync_config:
   feishu_app_token: HWEJbJhJRaAE3fsTcw2cqm14nfb   # 表标识(非密钥), 接表时已知
   feishu_table_id: tbliYIqSrgTkLA2h
   feishu_view_id: null
-  sync_interval: on_demand
+  sync_interval: daily                            # 翻 daily(2026-07-20): preflight/dry_run/真跑均已验证, 202 行入库 + 17 爆款通道1 已推 ssll; 进夜间 02:00 cron 自动跑 feishu/essence/curate(通道2)/ssll
 
