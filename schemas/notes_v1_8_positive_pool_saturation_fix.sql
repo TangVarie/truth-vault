@@ -45,12 +45,33 @@
 --   本 view 量的是"如果还按老办法取会怎样", 属于对照指标, 不是实际注入内容。
 --   autowriter 完全退役后本 view 可以下线。
 --
+-- ⚠️⚠️ 为什么用 DROP + CREATE 而不是 CREATE OR REPLACE(codex review)
+--
+--   本文件给视图【追加了 4 列】。Postgres 的 CREATE OR REPLACE VIEW 只能在末尾
+--   加列, **不能删列** —— 一旦本文件应用过, 任何试图把视图变回 6 列的语句都会
+--   报 `ERROR: cannot drop columns from view`(已实测)。
+--
+--   后果不只是"回滚说明写错了", 更常见的是这个坑:
+--     在已应用 v1_8 的库上【重跑基线 notes_v1_2_cross_schema_views.sql 会失败】——
+--     而那个文件本身是按"可重复执行"设计并被 CI 反复应用的。
+--
+--   所以: 本文件自己先 DROP 再 CREATE(不带 CASCADE —— 万一将来有东西依赖它,
+--   宁可让 DROP 报错, 也不要静默连带删掉别人); 回滚说明同理。
+--   当前无任何对象依赖此视图(pg_depend 查过), DROP 是安全的。
+--
 -- 部署: Supabase SQL Editor 粘贴执行, 或 MCP apply_migration。
--- 幂等: CREATE OR REPLACE, 可重复执行。
--- 回滚: 重新执行 notes_v1_2_cross_schema_views.sql 里的原始定义。
+-- 幂等: DROP IF EXISTS + CREATE, 可重复执行。
+--
+-- 回滚(想变回 v1_2 的 6 列版本):
+--   DROP VIEW IF EXISTS truth_vault.v_autowriter_positive_pool_saturation;
+--   \i schemas/notes_v1_2_cross_schema_views.sql
+--   -- ↑ 必须先 DROP。直接重跑基线会 ERROR: cannot drop columns from view。
 -- ════════════════════════════════════════════════════════════════════
 
-CREATE OR REPLACE VIEW truth_vault.v_autowriter_positive_pool_saturation AS
+-- 先 DROP: 见文件头的说明。不带 CASCADE, 有依赖时宁可报错。
+DROP VIEW IF EXISTS truth_vault.v_autowriter_positive_pool_saturation;
+
+CREATE VIEW truth_vault.v_autowriter_positive_pool_saturation AS
 WITH top_5 AS (
     SELECT
         b.project_id AS aw_project_id,

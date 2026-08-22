@@ -25,10 +25,14 @@ emotional_lever. 本脚本现在会把"池子里几条 / 其中几条能测多�
     python check_positive_saturation.py --threshold 0.5   # 更严的告警线
 
 退出码:
-    0 = 所有池子都测过且都在阈值下(真健康)
+    0 = 所有池子【全部条目】都测过且都在阈值下(真健康)
     1 = 至少一个池子饱和
-    2 = 至少一个池子【测不了】(正例没标 essence, 拿不到 lever) —— 不是健康,
-        只是没数据。cron/运维不要把它当 0 处理。
+    2 = 至少一个池子【没测全】(部分或全部正例没标 essence, 拿不到 lever) ——
+        不是健康, 只是没数据。cron/运维不要把它当 0 处理。
+
+⚠️ 2 的判据是【测全】而不是【测到过】: 5 条里只有 2 条能测, ratio 是拿那 2 条
+算的, 另外 3 条完全未知、可能全是同一个 lever。那种情况报 ok 就违背了"退出 0
+表示每个池子都测过"这个承诺。
 
 触发条件 (来自延后清单 🟡 慢性病): 第一次手动 review 时观察到 "近 1 个月
 positive items 80%+ 都是同一种调性". 这个脚本能在你"感觉到"之前先看到.
@@ -71,9 +75,12 @@ def main() -> int:
     print("=" * 96)
     print(f"  Positive pool saturation · {len(rows)} autowriter project(s) · threshold={args.threshold}")
     print("=" * 96)
-    print(f"  {'aw_project_id':<40} {'pool':<5} {'meas':<5} {'levers':<7} "
-          f"{'top_n':<6} {'ratio':<6}  status")
-    print("  " + "-" * 92)
+    # ⚠️ 必须打 pool_user_id: view 现在【按 project × user 分区】, 同一个项目
+    # 会出现多行。只打 project 的话, 一个饱和的私有池和一个健康的私有池看起来
+    # 就是两行重复的项目, 没法知道该找谁去改 —— per-user 监控就白做了。
+    print(f"  {'aw_project_id':<38} {'user':<10} {'pool':<5} {'meas':<5} "
+          f"{'levers':<7} {'top_n':<6} {'ratio':<6}  status")
+    print("  " + "-" * 104)
     for r in rows:
         ratio = r.get("dominant_lever_ratio")
         measurable = r.get("lever_measurable_count")
@@ -90,26 +97,37 @@ def main() -> int:
         else:
             flag = "ok"
         ratio_txt = f"{ratio:<6.2f}" if ratio is not None else f"{'n/a':<6}"
+        uid = r.get("pool_user_id")
+        uid_txt = (str(uid)[:8] if uid else "(无归属)")
         print(
-            f"  {r['aw_project_id']:<40} "
-            f"{r['active_positive_count']:<5} "
-            f"{measurable or 0:<5} "
+            f"  {str(r['aw_project_id']):<38} "
+            f"{uid_txt:<10} "
+            f"{pool_n:<5} "
+            f"{measurable:<5} "
             f"{r['distinct_lever_count'] or 0:<7} "
             f"{r['top_lever_count']:<6} "
             f"{ratio_txt}  {flag}"
         )
         if r.get("lever_distribution"):
-            print(f"  {'':40}   levers: {r['lever_distribution']}")
+            print(f"  {'':38}   levers: {r['lever_distribution']}")
 
     unmeasurable_n = sum(
         1 for r in rows
-        if r.get("dominant_lever_ratio") is None or not r.get("lever_measurable_count")
+        if r.get("dominant_lever_ratio") is None
+        or (r.get("lever_measurable_count") or 0) < (r.get("active_positive_count") or 0)
     )
     print()
     if unmeasurable_n:
-        print(f"  — {unmeasurable_n} 个池子无法评估多样性: 这些正例是运营在 aw "
-              "手标的 native 条目, 没有对应的 truth_vault.notes 记录, 取不到 "
-              "emotional_lever. 想让它可测, 需要给这些正例补 essence 标注。")
+        print(f"  — {unmeasurable_n} 个池子没测全: 池子里有运营在 aw 手标的 native "
+              "条目, 它们没有对应的 truth_vault.notes 记录, 取不到 emotional_lever。"
+              "想让它可测, 需要给这些正例补 essence 标注。")
+        for r in rows:
+            m = r.get("lever_measurable_count") or 0
+            n = r.get("active_positive_count") or 0
+            if r.get("dominant_lever_ratio") is None or m < n:
+                uid = r.get("pool_user_id")
+                print(f"      · {r['aw_project_id']} / user "
+                      f"{str(uid)[:8] if uid else '(无归属)'}: {m}/{n} 条可测")
     if warnings:
         print(f"  ⚠ {warnings} pool(s) over threshold {args.threshold}. "
               "Consider widening content angles or running essence annotation "
@@ -121,9 +139,9 @@ def main() -> int:
         # 常态(见 v1_8 的说明), 所以这条路径是主路径不是边角。cron 或运维只看
         # 退出码的话, 会把"一条都没测到"读成"多样性很好", 正是 v1_8 要暴露的
         # 那个假阴性又原样回来了。用一个区别于 0/1 的退出码。
-        print(f"  ⊘ 有 {unmeasurable_n} 个池子测不了, 无法判定是否饱和 —— "
+        print(f"  ⊘ 有 {unmeasurable_n} 个池子没测全, 无法判定是否饱和 —— "
               "这【不是】健康, 只是没数据。给这些正例补 essence 标注才能评估。")
-        print("    (exit 2 = 无法评估; exit 1 = 确实饱和; exit 0 = 测过且健康)")
+        print("    (exit 2 = 没测全; exit 1 = 确实饱和; exit 0 = 全部测过且健康)")
         return 2
     print(f"  ✓ All {len(rows)} pool(s) measured and under threshold {args.threshold}.")
     return 0

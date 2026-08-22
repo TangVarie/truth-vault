@@ -64,35 +64,66 @@ jobs:
           python - <<'PY'
           # schemas/controlled_vocab_v0_2.json 是词表的【机器可读权威导出】。
           # 消费方(autowriter/deskcore 等)原样 vendor 它并记校验和, 不手抄 ——
-          # 所以这份 JSON 一旦跟 docs/05 漂移, 下游全部跟着错。这个闸就是防它。
+          # 所以这份 JSON 一旦跟 docs/05 漂移, 下游全部跟着错, 而且是安静地错:
+          # 发牌会抽到闭集外的值, 不报错、直接产出脏数据。
           #
-          # 查三件事:
-          #   1. 各闭集大小 == docs/05 正文里声明的数量
-          #   2. 与 onboarder/vocab.py 重叠的组【逐值】一致(不只是数量)
-          #   3. lever→valence 派生表覆盖全部 lever(否则发牌会派生出错误极性)
+          # ⚠️ 只比【集合大小】是不够的(codex review): 一个错别字或等长替换能原样
+          # 通过。所以这里【逐值】比对 —— 解析 docs/05 每节表格第一列反引号里的值。
           import json, re, sys
           from onboarder import vocab as ov
 
           doc = open("docs/05-controlled-vocab.md", encoding="utf-8").read()
           data = json.load(open("schemas/controlled_vocab_v0_2.json", encoding="utf-8"))
           sets = data["sets"]
-
-          def declared(field):
-              m = re.search(r"`" + re.escape(field) + r"`[^\n]*?(\d+)\s*个值", doc)
-              return int(m.group(1)) if m else None
-
           bad = []
-          for name, spec in sorted(sets.items()):
-              code_n = len(spec["values"])
-              doc_n = declared(name)
-              if doc_n is None:
-                  print(f"  {name:24s} json={code_n:<3} doc=?   (docs/05 未声明数量, 跳过)")
-                  continue
-              ok = code_n == doc_n
-              print(f"  {name:24s} json={code_n:<3} doc={doc_n:<3} {'ok' if ok else 'DRIFT'}")
-              if not ok:
-                  bad.append(f"{name}: json={code_n} vs docs/05={doc_n}")
 
+          # ── ① 逐值比对 docs/05 ──
+          # docs/05 不成表格、因而无法解析的集合必须显式列在这里并写明理由,
+          # 不允许静默跳过(静默跳过正是这次要修的毛病)。
+          NOT_IN_DOC = {
+              # tier_source 是 mapping 协议的概念, docs/05 没有它的章节;
+              # 它已被下面 ② 的 onboarder/vocab.py 逐值比对覆盖。
+              "tier_source",
+          }
+
+          def section_for(field):
+              for part in re.split(r"\n(?=## )", doc):
+                  if f"`{field}`" in part.split("\n", 1)[0]:
+                      return part
+              return None
+
+          def doc_values(field):
+              sec = section_for(field)
+              if sec is None:
+                  return None
+              out, seen = [], set()
+              for line in sec.splitlines():
+                  m = re.match(r"^\|\s*`([^`]+)`", line)
+                  if m and m.group(1).strip() not in seen:
+                      seen.add(m.group(1).strip())
+                      out.append(m.group(1).strip())
+              return out or None
+
+          for name, spec in sorted(sets.items()):
+              js = list(spec["values"])
+              dv = doc_values(name)
+              if dv is None:
+                  if name in NOT_IN_DOC:
+                      print(f"  {name:24s} (docs/05 无此章节, 已在 NOT_IN_DOC 登记; 由 onboarder 比对覆盖)")
+                  else:
+                      bad.append(f"{name}: docs/05 里解析不到它的表格 —— 要么表格格式变了, "
+                                 f"要么这个集合该登记进 NOT_IN_DOC 并写明理由")
+                  continue
+              # 比集合而非序列: 顺序在 docs/05 与 onboarder 之间本就不同(如 tier),
+              # 而闭集的语义只关心成员。
+              if set(dv) != set(js):
+                  only_doc = sorted(set(dv) - set(js))
+                  only_js = sorted(set(js) - set(dv))
+                  bad.append(f"{name}: docs/05 独有={only_doc} JSON 独有={only_js}")
+              else:
+                  print(f"  {name:24s} ✓ 逐值一致 ({len(js)})")
+
+          # ── ② 与 onboarder/vocab.py 重叠的组: 逐值【且保序】 ──
           overlap = {
               "content_format":  ov.CONTENT_FORMATS,
               "target_audience": ov.TARGET_AUDIENCES,
@@ -105,19 +136,46 @@ jobs:
               if tuple(sets[name]["values"]) != tuple(expected):
                   bad.append(f"{name}: JSON 与 onboarder/vocab.py 逐值不一致")
 
+          # ── ③ 派生表完整性 ──
           levers = set(sets["emotional_lever"]["values"])
           if set(data["derivations"]["lever_to_valence"]) != levers:
               bad.append("lever_to_valence 没覆盖全部 emotional_lever")
           if not set(data["derivations"]["lever_to_valence"].values()) <= set(sets["emotional_valence"]["values"]):
               bad.append("lever_to_valence 派生出了闭集外的 valence")
-
-          excl = sets["trend_dependencies"].get("exclusive_value")
-          if excl not in sets["trend_dependencies"]["values"]:
+          if sets["trend_dependencies"].get("exclusive_value") not in sets["trend_dependencies"]["values"]:
               bad.append("trend_dependencies.exclusive_value 不在其闭集内")
+
+          # ── ④ surface 衰减规则 ↔ notes_v1_7 实现 ──
+          # 半衰期【不是】逐值属性, 是按组合求值的规则。此前导出成逐值 tier 映射,
+          # 把「平台话术」标成 2-3 年档、「行业事件」标成短期档 —— 而 v1_7 的注释
+          # 明说这两个【不在】短期集、落 12 月默认档。下游照那个映射排序会把
+          # 平台特定话术留得远超策略允许的时长。(codex review)
+          sql = open("schemas/notes_v1_7_surface_three_tier_decay.sql", encoding="utf-8").read()
+          decay = data["surface_decay"]
+          short_json = set(decay["short_term_set"])
+          m = re.search(r"ARRAY\[((?:'[^']+',?)+)\]::text\[\]", sql)
+          if not m:
+              bad.append("在 notes_v1_7 里找不到短期集的 ARRAY 字面量 —— SQL 结构变了?")
+          else:
+              short_sql = {x.strip().strip("'") for x in m.group(1).split(",") if x.strip()}
+              if short_json != short_sql:
+                  bad.append(f"short_term_set 与 notes_v1_7 不符: "
+                             f"JSON 独有={sorted(short_json - short_sql)} "
+                             f"SQL 独有={sorted(short_sql - short_json)}")
+              else:
+                  print(f"  short_term_set          ✓ 与 notes_v1_7 一致 ({len(short_sql)})")
+          # 这两个必须【不在】短期集, 且没有被当成范式档
+          for v in ("行业事件", "平台话术"):
+              if v in short_json:
+                  bad.append(f"{v} 不该在 short_term_set 里(v1_7: 落 12 月默认档)")
+          months = {r["halflife_months"] for r in decay["rules_in_order"]}
+          for want in (60, 30, 9, 12):
+              if want not in months:
+                  bad.append(f"surface_decay 规则缺少 {want} 月这一档(v1_7 有四档)")
 
           if bad:
               raise SystemExit("\n词表漂移:\n  - " + "\n  - ".join(bad))
-          print("\ncontrolled vocab JSON in sync with docs/05")
+          print("\ncontrolled vocab JSON in sync with docs/05 + notes_v1_7")
           PY
       - name: Comment parser unit tests
         working-directory: scripts
@@ -2082,6 +2140,44 @@ jobs:
                            'mixing them would have reported 0.60 — a number neither user sees)';
           END $$;
           SQL
+      - name: v1.8 rollback path actually works (codex review)
+        # 本文件给视图追加了 4 列, 而 CREATE OR REPLACE VIEW 不能删列。
+        # 后果不只是"回滚说明写错": 在已应用 v1_8 的库上【重跑基线
+        # notes_v1_2_cross_schema_views.sql 会 ERROR: cannot drop columns from view】——
+        # 而那个文件是按可重复执行设计的。所以 v1_8 改成了 DROP + CREATE,
+        # 这一步把"回滚→再前滚"的整条路钉死, 免得以后有人改回 CREATE OR REPLACE。
+        run: |
+          set -e
+          cols() {
+            psql -tAc "SELECT count(*) FROM information_schema.columns
+                        WHERE table_schema='truth_vault'
+                          AND table_name='v_autowriter_positive_pool_saturation';" | tr -d ' '
+          }
+          [ "$(cols)" = "10" ] || { echo "前置状态应为 v1_8 的 10 列, 实际 $(cols)"; exit 1; }
+
+          echo "— 回滚: DROP 后重跑基线, 应回到 6 列"
+          psql -v ON_ERROR_STOP=1 -c "DROP VIEW IF EXISTS truth_vault.v_autowriter_positive_pool_saturation;"
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_2_cross_schema_views.sql
+          [ "$(cols)" = "6" ] || { echo "回滚后应为 6 列, 实际 $(cols)"; exit 1; }
+
+          echo "— 再前滚: 重新应用 v1_8, 应回到 10 列"
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_8_positive_pool_saturation_fix.sql
+          [ "$(cols)" = "10" ] || { echo "再前滚后应为 10 列, 实际 $(cols)"; exit 1; }
+
+          echo "— 反证: 不先 DROP 直接重跑基线【必须失败】"
+          if psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_2_cross_schema_views.sql 2>/dev/null; then
+            echo "基线在 v1_8 之上竟然应用成功了 —— v1_8 大概被改回 CREATE OR REPLACE 了?"
+            echo "(那样回滚路径和基线重跑都会静默留下错误的列集)"
+            exit 1
+          fi
+          echo "  ok: 如预期报 cannot drop columns from view"
+
+          echo "— 收尾: 恢复到 v1_8 状态供后续步骤使用"
+          psql -v ON_ERROR_STOP=1 -c "DROP VIEW IF EXISTS truth_vault.v_autowriter_positive_pool_saturation;"
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_2_cross_schema_views.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_8_positive_pool_saturation_fix.sql
+          [ "$(cols)" = "10" ] || { echo "收尾后应为 10 列"; exit 1; }
+          echo "v1_8 rollback round-trip OK"
       - name: Apply dashboard system pulse view v5 (+ idempotency)
         # public.v_dash_system_pulse: 接口状态 / 数据新鲜度单行视图。跨 truth_vault.notes /
         # metric_snapshots / audit_log / projects + public.pipeline_runs(上面 cross-schema 步骤
