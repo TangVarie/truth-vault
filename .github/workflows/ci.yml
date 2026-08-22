@@ -58,7 +58,74 @@ jobs:
             onboarder/eval_wtg.py \
             worker/__init__.py \
             worker/app.py \
+            deskcore/__init__.py \
+            deskcore/app.py \
+            deskcore/clients.py \
+            deskcore/cli.py \
+            deskcore/core.py \
+            deskcore/identity.py \
+            deskcore/tools.py \
+            deskcore/vocab.py \
             sanshengliubu-patches/import_truth_vault_baokuan.py
+      - name: deskcore dedup hard-gate + vocab self-check (D-041)
+        run: |
+          # selftest 只用标准库, 不需要任何第三方依赖 —— 故意的:
+          # 查重与发牌是 deskcore 的两条命脉, 它们的回归必须在最便宜的
+          # CI 环境里就能跑, 不能被 supabase/anthropic SDK 的安装问题挡住。
+          #
+          # 它验三件事(见 deskcore/cli.py:selftest):
+          #   1. 开头精确撞车能拦 —— 这一条 autowriter 完全抓不到(它只比标题)
+          #   2. 换皮改写能拦 —— 换了标题+换了措辞, 靠正文四字串重合抓出来
+          #   3. 真正不同的稿子不误伤
+          python -m deskcore.cli selftest
+      - name: deskcore vocab ↔ docs/05 closed-set drift check (D-041)
+        run: |
+          python - <<'PY'
+          # 词表漂移闸: deskcore/vocab.py 的闭集大小必须与 docs/05 声明的一致。
+          # 改词表要三处同步(docs/05 权威 → deskcore/vocab.py → onboarder/vocab.py),
+          # 漏改一处会让发牌抽到不存在的值 —— 这个检查让漏改当场红。
+          import re, sys
+          from deskcore import vocab
+          from onboarder import vocab as ov
+
+          doc = open("docs/05-controlled-vocab.md", encoding="utf-8").read()
+
+          def declared(pattern):
+              m = re.search(pattern, doc)
+              return int(m.group(1)) if m else None
+
+          expect = {
+              "emotional_lever":       (len(vocab.EMOTIONAL_LEVERS),        declared(r"`emotional_lever`[^\n]*?(\d+)\s*个值")),
+              "emotional_valence":     (len(vocab.EMOTIONAL_VALENCES),      declared(r"`emotional_valence`[^\n]*?(\d+)\s*个值")),
+              "emotional_intensity":   (len(vocab.EMOTIONAL_INTENSITIES),   declared(r"`emotional_intensity`[^\n]*?(\d+)\s*个值")),
+              "human_truth_archetype": (len(vocab.HUMAN_TRUTH_ARCHETYPES),  declared(r"`human_truth_archetype`[^\n]*?(\d+)\s*个值")),
+              "trend_dependencies":    (len(vocab.TREND_DEPENDENCIES),      declared(r"`trend_dependencies`[^\n]*?(\d+)\s*个值")),
+              "content_format":        (len(vocab.CONTENT_FORMATS),         declared(r"`content_format`[^\n]*?(\d+)\s*个值")),
+              "target_audience":       (len(vocab.TARGET_AUDIENCES),        declared(r"`target_audience`[^\n]*?(\d+)\s*个值")),
+          }
+          bad = []
+          for name, (code_n, doc_n) in expect.items():
+              if doc_n is None:
+                  print(f"  {name:24s} code={code_n:<3} doc=?   (docs/05 未声明数量, 跳过)")
+                  continue
+              ok = code_n == doc_n
+              print(f"  {name:24s} code={code_n:<3} doc={doc_n:<3} {'ok' if ok else 'DRIFT'}")
+              if not ok:
+                  bad.append(f"{name}: deskcore/vocab.py={code_n} vs docs/05={doc_n}")
+
+          # 与 onboarder 共有的两组必须逐值一致, 不只是数量
+          if tuple(vocab.CONTENT_FORMATS) != tuple(ov.CONTENT_FORMATS):
+              bad.append("CONTENT_FORMATS differs between deskcore and onboarder")
+          if tuple(vocab.TARGET_AUDIENCES) != tuple(ov.TARGET_AUDIENCES):
+              bad.append("TARGET_AUDIENCES differs between deskcore and onboarder")
+          # valence 派生表必须覆盖全部 lever, 否则发牌会派生出错误极性
+          if set(vocab.LEVER_TO_VALENCE) != set(vocab.EMOTIONAL_LEVERS):
+              bad.append("LEVER_TO_VALENCE does not cover all EMOTIONAL_LEVERS")
+
+          if bad:
+              raise SystemExit("\n词表漂移:\n  - " + "\n  - ".join(bad))
+          print("\nvocab in sync")
+          PY
       - name: Comment parser unit tests
         working-directory: scripts
         run: |
@@ -1892,6 +1959,74 @@ jobs:
               END IF;
               RAISE NOTICE 'v_autowriter_positive_pool_saturation OK (active=5, distinct=3, top=3, ratio=%)',
                   r.dominant_lever_ratio;
+          END $$;
+          SQL
+      - name: Apply v1.8 positive-pool saturation blind-spot fix (+ idempotency)
+        # v1_8 修掉一个让 check_positive_saturation.py 从上线起就没真正生效过的
+        # 盲点: 原 view 的 WHERE 里有 `AND i.external_source='truth_vault'`,
+        # 只统计 push 通道写的正例 —— 而 push 从没真跑过, 生产库那列全 NULL,
+        # 于是脚本永远打印 "No active positive examples"。
+        # 它测不到运营手标的 native 正例, 而那才是真正在注入 prompt 的池子。
+        run: |
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_8_positive_pool_saturation_fix.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_8_positive_pool_saturation_fix.sql
+      - name: Sanity-check v1.8 (native positives now visible; unmeasurable ≠ healthy)
+        run: |
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          -- ① 回归: 上一步 CI_SAT 那 5 条 TV 正例的结论必须原样成立。
+          --    (v1_8 只放宽了 WHERE + 追加了 3 列, 不该改变已有口径)
+          DO $$
+          DECLARE r RECORD;
+          BEGIN
+              SELECT * INTO r FROM truth_vault.v_autowriter_positive_pool_saturation
+                  WHERE aw_project_id = '00000000-0000-0000-0000-000000aaaa01'::uuid;
+              IF r.active_positive_count != 5 OR r.top_lever_count != 3
+                 OR ABS(r.dominant_lever_ratio - 0.60) > 0.01 THEN
+                  RAISE EXCEPTION 'v1_8 regressed CI_SAT: active=% top=% ratio=%',
+                      r.active_positive_count, r.top_lever_count, r.dominant_lever_ratio;
+              END IF;
+              IF r.tv_positive_count != 5 OR r.native_positive_count != 0 THEN
+                  RAISE EXCEPTION 'v1_8 origin split wrong: tv=% native=%',
+                      r.tv_positive_count, r.native_positive_count;
+              END IF;
+              RAISE NOTICE 'v1_8 CI_SAT regression OK (ratio=%)', r.dominant_lever_ratio;
+          END $$;
+
+          -- ② 新行为: native 正例(external_source IS NULL)必须能被看见。
+          --    v1_8 之前这个项目在 view 里【根本不存在】。
+          INSERT INTO autowriter.batches (id, project_id) VALUES
+              ('00000000-0000-0000-0000-000000c10002'::uuid,
+               '00000000-0000-0000-0000-000000aaaa02'::uuid);
+          INSERT INTO autowriter.items (id, batch_id, example_label, created_at)
+          VALUES
+              (gen_random_uuid(), '00000000-0000-0000-0000-000000c10002'::uuid,
+               'positive', NOW() - INTERVAL '1 hour'),
+              (gen_random_uuid(), '00000000-0000-0000-0000-000000c10002'::uuid,
+               'positive', NOW() - INTERVAL '2 hour');
+          DO $$
+          DECLARE r RECORD;
+          BEGIN
+              SELECT * INTO r FROM truth_vault.v_autowriter_positive_pool_saturation
+                  WHERE aw_project_id = '00000000-0000-0000-0000-000000aaaa02'::uuid;
+              IF NOT FOUND THEN
+                  RAISE EXCEPTION 'native-only project still invisible — the blind spot is not fixed';
+              END IF;
+              IF r.active_positive_count != 2 OR r.native_positive_count != 2 THEN
+                  RAISE EXCEPTION 'expected 2 native positives, got active=% native=%',
+                      r.active_positive_count, r.native_positive_count;
+              END IF;
+              -- native 正例没有 external_source_id, join 不到 truth_vault.notes,
+              -- 所以拿不到 lever。关键: ratio 必须是 NULL(测不了) 而不是 0(看起来健康)。
+              IF r.lever_measurable_count != 0 THEN
+                  RAISE EXCEPTION 'expected lever_measurable_count=0, got %', r.lever_measurable_count;
+              END IF;
+              -- 分母是可测条数; 一条都测不到时必须报 NULL。若这里返回 0,
+              -- 脚本会把"没测到"显示成"多样性很好", 正是要避免的假阴性。
+              IF r.dominant_lever_ratio IS NOT NULL THEN
+                  RAISE EXCEPTION 'unmeasurable pool must report NULL ratio (not a healthy-looking number), got %',
+                      r.dominant_lever_ratio;
+              END IF;
+              RAISE NOTICE 'v1_8 native visibility OK (pool=2, measurable=0, ratio=NULL)';
           END $$;
           SQL
       - name: Apply dashboard system pulse view v5 (+ idempotency)

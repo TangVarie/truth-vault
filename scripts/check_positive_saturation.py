@@ -10,6 +10,16 @@ check_positive_saturation.py
 不写库, 不告警, 只 print. 想要 cron 自动告警时, 在 daily-sync.yml 加一步
 跑这个脚本并 set-output 之类即可.
 
+⚠️ 2026-08-22 (D-041) 修了一个让本脚本从上线起就没真正生效过的盲点:
+view 原来只统计 external_source='truth_vault' 的正例, 而 push 通道从没真跑过
+(那列生产库里全 NULL), 于是本脚本【永远】打印 "No active positive examples".
+它测不到运营自己手标的 native 正例 —— 而那才是真正在注入 prompt 的池子.
+修复见 schemas/notes_v1_8_positive_pool_saturation_fix.sql.
+
+native 正例没有 external_source_id, join 不到 truth_vault.notes, 所以拿不到
+emotional_lever. 本脚本现在会把"池子里几条 / 其中几条能测多样性"分开报,
+测不了就直说测不了, 不再显示成"健康".
+
 用法:
     python check_positive_saturation.py
     python check_positive_saturation.py --threshold 0.5   # 更严的告警线
@@ -44,7 +54,10 @@ def main() -> int:
     ).data or []
 
     if not rows:
-        logger.info("No active positive examples in any autowriter project.")
+        logger.info(
+            "No positive examples labeled in any autowriter project. "
+            "(v1_8 起本脚本已统计 native 正例; 仍为空 = 确实一条都没标过, "
+            "而不是老版本那个 external_source 盲点.)")
         return 0
 
     warnings = 0
@@ -52,25 +65,45 @@ def main() -> int:
     print("=" * 96)
     print(f"  Positive pool saturation · {len(rows)} autowriter project(s) · threshold={args.threshold}")
     print("=" * 96)
-    print(f"  {'aw_project_id':<40} {'count':<6} {'levers':<7} {'top_n':<6} {'ratio':<6}  status")
+    print(f"  {'aw_project_id':<40} {'pool':<5} {'meas':<5} {'levers':<7} "
+          f"{'top_n':<6} {'ratio':<6}  status")
     print("  " + "-" * 92)
     for r in rows:
         ratio = r.get("dominant_lever_ratio")
+        measurable = r.get("lever_measurable_count")
+        # ratio 为 NULL = 一条都测不到 lever(native 正例没有 essence 标注),
+        # 这【不是健康】, 是测不了. 单独标出来, 别混进 ok.
+        unmeasurable = (ratio is None or not measurable)
         warn = (ratio is not None and ratio >= args.threshold)
         if warn:
             warnings += 1
-        flag = "⚠ SATURATED" if warn else "ok"
+        if unmeasurable:
+            flag = "— 无法评估(正例未标 essence)"
+        elif warn:
+            flag = "⚠ SATURATED"
+        else:
+            flag = "ok"
+        ratio_txt = f"{ratio:<6.2f}" if ratio is not None else f"{'n/a':<6}"
         print(
             f"  {r['aw_project_id']:<40} "
-            f"{r['active_positive_count']:<6} "
+            f"{r['active_positive_count']:<5} "
+            f"{measurable or 0:<5} "
             f"{r['distinct_lever_count'] or 0:<7} "
             f"{r['top_lever_count']:<6} "
-            f"{(ratio if ratio is not None else 0):<6.2f}  {flag}"
+            f"{ratio_txt}  {flag}"
         )
         if r.get("lever_distribution"):
             print(f"  {'':40}   levers: {r['lever_distribution']}")
 
+    unmeasurable_n = sum(
+        1 for r in rows
+        if r.get("dominant_lever_ratio") is None or not r.get("lever_measurable_count")
+    )
     print()
+    if unmeasurable_n:
+        print(f"  — {unmeasurable_n} 个项目的正例池无法评估多样性: 这些正例是运营在 aw "
+              "手标的 native 条目, 没有对应的 truth_vault.notes 记录, 取不到 "
+              "emotional_lever. 想让它可测, 需要给这些正例补 essence 标注。")
     if warnings:
         print(f"  ⚠ {warnings} project(s) over threshold {args.threshold}. "
               "Consider widening content angles or running essence annotation "

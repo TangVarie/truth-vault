@@ -1262,3 +1262,89 @@ WHERE NOT EXISTS (
   时注入避坑段；优先级低于"灌料 + L3"。**登记备查，别再有人（含 AI）想着"用趴做负面飞轮"重踩。**
 - ⚠️ 内部逻辑纠错留痕：Session #18 讨论中一度提出"负面飞轮 from `趴`"，被策略 lead 当场否掉（理由即上方 Why），
   本条把"为什么不能这么做"固化进决策层，避免反复。
+
+---
+
+## D-041 · 写作台能力外置为 MCP（deskcore）；正例检索取代 recency top-5
+
+**日期**: 2026-08-22
+
+**What**: 三件事一起拍板：
+
+1. **autowriter 内容工作台的 Streamlit 界面停用**，但 Supabase `autowriter` schema
+   **一行不迁**。它值钱的四个机制（分层硬约束 / 调校笔记自动萃取 / 正负例池 /
+   语义查重）做成 MCP 工具服务 `deskcore/`（truth-vault 仓第四个 Railway 服务），
+   挂到 WorkBuddy / Claude Code / CodeBuddy。
+2. **隔离口径改为「项目规则团队共享 + 个人风格私有」**。autowriter 原来靠 RLS 按
+   `user_id` 隔离一切；deskcore 持 service_role，由服务端执行口径 —— 规则按
+   `project_id` 读全量不过滤 user，个人调校笔记/精修 diff 才按 user_id 过滤。
+3. **正例选取从 `created_at DESC` 取 5 改为按相关性检索 + 多样性约束**
+   （`deskcore/core.py:select_positive_examples`）。
+
+**Why**:
+
+团队已基本弃用工作台转用 WorkBuddy。两边缺陷互补：工作台严格执行规则、能靠喂
+自己的稿子变得"像我在说话"，但一个项目 5 个提示词要点 5 次、慢、重复率高；
+WorkBuddy 流畅、重复率相对低，但记不住规则、"持续在跟 AI 对话"。
+
+读过两个仓的代码后确认：**工作台的优势是四个具体机制（可搬），劣势是四个具体
+工程缺陷（可修）**，两件事在同一个改动里完成。不是"做不出 agent"的问题。
+
+重复率的四个根因（详见 [docs/27](27-deskcore-mcp.md) §1.2）：
+- 硬闸默认关着 —— `config.py:132` `ENABLE_DEDUP_REGEN` 默认 `"0"`，查重命中只写警告不拦
+- 只比标题且阈值 0.92 过高 —— 换说法的同角度标题普遍落在 0.85-0.90 全部溜过
+- 提示词侧只看最近 20 条 —— 库里捞 150 条，`generator.py:1384` 一句 `[-20:]` 扔掉 130 条
+- **正例池 recency top-5 构成趋同回路** —— 模型模仿最近 5 条 → 新稿被标 positive →
+  窗口滚动 → 语感越收越窄
+
+第 4 条是本条决策改动 3 的直接理由。它此前完全不可见：监控它的
+`check_positive_saturation.py` 只统计 `external_source='truth_vault'` 的行，而
+push 通道从没真跑过（那列全 NULL），所以它**从上线起永远打印"没有正例"**。
+已一并修（`schemas/notes_v1_8_positive_pool_saturation_fix.sql`）。
+
+慢的根因是 Streamlit（`app.py` 5560 行，每次交互全量重跑）。能力外置后自动消失。
+
+**平台可行性**（已查证）：WorkBuddy = 腾讯云 CodeBuddy 团队的 AI Agent 办公平台，
+自定义 skill 走 `~/.workbuddy/skills/<name>/SKILL.md`（与 Claude Code 同构）、
+MCP 走 `mcp.json`（用户级 + 项目级两层，v4.7.3 起支持 HTTP MCP）、
+workspace→project→task 三层隔离。
+
+**Rejected**:
+
+- **"完全退役工作台、记忆从头积累"** —— 拒绝。40 项目 / 269 条记忆 / 103 条已确认
+  负例 / 调校笔记是几年积累，重新驯化的成本远高于包一层 MCP。
+- **"不搬，直接修工作台"** —— 拒绝。四个重复率缺陷确实可以就地修，但
+  "一个项目 5 个提示词要点 5 次、几十个提示词散在各项目"的操作成本解决不了，
+  Streamlit 的慢也解决不了。
+- **"全部团队共享记忆"** —— 拒绝。一致性最好、维护最省，但会抹平个人风格 ——
+  而"像我在说话"正是这次要保住的东西。
+- **"用 DeepSeek Harness 做底座"** —— 拒绝。它是 2026-08-13 发的开源 agent 运行时
+  框架（"一切皆插件"），解决"agent 怎么跑"；我们缺的不是运行时，是记忆的内容
+  和结构，那部分自己已经有了。（"无限个性化"是社区形容词，非官方口径。）
+- **"把稿子也存进 truth_vault.notes"** —— 拒绝，同 D-027/D-040：`notes` 是
+  【已发布爆款事实】层，未发布的稿子不混进去。
+
+**Implications**:
+
+- 新增 `deskcore/`（app / core / tools / vocab / clients / identity / cli）+
+  `autowriter-migrations/009_deskcore.sql`（4 张新表 + `items.updated_at`，
+  现有 8 张表一行不动）+ `skills/bywood-writing-desk/SKILL.md` + [docs/27](27-deskcore-mcp.md)。
+- **`check_drafts` 是 deskcore 唯一不 fail-open 的工具** —— 查重挂了必须抛。
+  静默放行就是重演"硬闸默认关着"。其余读类工具照 docs/19 的降级铁律返回可用
+  结构，但每次降级必须 `logger.exception` 留痕。
+- `deskcore/vocab.py` 把 TV 原本**没有代码化闭集**的 5 个 essence 维度
+  （lever/archetype/trend/valence/intensity）抽成常量。此前它们只以自然语言存在于
+  `prompts/essence_annotator.md` 正文和 docs/05 表格里。**改词表要三处同步**：
+  docs/05（权威）→ `deskcore/vocab.py` → `onboarder/vocab.py`（若涉及那 7 组）。
+- `_assign_slot_coordinates` 按当年注释里留的路复活（`generator.py:1576-1584`
+  说"future iteration wants them back behind a per-project opt-in flag"）——
+  切入角度优先用项目自己的 `custom_roles`，没配才用通用池。
+- **user_id 必须用库里已有的 UUID**，不要新造。`RUNBOOK.md:150-153` 记过：写
+  service account UUID 导致 RLS 屏蔽、`list_example_items` 永远 0 行、飞轮静默断开。
+- `seeding-prompt-refiner` 的 `references/cross-batch-diversity.md` 里那四套
+  用户手动维护的补偿机制（角度编号库 / 历史回避清单 / 跨批次分布档案 /
+  账号差异化种子）落地后可退役 —— 它自己就标注了那是"过渡方案"。
+- 语言层**不新立第四套规则**：仓里已有 human-writing / bywood-proposal /
+  seeding-prompt-refiner 三套并列口径，`bywood-writing-desk` 只管流程纪律。
+- **未决**：WorkBuddy 的 HTTP MCP 能不能配自定义鉴权头无权威文档 —— deskcore
+  三种传法都收（header / Bearer / query），但这一步必须最先验，不通则形态要换。

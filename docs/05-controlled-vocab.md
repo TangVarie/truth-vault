@@ -18,6 +18,9 @@ Essence 层和 Audience 层的标注必须基于**闭集词表**。LLM 自由表
 2. **每条数据记录标注时的词表版本**（`essence_vocab_version` 字段）
 3. **添加新值容易，删除现有值困难** —— 删除需要先把所有使用此值的历史数据迁移
 4. **每次修改词表必须创建新决策记录**（DECISIONS.md）
+5. **改闭集要三处同步**（D-041）：本文（权威）→ `deskcore/vocab.py`（发牌用的
+   essence 5 维 + surface 池）→ `onboarder/vocab.py`（接表用的 7 组）。
+   `prompts/essence_annotator.md` 正文里内嵌的词表同样要跟。
 
 ---
 
