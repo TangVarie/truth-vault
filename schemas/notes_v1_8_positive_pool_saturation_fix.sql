@@ -21,7 +21,12 @@
 --
 -- 修法:
 --   1. 去掉 external_source 过滤 —— 统计全部正例(native + TV)。
---   2. 补三列, 让"能测到什么/测不到什么"变成显式信息而不是静默的零:
+--   2. 【按 user 分区】。deskcore 注入正例时是按 user_id 过滤的(正负例是个人
+--      风格资产), 所以一个多人共用的项目有【多个各自独立的注入池】。原来的
+--      窗口把全项目的正例混在一起取最近 5 条 —— 那个组合谁都没在用: 既可能
+--      掩盖某个人已经饱和的池子, 也可能报出没人经历过的饱和。
+--      窗口和输出都加 user_id(codex review P2)。
+--   3. 补三列, 让"能测到什么/测不到什么"变成显式信息而不是静默的零:
 --        native_positive_count   运营自己标的(external_source IS NULL)
 --        tv_positive_count       TV push 写的(已退役, 预期恒为 0)
 --        lever_measurable_count  能拿到 emotional_lever 的条数
@@ -52,8 +57,11 @@ WITH top_5 AS (
         i.external_source_id AS tv_note_id,
         i.external_source,
         n.emotional_lever,
+        i.user_id,
         ROW_NUMBER() OVER (
-            PARTITION BY b.project_id ORDER BY i.created_at DESC
+            -- v1_8: 加 user_id 进分区。deskcore 的注入池是 per-user 的, 混在
+            -- 一起算出来的"最近 5 条"任何人都不曾用过。
+            PARTITION BY b.project_id, i.user_id ORDER BY i.created_at DESC
         ) AS rn
     FROM autowriter.items i
     JOIN autowriter.batches b ON b.id = i.batch_id
@@ -66,15 +74,15 @@ in_pool AS (
     SELECT * FROM top_5 WHERE rn <= 5
 ),
 lever_counts AS (
-    SELECT aw_project_id, emotional_lever, COUNT(*) AS cnt
+    SELECT aw_project_id, user_id, emotional_lever, COUNT(*) AS cnt
     FROM in_pool
     WHERE emotional_lever IS NOT NULL
-    GROUP BY aw_project_id, emotional_lever
+    GROUP BY aw_project_id, user_id, emotional_lever
 ),
-per_project_top_lever AS (
-    SELECT aw_project_id, MAX(cnt) AS top_lever_count
+per_pool_top_lever AS (
+    SELECT aw_project_id, user_id, MAX(cnt) AS top_lever_count
     FROM lever_counts
-    GROUP BY aw_project_id
+    GROUP BY aw_project_id, user_id
 )
 SELECT
     -- ── 原有 6 列: 名字/顺序/类型不变 (CREATE OR REPLACE 的硬要求) ──
@@ -100,12 +108,19 @@ SELECT
     COUNT(*) FILTER (WHERE p.external_source = 'truth_vault')::INT
         AS tv_positive_count,
     COUNT(*) FILTER (WHERE p.emotional_lever IS NOT NULL)::INT
-        AS lever_measurable_count
+        AS lever_measurable_count,
+    -- v1_8: 池子归谁。NULL = 历史行没记 user_id(或 TV push 写的)。
+    -- 一个 aw_project_id 现在可能有多行, 每个用户一行 —— 这是刻意的, 因为
+    -- 每个人的注入池是独立的。
+    p.user_id AS pool_user_id
 FROM in_pool p
-LEFT JOIN per_project_top_lever t ON t.aw_project_id = p.aw_project_id
-GROUP BY p.aw_project_id;
+LEFT JOIN per_pool_top_lever t
+       ON t.aw_project_id = p.aw_project_id
+      AND t.user_id IS NOT DISTINCT FROM p.user_id
+GROUP BY p.aw_project_id, p.user_id;
 
 COMMENT ON VIEW truth_vault.v_autowriter_positive_pool_saturation IS
-    '正例池饱和度. v1_8 修掉只看 external_source=truth_vault 的盲点(那列全 NULL, '
+    '正例池饱和度(按 project × user 分区 —— deskcore 的注入池是 per-user 的). '
+    'v1_8 修掉只看 external_source=truth_vault 的盲点(那列全 NULL, '
     '导致本 view 从上线起一直为空). dominant_lever_ratio 的分母是【可测条数】, '
     'NULL 表示测不了而非健康. native 正例 join 不到 truth_vault.notes 故无 lever. D-041.';
