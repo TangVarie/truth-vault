@@ -314,7 +314,18 @@ jobs:
         if: steps.check.outputs.skip != 'true' && always()
         working-directory: scripts
         run: |
-          python check_positive_saturation.py || true  # advisory only
+          # advisory: 饱和/没测全都不该拖红整轮同步。但【崩了】要看得见 ——
+          # 2026-08-22 渲染循环里的一个 NameError 就是被裸 `|| true` 整个吞掉的,
+          # 而它吞掉的恰好是 v1_8 专门修的那个监控盲点(脚本天天"跑过", 天天没测)。
+          # Python 崩溃的退出码也是 1, 跟本脚本"确实饱和"的 1 撞车, 所以靠脚本
+          # 末尾的哨兵行判定, 不靠退出码。
+          set +e
+          python check_positive_saturation.py 2>&1 | tee /tmp/saturation.log
+          set -e
+          if ! grep -q '^SATURATION_CHECK_DONE rc=' /tmp/saturation.log; then
+            echo "::warning title=positive pool 饱和度检查崩了::脚本没跑到底(没有哨兵行), \
+          上面的 traceback 是真问题 —— 这一步 advisory 不拖红, 但监控现在是瞎的, 去修。"
+          fi
 
       - name: prune 馆员旧缓存 (advisory, 不 fail)
         if: steps.check.outputs.skip != 'true' && always()

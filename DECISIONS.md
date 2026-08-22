@@ -1335,6 +1335,14 @@ WHERE NOT EXISTS (
 - `schemas/notes_v1_8_...sql`：去掉 `external_source` 过滤，补 native/tv/可测条数三列，
   且 **`dominant_lever_ratio` 的分母改为「可测条数」** —— 一条都测不到时报 NULL 而不是 0
   （0 会被读成「多样性很好」，是要避免的假阴性）。CI 有两段断言钉死这个行为。
+- **监控本身也要被监控**：`check_positive_saturation.py` 在 `daily-sync.yml` 里是
+  `|| true` 调的（饱和不该拖红整轮同步），但裸 `|| true` 连**崩溃**一起吞。修 v1_8 的
+  同一个 PR 里，渲染循环就因此带过一个 `pool_n` 未赋值的 `NameError` —— 只要 view 回
+  任何一行就必崩，而崩了之后脚本天天「跑过」、天天什么都没测，**v1_8 要修的盲点换个
+  形式原样回来**。两道补丁钉死：① `report()` 抽成不碰网络的纯函数，CI 拿假行跑完整
+  渲染路径（8 个用例，含"部分可测但 ratio 好看"这条 round-2 判据）；② 正常跑完打
+  `SATURATION_CHECK_DONE rc=` 哨兵行，daily-sync 靠它区分崩溃与饱和 —— 因为 Python
+  崩溃的退出码也是 1，跟本脚本「确实饱和」的 1 撞车，光看退出码分不出来。
 - TV **不持有** deskcore 的任何代码、迁移或部署配置。相关 followup 记在
   [docs/10-sister-repo-followups.md](docs/10-sister-repo-followups.md)。
 
