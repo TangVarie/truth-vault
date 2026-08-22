@@ -58,73 +58,66 @@ jobs:
             onboarder/eval_wtg.py \
             worker/__init__.py \
             worker/app.py \
-            deskcore/__init__.py \
-            deskcore/app.py \
-            deskcore/clients.py \
-            deskcore/cli.py \
-            deskcore/core.py \
-            deskcore/identity.py \
-            deskcore/tools.py \
-            deskcore/vocab.py \
             sanshengliubu-patches/import_truth_vault_baokuan.py
-      - name: deskcore dedup hard-gate + vocab self-check (D-041)
-        run: |
-          # selftest 只用标准库, 不需要任何第三方依赖 —— 故意的:
-          # 查重与发牌是 deskcore 的两条命脉, 它们的回归必须在最便宜的
-          # CI 环境里就能跑, 不能被 supabase/anthropic SDK 的安装问题挡住。
-          #
-          # 它验三件事(见 deskcore/cli.py:selftest):
-          #   1. 开头精确撞车能拦 —— 这一条 autowriter 完全抓不到(它只比标题)
-          #   2. 换皮改写能拦 —— 换了标题+换了措辞, 靠正文四字串重合抓出来
-          #   3. 真正不同的稿子不误伤
-          python -m deskcore.cli selftest
-      - name: deskcore vocab ↔ docs/05 closed-set drift check (D-041)
+      - name: controlled vocab JSON ↔ docs/05 consistency (D-041)
         run: |
           python - <<'PY'
-          # 词表漂移闸: deskcore/vocab.py 的闭集大小必须与 docs/05 声明的一致。
-          # 改词表要三处同步(docs/05 权威 → deskcore/vocab.py → onboarder/vocab.py),
-          # 漏改一处会让发牌抽到不存在的值 —— 这个检查让漏改当场红。
-          import re, sys
-          from deskcore import vocab
+          # schemas/controlled_vocab_v0_2.json 是词表的【机器可读权威导出】。
+          # 消费方(autowriter/deskcore 等)原样 vendor 它并记校验和, 不手抄 ——
+          # 所以这份 JSON 一旦跟 docs/05 漂移, 下游全部跟着错。这个闸就是防它。
+          #
+          # 查三件事:
+          #   1. 各闭集大小 == docs/05 正文里声明的数量
+          #   2. 与 onboarder/vocab.py 重叠的组【逐值】一致(不只是数量)
+          #   3. lever→valence 派生表覆盖全部 lever(否则发牌会派生出错误极性)
+          import json, re, sys
           from onboarder import vocab as ov
 
           doc = open("docs/05-controlled-vocab.md", encoding="utf-8").read()
+          data = json.load(open("schemas/controlled_vocab_v0_2.json", encoding="utf-8"))
+          sets = data["sets"]
 
-          def declared(pattern):
-              m = re.search(pattern, doc)
+          def declared(field):
+              m = re.search(r"`" + re.escape(field) + r"`[^\n]*?(\d+)\s*个值", doc)
               return int(m.group(1)) if m else None
 
-          expect = {
-              "emotional_lever":       (len(vocab.EMOTIONAL_LEVERS),        declared(r"`emotional_lever`[^\n]*?(\d+)\s*个值")),
-              "emotional_valence":     (len(vocab.EMOTIONAL_VALENCES),      declared(r"`emotional_valence`[^\n]*?(\d+)\s*个值")),
-              "emotional_intensity":   (len(vocab.EMOTIONAL_INTENSITIES),   declared(r"`emotional_intensity`[^\n]*?(\d+)\s*个值")),
-              "human_truth_archetype": (len(vocab.HUMAN_TRUTH_ARCHETYPES),  declared(r"`human_truth_archetype`[^\n]*?(\d+)\s*个值")),
-              "trend_dependencies":    (len(vocab.TREND_DEPENDENCIES),      declared(r"`trend_dependencies`[^\n]*?(\d+)\s*个值")),
-              "content_format":        (len(vocab.CONTENT_FORMATS),         declared(r"`content_format`[^\n]*?(\d+)\s*个值")),
-              "target_audience":       (len(vocab.TARGET_AUDIENCES),        declared(r"`target_audience`[^\n]*?(\d+)\s*个值")),
-          }
           bad = []
-          for name, (code_n, doc_n) in expect.items():
+          for name, spec in sorted(sets.items()):
+              code_n = len(spec["values"])
+              doc_n = declared(name)
               if doc_n is None:
-                  print(f"  {name:24s} code={code_n:<3} doc=?   (docs/05 未声明数量, 跳过)")
+                  print(f"  {name:24s} json={code_n:<3} doc=?   (docs/05 未声明数量, 跳过)")
                   continue
               ok = code_n == doc_n
-              print(f"  {name:24s} code={code_n:<3} doc={doc_n:<3} {'ok' if ok else 'DRIFT'}")
+              print(f"  {name:24s} json={code_n:<3} doc={doc_n:<3} {'ok' if ok else 'DRIFT'}")
               if not ok:
-                  bad.append(f"{name}: deskcore/vocab.py={code_n} vs docs/05={doc_n}")
+                  bad.append(f"{name}: json={code_n} vs docs/05={doc_n}")
 
-          # 与 onboarder 共有的两组必须逐值一致, 不只是数量
-          if tuple(vocab.CONTENT_FORMATS) != tuple(ov.CONTENT_FORMATS):
-              bad.append("CONTENT_FORMATS differs between deskcore and onboarder")
-          if tuple(vocab.TARGET_AUDIENCES) != tuple(ov.TARGET_AUDIENCES):
-              bad.append("TARGET_AUDIENCES differs between deskcore and onboarder")
-          # valence 派生表必须覆盖全部 lever, 否则发牌会派生出错误极性
-          if set(vocab.LEVER_TO_VALENCE) != set(vocab.EMOTIONAL_LEVERS):
-              bad.append("LEVER_TO_VALENCE does not cover all EMOTIONAL_LEVERS")
+          overlap = {
+              "content_format":  ov.CONTENT_FORMATS,
+              "target_audience": ov.TARGET_AUDIENCES,
+              "intent":          ov.INTENTS,
+              "tier":            ov.TIERS,
+              "tier_source":     ov.TIER_SOURCES,
+              "category":        ov.CATEGORIES,
+          }
+          for name, expected in overlap.items():
+              if tuple(sets[name]["values"]) != tuple(expected):
+                  bad.append(f"{name}: JSON 与 onboarder/vocab.py 逐值不一致")
+
+          levers = set(sets["emotional_lever"]["values"])
+          if set(data["derivations"]["lever_to_valence"]) != levers:
+              bad.append("lever_to_valence 没覆盖全部 emotional_lever")
+          if not set(data["derivations"]["lever_to_valence"].values()) <= set(sets["emotional_valence"]["values"]):
+              bad.append("lever_to_valence 派生出了闭集外的 valence")
+
+          excl = sets["trend_dependencies"].get("exclusive_value")
+          if excl not in sets["trend_dependencies"]["values"]:
+              bad.append("trend_dependencies.exclusive_value 不在其闭集内")
 
           if bad:
               raise SystemExit("\n词表漂移:\n  - " + "\n  - ".join(bad))
-          print("\nvocab in sync")
+          print("\ncontrolled vocab JSON in sync with docs/05")
           PY
       - name: Comment parser unit tests
         working-directory: scripts
