@@ -1828,8 +1828,24 @@ install，生产是已有库、走 `migrations/`，而那个目录的 README 写
 
 **连带解决**：`scripts/sync_autowriter_decisions_to_prepublish.py` 那条
 「`items` 没有 `updated_at`，只能按 `created_at` 过滤，会漏收迟到的人工决策」
-的已知局限（脚本 docstring 里记着，靠 `--since-days 365` 兜着）现在可以真正修了 ——
-列已经在，改成按 `updated_at` 增量即可。**本仓尚未改**，留作后续。
+的已知局限（脚本 docstring 里记着，靠 `--since-days 365` 兜着）**已修**（D-043，
+2026-08-23）：时间窗改成 `created_at >= since` **OR** `updated_at >= since`。
+
+是「或」不是「替换」—— `updated_at` 是 nullable 列（`DEFAULT now()`，生产当前零
+NULL），只写 `.gte("updated_at", …)` 会把将来可能出现的 NULL 行**静默丢掉**，
+又是同一个病。留着 `created_at` 分支后，新窗口是旧窗口的**严格超集**，不可能回归。
+`--since-days` 默认仍是 365：窗口含义已变成「最近 N 天被动过的决定」，cron 停摆
+超过 N 天就捞不回停摆期间改的决定，宽一点是纯赚。
+
+生产实测（不是照文档推的）：事务内改一条 `approved → needs_revision`，`updated_at`
+从 backfill 值跳到 `now()` 后 rollback；PostgREST 的 `or=` 语法在生产实例上验过能过
+解析与列解析（只在权限阶段被 anon 拦）。CI 有一道对**两种**错误实现都会红的用例。
+
+**另一件同批落库的**：`schemas/security_revoke_anon_write_dash_views.sql`
+**2026-08-23 已 apply 到生产**（走 Supabase 迁移历史，不裸跑）。生产实测：
+`public` 下 anon 有写权限的关系 18 → **0**，18 个 `v_dash_*` 仍 100% 可读，
+以 `anon` 身份实读 `v_dash_overview` 仍回 1 行，非 `v_dash_*` 零误伤，
+幂等复跑结果一致，advisors 无新增。⚠️ **新增看板视图后要重跑这个文件**。
 
 ## 优先级总览 (2026-05-22 update)
 

@@ -33,11 +33,28 @@ sync_autowriter_decisions_to_prepublish.py
     二个 INSERT 而不是写两行. 脚本现在会把 23505 转成 info 级 "race"
     日志, 不当 error 计.
 
-迟到决策 (audit P1/P2-4 已知局限):
-    autowriter.items 没有 updated_at 列, 我们只能按 created_at 过滤.
-    --since-days 默认从 90 改为 365, 这样一年内人工才改状态的旧 item
-    仍能被回收. 长期 deployment 仍可能漏 1+ 年前创建的 item; 临时全扫
-    用 --since-days 0 (或 cron 每月跑一次 --since-days 0).
+迟到决策 (audit P1/P2-4 的已知局限, 2026-08-23 解除):
+    旧版只能按 created_at 过滤 —— autowriter.items 当时没有 updated_at
+    列, 于是"三个月前创建、今天才被人工改状态"的 item 会被时间窗直接筛
+    掉, 而且是静默的. 当时的兜底是把 --since-days 默认从 90 抬到 365.
+
+    aw 的 migrations/001_deskcore.sql 补上了 items.updated_at + 触发器
+    (2026-08-23 已应用到生产; 触发器 WHEN 子句盯的正是 status 与
+    example_label, 生产实测 status 变更确实会刷 updated_at). 时间窗改成:
+
+        created_at >= since  OR  updated_at >= since
+
+    是【或】, 不是【换成 updated_at】—— 两条分支都要:
+      · updated_at 分支 = 真正想要的能力, 捞回迟到的人工决策;
+      · created_at 分支 = 保底. updated_at 是 nullable 列 (DEFAULT now(),
+        生产当前零 NULL), 万一哪天有人显式插了 NULL, 只写
+        .gte("updated_at", ...) 会把那些行【静默丢掉】—— 又是一次"跑得
+        好好的、其实一直在漏". 留着 created_at 分支, 新窗口就是旧窗口的
+        严格超集, 这次改动不可能比改之前更差.
+
+    默认仍是 365 天, 没跟着缩: 窗口的含义已经变成"最近 N 天被动过的决
+    定", cron 若停摆超过 N 天, 停摆期间改的决定就再也捞不回来. 窗口宽
+    一点是纯赚. 全扫仍然是 --since-days 0.
 
 用法:
     python sync_autowriter_decisions_to_prepublish.py
@@ -74,21 +91,28 @@ def fetch_pending_decisions(sb, since_iso: str | None) -> list[dict]:
     """Find autowriter items with a status that maps to a decision, that
     don't yet have a 'human' prepublish_evaluations row.
 
-    Returns list of dicts with: id (item_id), status, user_id, created_at.
+    Returns list of dicts with: id (item_id), status, user_id, created_at,
+    updated_at.
     """
-    # autowriter.items has no `updated_at` column (see autowriter db.py items
-    # DDL; only created_at exists). Selecting it would make PostgREST 400 with
-    # "column items.updated_at does not exist". We use created_at as the time
-    # filter — coarse but always present; the NOT-EXISTS filter below stops
-    # us from creating duplicate evaluation rows on re-runs.
+    # 时间窗 = created_at OR updated_at, 理由见模块 docstring「迟到决策」.
+    # 【不能】只写 updated_at: 该列 nullable, 单条件会把 NULL 行静默丢掉;
+    # 双条件让新窗口成为旧窗口的严格超集, 所以这次改动不可能造成回归.
     q = (
         sb.schema("autowriter")
         .table("items")
-        .select("id, status, user_id, created_at")
+        .select("id, status, user_id, created_at, updated_at")
         .in_("status", list(_STATUS_TO_DECISION.keys()))
     )
     if since_iso:
-        q = q.gte("created_at", since_iso)
+        # 值用双引号包住 —— 时间戳里若出现 , . : 不会被 PostgREST 当成
+        # 逻辑树的语法分隔符. 这条语法在【生产 PostgREST 上实测过】:
+        # 解析与列解析都过了, 只在权限阶段被 anon 拦下 (42501); 故意写坏
+        # 括号则是 PGRST100 解析错、写不存在的列则是 42703 —— 三种错互相
+        # 区分得开, 所以"过了解析"这个结论是站得住的.
+        # supabase-py 2.30 渲染成 or=(created_at.gte."…",updated_at.gte."…").
+        q = q.or_(
+            f'created_at.gte."{since_iso}",updated_at.gte."{since_iso}"'
+        )
     rows = fetch_all_pages(q, order_by="id")
 
     # Exclude items that already have a 'human' eval row.
@@ -162,16 +186,34 @@ def insert_evaluation(sb, item: dict, dry_run: bool = False) -> bool:
         raise
 
 
+def _is_late_decision(row: dict) -> bool:
+    """这条 item 是不是"创建之后才被改过状态"的.
+
+    刻意【不】拿 ISO 字符串比大小: 两列都是 timestamptz, Postgres 只在小数
+    秒非零时才渲染小数部分, 于是同一时刻可能一列是 "…:00+00:00"、另一列是
+    "…:00.000000+00:00" —— 字典序下 '+'(0x2B) < '.'(0x2E), 会把"其实相等"
+    判成"晚于", 这个计数就开始虚报. 解析不了就返回 False (宁可少报也不虚
+    报: 这是个用来看修复有没有起作用的数, 虚报比漏报更坏).
+    """
+    created, updated = row.get("created_at"), row.get("updated_at")
+    if not created or not updated:
+        return False
+    try:
+        return datetime.fromisoformat(updated) > datetime.fromisoformat(created)
+    except (TypeError, ValueError):
+        return False
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
         "--since-days", type=int, default=365,
-        help="Only sync items created within the last N days (default 365 — "
-             "2026-05-22 audit P1/P2-4 bumped from 90, since autowriter.items "
-             "has no updated_at and we can't otherwise tell a 91-day-old item "
-             "got its decision changed today). Set 0 to scan everything; safe "
-             "but slower on aged deployments, run monthly as a catch-all.",
+        help="Only sync items created OR last touched within the last N days "
+             "(default 365). autowriter.items 现在有 updated_at 了, 所以"
+             "'很久以前创建、最近才改状态'的 item 也在窗口里 —— 窗口的含义"
+             "是'最近 N 天被动过的决定'. 默认没跟着缩回 90: cron 停摆超过 N "
+             "天, 停摆期间改的决定就捞不回来了. Set 0 to scan everything.",
     )
     args = parser.parse_args()
 
@@ -183,8 +225,12 @@ def main() -> int:
 
     sb = get_supabase_client()
     pending = fetch_pending_decisions(sb, since_iso)
-    logger.info("Found %d autowriter items with new human decisions to archive",
-                len(pending))
+    # 单独数一下"迟到决策": 创建之后才被改过状态的 item. 旧口径(只按
+    # created_at)在窗口边缘会漏掉的正是这一批. 把它打出来, 这条修复才是
+    # 【看得见】的 —— 否则又变成"改了, 但没人知道有没有起作用".
+    late = sum(1 for r in pending if _is_late_decision(r))
+    logger.info("Found %d autowriter items with new human decisions to archive "
+                "(其中 %d 条是创建后才改过状态的迟到决策)", len(pending), late)
 
     stats = {"pass": 0, "revise": 0, "race_skipped": 0, "errors": 0}
     for item in pending:
