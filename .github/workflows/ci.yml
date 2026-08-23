@@ -1441,12 +1441,18 @@ jobs:
               def __init__(self, data): self.data = data
 
           class FakeQ:
-              """记录 .order()/.range() 调用序列; 按 offset 切片吐数据。"""
-              def __init__(self, rows, *, repeat_first_page=False):
+              """记录 .order()/.range() 调用序列; 按 offset 切片吐数据。
+
+              server_cap 模拟 PostgREST 的 max-rows: 服务端把请求钳短, 于是
+              每一页都是"短页"但后面还有行 —— 假件不具备这个能力的话,
+              "按短页收工"这个 bug 根本测不出来。
+              """
+              def __init__(self, rows, *, repeat_first_page=False, server_cap=None):
                   self.rows = rows
                   self.order_calls = []
                   self.range_calls = []
                   self.repeat_first_page = repeat_first_page
+                  self.server_cap = server_cap
               def order(self, col, **kw):
                   self.order_calls.append(col); return self
               def range(self, lo, hi):
@@ -1454,7 +1460,10 @@ jobs:
               def execute(self):
                   if self.repeat_first_page:      # 模拟 PostgREST 改成取第一个 offset
                       return FakeExec(self.rows[0:self._hi - self._lo + 1])
-                  return FakeExec(self.rows[self._lo:self._hi + 1])
+                  page = self.rows[self._lo:self._hi + 1]
+                  if self.server_cap is not None:
+                      page = page[:self.server_cap]
+                  return FakeExec(page)
 
           rows = [{"id": i, "v": f"r{i}"} for i in range(250)]
 
@@ -1470,8 +1479,10 @@ jobs:
           got = _common.fetch_all_pages(q, page_size=100, order_by="id")
           assert [r["id"] for r in got] == list(range(250)), "翻页结果不是全量有序"
           assert q.order_calls == ["id"], f".order() 调了 {q.order_calls} —— 必须循环外只调一次"
-          assert q.range_calls == [(0, 99), (100, 199), (200, 299)], q.range_calls
-          print(f"  ✓ 250 行分 3 页取全 · order 调用={q.order_calls} · range={len(q.range_calls)} 次")
+          # 250 行 / 每页 100: 100 + 100 + 50 + 空页 = 4 次请求。
+          # offset 按实收前进 → 0 → 100 → 200 → 250(最后一次拿到空页收工)。
+          assert [lo for lo, _ in q.range_calls] == [0, 100, 200, 250], q.range_calls
+          print(f"  ✓ 250 行取全 · order 调用={q.order_calls} · offset 轨迹={[lo for lo,_ in q.range_calls]}")
 
           # 3) order_by 不在 select 里 → 明确报错(而不是靠 .get() 拿 None 静默去重成 1 行)
           try:
@@ -1490,12 +1501,34 @@ jobs:
               assert "分页没有前进" in str(e), e
               print("  ✓ 页面不前进 → RuntimeError(不死循环)")
 
-          # 5) 最后一页不满 → 正常收尾, 不多打一次请求
+          # 5) 最后一页不满 → 再拿一次空页才收工(多一次请求, 换与服务端上限无关)
           q = FakeQ(rows[:150])
           got = _common.fetch_all_pages(q, page_size=100, order_by="id")
-          assert len(got) == 150 and q.range_calls == [(0, 99), (100, 199)], q.range_calls
-          print("  ✓ 末页不满即停")
-          print("\nfetch_all_pages: 5/5 组通过")
+          assert len(got) == 150, len(got)
+          assert len(q.range_calls) == 3, q.range_calls          # 100 + 50 + 空
+          # 每页的起点必须正好接上一页的终点(按实收行数前进): 0 → 100 → 150。
+          # 断言这条关系而不是写死三元组 —— 写死的话换个 page_size 就得改测试,
+          # 而真正要钉死的是"不跳行、不重取"。
+          starts = [lo for lo, _ in q.range_calls]
+          assert starts == [0, 100, 150], starts
+          print(f"  ✓ 末页不满 → 补一次空页收工 · offset 轨迹 {starts}")
+
+          # 6) 【服务端把每页钳短】—— PostgREST max-rows 低于 page_size 时的真实行为。
+          #    本库实测 max-rows=1000 而 _DEFAULT_PAGE_SIZE 也是 1000, 零余量;
+          #    上限一旦调低, 按"短页收工"就会第一页返回 = 24 个调用点集体静默截断。
+          q = FakeQ(rows, server_cap=37)          # 请求 100, 服务端只给 37
+          got = _common.fetch_all_pages(q, page_size=100, order_by="id")
+          assert [r["id"] for r in got] == list(range(250)), (
+              f"服务端钳短时只拿回 {len(got)} 行(应 250) —— 又按短页收工了"
+          )
+          print(f"  ✓ 服务端每页钳到 37 行时仍取全 250 行({len(q.range_calls)} 次请求)")
+
+          # 7) offset 必须按【实拿到的行数】前进, 不是按 page_size —— 否则钳短时跳行
+          assert q.range_calls[1][0] == 37, (
+              f"第二页从 offset={q.range_calls[1][0]} 起(应 37) —— 按 page_size 跳会漏行"
+          )
+          print("  ✓ offset 按实收行数前进, 不按 page_size 跳")
+          print("\nfetch_all_pages: 7/7 组通过")
           PY
 
       - name: 每个 fetch_all_pages 调用点都传了 order_by (AST, 防回归)
@@ -1575,6 +1608,16 @@ jobs:
           assert c.get("/health").json()["config"]["anthropic_base_url_origin"] == "(unparseable)"
           del os.environ["ANTHROPIC_BASE_URL"]
           print("  ✓ 无法解析 → (unparseable), 不回落原值")
+
+          # IPv6: urlsplit().hostname 剥掉方括号, 直接拼端口会得到
+          # https://2001:db8::1:8443 —— 不合法且分不清端口 (codex PR#104 review)
+          for src, want in [
+              ("https://[2001:db8::1]:8443/v1", "https://[2001:db8::1]:8443"),
+              ("https://[2001:db8::1]/v1",      "https://[2001:db8::1]"),
+              ("https://api.anthropic.com",     "https://api.anthropic.com"),
+          ]:
+              assert w._safe_origin(src) == want, f"{src!r} → {w._safe_origin(src)!r}, 期望 {want!r}"
+          print("  ✓ IPv6 字面量保留方括号, 端口不粘连")
 
           # ── 互斥锁: 同一脚本第二个并发请求必须 409, 不能一起跑 ──
           # 换掉 subprocess.run, 让"跑脚本"变成一个可控的慢操作。

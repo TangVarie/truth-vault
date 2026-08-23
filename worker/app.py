@@ -197,7 +197,13 @@ def _safe_origin(url: str | None) -> str | None:
         parts = urlsplit(url)
         if not parts.hostname:
             return "(unparseable)"
-        origin = f"{parts.scheme}://{parts.hostname}" if parts.scheme else parts.hostname
+        host = parts.hostname
+        # urlsplit().hostname 会把 IPv6 字面量的方括号剥掉, 直接拼端口就成了
+        # https://2001:db8::1:8443 —— 既不合法也分不清哪段是端口。补回括号。
+        # (codex PR#104 review)
+        if ":" in host:
+            host = f"[{host}]"
+        origin = f"{parts.scheme}://{host}" if parts.scheme else host
         if parts.port:
             origin = f"{origin}:{parts.port}"
         return origin

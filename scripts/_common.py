@@ -869,9 +869,18 @@ def fetch_all_pages(query_builder, page_size: int = _DEFAULT_PAGE_SIZE,
             )
         seen.update(r.get(order_by) for r in fresh)
         rows.extend(fresh)
-        if len(page) < page_size:
+        # ⚠️ 终止判据是【空页】而不是【短页】, offset 按【实拿到的行数】前进。
+        # PostgREST 的 max-rows 会把请求钳短。本库实测 max-rows=1000, 而
+        # _DEFAULT_PAGE_SIZE 也是 1000 —— 正好相等才没出事, 零余量:
+        #   curl 'stage_logs?select=id' -H 'Range: 0-1071'
+        #     → 只回 1000 行, content-range: 0-999/*
+        # 上限一旦被调低(或哪天 PostgREST 换了默认值), 每一页都成"短页",
+        # 按 len(page) < page_size 收工 = 第一页就返回 = 24 个调用点集体静默截断,
+        # 恰好是本函数存在的理由。按空页收工则与服务端上限无关, 代价是末尾多发
+        # 一次空请求。(codex aw#57 review 指出同类问题, 本仓同一缺陷)
+        if not page:
             return rows
-        start += page_size
+        start += len(page)
 
 
 # ─────────────────────────────────────────────────────────────────────────
