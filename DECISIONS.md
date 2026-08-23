@@ -1458,4 +1458,78 @@ docs/19:180-200 记过同型事故（配置错被 except 吞掉，外面永远 2
   PG 16 上实测过整条路径：建单表直通视图 → `is_insertable_into='YES'` →
   `SET ROLE anon; INSERT` → `INSERT 0 1`，行进了底表；跑完本文件同一句 →
   `permission denied`，读仍正常。CI 每次复跑这个探针。
-- **本文件未 apply 到生产**，等人工确认后再跑（`schemas/` 里其余 REVOKE 文件同此约定）。
+- **2026-08-23 已 apply 到生产**（`kduysqedr`，走 Supabase 迁移历史落成
+  `security_revoke_anon_write_dash_views`，而不是裸跑 —— 迁移表里留得下痕迹，
+  免得又出现「合了代码不等于上了 schema」）。应用前后都在**生产库**上量过：
+
+  | | 应用前 | 应用后 |
+  |---|---|---|
+  | `public` 下 anon 有 INSERT 的关系数 | **18**（全是 `v_dash_*`） | **0** |
+  | 同上，`authenticated` 写权限（INS/UPD/DEL/TRUNC） | 18 | **0** |
+  | 18 个 `v_dash_*` 仍可被 anon / authenticated SELECT | 18 / 18 | **18 / 18** |
+  | 以 `anon` 身份实读 `v_dash_overview` | 1 行 | **1 行** |
+  | 非 `v_dash_*` 的 public 关系被误伤 | — | **0**（撤之前该数就是 0，撤之后仍是 0） |
+
+  幂等性也在生产上复跑验过（再跑一遍，anon 写权限仍 0、读仍 18）。
+  `get_advisors` 无新增 —— 剩下的 `security_definer_view` / `rls_disabled_in_public`
+  ERROR 全是本次之前就有的。
+- 约定不变：**只对运行时已存在的 `v_dash_*` 生效，新增看板视图后要重跑本文件**
+  （`schemas/` 里其余 REVOKE 文件同此约定）。
+
+---
+
+## D-043 · 迟到的人工决策：时间窗改成 `created_at` **OR** `updated_at`（不是替换）
+
+**日期**: 2026-08-23
+
+**What**: `scripts/sync_autowriter_decisions_to_prepublish.py` 的时间窗从
+`created_at >= since` 改成 `created_at >= since OR updated_at >= since`。
+
+**Why**: 这个脚本把 autowriter 侧的人工审稿决定（approved / needs_revision）归档进
+`truth_vault.prepublish_evaluations`。`autowriter.items` 从前没有 `updated_at`，
+于是「三个月前创建、今天才被人工改状态」的 item 会被时间窗**静默**筛掉 ——
+脚本照常打印成功，少收的那些没有任何地方看得出来。当时的兜底是把 `--since-days`
+默认从 90 抬到 365，属于拿窗口宽度换命中率。
+
+aw 的 `migrations/001_deskcore.sql` 补上了 `items.updated_at` + 触发器，
+2026-08-23 已应用到生产，这条局限才真正可解。
+
+**为什么是「或」而不是「换成 `updated_at`」**（这是本条真正的决策）:
+
+- `updated_at` 分支是想要的能力：捞回迟到的决定。
+- `created_at` 分支是保底。`updated_at` 是 **nullable** 列（`DEFAULT now()`，
+  生产当前零 NULL），哪天有人显式插了 NULL，只写 `.gte("updated_at", …)`
+  会把那些行**静默丢掉** —— 正好又是这次审计一路在治的那个病。
+- 留着 `created_at` 分支之后，**新窗口是旧窗口的严格超集**，这次改动在数学上
+  不可能比改之前更差。这个性质比「哪个列更准确」重要。
+
+**生产实测**（都在 `kduysqedr` 上量的，不是照文档推的）:
+
+- 触发器 `WHEN (old.status IS DISTINCT FROM new.status OR old.example_label IS
+  DISTINCT FROM new.example_label)` —— 事务内改一条 `approved → needs_revision`，
+  `updated_at` 从 backfill 值（= `created_at`）跳到 `now()`，然后 rollback。
+- PostgREST 的 `or=` 语法在**生产实例上**验过能过：解析与列解析都过了、只在权限阶段
+  被 anon 拦（42501）；故意写坏括号是 `PGRST100`、写不存在的列是 `42703` ——
+  三种错互相区分得开，所以「过了解析」这个结论站得住。
+- supabase-py 2.30 渲染成 `or=(created_at.gte."…",updated_at.gte."…")`，
+  与 `status=in.(…)` 是两个独立 query param，PostgREST 之间取 AND。值用双引号包住，
+  时间戳里若出现 `,` `.` `:` 不会被当成逻辑树的分隔符。
+
+**Rejected**:
+
+- ❌ **只按 `updated_at` 过滤。** 干净，但 nullable 那个洞会静默吃行。
+- ❌ **把 `autowriter.items.updated_at` 改成 NOT NULL。** 能一劳永逸，但那是 aw 仓
+  owned 的表，从 TV 仓单方面 `ALTER` 会让 aw 的迁移文件与生产库对不上 ——
+  正是「代码与 schema 分家」那个病。要改应该走 aw 的迁移。
+- ❌ **把 `--since-days` 默认缩回 90。** 抬到 365 的原因（没有 `updated_at`）确实没了，
+  但窗口的含义也变了：现在是「最近 N 天**被动过**的决定」。cron 停摆超过 N 天，
+  停摆期间改的决定就再也捞不回来。窗口宽一点是纯赚，保持 365。
+
+**Implications**:
+
+- CI 加了一道用例，对**两种**错误实现都会红：退回只按 `created_at` → 迟到决策捞不回；
+  改成只按 `updated_at` → `updated_at IS NULL` 的行被静默丢掉。假件不是只记调用串，
+  而是把谓词真的求值一遍，所以测的是「筛出来的是不是想要的行」。三种改坏方式都反证过。
+- 脚本现在单独数并打印「其中 N 条是创建后才改过状态的迟到决策」。不打这个数的话，
+  这条修复就又变成「改了，但没人知道有没有起作用」—— 与 `check_positive_saturation.py`
+  当年那个盲点同型。

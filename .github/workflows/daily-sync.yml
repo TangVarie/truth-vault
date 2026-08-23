@@ -324,9 +324,12 @@ jobs:
         run: |
           DRYRUN=""
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRYRUN="--dry-run"
-          # 2026-05-22 audit P1/P2-4: 默认 365 天窗口足够日 cron 抓到迟到决策;
-          # autowriter.items 没有 updated_at 列, 我们按 created_at 滚动取. 月度
-          # 可以跑一次 --since-days 0 全扫补漏 (在另一个 workflow / 手动 cron).
+          # 时间窗 = created_at OR updated_at (D-043, 2026-08-23)。
+          # updated_at 是 aw 仓 migrations/001_deskcore.sql 加的 —— 生产库已应用;
+          # 没有这列的库会降级回只按 created_at 并告警, 不会把这一步打死。
+          # 默认 365 天窗口足够日 cron 抓到迟到决策; 月度可以跑一次
+          # --since-days 0 全扫补漏 (在另一个 workflow / 手动 cron)。
+          # 本步在下方「Fail job on any sync failure」的聚合闸里, 真挂了会红+发邮件。
           python sync_autowriter_decisions_to_prepublish.py $DRYRUN
 
       - name: positive pool 饱和度检查 (advisory, 不 fail)

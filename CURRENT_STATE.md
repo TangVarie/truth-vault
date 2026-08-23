@@ -241,6 +241,7 @@ Sprint 0 的目标是**主链路上线 + 飞轮通道接通**，不是完整三�
 **Item 6 · prepublish_evaluations 写入路径** (`scripts/sync_autowriter_decisions_to_prepublish.py`)
 - 把 autowriter.items 上的 approved / needs_revision 决定归档进 prepublish_evaluations 作为 evaluator_type='human' 记录
 - 限制 (诚实): pred_tier_class + actual_tier 仍为 NULL (要 autowriter→TV lineage), v_evaluator_calibration 还是空
+- 时间窗 = `created_at` **OR** `updated_at` (D-043, 2026-08-23): aw 补上 `items.updated_at` 后, "很久以前创建、今天才被人工改状态"的 item 不再被静默筛掉. 是「或」不是「替换」—— `updated_at` nullable, 单条件会吃掉 NULL 行; 双条件让新窗口成为旧窗口的严格超集
 - 接进 daily-sync 每天跑
 
 **Item 7 · comments 楼层重建 LLM** (`scripts/annotate_comment_threading.py`)
