@@ -867,10 +867,14 @@ jobs:
               def __init__(self, rows): self.rows = rows
               def select(self, *a, **kw): return self
               def eq(self, *a, **kw): return self
-              def range(self, *a, **kw): return self
+              # order(): COR-001 之后 fetch_all_pages 必调它(唯一稳定排序键)。
+              # 假行也因此必须带 id —— 否则 fetch_all_pages 会明确报
+              # "order_by 不在返回列里", 那正是它该做的。
+              def order(self, *a, **kw): return self
+              def range(self, lo, hi): self._lo, self._hi = lo, hi; return self
               def execute(self):
                   class R: pass
-                  r = R(); r.data = self.rows; return r
+                  r = R(); r.data = self.rows[self._lo:self._hi + 1]; return r
 
           class FakeSB:
               def __init__(self, rows): self.rows = rows
@@ -879,14 +883,14 @@ jobs:
 
           # Mixed feedback shapes: str ok, list/dict/int filtered without crash
           rows = [
-              {"item_id": "i1", "version_num": 1, "ai_engine": "gpt", "feedback": None},
-              {"item_id": "i1", "version_num": 2, "ai_engine": "gpt", "feedback": "需要更口语"},
-              {"item_id": "i2", "version_num": 1, "ai_engine": "gpt", "feedback": None},
-              {"item_id": "i2", "version_num": 2, "ai_engine": "gpt", "feedback": ["legacy", "list"]},
-              {"item_id": "i3", "version_num": 1, "ai_engine": "gpt", "feedback": None},
-              {"item_id": "i3", "version_num": 2, "ai_engine": "gpt", "feedback": 42},
-              {"item_id": "i4", "version_num": 1, "ai_engine": "gpt", "feedback": "手动精修"},
-              {"item_id": "i4", "version_num": 2, "ai_engine": "gpt", "feedback": "  "},
+              {"id": "v1", "item_id": "i1", "version_num": 1, "ai_engine": "gpt", "feedback": None},
+              {"id": "v2", "item_id": "i1", "version_num": 2, "ai_engine": "gpt", "feedback": "需要更口语"},
+              {"id": "v3", "item_id": "i2", "version_num": 1, "ai_engine": "gpt", "feedback": None},
+              {"id": "v4", "item_id": "i2", "version_num": 2, "ai_engine": "gpt", "feedback": ["legacy", "list"]},
+              {"id": "v5", "item_id": "i3", "version_num": 1, "ai_engine": "gpt", "feedback": None},
+              {"id": "v6", "item_id": "i3", "version_num": 2, "ai_engine": "gpt", "feedback": 42},
+              {"id": "v7", "item_id": "i4", "version_num": 1, "ai_engine": "gpt", "feedback": "手动精修"},
+              {"id": "v8", "item_id": "i4", "version_num": 2, "ai_engine": "gpt", "feedback": "  "},
           ]
           result = e.query_source_b(FakeSB(rows))
           assert result == {"i1"}, f"expected only i1, got {result}"
@@ -2547,9 +2551,13 @@ jobs:
         # 不做这一步的话, 上面的 has_table_privilege 断言只证明"权限位变了",
         # 证明不了"变了这件事有意义"。
         run: |
+          # 先清干净再建: 用 IF NOT EXISTS 的话, 这一步万一被跑第二遍, 底表里会留着
+          # 上一轮的 id=42, 下面的 count=1 断言就变成看执行次数而不是看行为。
           psql -v ON_ERROR_STOP=1 -c "
-            CREATE TABLE IF NOT EXISTS public._revoke_probe(id int, n int);
-            CREATE OR REPLACE VIEW public.v_dash_probe AS SELECT id, n FROM public._revoke_probe;
+            DROP VIEW IF EXISTS public.v_dash_probe;
+            DROP TABLE IF EXISTS public._revoke_probe;
+            CREATE TABLE public._revoke_probe(id int, n int);
+            CREATE VIEW public.v_dash_probe AS SELECT id, n FROM public._revoke_probe;
             GRANT USAGE ON SCHEMA public TO anon;
             GRANT SELECT, INSERT ON public.v_dash_probe TO anon;
             GRANT SELECT, INSERT ON public._revoke_probe TO anon;"
@@ -2557,19 +2565,22 @@ jobs:
           got=$(psql -tAX -c "SELECT is_insertable_into FROM information_schema.views WHERE table_name='v_dash_probe';")
           [ "$got" = "YES" ] || { echo "::error::v_dash_probe 不是 auto-updatable, 探针失效"; exit 1; }
           # (a) REVOKE 前: 写得进
-          psql -v ON_ERROR_STOP=1 -c "SET ROLE anon; INSERT INTO public.v_dash_probe(id,n) VALUES (42,99);"
+          PGOPTIONS='-c role=anon' psql -v ON_ERROR_STOP=1 -c "INSERT INTO public.v_dash_probe(id,n) VALUES (42,99);"
           got=$(psql -tAX -c "SELECT count(*) FROM public._revoke_probe WHERE id=42;")
           [ "$got" = "1" ] || { echo "::error::探针没写进去, 后面的对比就没意义了"; exit 1; }
           echo "  ✓ REVOKE 前: anon 经单表直通视图把行写进了底表"
           # (b) REVOKE 后: 写不进
           psql -v ON_ERROR_STOP=1 -f schemas/security_revoke_anon_write_dash_views.sql
-          if psql -v ON_ERROR_STOP=1 -c "SET ROLE anon; INSERT INTO public.v_dash_probe(id,n) VALUES (43,99);" 2>/dev/null; then
+          if PGOPTIONS='-c role=anon' psql -v ON_ERROR_STOP=1 -c "INSERT INTO public.v_dash_probe(id,n) VALUES (43,99);" 2>/dev/null; then
             echo "::error::REVOKE 后 anon 仍能经视图写入"; exit 1
           fi
           got=$(psql -tAX -c "SELECT count(*) FROM public._revoke_probe WHERE id=43;")
           [ "$got" = "0" ] || { echo "::error::第二次写居然落库了"; exit 1; }
-          got=$(psql -tAX -c "SET ROLE anon; SELECT count(*) FROM public.v_dash_probe;")
-          [ "$got" = "1" ] || { echo "::error::anon 读也被撤了 —— 看板会瞎"; exit 1; }
+          # ⚠️ 不能写成 psql -tAX -c "SET ROLE anon; SELECT ..." —— psql 会把 SET 的
+          #    状态标签也打到 stdout, 结果是 "SET\n1" 而不是 "1", 断言假红。
+          #    用 PGOPTIONS 在连接时设角色, -c 里只留那一条 SELECT。
+          got=$(PGOPTIONS='-c role=anon' psql -tAX -c "SELECT count(*) FROM public.v_dash_probe;")
+          [ "$got" = "1" ] || { echo "::error::anon 读也被撤了 —— 看板会瞎 (got=$got)"; exit 1; }
           echo "  ✓ REVOKE 后: 写被拒 · 读仍正常"
           psql -v ON_ERROR_STOP=1 -c "DROP VIEW public.v_dash_probe; DROP TABLE public._revoke_probe;"
 
