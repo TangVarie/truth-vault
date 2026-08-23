@@ -867,10 +867,14 @@ jobs:
               def __init__(self, rows): self.rows = rows
               def select(self, *a, **kw): return self
               def eq(self, *a, **kw): return self
-              def range(self, *a, **kw): return self
+              # order(): COR-001 之后 fetch_all_pages 必调它(唯一稳定排序键)。
+              # 假行也因此必须带 id —— 否则 fetch_all_pages 会明确报
+              # "order_by 不在返回列里", 那正是它该做的。
+              def order(self, *a, **kw): return self
+              def range(self, lo, hi): self._lo, self._hi = lo, hi; return self
               def execute(self):
                   class R: pass
-                  r = R(); r.data = self.rows; return r
+                  r = R(); r.data = self.rows[self._lo:self._hi + 1]; return r
 
           class FakeSB:
               def __init__(self, rows): self.rows = rows
@@ -879,14 +883,14 @@ jobs:
 
           # Mixed feedback shapes: str ok, list/dict/int filtered without crash
           rows = [
-              {"item_id": "i1", "version_num": 1, "ai_engine": "gpt", "feedback": None},
-              {"item_id": "i1", "version_num": 2, "ai_engine": "gpt", "feedback": "需要更口语"},
-              {"item_id": "i2", "version_num": 1, "ai_engine": "gpt", "feedback": None},
-              {"item_id": "i2", "version_num": 2, "ai_engine": "gpt", "feedback": ["legacy", "list"]},
-              {"item_id": "i3", "version_num": 1, "ai_engine": "gpt", "feedback": None},
-              {"item_id": "i3", "version_num": 2, "ai_engine": "gpt", "feedback": 42},
-              {"item_id": "i4", "version_num": 1, "ai_engine": "gpt", "feedback": "手动精修"},
-              {"item_id": "i4", "version_num": 2, "ai_engine": "gpt", "feedback": "  "},
+              {"id": "v1", "item_id": "i1", "version_num": 1, "ai_engine": "gpt", "feedback": None},
+              {"id": "v2", "item_id": "i1", "version_num": 2, "ai_engine": "gpt", "feedback": "需要更口语"},
+              {"id": "v3", "item_id": "i2", "version_num": 1, "ai_engine": "gpt", "feedback": None},
+              {"id": "v4", "item_id": "i2", "version_num": 2, "ai_engine": "gpt", "feedback": ["legacy", "list"]},
+              {"id": "v5", "item_id": "i3", "version_num": 1, "ai_engine": "gpt", "feedback": None},
+              {"id": "v6", "item_id": "i3", "version_num": 2, "ai_engine": "gpt", "feedback": 42},
+              {"id": "v7", "item_id": "i4", "version_num": 1, "ai_engine": "gpt", "feedback": "手动精修"},
+              {"id": "v8", "item_id": "i4", "version_num": 2, "ai_engine": "gpt", "feedback": "  "},
           ]
           result = e.query_source_b(FakeSB(rows))
           assert result == {"i1"}, f"expected only i1, got {result}"
@@ -1420,6 +1424,323 @@ jobs:
           assert not s._is_duplicate_error(_E("relation does not exist; duplicate references unsupported", code="42P01"))
           print("  ✓ does not false-positive on FK / permission / network errors")
           print("\nautowriter dup detection: 2/2 groups passed")
+          PY
+
+      - name: fetch_all_pages 分页正确性 (COR-001)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # OFFSET 分页跨页时若无【唯一+稳定】ORDER BY, 行会被跳过/重取, 且不报错。
+          # 这里用一个假 builder 精确复现 postgrest-py 的两个语义:
+          #   · .order() 追加(不是替换)
+          #   · .range() 用 params.add() 累积
+          # 然后断言 fetch_all_pages 只在循环外 order 一次, 且能抓出"没前进"。
+          import _common
+
+          class FakeExec:
+              def __init__(self, data): self.data = data
+
+          class FakeQ:
+              """记录 .order()/.range() 调用序列; 按 offset 切片吐数据。
+
+              server_cap 模拟 PostgREST 的 max-rows: 服务端把请求钳短, 于是
+              每一页都是"短页"但后面还有行 —— 假件不具备这个能力的话,
+              "按短页收工"这个 bug 根本测不出来。
+              """
+              def __init__(self, rows, *, repeat_first_page=False, server_cap=None):
+                  self.rows = rows
+                  self.order_calls = []
+                  self.range_calls = []
+                  self.repeat_first_page = repeat_first_page
+                  self.server_cap = server_cap
+              def order(self, col, **kw):
+                  self.order_calls.append(col); return self
+              def range(self, lo, hi):
+                  self.range_calls.append((lo, hi)); self._lo, self._hi = lo, hi; return self
+              def execute(self):
+                  if self.repeat_first_page:      # 模拟 PostgREST 改成取第一个 offset
+                      return FakeExec(self.rows[0:self._hi - self._lo + 1])
+                  page = self.rows[self._lo:self._hi + 1]
+                  if self.server_cap is not None:
+                      page = page[:self.server_cap]
+                  return FakeExec(page)
+
+          rows = [{"id": i, "v": f"r{i}"} for i in range(250)]
+
+          # 1) order_by 必填 —— 漏了必须当场 TypeError, 不能默默按无序翻页
+          try:
+              _common.fetch_all_pages(FakeQ(rows), page_size=100)
+              raise AssertionError("order_by 缺失竟然没报错 —— 关键字必填被改掉了")
+          except TypeError:
+              print("  ✓ order_by 是必填关键字参数")
+
+          # 2) 正常翻页: 全量、无重复、顺序保持; 且 .order() 只调一次(在循环外)
+          q = FakeQ(rows)
+          got = _common.fetch_all_pages(q, page_size=100, order_by="id")
+          assert [r["id"] for r in got] == list(range(250)), "翻页结果不是全量有序"
+          assert q.order_calls == ["id"], f".order() 调了 {q.order_calls} —— 必须循环外只调一次"
+          # 250 行 / 每页 100: 100 + 100 + 50 + 空页 = 4 次请求。
+          # offset 按实收前进 → 0 → 100 → 200 → 250(最后一次拿到空页收工)。
+          assert [lo for lo, _ in q.range_calls] == [0, 100, 200, 250], q.range_calls
+          print(f"  ✓ 250 行取全 · order 调用={q.order_calls} · offset 轨迹={[lo for lo,_ in q.range_calls]}")
+
+          # 3) order_by 不在 select 里 → 明确报错(而不是靠 .get() 拿 None 静默去重成 1 行)
+          try:
+              _common.fetch_all_pages(FakeQ(rows), page_size=100, order_by="note_id")
+              raise AssertionError("order_by 不在返回列里竟然没报错")
+          except RuntimeError as e:
+              assert "不在返回列里" in str(e), e
+              print("  ✓ order_by 不在 .select() 里 → RuntimeError")
+
+          # 4) 分页没前进(每页都吐同一批)→ 报错, 绝不死循环
+          try:
+              _common.fetch_all_pages(FakeQ(rows, repeat_first_page=True),
+                                      page_size=100, order_by="id")
+              raise AssertionError("每页返回同一批竟然没报错 —— 会死循环")
+          except RuntimeError as e:
+              assert "分页没有前进" in str(e), e
+              print("  ✓ 页面不前进 → RuntimeError(不死循环)")
+
+          # 5) 最后一页不满 → 再拿一次空页才收工(多一次请求, 换与服务端上限无关)
+          q = FakeQ(rows[:150])
+          got = _common.fetch_all_pages(q, page_size=100, order_by="id")
+          assert len(got) == 150, len(got)
+          assert len(q.range_calls) == 3, q.range_calls          # 100 + 50 + 空
+          # 每页的起点必须正好接上一页的终点(按实收行数前进): 0 → 100 → 150。
+          # 断言这条关系而不是写死三元组 —— 写死的话换个 page_size 就得改测试,
+          # 而真正要钉死的是"不跳行、不重取"。
+          starts = [lo for lo, _ in q.range_calls]
+          assert starts == [0, 100, 150], starts
+          print(f"  ✓ 末页不满 → 补一次空页收工 · offset 轨迹 {starts}")
+
+          # 6) 【服务端把每页钳短】—— PostgREST max-rows 低于 page_size 时的真实行为。
+          #    本库实测 max-rows=1000 而 _DEFAULT_PAGE_SIZE 也是 1000, 零余量;
+          #    上限一旦调低, 按"短页收工"就会第一页返回 = 24 个调用点集体静默截断。
+          q = FakeQ(rows, server_cap=37)          # 请求 100, 服务端只给 37
+          got = _common.fetch_all_pages(q, page_size=100, order_by="id")
+          assert [r["id"] for r in got] == list(range(250)), (
+              f"服务端钳短时只拿回 {len(got)} 行(应 250) —— 又按短页收工了"
+          )
+          print(f"  ✓ 服务端每页钳到 37 行时仍取全 250 行({len(q.range_calls)} 次请求)")
+
+          # 7) offset 必须按【实拿到的行数】前进, 不是按 page_size —— 否则钳短时跳行
+          assert q.range_calls[1][0] == 37, (
+              f"第二页从 offset={q.range_calls[1][0]} 起(应 37) —— 按 page_size 跳会漏行"
+          )
+          print("  ✓ offset 按实收行数前进, 不按 page_size 跳")
+          print("\nfetch_all_pages: 7/7 组通过")
+          PY
+
+      - name: 每个 fetch_all_pages 调用点都传了 order_by (AST, 防回归)
+        run: |
+          python - <<'PY'
+          # 用 AST 而不是 grep: grep 会被注释/字符串里的 "order_by=" 骗过去,
+          # 也读不出跨行的调用。这条是 COR-001 的防回归闸 —— 新写的调用点漏传
+          # order_by 会被 TypeError 挡住(运行时), 但 CI 要在合并前就拦下来。
+          import ast, pathlib, sys
+
+          bad = []
+          n = 0
+          for f in sorted(pathlib.Path("scripts").glob("*.py")):
+              tree = ast.parse(f.read_text(encoding="utf-8"), filename=str(f))
+              for node in ast.walk(tree):
+                  if not isinstance(node, ast.Call):
+                      continue
+                  fn = node.func
+                  name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", None)
+                  if name != "fetch_all_pages":
+                      continue
+                  n += 1
+                  kws = {k.arg for k in node.keywords if k.arg}
+                  has_splat = any(k.arg is None for k in node.keywords)   # **kwargs 转发
+                  if "order_by" not in kws and not has_splat:
+                      bad.append(f"{f}:{node.lineno}")
+          assert n >= 20, f"只扫到 {n} 个调用点 —— AST 扫描八成瞎了, 别让它假绿"
+          if bad:
+              print("::error::以下 fetch_all_pages 调用点没传 order_by:")
+              for b in bad:
+                  print(f"  {b}")
+              sys.exit(1)
+          print(f"  ✓ {n} 个 fetch_all_pages 调用点全部显式传了 order_by")
+          PY
+
+      - name: worker 每脚本互斥锁 + /health 自曝配置 (COR-002 / SUP-001)
+        run: |
+          pip install -q fastapi 'httpx<0.28' 'starlette' >/dev/null
+          python - <<'PY'
+          import os, threading, time
+          os.environ.pop("WORKER_API_KEY", None)
+          from fastapi.testclient import TestClient
+          import worker.app as w
+
+          c = TestClient(w.app)
+
+          # ── /health 必须把"没配 key = 谁都能调"说出来 (SUP-001) ──
+          h = c.get("/health").json()
+          assert h["ok"] is True, "healthcheck 不能因为没配 key 就红(Railway 靠它起容器)"
+          assert h["auth"]["ok"] is False, h["auth"]
+          assert h["auth"]["required"] is False, h["auth"]
+          assert "dev" in h["auth"]["mode"], h["auth"]["mode"]
+          assert h["config"]["run_timeout_s"] == w._RUN_TIMEOUT_S
+          # config 只报"有没有配"的布尔, 不报值(base_url/model 除外, 那俩不是密钥)
+          for k in ("supabase_service_role_key", "anthropic_api_key", "supabase_url"):
+              assert isinstance(h["config"][k], bool), f"{k} 回显了值而不是布尔: {h['config'][k]!r}"
+          print(f"  ✓ 未配 key: ok=True 但 auth.ok=False · mode={h['auth']['mode']!r}")
+
+          os.environ["WORKER_API_KEY"] = "s3cret"
+          h = c.get("/health").json()
+          assert h["auth"]["ok"] is True and h["auth"]["required"] is True, h["auth"]
+          assert "s3cret" not in str(h), "key 泄进了 /health 响应体"
+          print("  ✓ 配了 key: auth.ok=True 且 key 不回显")
+          del os.environ["WORKER_API_KEY"]
+
+          # /health 无鉴权, 所以 ANTHROPIC_BASE_URL 只能回显 scheme://host ——
+          # 中转站 URL 可能带租户路径 / query 凭据 / user:pass@ (codex PR#104 review)。
+          os.environ["ANTHROPIC_BASE_URL"] = "https://u:p@gw.example.com:8443/tenant-42/v1?key=SEKRIT"
+          h = c.get("/health").json()
+          origin = h["config"]["anthropic_base_url_origin"]
+          assert origin == "https://gw.example.com:8443", origin
+          for leak in ("SEKRIT", "tenant-42", "u:p", "?key="):
+              assert leak not in str(h), f"{leak!r} 从 /health 漏出去了: {h['config']}"
+          print(f"  ✓ base_url 只回显 origin={origin!r}, 凭据/租户路径都没漏")
+          # 解析不了就明说, 绝不 fallback 回原值(那样等于没削)
+          os.environ["ANTHROPIC_BASE_URL"] = "::not a url::"
+          assert c.get("/health").json()["config"]["anthropic_base_url_origin"] == "(unparseable)"
+          del os.environ["ANTHROPIC_BASE_URL"]
+          print("  ✓ 无法解析 → (unparseable), 不回落原值")
+
+          # IPv6: urlsplit().hostname 剥掉方括号, 直接拼端口会得到
+          # https://2001:db8::1:8443 —— 不合法且分不清端口 (codex PR#104 review)
+          for src, want in [
+              ("https://[2001:db8::1]:8443/v1", "https://[2001:db8::1]:8443"),
+              ("https://[2001:db8::1]/v1",      "https://[2001:db8::1]"),
+              ("https://api.anthropic.com",     "https://api.anthropic.com"),
+          ]:
+              assert w._safe_origin(src) == want, f"{src!r} → {w._safe_origin(src)!r}, 期望 {want!r}"
+          print("  ✓ IPv6 字面量保留方括号, 端口不粘连")
+
+          # ── 互斥锁: 同一脚本第二个并发请求必须 409, 不能一起跑 ──
+          # 换掉 subprocess.run, 让"跑脚本"变成一个可控的慢操作。
+          started = threading.Event()
+          release = threading.Event()
+          class _P:  returncode = 0; stdout = "ok"; stderr = ""
+          def fake_run(cmd, **kw):
+              # 只有 essence 那次挂住(用来占住锁); 别的脚本立刻返回 ——
+              # 否则它也会在 release 上阻塞, 把 essence 的锁窗口耗光, 后面
+              # 对 /health.running 的断言就成了假阴性。
+              if "annotate_essence_pass.py" in " ".join(map(str, cmd)):
+                  started.set()
+                  assert release.wait(30), "release 超时 —— 测试自身卡住了"
+              return _P()
+          w.subprocess.run = fake_run
+          w._SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
+
+          out = {}
+          def first():
+              out["a"] = w._run("annotate_essence_pass.py", ["X", "--limit", "1"])
+          t = threading.Thread(target=first); t.start()
+          assert started.wait(5), "第一个请求没进到 subprocess"
+
+          from fastapi import HTTPException
+          try:
+              w._run("annotate_essence_pass.py", ["X", "--limit", "1"])
+              raise AssertionError("并发第二个请求没被挡 —— 会重复烧 LLM 并互相覆盖 essence")
+          except HTTPException as e:
+              assert e.status_code == 409, e.status_code
+              print(f"  ✓ 同脚本并发第二个 → {e.status_code}")
+
+          # 不同脚本互不阻塞(锁是 per-script, 不是全局)
+          w._run("curate_flywheel_lessons.py", ["--limit", "1"])
+          print("  ✓ 不同脚本各自一把锁, 不互相阻塞")
+
+          # essence 还占着锁时, /health 必须看得见它在跑
+          running = c.get("/health").json()["running"]
+          assert "annotate_essence_pass.py" in running, running
+          assert "curate_flywheel_lessons.py" not in running, running
+          print(f"  ✓ /health.running 暴露在跑的脚本: {running}")
+
+
+          release.set(); t.join(5)
+          assert out["a"]["ok"] is True, out["a"]
+          # 锁必须释放, 否则下一轮 cron 永远 409
+          w._run("annotate_essence_pass.py", ["X", "--limit", "1"])
+          print("  ✓ 跑完锁已释放(下一轮不会被自己挡住)")
+          # 边插锁边枚举: _script_lock() 的 setdefault 是【插入】, 边插边遍历同一个
+          # dict, CPython 抛 RuntimeError → /health 500 → Railway 重启容器
+          # (codex PR#104 review)。
+          # 预填一个大锁表把竞态窗口拉宽 —— 小表时每次枚举太快, 8 轮都撞不上,
+          # 撞不上不等于安全。本机实测: 裸遍历在 4 万项时稳定复现
+          # RuntimeError('dictionary changed size during iteration')。
+          saved = dict(w._SCRIPT_LOCKS)
+          def _race(fn, preload=40000, rounds=150):
+              w._SCRIPT_LOCKS.clear()
+              for i in range(preload):
+                  w._SCRIPT_LOCKS[f"pre{i}.py"] = threading.Lock()
+              err = {}; done = threading.Event()
+              def writer():
+                  i = 0
+                  while not done.is_set() and i < 200000:
+                      with w._LOCKS_GUARD:
+                          w._SCRIPT_LOCKS.setdefault(f"new{i}.py", threading.Lock())
+                      i += 1
+              def reader():
+                  try:
+                      for _ in range(rounds): fn()
+                  except Exception as e: err["e"] = repr(e)
+                  finally: done.set()
+              tw = threading.Thread(target=writer, daemon=True)
+              tr = threading.Thread(target=reader)
+              tw.start(); tr.start(); tr.join(60); done.set(); tw.join(3)
+              return err.get("e")
+
+          # 反证: 裸遍历必须炸 —— 否则这条断言测了个寂寞
+          bare = lambda: sorted(n for n, lk in w._SCRIPT_LOCKS.items() if lk.locked())
+          assert "changed size" in (_race(bare) or ""), (
+              "裸遍历没复现 dict 竞态 —— 本用例失去意义, 别让它假绿"
+          )
+          print("  ✓ 反证: 裸遍历确实抛 dictionary changed size during iteration")
+          assert _race(w._running_scripts) is None, "_running_scripts() 仍然会炸"
+          print("  ✓ _running_scripts() 在同样竞态下零异常")
+          w._SCRIPT_LOCKS.clear(); w._SCRIPT_LOCKS.update(saved)
+          print("\nworker 互斥锁 + health: 全部通过")
+          PY
+
+      - name: daily-sync 把 409 当瞬时失败 (不拖红 · 配合 worker 互斥锁)
+        run: |
+          python - <<'PY'
+          # worker 忙时回 409。daily-sync 的 worker_fail_kind() 若把它判成 systemic,
+          # 第一批就 409 会让整个夜间同步报红 —— 加锁反而制造了告警噪音。
+          #
+          # ⚠️ daily-sync.yml 里有【多份】worker_fail_kind() 定义(essence 一份、
+          #    curate 一份, 各自内联在自己那步的 shell 里)。本测试最初用
+          #    re.search 只取第一份 —— 于是 essence 那份补了 409、curate 那份没补,
+          #    测试照样全绿。codex PR#104 review 抓到了漏的那份。
+          #    现在用 finditer 遍历【每一份】, 并断言份数下限, 少了也当失败。
+          import re, subprocess, textwrap, pathlib
+          yml = pathlib.Path(".github/workflows/daily-sync.yml").read_text(encoding="utf-8")
+          defs = [textwrap.dedent(m.group(0))
+                  for m in re.finditer(r"( *)worker_fail_kind\(\) \{.*?\n\1\}", yml, re.S)]
+          assert len(defs) >= 2, (
+              f"只找到 {len(defs)} 份 worker_fail_kind() —— 期望 essence + curate 各一份。"
+              "少了就是有一步不再做失败分类了, 或正则失配, 两种都不能放过。"
+          )
+          cases = {
+              ("0", "409"): "transient",   # worker 忙 → 幂等下轮续
+              ("0", "502"): "transient",
+              ("28", "000"): "transient",  # curl 超时
+              ("0", "401"): "systemic",    # 鉴权坏 → 必须红
+              ("0", "404"): "systemic",
+              ("6", "000"): "systemic",    # DNS 挂 = URL 配坏
+          }
+          for i, fn in enumerate(defs, 1):
+              for (rc, code), want in cases.items():
+                  got = subprocess.run(["bash", "-c", f"{fn}\nworker_fail_kind {rc} {code}"],
+                                       capture_output=True, text=True).stdout.strip()
+                  assert got == want, (
+                      f"第 {i}/{len(defs)} 份分类器: curl_rc={rc} HTTP={code} → {got!r}, 期望 {want!r}"
+                  )
+              print(f"  ✓ 第 {i}/{len(defs)} 份 worker_fail_kind: {len(cases)}/{len(cases)} 用例通过")
+          print(f"\ndaily-sync 失败分类: {len(defs)} 份 × {len(cases)} 用例全通过")
           PY
 
   sql:
@@ -2300,6 +2621,75 @@ jobs:
         run: |
           psql -v ON_ERROR_STOP=1 -c "SELECT ym, notes, impressions, hits, cum_impressions FROM public.v_dash_monthly LIMIT 0;"
           psql -v ON_ERROR_STOP=1 -c "SELECT ym, dow, n FROM public.v_dash_pub_activity LIMIT 0;"
+      - name: Apply security revoke (anon/authenticated write on public.v_dash_*) (+ idempotency)
+        # 纵深防御: 撤 anon/authenticated 对看板视图的写权限(SELECT 保留, 看板服务端要读)。
+        # 这些视图今天是聚合视图、PG 重写阶段就拒写, 所以撤的是【未来某天有人加了
+        # 单表直通视图会自动继承的】权限 —— 见 SQL 文件头。REVOKE 幂等, 两遍验。
+        run: |
+          psql -v ON_ERROR_STOP=1 -f schemas/security_revoke_anon_write_dash_views.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/security_revoke_anon_write_dash_views.sql
+      - name: Sanity-check revoke (v_dash_* 无 anon 写权限 · 且仍可读)
+        # 在裸 PG 上先造出 anon/authenticated 角色并【故意 GRANT ALL】(复现 Supabase
+        # 建库默认), 再跑一遍 REVOKE, 断言写权限确实没了、SELECT 还在。
+        # 不造角色的话上面那步在 CI 里是 no-op —— 那就等于没测。
+        run: |
+          psql -v ON_ERROR_STOP=1 -c "DO \$\$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='anon') THEN CREATE ROLE anon; END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='authenticated') THEN CREATE ROLE authenticated; END IF;
+          END \$\$;"
+          psql -v ON_ERROR_STOP=1 -c "GRANT ALL ON public.v_dash_overview TO anon, authenticated;"
+          psql -v ON_ERROR_STOP=1 -c "SELECT has_table_privilege('anon','public.v_dash_overview','INSERT') AS must_be_true;" \
+            | grep -q ' t$' || { echo '前置 GRANT 没生效, 后面的断言就成了假阳性'; exit 1; }
+          psql -v ON_ERROR_STOP=1 -f schemas/security_revoke_anon_write_dash_views.sql
+          for role in anon authenticated; do
+            for priv in INSERT UPDATE DELETE TRUNCATE; do
+              got=$(psql -tAX -v ON_ERROR_STOP=1 -c \
+                "SELECT has_table_privilege('$role','public.v_dash_overview','$priv');")
+              [ "$got" = "f" ] || { echo "::error::$role 仍有 $priv on v_dash_overview"; exit 1; }
+            done
+            got=$(psql -tAX -v ON_ERROR_STOP=1 -c \
+              "SELECT has_table_privilege('$role','public.v_dash_overview','SELECT');")
+            [ "$got" = "t" ] || { echo "::error::$role 的 SELECT 被误撤 —— 看板会瞎"; exit 1; }
+          done
+          echo "  ✓ anon/authenticated: 写权限已撤 · SELECT 保留"
+      - name: Sanity-check revoke · 证明这条路径【真的能写穿】(不是假想)
+        # 本文件防的是"将来有人加了单表直通的 v_dash_* 视图"。这里就地造一个,
+        # 证明: (a) 有权限时 anon 确实能经视图把行写进底表; (b) 跑完 REVOKE 就写不进了。
+        # 不做这一步的话, 上面的 has_table_privilege 断言只证明"权限位变了",
+        # 证明不了"变了这件事有意义"。
+        run: |
+          # 先清干净再建: 用 IF NOT EXISTS 的话, 这一步万一被跑第二遍, 底表里会留着
+          # 上一轮的 id=42, 下面的 count=1 断言就变成看执行次数而不是看行为。
+          psql -v ON_ERROR_STOP=1 -c "
+            DROP VIEW IF EXISTS public.v_dash_probe;
+            DROP TABLE IF EXISTS public._revoke_probe;
+            CREATE TABLE public._revoke_probe(id int, n int);
+            CREATE VIEW public.v_dash_probe AS SELECT id, n FROM public._revoke_probe;
+            GRANT USAGE ON SCHEMA public TO anon;
+            GRANT SELECT, INSERT ON public.v_dash_probe TO anon;
+            GRANT SELECT, INSERT ON public._revoke_probe TO anon;"
+          # 前提: 单表直通视图确实是 auto-updatable(否则整个担心不成立)
+          got=$(psql -tAX -c "SELECT is_insertable_into FROM information_schema.views WHERE table_name='v_dash_probe';")
+          [ "$got" = "YES" ] || { echo "::error::v_dash_probe 不是 auto-updatable, 探针失效"; exit 1; }
+          # (a) REVOKE 前: 写得进
+          PGOPTIONS='-c role=anon' psql -v ON_ERROR_STOP=1 -c "INSERT INTO public.v_dash_probe(id,n) VALUES (42,99);"
+          got=$(psql -tAX -c "SELECT count(*) FROM public._revoke_probe WHERE id=42;")
+          [ "$got" = "1" ] || { echo "::error::探针没写进去, 后面的对比就没意义了"; exit 1; }
+          echo "  ✓ REVOKE 前: anon 经单表直通视图把行写进了底表"
+          # (b) REVOKE 后: 写不进
+          psql -v ON_ERROR_STOP=1 -f schemas/security_revoke_anon_write_dash_views.sql
+          if PGOPTIONS='-c role=anon' psql -v ON_ERROR_STOP=1 -c "INSERT INTO public.v_dash_probe(id,n) VALUES (43,99);" 2>/dev/null; then
+            echo "::error::REVOKE 后 anon 仍能经视图写入"; exit 1
+          fi
+          got=$(psql -tAX -c "SELECT count(*) FROM public._revoke_probe WHERE id=43;")
+          [ "$got" = "0" ] || { echo "::error::第二次写居然落库了"; exit 1; }
+          # ⚠️ 不能写成 psql -tAX -c "SET ROLE anon; SELECT ..." —— psql 会把 SET 的
+          #    状态标签也打到 stdout, 结果是 "SET\n1" 而不是 "1", 断言假红。
+          #    用 PGOPTIONS 在连接时设角色, -c 里只留那一条 SELECT。
+          got=$(PGOPTIONS='-c role=anon' psql -tAX -c "SELECT count(*) FROM public.v_dash_probe;")
+          [ "$got" = "1" ] || { echo "::error::anon 读也被撤了 —— 看板会瞎 (got=$got)"; exit 1; }
+          echo "  ✓ REVOKE 后: 写被拒 · 读仍正常"
+          psql -v ON_ERROR_STOP=1 -c "DROP VIEW public.v_dash_probe; DROP TABLE public._revoke_probe;"
 
   yaml:
     name: Mapping yaml lint

@@ -43,9 +43,22 @@ on:
     # 02:00 UTC = 10:00 北京时间. 飞书表通常这之前已经填好昨日数据.
     - cron: '0 2 * * *'
 
+# 同一时刻只允许一个 daily-sync 在跑。cron 与手动 workflow_dispatch 会撞:
+# 两个 run 各自快照同一批 essence_annotated_at IS NULL 的笔记 → 重复烧 LLM、
+# 且非确定性互相覆盖 essence(与 backfill-essence.yml:30 同一类事故)。
+# cancel-in-progress: false = 后来者排队等前一个跑完(sync/标注都幂等), 不打断在飞的批次。
+# ⚠️ 本 group 只挡 daily-sync 自己; 与 backfill-essence 的跨 workflow 相撞由
+#    worker 侧的每脚本互斥锁兜底(worker/app.py _script_lock → 409 busy)。
+concurrency:
+  group: daily-sync
+  cancel-in-progress: false
+
 jobs:
   sync:
     runs-on: ubuntu-latest
+    # 实测 15-38min(近 30 次 run)。GitHub 默认 360min: 某次 curl/worker 挂死会白烧 6h
+    # runner、并把下一天的 cron 顶到排队。120min ≈ 3x 观测上限, 够宽又能兜住挂死。
+    timeout-minutes: 120
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -162,7 +175,9 @@ jobs:
               0) : ;;                                  # curl 本身成功, 看 http_code
               *) echo systemic; return ;;             # 6 DNS / 7 拒连 / 3 URL格式 / 35,60 SSL = 没够到/配置坏
             esac
-            case "$2" in 502|503|504) echo transient ;; *) echo systemic ;; esac  # 网关超时=瞬时; 4xx 等=系统性
+            # 409 = worker 侧互斥锁拒绝(另一个 run/backfill 正在标同一批, worker/app.py)。
+            # 够到了 worker、没干活、完全幂等 → 与网关超时同类, 下轮 cron 续标, 不拖红。
+            case "$2" in 409|502|503|504) echo transient ;; *) echo systemic ;; esac  # 忙/网关超时=瞬时; 其余 4xx=系统性
           }
           fail_count=0
           for f in ../mappings/*.yaml; do
@@ -238,7 +253,11 @@ jobs:
               0) : ;;                                  # curl 本身成功, 看 http_code
               *) echo systemic; return ;;             # 6 DNS / 7 拒连 / 3 URL格式 / 35,60 SSL = 没够到/配置坏(已退避重试仍失败才到这 → 判红, 不掩盖坏 WORKER_URL; PR#86 review)
             esac
-            case "$2" in 502|503|504) echo transient ;; *) echo systemic ;; esac
+            # 409 = worker 侧互斥锁拒绝(另一个 run 正在跑 curate_flywheel_lessons.py)。
+            # 与 essence 段同一契约: 够到了 worker、没干活、幂等 → 瞬时, 下轮 cron 续, 不拖红。
+            # 【不】加进上面的退避重试: 锁是被另一次完整 curate 占着(分钟级),
+            # 20s+40s 骑不过去, 白等; 直接归瞬时、下轮再来才是设计的那条路。
+            case "$2" in 409|502|503|504) echo transient ;; *) echo systemic ;; esac
           }
           BODY="{\"limit\":${CUR_LIMIT},\"dry_run\":$DRY"
           [ -n "$PROJECT_FILTER" ] && BODY="$BODY,\"project\":\"$PROJECT_FILTER\""

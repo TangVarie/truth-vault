@@ -77,7 +77,8 @@ def analyze_project(sb, project_id: str, window_days: int) -> dict | None:
         .select("note_id, interactions, tier, tier_source, publish_time")
         .eq("project_id", project_id)
         .not_.is_("interactions", None)
-        .gte("publish_time", cutoff_iso)
+        .gte("publish_time", cutoff_iso),
+        order_by="note_id",
     )
 
     interactions = sorted(

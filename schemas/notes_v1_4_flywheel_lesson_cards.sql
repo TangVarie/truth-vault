@@ -37,13 +37,18 @@ CREATE TABLE IF NOT EXISTS truth_vault.flywheel_lesson_annotations (
     curated_by      TEXT,        -- 策展模型 id (如 claude-sonnet-4-6)
     curator_version TEXT,        -- 策展 prompt/spec 版本 (flywheel_curator vX)
     curated_at      TIMESTAMP DEFAULT NOW(),
-    -- updated_at: 馆员缓存失效用 (library_version = max(updated_at), docs/14 §4.2)。
-    -- DEFAULT 只在 INSERT 生效、UPDATE 时不变, 所以【重策展】(upsert 的 DO UPDATE)
-    -- 必须靠下方 BEFORE UPDATE 触发器刷新, 不能指望写入方记得 (PR#28 review r3333039971)。
+    -- updated_at: 行级新鲜度/退役判断用。
+    -- ⚠️ 【不是】馆员缓存键 —— library_version 用的是 max(curated_at)
+    --    (librarian/core.py:102 library_version(), 理由见该模块 docstring),
+    --    因为 curate_flywheel_lessons.py:143 每次 upsert 都显式写 curated_at=NOW(),
+    --    重策展照样让缓存失效, 且 curated_at 只在"真的重策过"时才动。
+    --    本视图 (下方 SELECT) 故意只导出 curated_at, 不导出 updated_at。
+    -- DEFAULT 只在 INSERT 生效、UPDATE 时不变, 所以任何 UPDATE 要刷新这列
+    -- 都得靠下方 BEFORE UPDATE 触发器, 不能指望写入方记得 (PR#28 review r3333039971)。
     updated_at      TIMESTAMP DEFAULT NOW()
 );
 
--- 退役/新鲜度 + 缓存版本: 馆员按 updated_at 判断卡是否过期, 并算 library_version。
+-- 退役/新鲜度: 馆员按 updated_at 判断卡是否过期 (library_version 见上, 用 curated_at)。
 CREATE INDEX IF NOT EXISTS idx_tv_lesson_updated_at
     ON truth_vault.flywheel_lesson_annotations(updated_at);
 

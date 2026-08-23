@@ -67,7 +67,9 @@ def main() -> int:
     )
     if args.project:
         cur_q = cur_q.eq("project_id", args.project)
-    cur_rows = fetch_all_pages(cur_q.order("publish_time", desc=True))[:args.limit]
+    cur_rows = fetch_all_pages(
+        cur_q.order("publish_time", desc=True), order_by="note_id",
+    )[:args.limit]
 
     # ── New strategy: score view + diversity ──
     new_q = (
@@ -79,7 +81,9 @@ def main() -> int:
     )
     if args.project:
         new_q = new_q.eq("project_id", args.project)
-    new_rows = fetch_all_pages(new_q.order("injection_score", desc=True))
+    new_rows = fetch_all_pages(
+        new_q.order("injection_score", desc=True), order_by="note_id",
+    )
 
     # Apply the same diversity filter the sync script would.
     from sync_truth_vault_baokuan_to_autowriter_items import (

@@ -135,7 +135,7 @@ def fetch_pending_baokuan(
     )
     if project_filter:
         q = q.eq("project_id", project_filter)
-    rows = fetch_all_pages(q)
+    rows = fetch_all_pages(q, order_by="note_id")
     # 伪爆贴 (synthetic = 人工刷的假指标, 如 WTG「笔记状态」含"关注") 分级处理
     # (2026-06-01 运营决定):
     #   - 指标型 tier (爆/大爆): 排除. 它们的"爆"是假数据撑的, 不可信.
@@ -185,7 +185,7 @@ def retract_stale_synthetic_from_ssll(
     # synthetic 判定在 Python 端(JSONB ->>'synthetic' 的 PostgREST 过滤对 NULL 行不稳, 同
     # fetch_pending_baokuan)。不再用 synced_to_ssll_at 预筛 —— orphan 行该标记为 NULL 也要回收。
     candidates = [
-        r for r in fetch_all_pages(q)
+        r for r in fetch_all_pages(q, order_by="note_id")
         if isinstance(r.get("data_quality_flags"), dict)
         and r["data_quality_flags"].get("synthetic") is True
     ]

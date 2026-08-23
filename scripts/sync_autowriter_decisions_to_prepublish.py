@@ -89,7 +89,7 @@ def fetch_pending_decisions(sb, since_iso: str | None) -> list[dict]:
     )
     if since_iso:
         q = q.gte("created_at", since_iso)
-    rows = fetch_all_pages(q)
+    rows = fetch_all_pages(q, order_by="id")
 
     # Exclude items that already have a 'human' eval row.
     if not rows:
@@ -98,9 +98,11 @@ def fetch_pending_decisions(sb, since_iso: str | None) -> list[dict]:
     existing = fetch_all_pages(
         sb.schema("truth_vault")
         .table("prepublish_evaluations")
-        .select("autowriter_item_id")
+        # evaluation_id 只为分页排序用(同一 item 可能有多条 human 评价)。
+        .select("evaluation_id, autowriter_item_id")
         .eq("evaluator_type", "human")
-        .in_("autowriter_item_id", item_ids)
+        .in_("autowriter_item_id", item_ids),
+        order_by="evaluation_id",
     )
     existing_ids = {r["autowriter_item_id"] for r in existing}
     return [r for r in rows if r["id"] not in existing_ids]
