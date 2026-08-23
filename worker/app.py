@@ -166,6 +166,45 @@ def _limit_arg(body: dict, default: int = 50) -> str:
     return str(n)
 
 
+def _running_scripts() -> list[str]:
+    """当前持锁(=正在跑)的脚本名。
+
+    ⚠️ 必须在 _LOCKS_GUARD 下先【快照】再判 locked(): _script_lock() 会对
+    _SCRIPT_LOCKS 做 setdefault, 那是**插入**。边插边遍历同一个 dict, CPython
+    会抛 RuntimeError: dictionary changed size during iteration —— 于是
+    /health 变 500, Railway 健康检查失败把容器重启。最容易撞上的正是冷启动:
+    Railway 在探活, 第一个 job 同时进来 (codex PR#104 review)。
+    """
+    with _LOCKS_GUARD:
+        snapshot = list(_SCRIPT_LOCKS.items())
+    return sorted(name for name, lk in snapshot if lk.locked())
+
+
+def _safe_origin(url: str | None) -> str | None:
+    """把 URL 削成 scheme://host[:port], 丢掉 userinfo / path / query。
+
+    为什么: /health **没有鉴权**(它得让 Railway 探活), 而 ANTHROPIC_BASE_URL
+    指向中转站, 可能带租户路径、query 里的凭据、甚至 user:pass@ 形式的
+    URI userinfo。原样回显等于把它们发给任何一个匿名调用方 —— 这和本端点
+    自己承诺的"只报有没有配、不报值"直接矛盾 (codex PR#104 review)。
+    保留 host 是因为诊断价值全在这: 一眼看出指的是中转站还是 api.anthropic.com。
+    解析失败不猜, 返回 "(unparseable)" —— 绝不 fallback 回原值。
+    """
+    if not url:
+        return None
+    try:
+        from urllib.parse import urlsplit
+        parts = urlsplit(url)
+        if not parts.hostname:
+            return "(unparseable)"
+        origin = f"{parts.scheme}://{parts.hostname}" if parts.scheme else parts.hostname
+        if parts.port:
+            origin = f"{origin}:{parts.port}"
+        return origin
+    except Exception:
+        return "(unparseable)"
+
+
 @app.get("/health")
 def health() -> dict:
     """健康检查 + 【配置自曝】。
@@ -195,12 +234,11 @@ def health() -> dict:
             "supabase_url": bool(os.environ.get("SUPABASE_URL")),
             "supabase_service_role_key": bool(os.environ.get("SUPABASE_SERVICE_ROLE_KEY")),
             "anthropic_api_key": bool(os.environ.get("ANTHROPIC_API_KEY")),
-            "anthropic_base_url": os.environ.get("ANTHROPIC_BASE_URL") or None,
+            # 只回显 scheme://host[:port] —— 见 _safe_origin()。
+            "anthropic_base_url_origin": _safe_origin(os.environ.get("ANTHROPIC_BASE_URL")),
             "essence_model": os.environ.get("ESSENCE_MODEL") or "claude-sonnet-4-6 (default)",
         },
-        "running": sorted(
-            name for name, lk in _SCRIPT_LOCKS.items() if lk.locked()
-        ),
+        "running": _running_scripts(),
     }
 
 

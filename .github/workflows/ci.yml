@@ -1561,6 +1561,21 @@ jobs:
           print("  ✓ 配了 key: auth.ok=True 且 key 不回显")
           del os.environ["WORKER_API_KEY"]
 
+          # /health 无鉴权, 所以 ANTHROPIC_BASE_URL 只能回显 scheme://host ——
+          # 中转站 URL 可能带租户路径 / query 凭据 / user:pass@ (codex PR#104 review)。
+          os.environ["ANTHROPIC_BASE_URL"] = "https://u:p@gw.example.com:8443/tenant-42/v1?key=SEKRIT"
+          h = c.get("/health").json()
+          origin = h["config"]["anthropic_base_url_origin"]
+          assert origin == "https://gw.example.com:8443", origin
+          for leak in ("SEKRIT", "tenant-42", "u:p", "?key="):
+              assert leak not in str(h), f"{leak!r} 从 /health 漏出去了: {h['config']}"
+          print(f"  ✓ base_url 只回显 origin={origin!r}, 凭据/租户路径都没漏")
+          # 解析不了就明说, 绝不 fallback 回原值(那样等于没削)
+          os.environ["ANTHROPIC_BASE_URL"] = "::not a url::"
+          assert c.get("/health").json()["config"]["anthropic_base_url_origin"] == "(unparseable)"
+          del os.environ["ANTHROPIC_BASE_URL"]
+          print("  ✓ 无法解析 → (unparseable), 不回落原值")
+
           # ── 互斥锁: 同一脚本第二个并发请求必须 409, 不能一起跑 ──
           # 换掉 subprocess.run, 让"跑脚本"变成一个可控的慢操作。
           started = threading.Event()
@@ -1601,11 +1616,49 @@ jobs:
           assert "curate_flywheel_lessons.py" not in running, running
           print(f"  ✓ /health.running 暴露在跑的脚本: {running}")
 
+
           release.set(); t.join(5)
           assert out["a"]["ok"] is True, out["a"]
           # 锁必须释放, 否则下一轮 cron 永远 409
           w._run("annotate_essence_pass.py", ["X", "--limit", "1"])
           print("  ✓ 跑完锁已释放(下一轮不会被自己挡住)")
+          # 边插锁边枚举: _script_lock() 的 setdefault 是【插入】, 边插边遍历同一个
+          # dict, CPython 抛 RuntimeError → /health 500 → Railway 重启容器
+          # (codex PR#104 review)。
+          # 预填一个大锁表把竞态窗口拉宽 —— 小表时每次枚举太快, 8 轮都撞不上,
+          # 撞不上不等于安全。本机实测: 裸遍历在 4 万项时稳定复现
+          # RuntimeError('dictionary changed size during iteration')。
+          saved = dict(w._SCRIPT_LOCKS)
+          def _race(fn, preload=40000, rounds=150):
+              w._SCRIPT_LOCKS.clear()
+              for i in range(preload):
+                  w._SCRIPT_LOCKS[f"pre{i}.py"] = threading.Lock()
+              err = {}; done = threading.Event()
+              def writer():
+                  i = 0
+                  while not done.is_set() and i < 200000:
+                      with w._LOCKS_GUARD:
+                          w._SCRIPT_LOCKS.setdefault(f"new{i}.py", threading.Lock())
+                      i += 1
+              def reader():
+                  try:
+                      for _ in range(rounds): fn()
+                  except Exception as e: err["e"] = repr(e)
+                  finally: done.set()
+              tw = threading.Thread(target=writer, daemon=True)
+              tr = threading.Thread(target=reader)
+              tw.start(); tr.start(); tr.join(60); done.set(); tw.join(3)
+              return err.get("e")
+
+          # 反证: 裸遍历必须炸 —— 否则这条断言测了个寂寞
+          bare = lambda: sorted(n for n, lk in w._SCRIPT_LOCKS.items() if lk.locked())
+          assert "changed size" in (_race(bare) or ""), (
+              "裸遍历没复现 dict 竞态 —— 本用例失去意义, 别让它假绿"
+          )
+          print("  ✓ 反证: 裸遍历确实抛 dictionary changed size during iteration")
+          assert _race(w._running_scripts) is None, "_running_scripts() 仍然会炸"
+          print("  ✓ _running_scripts() 在同样竞态下零异常")
+          w._SCRIPT_LOCKS.clear(); w._SCRIPT_LOCKS.update(saved)
           print("\nworker 互斥锁 + health: 全部通过")
           PY
 
@@ -1614,12 +1667,20 @@ jobs:
           python - <<'PY'
           # worker 忙时回 409。daily-sync 的 worker_fail_kind() 若把它判成 systemic,
           # 第一批就 409 会让整个夜间同步报红 —— 加锁反而制造了告警噪音。
-          # 这里直接把 shell 函数抠出来跑, 断言 409 归 transient。
+          #
+          # ⚠️ daily-sync.yml 里有【多份】worker_fail_kind() 定义(essence 一份、
+          #    curate 一份, 各自内联在自己那步的 shell 里)。本测试最初用
+          #    re.search 只取第一份 —— 于是 essence 那份补了 409、curate 那份没补,
+          #    测试照样全绿。codex PR#104 review 抓到了漏的那份。
+          #    现在用 finditer 遍历【每一份】, 并断言份数下限, 少了也当失败。
           import re, subprocess, textwrap, pathlib
           yml = pathlib.Path(".github/workflows/daily-sync.yml").read_text(encoding="utf-8")
-          m = re.search(r"( *)worker_fail_kind\(\) \{.*?\n\1\}", yml, re.S)
-          assert m, "没在 daily-sync.yml 里找到 worker_fail_kind() —— 测试失效了"
-          fn = textwrap.dedent(m.group(0))
+          defs = [textwrap.dedent(m.group(0))
+                  for m in re.finditer(r"( *)worker_fail_kind\(\) \{.*?\n\1\}", yml, re.S)]
+          assert len(defs) >= 2, (
+              f"只找到 {len(defs)} 份 worker_fail_kind() —— 期望 essence + curate 各一份。"
+              "少了就是有一步不再做失败分类了, 或正则失配, 两种都不能放过。"
+          )
           cases = {
               ("0", "409"): "transient",   # worker 忙 → 幂等下轮续
               ("0", "502"): "transient",
@@ -1628,12 +1689,15 @@ jobs:
               ("0", "404"): "systemic",
               ("6", "000"): "systemic",    # DNS 挂 = URL 配坏
           }
-          for (rc, code), want in cases.items():
-              got = subprocess.run(["bash", "-c", f"{fn}\nworker_fail_kind {rc} {code}"],
-                                   capture_output=True, text=True).stdout.strip()
-              assert got == want, f"curl_rc={rc} HTTP={code} → {got!r}, 期望 {want!r}"
-              print(f"  ✓ curl_rc={rc} HTTP={code} → {got}")
-          print("\ndaily-sync 失败分类: 6/6 通过")
+          for i, fn in enumerate(defs, 1):
+              for (rc, code), want in cases.items():
+                  got = subprocess.run(["bash", "-c", f"{fn}\nworker_fail_kind {rc} {code}"],
+                                       capture_output=True, text=True).stdout.strip()
+                  assert got == want, (
+                      f"第 {i}/{len(defs)} 份分类器: curl_rc={rc} HTTP={code} → {got!r}, 期望 {want!r}"
+                  )
+              print(f"  ✓ 第 {i}/{len(defs)} 份 worker_fail_kind: {len(cases)}/{len(cases)} 用例通过")
+          print(f"\ndaily-sync 失败分类: {len(defs)} 份 × {len(cases)} 用例全通过")
           PY
 
   sql:
