@@ -1795,12 +1795,41 @@ CI 有两段断言钉死这个行为。
 
 ### aw 侧待办
 
-| 项 | 说明 |
+| 项 | 状态 (2026-08-23 逐项核实) |
 |---|---|
-| vendor 词表 JSON | 原样复制 + 记 sha256 + CI 校验 |
-| deskcore 复用现有模块 | `memory.build_layered_system_prompt` / `generate_calibration_notes` / `db.list_example_items` / `dedup.py` / `librarian_client.py` 都已存在，别重写（实测重写约 400-500 行重复） |
-| 四张新表 | 发牌台账 / 成稿指纹库 / 个人调校笔记 / 手动精修 diff → 进 `db.py::CREATE_TABLES_SQL` + `migrations/` |
-| ⚠️ user_id | 必须用库里已有的 UUID，不要新造。`autowriter-migrations/RUNBOOK.md:150-153` 记过：写 service account UUID 导致 RLS 屏蔽、`list_example_items` 永远 0 行、飞轮静默断开 |
+| vendor 词表 JSON | ✅ `deskcore/vendor/controlled_vocab_v0_2.json` + `.sha256`，aw CI 有校验 |
+| deskcore 复用现有模块 | ✅ `deskcore/core.py` import 了 `db` / `dedup` / `librarian_client` / `memory`，没重写 |
+| 四张新表 | ✅ `angle_ledger` / `draft_fingerprints` / `user_calibration_notes` / `style_edits`，`db.py::CREATE_TABLES_SQL` + `migrations/001_deskcore.sql` 两边都有 |
+| ⚠️ user_id | ✅ deskcore 里零 `uuid4`，走库里已有 UUID |
+| **schema 已 apply 到生产** | ✅ 2026-08-23（见下方「迁移落库」） |
+
+### 迁移落库 (2026-08-23)
+
+⚠️ **合了代码不等于上了 schema。** #55 把 deskcore 合进 aw 仓后，
+`migrations/001_deskcore.sql` **从来没在生产库跑过** —— 四张表一张都不存在、
+`autowriter.items.updated_at` 也没有。`db.py::CREATE_TABLES_SQL` 只管 fresh
+install，生产是已有库、走 `migrations/`，而那个目录的 README 写明要**手动执行**。
+那段时间若部署 deskcore，每个碰这些表的工具调用都会直接失败 —— 又是一次
+「看着做完了，其实没生效」。
+
+已按 `migrations/README` 的约定走完：Supabase `create_branch` 建分支库 →
+`apply_migration` → 逐项验证 → 生产库应用 → 复验 → 删分支库。
+
+分支库验到的东西（都进了 [autowriter#57](https://github.com/TangVarie/autowriter/pull/57)）：
+
+- **回填口径**：`updated_at = created_at` 而不是 `NOW()`，历史行不会看着"刚改过"。
+  生产复验：4,574 条 items 全部相等，零 NULL。
+- **触发器 `WHEN` 三条行为**：只改 `feedback_draft`（用户打字）→ 不刷；
+  `status` 变更 → 刷；`NULL → 'positive'` → 刷（这条证明必须用
+  `IS DISTINCT FROM` 而非 `<>`，否则"第一次标正例"反而不刷时间戳）。
+- **本迁移新引入 2 条 advisor WARN**（两个 RPC 的 `search_path` 可变），
+  趁没进 prod 修掉了；修完 advisors 只剩 4 条 `rls_enabled_no_policy` INFO，
+  与现有 15 张 truth_vault 表同模式，**零回归**。
+
+**连带解决**：`scripts/sync_autowriter_decisions_to_prepublish.py` 那条
+「`items` 没有 `updated_at`，只能按 `created_at` 过滤，会漏收迟到的人工决策」
+的已知局限（脚本 docstring 里记着，靠 `--since-days 365` 兜着）现在可以真正修了 ——
+列已经在，改成按 `updated_at` 增量即可。**本仓尚未改**，留作后续。
 
 ## 优先级总览 (2026-05-22 update)
 
@@ -1824,4 +1853,4 @@ CI 有两段断言钉死这个行为。
 | R-031 | 飞书 lineage 列 → notes.source_autowriter_*_id 脚本支持 | TV | ✅ 已解决 (2026-06-05) | `transform_row` 加 `_LINEAGE_FK_COLS`/`_LINEAGE_RAW_EXTRA_COLS`: 6 列全局声明不再 quarantine + 2 UUID 自动进 FK 列, 其余 4 列进 raw_extra. CI 守 R-031 self-check; docs/11 改"✅ 现状". 见本文 § R-031. |
 | R-032 | autowriter 通道2 改 pull (调 LLM 馆员 + 注入) | TV + aw | ✅ 已解决 · production 拉通 (2026-06-05) | aw `librarian_client.py` + `app.py:_queue_worker_impl` fetch + `memory.py` 注入 P2; 实测一单借回 5 张经验卡、馆员缓存有真实流量. env 在 aw 部署 secrets (LIBRARIAN_URL/API_KEY/TIMEOUT_SEC). 见本文 § R-032 + docs/22 §2. |
 | R-033 | ssll 通道1 切到 LLM 馆员 (可选升级) | ssll | ⏳ 可选 | R-022 的 category-filter 已能用; 馆员(D-038)上线后 ssll 可升级共用同一馆员. 不阻塞, 降级回退现有 retrieve_reference_packs. |
-| R-034 | autowriter 写作台内核外置为 MCP (deskcore) | aw + TV | 🟡 TV 侧完成 / aw 侧进行中 | **deskcore 落 aw 仓不落 TV**(曾误写成 TV 服务, 违反 README 边界, 已撤回). TV 已出 `schemas/controlled_vocab_v0_2.json`(供 aw vendor) + v1_8 正例饱和度盲点修复. 见本文 § R-034 + [D-041](../DECISIONS.md#d-041). |
+| R-034 | autowriter 写作台内核外置为 MCP (deskcore) | aw + TV | ✅ 完成 (2026-08-23) | **deskcore 落 aw 仓不落 TV**(曾误写成 TV 服务, 违反 README 边界, 已撤回). TV 已出 `schemas/controlled_vocab_v0_2.json`(供 aw vendor) + v1_8 正例饱和度盲点修复. 见本文 § R-034 + [D-041](../DECISIONS.md#d-041). |
