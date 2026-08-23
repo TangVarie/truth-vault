@@ -1571,16 +1571,13 @@ jobs:
           # ── sync_autowriter_decisions 时间窗: created_at OR updated_at ─────────
           # 治的病: aw 侧补上 items.updated_at 之前, 本脚本只能按 created_at 过滤,
           # "很久以前创建、今天才被人工改状态"的 item 会被时间窗【静默】筛掉。
-          # 这个用例对【两种】错误实现都会红:
-          #   · 退回只按 created_at  → 迟到决策那条(A)捞不回来
-          #   · 改成只按 updated_at  → updated_at 为 NULL 的那条(D)被静默丢掉
+          # 用例对多种错误实现都会红, 见每条断言的消息。
           import importlib
 
           mod = importlib.import_module("sync_autowriter_decisions_to_prepublish")
 
           SINCE = "2025-08-23T00:00:00"
           ROWS = [
-              # id, status, created_at, updated_at
               {"id": "A", "status": "approved",       "created_at": "2024-01-01T00:00:00", "updated_at": "2026-08-22T09:00:00"},
               {"id": "B", "status": "needs_revision", "created_at": "2026-08-20T00:00:00", "updated_at": "2026-08-20T00:00:00"},
               {"id": "C", "status": "approved",       "created_at": "2020-01-01T00:00:00", "updated_at": "2020-01-01T00:00:00"},
@@ -1588,103 +1585,160 @@ jobs:
               {"id": "E", "status": "pending",        "created_at": "2026-08-22T00:00:00", "updated_at": "2026-08-22T00:00:00"},
           ]
 
-          store = {}
+          MISSING_COL_ERR = ('{"code":"42703","message":"column items.updated_at '
+                             'does not exist"}')
 
-          class FakeQ:
-              """按真实语义求值的假 builder —— 不只记调用串, 真的把谓词跑一遍,
-              这样测的是【筛出来的是不是想要的行】, 而不是字符串长得像不像。"""
-              def __init__(self, rows, table):
-                  self.rows = rows
-                  self.table = table
-                  self.preds = []
-              def select(self, cols):
-                  store.setdefault("select", {})[self.table] = cols; return self
-              def in_(self, col, vals):
-                  vs = set(vals); self.preds.append(lambda r: r.get(col) in vs); return self
-              def eq(self, col, val):
-                  self.preds.append(lambda r: r.get(col) == val); return self
-              def gte(self, col, val):
-                  store.setdefault("gte", []).append(col)
-                  self.preds.append(lambda r, c=col, v=val: r.get(c) is not None and r[c] >= v)
-                  return self
-              def or_(self, expr):
-                  store.setdefault("or_", []).append(expr)
-                  terms = []
-                  for term in expr.split(","):
-                      col, op, val = term.split(".", 2)
-                      assert op == "gte", f"用例只认 gte, 实际 {op}"
-                      terms.append((col, val.strip('"')))
-                  self.preds.append(
-                      lambda r, ts=terms: any(r.get(c) is not None and r[c] >= v for c, v in ts)
-                  )
-                  return self
-              def out(self):
-                  return [r for r in self.rows if all(p(r) for p in self.preds)]
 
-          class FakeSchema:
-              def __init__(self, name): self.name = name
-              def table(self, t):
-                  store.setdefault("tables", []).append((self.name, t))
-                  return FakeQ(ROWS if t == "items" else [], t)
+          def run(*, raise_on_or=None):
+              """跑一遍 fetch_pending_decisions, 返回 (ids, store)。
 
-          class FakeSB:
-              def schema(self, n): return FakeSchema(n)
+              raise_on_or: 不为 None 时, 带 or= 的那次查询抛这个异常 —— 用来模拟
+              目标库没有 updated_at 列。
+              """
+              store = {}
 
-          def fake_fetch_all_pages(q, *, order_by, **kw):
-              store.setdefault("order_by", []).append(order_by)
-              return q.out()
+              class FakeQ:
+                  """按真实语义求值的假 builder —— 不只记调用串, 真的把谓词跑一遍,
+                  这样测的是【筛出来的是不是想要的行】, 而不是字符串长得像不像。"""
+                  def __init__(self, rows, table):
+                      self.rows, self.table, self.preds = rows, table, []
+                      self.used_or = False
+                  def select(self, cols):
+                      store.setdefault("select", {}).setdefault(self.table, []).append(cols)
+                      self.cols = cols
+                      return self
+                  def in_(self, col, vals):
+                      vs = set(vals); self.preds.append(lambda r: r.get(col) in vs); return self
+                  def eq(self, col, val):
+                      self.preds.append(lambda r: r.get(col) == val); return self
+                  def gte(self, col, val):
+                      store.setdefault("gte", []).append(col)
+                      self.preds.append(
+                          lambda r, c=col, v=val: r.get(c) is not None and r[c] >= v)
+                      return self
+                  def or_(self, expr):
+                      store.setdefault("or_", []).append(expr)
+                      self.used_or = True
+                      terms = []
+                      for term in expr.split(","):
+                          col, op, val = term.split(".", 2)
+                          assert op == "gte", f"用例只认 gte, 实际 {op}"
+                          terms.append((col, val.strip('"')))
+                      self.preds.append(
+                          lambda r, ts=terms: any(
+                              r.get(c) is not None and r[c] >= v for c, v in ts))
+                      return self
+                  def out(self):
+                      keep = [c.strip() for c in getattr(self, "cols", "").split(",")]
+                      return [{k: v for k, v in r.items() if k in keep}
+                              for r in self.rows if all(p(r) for p in self.preds)]
 
-          mod.fetch_all_pages = fake_fetch_all_pages
+              class FakeSchema:
+                  def __init__(self, name): self.name = name
+                  def table(self, t):
+                      return FakeQ(ROWS if t == "items" else [], t)
 
-          got = mod.fetch_pending_decisions(FakeSB(), SINCE)
+              class FakeSB:
+                  def schema(self, n): return FakeSchema(n)
+
+              def fake_fetch_all_pages(q, *, order_by, **kw):
+                  store.setdefault("order_by", []).append(order_by)
+                  if q.used_or and raise_on_or is not None:
+                      raise raise_on_or
+                  return q.out()
+
+              mod.fetch_all_pages = fake_fetch_all_pages
+              got = mod.fetch_pending_decisions(FakeSB(), SINCE)
+              return got, store
+
+
+          # ── 1. 正常路径 ───────────────────────────────────────────────────────
+          got, store = run()
           ids = sorted(r["id"] for r in got)
 
-          # 1) 时间窗必须是 or=, 且两条分支都在
           assert store.get("or_"), "时间窗没走 or= —— 退回单列过滤了"
           expr = store["or_"][0]
           assert "created_at.gte." in expr, f"or= 里缺 created_at 分支: {expr}"
           assert "updated_at.gte." in expr, f"or= 里缺 updated_at 分支: {expr}"
-          assert expr.count('"') == 4, f"or= 的值没用双引号包住(时间戳含 , . : 时会被当分隔符): {expr}"
+          assert expr.count('"') == 4, f"or= 的值没用双引号包住: {expr}"
           assert "created_at" not in store.get("gte", []), "时间窗又退回 .gte('created_at') 了"
           print("  ✓ 时间窗 = or=(created_at.gte.\"…\",updated_at.gte.\"…\")")
 
-          # 2) select 必须带 updated_at, 否则迟到决策计数永远是 0(又一个看不见的洞)
-          assert "updated_at" in store["select"]["items"], \
-              f"items 的 select 少了 updated_at: {store['select']['items']}"
-          print("  ✓ select 带 updated_at (迟到决策计数才看得见)")
+          assert "updated_at" in store["select"]["items"][0], \
+              f"items 的 select 少了 updated_at: {store['select']['items'][0]}"
+          print("  ✓ select 带 updated_at (创建后被动过的计数才看得见)")
 
-          # 3) 语义: 筛出来的到底是哪几行
           assert ids == ["A", "B", "D"], f"筛出来的是 {ids}, 期望 ['A','B','D']"
-          print("  ✓ A 迟到决策(4年前建·昨天改) 捞回来了 —— 只按 created_at 会漏")
-          print("  ✓ D updated_at=NULL 仍在 —— 只按 updated_at 会静默丢掉")
-          print("  ✓ C 老且没动过 正确排除 · E status=pending 正确排除")
-
-          # 4) 分页排序键还在(COR-001 不能被这次改动带崩)
+          print("  ✓ A(4年前建·昨天改) 捞回来了 —— 只按 created_at 会漏")
+          print("  ✓ D(updated_at=NULL) 仍在 —— 只按 updated_at 会静默丢掉")
+          print("  ✓ C 老且没动过 · E status=pending 正确排除")
           assert store["order_by"][0] == "id", f"items 查询的 order_by 变了: {store['order_by']}"
           print("  ✓ order_by 仍是 id")
 
-          # 5) 迟到决策计数: 刻意不拿 ISO 字符串比大小
+
+          # ── 2. 目标库没有 updated_at 列 → 降级, 不是打死 (codex round-1 P1) ──
+          #    updated_at 是 aw 仓 migrations/001_deskcore.sql 加的, TV 自己那份
+          #    autowriter-migrations/007 建的 items 只有 created_at。
+          class _Err(Exception):
+              pass
+
+
+          got2, store2 = run(raise_on_or=_Err(MISSING_COL_ERR))
+          ids2 = sorted(r["id"] for r in got2)
+          assert ids2 == ["B", "D"], f"降级后筛出 {ids2}, 期望 ['B','D'](= 旧口径)"
+          assert "created_at" in store2.get("gte", []), "降级后没走 .gte('created_at')"
+          assert store2["select"]["items"][-1] == "id, status, user_id, created_at", \
+              f"降级形态的 select 不该带 updated_at: {store2['select']['items'][-1]}"
+          assert all("updated_at" not in r for r in got2), "降级形态的行不该有 updated_at 键"
+          print("  ✓ 缺列时降级回旧口径(只按 created_at), 而不是把整条链路打死")
+
+          # 降级判据必须【窄】—— 别的错误照旧抛, 否则就变成"出错了也当成功"
+          try:
+              run(raise_on_or=_Err("500 Internal Server Error"))
+          except _Err:
+              print("  ✓ 无关错误照旧抛 —— 降级判据没有宽到吞掉别的故障")
+          else:
+              raise AssertionError("无关错误被降级路径吞掉了 —— 这正是本仓一路在治的病")
+
+          assert mod._is_missing_updated_at(_Err(MISSING_COL_ERR)) is True
+          assert mod._is_missing_updated_at(_Err("column items.nosuchcol does not exist")) is False, \
+              "_is_missing_updated_at 认了跟 updated_at 无关的缺列错误"
+          assert mod._is_missing_updated_at(_Err("updated_at 超时")) is False, \
+              "_is_missing_updated_at 只要看到 updated_at 就认 —— 太宽了"
+          print("  ✓ _is_missing_updated_at 只认「updated_at 这一列不存在」")
+
+
+          # ── 3. "创建后被动过"的计数: 按时间解析比较, 且别名副其实 ─────────────
           #    两列都是 timestamptz, Postgres 只在小数秒非零时渲染小数部分, 于是
           #    同一时刻可能一列 "…:00+00:00"、另一列 "…:00.000000+00:00" ——
           #    字典序下 '+'(0x2B) < '.'(0x2E), 字符串比会把"相等"判成"晚于"。
-          _late = mod._is_late_decision
+          _touched = mod._touched_after_create
           CASES = [
               ({"created_at": "2026-08-19T03:07:00.444827+00:00",
                 "updated_at": "2026-08-19T03:07:00.444827+00:00"}, False, "完全相等(回填行)"),
               ({"created_at": "2026-08-19T03:07:00+00:00",
                 "updated_at": "2026-08-19T03:07:00.000000+00:00"}, False, "同一时刻·小数位渲染不同"),
               ({"created_at": "2024-01-01T00:00:00+00:00",
-                "updated_at": "2026-08-22T09:00:00+00:00"}, True, "真·迟到决策"),
+                "updated_at": "2026-08-22T09:00:00+00:00"}, True, "创建后确实被动过"),
               ({"created_at": "2026-08-21T00:00:00+00:00", "updated_at": None}, False, "updated_at 为 NULL"),
               ({"created_at": None, "updated_at": "2026-08-21T00:00:00+00:00"}, False, "created_at 为 NULL"),
               ({"created_at": "垃圾", "updated_at": "2026-08-21T00:00:00+00:00"}, False, "解析不了 → 不虚报"),
+              ({"created_at": "2026-08-21T00:00:00+00:00"}, False, "降级形态(压根没这个键)"),
           ]
           for row, want, why in CASES:
-              assert _late(row) == want, f"_is_late_decision {why}: got {_late(row)}, want {want}"
-          # 反证: 字符串比会在第 2 条上虚报, 所以"解析再比"不是洁癖
+              assert _touched(row) == want, f"_touched_after_create {why}: got {_touched(row)}, want {want}"
           _naive = CASES[1][0]["updated_at"] > CASES[1][0]["created_at"]
           assert _naive is True, "反证失效: 字符串比居然没在这条上虚报, 用例该重挑数据了"
-          print("  ✓ 迟到决策计数按时间解析比较(字符串比会在'同一时刻·小数位不同'上虚报)")
+          print("  ✓ 计数按时间解析比较(字符串比会在'同一时刻·小数位不同'上虚报)")
+
+          # 名字必须诚实: 触发器的 WHEN 对 status 和 example_label 都刷 updated_at,
+          # 所以这个数【不是】"迟到的审稿决定"的精确计数 (codex round-1 P2)。
+          assert not hasattr(mod, "_is_late_decision"), \
+              "还叫 _is_late_decision —— 它数的是「创建后被动过」, 含只改了正负例标注的"
+          doc = (_touched.__doc__ or "")
+          assert "example_label" in doc, "docstring 没讲清它为什么不等于「迟到决策」"
+          print("  ✓ 指标名副其实(不再自称「迟到决策」), docstring 讲清了口径")
+
           print("sync_autowriter_decisions 时间窗自检通过")
           PY
 

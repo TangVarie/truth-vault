@@ -56,6 +56,13 @@ sync_autowriter_decisions_to_prepublish.py
     定", cron 若停摆超过 N 天, 停摆期间改的决定就再也捞不回来. 窗口宽
     一点是纯赚. 全扫仍然是 --since-days 0.
 
+    ⚠️ 前置依赖与降级: updated_at 这一列【只有跑过 autowriter 仓的
+    migrations/001_deskcore.sql 的库才有】—— 本仓自己那份建库脚本
+    autowriter-migrations/007_fresh_install_autowriter_schema.sql 里的
+    items 只有 created_at。目标库没有这列时, fetch_pending_decisions 会
+    降级回旧口径(只按 created_at)并大声告警, 不会把整条链路打死;
+    见那个函数的 docstring。
+
 用法:
     python sync_autowriter_decisions_to_prepublish.py
     python sync_autowriter_decisions_to_prepublish.py --dry-run
@@ -87,33 +94,84 @@ _STATUS_TO_DECISION = {
 }
 
 
+def _items_query(sb, since_iso: str | None, *, with_updated_at: bool):
+    """建 autowriter.items 的查询. with_updated_at=False 是【降级形态】.
+
+    时间窗 = created_at OR updated_at, 理由见模块 docstring「迟到决策」.
+    【不能】只写 updated_at: 该列 nullable, 单条件会把 NULL 行静默丢掉;
+    双条件让新窗口成为旧窗口的严格超集, 所以这次改动不可能造成回归.
+    """
+    cols = "id, status, user_id, created_at"
+    if with_updated_at:
+        cols += ", updated_at"
+    q = (
+        sb.schema("autowriter")
+        .table("items")
+        .select(cols)
+        .in_("status", list(_STATUS_TO_DECISION.keys()))
+    )
+    if not since_iso:
+        return q
+    if not with_updated_at:
+        return q.gte("created_at", since_iso)
+    # 值用双引号包住 —— 时间戳里若出现 , . : 不会被 PostgREST 当成逻辑树的
+    # 语法分隔符. 这条语法在【生产 PostgREST 上实测过】: 解析与列解析都过了,
+    # 只在权限阶段被 anon 拦下 (42501); 故意写坏括号则是 PGRST100 解析错、
+    # 写不存在的列则是 42703 —— 三种错互相区分得开, 所以"过了解析"这个结论
+    # 是站得住的. supabase-py 2.30 渲染成
+    #   or=(created_at.gte."…",updated_at.gte."…")
+    return q.or_(f'created_at.gte."{since_iso}",updated_at.gte."{since_iso}"')
+
+
+def _is_missing_updated_at(exc: Exception) -> bool:
+    """这个异常是不是"autowriter.items 没有 updated_at 列"?
+
+    只认这一种, 别的照旧抛 —— 降级路径必须窄, 否则就变成"出错了也当成功",
+    正是本仓一路在治的病。
+    """
+    msg = str(exc).lower()
+    if "updated_at" not in msg:
+        return False
+    return any(k in msg for k in ("42703", "does not exist", "column"))
+
+
 def fetch_pending_decisions(sb, since_iso: str | None) -> list[dict]:
     """Find autowriter items with a status that maps to a decision, that
     don't yet have a 'human' prepublish_evaluations row.
 
     Returns list of dicts with: id (item_id), status, user_id, created_at,
-    updated_at.
+    以及 updated_at —— **除非**该列不存在(降级路径, 见下), 那时没有这个键。
+
+    ⚠️ **前置依赖**: `updated_at` 是 autowriter 仓
+    `migrations/001_deskcore.sql` 加的, 不在 truth-vault 自己那份
+    `autowriter-migrations/007_fresh_install_autowriter_schema.sql` 里
+    (那份的 items 只有 created_at)。也就是说【只按 TV 这边的建库脚本装起来
+    的库没有这一列】。PostgREST 对不存在的列返回 400/42703, 会把整个
+    select 打掉。
+
+    所以这里对【且仅对】"没有 updated_at 列"这一种错误降级回旧口径
+    (只按 created_at), 并大声告警。理由:
+      · 不降级 = 这条归档链路在那种库上直接死掉。它不会静默 ——
+        daily-sync 的 `prepublish_sync` 在聚合失败闸里(daily-sync.yml:402),
+        整个 workflow 会红并给 owner 发邮件 —— 但"红着不动"不如"降级跑着
+        并且喊出来"。
+      · 降级到旧口径 = 恰好是本次改动之前的行为, 不会比以前更差。
+      · 判据窄到只认这一种异常, 其余照旧抛。
     """
-    # 时间窗 = created_at OR updated_at, 理由见模块 docstring「迟到决策」.
-    # 【不能】只写 updated_at: 该列 nullable, 单条件会把 NULL 行静默丢掉;
-    # 双条件让新窗口成为旧窗口的严格超集, 所以这次改动不可能造成回归.
-    q = (
-        sb.schema("autowriter")
-        .table("items")
-        .select("id, status, user_id, created_at, updated_at")
-        .in_("status", list(_STATUS_TO_DECISION.keys()))
-    )
-    if since_iso:
-        # 值用双引号包住 —— 时间戳里若出现 , . : 不会被 PostgREST 当成
-        # 逻辑树的语法分隔符. 这条语法在【生产 PostgREST 上实测过】:
-        # 解析与列解析都过了, 只在权限阶段被 anon 拦下 (42501); 故意写坏
-        # 括号则是 PGRST100 解析错、写不存在的列则是 42703 —— 三种错互相
-        # 区分得开, 所以"过了解析"这个结论是站得住的.
-        # supabase-py 2.30 渲染成 or=(created_at.gte."…",updated_at.gte."…").
-        q = q.or_(
-            f'created_at.gte."{since_iso}",updated_at.gte."{since_iso}"'
+    try:
+        rows = fetch_all_pages(
+            _items_query(sb, since_iso, with_updated_at=True), order_by="id")
+    except Exception as exc:
+        if not _is_missing_updated_at(exc):
+            raise
+        logger.warning(
+            "autowriter.items 没有 updated_at 列 —— 时间窗降级回【只按 "
+            "created_at】, 迟到的人工决策会重新开始漏收。"
+            "补法: 在目标库上跑 autowriter 仓的 migrations/001_deskcore.sql。"
+            "原始错误: %s", str(exc)[:200],
         )
-    rows = fetch_all_pages(q, order_by="id")
+        rows = fetch_all_pages(
+            _items_query(sb, since_iso, with_updated_at=False), order_by="id")
 
     # Exclude items that already have a 'human' eval row.
     if not rows:
@@ -186,8 +244,15 @@ def insert_evaluation(sb, item: dict, dry_run: bool = False) -> bool:
         raise
 
 
-def _is_late_decision(row: dict) -> bool:
-    """这条 item 是不是"创建之后才被改过状态"的.
+def _touched_after_create(row: dict) -> bool:
+    """这条 item 是不是"创建之后又被动过"的.
+
+    ⚠️ **不等于"迟到的审稿决定"**(codex review)。触发器的 WHEN 是
+        old.status IS DISTINCT FROM new.status
+     OR old.example_label IS DISTINCT FROM new.example_label
+    —— 所以【只改了正负例标注、审稿状态一个字没动】也会刷 updated_at。
+    库里没有 status 专属的时间戳, 拿不到更细的口径, 所以这个数只能诚实地
+    叫"创建后被动过", 不能拿它当"捞回了多少条迟到决策"的证据。
 
     刻意【不】拿 ISO 字符串比大小: 两列都是 timestamptz, Postgres 只在小数
     秒非零时才渲染小数部分, 于是同一时刻可能一列是 "…:00+00:00"、另一列是
@@ -213,7 +278,8 @@ def main() -> int:
              "(default 365). autowriter.items 现在有 updated_at 了, 所以"
              "'很久以前创建、最近才改状态'的 item 也在窗口里 —— 窗口的含义"
              "是'最近 N 天被动过的决定'. 默认没跟着缩回 90: cron 停摆超过 N "
-             "天, 停摆期间改的决定就捞不回来了. Set 0 to scan everything.",
+             "天, 停摆期间改的决定就捞不回来了. Set 0 to scan everything. "
+             "目标库没有 items.updated_at 时会降级回只按 created_at 并告警.",
     )
     args = parser.parse_args()
 
@@ -225,12 +291,23 @@ def main() -> int:
 
     sb = get_supabase_client()
     pending = fetch_pending_decisions(sb, since_iso)
-    # 单独数一下"迟到决策": 创建之后才被改过状态的 item. 旧口径(只按
-    # created_at)在窗口边缘会漏掉的正是这一批. 把它打出来, 这条修复才是
-    # 【看得见】的 —— 否则又变成"改了, 但没人知道有没有起作用".
-    late = sum(1 for r in pending if _is_late_decision(r))
-    logger.info("Found %d autowriter items with new human decisions to archive "
-                "(其中 %d 条是创建后才改过状态的迟到决策)", len(pending), late)
+    # 时间窗降级了没? 降级形态的行里根本没有 updated_at 这个键。
+    degraded = bool(pending) and "updated_at" not in pending[0]
+    # 数一下"创建后被动过"的。旧口径(只按 created_at)在窗口边缘会漏掉的就在
+    # 这一批里。把它打出来, 这条修复才是【看得见】的 —— 否则又变成"改了,
+    # 但没人知道有没有起作用"(同 check_positive_saturation.py 当年那个盲点)。
+    # ⚠️ 它【不是】"迟到决策"的精确计数, 原因见 _touched_after_create。
+    touched = sum(1 for r in pending if _touched_after_create(r))
+    if degraded:
+        logger.info(
+            "Found %d autowriter items with new human decisions to archive "
+            "(⚠️ 时间窗已降级为只按 created_at —— 目标库没有 items.updated_at, "
+            "迟到的人工决策会漏收)", len(pending))
+    else:
+        logger.info(
+            "Found %d autowriter items with new human decisions to archive "
+            "(其中 %d 条在创建后被动过 —— 含只改了正负例标注的, 不等于"
+            "「捞回了这么多条迟到决策」)", len(pending), touched)
 
     stats = {"pass": 0, "revise": 0, "race_skipped": 0, "errors": 0}
     for item in pending:
