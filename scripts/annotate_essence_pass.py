@@ -565,7 +565,7 @@ def fetch_unannotated_notes(sb, project_id: str, reannotate: bool) -> list[dict]
     )
     if not reannotate:
         q = q.is_("essence_annotated_at", None)
-    return fetch_all_pages(q)
+    return fetch_all_pages(q, order_by="note_id")
 
 
 def write_essence_back(

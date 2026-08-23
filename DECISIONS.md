@@ -1353,3 +1353,109 @@ WHERE NOT EXISTS (
 - 四张新表进 `db.py::CREATE_TABLES_SQL`（fresh install）+ autowriter 自己的 `migrations/`（增量）。
 - **user_id 必须用库里已有的 UUID**，不要新造 —— `autowriter-migrations/RUNBOOK.md:150-153`
   记过：写 service account UUID 导致 RLS 屏蔽、`list_example_items` 永远 0 行、飞轮静默断开。
+
+---
+
+## D-042 · 分页必须带唯一稳定排序键；worker 侧加每脚本互斥锁
+
+**日期**: 2026-08-23
+
+**What**: 三件事，都是「跑得好好的、其实一直有洞」那一类：
+
+1. **`fetch_all_pages()` 的 `order_by` 改为必填关键字参数**，24 个调用点全部显式传入
+   唯一且稳定的排序键（`_common.py:813`）。
+2. **Railway worker 加每脚本互斥锁**（`worker/app.py`），抢不到 → `409`；
+   `daily-sync.yml` 加 `concurrency` group + `timeout-minutes`，并把 `409` 归入
+   **瞬时失败**（幂等下轮续，不拖红）。
+3. **`/health` 自曝配置**（worker），把「没配 `WORKER_API_KEY` = 谁都能调」这件事
+   显式暴露成 `auth.ok=false`，而不是只在代码里静默放行。
+
+**Why 1（无序 OFFSET 分页会丢行，而且不报错）**:
+
+OFFSET 分页的每一页是一次**独立的 HTTP 请求**，各自的事务快照、相隔数秒。SQL 对没有
+`ORDER BY` 的查询**不保证任何行序** —— 两次请求的顺序完全可以不同，于是跨页时有的行被
+跳过、有的行被取两遍。**不抛异常、不打警告**，脚本照常打印成功。
+
+这不是理论洁癖，本库两个条件都占齐：
+
+- `synchronize_seqscans = on`（PG 默认）：seq scan 允许从表中间开始、绕回开头。
+- `truth_vault.notes` 插入 4,223 行却被 UPDATE 过 120,853 次（每行约 28.6 次），
+  `metric_snapshots` 5,712 行 / 109,876 次。每次 UPDATE 都把新元组写到可能不同的页 ——
+  物理顺序被反复重排。
+
+审计时已有 4 个调用点实际跨过 1000 行页边界。
+
+**两条实现约束**（都验证过，别改回去）:
+
+- `.order()` 是**追加**语义（postgrest-py 把新列拼到已有 order 串后面），只能在循环
+  **外**调一次；放循环里会拼成 `id.asc,id.asc,id.asc,…`。
+- `.range()` 用 `params.add()` 而非 `set()`，循环里重复调会累积成
+  `offset=0&offset=1000&offset=2000&…`。实测 PostgREST 取**最后一个**，所以现在能正常
+  翻页 —— 但这是**未文档化行为**，万一哪天改成取第一个，每页都返回同一批行、
+  `len(page)==page_size` 永真 → **死循环**。函数里的 `seen` 去重兼进度检查就是这条的
+  保险：一页里一条新行都没有就报错，不静默转圈也不返回重复行。
+
+**排序键的选法**：`rank_score` / `injection_score` 这类含 recency 项、随墙钟连续变化的
+计算列**不能**当唯一键（页与页之间它就重排了）。它们保留作**主排序**（先 `.order(...)`），
+本函数再追加唯一键作次级键把顺序钉死 —— `curate_flywheel_lessons.py` /
+`preview_injection_candidates.py` 都是这个形状。
+
+**Why 2（两个 workflow 打同一个 worker，谁都不知道对方在跑）**:
+
+`daily-sync.yml` 和 `backfill-essence.yml` POST 的是**同一个** `/annotate-essence`。
+`annotate_essence_pass.py` 开工时 `SELECT essence_annotated_at IS NULL` 拿一批 ——
+两个 run 同时跑就各自快照**同一批**笔记，重复烧 LLM、且非确定性互相覆盖 essence。
+
+`backfill-essence.yml:30` 已有 concurrency group，但它只挡 backfill 自己、而且是
+per-project，**挡不住跨 workflow 相撞**。那道闸在 GitHub 侧，而真正被共享的资源是
+worker 这一个进程 —— 所以锁必须落在 worker 里。GitHub 侧的 group 只解决
+daily-sync 自己（cron 与手动 dispatch）相撞。
+
+`409` 必须归**瞬时失败**：worker 忙 = 够到了、没干活、完全幂等，跟网关超时同类。
+若判成 systemic，第一批就 409 会让整个夜间同步报红 —— 加锁反而制造告警噪音。
+
+`timeout-minutes: 120`：近 30 次 run 实测 15-38min，GitHub 默认 360min。某次
+curl/worker 挂死会白烧 6h runner，并把下一天的 cron 顶到排队。
+
+**Why 3（`/health` 说 ok 不等于配置是对的）**:
+
+`_check_auth()` 在没配 `WORKER_API_KEY` 时**静默放行**（dev 模式）。这在本地是便利，
+在 Railway 上就是「公网裸奔但看着一切正常」，而且**没有任何地方看得出来**。
+docs/19:180-200 记过同型事故（配置错被 except 吞掉，外面永远 200，查了很久）。
+
+`ok` 保持 `True` 不变（Railway healthcheck 靠它起容器，未配 key 仍是有意的 dev 模式），
+要看的是 `auth.ok`。只回显**有没有配**的布尔，绝不回显 key 本身 —— CI 有断言钉死。
+
+**Rejected**:
+
+- ❌ **把 `library_version` 从 `max(curated_at)` 改成 `max(updated_at)`。**
+  审计初稿据 `notes_v1_4_flywheel_lesson_cards.sql:39` 的注释（写着
+  `library_version = max(updated_at)`）判它是 P0，因为视图第 111 行只导出 `curated_at`。
+  **实测推翻了这个判断**：`curate_flywheel_lessons.py:143` 每次 upsert 都显式写
+  `curated_at = NOW()`，重策展照样让缓存失效 —— 生产库 347 行里 29 行 `updated_at >
+  curated_at`，但**全部是 ~1 秒**的时钟/往返噪音（`curated_at` 截到整秒、`updated_at`
+  带微秒），没有任何真实漂移。改成 `updated_at` 反而更差：微秒精度 + 任何非策展 UPDATE
+  都会把整个缓存打穿。**真正的缺陷只是那条注释写错了**，已改注释，不动视图与代码。
+  记在这里是因为「按注释判 bug」这个错法值得留档。
+- ❌ **`ALTER DEFAULT PRIVILEGES` 收紧 `public` schema 的默认写权限。**
+  能一劳永逸覆盖未来所有视图，但 `public` 是与三生六部共享的 schema
+  （`dashboard/lib/supabase.ts:11` 记了它 RLS-off 且 anon 可读），改默认值会波及对方
+  的写入，不该由本仓单方面决定。改为只撤**已存在**的 `v_dash_*`，并在文件头写明
+  「新增看板视图后请重跑本文件」。
+
+**Implications**:
+
+- 新写 `fetch_all_pages` 调用点漏传 `order_by` 会被 `TypeError` 挡住（运行时），
+  CI 另有一道 **AST 扫描**在合并前就拦（用 AST 而非 grep：grep 会被注释和字符串里的
+  `order_by=` 骗过去，也读不出跨行调用）。已反证过 —— 还原任一调用点，CI 立刻红。
+- `schemas/security_revoke_anon_write_dash_views.sql` **是纵深防御，不是补漏**：
+  现有 18 个 `v_dash_*` 全是聚合视图，`is_insertable_into = 'NO'`，PG 在重写阶段就拒写
+  （`cannot insert into view … aggregate functions are not automatically updatable`），
+  跟权限无关 —— 今天拿公开 anon key 也写不进去。撤的是**将来有人加了单表直通视图会自动
+  继承的**那份权限：那种视图 PG 判定为 auto-updatable，而这些视图是
+  `security_invoker=false`（以 owner 身份跑、绕开底层 `truth_vault` 的 RLS），
+  于是「anon key 可写 → 经视图穿透 RLS 写进 truth_vault」，且不会有任何报错。
+  PG 16 上实测过整条路径：建单表直通视图 → `is_insertable_into='YES'` →
+  `SET ROLE anon; INSERT` → `INSERT 0 1`，行进了底表；跑完本文件同一句 →
+  `permission denied`，读仍正常。CI 每次复跑这个探针。
+- **本文件未 apply 到生产**，等人工确认后再跑（`schemas/` 里其余 REVOKE 文件同此约定）。

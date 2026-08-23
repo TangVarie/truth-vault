@@ -70,8 +70,10 @@ def check_1_reference_samples(sb) -> dict:
     # check_2 / check_3 的 stage_logs 拉取保持一致.
     tv_rows = fetch_all_pages(
         sb.schema("public").table("reference_samples")
-        .select("source_truth_vault_note_id, platform, category, quality_score")
-        .not_.is_("source_truth_vault_note_id", None)
+        # id 只为分页排序用(source_truth_vault_note_id 可重复)。
+        .select("id, source_truth_vault_note_id, platform, category, quality_score")
+        .not_.is_("source_truth_vault_note_id", None),
+        order_by="id",
     )
     return {"total": total, "tv_origin": len(tv_rows), "tv_rows": tv_rows}
 
@@ -83,7 +85,8 @@ def check_2_retrieval_audit(sb, days: float) -> dict:
         sb.schema("public").table("stage_logs")
         .select("*")
         .eq("stage_name", R022_STAGE)
-        .gte("created_at", _utc_cutoff_iso(days))
+        .gte("created_at", _utc_cutoff_iso(days)),
+        order_by="id",
     )
     db_sourced = static_sourced = total_cells = 0
     for r in rows:
@@ -107,10 +110,12 @@ def check_2_retrieval_audit(sb, days: float) -> dict:
 def check_3_warnings(sb) -> dict:
     rows = fetch_all_pages(
         sb.schema("public").table("stage_logs")
-        .select("run_id, created_at, status, output_data")
+        # id 只为分页排序用(run_id 一次 run 多行)。
+        .select("id, run_id, created_at, status, output_data")
         .eq("stage_name", R022_STAGE)
         .eq("status", "completed_warn")
-        .gte("created_at", _utc_cutoff_iso(1))
+        .gte("created_at", _utc_cutoff_iso(1)),
+        order_by="id",
     )
     return {"warn_rows": rows}
 

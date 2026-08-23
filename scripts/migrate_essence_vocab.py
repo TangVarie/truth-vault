@@ -107,7 +107,8 @@ def migrate_scalar(sb, column: str, mapping: dict[str, str | None],
         rows = fetch_all_pages(
             sb.schema("truth_vault").table("notes")
             .select("note_id")
-            .eq(column, old)
+            .eq(column, old),
+            order_by="note_id",
         )
         if not rows:
             logger.info("  %s: no rows with %s=%r — skipping", column, column, old)
@@ -139,7 +140,8 @@ def migrate_array(sb, column: str, mapping: dict[str, str | None],
         rows = fetch_all_pages(
             sb.schema("truth_vault").table("notes")
             .select("note_id, " + column)
-            .contains(column, [old])
+            .contains(column, [old]),
+            order_by="note_id",
         )
         for r in rows:
             candidate_ids.add(r["note_id"])

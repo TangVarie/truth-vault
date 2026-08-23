@@ -125,7 +125,10 @@ def fetch_uncurated_cards(sb, project_id, recurate: bool) -> list[dict]:
         q = q.eq("project_id", project_id)
     if not recurate:
         q = q.eq("is_curated", False)
-    return fetch_all_pages(q.order("rank_score", desc=True))
+    # rank_score 含 recency 项、随时间连续重排, 不能当唯一分页键 ——
+    # 它作主排序, source_note_id 作次级键把跨页顺序钉死。
+    return fetch_all_pages(q.order("rank_score", desc=True),
+                           order_by="source_note_id")
 
 
 def write_lesson_back(sb, note_id: str, model: str, parsed: dict, dry_run: bool) -> None:

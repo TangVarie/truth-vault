@@ -145,7 +145,7 @@ def fetch_notes_with_comments_text(sb, project_id: str) -> list[dict]:
         .eq("project_id", project_id)
         .not_.is_("raw_extra", None)
     )
-    rows = fetch_all_pages(q)
+    rows = fetch_all_pages(q, order_by="note_id")
     # Filter client-side for the two raw_extra keys (PostgREST JSON
     # path filters on `not.is null` over deep paths is awkward).
     return [

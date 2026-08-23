@@ -65,12 +65,13 @@ def query_source_a(sb, aw_project_id: str | None = None) -> Set[str]:
     q = (
         sb.schema("autowriter")
         .table("versions")
-        .select("item_id, version_num, ai_engine, "
+        .select("id, item_id, version_num, ai_engine, "
                 "items!inner(batches!inner(project_id))")
     )
     if aw_project_id:
         q = q.eq("items.batches.project_id", aw_project_id)
-    rows = fetch_all_pages(q)
+    # order_by="id": versions.id 是主键, 唯一且稳定; item_id/version_num 单列都不唯一。
+    rows = fetch_all_pages(q, order_by="id")
 
     by_item: dict[str, list[tuple[int, str]]] = {}
     for r in rows:
@@ -124,12 +125,12 @@ def query_source_b(sb, aw_project_id: str | None = None) -> Set[str]:
     q = (
         sb.schema("autowriter")
         .table("versions")
-        .select("item_id, version_num, ai_engine, feedback, "
+        .select("id, item_id, version_num, ai_engine, feedback, "
                 "items!inner(batches!inner(project_id))")
     )
     if aw_project_id:
         q = q.eq("items.batches.project_id", aw_project_id)
-    rows = fetch_all_pages(q)
+    rows = fetch_all_pages(q, order_by="id")
 
     by_item: dict[str, list[tuple[int, str, str | None]]] = {}
     for r in rows:
@@ -182,7 +183,7 @@ def query_source_c(sb, aw_project_id: str | None = None) -> Set[str]:
     )
     if aw_project_id:
         q_pending = q_pending.eq("batches.project_id", aw_project_id)
-    pending_rows = fetch_all_pages(q_pending)
+    pending_rows = fetch_all_pages(q_pending, order_by="id")
     pending_by_batch: dict[str, list[str]] = {}
     for r in pending_rows:
         pending_by_batch.setdefault(r["batch_id"], []).append(r["id"])
@@ -199,11 +200,14 @@ def query_source_c(sb, aw_project_id: str | None = None) -> Set[str]:
         q_approved = (
             sb.schema("autowriter")
             .table("items")
-            .select("batch_id")
+            # id 只为分页排序用(batch_id 一个批次多行, 不能当 order_by)。
+            .select("id, batch_id")
             .in_("batch_id", list(batch))
             .eq("status", "approved")
         )
-        approved_batches = {r["batch_id"] for r in fetch_all_pages(q_approved)}
+        approved_batches = {
+            r["batch_id"] for r in fetch_all_pages(q_approved, order_by="id")
+        }
         for b in batch:
             if b in approved_batches:
                 candidate_items.update(pending_by_batch[b])
@@ -236,7 +240,7 @@ def fetch_already_reviewed(sb, aw_project_id: str | None = None) -> Set[str]:
         ).not_.is_(col, None)
         if aw_project_id:
             q = q.eq("batches.project_id", aw_project_id)
-        for r in fetch_all_pages(q):
+        for r in fetch_all_pages(q, order_by="id"):
             seen.add(r["id"])
     return seen
 

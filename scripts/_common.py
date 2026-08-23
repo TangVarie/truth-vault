@@ -737,11 +737,13 @@ def update_project_date_range(client: Client, project_id: str) -> None:
     insert; 而 insert 走 upsert + 不动 start/end_date 列, 不会产生 start>end).
     """
     # 一次 fetch 拿到所有 publish_time. 行数大时 fetch_all_pages 自动分页.
+    # note_id 只为分页做稳定键(publish_time 不唯一), 不参与下面的 min/max。
     rows = fetch_all_pages(
         client.schema("truth_vault").table("notes")
-        .select("publish_time")
+        .select("note_id, publish_time")
         .eq("project_id", project_id)
-        .not_.is_("publish_time", None)
+        .not_.is_("publish_time", None),
+        order_by="note_id",
     )
     if not rows:
         return
@@ -808,29 +810,65 @@ def mask_secrets(s: str) -> str:
 _DEFAULT_PAGE_SIZE = 1000
 
 
-def fetch_all_pages(query_builder, page_size: int = _DEFAULT_PAGE_SIZE) -> list:
+def fetch_all_pages(query_builder, page_size: int = _DEFAULT_PAGE_SIZE,
+                    *, order_by: str) -> list:
     """Drain a Supabase PostgREST query across all pages.
 
     Usage:
         rows = fetch_all_pages(
             sb.schema("truth_vault").table("notes")
               .select("note_id, ...")
-              .in_("tier", ["爆", "大爆"])
+              .in_("tier", ["爆", "大爆"]),
+            order_by="note_id",
         )
 
-    The query_builder is a chained PostgREST builder *before* .execute().
-    We attach .range(start, end) per page and assemble the full list.
-    A short page (fewer rows than page_size) terminates the loop. If a
-    page comes back exactly page_size, we keep going — the cost of one
-    extra empty fetch is cheap and avoids missed rows at the boundary.
+    ⚠️ ``order_by`` 是**必填**的, 且必须是【唯一 + 稳定】的列, 还必须出现在
+    ``.select()`` 里。这不是洁癖, 是这个函数的正确性前提:
+
+    OFFSET 分页的每一页是一次**独立的 HTTP 请求**(各自的事务快照, 相隔数秒)。
+    SQL 对没有 ORDER BY 的查询【不保证任何行序】, 两次请求的顺序完全可以不同,
+    于是跨页时**有的行被跳过、有的行被取两遍** —— 而且不报错, 脚本照常打印
+    成功。这不是理论: 本库 synchronize_seqscans=on(PG 默认, seq scan 允许从
+    表中间开始并绕回), 且 truth_vault.notes 插入 4.2k 行却被 UPDATE 过 12 万次
+    (每行约 28.6 次), 每次 UPDATE 都把新元组写到可能不同的页 —— 物理顺序被
+    反复重排。2026-08-23 审计时已有 4 个调用点跨过 1000 行页边界。
+
+    "稳定"= 值不随时间变。**不能**用 rank_score / injection_score 这类含
+    recency 项、随墙钟连续变化的计算列做唯一排序键: 页与页之间它就重排了。
+    那些列可以作为**主排序**保留在 builder 里(``.order(...)`` 先调), 本函数
+    再追加 ``order_by`` 作次级键把顺序钉死。
+
+    另外两点实现约束(都验证过, 别改回去):
+
+    1. ``.order()`` 是**追加**语义(postgrest-py 把新列拼到已有 order 串后面),
+       所以只能在循环**外**调一次; 放循环里会拼成 ``id.asc,id.asc,id.asc,...``。
+    2. ``.range()`` 用的是 ``params.add()`` 而非 ``set()``, 循环里重复调会累积成
+       ``offset=0&offset=1000&offset=2000&...``。实测 PostgREST 取**最后一个**,
+       所以现在能正常翻页 —— 但这是**未文档化行为**, 万一哪天改成取第一个,
+       每页都会返回同一批行、``len(page)==page_size`` 永真 → **死循环**。
+       下面的 ``seen`` 去重兼进度检查就是这条的保险: 一页里一条新行都没有就
+       判定没有进展并报错, 不会静默转圈也不会返回重复行。
     """
+    q = query_builder.order(order_by)      # 一次, 循环外 —— 见上方约束 1
     rows: list = []
+    seen: set = set()
     start = 0
     while True:
-        end = start + page_size - 1
-        res = query_builder.range(start, end).execute()
-        page = res.data or []
-        rows.extend(page)
+        page = (q.range(start, start + page_size - 1).execute()).data or []
+        if page and order_by not in page[0]:
+            raise RuntimeError(
+                f"fetch_all_pages: order_by={order_by!r} 不在返回列里 —— "
+                f"请把它加进 .select()。拿到的列: {sorted(page[0])}"
+            )
+        fresh = [r for r in page if r.get(order_by) not in seen]
+        if page and not fresh:
+            raise RuntimeError(
+                f"fetch_all_pages: offset={start} 这一页 {len(page)} 行全是重复的, "
+                "分页没有前进。多半是 PostgREST 对重复 offset 参数的取值行为变了"
+                "(见本函数 docstring 约束 2), 或 order_by 不唯一。"
+            )
+        seen.update(r.get(order_by) for r in fresh)
+        rows.extend(fresh)
         if len(page) < page_size:
             return rows
         start += page_size

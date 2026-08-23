@@ -6,7 +6,10 @@
 
   POST /annotate-essence  body={project, limit?, dry_run?, reannotate?}
   POST /curate            body={project?, limit?, dry_run?}
-  GET  /health
+  GET  /health            → {ok, service, auth{ok,required,mode}, config{...}, running[]}
+
+并发: 每个脚本同一时刻只跑一个(_script_lock)。抢不到锁 → **409** + detail 说明,
+     调用方当【幂等瞬时失败】处理、下轮再来(见 _script_lock docstring)。
 
 实现:subprocess 跑【现有的、已验证的】scripts/annotate_essence_pass.py /
      curate_flywheel_lessons.py —— 不重写标注逻辑,只换运行环境(Railway 连得上网关)。
@@ -34,6 +37,8 @@ import logging
 import os
 import subprocess
 import sys
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -53,6 +58,42 @@ _SCRIPTS_DIR = _REPO_ROOT / "scripts"
 # 若 Railway HTTP 边缘超时(部分套餐 ~5min),把 daily-sync 的 limit 调小即可。
 _RUN_TIMEOUT_S = int(os.environ.get("WORKER_RUN_TIMEOUT_S", "900"))
 _TAIL = 4000  # 回传给调用方的 stdout/stderr 末尾字节数(控响应体)
+
+# 每脚本互斥锁 —— 同一个脚本同一时刻只准跑一个进程。
+#
+# 为什么需要: daily-sync.yml:181 和 backfill-essence.yml:118 打的是【同一个】
+# /annotate-essence。annotate_essence_pass.py 开工时 SELECT `essence_annotated_at
+# IS NULL` 拿一批, 两个 run 同时跑就会各自快照【同一批】笔记 → 重复烧 LLM、且
+# 非确定性地互相覆盖 essence。backfill-essence.yml:30 的 concurrency group 只挡
+# backfill 自己(而且是 per-project), 挡不住跨 workflow 相撞 —— 那道闸只在 GitHub
+# 侧, 而真正被共享的资源是 worker 这一个进程, 所以锁必须落在这里。
+#
+# 语义: 非阻塞。抢不到 → 409 + busy=true, 调用方按【幂等瞬时失败】处理下轮再来
+# (daily-sync.yml worker_fail_kind() 已把 409 归入 transient; backfill 本就对
+# 非 200 退避重试)。绝不阻塞等待 —— 一等就撞 Railway 边缘 ~5min 超时, 白占连接。
+#
+# ⚠️ 边界: 这是【进程内】锁, 只在 Railway 单实例下成立(当前部署即单实例)。
+#    真要多副本, 得换成 Postgres advisory lock —— 那时把本函数换掉即可, 调用方
+#    契约(409 busy)不用动。
+_SCRIPT_LOCKS: dict[str, threading.Lock] = {}
+_LOCKS_GUARD = threading.Lock()
+
+
+@contextmanager
+def _script_lock(script: str):
+    """非阻塞地独占 <script>;已有人在跑就抛 409。"""
+    with _LOCKS_GUARD:
+        lock = _SCRIPT_LOCKS.setdefault(script, threading.Lock())
+    if not lock.acquire(blocking=False):
+        logger.warning("busy: %s already running, rejecting with 409", script)
+        raise HTTPException(
+            status_code=409,
+            detail=f"{script} is already running; retry later (work is idempotent)",
+        )
+    try:
+        yield
+    finally:
+        lock.release()
 
 
 def _check_auth(provided: str | None) -> None:
@@ -81,10 +122,11 @@ def _run(script: str, args: list[str]) -> dict:
     cmd = [sys.executable, str(path), *args]
     logger.info("run: %s", " ".join(cmd))
     try:
-        proc = subprocess.run(
-            cmd, cwd=str(_REPO_ROOT), capture_output=True, text=True,
-            timeout=_RUN_TIMEOUT_S,
-        )
+        with _script_lock(script):
+            proc = subprocess.run(
+                cmd, cwd=str(_REPO_ROOT), capture_output=True, text=True,
+                timeout=_RUN_TIMEOUT_S,
+            )
     except subprocess.TimeoutExpired as exc:
         logger.warning("timeout after %ss: %s %s", _RUN_TIMEOUT_S, script, args)
         partial = exc.stdout if isinstance(exc.stdout, str) else ""
@@ -126,7 +168,40 @@ def _limit_arg(body: dict, default: int = 50) -> str:
 
 @app.get("/health")
 def health() -> dict:
-    return {"ok": True, "service": "tv-worker"}
+    """健康检查 + 【配置自曝】。
+
+    为什么要曝鉴权状态: _check_auth() 在没配 WORKER_API_KEY 时【静默放行】(dev 模式)。
+    这在本地是便利, 在 Railway 上就是"公网裸奔但看着一切正常" —— 而且没有任何地方
+    看得出来。docs/19:180-200 记过同型事故(配置错被 except 吞掉, 外面永远 200)。
+    所以这里把已解析到的配置回显出来, 让配漏当场可见。
+
+    ⚠️ 只回显【有没有配】, 绝不回显 key 本身。
+    ⚠️ 保持 ok=True 不变 —— Railway healthcheck 靠它, 未配 key 不该让容器起不来
+       (仍是有意的 dev 模式)。要看的是 auth.ok。
+    """
+    has_key = bool(os.environ.get("WORKER_API_KEY"))
+    return {
+        "ok": True,
+        "service": "tv-worker",
+        "auth": {
+            # ok=False = 谁都能调这个 worker(会烧 LLM 额度)。生产上应为 True。
+            "ok": has_key,
+            "required": has_key,
+            "mode": "X-Worker-Key" if has_key else "open (dev — WORKER_API_KEY 未配, 任何人可调)",
+        },
+        "config": {
+            "run_timeout_s": _RUN_TIMEOUT_S,
+            "scripts_dir_ok": _SCRIPTS_DIR.is_dir(),
+            "supabase_url": bool(os.environ.get("SUPABASE_URL")),
+            "supabase_service_role_key": bool(os.environ.get("SUPABASE_SERVICE_ROLE_KEY")),
+            "anthropic_api_key": bool(os.environ.get("ANTHROPIC_API_KEY")),
+            "anthropic_base_url": os.environ.get("ANTHROPIC_BASE_URL") or None,
+            "essence_model": os.environ.get("ESSENCE_MODEL") or "claude-sonnet-4-6 (default)",
+        },
+        "running": sorted(
+            name for name, lk in _SCRIPT_LOCKS.items() if lk.locked()
+        ),
+    }
 
 
 @app.post("/annotate-essence")

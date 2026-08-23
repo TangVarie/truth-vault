@@ -128,7 +128,7 @@ def fetch_notes_with_pending_threading(
         .eq("project_id", project_id)
         .not_.is_("raw_extra", None)
     )
-    rows = fetch_all_pages(q)
+    rows = fetch_all_pages(q, order_by="note_id")
     candidates = []
     for r in rows:
         re = r.get("raw_extra") or {}
@@ -151,7 +151,10 @@ def fetch_notes_with_pending_threading(
             sb.schema("truth_vault").table("comments")
             .select("comment_id, content, comment_role, comment_order, parent_comment_id, is_pinned")
             .eq("note_id", r["note_id"])
-            .order("comment_order", desc=False)
+            .order("comment_order", desc=False),
+            # comment_order 在同一篇里可能重复/缺失, 只能当主排序;
+            # comment_id 是主键, 作为唯一稳定的翻页键追加在后面。
+            order_by="comment_id",
         )
         if not comments:
             continue

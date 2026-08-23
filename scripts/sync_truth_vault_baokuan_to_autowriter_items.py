@@ -200,7 +200,9 @@ def fetch_injection_candidates(sb, project_filter: str | None = None) -> list[di
         q = q.eq("project_id", project_filter)
     # PostgREST honors ORDER BY on a view. View output isn't materialized; the
     # score expression is computed at query time.
-    rows = fetch_all_pages(q.order("injection_score", desc=True))
+    # injection_score 随时间重排, 只能作主排序; note_id 作次级键(见 _common)。
+    rows = fetch_all_pages(q.order("injection_score", desc=True),
+                           order_by="note_id")
     # Map mapping_to_autowriter_project_id → aw_project_id for downstream
     # code that doesn't want the long name.
     for r in rows:
