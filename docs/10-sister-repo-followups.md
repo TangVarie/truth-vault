@@ -1741,6 +1741,67 @@ WHERE sl.stage_name = 'r022_flywheel_audit'
 健康度的第 J 节), 或写进新的 `scripts/check_flywheel_health.py` 由
 `daily-sync.yml` 跑完飞轮 sync 后顺手跑.
 
+## R-034 · autowriter 写作台内核外置为 MCP（deskcore）· TV 侧只出词表
+
+**Owner**: aw（主体）+ TV（词表导出，已完成）
+**决策**: [D-041](../DECISIONS.md#d-041)
+**设计与接入说明**: autowriter 仓 `docs/deskcore.md`
+
+### 背景
+
+autowriter 的 Streamlit 界面停用（`app.py` 5560 行、每次交互全量重跑 = 慢的根源），
+但它值钱的四个机制做成 MCP 工具继续用，挂到 WorkBuddy / Claude Code / CodeBuddy。
+Supabase 里的 `autowriter` schema 一行不迁。
+
+### ⚠️ 边界（本条最要紧的部分）
+
+**deskcore 落 autowriter 仓，不落 TV。** 曾经写成 TV 的第四个 Railway 服务并开了
+PR#103，是违反 `README.md` 边界的实现（TV 不是内容生产工具；deskcore 的
+`check_drafts` reject 稿子、`draw_angles` 定角度都是内容判断 = Layer 3，
+违反原则 1「管家做查询，不做判断」），已撤回。
+
+`autowriter-migrations/` 存在于 TV，是因为 TV 当年为**集成**改 autowriter 的
+schema（001-006 是集成产物，007 只是 `db.py::CREATE_TABLES_SQL` 的快照）——
+那不构成「TV 拥有 autowriter schema」的通则。**autowriter 自己的新能力，
+schema 进它自己的 `db.py` + `migrations/`。**
+
+### TV 侧交付（已完成）
+
+1. **`schemas/controlled_vocab_v0_2.json`** —— 受控词表的机器可读权威导出。
+   只含 TV 拥有的层（essence 维度 + 跨仓共享分类）；**表层的标题句式 / 词感 /
+   切入角度不在此列**，那是各生产系统自己的东西（半衰期 6-12 个月，本来就该
+   独立演进，见 README 原则 2）。
+   → **aw 侧要做的**：原样 vendor 这个文件 + 记 sha256，CI 校验副本没被手改。
+     **不要手抄** —— `onboarder/vocab.py` 已经是一份手抄副本，再加跨仓手抄必漂移。
+2. **`schemas/notes_v1_8_positive_pool_saturation_fix.sql`** —— 见下节。
+
+### 附带修复的一个长期盲点（TV 侧，已完成）
+
+`check_positive_saturation.py` **从上线起就没真正生效过**：view 的 WHERE 里有
+`AND i.external_source='truth_vault'`，只统计 push 通道写的正例，而 push 从没真跑过
+（生产库那列全 NULL）→ 永远打印「没有正例」。它测不到运营手标的 native 正例，
+而那才是真正在注入 prompt 的池子。
+
+它本该监控的正是 **recency top-5 正例池的趋同回路**（模型模仿最近 5 条 → 新稿被标
+positive → 窗口滚动 → 语感越收越窄）—— 这个回路跑了多久没人知道。
+
+v1_8 去掉该过滤、补 native/tv/可测条数三列，且 `dominant_lever_ratio` 的分母改为
+**可测条数**：一条都测不到时报 NULL 而不是 0（0 会被读成「多样性很好」）。
+CI 有两段断言钉死这个行为。
+
+> native 正例没有 `external_source_id`，join 不到 `truth_vault.notes`，所以拿不到
+> `emotional_lever`。想让它可测，需要给这些正例补 essence 标注 —— 这是 aw 侧的
+> 一个可选后续。
+
+### aw 侧待办
+
+| 项 | 说明 |
+|---|---|
+| vendor 词表 JSON | 原样复制 + 记 sha256 + CI 校验 |
+| deskcore 复用现有模块 | `memory.build_layered_system_prompt` / `generate_calibration_notes` / `db.list_example_items` / `dedup.py` / `librarian_client.py` 都已存在，别重写（实测重写约 400-500 行重复） |
+| 四张新表 | 发牌台账 / 成稿指纹库 / 个人调校笔记 / 手动精修 diff → 进 `db.py::CREATE_TABLES_SQL` + `migrations/` |
+| ⚠️ user_id | 必须用库里已有的 UUID，不要新造。`autowriter-migrations/RUNBOOK.md:150-153` 记过：写 service account UUID 导致 RLS 屏蔽、`list_example_items` 永远 0 行、飞轮静默断开 |
+
 ## 优先级总览 (2026-05-22 update)
 
 ✅ = 已落地 · 🟡 = 部分落地 · ⏳ = 待 sister-repo 维护者执行
@@ -1763,3 +1824,4 @@ WHERE sl.stage_name = 'r022_flywheel_audit'
 | R-031 | 飞书 lineage 列 → notes.source_autowriter_*_id 脚本支持 | TV | ✅ 已解决 (2026-06-05) | `transform_row` 加 `_LINEAGE_FK_COLS`/`_LINEAGE_RAW_EXTRA_COLS`: 6 列全局声明不再 quarantine + 2 UUID 自动进 FK 列, 其余 4 列进 raw_extra. CI 守 R-031 self-check; docs/11 改"✅ 现状". 见本文 § R-031. |
 | R-032 | autowriter 通道2 改 pull (调 LLM 馆员 + 注入) | TV + aw | ✅ 已解决 · production 拉通 (2026-06-05) | aw `librarian_client.py` + `app.py:_queue_worker_impl` fetch + `memory.py` 注入 P2; 实测一单借回 5 张经验卡、馆员缓存有真实流量. env 在 aw 部署 secrets (LIBRARIAN_URL/API_KEY/TIMEOUT_SEC). 见本文 § R-032 + docs/22 §2. |
 | R-033 | ssll 通道1 切到 LLM 馆员 (可选升级) | ssll | ⏳ 可选 | R-022 的 category-filter 已能用; 馆员(D-038)上线后 ssll 可升级共用同一馆员. 不阻塞, 降级回退现有 retrieve_reference_packs. |
+| R-034 | autowriter 写作台内核外置为 MCP (deskcore) | aw + TV | 🟡 TV 侧完成 / aw 侧进行中 | **deskcore 落 aw 仓不落 TV**(曾误写成 TV 服务, 违反 README 边界, 已撤回). TV 已出 `schemas/controlled_vocab_v0_2.json`(供 aw vendor) + v1_8 正例饱和度盲点修复. 见本文 § R-034 + [D-041](../DECISIONS.md#d-041). |

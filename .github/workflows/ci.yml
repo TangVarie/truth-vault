@@ -59,6 +59,124 @@ jobs:
             worker/__init__.py \
             worker/app.py \
             sanshengliubu-patches/import_truth_vault_baokuan.py
+      - name: controlled vocab JSON ↔ docs/05 consistency (D-041)
+        run: |
+          python - <<'PY'
+          # schemas/controlled_vocab_v0_2.json 是词表的【机器可读权威导出】。
+          # 消费方(autowriter/deskcore 等)原样 vendor 它并记校验和, 不手抄 ——
+          # 所以这份 JSON 一旦跟 docs/05 漂移, 下游全部跟着错, 而且是安静地错:
+          # 发牌会抽到闭集外的值, 不报错、直接产出脏数据。
+          #
+          # ⚠️ 只比【集合大小】是不够的(codex review): 一个错别字或等长替换能原样
+          # 通过。所以这里【逐值】比对 —— 解析 docs/05 每节表格第一列反引号里的值。
+          import json, re, sys
+          from onboarder import vocab as ov
+
+          doc = open("docs/05-controlled-vocab.md", encoding="utf-8").read()
+          data = json.load(open("schemas/controlled_vocab_v0_2.json", encoding="utf-8"))
+          sets = data["sets"]
+          bad = []
+
+          # ── ① 逐值比对 docs/05 ──
+          # docs/05 不成表格、因而无法解析的集合必须显式列在这里并写明理由,
+          # 不允许静默跳过(静默跳过正是这次要修的毛病)。
+          NOT_IN_DOC = {
+              # tier_source 是 mapping 协议的概念, docs/05 没有它的章节;
+              # 它已被下面 ② 的 onboarder/vocab.py 逐值比对覆盖。
+              "tier_source",
+          }
+
+          def section_for(field):
+              for part in re.split(r"\n(?=## )", doc):
+                  if f"`{field}`" in part.split("\n", 1)[0]:
+                      return part
+              return None
+
+          def doc_values(field):
+              sec = section_for(field)
+              if sec is None:
+                  return None
+              out, seen = [], set()
+              for line in sec.splitlines():
+                  m = re.match(r"^\|\s*`([^`]+)`", line)
+                  if m and m.group(1).strip() not in seen:
+                      seen.add(m.group(1).strip())
+                      out.append(m.group(1).strip())
+              return out or None
+
+          for name, spec in sorted(sets.items()):
+              js = list(spec["values"])
+              dv = doc_values(name)
+              if dv is None:
+                  if name in NOT_IN_DOC:
+                      print(f"  {name:24s} (docs/05 无此章节, 已在 NOT_IN_DOC 登记; 由 onboarder 比对覆盖)")
+                  else:
+                      bad.append(f"{name}: docs/05 里解析不到它的表格 —— 要么表格格式变了, "
+                                 f"要么这个集合该登记进 NOT_IN_DOC 并写明理由")
+                  continue
+              # 比集合而非序列: 顺序在 docs/05 与 onboarder 之间本就不同(如 tier),
+              # 而闭集的语义只关心成员。
+              if set(dv) != set(js):
+                  only_doc = sorted(set(dv) - set(js))
+                  only_js = sorted(set(js) - set(dv))
+                  bad.append(f"{name}: docs/05 独有={only_doc} JSON 独有={only_js}")
+              else:
+                  print(f"  {name:24s} ✓ 逐值一致 ({len(js)})")
+
+          # ── ② 与 onboarder/vocab.py 重叠的组: 逐值【且保序】 ──
+          overlap = {
+              "content_format":  ov.CONTENT_FORMATS,
+              "target_audience": ov.TARGET_AUDIENCES,
+              "intent":          ov.INTENTS,
+              "tier":            ov.TIERS,
+              "tier_source":     ov.TIER_SOURCES,
+              "category":        ov.CATEGORIES,
+          }
+          for name, expected in overlap.items():
+              if tuple(sets[name]["values"]) != tuple(expected):
+                  bad.append(f"{name}: JSON 与 onboarder/vocab.py 逐值不一致")
+
+          # ── ③ 派生表完整性 ──
+          levers = set(sets["emotional_lever"]["values"])
+          if set(data["derivations"]["lever_to_valence"]) != levers:
+              bad.append("lever_to_valence 没覆盖全部 emotional_lever")
+          if not set(data["derivations"]["lever_to_valence"].values()) <= set(sets["emotional_valence"]["values"]):
+              bad.append("lever_to_valence 派生出了闭集外的 valence")
+          if sets["trend_dependencies"].get("exclusive_value") not in sets["trend_dependencies"]["values"]:
+              bad.append("trend_dependencies.exclusive_value 不在其闭集内")
+
+          # ── ④ surface 衰减规则 ↔ notes_v1_7 实现 ──
+          # 半衰期【不是】逐值属性, 是按组合求值的规则。此前导出成逐值 tier 映射,
+          # 把「平台话术」标成 2-3 年档、「行业事件」标成短期档 —— 而 v1_7 的注释
+          # 明说这两个【不在】短期集、落 12 月默认档。下游照那个映射排序会把
+          # 平台特定话术留得远超策略允许的时长。(codex review)
+          sql = open("schemas/notes_v1_7_surface_three_tier_decay.sql", encoding="utf-8").read()
+          decay = data["surface_decay"]
+          short_json = set(decay["short_term_set"])
+          m = re.search(r"ARRAY\[((?:'[^']+',?)+)\]::text\[\]", sql)
+          if not m:
+              bad.append("在 notes_v1_7 里找不到短期集的 ARRAY 字面量 —— SQL 结构变了?")
+          else:
+              short_sql = {x.strip().strip("'") for x in m.group(1).split(",") if x.strip()}
+              if short_json != short_sql:
+                  bad.append(f"short_term_set 与 notes_v1_7 不符: "
+                             f"JSON 独有={sorted(short_json - short_sql)} "
+                             f"SQL 独有={sorted(short_sql - short_json)}")
+              else:
+                  print(f"  short_term_set          ✓ 与 notes_v1_7 一致 ({len(short_sql)})")
+          # 这两个必须【不在】短期集, 且没有被当成范式档
+          for v in ("行业事件", "平台话术"):
+              if v in short_json:
+                  bad.append(f"{v} 不该在 short_term_set 里(v1_7: 落 12 月默认档)")
+          months = {r["halflife_months"] for r in decay["rules_in_order"]}
+          for want in (60, 30, 9, 12):
+              if want not in months:
+                  bad.append(f"surface_decay 规则缺少 {want} 月这一档(v1_7 有四档)")
+
+          if bad:
+              raise SystemExit("\n词表漂移:\n  - " + "\n  - ".join(bad))
+          print("\ncontrolled vocab JSON in sync with docs/05 + notes_v1_7")
+          PY
       - name: Comment parser unit tests
         working-directory: scripts
         run: |
@@ -1171,6 +1289,102 @@ jobs:
           print(f"  ✓ global cap round-robin: {rr_per_proj} (fair across projects)")
           print("\nper-project quota: 3/3 cases passed")
           PY
+      - name: Saturation report 渲染路径冒烟测试 (D-041 round-4)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # ⚠️ 这一步存在的理由:
+          # check_positive_saturation.py 在 daily-sync.yml:317 是 `|| true` 调用的。
+          # 2026-08-22 渲染循环里有过一个 `pool_n` 未赋值的 NameError —— 只要 view
+          # 返回任何一行就必崩, 而 `|| true` 把它整个吞掉, 于是 v1_8 专门修的那个
+          # 盲点会以另一种形式原样保留(脚本天天"跑过", 天天什么都没测)。
+          # 所以: 渲染路径必须在 CI 里被真正执行一次, 不能只靠 py_compile。
+          # report() 是纯函数、不碰网络, 就是为这个测试留的口子。
+          import io, contextlib
+          import check_positive_saturation as c
+
+          def run(rows, threshold=0.6):
+              buf = io.StringIO()
+              with contextlib.redirect_stdout(buf):
+                  rc = c.report(rows, threshold)
+              return rc, buf.getvalue()
+
+          def row(**kw):
+              base = {
+                  "aw_project_id": "11111111-1111-1111-1111-111111111111",
+                  "pool_user_id":  "22222222-2222-2222-2222-222222222222",
+                  "active_positive_count": 5,
+                  "lever_measurable_count": 5,
+                  "distinct_lever_count": 3,
+                  "top_lever_count": 2,
+                  "dominant_lever_ratio": 0.4,
+                  "lever_distribution": None,
+              }
+              base.update(kw)
+              return base
+
+          # A: 空池 → 0, 且不能再打老版本那句 "No active positive examples"
+          rc, out = run([])
+          assert rc == 0, rc
+          assert "external_source" in out, out
+          print("  ✓ 空结果 → exit 0, 且说明里点名了老盲点")
+
+          # B: 全部测全且健康 → 0。这一条就是当年 NameError 的触发条件:
+          #    只要 view 回了任何一行就会崩。
+          rc, out = run([row()])
+          assert rc == 0, (rc, out)
+          assert "All 1 pool(s) measured" in out, out
+          print("  ✓ 测全且健康 → exit 0 (渲染循环真的跑通了)")
+
+          # C: 饱和 → 1
+          rc, out = run([row(distinct_lever_count=1, top_lever_count=5,
+                             dominant_lever_ratio=1.0)])
+          assert rc == 1, (rc, out)
+          assert "SATURATED" in out, out
+          print("  ✓ 饱和 → exit 1")
+
+          # D: 一条都测不到(ratio NULL, 计数列全 NULL) → 2, 不能显示成 ok
+          rc, out = run([row(lever_measurable_count=None, distinct_lever_count=None,
+                             top_lever_count=0, dominant_lever_ratio=None)])
+          assert rc == 2, (rc, out)
+          assert "无法评估" in out and "ok" not in out.split("status")[1], out
+          assert "n/a" in out, out
+          print("  ✓ 全不可测 → exit 2, 且 NULL 计数列不炸 f-string")
+
+          # E: 【部分】可测 —— 5 条里 2 条能测、那 2 条恰好很分散。
+          #    ratio 好看, 但另外 3 条完全未知 ⇒ 必须 2 而不是 0。
+          #    这是 round-2 引入、round-4 才发现没落到循环里的那条判据。
+          rc, out = run([row(lever_measurable_count=2, distinct_lever_count=2,
+                             top_lever_count=1, dominant_lever_ratio=0.5)])
+          assert rc == 2, (rc, out)
+          assert "仅 2/5 条可测" in out, out
+          print("  ✓ 部分可测(2/5)且 ratio 好看 → 仍是 exit 2, 不许报健康")
+
+          # F: 饱和优先于没测全 —— 确实测出饱和了就得是 1(可行动) 而不是 2(没数据)
+          rc, out = run([row(lever_measurable_count=3, dominant_lever_ratio=1.0,
+                             distinct_lever_count=1, top_lever_count=3),
+                         row(aw_project_id="33333333-3333-3333-3333-333333333333",
+                             lever_measurable_count=1, dominant_lever_ratio=None)])
+          assert rc == 1, (rc, out)
+          print("  ✓ 同时饱和+没测全 → exit 1 优先(饱和是可行动的)")
+
+          # G: pool_user_id 为 NULL(历史无归属正例) 不能炸, 且要打 "(无归属)"
+          rc, out = run([row(pool_user_id=None)])
+          assert rc == 0 and "(无归属)" in out, (rc, out)
+          print("  ✓ pool_user_id NULL → 打 (无归属), 不炸")
+
+          # H: 行级判据必须和汇总判据一致 —— 任何一行标了"无法评估", 退出码
+          #    就不能是 0。round-4 那次错就错在两边判据不同步。
+          for kw in ({"dominant_lever_ratio": None},
+                     {"lever_measurable_count": 0},
+                     {"lever_measurable_count": 4},
+                     {"active_positive_count": 9}):
+              rc, out = run([row(**kw)])
+              assert ("无法评估" in out) == (rc == 2), (kw, rc, out)
+          print("  ✓ 行级 unmeasurable 与退出码 2 完全同步")
+
+          print("\ncheck_positive_saturation.report: 8/8 cases passed")
+          PY
       - name: Autowriter dup-error detection self-check
         working-directory: scripts
         run: |
@@ -1894,6 +2108,172 @@ jobs:
                   r.dominant_lever_ratio;
           END $$;
           SQL
+      - name: Apply v1.8 positive-pool saturation blind-spot fix (+ idempotency)
+        # v1_8 修掉一个让 check_positive_saturation.py 从上线起就没真正生效过的
+        # 盲点: 原 view 的 WHERE 里有 `AND i.external_source='truth_vault'`,
+        # 只统计 push 通道写的正例 —— 而 push 从没真跑过, 生产库那列全 NULL,
+        # 于是脚本永远打印 "No active positive examples"。
+        # 它测不到运营手标的 native 正例, 而那才是真正在注入 prompt 的池子。
+        run: |
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_8_positive_pool_saturation_fix.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_8_positive_pool_saturation_fix.sql
+      - name: Sanity-check v1.8 (native visible / unmeasurable ≠ healthy / per-user pools)
+        run: |
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          -- ① 回归: 上一步 CI_SAT 那 5 条 TV 正例的结论必须原样成立。
+          --    (v1_8 只放宽了 WHERE + 追加了 3 列, 不该改变已有口径)
+          DO $$
+          DECLARE r RECORD;
+          BEGIN
+              SELECT * INTO r FROM truth_vault.v_autowriter_positive_pool_saturation
+                  WHERE aw_project_id = '00000000-0000-0000-0000-000000aaaa01'::uuid;
+              IF r.active_positive_count != 5 OR r.top_lever_count != 3
+                 OR ABS(r.dominant_lever_ratio - 0.60) > 0.01 THEN
+                  RAISE EXCEPTION 'v1_8 regressed CI_SAT: active=% top=% ratio=%',
+                      r.active_positive_count, r.top_lever_count, r.dominant_lever_ratio;
+              END IF;
+              IF r.tv_positive_count != 5 OR r.native_positive_count != 0 THEN
+                  RAISE EXCEPTION 'v1_8 origin split wrong: tv=% native=%',
+                      r.tv_positive_count, r.native_positive_count;
+              END IF;
+              RAISE NOTICE 'v1_8 CI_SAT regression OK (ratio=%)', r.dominant_lever_ratio;
+          END $$;
+
+          -- ② 新行为: native 正例(external_source IS NULL)必须能被看见。
+          --    v1_8 之前这个项目在 view 里【根本不存在】。
+          INSERT INTO autowriter.batches (id, project_id) VALUES
+              ('00000000-0000-0000-0000-000000c10002'::uuid,
+               '00000000-0000-0000-0000-000000aaaa02'::uuid);
+          INSERT INTO autowriter.items (id, batch_id, example_label, created_at)
+          VALUES
+              (gen_random_uuid(), '00000000-0000-0000-0000-000000c10002'::uuid,
+               'positive', NOW() - INTERVAL '1 hour'),
+              (gen_random_uuid(), '00000000-0000-0000-0000-000000c10002'::uuid,
+               'positive', NOW() - INTERVAL '2 hour');
+          DO $$
+          DECLARE r RECORD;
+          BEGIN
+              SELECT * INTO r FROM truth_vault.v_autowriter_positive_pool_saturation
+                  WHERE aw_project_id = '00000000-0000-0000-0000-000000aaaa02'::uuid;
+              IF NOT FOUND THEN
+                  RAISE EXCEPTION 'native-only project still invisible — the blind spot is not fixed';
+              END IF;
+              IF r.active_positive_count != 2 OR r.native_positive_count != 2 THEN
+                  RAISE EXCEPTION 'expected 2 native positives, got active=% native=%',
+                      r.active_positive_count, r.native_positive_count;
+              END IF;
+              -- native 正例没有 external_source_id, join 不到 truth_vault.notes,
+              -- 所以拿不到 lever。关键: ratio 必须是 NULL(测不了) 而不是 0(看起来健康)。
+              IF r.lever_measurable_count != 0 THEN
+                  RAISE EXCEPTION 'expected lever_measurable_count=0, got %', r.lever_measurable_count;
+              END IF;
+              -- 分母是可测条数; 一条都测不到时必须报 NULL。若这里返回 0,
+              -- 脚本会把"没测到"显示成"多样性很好", 正是要避免的假阴性。
+              IF r.dominant_lever_ratio IS NOT NULL THEN
+                  RAISE EXCEPTION 'unmeasurable pool must report NULL ratio (not a healthy-looking number), got %',
+                      r.dominant_lever_ratio;
+              END IF;
+              RAISE NOTICE 'v1_8 native visibility OK (pool=2, measurable=0, ratio=NULL)';
+          END $$;
+
+          -- ③ 按 user 分区: 同一项目里两个人各有各的私有注入池。
+          --    deskcore 注入正例时按 user_id 过滤(正负例是个人风格资产), 所以
+          --    混算出来的"最近 5 条"两个人谁都没在用 —— 会掩盖某个人的饱和。
+          --    用户 a: 3 条全同一个 lever  → ratio 1.00 (严重饱和, 该告警)
+          --    用户 b: 3 条三种不同 lever  → ratio 0.33 (健康)
+          --    不分区的话混算成 ratio 0.60, 恰好卡在阈值上, a 的饱和被藏起来。
+          INSERT INTO truth_vault.notes (note_id, project_id, raw_content, tier, emotional_lever) VALUES
+              ('MU_a1','CI_SAT','x','爆','焦虑撬动'),
+              ('MU_a2','CI_SAT','x','爆','焦虑撬动'),
+              ('MU_a3','CI_SAT','x','爆','焦虑撬动'),
+              ('MU_b1','CI_SAT','x','爆','造梦投射'),
+              ('MU_b2','CI_SAT','x','爆','共鸣释放'),
+              ('MU_b3','CI_SAT','x','爆','好奇驱动');
+          INSERT INTO autowriter.batches (id, project_id) VALUES
+              ('00000000-0000-0000-0000-000000c10003'::uuid,
+               '00000000-0000-0000-0000-000000aaaa03'::uuid);
+          INSERT INTO autowriter.items
+              (id, batch_id, user_id, example_label, external_source, external_source_id, created_at)
+          VALUES
+              (gen_random_uuid(),'00000000-0000-0000-0000-000000c10003'::uuid,
+               '00000000-0000-0000-0000-00000000000a'::uuid,'positive','truth_vault','MU_a1',NOW()-INTERVAL '1 hour'),
+              (gen_random_uuid(),'00000000-0000-0000-0000-000000c10003'::uuid,
+               '00000000-0000-0000-0000-00000000000a'::uuid,'positive','truth_vault','MU_a2',NOW()-INTERVAL '2 hour'),
+              (gen_random_uuid(),'00000000-0000-0000-0000-000000c10003'::uuid,
+               '00000000-0000-0000-0000-00000000000a'::uuid,'positive','truth_vault','MU_a3',NOW()-INTERVAL '3 hour'),
+              (gen_random_uuid(),'00000000-0000-0000-0000-000000c10003'::uuid,
+               '00000000-0000-0000-0000-00000000000b'::uuid,'positive','truth_vault','MU_b1',NOW()-INTERVAL '4 hour'),
+              (gen_random_uuid(),'00000000-0000-0000-0000-000000c10003'::uuid,
+               '00000000-0000-0000-0000-00000000000b'::uuid,'positive','truth_vault','MU_b2',NOW()-INTERVAL '5 hour'),
+              (gen_random_uuid(),'00000000-0000-0000-0000-000000c10003'::uuid,
+               '00000000-0000-0000-0000-00000000000b'::uuid,'positive','truth_vault','MU_b3',NOW()-INTERVAL '6 hour');
+          DO $$
+          DECLARE ra RECORD; rb RECORD; n_rows INT;
+          BEGIN
+              SELECT count(*) INTO n_rows
+                FROM truth_vault.v_autowriter_positive_pool_saturation
+               WHERE aw_project_id = '00000000-0000-0000-0000-000000aaaa03'::uuid;
+              IF n_rows != 2 THEN
+                  RAISE EXCEPTION 'expected one row per user (2), got % — view is not partitioned by user', n_rows;
+              END IF;
+
+              SELECT * INTO ra FROM truth_vault.v_autowriter_positive_pool_saturation
+               WHERE aw_project_id = '00000000-0000-0000-0000-000000aaaa03'::uuid
+                 AND pool_user_id = '00000000-0000-0000-0000-00000000000a'::uuid;
+              SELECT * INTO rb FROM truth_vault.v_autowriter_positive_pool_saturation
+               WHERE aw_project_id = '00000000-0000-0000-0000-000000aaaa03'::uuid
+                 AND pool_user_id = '00000000-0000-0000-0000-00000000000b'::uuid;
+
+              IF ra.active_positive_count != 3 OR ABS(ra.dominant_lever_ratio - 1.00) > 0.01 THEN
+                  RAISE EXCEPTION 'user a pool wrong: pool=% ratio=% (expected 3 / 1.00 saturated)',
+                      ra.active_positive_count, ra.dominant_lever_ratio;
+              END IF;
+              IF rb.active_positive_count != 3 OR ABS(rb.dominant_lever_ratio - 0.33) > 0.02 THEN
+                  RAISE EXCEPTION 'user b pool wrong: pool=% ratio=% (expected 3 / 0.33 healthy)',
+                      rb.active_positive_count, rb.dominant_lever_ratio;
+              END IF;
+              RAISE NOTICE 'v1_8 per-user partition OK (a=1.00 saturated, b=0.33 healthy; '
+                           'mixing them would have reported 0.60 — a number neither user sees)';
+          END $$;
+          SQL
+      - name: v1.8 rollback path actually works (codex review)
+        # 本文件给视图追加了 4 列, 而 CREATE OR REPLACE VIEW 不能删列。
+        # 后果不只是"回滚说明写错": 在已应用 v1_8 的库上【重跑基线
+        # notes_v1_2_cross_schema_views.sql 会 ERROR: cannot drop columns from view】——
+        # 而那个文件是按可重复执行设计的。所以 v1_8 改成了 DROP + CREATE,
+        # 这一步把"回滚→再前滚"的整条路钉死, 免得以后有人改回 CREATE OR REPLACE。
+        run: |
+          set -e
+          cols() {
+            psql -tAc "SELECT count(*) FROM information_schema.columns
+                        WHERE table_schema='truth_vault'
+                          AND table_name='v_autowriter_positive_pool_saturation';" | tr -d ' '
+          }
+          [ "$(cols)" = "10" ] || { echo "前置状态应为 v1_8 的 10 列, 实际 $(cols)"; exit 1; }
+
+          echo "— 回滚: DROP 后重跑基线, 应回到 6 列"
+          psql -v ON_ERROR_STOP=1 -c "DROP VIEW IF EXISTS truth_vault.v_autowriter_positive_pool_saturation;"
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_2_cross_schema_views.sql
+          [ "$(cols)" = "6" ] || { echo "回滚后应为 6 列, 实际 $(cols)"; exit 1; }
+
+          echo "— 再前滚: 重新应用 v1_8, 应回到 10 列"
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_8_positive_pool_saturation_fix.sql
+          [ "$(cols)" = "10" ] || { echo "再前滚后应为 10 列, 实际 $(cols)"; exit 1; }
+
+          echo "— 反证: 不先 DROP 直接重跑基线【必须失败】"
+          if psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_2_cross_schema_views.sql 2>/dev/null; then
+            echo "基线在 v1_8 之上竟然应用成功了 —— v1_8 大概被改回 CREATE OR REPLACE 了?"
+            echo "(那样回滚路径和基线重跑都会静默留下错误的列集)"
+            exit 1
+          fi
+          echo "  ok: 如预期报 cannot drop columns from view"
+
+          echo "— 收尾: 恢复到 v1_8 状态供后续步骤使用"
+          psql -v ON_ERROR_STOP=1 -c "DROP VIEW IF EXISTS truth_vault.v_autowriter_positive_pool_saturation;"
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_2_cross_schema_views.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_8_positive_pool_saturation_fix.sql
+          [ "$(cols)" = "10" ] || { echo "收尾后应为 10 列"; exit 1; }
+          echo "v1_8 rollback round-trip OK"
       - name: Apply dashboard system pulse view v5 (+ idempotency)
         # public.v_dash_system_pulse: 接口状态 / 数据新鲜度单行视图。跨 truth_vault.notes /
         # metric_snapshots / audit_log / projects + public.pipeline_runs(上面 cross-schema 步骤

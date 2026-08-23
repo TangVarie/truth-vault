@@ -1262,3 +1262,94 @@ WHERE NOT EXISTS (
   时注入避坑段；优先级低于"灌料 + L3"。**登记备查，别再有人（含 AI）想着"用趴做负面飞轮"重踩。**
 - ⚠️ 内部逻辑纠错留痕：Session #18 讨论中一度提出"负面飞轮 from `趴`"，被策略 lead 当场否掉（理由即上方 Why），
   本条把"为什么不能这么做"固化进决策层，避免反复。
+
+---
+
+## D-041 · 写作台能力外置为 MCP（落在 autowriter，不在 TV）；TV 侧只出词表与盲点修复
+
+**日期**: 2026-08-22
+
+**What**: 三件事：
+
+1. **autowriter 内容工作台的 Streamlit 界面停用**，它值钱的四个机制（分层硬约束 /
+   调校笔记自动萃取 / 正负例池 / 语义查重）重做成 MCP 工具服务 `deskcore`，挂到
+   WorkBuddy / Claude Code / CodeBuddy。Supabase 里的 `autowriter` schema 一行不迁。
+2. **`deskcore` 落在 autowriter 仓，不在 Truth Vault。**（见下方 Rejected 第一条 ——
+   这一条是本决策最要紧的边界。）
+3. **TV 侧的交付物只有两样**：受控词表的机器可读导出（`schemas/controlled_vocab_v0_2.json`）
+   + 正例饱和度监控的盲点修复（`schemas/notes_v1_8_...sql`）。
+
+**Why（为什么 deskcore 不能放 TV）**:
+
+- `README.md` 的边界写死了：Truth Vault **不是**内容生产工具（生产由 sanshengliubu /
+  autowriter 做）。deskcore 的 `check_drafts` 会 reject 稿子、`draw_angles` 替人决定
+  每篇写什么角度 —— 这是内容判断，属 Layer 3，**直接违反原则 1「管家做查询，不做判断」**。
+- 数据流向也是一边倒：deskcore 十个工具里九个只读写 `autowriter` schema，新增的四张表
+  全在 `autowriter` 下。唯一碰 TV 的 `borrow_lessons` 是**走 HTTP 调 librarian** ——
+  跟 autowriter 现有的 `librarian_client.py` 是同一个消费者姿势。消费者住自己仓里，
+  ssll 和 autowriter 都如此，deskcore 没有例外的理由。
+- 放进 autowriter 还能**真正瘦身**：`memory.build_layered_system_prompt` /
+  `memory.generate_calibration_notes` / `db.list_example_items` / `dedup.py` /
+  `librarian_client.py` 全都已经在那边了。放 TV 等于把这些重写一遍（实测约 400-500 行
+  重复），两份「怎么拼分层 prompt」的代码分居两仓是最容易烂掉的那种结构。
+
+**Why（重复率的四个根因 —— 这部分的诊断在 TV 侧留档，因为它解释了 §3 的盲点修复）**:
+
+- **硬闸默认关着**：`config.py:132` `ENABLE_DEDUP_REGEN` 默认 `"0"`，查重命中只写警告不拦。
+- **只比标题且阈值 0.92 过高**：换说法的同角度标题普遍落在 0.85-0.90 全部溜过。
+- **提示词侧只看最近 20 条**：`db.py:1556` 捞 150 条，`generator.py:1384` 一句 `[-20:]` 扔掉 130 条。
+- **正例池 recency top-5 构成趋同回路**：模型模仿最近 5 条 → 新稿被标 positive →
+  窗口滚动 → 语感越收越窄。
+
+第四条此前**完全不可见**：监控它的 `check_positive_saturation.py` 只统计
+`external_source='truth_vault'` 的行，而 push 通道从没真跑过（那列生产库里全 NULL），
+所以它**从上线起永远打印「没有正例」**。它测不到运营手标的 native 正例 —— 而那才是真正在
+注入 prompt 的池子。这个回路跑了多久没人知道。**这是 TV 侧必须修的，因为 view 在
+`truth_vault` schema 下。**
+
+**Rejected**:
+
+- **「deskcore 放 truth-vault，跟 librarian/onboarder/worker 并列」** —— 拒绝，理由见上方
+  Why 第一节。⚠️ 本条曾被实际写成代码并开了 PR#103，是**违反 README 边界的实现**，
+  经用户当场指出后撤回。留档防止再犯：`autowriter-migrations/` 目录存在于 TV，是因为
+  TV 当年为**集成**改 autowriter 的 schema（001-006 全是集成产物，007 只是
+  `db.py::CREATE_TABLES_SQL` 的快照）；那不构成「TV 拥有 autowriter schema」的通则，
+  更不构成「autowriter 的新能力可以住进 TV」。
+- **「完全退役工作台、记忆从头积累」** —— 拒绝。40 项目 / 269 条记忆 / 103 条已确认负例 /
+  调校笔记是几年积累，重新驯化的成本远高于换个头。
+- **「全部团队共享记忆」** —— 拒绝。会抹平个人风格，而「像我在说话」正是这次要保住的东西。
+  口径定为**项目规则团队共享 + 个人风格私有**。
+- **「用 DeepSeek Harness 做底座」** —— 拒绝。它是 2026-08-13 发的开源 agent 运行时框架，
+  解决「agent 怎么跑」；缺的不是运行时，是记忆的内容和结构，那部分自己已经有了。
+- **「autowriter 手抄一份词表」** —— 拒绝。`onboarder/vocab.py` 已经是 docs/05 的手抄副本，
+  再加一份跨仓手抄必然漂移。改为 TV 导出 `schemas/controlled_vocab_v0_2.json`，
+  消费方原样 vendor 并记校验和。
+
+**Implications（TV 侧）**:
+
+- **`schemas/controlled_vocab_v0_2.json`** = 词表的机器可读权威导出。**只导出 TV 拥有的层**
+  （essence 维度 + 跨仓共享分类）；表层的标题句式/词感/切入角度不在此列 —— 那是各生产系统
+  自己的东西，半衰期 6-12 个月，本来就该独立演进（README 原则 2 的 Surface/Essence 分层）。
+- **改词表现在要三处同步**：docs/05（人类可读权威）→ `schemas/controlled_vocab_v0_2.json`
+  （机器可读导出，CI 保证一致）→ `onboarder/vocab.py`。下游 vendor 方按校验和跟进。
+- `schemas/notes_v1_8_...sql`：去掉 `external_source` 过滤，补 native/tv/可测条数三列，
+  且 **`dominant_lever_ratio` 的分母改为「可测条数」** —— 一条都测不到时报 NULL 而不是 0
+  （0 会被读成「多样性很好」，是要避免的假阴性）。CI 有两段断言钉死这个行为。
+- **监控本身也要被监控**：`check_positive_saturation.py` 在 `daily-sync.yml` 里是
+  `|| true` 调的（饱和不该拖红整轮同步），但裸 `|| true` 连**崩溃**一起吞。修 v1_8 的
+  同一个 PR 里，渲染循环就因此带过一个 `pool_n` 未赋值的 `NameError` —— 只要 view 回
+  任何一行就必崩，而崩了之后脚本天天「跑过」、天天什么都没测，**v1_8 要修的盲点换个
+  形式原样回来**。两道补丁钉死：① `report()` 抽成不碰网络的纯函数，CI 拿假行跑完整
+  渲染路径（8 个用例，含"部分可测但 ratio 好看"这条 round-2 判据）；② 正常跑完打
+  `SATURATION_CHECK_DONE rc=` 哨兵行，daily-sync 靠它区分崩溃与饱和 —— 因为 Python
+  崩溃的退出码也是 1，跟本脚本「确实饱和」的 1 撞车，光看退出码分不出来。
+- TV **不持有** deskcore 的任何代码、迁移或部署配置。相关 followup 记在
+  [docs/10-sister-repo-followups.md](docs/10-sister-repo-followups.md)。
+
+**Implications（autowriter 侧，本仓不实施、仅登记）**:
+
+- `deskcore/` 作为 MCP 服务落 autowriter，复用其 `db.py` / `memory.py` / `dedup.py` /
+  `librarian_client.py`，只新增：发牌台账、成稿指纹库、个人调校笔记分层、身份解析。
+- 四张新表进 `db.py::CREATE_TABLES_SQL`（fresh install）+ autowriter 自己的 `migrations/`（增量）。
+- **user_id 必须用库里已有的 UUID**，不要新造 —— `autowriter-migrations/RUNBOOK.md:150-153`
+  记过：写 service account UUID 导致 RLS 屏蔽、`list_example_items` 永远 0 行、飞轮静默断开。
