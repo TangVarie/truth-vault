@@ -209,6 +209,70 @@ jobs:
               raise SystemExit(f"\n{len(failed)} parser test(s) failed")
           print(f"\n{len(cases)}/{len(cases)} passed")
           PY
+      - name: 对账只在完整同步时盖戳, 且只报不删 (跨库审计 COR-011)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          import inspect
+          import sync_feishu_notes_to_truth_vault as M
+
+          src = inspect.getsource(M.main)
+
+          # ── ① 「完整同步」的判据必须同时排除三种情况 ──
+          #
+          # 这是这条改动里唯一会造成**不可逆**错误的地方: 把"这次没看见"
+          # 当成"被删了"。--limit 会让循环中途 break; 多表合并里任何一张表
+          # 抓失败, 那张表的记录也全都没看见。判据漏掉任何一个, 一次带
+          # --limit 的手动同步就能把整个项目标成"消失"。
+          assert "truncated_by_limit" in src, "没有记录 --limit 是否截断过"
+          assert "fetch_failed" in src, "没有记录哪张飞书表抓失败了"
+          assert "full_scan = (not truncated_by_limit) and (not fetch_failed)" in src, \
+              "完整同步的判据不对 —— 必须同时排除 limit 截断和抓取失败"
+          assert "if full_scan:" in src, "盖戳没有被 full_scan 守住"
+          print("  ✓ 完整同步的判据同时排除 --limit 截断与抓取失败")
+
+          # ── ② 判据只算一次 ——「盖戳」和「对账」必须共用同一个 ──
+          # 两处各判一次的话, 迟早出现"盖了戳但没对账"或者反过来。
+          assert src.count("full_scan = ") == 1, "full_scan 被算了不止一次"
+          print("  ✓ 盖戳与对账共用同一个判据(只算一次)")
+
+          # ── ③ 只报不删 ──
+          #
+          # notes 有六张表 ON DELETE CASCADE, 另有 synced_to_ssll_at 标着
+          # 已经推到三生六部(**另一个数据库**, 没有外键)的行。这个方向的
+          # 错误不可逆, 所以对账那段里不许出现任何删除/状态变更。
+          recon = src[src.index("对账: 这次完整扫描没见到的"):]
+          for forbidden in (".delete(", '"is_deleted"', '"deleted_at"',
+                            "tombstone", '.update({"tier"'):
+              assert forbidden not in recon, \
+                  f"对账里出现了 {forbidden!r} —— 这次刻意只报不删"
+          print("  ✓ 对账段里没有任何删除 / 状态变更")
+
+          # ── ④ 「从没经历过完整同步」不算「消失」 ──
+          #
+          # 迁移当天全库的 last_seen_run_id 都是 NULL。混在一起报的话, 第一
+          # 份报告会把整个库列成"消失", 然后没有人会再看这个报告。
+          assert "never_seen" in recon and "vanished" in recon, \
+              "没有把「从没见过」和「消失了」分开"
+          assert 'not r.get("last_seen_run_id")' in recon, "分开的判据不对"
+          print("  ✓ 「从没经历过完整同步」与「消失了」分开报")
+
+          # ── ⑤ 下游影响面要一起报 ──
+          # 只躺在 TV 里的孤儿, 和已经推去三生六部当参考样本的孤儿, 处理
+          # 起来完全是两件事。
+          for col in ("synced_to_ssll_at", "synced_to_aw_at", "essence_annotated_at"):
+              assert col in recon, f"对账没报 {col} —— 清理时不知道要先撤什么"
+          print("  ✓ 报告带上了下游影响面(ssll / autowriter / 精华标注)")
+
+          # ── ⑥ 盖的戳是 run_id 而不是时间戳比较 ──
+          # 时钟漂移 / 并发跑 / 时区都会让"按时间比"出错; run_id 是精确相等。
+          assert "last_seen_run_id" in src and "neq(\"last_seen_run_id\", run_id)" in src, \
+              "对账不是按 run_id 精确匹配的"
+          print("  ✓ 对账按 run_id 精确相等, 不依赖时钟")
+
+          print("COR-011 自检通过")
+          PY
+
       - name: Essence vocab validator self-check
         working-directory: scripts
         run: |
@@ -1983,6 +2047,20 @@ jobs:
       - name: Sanity-check v1.5 (librarian cache table exists)
         run: |
           psql -v ON_ERROR_STOP=1 -c "SELECT 'truth_vault.flywheel_librarian_cache'::regclass;"
+      - name: Apply v1.9 last_seen reconcile (+ idempotency)
+        # 只依赖 truth_vault.notes (v1_2)。ADD COLUMN / CREATE INDEX IF NOT EXISTS
+        # → 第二次 apply 必须是干净 no-op。
+        run: |
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_9_last_seen_reconcile.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_9_last_seen_reconcile.sql
+      - name: Sanity-check v1.9 (last_seen 两列 + 索引都在, 且默认 NULL)
+        run: |
+          psql -v ON_ERROR_STOP=1 -c "SELECT last_seen_at, last_seen_run_id FROM truth_vault.notes LIMIT 0;"
+          psql -v ON_ERROR_STOP=1 -c "SELECT to_regclass('truth_vault.notes_last_seen_idx') IS NOT NULL AS idx_ok;"
+          # 存量行必须是 NULL —— 迁移**不回填**。回填成"刚见过"等于凭空宣称
+          # 它们还在源里, 而那正是这两列要回答的问题。
+          psql -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM truth_vault.notes WHERE last_seen_run_id IS NOT NULL;" | grep -q ' 0' \
+            || (echo "存量行被回填了 last_seen_run_id —— 迁移不该假装见过它们" && exit 1)
       - name: Apply v1.6 sync_status pending fix (+ idempotency)
         # CREATE OR REPLACE VIEW; supersede v1_3 的 v_flywheel_sync_status。两遍验幂等。
         run: |

@@ -34,6 +34,7 @@ import argparse
 import json
 import os
 import sys
+import uuid
 import time
 from typing import Any, Iterator
 
@@ -44,6 +45,7 @@ from _common import (
     ensure_account_exists,
     ensure_project_exists,
     extract_tier,
+    fetch_all_pages,
     get_supabase_client,
     load_mapping,
     make_note_id,
@@ -893,12 +895,30 @@ def main() -> int:
     if len(configured) > 1:
         logger.info("多表合并: project=%s 同步 %d 张飞书表", mapping["project_id"], len(configured))
 
+    # ── 对账用的"这次跑得完不完整"(审计 COR-011)────────────────────────
+    #
+    # 「这次没看见它」和「它被删了」不是一回事, 而且区别是致命的:
+    #   · --limit 会让循环中途 break, 后面的记录一条都不会被看见;
+    #   · 多表合并时任何一张表抓失败, 那张表里的记录也全都没看见。
+    # 所以只有**完整**同步才有资格给 note 盖 last_seen 戳; 部分同步一个都
+    # 不盖 —— 半新半旧的 last_seen 比没有这个字段更坏。
+    run_id = uuid.uuid4().hex
+    fetch_failed: list[str] = []
+    truncated_by_limit = False
+
     def _iter_all_records():
         for _sp in configured:
-            yield from fs.list_records(_sp["app_token"], _sp["table_id"], _sp["view_id"])
+            try:
+                yield from fs.list_records(_sp["app_token"], _sp["table_id"], _sp["view_id"])
+            except Exception as exc:
+                # 一张表抓不动**不该**让整条同步崩掉(其它表的数据仍然值得写),
+                # 但必须记下来 —— 它直接决定这次能不能对账。
+                logger.exception("飞书表抓取失败 table_id=%s: %s", _sp["table_id"], exc)
+                fetch_failed.append(_sp["table_id"])
 
     for item in _iter_all_records():
         if args.limit and stats["total"] >= args.limit:
+            truncated_by_limit = True
             break
         stats["total"] += 1
         feishu_record_id = item.get("record_id", "")
@@ -961,6 +981,20 @@ def main() -> int:
             stats["errors"] += 1
 
     # ── Batch write (FK order: project → accounts → notes → metrics) ──
+    # 只有完整同步才盖 last_seen 戳(审计 COR-011)。判据在这里算一次, 下面
+    # 报告和盖戳共用 —— 两处各判一次迟早写岔。
+    full_scan = (not truncated_by_limit) and (not fetch_failed) and (not args.dry_run)
+    if not full_scan and not args.dry_run:
+        logger.warning(
+            "本次不是完整同步(--limit 截断=%s · 抓取失败的表=%s), "
+            "**不盖 last_seen 戳、也不做对账** —— 半新半旧的 last_seen 比没有更坏。",
+            truncated_by_limit, fetch_failed or "无",
+        )
+    if full_scan:
+        for n in pending_notes:
+            n["last_seen_at"] = _iso_now()
+            n["last_seen_run_id"] = run_id
+
     ensure_accounts_batch(sb, account_platforms, dry_run=args.dry_run)
     written_ids = upsert_notes_batch(sb, pending_notes, dry_run=args.dry_run)
     # Only write metrics for notes that actually landed — a metric whose note
@@ -981,6 +1015,58 @@ def main() -> int:
         except Exception as exc:
             logger.warning("update_project_date_range failed for %s: %s",
                            mapping["project_id"], exc)
+
+    # ── 对账: 这次完整扫描没见到的 note(审计 COR-011)────────────────────
+    #
+    # **只报告, 不删除, 不改状态。** 理由见 schemas/notes_v1_9 的文件头 ——
+    # 简单说: notes 有六张表 ON DELETE CASCADE, 另有 synced_to_ssll_at 标着
+    # 已经推到三生六部(**另一个数据库**, 没有外键)的行。删错的方向不可逆,
+    # 而"没看见"本身有好几种无害的原因。所以这里只把它从"完全看不见"变成
+    # "看得见", 删不删是产品判断。
+    if full_scan:
+        try:
+            missing = fetch_all_pages(
+                sb.schema("truth_vault").table("notes")
+                .select("note_id, title, tier, last_seen_at, last_seen_run_id, "
+                        "synced_to_ssll_at, synced_to_aw_at, essence_annotated_at")
+                .eq("project_id", mapping["project_id"])
+                .neq("last_seen_run_id", run_id),
+                order_by="note_id",
+            )
+        except Exception as exc:
+            logger.warning("对账查询失败(不影响本次同步): %s", exc)
+            missing = []
+
+        # 从来没经历过完整同步的行(本列上线前就在库里)**不是**候选 ——
+        # 把这两者混在一起, 迁移当天的报告会把全库都列出来, 然后没人再看它。
+        never_seen = [r for r in missing if not r.get("last_seen_run_id")]
+        vanished = [r for r in missing if r.get("last_seen_run_id")]
+
+        stats["reconcile_never_seen"] = len(never_seen)
+        stats["reconcile_vanished"] = len(vanished)
+        if never_seen:
+            logger.info(
+                "对账: %d 条还没经历过完整同步(last_seen_run_id 为空) —— "
+                "**不是**消失, 下次完整同步就会盖上戳。",
+                len(never_seen),
+            )
+        if vanished:
+            # 下游影响面一起报出来: 一条只躺在 TV 里的孤儿, 和一条已经被推去
+            # 三生六部当参考样本、或者已经生成过 lesson 的孤儿, 处理起来完全
+            # 是两件事。
+            downstream = [
+                r for r in vanished
+                if r.get("synced_to_ssll_at") or r.get("synced_to_aw_at")
+                or r.get("essence_annotated_at")
+            ]
+            logger.warning(
+                "对账: %d 条 note 在本次**完整**同步里没出现(飞书那边删了/移走了/"
+                "改了 record_id)。**未删除**, 仅报告。其中 %d 条已有下游产物"
+                "(ssll 参考样本 / autowriter 正例 / 精华标注), 清理时要先撤下游。"
+                "样例: %s",
+                len(vanished), len(downstream),
+                [f"{r['note_id']}(tier={r.get('tier')})" for r in vanished[:10]],
+            )
 
     if stats["empty_placeholder"]:
         logger.info(
