@@ -56,6 +56,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -155,15 +156,44 @@ def fetch_notes_with_comments_text(sb, project_id: str) -> list[dict]:
     ]
 
 
-def existing_comment_ids(sb, note_id: str) -> set[str]:
+def existing_comments(sb, note_id: str) -> list[dict]:
+    """这条 note 已经存下来的评论(带内容), 按 comment_order 稳定排序。
+
+    ⚠️ 原来这里只取 ``comment_id`` 的集合, 而配对是**按位置**做的 ——
+    见 write_comments 的说明, 那正是 COR-013 的根因。要按内容配对就必须
+    把内容读回来。
+    """
     res = (
         sb.schema("truth_vault")
         .table("comments")
-        .select("comment_id")
+        .select("comment_id, content, comment_role, comment_order")
         .eq("note_id", note_id)
         .execute()
     )
-    return {r["comment_id"] for r in (res.data or [])}
+    rows = list(res.data or [])
+    rows.sort(key=lambda r: (r.get("comment_order") is None,
+                             r.get("comment_order") or 0,
+                             r.get("comment_id") or ""))
+    return rows
+
+
+def _content_key(role: str, content: str) -> tuple[str, str]:
+    """配对用的键。两端空白归一 —— 运营重新粘贴时行尾空格经常会变。"""
+    return ((role or "").strip(), (content or "").strip())
+
+
+def _minted_id(note_id: str, role: str, content: str, nth: int) -> str:
+    """给**新**评论造一个内容寻址的 id。
+
+    ``nth`` 是同一条 (role, content) 在本条 note 里的第几次出现 —— 运营粘贴
+    的文本里"好用""+1"这种一模一样的评论很常见, 光靠内容哈希会撞。
+
+    ⚠️ 前缀刻意是 ``_h`` 而不是 ``_c``: 老行是 ``{note_id}_c{ordinal}``,
+    两套必须不可能撞上。老行**不会**被改名(见 write_comments), 所以这里只管
+    新造的。
+    """
+    h = hashlib.sha256("\u0000".join(_content_key(role, content)).encode("utf-8"))
+    return f"{note_id}_h{h.hexdigest()[:12]}_{nth}"
 
 
 def write_comments(
@@ -173,17 +203,69 @@ def write_comments(
     parsed: list[tuple[str, str]],
     dry_run: bool,
 ) -> int:
-    """Insert flat (no parent) comment rows. Returns count actually written."""
+    """Insert flat (no parent) comment rows. Returns count actually written.
+
+    ── 为什么按内容配对而不是按位置(跨库审计 2026-08-24 COR-013)──────────
+
+    原来 ``comment_id = f"{note_id}_c{ordinal}"``, ordinal 是这条评论在**本次
+    解析结果里的下标**, 且只 insert 不更新。源是运营手工粘贴的自由文本, 没有
+    任何原生 comment id, 所以"第几条"就成了唯一身份。
+
+    运营在**头部插一条**新评论, 后果实测如下(源 [A,B] → [X,A,B]):
+
+        第一轮: _c1=A, _c2=B
+        第二轮: _c1 已存在 → 跳过(X 就此丢失)
+                _c2 已存在 → 跳过
+                _c3 = B    → 当成新评论插进去
+
+    也就是: **新评论静默丢失、旧评论被写成两条、每条的 comment_order 全错**。
+    而随后的 LLM 楼层重建会基于这些行写 parent_comment_id —— 层级建在错的
+    数据上, 之后再也没人对得回来。
+
+    改成按 (role, content) 配对:
+      · 能配上已有行 → **复用它原来的 comment_id**, 只在位置变了时更新
+        comment_order。绝不改名 —— comments.parent_comment_id 是自引用外键,
+        改名等于把已经重建好的楼层全打断;
+      · 配不上 → 造一个内容寻址的新 id 插进去;
+      · 已有行没被配上 → 说明它从源里消失了, **只报数不删**(见下)。
+
+    ⚠️ **没有做软删**。comments 表没有 is_deleted / deleted_at 列, 加列是
+       独立的一次 schema 迁移; 而且"从源里消失"要不要等于"删除"取决于运营
+       的实际用法(粘贴时截断了一段 vs 真的删了评论), 那是产品判断。这次只
+       把它数出来、log 出来, 让它从"完全看不见"变成"看得见"。集合对账那条
+       在审计里是 COR-011, 单独处理。
+    """
     if not parsed:
         return 0
-    existing = set() if dry_run else existing_comment_ids(sb, note_id)
-    to_insert = []
+
+    rows = [] if dry_run else existing_comments(sb, note_id)
+
+    # (role, content) → 还没被认领的已有 id, 按 comment_order 排。同一段内容
+    # 重复出现时先来先认领, 顺序稳定。
+    available: dict[tuple[str, str], list[dict]] = {}
+    for r in rows:
+        available.setdefault(_content_key(r.get("comment_role", ""),
+                                          r.get("content", "")), []).append(r)
+
+    to_insert: list[dict] = []
+    reorders: list[tuple[str, int]] = []      # (comment_id, 新的 comment_order)
+    claimed: set[str] = set()
+    seen_counts: dict[tuple[str, str], int] = {}
+
     for ordinal, (role, content) in enumerate(parsed, start=1):
-        comment_id = f"{note_id}_c{ordinal}"
-        if comment_id in existing:
+        key = _content_key(role, content)
+        seen_counts[key] = seen_counts.get(key, 0) + 1
+
+        pool = available.get(key) or []
+        if pool:
+            row = pool.pop(0)
+            claimed.add(row["comment_id"])
+            if row.get("comment_order") != ordinal:
+                reorders.append((row["comment_id"], ordinal))
             continue
+
         to_insert.append({
-            "comment_id": comment_id,
+            "comment_id": _minted_id(note_id, role, content, seen_counts[key]),
             "note_id": note_id,
             "project_id": project_id,
             "content": content,
@@ -195,15 +277,51 @@ def write_comments(
             "is_displayed": True,
             "created_at": _iso_now(),
         })
+
+    vanished = [r for r in rows if r["comment_id"] not in claimed]
+    if vanished:
+        # 只报不删 —— 见 docstring。但**必须**看得见: 原来这种行是完全静默的。
+        logger.warning(
+            "note=%s 有 %d 条已入库的评论在本次源文本里找不到了(未删除, 仅报告): %s",
+            note_id, len(vanished),
+            [r["comment_id"] for r in vanished[:5]],
+        )
+
+    if dry_run:
+        if to_insert:
+            logger.info("[dry-run] would insert %d comments for %s "
+                        "(first: role=%s, content=%r)",
+                        len(to_insert), note_id,
+                        to_insert[0]["comment_role"],
+                        to_insert[0]["content"][:60])
+        if reorders:
+            logger.info("[dry-run] would fix comment_order on %d existing rows",
+                        len(reorders))
+        return len(to_insert)
+
+    # 位置变了的先更新 —— 它不影响 comment_id, 但 comment_order 是楼层重建和
+    # 展示的依据, 留着旧值等于留着一份错的顺序。
+    for comment_id, new_order in reorders:
+        try:
+            (
+                sb.schema("truth_vault")
+                .table("comments")
+                .update({"comment_order": new_order})
+                .eq("comment_id", comment_id)
+                .execute()
+            )
+        except Exception:
+            logger.exception("comment_order 更新失败 comment_id=%s", comment_id)
+
     if not to_insert:
         return 0
-    if dry_run:
-        logger.info("[dry-run] would insert %d comments for %s "
-                    "(first: role=%s, content=%r)",
-                    len(to_insert), note_id,
-                    to_insert[0]["comment_role"],
-                    to_insert[0]["content"][:60])
-        return len(to_insert)
+    (
+        sb.schema("truth_vault")
+        .table("comments")
+        .insert(to_insert)
+        .execute()
+    )
+    return len(to_insert)
     (
         sb.schema("truth_vault")
         .table("comments")
