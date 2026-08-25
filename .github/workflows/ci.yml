@@ -31,6 +31,7 @@ jobs:
       - name: Compile all scripts
         run: |
           python -m py_compile \
+            service_auth.py \
             scripts/_common.py \
             scripts/sync_feishu_notes_to_truth_vault.py \
             scripts/sync_comments_from_raw_extra.py \
@@ -1753,12 +1754,40 @@ jobs:
 
           c = TestClient(w.app)
 
-          # ── /health 必须把"没配 key = 谁都能调"说出来 (SUP-001) ──
+          # ── 没配 key = **锁死**, 不是"谁都能调" (跨库审计 SUP-001) ──
+          #
+          # ⚠️ 这几条断言以前是反的, 而反的那一版是错的。原文是:
+          #        assert h["auth"]["required"] is False
+          #        assert "dev" in h["auth"]["mode"]
+          #    也就是把"secret 漏配 → 端点对全世界敞开"当成了正确行为, 理由是
+          #    "/health 会把它说出来"。那个自曝是对的、保留了, 但它不是防线 ——
+          #    没有人会在事故之前去读 /health。
+          #
+          #    这个 worker 拿 service-role 凭据 subprocess 跑仓库里的脚本。默认
+          #    敞开不可接受。现在: 没配 key 且没显式开匿名 → 业务请求一律 401。
           h = c.get("/health").json()
           assert h["ok"] is True, "healthcheck 不能因为没配 key 就红(Railway 靠它起容器)"
           assert h["auth"]["ok"] is False, h["auth"]
           assert h["auth"]["required"] is False, h["auth"]
-          assert "dev" in h["auth"]["mode"], h["auth"]["mode"]
+          assert h["auth"]["anonymous_allowed"] is False, h["auth"]
+          assert "locked" in h["auth"]["mode"], h["auth"]["mode"]
+          # 而且真的要拒 —— 光在 /health 里说"锁了"不算
+          r = c.post("/annotate-essence", json={"project_id": "p"})
+          assert r.status_code == 401, f"没配 key 却放行了: {r.status_code}"
+          print("  ✓ 未配 key: 业务请求 401(不是静默放行)")
+
+          # 显式开匿名才放行 —— 本地开发的逃生口, 必须是**写出来**的意图
+          os.environ["WORKER_ALLOW_ANONYMOUS"] = "1"
+          h = c.get("/health").json()
+          assert h["auth"]["anonymous_allowed"] is True and h["auth"]["ok"] is False, h["auth"]
+          assert "anonymous" in h["auth"]["mode"], h["auth"]["mode"]
+          # 半开的值不算开: 只有 1/true/yes/on
+          for half in ("0", "false", "no", ""):
+              os.environ["WORKER_ALLOW_ANONYMOUS"] = half
+              assert c.get("/health").json()["auth"]["anonymous_allowed"] is False, half
+          os.environ.pop("WORKER_ALLOW_ANONYMOUS", None)
+          print("  ✓ 匿名必须显式开, 且 0/false/no/空 都不算开")
+
           assert h["config"]["run_timeout_s"] == w._RUN_TIMEOUT_S
           # config 只报"有没有配"的布尔, 不报值(base_url/model 除外, 那俩不是密钥)
           for k in ("supabase_service_role_key", "anthropic_api_key", "supabase_url"):
@@ -1769,7 +1798,9 @@ jobs:
           h = c.get("/health").json()
           assert h["auth"]["ok"] is True and h["auth"]["required"] is True, h["auth"]
           assert "s3cret" not in str(h), "key 泄进了 /health 响应体"
-          print("  ✓ 配了 key: auth.ok=True 且 key 不回显")
+          assert c.post("/annotate-essence", json={"project_id": "p"},
+                        headers={"X-Worker-Key": "wrong"}).status_code == 401, "错 key 放行了"
+          print("  ✓ 配了 key: auth.ok=True · key 不回显 · 错 key 401")
           del os.environ["WORKER_API_KEY"]
 
           # /health 无鉴权, 所以 ANTHROPIC_BASE_URL 只能回显 scheme://host ——
@@ -1881,6 +1912,68 @@ jobs:
           print("  ✓ _running_scripts() 在同样竞态下零异常")
           w._SCRIPT_LOCKS.clear(); w._SCRIPT_LOCKS.update(saved)
           print("\nworker 互斥锁 + health: 全部通过")
+          PY
+
+      - name: 三个服务的鉴权闸口径一致且 fail-closed (跨库审计 SUP-001)
+        run: |
+          pip install -q fastapi 'httpx<0.28' 'starlette' >/dev/null
+          python - <<'PY'
+          import os
+          from fastapi.testclient import TestClient
+
+          # librarian / onboarder 原来**一条鉴权用例都没有**, worker 那条又把
+          # fail-open 钉成了正确行为。这一步逐个服务跑同一组断言 —— 三个服务守
+          # 的是同一条安全不变量, 就该用同一把尺子量。
+          #
+          # 它们手里分别有: service-role 读 + LLM(librarian)、未信任输入进模型
+          # 且改写 mappings/*.yaml(onboarder)、service-role 凭据 subprocess 跑
+          # 仓库脚本(worker)。任何一个默认敞开都不可接受。
+          import librarian.app as L
+          import onboarder.app as O
+          import worker.app as W
+
+          CASES = [
+              ("librarian", L, "LIBRARIAN", "X-Librarian-Key", "/librarian"),
+              ("onboarder", O, "ONBOARDER", "X-Onboarder-Key", "/onboard"),
+              ("worker",    W, "WORKER",    "X-Worker-Key",    "/annotate-essence"),
+          ]
+
+          for name, mod, prefix, header, endpoint in CASES:
+              for v in (f"{prefix}_API_KEY", f"{prefix}_ALLOW_ANONYMOUS"):
+                  os.environ.pop(v, None)
+              c = TestClient(mod.app)
+
+              # ① 没配 key、没开匿名 → 业务请求一律 401
+              r = c.post(endpoint, json={})
+              assert r.status_code == 401, f"{name}: 未配 key 却回 {r.status_code}"
+              h = c.get("/health").json()
+              assert h["ok"] is True, f"{name}: healthcheck 不该因为没配 key 就红"
+              assert h["auth"]["ok"] is False and "locked" in h["auth"]["mode"], h["auth"]
+
+              # ② 配了 key: 对的放行(不再是 401)、错的 401、key 不回显
+              os.environ[f"{prefix}_API_KEY"] = "s3cret-" + name
+              assert c.post(endpoint, json={},
+                            headers={header: "wrong"}).status_code == 401, f"{name}: 错 key 放行"
+              assert c.post(endpoint, json={},
+                            headers={header: "s3cret-" + name}).status_code != 401, \
+                  f"{name}: 对的 key 被拒了 —— 这不是修好, 是拒绝一切"
+              h = c.get("/health").json()
+              assert h["auth"]["ok"] is True, h["auth"]
+              assert "s3cret" not in str(h), f"{name}: key 泄进了 /health"
+              del os.environ[f"{prefix}_API_KEY"]
+
+              # ③ 显式开匿名才放行 —— 逃生口必须是写出来的意图
+              os.environ[f"{prefix}_ALLOW_ANONYMOUS"] = "1"
+              assert c.post(endpoint, json={}).status_code != 401, f"{name}: 开了匿名仍拒"
+              h = c.get("/health").json()
+              assert h["auth"]["anonymous_allowed"] is True, h["auth"]
+              # 匿名能跑, 但**不安全** —— /health 不该把这两件事混为一谈
+              assert h["auth"]["ok"] is False, f"{name}: 匿名模式不该报 auth.ok=True"
+              del os.environ[f"{prefix}_ALLOW_ANONYMOUS"]
+
+              print(f"  ✓ {name}: 未配→401 · 配了→校验 · 显式匿名→放行且自报不安全")
+
+          print("三个服务的鉴权闸口径一致")
           PY
 
       - name: daily-sync 把 409 当瞬时失败 (不拖红 · 配合 worker 互斥锁)
