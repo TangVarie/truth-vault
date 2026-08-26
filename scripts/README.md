@@ -86,6 +86,17 @@ CI 和 daily-sync workflow 都优先读 `.lock`; `.txt` 仅作为 "high-level in
 #   - schemas/notes_v1_2_tier_discrepancy_view.sql    → tier 矛盾复核视图
 #   - schemas/notes_v1_4_flywheel_lesson_cards.sql    → 飞轮策展库 (经验卡表 + v_flywheel_lesson_cards 视图)
 #   - schemas/notes_v1_5_librarian_cache.sql          → 馆员结果缓存表 (pull / D-038)
+#   - schemas/notes_v1_6_sync_status_pending_fix.sql  → v_flywheel_sync_status 的 pending_* 对齐 (视图)
+#   - schemas/notes_v1_7_surface_three_tier_decay.sql → 注入视图 surface 三级时间衰减 (视图, D-009)
+#   - schemas/notes_v1_8_positive_pool_saturation_fix.sql → 正例饱和度视图盲点修复 (视图, D-041)
+#   - schemas/notes_v1_9_last_seen_reconcile.sql      → notes 加 last_seen_at / last_seen_run_id
+#         ⚠️ **这一条是硬前置, 不是可选**: sync 脚本每次完整同步都会在 note
+#            upsert 里带上这两列。没跑它的库上, **每一条 note 的 upsert 都会
+#            失败**(column does not exist), 而不是降级。空库上实测:
+#              跑到 v1_5 为止 → INSERT ... last_seen_at → column 不存在
+#              补上 v1_9      → 通过
+#            v1_6 / v1_7 / v1_8 是**只改视图**的, 漏了只是视图旧, 不挡写入;
+#            v1_9 是唯一动 notes 表结构的。(codex review COR-011)
 #   - autowriter-migrations/001_create_autowriter_schema.sql → 把 autowriter 表从 public 迁到 autowriter schema
 #   - autowriter-migrations/002_add_external_source.sql     → items 加 (external_source, external_source_id) 列
 #         + per-user partial UNIQUE (user_id, external_source, external_source_id) WHERE external_source IS NOT NULL.

@@ -43,8 +43,19 @@
 ALTER TABLE truth_vault.notes
     ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;
 
--- 盖戳的那次运行的 id。有了它, "这条是本次见到的"就是一个**精确相等**的
--- 判断, 不依赖时钟(并发跑、时区、容器时钟漂移都不影响)。
+-- 盖戳的那次运行的 id。"这条是本次见到的"因此是一个**精确相等**的判断。
+--
+-- ⚠️ 但**只靠它不够**。对账的完整判据是两部分(见 sync 脚本的对账段):
+--
+--   ① run_id 不等于本次 —— 且 **NULL 也算不等于**。裸 `<>` 会把 NULL 的行
+--      整个滤掉(`NULL <> 'x'` 是 unknown), 于是"还没经历过完整同步"这一类
+--      永远报不出来, 而把这两类分开正是本迁移一半的意义。要 IS DISTINCT FROM
+--      的语义(PostgREST 用 `or(neq, is.null)` 展开)。
+--   ② 且 last_seen_at **早于本次开跑的时刻** —— 排掉同项目上另一次并发同步
+--      刚盖的戳。否则 B 在 A 的「写完 → 查对账」窗口里把全库 run_id 覆盖成
+--      自己的, A 会把**整个项目**报成消失了, 而两次扫描其实都是完整的。
+--
+-- 时间那一半只用来做 ② 这一件事; 主判据仍是 run_id, 不依赖时钟精度。
 ALTER TABLE truth_vault.notes
     ADD COLUMN IF NOT EXISTS last_seen_run_id TEXT;
 

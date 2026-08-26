@@ -230,7 +230,15 @@ jobs:
           assert "full_scan = (not truncated_by_limit) and (not fetch_failed)" in src, \
               "完整同步的判据不对 —— 必须同时排除 limit 截断和抓取失败"
           assert "if full_scan:" in src, "盖戳没有被 full_scan 守住"
-          print("  ✓ 完整同步的判据同时排除 --limit 截断与抓取失败")
+          # codex review: 还要排除**逐条处理失败**。一条被 quarantine / transform_row
+          # 抛错 / 缺必填的记录没被盖戳, 而它在飞书里明明还在 —— 上一轮盖过戳的话,
+          # 这次会被报成"消失了"。对账报错一条就不如不报。
+          assert "records_all_ok" in src, \
+              "完整同步的判据没有排除逐条处理失败(quarantine / transform 抛错)"
+          # 以及**写入失败**。戳是写入 payload 的一部分(必须先盖后写), 所以
+          # stamping 那一步算不到 upsert 的失败, 得在对账那侧再挡一次。
+          assert "writes_all_ok" in src, "没有挡住「note 没写成功」就去对账"
+          print("  ✓ 判据排除 --limit / 抓取失败 / 逐条处理失败 / 写入失败")
 
           # ── ② 判据只算一次 ——「盖戳」和「对账」必须共用同一个 ──
           # 两处各判一次的话, 迟早出现"盖了戳但没对账"或者反过来。
@@ -263,13 +271,71 @@ jobs:
           # 起来完全是两件事。
           for col in ("synced_to_ssll_at", "synced_to_aw_at", "essence_annotated_at"):
               assert col in recon, f"对账没报 {col} —— 清理时不知道要先撤什么"
-          print("  ✓ 报告带上了下游影响面(ssll / autowriter / 精华标注)")
+          # codex review: 经验卡也是下游, 而且是**最容易漏的那个** —— 它由
+          # curate 脚本独立建, 不回写 note 上任何一列, 但 note_id 是 ON DELETE
+          # CASCADE。只看 note 上那三个戳, 会把"删了会连带删掉一张馆员正在借阅
+          # 的卡"报成"这条没有下游产物"。
+          assert "flywheel_lesson_annotations" in recon, \
+              "对账没查经验卡 —— 它 CASCADE 于 note, 删了会连带没"
+          print("  ✓ 下游影响面含经验卡(CASCADE 于 note, 最容易漏的那个)")
 
-          # ── ⑥ 盖的戳是 run_id 而不是时间戳比较 ──
-          # 时钟漂移 / 并发跑 / 时区都会让"按时间比"出错; run_id 是精确相等。
-          assert "last_seen_run_id" in src and "neq(\"last_seen_run_id\", run_id)" in src, \
-              "对账不是按 run_id 精确匹配的"
-          print("  ✓ 对账按 run_id 精确相等, 不依赖时钟")
+          # ── ⑥ 主判据是 run_id 精确相等, 但 NULL 要算"不等于" ──
+          #
+          # ⚠️ 这条**改过**: 原来钉的是 `.neq("last_seen_run_id", run_id)`,
+          #    而 PostgREST 的 neq 直译成 SQL 的 `<>` —— `NULL <> 'x'` 是
+          #    unknown, WHERE 会把它滤掉。于是 last_seen_run_id 为 NULL 的老行
+          #    **永远进不了 missing**, never_seen 恒为空, 而把"还没经历过完整
+          #    同步"和"消失了"分开正是这个功能的一半。真库实测:
+          #        WHERE last_seen_run_id <> 'run-1'             → 只有 stale
+          #        WHERE last_seen_run_id IS DISTINCT FROM 'run-1' → legacy + stale
+          #    (codex review)
+          assert "last_seen_run_id.is.null" in recon, \
+              "对账漏了 last_seen_run_id 为 NULL 的行 —— never_seen 会恒为空"
+          assert "last_seen_run_id.neq." in recon, "主判据不再是 run_id 相等"
+          print("  ✓ 主判据是 run_id, 且 NULL 也算「不是本次见到的」")
+
+          # ── ⑦ 排掉并发同步盖的戳 ──
+          # B 在 A 的「写完 → 查对账」窗口里把全库 run_id 覆盖成自己的, A 会把
+          # **整个项目**报成消失, 而两次扫描其实都是完整的。(codex review)
+          #
+          # ⚠️ 判据要钉**那个比较**, 不能只钉变量名 `concurrent` —— 第一版就是
+          #    `assert "concurrent" in recon`, 而把它改成 `concurrent = []` 之后
+          #    名字还在, 断言照样绿。又一条只认名字不认行为的空转守卫。
+          assert "run_started_at" in src, "没有记录本次开跑时刻"
+          assert 'last_seen_at"] >= run_started_at' in recon, \
+              "没有按「last_seen_at >= 本次开跑时刻」排除并发同步盖的戳"
+          assert "missing = [r for r in missing" in recon, "排除结果没有作用回 missing"
+          print("  ✓ 排除了并发同步盖的戳(按 last_seen_at >= 本次开跑时刻)")
+
+          # ── ⑧ TIMESTAMPTZ 列要用带偏移的时间串 ──
+          # last_seen_at 是 TIMESTAMPTZ; 给它 naive 串, Postgres 按**会话时区**
+          # 解释再转 UTC —— 会话时区不是 UTC 时整体偏几小时, 且不报错。
+          stamp = src[src.index("if full_scan:"):]
+          assert "_iso_now_tz()" in stamp, \
+              "last_seen_at(TIMESTAMPTZ)用了 naive 的 _iso_now() —— 会按会话时区偏移"
+          print("  ✓ last_seen_at 用 _iso_now_tz()(带 +00:00)")
+
+          # ── ⑨ 每一个被 upsert 写出去的列, 都得在首次部署清单里有来源 ──
+          #
+          # ⚠️ 这条是**部署契约**, 不是代码正确性: v1_9 给 notes 加了两列, 而
+          #    scripts/README.md 的「第一次部署」Step 0 清单当时停在 v1_5。照文档
+          #    部署出来的库上, **每一条 note 的 upsert 都会失败**(column does not
+          #    exist) —— 不是降级, 是全挂。空库上实测过:
+          #        跑到 v1_5 为止 → INSERT ... last_seen_at → column 不存在
+          #        补上 v1_9      → 通过
+          #    (codex review)
+          #
+          # 判据钉的是**被禁止的形态**: 脚本写了某列, 而清单里没有任何一条迁移
+          # 提到它。以后再加列忘了写文档同样会红。
+          import pathlib
+          readme = pathlib.Path("README.md").read_text(encoding="utf-8")
+          step0 = readme[readme.index("第一次部署"):readme.index("Step 1")]
+          for col in ("last_seen_at", "last_seen_run_id"):
+              assert col in src, f"脚本不再写 {col}? 那这条断言该改了"
+          assert "notes_v1_9" in step0, (
+              "v1_9 不在首次部署清单里 —— 照文档部署的库上每条 note upsert 都会"
+              "失败(column does not exist)")
+          print("  ✓ v1_9 在首次部署清单里(它是硬前置, 不是可选)")
 
           print("COR-011 自检通过")
           PY
