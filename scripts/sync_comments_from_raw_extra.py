@@ -194,8 +194,8 @@ def _content_key(role: str, content: str) -> tuple[str, str]:
 def _minted_id(note_id: str, role: str, content: str, nth: int) -> str:
     """给**新**评论造一个内容寻址的 id。
 
-    ``nth`` 是同一条 (role, content) 在本条 note 里的第几次出现 —— 运营粘贴
-    的文本里"好用""+1"这种一模一样的评论很常见, 光靠内容哈希会撞。
+    ``nth`` 区分同一条 (role, content) 的多次出现 —— 运营粘贴的文本里
+    "好用""+1"这种一模一样的评论很常见, 光靠内容哈希会撞。
 
     ⚠️ 前缀刻意是 ``_h`` 而不是 ``_c``: 老行是 ``{note_id}_c{ordinal}``,
     两套必须不可能撞上。老行**不会**被改名(见 write_comments), 所以这里只管
@@ -203,6 +203,26 @@ def _minted_id(note_id: str, role: str, content: str, nth: int) -> str:
     """
     h = hashlib.sha256("\u0000".join(_content_key(role, content)).encode("utf-8"))
     return f"{note_id}_h{h.hexdigest()[:12]}_{nth}"
+
+
+def _next_free_id(note_id: str, role: str, content: str, taken: set[str]) -> str:
+    """挑一个**还没被占**的 nth。
+
+    ⚠️ 不能拿"这是源里第几次出现"当 nth。中间那条被硬删之后就会撞:
+    ``_1/_2/_3`` 都在, 有人删掉 ``_2``, 而源里仍是三次出现 —— 配对认领
+    ``_1`` 和 ``_3``(仅存的两行), 第三次出现算出 nth=3, mint 出来正好是
+    **已经被认领的** ``_3`` → 整批 insert 撞主键失败, 那条缺的反而补不回来。
+    实测复现: ``PK 冲突: n1_h9c0bc1c36c11_3``。(codex review)
+
+    改成"往上找第一个空位": 只看 id 占没占, 与源里的位置无关。``taken`` 要
+    同时包含**库里已有的**和**本次已经 mint 的**。
+    """
+    nth = 1
+    while True:
+        cid = _minted_id(note_id, role, content, nth)
+        if cid not in taken:
+            return cid
+        nth += 1
 
 
 def write_comments(
@@ -247,7 +267,12 @@ def write_comments(
     if not parsed:
         return 0
 
-    rows = [] if dry_run else existing_comments(sb, note_id)
+    # ⚠️ dry-run 也要**真的读**已有行。读是没有副作用的, 而 dry-run 的全部价值
+    #    就是"预览真跑会发生什么"。原来这里强行置空, 于是 dry-run 把每一条都算成
+    #    新增: 已经同步过的 note 会报一堆并不会发生的 insert, 而重排和"从源里消失"
+    #    这两份新增的报告在 dry-run 下**永远为空**。预览失真比没有预览更坏 ——
+    #    人会照着它下判断。(codex review)
+    rows = existing_comments(sb, note_id)
 
     # (role, content) → 还没被认领的已有 id, 按 comment_order 排。同一段内容
     # 重复出现时先来先认领, 顺序稳定。
@@ -256,14 +281,16 @@ def write_comments(
         available.setdefault(_content_key(r.get("comment_role", ""),
                                           r.get("content", "")), []).append(r)
 
+    # 已经被占用的 id: 库里**全部**已有行 + 本次已经 mint 的。给 _next_free_id
+    # 用 —— 只看"占没占", 不看"源里第几次出现"。
+    taken: set[str] = {r["comment_id"] for r in rows}
+
     to_insert: list[dict] = []
     reorders: list[tuple[str, int]] = []      # (comment_id, 新的 comment_order)
     claimed: set[str] = set()
-    seen_counts: dict[tuple[str, str], int] = {}
 
     for ordinal, (role, content) in enumerate(parsed, start=1):
         key = _content_key(role, content)
-        seen_counts[key] = seen_counts.get(key, 0) + 1
 
         pool = available.get(key) or []
         if pool:
@@ -273,8 +300,10 @@ def write_comments(
                 reorders.append((row["comment_id"], ordinal))
             continue
 
+        new_id = _next_free_id(note_id, role, content, taken)
+        taken.add(new_id)
         to_insert.append({
-            "comment_id": _minted_id(note_id, role, content, seen_counts[key]),
+            "comment_id": new_id,
             "note_id": note_id,
             "project_id": project_id,
             "content": content,
@@ -310,6 +339,16 @@ def write_comments(
 
     # 位置变了的先更新 —— 它不影响 comment_id, 但 comment_order 是楼层重建和
     # 展示的依据, 留着旧值等于留着一份错的顺序。
+    #
+    # ⚠️ 更新失败**必须让整次运行失败**。原来这里只 logger.exception 就接着往下
+    #    插新行, 函数照常返回成功 —— 而 daily-sync 只看退出码, 于是: 新行进了库、
+    #    旧行留着错的(甚至重复的) comment_order、工作流全绿、没有任何人被通知。
+    #    这正是本轮审计 COR-008(指标写失败不计进 exit code)同一个形状, 只是换了
+    #    个脚本。(codex review)
+    #
+    #    先把所有的都试一遍再抛: 一次瞬时错误不该掩盖后面还有多少条也失败了,
+    #    日志里要看得到全貌。
+    failed_reorders: list[str] = []
     for comment_id, new_order in reorders:
         try:
             (
@@ -321,6 +360,12 @@ def write_comments(
             )
         except Exception:
             logger.exception("comment_order 更新失败 comment_id=%s", comment_id)
+            failed_reorders.append(comment_id)
+    if failed_reorders:
+        raise RuntimeError(
+            f"note={note_id}: {len(failed_reorders)}/{len(reorders)} 条 comment_order "
+            f"没更新成功 {failed_reorders[:5]} —— 这些行的顺序现在是错的, "
+            "楼层重建会建在错的顺序上。本次同步按失败处理, 不再插入新行。")
 
     if not to_insert:
         return 0
@@ -347,7 +392,9 @@ def main() -> int:
     logger.info("Found %d notes with raw_extra._comment_text(_persona) for %s",
                 len(notes), args.project_id)
 
-    stats = {"notes_processed": 0, "comments_written": 0, "skipped_empty": 0}
+    stats = {"notes_processed": 0, "comments_written": 0, "skipped_empty": 0,
+             "notes_source_cleared": 0}
+    covered: set[str] = set()
     for note in notes:
         raw = note.get("raw_extra") or {}
         text_main = raw.get("_comment_text") or ""
@@ -357,11 +404,48 @@ def main() -> int:
         if not parsed:
             stats["skipped_empty"] += 1
             continue
+        covered.add(note["note_id"])
         written = write_comments(
             sb, note["note_id"], note["project_id"], parsed, args.dry_run
         )
         stats["notes_processed"] += 1
         stats["comments_written"] += written
+
+    # ── 整块源文本被清空的 note ────────────────────────────────────────────
+    # write_comments 里的 vanished 报告只看得见**部分**消失: 它是拿本次解析结果
+    # 去比已有行的。运营把两个源字段整个清空时, 这条 note 会被
+    # fetch_notes_with_comments_text 直接滤掉(它要求至少有一个字段非空), 而
+    # write_comments 对空解析又是早返回 —— 于是**整条 note 的评论全部留在库里,
+    # 一句话都不会说**。恰恰是"全清"这种最该被看见的情况完全隐身。(codex review)
+    #
+    # 只报不删, 口径同 write_comments: comments 表没有软删列, 而"源里没了"要不要
+    # 等于"删除"是产品判断(粘贴时截断了 vs 真的删了)。这里只让它可见。
+    #
+    # ⚠️ 带 --limit 时不做这个对账 —— 那时 covered 本来就是不完整的, 拿它比会把
+    #    没轮到处理的 note 全report成"源被清空了"。同 COR-011 的口径: 部分扫描
+    #    不产出对账结论。
+    if args.limit:
+        logger.info("带 --limit, 跳过「源被清空」对账(本次覆盖不完整, 比了会误报)")
+    else:
+        try:
+            q = (
+                sb.schema("truth_vault")
+                .table("comments")
+                .select("note_id")
+                .eq("project_id", args.project_id)
+            )
+            with_rows = {r["note_id"] for r in fetch_all_pages(q, order_by="note_id")}
+            cleared = sorted(with_rows - covered)
+            stats["notes_source_cleared"] = len(cleared)
+            if cleared:
+                logger.warning(
+                    "%d 条 note 库里有评论、但本次源文本里一条都解析不出来"
+                    "(未删除, 仅报告): %s", len(cleared), cleared[:5])
+        except Exception:
+            # 对账失败不该把同步判失败 —— 它是**附加的**可见性, 不是这个脚本的
+            # 主职责。但也不能静默: 报出来, 并在 stats 里留 -1 标明"这次没算成"。
+            logger.exception("「源被清空」对账查询失败")
+            stats["notes_source_cleared"] = -1
 
     logger.info("Done: %s", json.dumps(stats, ensure_ascii=False))
     return 0

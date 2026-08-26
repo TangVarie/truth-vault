@@ -351,6 +351,73 @@ jobs:
               "existing_comments 没走 fetch_all_pages —— 超过 1000 条就静默截断"
           print("  ✓ existing_comments 走 fetch_all_pages")
 
+          # ══ codex review 四条 ══════════════════════════════════════════
+
+          # ⑦ 重复内容中间被硬删之后, 补的那条不许撞主键
+          #
+          # _1/_2/_3 都在, 有人删掉 _2, 而源里仍是三次出现 —— 配对认领 _1 和 _3
+          # (仅存的两行), 第三次出现若按"源里第几次"算 nth=3, mint 出来正好是
+          # 已经被认领的 _3 → 整批 insert 撞主键, 那条缺的反而补不回来。
+          sb = _FakeSB()
+          M.write_comments(sb, NOTE, PROJ, [("素人","好用")]*3, dry_run=False)
+          mid = sorted(r["comment_id"] for r in sb.rows)[1]
+          sb.rows = [r for r in sb.rows if r["comment_id"] != mid]   # 硬删中间那条
+          n = M.write_comments(sb, NOTE, PROJ, [("素人","好用")]*3, dry_run=False)
+          assert n == 1, f"该补回 1 条, 实际 {n}"
+          assert len(sb.rows) == 3, f"补完应有 3 条, 实际 {len(sb.rows)}"
+          assert len({r["comment_id"] for r in sb.rows}) == 3, "id 撞了"
+          print("  ✓ 重复内容中间被硬删: 补回一条, 不撞主键")
+
+          # ⑧ dry-run 必须真的读已有行
+          #
+          # 强行置空的话, 已经同步过的 note 在 dry-run 下会报一堆并不会发生的
+          # insert, 而重排 / 消失这两份报告永远为空。预览失真比没有预览更坏。
+          sb = _FakeSB()
+          M.write_comments(sb, NOTE, PROJ, [("素人","A"),("素人","B")], dry_run=False)
+          n = M.write_comments(sb, NOTE, PROJ, [("素人","A"),("素人","B")], dry_run=True)
+          assert n == 0, f"dry-run 把已同步的 note 报成要插 {n} 条"
+          print("  ✓ dry-run 读已有行, 不虚报 insert")
+
+          # ⑨ comment_order 更新失败要让整次运行失败
+          #
+          # 原来只 logger.exception 就接着插新行、照常返回成功, 而 daily-sync 只看
+          # 退出码 —— 新行进库、旧行留着错的顺序、工作流全绿、没人被通知。
+          # 与 COR-008(指标写失败不计进 exit code)同一个形状。
+          class _UpdateFails(_FakeSB):
+              def execute(s):
+                  if s._op == "update":
+                      raise RuntimeError("PostgREST 503")
+                  return _FakeSB.execute(s)
+          sb = _UpdateFails()
+          M.write_comments(sb, NOTE, PROJ, [("素人","A"),("素人","B")], dry_run=False)
+          try:
+              M.write_comments(sb, NOTE, PROJ,
+                               [("素人","X"),("素人","A"),("素人","B")], dry_run=False)
+              raise AssertionError("comment_order 更新失败却报了成功")
+          except RuntimeError as e:
+              assert "comment_order" in str(e), e
+          print("  ✓ comment_order 更新失败 → 抛错(退出码非 0), 不静默继续")
+
+          # ⑩ 整块源文本被清空的 note 要被报出来
+          #
+          # write_comments 的 vanished 只看得见**部分**消失。全清时这条 note 会被
+          # fetch_notes_with_comments_text 滤掉、write_comments 又对空解析早返回
+          # —— 整条 note 的评论全留在库里, 一句话都不说。判据放在 main 的对账上。
+          import inspect
+          msrc = inspect.getsource(M.main)
+          assert "notes_source_cleared" in msrc, "main 里没有「源被清空」对账"
+          # ⚠️ 判据要钉**那一个**闸, 不能钉 "if args.limit:" —— main 里有**两处**
+          #    args.limit(前面还有 `notes = notes[:args.limit]`), find() 命中的是
+          #    靠前那个, 于是把对账的闸整个拆掉这条断言照样绿。第一版就是这么写的,
+          #    靠"新断言必须先红"才发现它在空转。改成钉这一处独有的跳过文案。
+          i_guard = msrc.find("跳过「源被清空」对账")
+          i_query = msrc.find("with_rows")
+          assert i_guard >= 0, "对账没有 --limit 的闸"
+          assert i_guard < i_query, (
+              "闸排在对账查询后面 —— 部分扫描时 covered 本来就不全, "
+              "拿它比会把没轮到处理的 note 全误报成「源被清空」")
+          print("  ✓ main 有「源被清空」对账, 且 --limit 时先跳过")
+
           print("COR-013 自检通过")
           PY
 
