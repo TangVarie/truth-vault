@@ -162,15 +162,24 @@ def existing_comments(sb, note_id: str) -> list[dict]:
     ⚠️ 原来这里只取 ``comment_id`` 的集合, 而配对是**按位置**做的 ——
     见 write_comments 的说明, 那正是 COR-013 的根因。要按内容配对就必须
     把内容读回来。
+
+    ⚠️ **必须翻页。** PostgREST 的 ``db-max-rows`` 默认 1000, 裸 ``.execute()``
+    会被服务端**静默钳到 1000** —— 一条爆款笔记的评论轻松过千。被钳掉的那些行
+    在这里"不存在", 于是它们对应的评论会被当成新评论去 mint id; 而 id 是内容
+    寻址的, mint 出来的正好就是那几行**已经占着的主键** → insert 抛 PK 冲突,
+    这条 note 的同步就此断掉。顺带 vanished 那份报告也会把它们全列成"消失了"。
+
+    本文件 17 行之前的 ``fetch_notes_with_comments_text`` 已经在用
+    ``fetch_all_pages``(它的 docstring 专门讲了这个 1000 的零余量), 同一个文件
+    里两种口径才是真正危险的地方。
     """
-    res = (
+    q = (
         sb.schema("truth_vault")
         .table("comments")
         .select("comment_id, content, comment_role, comment_order")
         .eq("note_id", note_id)
-        .execute()
     )
-    rows = list(res.data or [])
+    rows = list(fetch_all_pages(q, order_by="comment_id"))
     rows.sort(key=lambda r: (r.get("comment_order") is None,
                              r.get("comment_order") or 0,
                              r.get("comment_id") or ""))
@@ -315,13 +324,6 @@ def write_comments(
 
     if not to_insert:
         return 0
-    (
-        sb.schema("truth_vault")
-        .table("comments")
-        .insert(to_insert)
-        .execute()
-    )
-    return len(to_insert)
     (
         sb.schema("truth_vault")
         .table("comments")

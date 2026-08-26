@@ -224,17 +224,40 @@ jobs:
           # 新评论静默丢失 + 旧评论写成两条 + comment_order 全错。而随后的 LLM
           # 楼层重建会基于这些行写 parent_comment_id —— 层级建在错的数据上。
 
+          # ⚠️ 假件必须模拟 PostgREST 的 **db-max-rows 静默钳位**(默认 1000)。
+          #    不模拟的话, "读已有评论时忘了翻页"这类 bug 在测试里**永远看不见**
+          #    —— 而它正是本仓审计反复出现的那一类(COR-006 / ROB-011)。
+          #    insert 也按主键去重, 撞了就抛 —— 真库有 PRIMARY KEY (comment_id),
+          #    假件不抛的话"重复 mint"会被写成两行而测试全绿。
+          MAXROWS = 1000
+
           class _FakeSB:
-              def __init__(s, rows=()): s.rows=[dict(r) for r in rows]; s._op=None; s._eq=None
+              def __init__(s, rows=()):
+                  s.rows=[dict(r) for r in rows]; s._op=None; s._eq=None; s._rng=None
               def schema(s,_): return s
               def table(s,n): return s
-              def select(s,*a): s._op="select"; return s
+              def select(s,*a): s._op="select"; s._rng=None; return s
               def eq(s,k,v): s._eq=(k,v); return s
-              def insert(s,rows): s.rows.extend(rows); s._op="insert"; return s
+              def order(s,col): s._order=col; return s
+              def range(s,a,b): s._rng=(a,b); return s
+              def insert(s,rows):
+                  ids={r["comment_id"] for r in s.rows}
+                  for r in rows:
+                      if r["comment_id"] in ids:
+                          raise AssertionError(
+                              f"主键冲突: {r['comment_id']} 已存在 —— "
+                              "重复 mint 了一个已经占着的 id")
+                      ids.add(r["comment_id"])
+                  s.rows.extend(rows); s._op="insert"; return s
               def update(s,patch): s._op="update"; s._patch=patch; return s
               def execute(s):
                   if s._op=="select":
-                      return type("R",(),{"data":[dict(r) for r in s.rows]})()
+                      data=sorted((dict(r) for r in s.rows),
+                                  key=lambda r: r.get(getattr(s,"_order","comment_id")) or "")
+                      if s._rng is not None:
+                          data=data[s._rng[0]:s._rng[1]+1]
+                      # 服务端上限: 请求再大也只回这么多, 且**不报错**
+                      return type("R",(),{"data":data[:MAXROWS]})()
                   if s._op=="update":
                       for r in s.rows:
                           if r["comment_id"]==s._eq[1]: r.update(s._patch)
@@ -299,6 +322,34 @@ jobs:
           assert any(r["content"]=="B" for r in sb.rows), \
               "B 从源里消失就被删了 —— 本次刻意不做删除(comments 没有软删列)"
           print("  ✓ 从源里消失的行保留下来(仅告警), 没有静默删除")
+
+          # ── ⑥ 已有评论超过 db-max-rows 时不许把它们当成"不存在" ──
+          #
+          # PostgREST 默认 max-rows=1000, 裸 .execute() 会被服务端**静默钳到
+          # 1000**。一条爆款笔记的评论轻松过千。被钳掉的行在读取侧"不存在",
+          # 于是它们对应的评论会被当成新评论去 mint id —— 而 id 是内容寻址的,
+          # mint 出来的正好就是那几行**已经占着的主键** → PK 冲突, 这条 note
+          # 的同步就此断掉。vanished 那份报告也会把它们全列成"消失了"。
+          #
+          # 这条正是本仓审计反复出现的那一类(COR-006 / ROB-011), 而同一个文件
+          # 17 行之前的 fetch_notes_with_comments_text 已经在用 fetch_all_pages。
+          BIG = [("素人", f"评论{i}") for i in range(MAXROWS + 200)]
+          sb = _FakeSB()
+          M.write_comments(sb, NOTE, PROJ, BIG, dry_run=False)
+          assert len(sb.rows) == len(BIG), f"首轮就没写全: {len(sb.rows)}"
+          # 重跑: 全部都该被认领, 一条都不该新插(insert 里的 PK 检查会当场抛)
+          n = M.write_comments(sb, NOTE, PROJ, BIG, dry_run=False)
+          assert n == 0, f"超过 max-rows 的那些被当成新评论了: 又插了 {n} 条"
+          assert len(sb.rows) == len(BIG), f"行数变了: {len(sb.rows)}"
+          print(f"  ✓ {len(BIG)} 条(> max-rows {MAXROWS}) 重跑仍是 no-op —— 读取侧翻页了")
+
+          # 读取路径必须走 fetch_all_pages。判据是**被禁止的形态**: 不许再有
+          # 裸的 .execute() 直接喂给 existing_comments 的返回。
+          import ast, inspect
+          src = inspect.getsource(M.existing_comments)
+          assert "fetch_all_pages" in src, \
+              "existing_comments 没走 fetch_all_pages —— 超过 1000 条就静默截断"
+          print("  ✓ existing_comments 走 fetch_all_pages")
 
           print("COR-013 自检通过")
           PY
