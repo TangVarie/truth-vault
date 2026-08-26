@@ -900,6 +900,25 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds")
 
 
+def _iso_now_tz() -> str:
+    """UTC ISO timestamp **带偏移量**, 给 ``TIMESTAMPTZ`` 列用。
+
+    ⚠️ 和上面那个 ``_iso_now()`` 是两件事, 别混:
+
+      · ``_iso_now()`` 故意去掉时区, 因为本仓绝大多数列是
+        ``TIMESTAMP WITHOUT TIME ZONE``, 带上 ``+00:00`` 会被 Postgres 悄悄
+        丢掉、读的人再也判不出它是不是 UTC;
+      · ``TIMESTAMPTZ`` 列**正相反** —— 给它一个 naive 串, Postgres 会按
+        **会话时区**解释再转成 UTC 存。会话时区不是 UTC 时(连接默认不保证是),
+        存进去的时刻整体偏几个小时, 基于它算的"消失了多久"跟着错, 而且不报错。
+        (codex review)
+
+    ``notes.last_seen_at`` 是 ``TIMESTAMPTZ``(见 schemas/notes_v1_9), 走这个。
+    以后新增 TIMESTAMPTZ 列也走这个。
+    """
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # Logging
 # ─────────────────────────────────────────────────────────────────────────

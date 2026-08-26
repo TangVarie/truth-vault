@@ -60,6 +60,74 @@ jobs:
             worker/__init__.py \
             worker/app.py \
             sanshengliubu-patches/import_truth_vault_baokuan.py
+      - name: 本工作流里每个内联 python 块都有结束符 (防"守卫被静默吞掉")
+        run: |
+          python - <<'PY'
+          # 这一步守的是**本文件自己**。
+          #
+          # 下面几十个 step 的内联自检长这样:
+          #
+          #     run: |
+          #       python - <<'PY'      ← 开
+          #       ...断言...
+          #       PY                   ← 关
+          #
+          # 结束符掉了会怎样? bash 不会报错 —— 它只打一句 warning, 然后把
+          # heredoc 一直读到脚本 EOF。所以**这一个块**照样跑。真正的危险有两
+          # 层, 都很安静:
+          #
+          #   ① 之后往同一个 run 块里再追加任何命令, 都会被吞进上一段 python
+          #      的源码里, 变成语法错误或者干脆不执行 —— 而不是"多跑一条";
+          #   ② 任何靠"开-关配对"抽块来审计本工作流的工具(包括做审计
+          #      时用的那种)会直接**看不见**这个块, 于是报"N 个块, 0 个失败",
+          #      而 N 少了一个。守卫在统计里消失, 比守卫变红危险得多。
+          #
+          # ②就是这条 CI 步骤存在的原因: 2026-08-26 合并时发现 main 上
+          # COR-008 那个块的结束符已经掉了一段时间, 是靠"块数没涨"才发现的。
+          # 靠人数数不可靠, 所以钉进 CI。
+          #
+          # 判据是**配对**, 不是计数相等 —— 计数相等挡不住"A 少一个、B 多一个"。
+          import pathlib
+          import re
+          import sys
+
+          import yaml
+
+          OPEN = re.compile(r"<<'PY'\s*$")
+          path = pathlib.Path(".github/workflows/ci.yml")
+          wf = yaml.safe_load(path.read_text(encoding="utf-8"))
+
+          bad = []
+          checked = 0
+          for job_name, job in (wf.get("jobs") or {}).items():
+              for idx, step in enumerate(job.get("steps") or []):
+                  script = step.get("run")
+                  if not script:
+                      continue
+                  where = f"{job_name} / {step.get('name') or f'step #{idx}'}"
+                  lines = script.split("\n")
+                  i = 0
+                  while i < len(lines):
+                      if OPEN.search(lines[i]):
+                          checked += 1
+                          start = i + 1
+                          i += 1
+                          while i < len(lines) and lines[i].strip() != "PY":
+                              i += 1
+                          if i >= len(lines):
+                              bad.append(f"{where}: 第 {start} 行开的 heredoc 没有 PY 结束符")
+                      i += 1
+
+          if bad:
+              print("以下内联块缺结束符 —— 后续命令会被吞进 python 源码, 且审计工具看不见它们:")
+              for b in bad:
+                  print("  ✗ " + b)
+              sys.exit(1)
+
+          assert checked > 20, f"只找到 {checked} 个内联块, 抽块逻辑八成坏了"
+          print(f"  ✓ {checked} 个内联 python 块, 每个都有配对的 PY 结束符")
+          PY
+
       - name: controlled vocab JSON ↔ docs/05 consistency (D-041)
         run: |
           python - <<'PY'
@@ -209,6 +277,135 @@ jobs:
           if failed:
               raise SystemExit(f"\n{len(failed)} parser test(s) failed")
           print(f"\n{len(cases)}/{len(cases)} passed")
+          PY
+      - name: 对账只在完整同步时盖戳, 且只报不删 (跨库审计 COR-011)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          import inspect
+          import sync_feishu_notes_to_truth_vault as M
+
+          src = inspect.getsource(M.main)
+
+          # ── ① 「完整同步」的判据必须同时排除三种情况 ──
+          #
+          # 这是这条改动里唯一会造成**不可逆**错误的地方: 把"这次没看见"
+          # 当成"被删了"。--limit 会让循环中途 break; 多表合并里任何一张表
+          # 抓失败, 那张表的记录也全都没看见。判据漏掉任何一个, 一次带
+          # --limit 的手动同步就能把整个项目标成"消失"。
+          assert "truncated_by_limit" in src, "没有记录 --limit 是否截断过"
+          assert "fetch_failed" in src, "没有记录哪张飞书表抓失败了"
+          assert "full_scan = (not truncated_by_limit) and (not fetch_failed)" in src, \
+              "完整同步的判据不对 —— 必须同时排除 limit 截断和抓取失败"
+          assert "if full_scan:" in src, "盖戳没有被 full_scan 守住"
+          # codex review: 还要排除**逐条处理失败**。一条被 quarantine / transform_row
+          # 抛错 / 缺必填的记录没被盖戳, 而它在飞书里明明还在 —— 上一轮盖过戳的话,
+          # 这次会被报成"消失了"。对账报错一条就不如不报。
+          assert "records_all_ok" in src, \
+              "完整同步的判据没有排除逐条处理失败(quarantine / transform 抛错)"
+          # 以及**写入失败**。戳是写入 payload 的一部分(必须先盖后写), 所以
+          # stamping 那一步算不到 upsert 的失败, 得在对账那侧再挡一次。
+          assert "writes_all_ok" in src, "没有挡住「note 没写成功」就去对账"
+          print("  ✓ 判据排除 --limit / 抓取失败 / 逐条处理失败 / 写入失败")
+
+          # ── ② 判据只算一次 ——「盖戳」和「对账」必须共用同一个 ──
+          # 两处各判一次的话, 迟早出现"盖了戳但没对账"或者反过来。
+          assert src.count("full_scan = ") == 1, "full_scan 被算了不止一次"
+          print("  ✓ 盖戳与对账共用同一个判据(只算一次)")
+
+          # ── ③ 只报不删 ──
+          #
+          # notes 有六张表 ON DELETE CASCADE, 另有 synced_to_ssll_at 标着
+          # 已经推到三生六部(**另一个数据库**, 没有外键)的行。这个方向的
+          # 错误不可逆, 所以对账那段里不许出现任何删除/状态变更。
+          recon = src[src.index("对账: 这次完整扫描没见到的"):]
+          for forbidden in (".delete(", '"is_deleted"', '"deleted_at"',
+                            "tombstone", '.update({"tier"'):
+              assert forbidden not in recon, \
+                  f"对账里出现了 {forbidden!r} —— 这次刻意只报不删"
+          print("  ✓ 对账段里没有任何删除 / 状态变更")
+
+          # ── ④ 「从没经历过完整同步」不算「消失」 ──
+          #
+          # 迁移当天全库的 last_seen_run_id 都是 NULL。混在一起报的话, 第一
+          # 份报告会把整个库列成"消失", 然后没有人会再看这个报告。
+          assert "never_seen" in recon and "vanished" in recon, \
+              "没有把「从没见过」和「消失了」分开"
+          assert 'not r.get("last_seen_run_id")' in recon, "分开的判据不对"
+          print("  ✓ 「从没经历过完整同步」与「消失了」分开报")
+
+          # ── ⑤ 下游影响面要一起报 ──
+          # 只躺在 TV 里的孤儿, 和已经推去三生六部当参考样本的孤儿, 处理
+          # 起来完全是两件事。
+          for col in ("synced_to_ssll_at", "synced_to_aw_at", "essence_annotated_at"):
+              assert col in recon, f"对账没报 {col} —— 清理时不知道要先撤什么"
+          # codex review: 经验卡也是下游, 而且是**最容易漏的那个** —— 它由
+          # curate 脚本独立建, 不回写 note 上任何一列, 但 note_id 是 ON DELETE
+          # CASCADE。只看 note 上那三个戳, 会把"删了会连带删掉一张馆员正在借阅
+          # 的卡"报成"这条没有下游产物"。
+          assert "flywheel_lesson_annotations" in recon, \
+              "对账没查经验卡 —— 它 CASCADE 于 note, 删了会连带没"
+          print("  ✓ 下游影响面含经验卡(CASCADE 于 note, 最容易漏的那个)")
+
+          # ── ⑥ 主判据是 run_id 精确相等, 但 NULL 要算"不等于" ──
+          #
+          # ⚠️ 这条**改过**: 原来钉的是 `.neq("last_seen_run_id", run_id)`,
+          #    而 PostgREST 的 neq 直译成 SQL 的 `<>` —— `NULL <> 'x'` 是
+          #    unknown, WHERE 会把它滤掉。于是 last_seen_run_id 为 NULL 的老行
+          #    **永远进不了 missing**, never_seen 恒为空, 而把"还没经历过完整
+          #    同步"和"消失了"分开正是这个功能的一半。真库实测:
+          #        WHERE last_seen_run_id <> 'run-1'             → 只有 stale
+          #        WHERE last_seen_run_id IS DISTINCT FROM 'run-1' → legacy + stale
+          #    (codex review)
+          assert "last_seen_run_id.is.null" in recon, \
+              "对账漏了 last_seen_run_id 为 NULL 的行 —— never_seen 会恒为空"
+          assert "last_seen_run_id.neq." in recon, "主判据不再是 run_id 相等"
+          print("  ✓ 主判据是 run_id, 且 NULL 也算「不是本次见到的」")
+
+          # ── ⑦ 排掉并发同步盖的戳 ──
+          # B 在 A 的「写完 → 查对账」窗口里把全库 run_id 覆盖成自己的, A 会把
+          # **整个项目**报成消失, 而两次扫描其实都是完整的。(codex review)
+          #
+          # ⚠️ 判据要钉**那个比较**, 不能只钉变量名 `concurrent` —— 第一版就是
+          #    `assert "concurrent" in recon`, 而把它改成 `concurrent = []` 之后
+          #    名字还在, 断言照样绿。又一条只认名字不认行为的空转守卫。
+          assert "run_started_at" in src, "没有记录本次开跑时刻"
+          assert 'last_seen_at"] >= run_started_at' in recon, \
+              "没有按「last_seen_at >= 本次开跑时刻」排除并发同步盖的戳"
+          assert "missing = [r for r in missing" in recon, "排除结果没有作用回 missing"
+          print("  ✓ 排除了并发同步盖的戳(按 last_seen_at >= 本次开跑时刻)")
+
+          # ── ⑧ TIMESTAMPTZ 列要用带偏移的时间串 ──
+          # last_seen_at 是 TIMESTAMPTZ; 给它 naive 串, Postgres 按**会话时区**
+          # 解释再转 UTC —— 会话时区不是 UTC 时整体偏几小时, 且不报错。
+          stamp = src[src.index("if full_scan:"):]
+          assert "_iso_now_tz()" in stamp, \
+              "last_seen_at(TIMESTAMPTZ)用了 naive 的 _iso_now() —— 会按会话时区偏移"
+          print("  ✓ last_seen_at 用 _iso_now_tz()(带 +00:00)")
+
+          # ── ⑨ 每一个被 upsert 写出去的列, 都得在首次部署清单里有来源 ──
+          #
+          # ⚠️ 这条是**部署契约**, 不是代码正确性: v1_9 给 notes 加了两列, 而
+          #    scripts/README.md 的「第一次部署」Step 0 清单当时停在 v1_5。照文档
+          #    部署出来的库上, **每一条 note 的 upsert 都会失败**(column does not
+          #    exist) —— 不是降级, 是全挂。空库上实测过:
+          #        跑到 v1_5 为止 → INSERT ... last_seen_at → column 不存在
+          #        补上 v1_9      → 通过
+          #    (codex review)
+          #
+          # 判据钉的是**被禁止的形态**: 脚本写了某列, 而清单里没有任何一条迁移
+          # 提到它。以后再加列忘了写文档同样会红。
+          import pathlib
+          readme = pathlib.Path("README.md").read_text(encoding="utf-8")
+          step0 = readme[readme.index("第一次部署"):readme.index("Step 1")]
+          for col in ("last_seen_at", "last_seen_run_id"):
+              assert col in src, f"脚本不再写 {col}? 那这条断言该改了"
+          assert "notes_v1_9" in step0, (
+              "v1_9 不在首次部署清单里 —— 照文档部署的库上每条 note upsert 都会"
+              "失败(column does not exist)")
+          print("  ✓ v1_9 在首次部署清单里(它是硬前置, 不是可选)")
+
+          print("COR-011 自检通过")
           PY
       - name: 评论身份按内容而不是按位置 (跨库审计 COR-013)
         working-directory: scripts
@@ -2209,6 +2406,8 @@ jobs:
           print("  ✓ exit code 现在会因为指标丢失而变红")
 
           print("COR-008 自检通过")
+          PY
+
       - name: 三个服务的鉴权闸口径一致且 fail-closed (跨库审计 SUP-001)
         run: |
           pip install -q fastapi 'httpx<0.28' 'starlette' >/dev/null
@@ -2444,6 +2643,20 @@ jobs:
       - name: Sanity-check v1.5 (librarian cache table exists)
         run: |
           psql -v ON_ERROR_STOP=1 -c "SELECT 'truth_vault.flywheel_librarian_cache'::regclass;"
+      - name: Apply v1.9 last_seen reconcile (+ idempotency)
+        # 只依赖 truth_vault.notes (v1_2)。ADD COLUMN / CREATE INDEX IF NOT EXISTS
+        # → 第二次 apply 必须是干净 no-op。
+        run: |
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_9_last_seen_reconcile.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_9_last_seen_reconcile.sql
+      - name: Sanity-check v1.9 (last_seen 两列 + 索引都在, 且默认 NULL)
+        run: |
+          psql -v ON_ERROR_STOP=1 -c "SELECT last_seen_at, last_seen_run_id FROM truth_vault.notes LIMIT 0;"
+          psql -v ON_ERROR_STOP=1 -c "SELECT to_regclass('truth_vault.notes_last_seen_idx') IS NOT NULL AS idx_ok;"
+          # 存量行必须是 NULL —— 迁移**不回填**。回填成"刚见过"等于凭空宣称
+          # 它们还在源里, 而那正是这两列要回答的问题。
+          psql -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM truth_vault.notes WHERE last_seen_run_id IS NOT NULL;" | grep -q ' 0' \
+            || (echo "存量行被回填了 last_seen_run_id —— 迁移不该假装见过它们" && exit 1)
       - name: Apply v1.6 sync_status pending fix (+ idempotency)
         # CREATE OR REPLACE VIEW; supersede v1_3 的 v_flywheel_sync_status。两遍验幂等。
         run: |
