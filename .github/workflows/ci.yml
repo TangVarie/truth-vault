@@ -60,6 +60,74 @@ jobs:
             worker/__init__.py \
             worker/app.py \
             sanshengliubu-patches/import_truth_vault_baokuan.py
+      - name: 本工作流里每个内联 python 块都有结束符 (防"守卫被静默吞掉")
+        run: |
+          python - <<'PY'
+          # 这一步守的是**本文件自己**。
+          #
+          # 下面几十个 step 的内联自检长这样:
+          #
+          #     run: |
+          #       python - <<'PY'      ← 开
+          #       ...断言...
+          #       PY                   ← 关
+          #
+          # 结束符掉了会怎样? bash 不会报错 —— 它只打一句 warning, 然后把
+          # heredoc 一直读到脚本 EOF。所以**这一个块**照样跑。真正的危险有两
+          # 层, 都很安静:
+          #
+          #   ① 之后往同一个 run 块里再追加任何命令, 都会被吞进上一段 python
+          #      的源码里, 变成语法错误或者干脆不执行 —— 而不是"多跑一条";
+          #   ② 任何靠"开-关配对"抽块来审计本工作流的工具(包括做审计
+          #      时用的那种)会直接**看不见**这个块, 于是报"N 个块, 0 个失败",
+          #      而 N 少了一个。守卫在统计里消失, 比守卫变红危险得多。
+          #
+          # ②就是这条 CI 步骤存在的原因: 2026-08-26 合并时发现 main 上
+          # COR-008 那个块的结束符已经掉了一段时间, 是靠"块数没涨"才发现的。
+          # 靠人数数不可靠, 所以钉进 CI。
+          #
+          # 判据是**配对**, 不是计数相等 —— 计数相等挡不住"A 少一个、B 多一个"。
+          import pathlib
+          import re
+          import sys
+
+          import yaml
+
+          OPEN = re.compile(r"<<'PY'\s*$")
+          path = pathlib.Path(".github/workflows/ci.yml")
+          wf = yaml.safe_load(path.read_text(encoding="utf-8"))
+
+          bad = []
+          checked = 0
+          for job_name, job in (wf.get("jobs") or {}).items():
+              for idx, step in enumerate(job.get("steps") or []):
+                  script = step.get("run")
+                  if not script:
+                      continue
+                  where = f"{job_name} / {step.get('name') or f'step #{idx}'}"
+                  lines = script.split("\n")
+                  i = 0
+                  while i < len(lines):
+                      if OPEN.search(lines[i]):
+                          checked += 1
+                          start = i + 1
+                          i += 1
+                          while i < len(lines) and lines[i].strip() != "PY":
+                              i += 1
+                          if i >= len(lines):
+                              bad.append(f"{where}: 第 {start} 行开的 heredoc 没有 PY 结束符")
+                      i += 1
+
+          if bad:
+              print("以下内联块缺结束符 —— 后续命令会被吞进 python 源码, 且审计工具看不见它们:")
+              for b in bad:
+                  print("  ✗ " + b)
+              sys.exit(1)
+
+          assert checked > 20, f"只找到 {checked} 个内联块, 抽块逻辑八成坏了"
+          print(f"  ✓ {checked} 个内联 python 块, 每个都有配对的 PY 结束符")
+          PY
+
       - name: controlled vocab JSON ↔ docs/05 consistency (D-041)
         run: |
           python - <<'PY'
@@ -2338,6 +2406,8 @@ jobs:
           print("  ✓ exit code 现在会因为指标丢失而变红")
 
           print("COR-008 自检通过")
+          PY
+
       - name: 三个服务的鉴权闸口径一致且 fail-closed (跨库审计 SUP-001)
         run: |
           pip install -q fastapi 'httpx<0.28' 'starlette' >/dev/null
