@@ -2015,6 +2015,38 @@ jobs:
           assert cw.post("/annotate-essence", json={}).status_code == 401
           del os.environ["WORKER_API_KEY"]
           print("  ✓ 环境里的 key 是非 ASCII 时照常 401(不是 500)")
+
+          # ── __all__ 里的名字必须真的存在 ──────────────────────────────
+          # 这里曾经列着 AuthDecision(早期设计留下的类名, 后来没实现)。
+          # `from service_auth import *` 会直接 AttributeError, 而这个模块是三个
+          # 服务共用的鉴权闸 —— 导入炸掉就是三个服务一起起不来。(codex review)
+          import service_auth as SA
+          missing = [n for n in SA.__all__ if not hasattr(SA, n)]
+          assert not missing, f"__all__ 里有不存在的名字: {missing}"
+          exec("from service_auth import *", {})   # 真的 import 一次
+          print(f"  ✓ __all__ 每个名字都取得到: {SA.__all__}")
+
+          # ── key 和 ALLOW_ANONYMOUS 同时在时, /health 不许自相矛盾 ────
+          #
+          # resolve() 先看 key, 所以匿名**并不生效**; 而 /health 以前照实回
+          # anonymous_allowed=True —— 它说"任何人可调", 实际每个不带 key 的请求
+          # 都 401。运维照着它排查会往完全错的方向走。(codex review)
+          #
+          # 但也不能光算成 False 了事: 生产上留着一个失效的 ALLOW_ANONYMOUS,
+          # 等哪天有人拿掉 key(轮换/迁移/清环境变量)它就**静默生效**。所以
+          # "生效与否"和"设没设"分成两个字段, 别挤在一个布尔里。
+          os.environ["WORKER_API_KEY"] = "k"
+          os.environ["WORKER_ALLOW_ANONYMOUS"] = "1"
+          h = SA.auth_health("WORKER", header="X-Worker-Key")
+          assert h["anonymous_allowed"] is False, \
+              f"key 压着匿名, /health 却说匿名可用: {h}"
+          assert h["anonymous_flag_set"] is True, "失效的匿名开关被完全藏起来了"
+          assert "ALLOW_ANONYMOUS" in h["mode"], f"mode 没提醒这个开关还留着: {h['mode']}"
+          # 行为要和它说的一致: 不带 key 照样 401
+          assert TestClient(W.app).post("/annotate-essence", json={}).status_code == 401
+          for _v in ("WORKER_API_KEY", "WORKER_ALLOW_ANONYMOUS"):
+              os.environ.pop(_v, None)
+          print("  ✓ key+匿名开关同时在: anonymous_allowed=False, 但 mode 点名提醒")
           PY
 
       - name: daily-sync 把 409 当瞬时失败 (不拖红 · 配合 worker 互斥锁)

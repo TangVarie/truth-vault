@@ -44,7 +44,11 @@ from __future__ import annotations
 import hmac
 import os
 
-__all__ = ["AuthDecision", "resolve", "auth_health", "AuthError"]
+# ⚠️ 只列**真的存在**的名字。这里曾经写着 ``AuthDecision`` —— 一个早期设计留下的
+#    类名, 后来没实现。``from service_auth import *`` 会直接 AttributeError,
+#    而这个模块是三个服务共用的鉴权闸, 导入炸掉就是三个服务一起起不来。
+#    (codex review) CI 里有一条断言 __all__ 里每个名字都能取到。
+__all__ = ["resolve", "auth_health", "AuthError"]
 
 # 匿名开关认这些值。刻意收得很窄: "0" / "false" / 空字符串 / 随手写的 "no"
 # 都不算开 —— 半开的鉴权比明确的开或关都危险。
@@ -107,12 +111,28 @@ def auth_health(prefix: str, *, header: str) -> dict:
 
     ``ok`` 的含义是"这个服务现在是安全的": 配了 key 才算。显式匿名模式
     ``ok=False`` —— 它能跑, 但它不安全, 而 /health 不该把这两件事混为一谈。
+
+    ⚠️ ``anonymous_allowed`` 报的是**当前真的会不会放行匿名**, 不是"那个环境
+    变量设没设"。两者在 key 和开关**同时存在**时会分叉: ``resolve`` 先看 key,
+    所以匿名并不生效, 而以前这里照实回 True —— /health 说"任何人可调", 实际
+    每个不带 key 的请求都 401。运维照着它排查会往完全错的方向走。(codex review)
+
+    但**光把它算成 False 又会丢掉一条真信息**: 生产上留着一个失效的
+    ``ALLOW_ANONYMOUS``, 等哪天有人拿掉 key(轮换、迁移、清理环境变量), 它会
+    **静默生效**, 服务从 401 变成全开而没有任何动静。所以那种情况在 ``mode``
+    里明说, 并单独回一个 ``anonymous_flag_set`` —— 生效与否和设没设是两件事,
+    分成两个字段说, 不要挤在一个布尔里。
     """
     has_key = bool(os.environ.get(f"{prefix}_API_KEY"))
-    anon = _anonymous_allowed(prefix)
+    flag_set = _anonymous_allowed(prefix)
+    effective_anon = flag_set and not has_key
+
     if has_key:
         mode = header
-    elif anon:
+        if flag_set:
+            mode += (f" ⚠️ {prefix}_ALLOW_ANONYMOUS 也设着 —— 当前被 key 压住不生效, "
+                     f"但一旦 {prefix}_API_KEY 被拿掉它就会静默放开。建议删掉。")
+    elif effective_anon:
         mode = (f"anonymous (显式设了 {prefix}_ALLOW_ANONYMOUS —— "
                 f"任何人可调, 别用在公网)")
     else:
@@ -121,6 +141,9 @@ def auth_health(prefix: str, *, header: str) -> dict:
     return {
         "ok": has_key,
         "required": has_key,
-        "anonymous_allowed": anon,
+        # 生效与否
+        "anonymous_allowed": effective_anon,
+        # 设没设(即使当前不生效) —— 留着它才能发现"拿掉 key 就会开门"这种配置
+        "anonymous_flag_set": flag_set,
         "mode": mode,
     }
