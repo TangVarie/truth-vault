@@ -33,8 +33,14 @@ GitHub「Run workflow」填表 ──HTTP──▶ Railway /onboard(连网关+�
 - root = repo 根;build `pip install -r onboarder/requirements.txt`;
   start `uvicorn onboarder.app:app --host 0.0.0.0 --port $PORT`;healthcheck `/health`
 - env:`ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY`(**用能跑通的那条通道**)、
-  `FEISHU_APP_ID` + `FEISHU_APP_SECRET`、`ONBOARDER_API_KEY`(自己定个口令)、
-  可选 `ONBOARDER_MODEL`
+  `FEISHU_APP_ID` + `FEISHU_APP_SECRET`、**`ONBOARDER_API_KEY`**(自己定个口令,
+  **必填** —— 见下)、可选 `ONBOARDER_MODEL`
+
+  > ⚠️ **`ONBOARDER_API_KEY` 不设 = 所有业务请求 401**(2026-08-26,跨库审计
+  > SUP-001)。服务照常起、`/health` 照常 200,但接口全锁 —— 因为它把**未信任
+  > 输入送进模型**、还会改写 `mappings/*.yaml`,漏配没有任何症状。
+  > 本地免鉴权:显式 `ONBOARDER_ALLOW_ANONYMOUS=1`(别设进 Railway)。
+  > 当前处于哪一态看 `/health` 的 `auth.mode`。
 - 拿到公网域名,如 `https://onboarder-xxx.up.railway.app`
 
 **② GitHub:加 2 个 repo secret**(Settings → Secrets → Actions):
