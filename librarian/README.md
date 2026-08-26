@@ -53,8 +53,15 @@ python -m librarian.cli --brief librarian/sample_brief.json
 
 repo 根 `railway.json` 已配好;在 Railway 建一个 service、root 指 repo 根、设环境变量
 (`SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` / `ANTHROPIC_API_KEY` / **`ANTHROPIC_BASE_URL`**
-(中转站/第三方网关, 可选, 不设走官方) / `FLYWHEEL_LIBRARIAN_MODEL`(见下方⚠️) / 建议设
-`LIBRARIAN_API_KEY` 鉴权)即可。healthcheck 走 `/health`。
+(中转站/第三方网关, 可选, 不设走官方) / `FLYWHEEL_LIBRARIAN_MODEL`(见下方⚠️) /
+**`LIBRARIAN_API_KEY`**)即可。healthcheck 走 `/health`。
+
+> ⚠️ **`LIBRARIAN_API_KEY` 从"建议设"变成"必须设"**(2026-08-26,跨库审计 SUP-001)。
+> 不设的话服务照常起、`/health` 照常 200,但**所有业务请求一律 401** ——
+> 因为它持 service-role 客户端读 lesson cards、且每次 miss 都打一次 LLM,
+> 漏配一个 secret 就等于把这两样交给公网,而漏配**没有任何症状**。
+> 本地开发要免鉴权,显式设 `LIBRARIAN_ALLOW_ANONYMOUS=1`(别设进 Railway);
+> 当前处于哪一态看 `/health` 的 `auth.mode`。
 
 > ⚠️ **模型 env 名各服务不同(2026-06-04 踩过的坑)**:馆员读 **`FLYWHEEL_LIBRARIAN_MODEL`**(默认
 > `claude-sonnet-4-6`),而 worker 读 `ESSENCE_MODEL`、autowriter 读 `CLAUDE_MODEL` —— **三个名字都不一样**。

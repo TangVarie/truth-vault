@@ -24,7 +24,20 @@ GitHub daily-sync(cron)
 | POST | `/curate` | `{project?, limit?=50, dry_run?}` | 把合格爆款策展成经验卡(喂馆员书架) |
 
 返回 `200 + {ok, returncode, stdout_tail, stderr_tail, action, project}`。`returncode!=0` → `ok=false`,
-由 daily-sync 判该步失败。鉴权:设了 `WORKER_API_KEY` 则请求须带 header `X-Worker-Key`;没设则放行(dev)。
+由 daily-sync 判该步失败。
+
+**鉴权(2026-08-26 起 fail-closed,跨库审计 SUP-001):**
+
+| 配置 | 行为 |
+|---|---|
+| 设了 `WORKER_API_KEY` | 请求须带 header `X-Worker-Key`,不匹配 → 401 |
+| 什么都没设 | **所有业务请求一律 401**(`/health` 仍 200,`auth.mode` 写明 `locked`) |
+| 没设 key + `WORKER_ALLOW_ANONYMOUS=1` | 放行,且 `/health` 报 `auth.ok=false` |
+
+⚠️ 以前这里写的是"没设则放行(dev)"。改掉的理由:这个 worker 拿 service-role
+凭据**subprocess 跑仓库里的脚本**,而漏配一个 secret(改名、迁 service、新建
+staging)**没有任何症状** —— 服务照常 200、日志照常干净。现在漏配会当场 401,
+`/health` 的 `auth.mode` 说得清为什么。
 
 ## 部署(Railway · 新建第三个 service,与 librarian/onboarder 并存)
 
@@ -60,10 +73,24 @@ GitHub daily-sync(cron)
 
 ## 本地自测
 
+⚠️ **先过鉴权那一关**,否则下面每条都是 401(fail-closed,见上)。二选一:
+
+```bash
+# (a) 带 key —— 和生产一个口径, 推荐
+export WORKER_API_KEY=local-dev-key
+AUTH=(-H "X-Worker-Key: $WORKER_API_KEY")
+
+# (b) 显式开匿名 —— 只在本地用, 别设进 Railway
+# export WORKER_ALLOW_ANONYMOUS=1
+# AUTH=()
+```
+
+`curl -s localhost:8000/health | jq .auth` 能看到当前是哪一态(`mode` 会写明)。
+
 ```bash
 # dry-run 不调 LLM、不写库(脚本 --dry-run)
-curl -s -X POST localhost:8000/annotate-essence -H 'content-type: application/json' \
+curl -s -X POST localhost:8000/annotate-essence "${AUTH[@]}" -H 'content-type: application/json' \
   -d '{"project":"WTG_phase1","limit":5,"dry_run":true}' | jq
-curl -s -X POST localhost:8000/curate -H 'content-type: application/json' \
+curl -s -X POST localhost:8000/curate "${AUTH[@]}" -H 'content-type: application/json' \
   -d '{"project":"WTG_phase1","limit":5,"dry_run":true}' | jq
 ```

@@ -44,6 +44,11 @@ from pathlib import Path
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 
+# 仓库根的共享鉴权闸(跨库审计 SUP-001)。三个服务的 Railway root 都是 repo
+# 根(见各自 railway.json 的 startCommand `uvicorn <svc>.app:app`), 所以顶层
+# 模块对三边都可导入; 它只用标准库, 不给任何一个服务加依赖。
+import service_auth
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("tv-worker")
 
@@ -97,11 +102,16 @@ def _script_lock(script: str):
 
 
 def _check_auth(provided: str | None) -> None:
-    expected = os.environ.get("WORKER_API_KEY")
-    if not expected:
-        return  # 未配 = dev 模式,放行
-    if provided != expected:
-        raise HTTPException(status_code=401, detail="invalid or missing X-Worker-Key")
+    """没配 key 就**一律 401**, 不再静默放行(跨库审计 SUP-001)。
+
+    判据统一在仓库根的 ``service_auth`` 里 —— 三个服务原来各存一份
+    一模一样的实现, 而它们守的是同一条安全不变量: 漂了就意味着某个
+    服务悄悄还开着, 且没有任何症状。
+    """
+    try:
+        service_auth.resolve("WORKER", provided, header="X-Worker-Key")
+    except service_auth.AuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
 
 
 def _run(script: str, args: list[str]) -> dict:
@@ -215,25 +225,22 @@ def _safe_origin(url: str | None) -> str | None:
 def health() -> dict:
     """健康检查 + 【配置自曝】。
 
-    为什么要曝鉴权状态: _check_auth() 在没配 WORKER_API_KEY 时【静默放行】(dev 模式)。
-    这在本地是便利, 在 Railway 上就是"公网裸奔但看着一切正常" —— 而且没有任何地方
-    看得出来。docs/19:180-200 记过同型事故(配置错被 except 吞掉, 外面永远 200)。
-    所以这里把已解析到的配置回显出来, 让配漏当场可见。
+    为什么要曝鉴权状态: 让"key 配漏了"当场可见。docs/19:180-200 记过同型事故
+    (配置错被 except 吞掉, 外面永远 200)。
+
+    ⚠️ 这个自曝**不是防线** —— 没人会在事故之前来读 /health。防线是
+       _check_auth 现在的 fail-closed(跨库审计 SUP-001): 没配 key 且没显式开
+       匿名, 所有业务请求一律 401。自曝的价值是告诉运维"为什么全在 401"。
 
     ⚠️ 只回显【有没有配】, 绝不回显 key 本身。
-    ⚠️ 保持 ok=True 不变 —— Railway healthcheck 靠它, 未配 key 不该让容器起不来
-       (仍是有意的 dev 模式)。要看的是 auth.ok。
+    ⚠️ 保持 ok=True 不变 —— Railway healthcheck 靠它, 配置不全不该让容器起不来
+       (那只会变成重启风暴, 而且重启治不好配置)。要看的是 auth.ok。
     """
-    has_key = bool(os.environ.get("WORKER_API_KEY"))
     return {
         "ok": True,
         "service": "tv-worker",
-        "auth": {
-            # ok=False = 谁都能调这个 worker(会烧 LLM 额度)。生产上应为 True。
-            "ok": has_key,
-            "required": has_key,
-            "mode": "X-Worker-Key" if has_key else "open (dev — WORKER_API_KEY 未配, 任何人可调)",
-        },
+        # ok=False = 这个 worker 现在不安全(锁死或显式匿名)。生产上应为 True。
+        "auth": service_auth.auth_health("WORKER", header="X-Worker-Key"),
         "config": {
             "run_timeout_s": _RUN_TIMEOUT_S,
             "scripts_dir_ok": _SCRIPTS_DIR.is_dir(),
