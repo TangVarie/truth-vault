@@ -41,6 +41,7 @@ SUP-002)，最后落在 fail-closed + 一个**显式的**匿名开关上。两�
 
 from __future__ import annotations
 
+import hmac
 import os
 
 __all__ = ["AuthDecision", "resolve", "auth_health", "AuthError"]
@@ -58,6 +59,27 @@ def _anonymous_allowed(prefix: str) -> bool:
     return (os.environ.get(f"{prefix}_ALLOW_ANONYMOUS") or "").strip().lower() in _TRUTHY
 
 
+def _key_matches(provided: str | None, expected: str) -> bool:
+    """恒定时间比对。
+
+    ``provided != expected`` 会在**第一个不同的字节**处短路, 于是比对耗时泄露
+    「猜对了前几个字符」—— 攻击者可以按字节把 key 试出来, 而不必穷举整个空间。
+    三份旧实现都是裸 ``!=``; 这次把判据收敛成一处, 正好是把它换成
+    ``hmac.compare_digest`` 的时候: 一个地方对了, 三个服务就都对了。
+
+    远程 HTTP 上要利用这个侧信道很难(网络抖动淹没了纳秒级差异), 但难不等于
+    没有, 而代价只有一次 encode。**这个函数唯一的职责就是比密钥**, 在这里留
+    一个已知不安全的比较没有任何理由。
+
+    ``compare_digest`` 只接受同类型且(对 str 而言)全 ASCII 的参数, 所以统一
+    encode 成 bytes —— key 里出现非 ASCII 时裸传 str 会抛 TypeError, 那会变成
+    500 而不是 401。
+    """
+    if provided is None:
+        return False
+    return hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8"))
+
+
 def resolve(prefix: str, provided: str | None, *, header: str) -> str:
     """校验一次调用。返回本次的模式名; 不通过就抛 ``AuthError``。
 
@@ -66,7 +88,7 @@ def resolve(prefix: str, provided: str | None, *, header: str) -> str:
     """
     expected = os.environ.get(f"{prefix}_API_KEY")
     if expected:
-        if provided != expected:
+        if not _key_matches(provided, expected):
             raise AuthError(f"invalid or missing {header}")
         return "key"
 

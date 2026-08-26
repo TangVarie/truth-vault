@@ -1974,6 +1974,47 @@ jobs:
               print(f"  ✓ {name}: 未配→401 · 配了→校验 · 显式匿名→放行且自报不安全")
 
           print("三个服务的鉴权闸口径一致")
+
+          # ── 比对必须是恒定时间的 ──────────────────────────────────────
+          #
+          # 裸 `provided != expected` 在**第一个不同的字节**处短路, 耗时因此泄露
+          # 「猜对了前几个字符」—— 攻击者可以按字节把 key 试出来, 而不必穷举。
+          # 三份旧实现都是裸 !=; 判据收敛成一处之后, 这里把正确写法钉死。
+          #
+          # 判据是**被禁止的形态**(源码里不许出现对 provided 的裸比较), 不是
+          # "现在用的是哪个函数" —— 换等价实现不会假警报, 改回裸 != 会红。
+          import ast, inspect, service_auth
+
+          src = inspect.getsource(service_auth)
+          bad = []
+          for node in ast.walk(ast.parse(src)):
+              if not isinstance(node, ast.Compare):
+                  continue
+              names = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+              if {"provided", "expected"} <= names and any(
+                      isinstance(op, (ast.Eq, ast.NotEq)) for op in node.ops):
+                  bad.append(ast.unparse(node))
+          assert not bad, f"密钥用了短路比较(时序侧信道): {bad}"
+          assert "compare_digest" in src, "没有任何恒定时间比较 —— 判据是不是被绕过了?"
+          print("  ✓ 密钥比对是恒定时间的(源码里没有对 provided 的裸 ==/!=)")
+
+          # 环境里配了**非 ASCII** 的 key 时, 必须照常 401, 不能变成 500。
+          #
+          # ⚠️ 这条最初写成"把非 ASCII key 当请求头发进来", 跑一遍就红了 ——
+          #    HTTP 头值本来就装不下非 ASCII, httpx 在客户端就拒了。所以那个
+          #    场景根本不存在, **危险的是另一侧**: expected 来自环境变量, 那里
+          #    完全可以是非 ASCII。compare_digest 对 str 参数要求全 ASCII, 裸传
+          #    str 会抛 TypeError —— 于是"运维把 key 设成了带中文的字符串"会让
+          #    每个请求 500 而不是 401。_key_matches 统一 encode 成 bytes 就是
+          #    为了这个。
+          os.environ["WORKER_API_KEY"] = "钥匙-¥€"
+          cw = TestClient(W.app)
+          r = cw.post("/annotate-essence", json={}, headers={"X-Worker-Key": "wrong"})
+          assert r.status_code == 401, f"非 ASCII key 把拒绝变成了 {r.status_code}"
+          # 完全不带头(provided=None)也要 401, 不能是 AttributeError → 500
+          assert cw.post("/annotate-essence", json={}).status_code == 401
+          del os.environ["WORKER_API_KEY"]
+          print("  ✓ 环境里的 key 是非 ASCII 时照常 401(不是 500)")
           PY
 
       - name: daily-sync 把 409 当瞬时失败 (不拖红 · 配合 worker 互斥锁)
