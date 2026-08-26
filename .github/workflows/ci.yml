@@ -1914,6 +1914,89 @@ jobs:
           print("\nworker 互斥锁 + health: 全部通过")
           PY
 
+      - name: 指标写失败必须计进 exit code (跨库审计 COR-008)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          import sync_feishu_notes_to_truth_vault as M
+
+          # 场景就是审计描述的那个: **note 全成功、metric 全失败**。
+          # 修之前 upsert_metrics_batch 返回 None、逐行失败只写日志, 而 exit
+          # code 只看 note 的失败数 —— 于是指标一条没写进去, 任务照样 exit 0,
+          # Done 那行还写着 errors: 0。daily-sync 的聚合闸看到的是绿的。
+          #
+          # 指标丢了**不可恢复**: 快照的时间窗过去就过去了, 下次同步补不回
+          # 24h 那一格。note 丢了至少下次重跑会补上。
+
+          class _Boom:
+              """metric_snapshots 的写一律炸; 其它表照常。"""
+              def __init__(s, table_name=None): s.t = table_name
+              def schema(s, _): return s
+              # ⚠️ 用 type(s) 而不是写死 _Boom —— 否则下面的 _OK / _AcctBoom
+              #    子类调 .table() 会拿回一个**父类**实例, 照样炸, 于是"全成功"
+              #    那条用例永远测不到成功路径(第一版就是这么错的)。
+              def table(s, name): return type(s)(name)
+              def upsert(s, *a, **k):
+                  if s.t == "metric_snapshots":
+                      raise RuntimeError("PostgREST 42501: permission denied")
+                  return s
+              def insert(s, *a, **k): return s.upsert()
+              def execute(s): return type("R", (), {"data": []})()
+
+          metrics = [{"note_id": f"p_{i}", "window_label": "24h", "source": "feishu",
+                      "likes": i} for i in range(5)]
+          written_ids = {m["note_id"] for m in metrics}
+
+          got = M.upsert_metrics_batch(_Boom(), metrics, written_note_ids=written_ids)
+          assert isinstance(got, tuple) and len(got) == 2, \
+              f"必须返回 (written, failed), 拿到 {type(got).__name__}"
+          n_written, failed = got
+          assert n_written == 0, n_written
+          assert len(failed) == 5, f"5 条全失败却只报了 {len(failed)}"
+          print(f"  ✓ 失败集合被还给了调用方: {len(failed)} 条")
+
+          # 全成功时不能误报
+          class _OK(_Boom):
+              def upsert(s, *a, **k): return s
+          n_written, failed = M.upsert_metrics_batch(_OK(), metrics,
+                                                     written_note_ids=written_ids)
+          assert n_written == 5 and failed == [], (n_written, failed)
+          print("  ✓ 全成功时 failed 为空, written 计数正确")
+
+          # 因为 note 没落库而被主动跳过的, **不算**失败 —— 那些 note 已经
+          # 计过一次错了, 再算一次就是双重计数。
+          n_written, failed = M.upsert_metrics_batch(_OK(), metrics,
+                                                     written_note_ids={"p_0"})
+          assert n_written == 1 and failed == [], (n_written, failed)
+          print("  ✓ 因 FK 跳过的不计进 failed(避免与 note 失败双重计数)")
+
+          # accounts 同一形状
+          class _AcctBoom(_Boom):
+              def upsert(s, *a, **k):
+                  if s.t == "accounts": raise RuntimeError("boom")
+                  return s
+          M._iso_now = lambda: "2026-01-01T00:00:00Z"
+          _orig = M.ensure_account_exists
+          M.ensure_account_exists = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+          try:
+              bad = M.ensure_accounts_batch(_AcctBoom(), {"a1": "xiaohongshu"})
+              assert len(bad) == 1, f"account 失败没被返回: {bad}"
+          finally:
+              M.ensure_account_exists = _orig
+          print("  ✓ accounts 的失败也还给了调用方")
+
+          # exit code 的口径: main 里 errors 累加了 metrics/accounts 的失败,
+          # 且 return 0 只在 errors == 0 时发生。用源码断言 —— 真跑 main 要
+          # 一整套飞书/Supabase 替身, 那反而测不清这一条。
+          import inspect
+          src = inspect.getsource(M.main)
+          assert 'stats["errors"] += len(failed_metrics) + len(failed_accounts)' in src, \
+              "main 没把 metric/account 的失败计进 errors —— exit code 仍是假绿"
+          assert 'return 0 if stats["errors"] == 0 else 1' in src, "exit code 口径变了"
+          assert 'stats["metrics_failed"]' in src, "Done 那行看不到 metrics_failed"
+          print("  ✓ exit code 现在会因为指标丢失而变红")
+
+          print("COR-008 自检通过")
       - name: 三个服务的鉴权闸口径一致且 fail-closed (跨库审计 SUP-001)
         run: |
           pip install -q fastapi 'httpx<0.28' 'starlette' >/dev/null
