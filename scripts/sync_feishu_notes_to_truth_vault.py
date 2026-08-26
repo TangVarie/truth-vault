@@ -685,12 +685,20 @@ _BATCH_CHUNK = 500
 def ensure_accounts_batch(
     client: Client, account_platforms: dict[str, str], *,
     dry_run: bool = False, chunk_size: int = _BATCH_CHUNK,
-) -> None:
+) -> list[dict[str, Any]]:
     """Batch version of ensure_account_exists: upsert unique accounts in chunks
     instead of one call per note. ignore_duplicates preserves first_seen_at.
-    Falls back to per-row (ensure_account_exists) if a chunk fails."""
+    Falls back to per-row (ensure_account_exists) if a chunk fails.
+
+    Returns the accounts that ultimately failed to write.
+
+    ⚠️ 与 metrics 那条(COR-008)同一形状: 原来返回 None、逐行失败只写日志。
+    严重度低一些 —— account 没建起来, 它下面的 note 会撞 FK 而失败, 那个是
+    计数的。但"低一些"不等于该看不见: 会出现"note 全挂但没人说得清为什么"的
+    排查现场, 而根因就在这几行日志里。"""
     if dry_run or not account_platforms:
-        return
+        return []
+    failed: list[dict[str, Any]] = []
     rows = [
         {"account_id": aid, "platform": plat, "owner_type": "素人",
          "first_seen_at": _iso_now()}
@@ -712,6 +720,11 @@ def ensure_accounts_batch(
                     ensure_account_exists(client, row["account_id"], platform=row["platform"])
                 except Exception:
                     logger.exception("per-row account upsert failed: %s", row.get("account_id"))
+                    failed.append(row)
+    if failed:
+        logger.error("accounts 有 %d 个最终没建起来, 它们下面的 note 会全部撞 FK: %s",
+                     len(failed), [r.get("account_id") for r in failed[:10]])
+    return failed
 
 
 def upsert_notes_batch(
@@ -755,13 +768,26 @@ def upsert_metrics_batch(
     client: Client, metrics: list[dict[str, Any]], *,
     written_note_ids: set[str] | None = None,
     dry_run: bool = False, chunk_size: int = _BATCH_CHUNK,
-) -> None:
+) -> tuple[int, list[dict[str, Any]]]:
     """Batch-upsert metric_snapshots; per-row fallback (upsert_metric) on a
     chunk failure.
 
+    Returns ``(written_count, failed_metrics)``.
+
+    ⚠️ **必须把失败集合还给调用方**(跨库审计 2026-08-24 COR-008)。原来这个
+    函数返回 None, 逐行失败只 ``logger.exception``, 而 main 的 exit code 是
+    ``0 if stats["errors"] == 0``, 且 ``stats["errors"]`` 只累加 **note** 的
+    失败数 —— 也就是说**指标可以一条都没写进去, 任务照样 exit 0**, Done 那行
+    还写着 errors: 0。daily-sync 的聚合失败闸看到的是绿的, 没有人会发现。
+
+    而指标丢了是**不可恢复**的: 快照的时间窗过去就过去了, 下一次同步补不回
+    24h 那一格。note 丢了至少还会在下次重跑时补上。
+
     If `written_note_ids` is given, drop any metric whose note_id isn't in it —
     that note failed to upsert, so its metric would violate the
-    metric_snapshots.note_id FK and sink the whole chunk into a per-row retry."""
+    metric_snapshots.note_id FK and sink the whole chunk into a per-row retry.
+    这些被主动跳过的**不算**进 failed: 它们的 note 已经计过一次错了, 再算一次
+    就成了双重计数。"""
     if written_note_ids is not None:
         orphaned = [m for m in metrics if m["note_id"] not in written_note_ids]
         if orphaned:
@@ -774,7 +800,9 @@ def upsert_metrics_batch(
         for m in metrics:
             logger.info("[dry-run] would upsert metric_snapshot note_id=%s window=%s",
                         m["note_id"], m["window_label"])
-        return
+        return len(metrics), []
+    written = 0
+    failed: list[dict[str, Any]] = []
     for i in range(0, len(metrics), chunk_size):
         chunk = metrics[i:i + chunk_size]
         try:
@@ -782,14 +810,26 @@ def upsert_metrics_batch(
                 client.schema("truth_vault").table("metric_snapshots")
                 .upsert(chunk, on_conflict="note_id,window_label,source").execute()
             )
+            written += len(chunk)
         except Exception as exc:
             logger.warning("metrics batch [%d:%d] failed (%s); per-row fallback",
                            i, i + len(chunk), exc)
             for m in chunk:
                 try:
                     upsert_metric(client, m)
+                    written += 1
                 except Exception:
                     logger.exception("per-row metric upsert failed note_id=%s", m.get("note_id"))
+                    failed.append(m)
+    if failed:
+        # 单独喊一声。上面那些 logger.exception 混在一大片日志里, 而这一行是
+        # "这次同步丢了多少指标"的**汇总**, 也是下面 stats/exit code 的依据。
+        logger.error(
+            "metric_snapshots 有 %d 条最终没写进去(已逐条重试过): %s",
+            len(failed),
+            [f"{m.get('note_id')}@{m.get('window_label')}" for m in failed[:10]],
+        )
+    return written, failed
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -883,8 +923,12 @@ def main() -> int:
     if not args.dry_run:
         ensure_project_exists(sb, mapping)
 
+    # metrics_* / accounts_failed 是 COR-008 补的: 让"这次同步到底丢没丢东西"
+    # 出现在 Done 那一行里, 而不是只散落在几十条 logger.exception 之间。
     stats = {"total": 0, "upserted": 0, "quarantined": 0,
-             "empty_placeholder": 0, "errors": 0}
+             "empty_placeholder": 0, "errors": 0,
+             "metrics_written": 0, "metrics_failed": 0,
+             "metrics_skipped_fk": 0, "accounts_failed": 0}
     # Collect transformed rows, then write in batches after the loop (one
     # upsert per chunk instead of ~3 REST calls per record — see *_batch above).
     pending_notes: list[dict[str, Any]] = []
@@ -1017,16 +1061,30 @@ def main() -> int:
             n["last_seen_at"] = _iso_now_tz()
             n["last_seen_run_id"] = run_id
 
-    ensure_accounts_batch(sb, account_platforms, dry_run=args.dry_run)
+    failed_accounts = ensure_accounts_batch(sb, account_platforms, dry_run=args.dry_run)
     written_ids = upsert_notes_batch(sb, pending_notes, dry_run=args.dry_run)
     # Only write metrics for notes that actually landed — a metric whose note
     # failed to upsert would violate the metric_snapshots.note_id FK (see
     # upsert_metrics_batch). In dry-run written_ids holds all ids, so nothing
     # is filtered.
-    upsert_metrics_batch(sb, pending_metrics, written_note_ids=written_ids,
-                         dry_run=args.dry_run)
+    metrics_written, failed_metrics = upsert_metrics_batch(
+        sb, pending_metrics, written_note_ids=written_ids, dry_run=args.dry_run)
     stats["upserted"] = len(written_ids)
     stats["errors"] += len(pending_notes) - len(written_ids)
+
+    # ⚠️ 指标和账号的失败**必须计进 errors**(跨库审计 COR-008)。
+    # 原来 errors 只累加 note 的失败数, 于是"指标一条都没写进去"这件事既不
+    # 影响 exit code、也不出现在 Done 那行里 —— daily-sync 的聚合闸看到的是
+    # 绿的。而指标丢了是**不可恢复**的: 快照的时间窗过去就过去了。
+    stats["metrics_written"] = metrics_written
+    stats["metrics_failed"] = len(failed_metrics)
+    stats["accounts_failed"] = len(failed_accounts)
+    stats["errors"] += len(failed_metrics) + len(failed_accounts)
+    # 因为 note 没落库而被主动跳过的那些指标**单独记**, 不计进 errors ——
+    # 它们的 note 已经计过一次了, 再算一次就是双重计数。
+    stats["metrics_skipped_fk"] = (
+        len(pending_metrics) - metrics_written - len(failed_metrics)
+    )
 
     # Roll up project-level date range from the freshly synced notes. The yaml
     # placeholders (auto_from_publish_time_min/max) aren't DATE-castable, so

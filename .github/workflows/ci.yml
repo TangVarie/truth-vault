@@ -339,6 +339,217 @@ jobs:
 
           print("COR-011 自检通过")
           PY
+      - name: 评论身份按内容而不是按位置 (跨库审计 COR-013)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          import sync_comments_from_raw_extra as M
+
+          # 源是运营手工粘贴的自由文本, **没有任何原生 comment id**, 所以原来
+          # 拿"第几条"当身份: comment_id = f"{note_id}_c{ordinal}", 且只 insert
+          # 不更新。运营在头部插一条, 实测后果:
+          #     源 [A,B] → [X,A,B]
+          #     _c1 已存在 → 跳过(X 就此丢失) · _c2 已存在 → 跳过
+          #     _c3 = B → 当成新评论插进去
+          # 新评论静默丢失 + 旧评论写成两条 + comment_order 全错。而随后的 LLM
+          # 楼层重建会基于这些行写 parent_comment_id —— 层级建在错的数据上。
+
+          # ⚠️ 假件必须模拟 PostgREST 的 **db-max-rows 静默钳位**(默认 1000)。
+          #    不模拟的话, "读已有评论时忘了翻页"这类 bug 在测试里**永远看不见**
+          #    —— 而它正是本仓审计反复出现的那一类(COR-006 / ROB-011)。
+          #    insert 也按主键去重, 撞了就抛 —— 真库有 PRIMARY KEY (comment_id),
+          #    假件不抛的话"重复 mint"会被写成两行而测试全绿。
+          MAXROWS = 1000
+
+          class _FakeSB:
+              def __init__(s, rows=()):
+                  s.rows=[dict(r) for r in rows]; s._op=None; s._eq=None; s._rng=None
+              def schema(s,_): return s
+              def table(s,n): return s
+              def select(s,*a): s._op="select"; s._rng=None; return s
+              def eq(s,k,v): s._eq=(k,v); return s
+              def order(s,col): s._order=col; return s
+              def range(s,a,b): s._rng=(a,b); return s
+              def insert(s,rows):
+                  ids={r["comment_id"] for r in s.rows}
+                  for r in rows:
+                      if r["comment_id"] in ids:
+                          raise AssertionError(
+                              f"主键冲突: {r['comment_id']} 已存在 —— "
+                              "重复 mint 了一个已经占着的 id")
+                      ids.add(r["comment_id"])
+                  s.rows.extend(rows); s._op="insert"; return s
+              def update(s,patch): s._op="update"; s._patch=patch; return s
+              def execute(s):
+                  if s._op=="select":
+                      data=sorted((dict(r) for r in s.rows),
+                                  key=lambda r: r.get(getattr(s,"_order","comment_id")) or "")
+                      if s._rng is not None:
+                          data=data[s._rng[0]:s._rng[1]+1]
+                      # 服务端上限: 请求再大也只回这么多, 且**不报错**
+                      return type("R",(),{"data":data[:MAXROWS]})()
+                  if s._op=="update":
+                      for r in s.rows:
+                          if r["comment_id"]==s._eq[1]: r.update(s._patch)
+                  return type("R",(),{"data":s.rows})()
+
+          NOTE, PROJ = "p_note1", "p"
+
+          # ── ① 头部插入: 新的要进去, 旧的不许重复, order 要跟上 ──
+          sb = _FakeSB()
+          M.write_comments(sb, NOTE, PROJ, [("素人","A"),("素人","B")], dry_run=False)
+          M.write_comments(sb, NOTE, PROJ, [("素人","X"),("素人","A"),("素人","B")], dry_run=False)
+          vals = [r["content"] for r in sb.rows]
+          assert "X" in vals, "头部插入的新评论丢了"
+          assert vals.count("B") == 1, f"B 被写了 {vals.count('B')} 遍"
+          order = {r["content"]: r["comment_order"] for r in sb.rows}
+          assert order == {"X":1,"A":2,"B":3}, f"comment_order 没跟上重排: {order}"
+          print("  ✓ 头部插入: 新评论进库 · 无重复 · comment_order 正确")
+
+          # ── ② 向后兼容: 老的 _c{n} 行必须被**认领**, 不许改名 ──
+          #
+          # comments.parent_comment_id 是自引用外键。给已有行改名 = 把已经
+          # 重建好的楼层全打断, 而且改完之后再也对不回来。
+          old = [
+            {"comment_id":"p_note1_c1","content":"A","comment_role":"素人",
+             "comment_order":1,"parent_comment_id":None},
+            {"comment_id":"p_note1_c2","content":"B","comment_role":"素人",
+             "comment_order":2,"parent_comment_id":"p_note1_c1"},
+          ]
+          sb = _FakeSB(old)
+          M.write_comments(sb, NOTE, PROJ, [("素人","X"),("素人","A"),("素人","B")], dry_run=False)
+          ids = {r["content"]: r["comment_id"] for r in sb.rows}
+          assert ids["A"] == "p_note1_c1", f"老行 A 被改名成了 {ids['A']}"
+          assert ids["B"] == "p_note1_c2", f"老行 B 被改名成了 {ids['B']}"
+          b = next(r for r in sb.rows if r["content"]=="B")
+          assert b["parent_comment_id"] == "p_note1_c1", "楼层链被打断了"
+          assert len(sb.rows) == 3, f"行数不对(有重复?): {len(sb.rows)}"
+          print("  ✓ 老的 _c{n} 行被认领而非改名, parent_comment_id 链完好")
+
+          # ── ③ 重复内容不许互相吞 ──
+          # "好用" "+1" 这种一模一样的评论在真实数据里很常见。
+          sb = _FakeSB()
+          M.write_comments(sb, NOTE, PROJ, [("素人","好用"),("素人","好用")], dry_run=False)
+          assert len(sb.rows) == 2, f"两条一样的评论塌成了 {len(sb.rows)} 条"
+          assert len({r["comment_id"] for r in sb.rows}) == 2, "id 撞了"
+          # 重跑必须幂等 —— 不能又插两条
+          M.write_comments(sb, NOTE, PROJ, [("素人","好用"),("素人","好用")], dry_run=False)
+          assert len(sb.rows) == 2, f"重跑之后变成 {len(sb.rows)} 条"
+          print("  ✓ 重复内容各自成行, 且重跑幂等")
+
+          # ── ④ 纯重跑(源没变)不许有任何写入 ──
+          sb = _FakeSB()
+          M.write_comments(sb, NOTE, PROJ, [("素人","A"),("素人","B")], dry_run=False)
+          before = [dict(r) for r in sb.rows]
+          n = M.write_comments(sb, NOTE, PROJ, [("素人","A"),("素人","B")], dry_run=False)
+          assert n == 0 and sb.rows == before, "源没变却写了东西"
+          print("  ✓ 源没变时是干净的 no-op")
+
+          # ── ⑤ 从源里消失的行: 只报不删(见 write_comments 的说明) ──
+          sb = _FakeSB()
+          M.write_comments(sb, NOTE, PROJ, [("素人","A"),("素人","B")], dry_run=False)
+          M.write_comments(sb, NOTE, PROJ, [("素人","A")], dry_run=False)
+          assert any(r["content"]=="B" for r in sb.rows), \
+              "B 从源里消失就被删了 —— 本次刻意不做删除(comments 没有软删列)"
+          print("  ✓ 从源里消失的行保留下来(仅告警), 没有静默删除")
+
+          # ── ⑥ 已有评论超过 db-max-rows 时不许把它们当成"不存在" ──
+          #
+          # PostgREST 默认 max-rows=1000, 裸 .execute() 会被服务端**静默钳到
+          # 1000**。一条爆款笔记的评论轻松过千。被钳掉的行在读取侧"不存在",
+          # 于是它们对应的评论会被当成新评论去 mint id —— 而 id 是内容寻址的,
+          # mint 出来的正好就是那几行**已经占着的主键** → PK 冲突, 这条 note
+          # 的同步就此断掉。vanished 那份报告也会把它们全列成"消失了"。
+          #
+          # 这条正是本仓审计反复出现的那一类(COR-006 / ROB-011), 而同一个文件
+          # 17 行之前的 fetch_notes_with_comments_text 已经在用 fetch_all_pages。
+          BIG = [("素人", f"评论{i}") for i in range(MAXROWS + 200)]
+          sb = _FakeSB()
+          M.write_comments(sb, NOTE, PROJ, BIG, dry_run=False)
+          assert len(sb.rows) == len(BIG), f"首轮就没写全: {len(sb.rows)}"
+          # 重跑: 全部都该被认领, 一条都不该新插(insert 里的 PK 检查会当场抛)
+          n = M.write_comments(sb, NOTE, PROJ, BIG, dry_run=False)
+          assert n == 0, f"超过 max-rows 的那些被当成新评论了: 又插了 {n} 条"
+          assert len(sb.rows) == len(BIG), f"行数变了: {len(sb.rows)}"
+          print(f"  ✓ {len(BIG)} 条(> max-rows {MAXROWS}) 重跑仍是 no-op —— 读取侧翻页了")
+
+          # 读取路径必须走 fetch_all_pages。判据是**被禁止的形态**: 不许再有
+          # 裸的 .execute() 直接喂给 existing_comments 的返回。
+          import ast, inspect
+          src = inspect.getsource(M.existing_comments)
+          assert "fetch_all_pages" in src, \
+              "existing_comments 没走 fetch_all_pages —— 超过 1000 条就静默截断"
+          print("  ✓ existing_comments 走 fetch_all_pages")
+
+          # ══ codex review 四条 ══════════════════════════════════════════
+
+          # ⑦ 重复内容中间被硬删之后, 补的那条不许撞主键
+          #
+          # _1/_2/_3 都在, 有人删掉 _2, 而源里仍是三次出现 —— 配对认领 _1 和 _3
+          # (仅存的两行), 第三次出现若按"源里第几次"算 nth=3, mint 出来正好是
+          # 已经被认领的 _3 → 整批 insert 撞主键, 那条缺的反而补不回来。
+          sb = _FakeSB()
+          M.write_comments(sb, NOTE, PROJ, [("素人","好用")]*3, dry_run=False)
+          mid = sorted(r["comment_id"] for r in sb.rows)[1]
+          sb.rows = [r for r in sb.rows if r["comment_id"] != mid]   # 硬删中间那条
+          n = M.write_comments(sb, NOTE, PROJ, [("素人","好用")]*3, dry_run=False)
+          assert n == 1, f"该补回 1 条, 实际 {n}"
+          assert len(sb.rows) == 3, f"补完应有 3 条, 实际 {len(sb.rows)}"
+          assert len({r["comment_id"] for r in sb.rows}) == 3, "id 撞了"
+          print("  ✓ 重复内容中间被硬删: 补回一条, 不撞主键")
+
+          # ⑧ dry-run 必须真的读已有行
+          #
+          # 强行置空的话, 已经同步过的 note 在 dry-run 下会报一堆并不会发生的
+          # insert, 而重排 / 消失这两份报告永远为空。预览失真比没有预览更坏。
+          sb = _FakeSB()
+          M.write_comments(sb, NOTE, PROJ, [("素人","A"),("素人","B")], dry_run=False)
+          n = M.write_comments(sb, NOTE, PROJ, [("素人","A"),("素人","B")], dry_run=True)
+          assert n == 0, f"dry-run 把已同步的 note 报成要插 {n} 条"
+          print("  ✓ dry-run 读已有行, 不虚报 insert")
+
+          # ⑨ comment_order 更新失败要让整次运行失败
+          #
+          # 原来只 logger.exception 就接着插新行、照常返回成功, 而 daily-sync 只看
+          # 退出码 —— 新行进库、旧行留着错的顺序、工作流全绿、没人被通知。
+          # 与 COR-008(指标写失败不计进 exit code)同一个形状。
+          class _UpdateFails(_FakeSB):
+              def execute(s):
+                  if s._op == "update":
+                      raise RuntimeError("PostgREST 503")
+                  return _FakeSB.execute(s)
+          sb = _UpdateFails()
+          M.write_comments(sb, NOTE, PROJ, [("素人","A"),("素人","B")], dry_run=False)
+          try:
+              M.write_comments(sb, NOTE, PROJ,
+                               [("素人","X"),("素人","A"),("素人","B")], dry_run=False)
+              raise AssertionError("comment_order 更新失败却报了成功")
+          except RuntimeError as e:
+              assert "comment_order" in str(e), e
+          print("  ✓ comment_order 更新失败 → 抛错(退出码非 0), 不静默继续")
+
+          # ⑩ 整块源文本被清空的 note 要被报出来
+          #
+          # write_comments 的 vanished 只看得见**部分**消失。全清时这条 note 会被
+          # fetch_notes_with_comments_text 滤掉、write_comments 又对空解析早返回
+          # —— 整条 note 的评论全留在库里, 一句话都不说。判据放在 main 的对账上。
+          import inspect
+          msrc = inspect.getsource(M.main)
+          assert "notes_source_cleared" in msrc, "main 里没有「源被清空」对账"
+          # ⚠️ 判据要钉**那一个**闸, 不能钉 "if args.limit:" —— main 里有**两处**
+          #    args.limit(前面还有 `notes = notes[:args.limit]`), find() 命中的是
+          #    靠前那个, 于是把对账的闸整个拆掉这条断言照样绿。第一版就是这么写的,
+          #    靠"新断言必须先红"才发现它在空转。改成钉这一处独有的跳过文案。
+          i_guard = msrc.find("跳过「源被清空」对账")
+          i_query = msrc.find("with_rows")
+          assert i_guard >= 0, "对账没有 --limit 的闸"
+          assert i_guard < i_query, (
+              "闸排在对账查询后面 —— 部分扫描时 covered 本来就不全, "
+              "拿它比会把没轮到处理的 note 全误报成「源被清空」")
+          print("  ✓ main 有「源被清空」对账, 且 --limit 时先跳过")
+
+          print("COR-013 自检通过")
+          PY
 
       - name: Essence vocab validator self-check
         working-directory: scripts
@@ -2044,6 +2255,89 @@ jobs:
           print("\nworker 互斥锁 + health: 全部通过")
           PY
 
+      - name: 指标写失败必须计进 exit code (跨库审计 COR-008)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          import sync_feishu_notes_to_truth_vault as M
+
+          # 场景就是审计描述的那个: **note 全成功、metric 全失败**。
+          # 修之前 upsert_metrics_batch 返回 None、逐行失败只写日志, 而 exit
+          # code 只看 note 的失败数 —— 于是指标一条没写进去, 任务照样 exit 0,
+          # Done 那行还写着 errors: 0。daily-sync 的聚合闸看到的是绿的。
+          #
+          # 指标丢了**不可恢复**: 快照的时间窗过去就过去了, 下次同步补不回
+          # 24h 那一格。note 丢了至少下次重跑会补上。
+
+          class _Boom:
+              """metric_snapshots 的写一律炸; 其它表照常。"""
+              def __init__(s, table_name=None): s.t = table_name
+              def schema(s, _): return s
+              # ⚠️ 用 type(s) 而不是写死 _Boom —— 否则下面的 _OK / _AcctBoom
+              #    子类调 .table() 会拿回一个**父类**实例, 照样炸, 于是"全成功"
+              #    那条用例永远测不到成功路径(第一版就是这么错的)。
+              def table(s, name): return type(s)(name)
+              def upsert(s, *a, **k):
+                  if s.t == "metric_snapshots":
+                      raise RuntimeError("PostgREST 42501: permission denied")
+                  return s
+              def insert(s, *a, **k): return s.upsert()
+              def execute(s): return type("R", (), {"data": []})()
+
+          metrics = [{"note_id": f"p_{i}", "window_label": "24h", "source": "feishu",
+                      "likes": i} for i in range(5)]
+          written_ids = {m["note_id"] for m in metrics}
+
+          got = M.upsert_metrics_batch(_Boom(), metrics, written_note_ids=written_ids)
+          assert isinstance(got, tuple) and len(got) == 2, \
+              f"必须返回 (written, failed), 拿到 {type(got).__name__}"
+          n_written, failed = got
+          assert n_written == 0, n_written
+          assert len(failed) == 5, f"5 条全失败却只报了 {len(failed)}"
+          print(f"  ✓ 失败集合被还给了调用方: {len(failed)} 条")
+
+          # 全成功时不能误报
+          class _OK(_Boom):
+              def upsert(s, *a, **k): return s
+          n_written, failed = M.upsert_metrics_batch(_OK(), metrics,
+                                                     written_note_ids=written_ids)
+          assert n_written == 5 and failed == [], (n_written, failed)
+          print("  ✓ 全成功时 failed 为空, written 计数正确")
+
+          # 因为 note 没落库而被主动跳过的, **不算**失败 —— 那些 note 已经
+          # 计过一次错了, 再算一次就是双重计数。
+          n_written, failed = M.upsert_metrics_batch(_OK(), metrics,
+                                                     written_note_ids={"p_0"})
+          assert n_written == 1 and failed == [], (n_written, failed)
+          print("  ✓ 因 FK 跳过的不计进 failed(避免与 note 失败双重计数)")
+
+          # accounts 同一形状
+          class _AcctBoom(_Boom):
+              def upsert(s, *a, **k):
+                  if s.t == "accounts": raise RuntimeError("boom")
+                  return s
+          M._iso_now = lambda: "2026-01-01T00:00:00Z"
+          _orig = M.ensure_account_exists
+          M.ensure_account_exists = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+          try:
+              bad = M.ensure_accounts_batch(_AcctBoom(), {"a1": "xiaohongshu"})
+              assert len(bad) == 1, f"account 失败没被返回: {bad}"
+          finally:
+              M.ensure_account_exists = _orig
+          print("  ✓ accounts 的失败也还给了调用方")
+
+          # exit code 的口径: main 里 errors 累加了 metrics/accounts 的失败,
+          # 且 return 0 只在 errors == 0 时发生。用源码断言 —— 真跑 main 要
+          # 一整套飞书/Supabase 替身, 那反而测不清这一条。
+          import inspect
+          src = inspect.getsource(M.main)
+          assert 'stats["errors"] += len(failed_metrics) + len(failed_accounts)' in src, \
+              "main 没把 metric/account 的失败计进 errors —— exit code 仍是假绿"
+          assert 'return 0 if stats["errors"] == 0 else 1' in src, "exit code 口径变了"
+          assert 'stats["metrics_failed"]' in src, "Done 那行看不到 metrics_failed"
+          print("  ✓ exit code 现在会因为指标丢失而变红")
+
+          print("COR-008 自检通过")
       - name: 三个服务的鉴权闸口径一致且 fail-closed (跨库审计 SUP-001)
         run: |
           pip install -q fastapi 'httpx<0.28' 'starlette' >/dev/null
