@@ -38,6 +38,29 @@ DEFAULT_TIMEOUT = 300
 
 STATUS_ICON = {"ok": "✅", "needs_fix": "⚠️", "failed": "❌", "skipped": "⏭️"}
 
+# 仓里标"这项要人拍板"的字面标记(docs/16 / 各 mappings 头注的约定)。
+PENDING_MARK = "[待确认]"
+
+
+def count_pending(res: dict) -> int:
+    """这份草稿有多少项要策略 lead 拍板 —— 取**文本标记**与校验器 pending 的较大者。
+
+    ⚠️ 只用校验器的 ``pending`` 会**系统性报 0**。``vocab.validate_mapping`` 判的是
+    字段的【值】是不是占位符, 而模型的实际写法是【值填真实词表值 + 把 [待确认] 写进
+    行尾注释】:
+
+        content_format: 提问求助          # [待确认] 纠结要不要报名 → 提问求助/认知重构
+
+    yaml 注释在 safe_load 之后就没了, 校验器看不见。首批真跑(2026-08-28 run#16)实测:
+    TUGE 草稿有 32 处 [待确认]、ANSHEN 有 22 处, 而汇总那一列都报 0。
+
+    这个方向的错是**最坏的那种**:看汇总的人会以为"没什么要拍板的, 可以合了", 而真相
+    恰好相反 —— 那道人工闸门(README 原则 1)正是靠这些标记提示的。宁可多报也不能报 0。
+    (eval_wtg 的文档字符串早写了这个坑, 但当时只用在"别拿 golden 的 pending 当判据"上。)
+    """
+    marks = (res.get("mapping_yaml") or "").count(PENDING_MARK)
+    return max(marks, len(res.get("pending") or []))
+
 
 # ── 逐表起草 ────────────────────────────────────────────────────────────────
 
@@ -69,15 +92,61 @@ def _post_onboard(base_url: str, api_key: str | None, payload: dict, timeout: in
         raise RuntimeError(f"连不上 {base_url}: {exc.reason}") from exc
 
 
-def _draft_one(entry: dict, *, remote: str | None, api_key: str | None,
-               sample_n: int, model: str | None, timeout: int) -> dict:
+def build_payload(entry: dict, *, sample_n: int, model: str | None = None) -> dict[str, Any]:
+    """条目 → `/onboard` 的请求体。**能在本地算出 id 时就送 id, 不送 url。**
+
+    ⚠️ 这不是风格问题, 是**版本错配**问题。`url` 是服务端(Railway)新加的字段, 而
+    Railway 是独立部署的 —— 代码 merge 进 GitHub ≠ 那个服务重新部署了。首次真跑
+    (2026-08-28 run#15)六张表全部拿到:
+
+        HTTP 400: {"detail":"missing required field: app_token"}
+
+    那是**旧版 app.py 的文案**:服务还跑着老代码, 不认识 url。而链接解析是纯客户端、
+    不联网的 —— 链接里已经带了 `?table=` 时, 两个 id 本地就能算出来, 送 id 则新旧
+    服务端都认。
+
+    只有链接**没带** `?table=` 时才回落到送 url:那种情况必须由服务端连飞书去列表
+    选表, 客户端(GH runner)没有飞书凭证, 本地做不到。老服务端遇到这种会回 400,
+    但那条报错本身就说明该在链接里带上表。
+
+    ⚠️ **"新旧都认"说的是【端点的入参形状】, 不是"任何 token 都能取到数"。**(codex review)
+    `/wiki/` 链接的 token 是知识库节点 id;它能不能直接当 `app_token` 用取决于飞书,
+    不取决于本函数。新服务端取数失败时还有 `core._with_wiki_fallback` 换 `obj_token`,
+    **旧服务端没有那一步** —— 真遇到不被直接接受的 wiki token, 旧服务端会 500, 而客户端
+    **补救不了**(runner 没有飞书凭证, 换不了 obj_token)。那种情况唯一的出路是重部署
+    Railway, 不是改这里:送 url 只会让旧服务端 400, 严格更差。
+
+    本仓当前租户的实测(2026-08-28 run#16, 打的就是旧服务端):TUGE / ANSHEN 两张
+    `/wiki/` 表的节点 token 直接当 app_token **取数成功**;同批失败的四张里两张是
+    `/base/`、两张是 `/wiki/`, 且报的都是 502 / 读超时(网关侧), 与链接形态无关。
+    即"飞书直接收 wiki token"在这个租户上成立 —— 但那是**飞书的事实**, 不是本函数的保证。
+    """
     payload: dict[str, Any] = {"project_id": entry["project_id"],
                                "sample_n": entry.get("sample_n") or sample_n}
-    for k in ("url", "app_token", "table_id"):
-        if entry.get(k):
-            payload[k] = entry[k]
+    app_token, table_id = entry.get("app_token"), entry.get("table_id")
+    if entry.get("url") and not (app_token and table_id):
+        info = links.parse_feishu_url(entry["url"])
+        app_token = app_token or info["token"]
+        table_id = table_id or info["table_id"]
+    if app_token and table_id:
+        payload["app_token"], payload["table_id"] = app_token, table_id
+    elif entry.get("url"):
+        payload["url"] = entry["url"]      # 缺 ?table= —— 只能让服务端去列表选表
+    else:
+        # 两样都没有 —— 早失败, 别把 url=None 送出去让服务端回一个含糊的 400。
+        # parse_batch_spec 保证不会走到这里, 但 build_payload 已经是公开函数了,
+        # 判据不该建立在"某个调用方记得校验"上。
+        raise ValueError(
+            f"{entry.get('project_id')!r}: 既没有 url 也没有完整的 app_token + table_id"
+        )
     if model:
         payload["model"] = model
+    return payload
+
+
+def _draft_one(entry: dict, *, remote: str | None, api_key: str | None,
+               sample_n: int, model: str | None, timeout: int) -> dict:
+    payload = build_payload(entry, sample_n=sample_n, model=model)
 
     if remote:
         return _post_onboard(remote, api_key, payload, timeout)
@@ -180,15 +249,17 @@ def run_batch(
         yaml_path.write_text(res["mapping_yaml"], encoding="utf-8")
         brief_path.write_text(res.get("review_brief") or "", encoding="utf-8")
         status = "needs_fix" if res.get("is_error") else "ok"
+        pending_n = count_pending(res)
         print(f"{head}: {STATUS_ICON[status]} 写出 {yaml_path.name} + {brief_path.name}"
               f" · errors={len(res.get('errors') or [])}"
               f" uncovered={len(res.get('uncovered') or [])}"
-              f" 待确认={len(res.get('pending') or [])}")
+              f" 待确认={pending_n}")
         results.append({
             "project_id": pid, "status": status, "ref": _ref_of(entry), "detail": "",
             "errors": list(res.get("errors") or []),
             "uncovered": list(res.get("uncovered") or []),
             "pending": list(res.get("pending") or []),
+            "pending_n": pending_n,        # 见 count_pending:校验器那个会系统性报 0
             "app_token": res.get("app_token"), "table_id": res.get("table_id"),
             "files": [str(yaml_path), str(brief_path)],
         })
@@ -225,7 +296,7 @@ def render_summary(results: list[dict]) -> str:
         detail = f" {_cell(r['detail'])}" if r["status"] in ("failed", "skipped") else ""
         lines.append(
             f"| `{r['project_id']}` | {STATUS_ICON[r['status']]} {r['status']}{detail} "
-            f"| {len(r['errors'])} | {len(r['uncovered'])} | {len(r['pending'])} |"
+            f"| {len(r['errors'])} | {len(r['uncovered'])} | {r.get('pending_n', len(r['pending']))} |"
         )
 
     problems = [r for r in results if r["errors"] or r["uncovered"]]
