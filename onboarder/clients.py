@@ -275,7 +275,7 @@ def get_supabase():
 
 
 # ── Anthropic(中转站)单次调用 —— 镜像 librarian/clients.call_anthropic ──────
-# 这是已验证能透传你中转站的那条路(非流式 messages.create + base_url)。
+# 走中转站(base_url)。默认**流式** —— 非流式会撞网关的 120s 读超时, 见 call_anthropic。
 def parse_json(text: str):
     """剥掉 ``` 围栏再 json.loads;失败返回 None。"""
     t = (text or "").strip()
@@ -291,7 +291,9 @@ def parse_json(text: str):
 
 # 判成"值得重试"的 HTTP 状态。520/522/524 是 **Cloudflare 边缘**的错误(中转站挂在
 # CF 后面), 不是 Anthropic 的:
-#   524 = 源站在 CF 的等待上限(默认 100s)内没回话
+#   524 = 源站在 CF 的**读**等待窗口内没回话(本仓实测这个中转站是 120s,
+#         报错原文:"did not return a complete response within the 120-second
+#         Proxy Read Timeout window")
 #   522 = 连不上源站   ·   520 = 源站回了 CF 看不懂的东西
 # 原来这三个都**不在**表里, 只是碰巧因为 CF 错误页里有 "timeout" 字样才被判成可重试
 # —— 靠错误页文案兜底的判据, 换个网关就失效。显式列出来。
@@ -312,6 +314,24 @@ def call_anthropic(prompt: str, model: str, *, system=None, max_tokens: int = 80
     一次网关超时就会被放大成 4×3=12 次、每次卡满网关的等待上限。2026-08-28 实测:
     LNKT 那张表因此在 524 上空转, 单张最坏能烧掉 20 分钟, 而六张表的批量跑了 28.5
     分钟 —— 时间全花在超时上, 不是花在干活上。故 ``max_retries=0``, 退避只由这里管。
+
+    ⚠️ **默认走流式**(``ONBOARDER_STREAM=0`` 可退回非流式)。这**反转了** docs/16 /
+    onboarder README 里"单次非流式(已验证能透传中转站)"那条早期结论 —— 因为实测证明
+    非流式对宽表**结构上就跑不完**:
+
+        表      列数  结果
+        LNKT    52   ❌ 524
+        XIWU    31   ❌ 524
+        SPX     20   ✅        ← 294 行, 比 XIWU 还多, 照样过
+        BJS     15   ✅
+
+    决定成败的是**列数**(列多 → field_mapping / raw_extra / 方向都更长 → 输出更长),
+    不是行数。而 524 是**读**超时:CF 在 120s 内没收到任何字节才触发。流式下 token
+    持续往外吐, 这个计时器就永远不会走到头 —— 这是 524 的标准解, 也是 SDK 对
+    max_tokens 这么大的输出一直建议的做法。
+
+    非流式那条结论当时是对的(它验证的是"中转站能不能透传"), 只是没覆盖到"输出长到
+    120s 都出不完"这种情况。换更快的模型只是把线往后挪, 挪不过宽表。
     """
     import anthropic  # lazy
 
@@ -321,6 +341,7 @@ def call_anthropic(prompt: str, model: str, *, system=None, max_tokens: int = 80
     if os.environ.get("ANTHROPIC_BASE_URL"):
         kwargs["base_url"] = os.environ["ANTHROPIC_BASE_URL"]
     client = anthropic.Anthropic(**kwargs)
+    stream = os.environ.get("ONBOARDER_STREAM", "1").strip().lower() not in ("0", "false", "no")
     for attempt in range(max_attempts):
         try:
             create_kwargs: dict = {
@@ -330,6 +351,9 @@ def call_anthropic(prompt: str, model: str, *, system=None, max_tokens: int = 80
             }
             if system is not None:
                 create_kwargs["system"] = system
+            if stream:
+                with client.messages.stream(**create_kwargs) as s:
+                    return "".join(s.text_stream)
             msg = client.messages.create(**create_kwargs)
             return "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
         except Exception as exc:  # noqa: BLE001
@@ -344,12 +368,25 @@ def call_anthropic(prompt: str, model: str, *, system=None, max_tokens: int = 80
             if status in _GATEWAY_TIMEOUT_STATUS or (
                     not status and "524" in str(exc)):
                 # 把这一类的诊断说清楚, 否则下一个人要重走一遍"到底是谁超时了"。
+                #
+                # ⚠️ 建议要**看当前状态给**, 不能写死。第一版无条件写着"换成
+                #    claude-sonnet-4-6", 而实测那次日志里 model 就是 sonnet-4-6 ——
+                #    一条让人去做他已经做过的事的建议, 比不给建议更浪费时间。
+                if stream:
+                    fix = ("已经是流式了却还超时 —— 说明**中转站没有真的透传 SSE**"
+                           "(把流缓冲成整包再转发), 那样流式就失去意义。"
+                           "解法:① 找中转站确认是否透传流式;② 调小 max_tokens;"
+                           "③ 砍 corpus(onboarder/corpus.py 每次把全部历史 mapping 塞进 prompt);"
+                           "④ 宽表分次起草。")
+                else:
+                    fix = ("当前是**非流式**(ONBOARDER_STREAM=0)。524 是**读**超时, "
+                           "流式能让 token 持续外吐、计时器不触发 —— 先去掉 "
+                           "ONBOARDER_STREAM=0 再试。")
                 raise RuntimeError(
                     f"网关超时(HTTP {status or 524}) —— 是**中转站前面的 Cloudflare** 等不及了, "
-                    f"不是飞书、也不是 Railway。本次用的模型是 {model!r}, max_tokens={max_tokens}。"
-                    "重试极少有用(它不是抖动, 是这次生成本来就超过了网关上限)。"
-                    "解法按顺序试:① 换更快的模型(ONBOARDER_MODEL=claude-sonnet-4-6);"
-                    "② 调小 max_tokens;③ 表特别大时分次起草。"
+                    f"不是飞书、也不是 Railway。本次:模型 {model!r}, max_tokens={max_tokens}, "
+                    f"流式={'开' if stream else '关'}。"
+                    f"重试极少有用(它不是抖动, 是这次生成本来就超过了网关的读窗口)。{fix}"
                 ) from exc
             if not transient or last:
                 raise
