@@ -168,7 +168,39 @@ def load_mapping(project_id: str) -> dict:
                 f"{path}: tier_extraction.source={src!r} not in "
                 f"{sorted(_ALLOWED_TIER_SOURCES)}. Check for typos."
             )
+    _reject_shadowed_tier_rules(path, tier_extraction.get("rules") or [])
     return m
+
+
+def _reject_shadowed_tier_rules(path, rules: list[dict]) -> None:
+    """规则列序里靠前的短针,不许把靠后的长针整条遮死。
+
+    `_first_matching_tier` 取【首个】命中,所以短针在前 = 长针永远不可达。
+    实测(2026-08-28,BJS_phase1 起草稿):
+        - match_contains: ["爆贴", "爆帖"]   → 爆        # 「伪爆帖500」在这里就命中了
+        - match_contains: ["伪爆帖", "伪20评"] → 数据异常   # ← 永远走不到
+    后果最严重的一类:运营手工标的假数据被判成【爆】,再叠加 synthetic 那道网当时也漏
+    (只认「伪爆贴」不认「伪爆帖」),假爆款就以真爆款身份进了飞轮和看板爆款率。
+    这是纯静态可查的 —— 全部既有 mapping 扫过零误报,唯一命中就是上面那条。
+    修法是【调列序】:长针(伪爆帖)排到短针(爆帖)前面,与「爆贴预备 先于 爆贴」同理。
+    """
+    seen: list[tuple[str, Any, int]] = []
+    for i, rule in enumerate(rules):
+        needles = rule.get("match_contains")
+        # 写成裸字符串(而不是列表)时别按字符逐个拆 —— 那会拿单字去比子串, 报一堆假遮死。
+        # 这种 mapping 本身就坏(引擎也会逐字符匹配), 但那不是这道 lint 该报的错。
+        if not isinstance(needles, list):
+            continue
+        for needle in map(str, needles):
+            for prev_needle, prev_tier, prev_i in seen:
+                if prev_needle != needle and prev_needle in needle:
+                    raise ValueError(
+                        f"{path}: tier 规则列序把长针遮死了 —— 规则#{prev_i} 的"
+                        f"「{prev_needle}」(→{prev_tier})是规则#{i} 的「{needle}」"
+                        f"(→{rule.get('tier')})的子串, 首个命中原则下后者永远不可达。"
+                        f"把「{needle}」那条【上移】到「{prev_needle}」之前。"
+                    )
+            seen.append((needle, rule.get("tier"), i))
 
 
 # ─────────────────────────────────────────────────────────────────────────

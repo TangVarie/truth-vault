@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import uuid
 import time
@@ -234,6 +235,18 @@ _LINEAGE_COLS = tuple(_LINEAGE_FK_COLS) + _LINEAGE_RAW_EXTRA_COLS
 _NOTE_DATA_SIGNALS = (
     "account_id", "publish_url", "impressions", "reads", "interactions", "tier",
 )
+
+# 「运营在 tier 源里手写的假数据标记」—— 命中 → data_quality_flags.synthetic=true。
+# 这是假爆款进不了飞轮的【最后一道网】(见 transform_row 的 synthetic 段: 它【独立】于
+# tier 取值判定, 正因为 tier 规则的 match_contains「爆贴/爆帖」会把「伪爆帖500」误命中成 爆)。
+# 为什么是正则而不是 `"伪爆贴" in s`(2026-08-28 修): 运营 帖/贴 混写 —— 库里既有的
+# mapping 早就两个都收(XIWU/BJS 的 tier 规则写 ["爆贴", "爆帖"]), 但这道网只认「伪爆贴」。
+# 实测 BJS_phase1 / SPX_phase1 两张表的「流量状态」写的是【帖】:
+#   「伪爆帖500」→ 旧逻辑 `"伪爆贴" in "伪爆帖500"` = False → synthetic 漏标;
+#   叠加 BJS 规则列序(爆帖 在 伪爆帖 之前)→ tier=爆 且 synthetic=false
+#   = 人工假爆款【以真爆款身份】进飞轮 + 进看板爆款率, 正是本段注释承诺不会发生的事。
+# 「伪20评」(人工补的假评论数)同属"指标不可信", 一并收 —— 这两张表的状态列就是这么写的。
+_SYNTHETIC_TIER_SRC_RE = re.compile(r"伪爆[贴帖]|伪\d+评")
 
 
 def _skip_on_demand_on_cron(sync_interval: str | None, scheduled: bool) -> bool:
@@ -445,7 +458,8 @@ def transform_row(
     # ── 伪爆贴标记(synthetic)= 运营人工判定的"假爆款", 指标不可信 → 【最高优先级】不算爆款 ──
     #   两个【真实信号】(任一成立 → synthetic=true, 写同一个 data_quality_flags.synthetic):
     #   A) 笔记状态(_note_status_raw)含「关注」—— WTG 式人工伪爆贴标记。
-    #   C) tier 源(流量状态/状态/备注)值含「伪爆贴」—— RIO 式:运营直接在状态列写「伪爆贴500」等。
+    #   C) tier 源(流量状态/状态/备注)值命中 _SYNTHETIC_TIER_SRC_RE —— RIO 式:运营直接在状态列
+    #      写「伪爆贴500」「伪爆帖500」「伪20评」等。
     #      ⚠️ tier 规则 match_contains「爆贴」会把「伪爆贴」误读成 爆;synthetic 在此【独立】按原始
     #      tier 源字串判定、与最终 tier 取值无关 —— 确保假爆款【不论 tier 怎么定】都被剔出爆款/飞轮。
     #   synthetic=true → ① 排除出种草飞轮(通道1 ssll + 通道2 书架, 含 ssll 自愈回收);
@@ -468,8 +482,11 @@ def transform_row(
     tier_src_str = str(intermediates.get(tier_intermediate_key) or "") if tier_src_seen else ""
     if tier_src_seen:
         note.setdefault("raw_extra", {})["_tier_source_raw"] = tier_src_str
-        if "伪爆贴" in tier_src_str:
-            syn_reasons.append("流量状态/状态标注「伪爆贴」= 运营人工判定的假爆款; 指标不可信")
+        syn_hit = _SYNTHETIC_TIER_SRC_RE.search(tier_src_str)
+        if syn_hit:
+            syn_reasons.append(
+                f"流量状态/状态标注「{syn_hit.group(0)}」= 运营人工判定的假数据; 指标不可信"
+            )
     if note_status_seen or tier_src_seen:
         flags = dict(note.get("data_quality_flags") or {})
         if syn_reasons:
