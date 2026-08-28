@@ -289,16 +289,33 @@ def parse_json(text: str):
         return None
 
 
+# 判成"值得重试"的 HTTP 状态。520/522/524 是 **Cloudflare 边缘**的错误(中转站挂在
+# CF 后面), 不是 Anthropic 的:
+#   524 = 源站在 CF 的等待上限(默认 100s)内没回话
+#   522 = 连不上源站   ·   520 = 源站回了 CF 看不懂的东西
+# 原来这三个都**不在**表里, 只是碰巧因为 CF 错误页里有 "timeout" 字样才被判成可重试
+# —— 靠错误页文案兜底的判据, 换个网关就失效。显式列出来。
+_TRANSIENT_STATUS = (429, 500, 502, 503, 504, 520, 522, 524, 529)
+
+# 网关等不及的那几个 —— 重试**很少**有用:它不是抖动, 是"这次生成本来就超过了上限"。
+_GATEWAY_TIMEOUT_STATUS = (504, 524)
+
+
 def call_anthropic(prompt: str, model: str, *, system=None, max_tokens: int = 8000,
                    max_attempts: int = 4) -> str:
     """一次 Anthropic 调用 + 瞬时错误退避重试。lazy-import anthropic。
 
     走中转站:设了 ANTHROPIC_BASE_URL 就作为 base_url(api_key 用 ANTHROPIC_API_KEY),
     与 librarian / autowriter 同一约定;不设则走官方 endpoint。
+
+    ⚠️ **只保留一层重试。** SDK 自己默认还会重试 2 次, 叠上这里的 max_attempts=4,
+    一次网关超时就会被放大成 4×3=12 次、每次卡满网关的等待上限。2026-08-28 实测:
+    LNKT 那张表因此在 524 上空转, 单张最坏能烧掉 20 分钟, 而六张表的批量跑了 28.5
+    分钟 —— 时间全花在超时上, 不是花在干活上。故 ``max_retries=0``, 退避只由这里管。
     """
     import anthropic  # lazy
 
-    kwargs: dict = {}
+    kwargs: dict = {"max_retries": 0}     # 见上:重试只留一层
     if os.environ.get("ANTHROPIC_API_KEY"):
         kwargs["api_key"] = os.environ["ANTHROPIC_API_KEY"]
     if os.environ.get("ANTHROPIC_BASE_URL"):
@@ -318,12 +335,23 @@ def call_anthropic(prompt: str, model: str, *, system=None, max_tokens: int = 80
         except Exception as exc:  # noqa: BLE001
             status = getattr(exc, "status_code", None)
             transient = (
-                status in (429, 500, 502, 503, 504, 529)
+                status in _TRANSIENT_STATUS
                 or any(s in str(exc).lower() for s in (
-                    "429", "500", "502", "503", "504", "529",
-                    "timeout", "connection", "overloaded"))
+                    [str(s) for s in _TRANSIENT_STATUS]
+                    + ["timeout", "connection", "overloaded"]))
             )
-            if not transient or attempt == max_attempts - 1:
+            last = attempt == max_attempts - 1
+            if status in _GATEWAY_TIMEOUT_STATUS or (
+                    not status and "524" in str(exc)):
+                # 把这一类的诊断说清楚, 否则下一个人要重走一遍"到底是谁超时了"。
+                raise RuntimeError(
+                    f"网关超时(HTTP {status or 524}) —— 是**中转站前面的 Cloudflare** 等不及了, "
+                    f"不是飞书、也不是 Railway。本次用的模型是 {model!r}, max_tokens={max_tokens}。"
+                    "重试极少有用(它不是抖动, 是这次生成本来就超过了网关上限)。"
+                    "解法按顺序试:① 换更快的模型(ONBOARDER_MODEL=claude-sonnet-4-6);"
+                    "② 调小 max_tokens;③ 表特别大时分次起草。"
+                ) from exc
+            if not transient or last:
                 raise
             time.sleep(2 ** (attempt + 1))
     raise RuntimeError("call_anthropic exhausted retries")

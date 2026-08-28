@@ -2887,6 +2887,87 @@ jobs:
           print("批量接表自检通过")
           PY
 
+      - name: 网关超时不许空转重试, 且报错要自解释 (2026-08-28 实测 524)
+        run: |
+          python - <<'PY'
+          # 2026-08-28 接 LNKT 那张表时, Railway 日志里是:
+          #     POST https://tdyun.ai/v1/messages "HTTP/1.1 524"
+          #     Retrying request to /v1/messages in 0.469400 seconds
+          #     POST https://tdyun.ai/v1/messages "HTTP/1.1 524"
+          # 524 是**中转站前面的 Cloudflare**说"源站在我的等待上限内没回话"。三件事错了:
+          #
+          #   ① 524/522/520 都不在显式的瞬时状态表里, 只是碰巧因为 CF 错误页里有
+          #      "timeout" 字样才被判成可重试 —— 靠错误页文案兜底, 换个网关就失效。
+          #   ② 重试有**两层**:SDK 默认 2 次 × 这里 4 次 = 12 次, 每次都卡满网关上限。
+          #      单张表最坏烧 20 分钟, 六张表的批量跑了 28.5 分钟 —— 时间全花在超时上。
+          #   ③ 报错只是个 524, 看的人要重走一遍"到底是飞书、Railway 还是网关在超时"。
+          #      (这次就走了两轮:先误判成"Railway 服务挂了", 靠日志才定位到网关。)
+          import sys, types
+
+          from onboarder import clients
+
+          class Err(Exception):
+              def __init__(s, msg, status=None):
+                  super().__init__(msg); s.status_code = status
+
+          calls = []
+
+          def fake(status, msg, n_fail=99):
+              mod = types.ModuleType("anthropic")
+              class C:
+                  def __init__(s, **kw): calls.append(kw)
+                  @property
+                  def messages(s): return s
+                  def create(s, **kw):
+                      calls.append("create")
+                      if len([c for c in calls if c == "create"]) <= n_fail:
+                          raise Err(msg, status)
+                      return types.SimpleNamespace(
+                          content=[types.SimpleNamespace(type="text", text="ok")])
+              mod.Anthropic = C
+              sys.modules["anthropic"] = mod
+
+          clients.time.sleep = lambda s: None      # 别在 CI 里真睡退避
+
+          # ① 只留一层重试 —— 判据钉在传给 SDK 的参数上
+          calls.clear(); fake(524, "524 A timeout occurred")
+          try:
+              clients.call_anthropic("p", "claude-opus-4-6")
+          except RuntimeError:
+              pass
+          assert calls[0].get("max_retries") == 0, \
+              f"没关掉 SDK 自己的重试 —— 会和这里的退避相乘: {calls[0]}"
+
+          # ② 网关超时立刻停。重试没用:它不是抖动, 是这次生成本来就超过了上限。
+          n = len([c for c in calls if c == "create"])
+          assert n == 1, f"524 上重试了 {n} 次 —— 每次都会卡满网关的等待上限"
+
+          # ③ 报错必须自解释:说清是谁在超时 + 当时用的模型 + 怎么解
+          calls.clear(); fake(524, "524 A timeout occurred")
+          try:
+              clients.call_anthropic("p", "claude-opus-4-6")
+              raise AssertionError("网关超时却没抛")
+          except RuntimeError as exc:
+              msg = str(exc)
+              for must in ("网关超时", "Cloudflare", "claude-opus-4-6",
+                           "claude-sonnet-4-6", "不是飞书"):
+                  assert must in msg, f"报错里没有 {must!r} —— 看的人还得重查一遍是谁超时"
+          print("  ✓ 网关超时: 单层重试 · 不空转 · 报错点名是谁超时/什么模型/怎么解")
+
+          # ④ 真正的瞬时错误(529 过载)仍然要重试到成功, 别把这条也一起关了
+          calls.clear(); fake(529, "529 overloaded", n_fail=2)
+          assert clients.call_anthropic("p", "m") == "ok"
+          assert len([c for c in calls if c == "create"]) == 3
+          # ⑤ 非瞬时(401)立刻抛, 别把鉴权错误也重试四遍
+          calls.clear(); fake(401, "401 unauthorized")
+          try:
+              clients.call_anthropic("p", "m"); raise AssertionError("401 没抛")
+          except Err:
+              pass
+          assert len([c for c in calls if c == "create"]) == 1
+          print("  ✓ 529 仍重试到成功 · 401 立刻抛(没把重试一刀切掉)")
+          PY
+
       - name: 接表 workflow 不把 dispatch 输入插进 shell (脚本注入)
         run: |
           python - <<'PY'
