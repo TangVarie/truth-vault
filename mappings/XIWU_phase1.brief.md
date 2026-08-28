@@ -17,7 +17,10 @@
 **先例**
 TGV_phase1 同样面临 category 判断(保健品 vs 母婴), 按「产品本位」定。OKMAN_phase1 category=处方药由策略 lead 拍板。
 
-**请确认**: brand 用「西屋」还是完整品牌名? product 写法? category 用「家居家电」还是「医疗器械」?
+**✅ category 已定**(2026-08-28 策略 lead):**`家居家电`**,不按医疗器械。
+红线按家居家电这档走(禁宣称治疗腰椎间盘突出/颈椎病、禁绝对化),`base_template` 不升级。
+
+**仍待确认**: brand 用「西屋」还是完整品牌名? product 写法(「按摩椅」还是具体到 GT33)?
 
 ---
 

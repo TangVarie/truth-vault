@@ -2,11 +2,13 @@
 # LNKT_phase1 · 雷诺考特鼻喷 —— Onboarding 草稿(DRAFT · schema 演化)
 # ════════════════════════════════════════════════════════════════════
 #
-# ⚠️ 本表有两处新模式(与全部历史表不同), 须策略 lead 拍板后才能最终确认:
-#   (1) 方向拆成两列:「人群方向」(3 选项) + 「内容方向」(18 选项), 无单一「方向」列;
-#   (2) 平台是抖音(v.douyin.com 链接), 不是小红书;
+# ⚠️ 本表三处与全部历史表不同:
+#   (1) 方向拆成两列:「人群方向」(3 选项) + 「内容方向」(18 选项), 无单一「方向」列
+#       —— 【仍待策略 lead 拍板】, 见下方 direction_decomposition 那段;
+#   (2) 平台是抖音(v.douyin.com 链接), 不是小红书 —— ✅ 已定(2026-08-28): 就按抖音接;
 #   (3) 无曝光量/阅读量/互动量独立列 —— 数据汇总以文本形式散在「数据汇总-第N次」列。
-# 草稿起点 = A 家族(WTG/RIO/TXQ 式双状态列骨架); 飞书坐标、品类待补。
+# 草稿起点 = A 家族(WTG/RIO/TXQ 式双状态列骨架)。
+# 品类 ✅ 已定 = OTC药(2026-08-28); 飞书坐标已由批量流程从链接算出并写入 sync_config。
 # ════════════════════════════════════════════════════════════════════
 
 version: 1.0
@@ -15,7 +17,12 @@ version: 1.0
 project_id: LNKT_phase1
 brand: 雷诺考特                  # [待确认] 据蓝词/话题标签推断(雷诺考特鼻喷);LNKT 为内部代号
 product: 布地奈德鼻喷            # [待确认] 据蓝词推断;实际产品线待策略 lead 确认
-category: 处方药                 # [待确认] 布地奈德鼻喷国内属处方药(Rx);策略 lead 拍板
+# 策略 lead 定(2026-08-28): 雷诺考特【只是 OTC】, 不是处方药。
+# 起草稿按"布地奈德鼻用制剂国内属 Rx"推成了处方药 —— 那是按通用成分推的, 而实际按什么
+# 销售由这个品牌的注册证决定, 只有业务侧知道。这正是 R-009 当年在力克雷 NRT 上定过的
+# 同一类问题(成分看着像 Rx, 实际按 OTC 卖)。
+# ⚠️ base_template 仍留在【处方药】那档, 见下方 compliance —— 品类是 OTC, 合规按药品级走。
+category: OTC药
 # 全库第一个非小红书项目。策略 lead 定(2026-08-28): 就按抖音接, 不改。
 # 接表侧核过下游, TV 这半是通的(不是"应该能跑"):
 #   · notes.platform / accounts.platform 都是 TEXT NOT NULL DEFAULT 'xiaohongshu', 无 CHECK
@@ -242,9 +249,13 @@ tier_thresholds:
 # 合规
 # ════════════════════════════════════════════════════════════════════
 compliance:
-  base_template: 处方药              # [待确认] 布地奈德鼻喷=处方药级合规;策略 lead 拍板
-  custom_red_flags:                  # [待确认]
-    - "布地奈德/雷诺考特属鼻用激素类处方药;禁直接宣称'治疗鼻炎''根治'"
+  # category 是 OTC药, 但模板仍走【处方药】这档 —— 这不是漏改, 是 NRT 立的先例:
+  # NRT_phase2/3 同样 category: OTC药 + base_template: 处方药(R-009)。
+  # 即"按 OTC 卖"决定的是品类, 不降低合规档位; 药品内容的红线按药品级走。
+  # 往松改是有代价的方向, 真要改请连 NRT 那两张一起议。
+  base_template: 处方药
+  custom_red_flags:                  # [待确认] 措辞待策略 lead 定; 下面第一条已按 OTC 改
+    - "鼻用激素类 OTC 药;禁直接宣称'治疗鼻炎''根治'"
     - "禁剂量数字(mg/μg)出现在正文"
     - "禁暗示替代医疗/暗示不需就医直接自购"
     - "禁绝对化功效('一定有效'/'彻底好了')等"
@@ -354,10 +365,13 @@ onboarding_meta:
       「人群方向」→ raw_extra(同时作为 target_audience 起草参考)。
       待确认:人群方向是否需要独立建立 audience_decomposition 或合并进 direction 键名?
 
-    [新模式 2] 平台=抖音(douyin)
-      样本链接全为 v.douyin.com;素人主页链接也是抖音链接。
-      与历史表(小红书)不同,待确认 sync 脚本是否支持抖音 feishu_api 路径,
-      「观众分析」格式是否与 WTG parse_audience_analysis 兼容(样本看格式相同,可解析)。
+    [新模式 2] 平台=抖音(douyin) —— 已定(2026-08-28): 就按抖音接。
+      TV 侧下游已核过是通的: notes/accounts.platform 无 CHECK ·
+      ensure_account_exists 收 platform 参数 · _PLATFORM_EN_TO_SSLL 已有 douyin→抖音
+      (未知平台那里直接 raise, 所以有没有这行是硬判据) ·
+      parse_audience_analysis 按文本格式解析与平台无关。
+      ⚠️ 仍未核: 三生六部仓的 list_reference_packs 认不认「抖音」(另一个 repo)。
+      本表 on_demand 不自动跑; 翻 daily 前要在那边确认。
 
     [新模式 3] 无独立互动量/曝光量/阅读量列
       数据汇总文本在「数据汇总-第N次」里(非结构化)。
@@ -365,7 +379,8 @@ onboarding_meta:
       建议后续 annotation pass 解析最终回收的汇总文本写回 notes。
 
     其余待确认项:
-      - brand(雷诺考特?)/ product(布地奈德鼻喷?)/ category(处方药?) → 策略 lead 拍板
+      - category 已定 = OTC药(2026-08-28 策略 lead), base_template 仍走处方药档(NRT 先例)
+      - brand(雷诺考特?)/ product(布地奈德鼻喷?) → 仍待策略 lead 确认写法
       - 18 种内容方向的 content_format / target_audience / user_pain_point → 审 direction_decomposition
       - 「小爆」→ 爆 的 tier 映射是否合适(同 OKMAN 先例)
       - tier_thresholds 本期无效;待互动量口径确认后重设

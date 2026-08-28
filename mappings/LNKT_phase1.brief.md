@@ -14,9 +14,15 @@
 
 待确认:这个做法是否符合投放策略意图?还是应该把两列拼接成联合键(如「妈妈人群 · 就医流水账」)?
 
-**[新模式 2] 平台=抖音**
+**[新模式 2] 平台=抖音** —— ✅ 已定(2026-08-28):就按抖音接,不改。
 
-所有样本链接为 `v.douyin.com`。与历史表(小红书)不同。待确认 sync 脚本的 feishu_api 路径是否已支持抖音项目,`parse_audience_analysis` 对抖音「观众分析」文本是否兼容(样本格式与 WTG 看起来一致,但需确认)。
+TV 侧下游已核过是通的(不是"应该能跑"):`notes/accounts.platform` 是 TEXT 无 CHECK ·
+`ensure_account_exists` 收 `platform` 参数 · `_PLATFORM_EN_TO_SSLL` **已有** `douyin → 抖音`
+(未知平台那里直接 `raise`,所以有没有这行是硬判据) · `parse_audience_analysis`
+按文本格式解析,与平台无关。
+
+⚠️ **仍未核**:三生六部那个仓的 `list_reference_packs` 认不认「抖音」—— 另一个 repo,
+没有访问权。本表 `on_demand` 不自动跑,**翻 daily 前要在那边确认**。
 
 **[新模式 3] 无独立互动量列**
 
@@ -24,13 +30,19 @@
 
 ---
 
-### 2. brand / product / category
+### 2. brand / product / category —— ✅ category 已定
 
-草稿:brand=雷诺考特 / product=布地奈德鼻喷 / category=处方药
+**category = `OTC药`**(2026-08-28 策略 lead 定:"雷诺考特只是 OTC")。
 
-依据:蓝词字段取值(雷诺考特鼻喷、布地奈德、布地奈德喷雾)+ 话题标签(鼻炎自救坦白局)。布地奈德鼻用制剂在国内属处方药(Rx)。
+起草稿按"布地奈德鼻用制剂国内属 Rx"推成了 `处方药` —— 那是按**通用成分**推的,
+而实际按什么销售由这个品牌的注册证决定,只有业务侧知道。
+这与 R-009 当年在力克雷 NRT 上处理的是同一类问题(成分看着像 Rx,实际按 OTC 卖)。
 
-先例参考:NRT_phase2/3 的 OTC 药认定(R-009 决议)走了策略 lead 拍板流程,处方药认定同理需拍板。
+⚠️ **`base_template` 仍留在「处方药」这档**,这不是漏改 —— NRT_phase2/3 同样是
+`category: OTC药` + `base_template: 处方药`。即"按 OTC 卖"决定的是**品类**,
+不降低**合规档位**;药品内容的红线仍按药品级走。往松改请连 NRT 那两张一起议。
+
+**仍待确认**:brand 写法(雷诺考特?)/ product 写法(布地奈德鼻喷?),以及红线措辞。
 
 ---
 
