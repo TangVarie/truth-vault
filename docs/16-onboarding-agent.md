@@ -184,7 +184,8 @@ onboarder/
 
 不再有"agent 可调的 MCP 工具" —— 全是 `core` 里的**确定性步骤**:飞书拉字段/选项/全表
 distinct(`clients`)· 读 `mappings/` + 词表/家族指纹(`corpus`)· 词表 + D-021 校验
-(`vocab`)· 单次 `call_anthropic`(`clients`,走中转站非流式)。
+(`vocab`)· 单次 `call_anthropic`(`clients`,走中转站;**2026-08-28 起默认流式**,
+非流式撞网关 120s 读超时、宽表跑不完 —— 见 `onboarder/README` §架构)。
 
 ## 验收 · WTG 金标准 eval
 

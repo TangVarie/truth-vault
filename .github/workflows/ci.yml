@@ -2902,7 +2902,7 @@ jobs:
           #      单张表最坏烧 20 分钟, 六张表的批量跑了 28.5 分钟 —— 时间全花在超时上。
           #   ③ 报错只是个 524, 看的人要重走一遍"到底是飞书、Railway 还是网关在超时"。
           #      (这次就走了两轮:先误判成"Railway 服务挂了", 靠日志才定位到网关。)
-          import sys, types
+          import os, sys, types
 
           from onboarder import clients
 
@@ -2914,13 +2914,24 @@ jobs:
 
           def fake(status, msg, n_fail=99):
               mod = types.ModuleType("anthropic")
+              class Stream:
+                  def __enter__(s):
+                      calls.append("stream")
+                      if status and len([c for c in calls
+                                         if c in ("stream", "create")]) <= n_fail:
+                          raise Err(msg, status)
+                      return s
+                  def __exit__(s, *a): return False
+                  @property
+                  def text_stream(s): return iter(["ok"])
               class C:
                   def __init__(s, **kw): calls.append(kw)
                   @property
                   def messages(s): return s
+                  def stream(s, **kw): return Stream()
                   def create(s, **kw):
                       calls.append("create")
-                      if len([c for c in calls if c == "create"]) <= n_fail:
+                      if len([c for c in calls if c in ("stream", "create")]) <= n_fail:
                           raise Err(msg, status)
                       return types.SimpleNamespace(
                           content=[types.SimpleNamespace(type="text", text="ok")])
@@ -2928,6 +2939,7 @@ jobs:
               sys.modules["anthropic"] = mod
 
           clients.time.sleep = lambda s: None      # 别在 CI 里真睡退避
+          os.environ.pop("ONBOARDER_STREAM", None)
 
           # ① 只留一层重试 —— 判据钉在传给 SDK 的参数上
           calls.clear(); fake(524, "524 A timeout occurred")
@@ -2939,7 +2951,8 @@ jobs:
               f"没关掉 SDK 自己的重试 —— 会和这里的退避相乘: {calls[0]}"
 
           # ② 网关超时立刻停。重试没用:它不是抖动, 是这次生成本来就超过了上限。
-          n = len([c for c in calls if c == "create"])
+          #    (数 stream+create 两种 —— 默认走流式, 逃生口下才走 create)
+          n = len([c for c in calls if c in ("stream", "create")])
           assert n == 1, f"524 上重试了 {n} 次 —— 每次都会卡满网关的等待上限"
 
           # ③ 报错必须自解释:说清是谁在超时 + 当时用的模型 + 怎么解
@@ -2949,22 +2962,57 @@ jobs:
               raise AssertionError("网关超时却没抛")
           except RuntimeError as exc:
               msg = str(exc)
-              for must in ("网关超时", "Cloudflare", "claude-opus-4-6",
-                           "claude-sonnet-4-6", "不是飞书"):
+              for must in ("网关超时", "Cloudflare", "claude-opus-4-6", "不是飞书"):
                   assert must in msg, f"报错里没有 {must!r} —— 看的人还得重查一遍是谁超时"
           print("  ✓ 网关超时: 单层重试 · 不空转 · 报错点名是谁超时/什么模型/怎么解")
+
+          # ③-b 默认走**流式**, 且建议要看当前状态给, 不能写死
+          #
+          # 524 是**读**超时:CF 在 120s 内没收到任何字节才触发("did not return a
+          # complete response within the 120-second Proxy Read Timeout window")。
+          # 流式下 token 持续外吐, 计时器不触发 —— 这是 524 的标准解。实测(run#19,
+          # 已经换成 sonnet 之后)决定成败的是**列数**不是行数:
+          #     LNKT 52 列 ❌ · XIWU 31 列 ❌ · SPX 20 列/294 行 ✅ · BJS 15 列 ✅
+          # 所以换模型只是把线往后挪, 挪不过宽表。
+          calls.clear(); fake(None, "", n_fail=0)
+          assert clients.call_anthropic("p", "m") == "ok"
+          assert "stream" in calls and "create" not in calls, f"默认没走流式: {calls}"
+          # 逃生口:万一中转站不好好代理 SSE, 不改代码就能退回
+          os.environ["ONBOARDER_STREAM"] = "0"
+          calls.clear(); fake(None, "", n_fail=0)
+          assert clients.call_anthropic("p", "m") == "ok"
+          assert "create" in calls and "stream" not in calls, f"逃生口失效: {calls}"
+          # 非流式下超时 → 要建议"先开流式", **不能**建议换一个已经在用的模型。
+          # 第一版就是无条件写着"换成 claude-sonnet-4-6", 而实测那次日志里 model
+          # 就是 sonnet-4-6 —— 让人去做他已经做过的事, 比不给建议更浪费时间。
+          calls.clear(); fake(524, "524 A timeout occurred")
+          try:
+              clients.call_anthropic("p", "claude-sonnet-4-6"); raise AssertionError("没抛")
+          except RuntimeError as exc:
+              msg = str(exc)
+              assert "流式=关" in msg and "ONBOARDER_STREAM=0" in msg, msg
+              assert "换更快的模型" not in msg, \
+                  "还在无条件建议换模型 —— 实测那次已经是 sonnet 了"
+          os.environ.pop("ONBOARDER_STREAM", None)
+          # 流式下仍超时 → 指向"中转站没真的透传 SSE", 而不是重复上一条建议
+          calls.clear(); fake(524, "524 A timeout occurred")
+          try:
+              clients.call_anthropic("p", "claude-sonnet-4-6"); raise AssertionError("没抛")
+          except RuntimeError as exc:
+              assert "流式=开" in str(exc) and "透传 SSE" in str(exc), str(exc)
+          print("  ✓ 默认流式(524 的标准解)· 有 ONBOARDER_STREAM=0 逃生口 · 建议按当前状态给")
 
           # ④ 真正的瞬时错误(529 过载)仍然要重试到成功, 别把这条也一起关了
           calls.clear(); fake(529, "529 overloaded", n_fail=2)
           assert clients.call_anthropic("p", "m") == "ok"
-          assert len([c for c in calls if c == "create"]) == 3
+          assert len([c for c in calls if c in ("stream", "create")]) == 3
           # ⑤ 非瞬时(401)立刻抛, 别把鉴权错误也重试四遍
           calls.clear(); fake(401, "401 unauthorized")
           try:
               clients.call_anthropic("p", "m"); raise AssertionError("401 没抛")
           except Err:
               pass
-          assert len([c for c in calls if c == "create"]) == 1
+          assert len([c for c in calls if c in ("stream", "create")]) == 1
           print("  ✓ 529 仍重试到成功 · 401 立刻抛(没把重试一刀切掉)")
           PY
 

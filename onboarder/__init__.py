@@ -3,7 +3,8 @@
 见 docs/16-onboarding-agent.md。做"梳理 + 闭集抽取 + 起草",判断权
 (方向拆解 / tier 阈值 / 合规)留给策略 lead(README 原则 1)。
 
-架构:确定性取数 + 单次 Anthropic 调用(librarian 同款,走中转站非流式),
+架构:确定性取数 + 单次 Anthropic 调用(走中转站, 默认流式 —— 见 clients.call_anthropic
+的说明:非流式撞网关 120s 读超时, 宽表跑不完),
 不再用 agent-sdk / claude CLI。布局:
     vocab.py    受控词表闭集 + 校验器(硬护栏)
     links.py    飞书链接 / 批量清单解析 + project_id 消毒(纯标准库,不联网)
