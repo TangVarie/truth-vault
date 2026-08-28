@@ -19,7 +19,7 @@ from typing import Any
 
 import yaml
 
-from . import clients, corpus, vocab
+from . import clients, corpus, links, vocab
 
 DEFAULT_MODEL = os.environ.get("ONBOARDER_MODEL", "claude-sonnet-4-6")
 DISTINCT_CAP = 40   # 不同值超过这个数的列视为自由文本,只报数量不铺开(控 prompt 体积)
@@ -168,19 +168,87 @@ def _rewrite_sync_config(mapping_text: str, app_token: str, table_id: str) -> st
     return f"{body}\n\n{block}"
 
 
+def _ensure_project_id(mapping_text: str, project_id: str) -> str:
+    """把草稿里的顶层 ``project_id`` 钉成本次请求的值(§CI mapping yaml lint)。
+
+    CI 的 mapping lint 判 ``data["project_id"] != 文件名`` 直接红, 而文件名由请求
+    参数决定、yaml 里那一行由模型写 —— 两者本来就有漂的空间(模型偶尔把品牌全名或
+    表名写进去)。这不是判断项, 是**已知输入**, 和 sync_config 里的 app_token 同一
+    性质:与其让人在 PR 上修一个纯机械的字段, 不如在出草稿时就钉死。
+
+    只动**顶层**那一行(行首非空白), 不碰任何缩进块里同名的键。
+    """
+    out: list[str] = []
+    replaced = False
+    for ln in (mapping_text or "").splitlines():
+        if not replaced and ln.startswith("project_id:"):
+            if ln.strip() != f"project_id: {project_id}":
+                print(f"· 草稿的 project_id 与请求不符,已钉成 {project_id}(原:{ln.strip()})")
+            out.append(f"project_id: {project_id}")
+            replaced = True
+            continue
+        out.append(ln)
+    if replaced:
+        return "\n".join(out)
+    # 模型压根没写这个键 —— 补在最前面(yaml 顶层键无序,放哪都等价)
+    print(f"· 草稿缺 project_id,已补 {project_id}")
+    return f"project_id: {project_id}\n" + "\n".join(out)
+
+
+def resolve_table_ref(
+    *, url: str | None = None, app_token: str | None = None, table_id: str | None = None
+) -> tuple[str, str]:
+    """(链接 | app_token+table_id) → (app_token, table_id)。链接式才可能联网。
+
+    三种要联网的情况都在这里, 不散到调用方:
+      · /wiki/ 链接 → 换 obj_token(见 clients.resolve_wiki_node 的说明)
+      · 链接省了 ?table= 且这个 base 只有一张表 → 就用那张
+      · 省了 ?table= 但有多张 → **报错并列出候选**, 不猜。猜错的代价是跑完一整轮
+        飞书全表扫描 + 一次 LLM 调用, 才得到一份接错表的 mapping。
+    """
+    if url:
+        info = links.parse_feishu_url(url)          # 坏链接在这里就抛(未联网)
+        token = info["token"]
+        app_token = clients.resolve_wiki_node(token) if info["kind"] == "wiki" else token
+        table_id = info["table_id"] or table_id
+        if not table_id:
+            tables = clients.list_tables(app_token)
+            if len(tables) == 1:
+                table_id = tables[0]["table_id"]
+                print(f"· 链接没带 ?table=,该 base 只有一张表 → {tables[0].get('name')} ({table_id})")
+            else:
+                listing = "\n".join(
+                    f"    {t['table_id']}  {t.get('name')}" for t in tables
+                ) or "    (一张表都没有)"
+                raise RuntimeError(
+                    f"链接没带 ?table=,而这个 base 有 {len(tables)} 张表 —— 不猜。"
+                    f"请在链接里带上要接的那张(浏览器里点开该表再复制地址),或直接给 table_id:\n{listing}"
+                )
+        return app_token, table_id
+
+    if not app_token or not table_id:
+        raise RuntimeError("要么给 url,要么给 app_token + table_id(两者缺一不可)")
+    return app_token, table_id
+
+
 def draft(
     *,
     project_id: str,
-    app_token: str,
-    table_id: str,
+    app_token: str | None = None,
+    table_id: str | None = None,
+    url: str | None = None,
     sample_n: int = 30,
     model: str = DEFAULT_MODEL,
 ) -> dict[str, Any]:
     """确定性取数 + 单次 Anthropic 调用 → 草稿(不写盘;CLI 和 Railway 端点共用)。
 
-    返回 {mapping_yaml, review_brief, errors, uncovered, pending, is_error};
-    解析不出 mapping 时返回 {is_error, reason, raw_head}(无 mapping_yaml)。
+    表标识给 ``url``(飞书链接,含 /wiki/ 形态)或 ``app_token`` + ``table_id`` 皆可。
+
+    返回 {mapping_yaml, review_brief, errors, uncovered, pending, is_error, app_token,
+    table_id};解析不出 mapping 时返回 {is_error, reason, raw_head}(无 mapping_yaml)。
     """
+    project_id = links.safe_project_id(project_id)
+    app_token, table_id = resolve_table_ref(url=url, app_token=app_token, table_id=table_id)
     try:
         fields = clients.list_fields(app_token, table_id)
     except Exception as exc:  # noqa: BLE001
@@ -208,6 +276,8 @@ def draft(
 
     # §7-B: 把已知 app_token/table_id 写进 sync_config —— 否则 daily cron 见 null 会跳过该项目。
     mapping_text = _rewrite_sync_config(mapping_text, app_token, table_id)
+    # 文件名 = <project_id>.yaml, CI mapping lint 要求 yaml 里那一行与之相等。
+    mapping_text = _ensure_project_id(mapping_text, project_id)
 
     try:
         mp = yaml.safe_load(mapping_text)
@@ -223,14 +293,19 @@ def draft(
         "uncovered": res["uncovered_columns"],
         "pending": res["pending"],
         "is_error": bool(res["errors"] or res["uncovered_columns"]),
+        # 回显解析后的表标识 —— 链接式调用时,调用方(批量/人)只给了一条 URL,
+        # 出了问题要知道它到底解到了哪张表(尤其 /wiki/ 换过 obj_token 之后)。
+        "app_token": app_token,
+        "table_id": table_id,
     }
 
 
 def run_onboarding(
     *,
     project_id: str,
-    app_token: str,
-    table_id: str,
+    app_token: str | None = None,
+    table_id: str | None = None,
+    url: str | None = None,
     sample_n: int = 30,
     model: str = DEFAULT_MODEL,
     out_dir: str = "mappings",
@@ -244,7 +319,7 @@ def run_onboarding(
         return {"dry_run": True}
 
     res = draft(project_id=project_id, app_token=app_token, table_id=table_id,
-                sample_n=sample_n, model=model)
+                url=url, sample_n=sample_n, model=model)
     if "mapping_yaml" not in res:
         print("❌ " + res.get("reason", "失败") + "。原始响应前 1200 字:\n" + res.get("raw_head", ""))
         return res

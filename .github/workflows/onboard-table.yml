@@ -1,24 +1,40 @@
 # 接表 agent —— GitHub 按钮触发 → 调 Railway onboarder 端点起草 → 推草稿分支 + 给开 PR 链接。
 # 见 docs/16 / onboarder/README。Railway 跑 LLM(它连得上中转站,GitHub Actions 连不上);
 # GH 这边只做 git —— 拿回草稿、推分支。只需 contents:write,不碰"允许 Actions 开 PR"开关。
-name: 接表 agent (onboard a feishu table)
+#
+# 一次可接【多张】表:填 tables(一行一张,或用 ; 分隔)。编排在 onboarder/batch.py ——
+# 逐表打 /onboard,一张挂了不拖垮整批(为什么批量不做成服务端端点,见 batch.py 模块头)。
+# 只填 project_id/app_token/table_id 的老用法照旧可用,内部当成 1 条清单跑。
+name: 接表 agent (onboard feishu tables)
 
 on:
   workflow_dispatch:
     inputs:
+      tables:
+        description: "批量清单(一行一张,或用 ; 分隔):project_id | 飞书链接。例:TXQ_phase2 | https://x.feishu.cn/base/App?table=tblA ; OKM_phase2 | https://…"
+        required: false
+        default: ""
       project_id:
-        description: "品牌_期数,如 TXQ_phase1"
-        required: true
+        description: "[单张] 品牌_期数,如 TXQ_phase1(填了 tables 就不用管这三个)"
+        required: false
+        default: ""
       feishu_app_token:
-        description: "飞书表 app_token (bascn.../A2sy...)"
-        required: true
+        description: "[单张] 飞书表 app_token (bascn.../A2sy...),或直接贴整条表链接"
+        required: false
+        default: ""
       feishu_table_id:
-        description: "飞书表 table_id (tbl...)"
-        required: true
+        description: "[单张] 飞书表 table_id (tbl...);上面贴的是链接时留空"
+        required: false
+        default: ""
       sample_n:
-        description: "拉多少行文案样本"
+        description: "每张表拉多少行文案样本"
         required: false
         default: "30"
+      overwrite:
+        description: "允许覆盖已存在的 mappings/<id>.yaml(默认跳过 —— 里面有策略 lead 审过的判断项)"
+        type: boolean
+        required: false
+        default: false
 
 jobs:
   onboard:
@@ -27,47 +43,106 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-      - name: 调 Railway onboarder 起草(Railway 连得上网关)
+      # ⚠️ 所有 workflow_dispatch 输入一律走 env 传进来, **不**直接 ${{ }} 插进 bash。
+      #    直接插值时输入是被当成 shell 源码拼进去的 —— 一条带引号/分号/反引号的
+      #    "表名"就能在 runner 上执行任意命令(而这个 job 手里有 contents:write)。
+      #    走 env 之后它只是一个字符串变量, 引号自己会管住自己。
+      - name: 组装清单 + 校验(不联网、不花钱)
+        id: spec
+        env:
+          TABLES: ${{ inputs.tables }}
+          PROJECT_ID: ${{ inputs.project_id }}
+          APP_TOKEN: ${{ inputs.feishu_app_token }}
+          TABLE_ID: ${{ inputs.feishu_table_id }}
+        run: |
+          set -euo pipefail
+          if [ -n "${TABLES// /}" ]; then
+            printf '%s\n' "$TABLES" > /tmp/onboard-spec.txt
+          else
+            [ -n "$PROJECT_ID" ] || { echo "❌ tables 和 project_id 都是空的 —— 至少填一个"; exit 1; }
+            [ -n "$APP_TOKEN" ]  || { echo "❌ 单张模式要填 feishu_app_token(或整条表链接)"; exit 1; }
+            # table_id 可以留空:贴的是带 ?table= 的链接, 或该 base 只有一张表
+            if [ -n "$TABLE_ID" ]; then
+              printf '%s | %s | %s\n' "$PROJECT_ID" "$APP_TOKEN" "$TABLE_ID" > /tmp/onboard-spec.txt
+            else
+              printf '%s | %s\n' "$PROJECT_ID" "$APP_TOKEN" > /tmp/onboard-spec.txt
+            fi
+          fi
+          echo "── 清单 ──"; cat /tmp/onboard-spec.txt
+
+          # 先解析一遍:清单打错字就在这里红, 不去动飞书、不打网关。
+          python -m onboarder.batch --spec-file /tmp/onboard-spec.txt --dry-run
+
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import os
+          from onboarder import links
+          entries, errors = links.parse_batch_spec(
+              open("/tmp/onboard-spec.txt", encoding="utf-8").read())
+          assert not errors, errors      # --dry-run 已经报过了, 这里只是不让它悄悄过
+          # 分支名: 单张沿用 onboarder/draft-<id>(老用法的肌肉记忆不变);
+          # 多张用 run_id —— 唯一, 不会把别人正在审的批次分支强推掉。
+          branch = (f"onboarder/draft-{entries[0]['project_id']}" if len(entries) == 1
+                    else f"onboarder/batch-{os.environ['GITHUB_RUN_ID']}")
+          print(f"branch={branch}")
+          print(f"count={len(entries)}")
+          PY
+
+      - name: 批量起草(逐表调 Railway onboarder)
+        id: batch
         env:
           ONBOARDER_URL: ${{ secrets.ONBOARDER_URL }}
           ONBOARDER_API_KEY: ${{ secrets.ONBOARDER_API_KEY }}
+          SAMPLE_N: ${{ inputs.sample_n }}
+          OVERWRITE: ${{ inputs.overwrite }}
         run: |
-          [ -n "$ONBOARDER_URL" ] || { echo "❌ 缺 secret ONBOARDER_URL(Railway 端点地址)"; exit 1; }
-          code=$(curl -sS -w "%{http_code}" -o /tmp/resp.json --max-time 220 \
-            -X POST "${ONBOARDER_URL%/}/onboard" \
-            -H "X-Onboarder-Key: $ONBOARDER_API_KEY" \
-            -H "content-type: application/json" \
-            -d "{\"project_id\":\"${{ inputs.project_id }}\",\"app_token\":\"${{ inputs.feishu_app_token }}\",\"table_id\":\"${{ inputs.feishu_table_id }}\",\"sample_n\":${{ inputs.sample_n }}}")
-          echo "HTTP $code"
-          [ "$code" = "200" ] || { echo "❌ 端点返回非 200:"; cat /tmp/resp.json; echo; exit 1; }
-
-      - name: 写出草稿文件
-        run: |
-          jq -r '.mapping_yaml'  /tmp/resp.json > "mappings/${{ inputs.project_id }}.yaml"
-          jq -r '.review_brief'  /tmp/resp.json > "mappings/${{ inputs.project_id }}.brief.md"
-          echo "── 校验 ──"
-          echo "词表 errors:   $(jq -c '.errors'    /tmp/resp.json)"
-          echo "未覆盖列(D-021):$(jq -c '.uncovered' /tmp/resp.json)"
-          echo "待确认项:       $(jq -r '.pending | length' /tmp/resp.json) 项"
+          set -uo pipefail
+          [ -n "${ONBOARDER_URL:-}" ] || { echo "❌ 缺 secret ONBOARDER_URL(Railway 端点地址)"; exit 1; }
+          extra=""
+          [ "$OVERWRITE" = "true" ] && extra="--overwrite"
+          set +e
+          python -m onboarder.batch \
+            --spec-file /tmp/onboard-spec.txt \
+            --remote "$ONBOARDER_URL" \
+            --sample-n "$SAMPLE_N" \
+            --summary-file /tmp/onboard-summary.md \
+            $extra
+          code=$?
+          set -e
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          # 不在这里退出 —— 草稿已经写盘了, 先推分支再判红(见最后那个校验门)。
+          cat /tmp/onboard-summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
 
       - name: 推草稿分支 + 给出开 PR 链接
+        env:
+          BRANCH: ${{ steps.spec.outputs.branch }}
+          COUNT: ${{ steps.spec.outputs.count }}
         run: |
+          set -euo pipefail
+          if [ -z "$(git status --porcelain mappings)" ]; then
+            echo "::warning title=没有产出::一张草稿都没写出来(全部失败或全部跳过),不推分支"
+            exit 0
+          fi
           git config user.name "onboarder-bot"
           git config user.email "onboarder@users.noreply.github.com"
-          b="onboarder/draft-${{ inputs.project_id }}"
-          git checkout -b "$b"
-          git add "mappings/${{ inputs.project_id }}.yaml" "mappings/${{ inputs.project_id }}.brief.md"
-          git commit -m "接表草稿: ${{ inputs.project_id }}(agent 起草,待策略 lead 审)"
-          git push -f -u origin "$b"
-          echo "::notice title=草稿已就绪::分支 $b 已推送"
-          echo "👉 点这里开 PR: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/main...$b?expand=1"
+          git checkout -b "$BRANCH"
+          git add mappings
+          git commit -m "接表草稿: ${COUNT} 张表(agent 起草,待策略 lead 审)"
+          git push -f -u origin "$BRANCH"
+          echo "::notice title=草稿已就绪::分支 $BRANCH 已推送(${COUNT} 张表)"
+          echo "👉 点这里开 PR: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/main...$BRANCH?expand=1"
+          echo "   PR 描述可直接粘 step summary 里那份批量汇总。"
 
-      - name: 校验门(草稿已推;有校验问题则让 run 变红,不静默放过)
+      - name: 校验门(草稿已推;有问题则让 run 变红,不静默放过)
+        env:
+          CODE: ${{ steps.batch.outputs.code }}
         run: |
-          if [ "$(jq -r '.is_error' /tmp/resp.json)" = "true" ]; then
-            echo "::error title=草稿有校验问题,需修复后再 merge::errors=$(jq -c '.errors' /tmp/resp.json) | uncovered(D-021)=$(jq -c '.uncovered' /tmp/resp.json)"
-            echo "(草稿已推到分支,可在该分支/PR 上直接改;但本次 run 标红提醒别直接 merge。)"
+          if [ "$CODE" != "0" ]; then
+            echo "::error title=这批草稿有问题,需修复后再 merge::见 step summary 的批量汇总(词表 errors / 未覆盖列 D-021 / 失败表)"
+            echo "(能出的草稿都已推到分支,可在该分支/PR 上直接改;本次 run 标红提醒别直接 merge。)"
             exit 1
           fi
-          echo "✅ 词表 + D-021 校验通过。"
+          echo "✅ 全部通过:词表 + D-021 校验干净。"

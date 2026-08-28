@@ -6,11 +6,13 @@
 架构:确定性取数 + 单次 Anthropic 调用(librarian 同款,走中转站非流式),
 不再用 agent-sdk / claude CLI。布局:
     vocab.py    受控词表闭集 + 校验器(硬护栏)
+    links.py    飞书链接 / 批量清单解析 + project_id 消毒(纯标准库,不联网)
     clients.py  飞书(REST) + Supabase + Anthropic(中转站单次调用)客户端
     corpus.py   历史 mappings + 家族指纹 → 起草用 few-shot 上下文
     core.py     编排:拉字段/选项/全表 distinct/样本 + 一次调用 → 草稿 + 校验 + 写盘
+    batch.py    批量:逐表调 /onboard(或本地 draft)+ 汇总,一批一个分支/PR
     cli.py      命令行入口
     eval_wtg.py WTG 结构回归 eval
 """
 
-__all__ = ["vocab", "clients", "corpus", "core"]
+__all__ = ["vocab", "links", "clients", "corpus", "core", "batch"]

@@ -18,6 +18,9 @@
   → 词表 + D-021 校验 → 草稿
 ```
 
+批量(N 张)在**调用方**编排:`batch.py` 逐表打上面这条链路,一张挂了不拖垮整批,
+最后汇总成一个分支/PR。见下方「批量」节 + DECISIONS D-044。
+
 ## 部署:Railway 跑端点 + GitHub 按钮触发(推荐)
 
 实测 **GitHub Actions 连不上中转站**(海外 runner → 网关超时),但 **Railway 连得上**
@@ -47,8 +50,48 @@ GitHub「Run workflow」填表 ──HTTP──▶ Railway /onboard(连网关+�
 - `ONBOARDER_URL` = 上面的 Railway 域名
 - `ONBOARDER_API_KEY` = 与 Railway 那个 `ONBOARDER_API_KEY` 一致
 
-**③ 跑**:Actions →「接表 agent」→ Run workflow,填 project_id + app_token + table_id
-→ 跑完日志里有「👉 点这里开 PR」链接,点开 merge 即审。
+**③ 跑**:Actions →「接表 agent」→ Run workflow → 跑完日志里有「👉 点这里开 PR」链接,
+点开 merge 即审;批量汇总在 run 的 Summary 页(可直接粘进 PR 描述)。
+
+**填哪个框**:
+
+- **一次接多张(推荐)** —— 只填 `tables`,一行一张;网页那个框是**单行**的,所以也支持
+  用 `;` 分隔:
+
+  ```
+  TXQ_phase2 | https://bywood.feishu.cn/base/App?table=tblA ; OKM_phase2 | https://…
+  ```
+
+  格式是 `project_id | 飞书链接`,链接直接从浏览器地址栏复制即可(`/wiki/` 形态也认)。
+  也可以写 `project_id | app_token | table_id`,末尾还能再加一列样本行数。
+- **一次一张(老用法)** —— 填 `project_id` + `feishu_app_token` + `feishu_table_id`,
+  行为与以前一致(分支名仍是 `onboarder/draft-<project_id>`)。`feishu_app_token` 那格
+  现在也可以直接贴整条链接,此时 `feishu_table_id` 留空。
+
+**两个默认值值得知道**:
+
+- **已存在的 `mappings/<id>.yaml` 会被跳过**,不会被新草稿盖掉 —— 里面的判断项
+  (方向拆解 / 阈值 / 合规)是策略 lead 审过的。确认要重出草稿,勾 `overwrite`。
+- **一张表挂了不影响其余**;汇总末尾会给一份**可粘贴重跑**的失败清单。
+
+## 批量:本地跑
+
+```bash
+python -m onboarder.batch --remote https://onboarder-xxx.up.railway.app \
+  --api-key "$ONBOARDER_API_KEY" \
+  --spec "TXQ_phase2 | https://x.feishu.cn/base/App?table=tblA
+          OKM_phase2 | https://x.feishu.cn/base/App2?table=tblB"
+
+python -m onboarder.batch --spec-file tables.txt --dry-run   # 只校验清单,不联网不花钱
+```
+
+`--remote` 模式**只用标准库**(runner 上不装依赖);不给 `--remote` 就本地直接跑
+`core.draft()`(需要 中转站 + 飞书 凭证)。退出码:`0` 全干净 / `1` 有表失败或校验不干净
+(草稿仍已写盘)/ `2` 清单本身有错(**一张都不跑**)。
+
+> 为什么批量做在调用方而不是加一个服务端 `/onboard-batch`:见 `batch.py` 模块头 +
+> **[DECISIONS D-044](../DECISIONS.md)**(超时会连带丢掉已跑完的表 / Railway 重启丢批次
+> 状态 / 不新增鉴权面)。
 
 ## 本地跑(备用,只要 Python)
 
@@ -57,9 +100,17 @@ pip install -r onboarder/requirements.txt
 export ANTHROPIC_BASE_URL=... ANTHROPIC_API_KEY=... FEISHU_APP_ID=... FEISHU_APP_SECRET=...
 python -m onboarder.cli --project-id WTG_phase1 \
   --app-token A2sybSE0pa5kcnsukAMcJ9TDngb --table-id tbliiz1N4m9bCRx2 --out-dir out
+# 或者直接贴浏览器地址栏那条链接(/wiki/ 形态也认):
+python -m onboarder.cli --project-id WTG_phase1 \
+  --url 'https://x.feishu.cn/base/A2sybSE0pa5kcnsukAMcJ9TDngb?table=tbliiz1N4m9bCRx2' --out-dir out
 # 只拼 prompt 不调 LLM/不连飞书:
 python -m onboarder.cli --project-id X --dry-run
 ```
+
+**链接的三个坑**(`links.py` 显式区分,不猜):`/wiki/<token>` 是知识库**节点** id,不是
+`app_token`(要再换一次 `obj_token`,飞书 bot 需要该知识库的读权限);`larksuite.com` 是
+国际版 Lark,API 主机不同 —— 直接拒,不然表现为"这张表不存在";链接缺 `?table=` 时,
+单表 base 自动取那张、多表 base 报出候选让你选。
 > Windows 看产物别用 `type`(乱码),用 `Get-Content -Encoding UTF8 out\WTG_phase1.yaml`。
 
 ## 验收 · WTG 金标准
