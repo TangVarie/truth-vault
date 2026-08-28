@@ -1,0 +1,124 @@
+version: 1.0
+
+project_id: BJS_phase1
+brand: 百健士
+product: 儿童藻油
+category: 保健品
+platform: xiaohongshu
+schema_family: B
+start_date: auto_from_publish_time_min
+end_date: auto_from_publish_time_max
+
+field_mapping:
+  素人编号: account_id
+  笔记内容: raw_content
+  发布时间: publish_time
+  反馈链接: publish_url
+  方向: _direction_raw
+  流量状态: _status_raw
+  笔记状态: _note_status_raw
+  随贴评论: _comment_text
+  蓝词字段: hit_blue_keywords
+
+direction_decomposition:
+  "好物分享-产品贴":
+    content_format: 直给推荐                      # [待确认]
+    target_audience: ["通用"]                     # [待确认]
+    user_pain_point: 儿童DHA+叶黄素营养补充需求   # [待确认]
+  
+  "提问贴":
+    content_format: 提问求助                      # [待确认]
+    target_audience: ["通用"]                     # [待确认]
+    user_pain_point: 儿童营养品选购决策困惑       # [待确认]
+
+tier_extraction:
+  source: 状态字段
+  rules:
+    - match_contains: ["大爆"]
+      tier: 大爆
+    - match_contains: ["爆贴预备"]
+      tier: 预备
+    - match_contains: ["爆贴", "爆帖"]
+      tier: 爆
+    - match_contains: ["蓝词"]
+      tier: 参考
+    - match_contains: ["风控"]
+      tier: 风控
+    - match_contains: ["无水花"]
+      tier: 趴
+    - match_contains: ["评估中"]
+      tier: 未知
+    - match_contains: ["伪爆帖", "伪20评"]
+      tier: 数据异常
+    - default: null
+
+tier_thresholds:
+  爆: 100                                         # [待确认]
+  大爆: 500                                       # [待确认]
+
+compliance:
+  base_template: 保健品
+  custom_red_flags:
+    - "保健品禁疾病治疗/预防宣称;DHA功效需可证实、禁绝对化(最/第一/100%)"
+    - "禁医疗化表述(治疗/修复等需谨慎)"
+    - "涉及儿童营养时禁暗示'提高智商''治疗疾病'"
+  blue_keyword_strategy:
+    primary:                                      # [待确认]
+      - "百健士"
+      - "SPORTSIX"
+      - "儿童藻油"
+      - "DHA"
+      - "叶黄素"
+    secondary:                                    # [待确认]
+      - "藻源DHA"
+      - "Informed Sport认证"
+      - "AMAG 9298"
+    avoid: []
+
+project_specific_fields_to_raw_extra:
+  - 起量时间
+  - 笔记配图
+  - 随贴评论配图
+  - 相关截图
+  - 蓝词图片
+  - 父记录
+
+data_supplement_needed:
+  - field: account_followers
+    method: B 家族缺粉丝数
+    estimated_rows: 43
+  - field: impressions, reads, interactions
+    method: 本表无曝光量/阅读量/互动量数据
+    estimated_rows: 43
+
+onboarding_meta:
+  onboarded_at: 2026-01-XX
+  onboarded_by: 接表管家起草
+  strategy_lead: [待填]
+  notes: |
+    DRAFT — B 家族(无巡查/检查/数据回收列)。
+    特殊点:
+      1) 产品=百健士儿童藻油(DHA+叶黄素复配,澳洲藻田来源);
+      2) 无 intent 列(同 WTG 金标准, intent=null);
+      3) 方向只有 2 种(好物分享-产品贴/提问贴);
+      4) 流量状态含特殊值「蓝词」(映射为 参考)、「伪爆帖500」「伪20评」(映射为 数据异常);
+      5) 蓝词字段有 7 种选项但样本中 0 行有值;
+      6) 本表【无】曝光量/阅读量/互动量列 → 数值推断 tier 无效,仅依赖状态字段;
+      7) 观众分析列不存在 → 无 actual_audience_data;
+      8) 样本 43 行全部「已发布」,流量状态 42 行「无水花」+1 行「无水花 / 爆贴」多选。
+    
+    待 preflight 校正:
+      - 飞书坐标(app_token/table_id)
+      - 真实列名对齐
+      - 未声明列补进 raw_extra
+      - 互动量相关列确认(是否存在、如何命名)
+      - tier 分布验证
+    
+    autowriter 映射不需配(D-038 通道2 退役)。
+
+sync_config:
+  source_type: feishu_api
+  feishu_app_token: XkANwc24CidwrdkauRHcBQELnrh   # 表标识(非密钥), 接表时已知
+  feishu_table_id: tblI8pustQPdVhHy
+  feishu_view_id: null
+  sync_interval: on_demand

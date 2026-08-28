@@ -1,0 +1,145 @@
+# ════════════════════════════════════════════════════════════════════
+# SPX_phase1 · SPORTSIX 能量胶 —— Onboarding 草稿(DRAFT)
+# ════════════════════════════════════════════════════════════════════
+# 产品: SPORTSIX 能量胶(韩国运动营养品牌,液体能量补给)
+# 投放策略: 小红书素人铺量,以运动场景(跑步/骑行/健身/冲浪等)切入,
+#          强调液体形态便捷性 + 不伤胃 + 快速补能
+# 样本 30 行(294 总行):提问贴 139 / 好物分享-产品贴 103 / 抖音 50
+# ════════════════════════════════════════════════════════════════════
+
+version: 1.0
+
+# ── 项目元数据 ──
+project_id: SPX_phase1
+brand: SPORTSIX                # [待确认] 韩国运动营养品牌
+product: 能量胶                # [待确认] 液体能量补给(区别于传统胶状/粉末)
+category: 保健品              # [待确认] 运动营养属保健品(非食品饮料)
+platform: xiaohongshu
+schema_family: B               # 无巡查/检查/主页链接列 → B 家族;有 曝光量/阅读量/互动量
+start_date: auto_from_publish_time_min
+end_date: auto_from_publish_time_max
+
+# ── 字段映射 ── [30 列全覆盖]
+field_mapping:
+  素人编号: account_id
+  笔记内容: raw_content          # 【标题】+【正文】结构化文案
+  发布时间: publish_time
+  笔记链接: publish_url
+  方向: _direction_raw            # → direction_decomposition(3 种:提问贴/好物分享-产品贴/抖音)
+  流量状态: _status_raw           # tier 源(B 家族;10 种取值含伪爆帖500等)
+  曝光量: impressions
+  阅读量: reads
+  互动量: interactions
+  观众分析: _audience_raw          # → actual_audience_data(sync 确定性解析;93 行有值)
+  随贴评论: _comment_text          # → comments 表(Phase2 LLM 解析)
+  蓝词字段: hit_blue_keywords      # → notes.hit_blue_keywords(12 种取值,SPORTSIX/能量胶/Informed Sport认证)
+  笔记状态: _note_status_raw       # 工作流状态(非 tier 源;检测伪爆贴)
+
+# ── intent ──
+# 本表【无】「发布笔记」intent 列 → 不做意图分类,notes.intent 留空(同 WTG 金标准)
+
+# ── 方向拆解 ── [待确认 · 3 方向按样本文案风格起草]
+# 飞书「方向」3 种取值:提问贴(139 条主力)/ 好物分享-产品贴(103 条)/ 抖音(50 条)
+# content_format / target_audience 受 docs/05 v0.2 闭集约束
+direction_decomposition:
+
+  "提问贴":                         # 139 条(最多);以真实运动场景 + 痛点 + 求助/分享格式
+    content_format: 提问求助        # [待确认] 「提问贴」方向名直接对应受控词表「提问求助」
+    target_audience: ["通用"]       # [待确认] 覆盖跑步/骑行/健身/篮球/冲浪/滑板等多运动场景
+    user_pain_point: 运动中途体能崩溃 / 空腹跑不适 / 补给难下咽 / 胃不舒服(渗透压) / 持久力不足
+
+  "好物分享-产品贴":                # 103 条;直接产品露出 + 使用体验
+    content_format: 直给推荐        # [待确认] 产品贴=直给推荐
+    target_audience: ["通用"]       # [待确认]
+    user_pain_point: 运动补给选择困难 / 传统能量胶口感差 / 液体形态便捷需求
+
+  "抖音":                           # 50 条;跨平台内容(抖音素材在小红书分发?)
+    content_format: 直给推荐        # [待确认] 抖音内容多为产品展示
+    target_audience: ["通用"]       # [待确认]
+    user_pain_point: null           # [待确认] 抖音内容未见样本,无法判断
+
+tier_extraction:
+  source: 状态字段                  # 指示用 _status_raw(即「流量状态」列)
+  rules:
+    - match_contains: ["大爆"]
+      tier: 大爆
+    - match_contains: ["爆帖预备"]
+      tier: 预备
+    - match_contains: ["爆贴"]        # 注:飞书选项「爆贴」(贴非帖)
+      tier: 爆
+    - match_contains: ["蓝词"]        # SPX 独有状态「蓝词」→ 参考(纯蓝词命中但非爆)
+      tier: 参考
+    - match_contains: ["风控"]
+      tier: 风控
+    - match_contains: ["无水花"]
+      tier: 趴
+    - match_contains: ["评估中"]
+      tier: 未知
+    - match_contains: ["伪爆帖500", "伪20评"]  # SPX 独有:人工伪数据标记
+      tier: 数据异常
+    - default: null
+
+# ── 数值推断阈值 ── [待确认 · 按样本分布起草]
+# 样本 30 行互动量分布:多数 0-1,最高 10(1 条评估中)。
+# 推荐起点:爆=50 / 大爆=200(保守值,入库后跑 scripts/recommend_tier_thresholds.py 复核)
+tier_thresholds:
+  爆: 50                            # [待确认] 样本互动极低,起点保守
+  大爆: 200                         # [待确认]
+
+# ── 合规 ──
+compliance:
+  base_template: 保健品            # [待确认] 运动营养品属保健品
+  custom_red_flags:                # [待确认]
+    - "保健品禁疾病治疗功效宣称;能量补给功效需可证实,禁绝对化(最/第一/100%)"
+    - "Informed Sport 认证可提及,但需确保真实性"
+    - "禁向未成年人营销运动补给"
+  blue_keyword_strategy:
+    primary: ["SPORTSIX", "SPORTSIX能量胶", "Informed Sport认证"]  # [待确认] 按样本蓝词字段 12 种取值
+    secondary: ["能量胶", "液体能量胶", "运动补给"]
+    avoid: []
+
+# ── 项目专属字段(进 raw_extra) ── [30 列已全覆盖 field_mapping,此处仅图片/附件类]
+project_specific_fields_to_raw_extra:
+  - 笔记配图                        # 图片 URL/附件(188 个不同值)
+  - 随贴评论配图                    # 评论配图(46 个不同值)
+  - 相关截图                        # 截图(289 个不同值)
+  - 蓝词图片                        # 蓝词截图(12 个不同值,含 image.png×25)
+  - 数据汇总                        # 文本汇总列(292 个不同值)
+  - 父记录                          # 飞书内部关联字段
+  - 平台                            # 单值「小红书」×84(冗余列,已知 platform=xiaohongshu)
+
+data_supplement_needed:
+  - field: account_followers
+    method: 本表【无】粉丝数/帐号昵称列 → 需通过 publish_url 调小红书 API 或人工补录
+    estimated_rows: 0
+
+# ── Sync 配置 ── (飞书坐标待用户提供)
+onboarding_meta:
+  onboarded_at: 2026-07-21
+  onboarded_by: 接表 agent 起草;策略判断项待策略 lead 拍板
+  strategy_lead: (待指定)
+  notes: |
+    DRAFT —— B 家族,30 行样本起草。流程同 HXZ/RIO/TXQ:
+      1) 飞书坐标待用户提供 → 补 sync_config.feishu_app_token / feishu_table_id;
+      2) preflight 拉全表(show=50)→ 修 field_mapping(核对 30 列真实列名) + 
+         补「未声明列」进 raw_extra;
+      3) 「方向」3 种取值 → direction_decomposition 已按样本起草,待策略 lead 确认
+         content_format / target_audience / user_pain_point;
+      4) tier 阈值 爆50/大爆200 按样本保守推荐,入库后复核;
+      5) brand=SPORTSIX / product=能量胶 / category=保健品 待策略 lead 确认;
+      6) preflight 干净 → PR → 显式 Daily TV sync(dry_run → 实跑)→ backfill essence。
+    特殊点:
+      - 产品=SPORTSIX 能量胶(韩国运动营养,液体形态,区别传统胶状);
+      - 无 intent 列(同 WTG 金标准,intent=null);
+      - 方向 3 种(提问贴主力 139 条 / 好物分享-产品贴 103 / 抖音 50);
+      - 流量状态含非标值「蓝词」「伪爆帖500」「伪20评」(其它表少见)→ tier 规则已特殊映射;
+      - 蓝词字段有值(样本 30 行中 5 行),12 种选项(SPORTSIX/Informed Sport 认证等);
+      - 观众分析格式与 WTG 一致(可解析),93 行有值(全表 294 行)。
+    autowriter 映射不需配(D-038 通道2 退役)。
+
+sync_config:
+  source_type: feishu_api
+  feishu_app_token: PLB3wBG1eiiOfXkApE2cerOonKu   # 表标识(非密钥), 接表时已知
+  feishu_table_id: tbl4cA6tdO4CIE6F
+  feishu_view_id: null
+  sync_interval: on_demand
