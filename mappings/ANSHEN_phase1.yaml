@@ -1,0 +1,163 @@
+# ════════════════════════════════════════════════════════════════════
+# 岸深冲牙器 · ANSHEN_phase1 —— Onboarding 草稿(DRAFT)
+# ════════════════════════════════════════════════════════════════════
+# 产品: 岸深冲牙器 C10(便携式水牙线)
+# 投放策略: 小红书素人铺量, 以口腔痛点场景切入(口气/正畸/敏感牙/送礼/差旅)
+# 真实列名 / 方向取值 据 preflight 样本(99 行, 16 列)起草。
+# ⚠️ 本表特殊点:
+#    - 无曝光/阅读/互动数据列(早期铺量表, 尚未回收流量数据)
+#    - 无 tier 源(「流量状况」列 100% 为空; 无「备注」列)
+#    - 「笔记状态」是内容形式标(直出贴/提问贴), 非工作流/tier 源
+#    - 方向全部单选(5 种), 无多选组合
+# ════════════════════════════════════════════════════════════════════
+
+version: 1.0
+
+# ── 项目元数据 ──
+project_id: ANSHEN_phase1
+brand: 岸深                     # [待确认] 品牌中文名(文案里写"岸深冲牙器"/"岸深C10")
+product: 冲牙器C10              # [待确认] 产品精确表述(C10 型号; 附带漱口水赠品)
+category: 个护                  # [待确认] 冲牙器=口腔护理, 归个护(同 WTG 洗护); 或归「医疗器械」待策略确认
+platform: xiaohongshu
+schema_family: B               # 无巡查状态/最近检查时间/主页链接typed列/数据回收情况 → 非 A; 无日期化结算列 → 非 C; 有方向列+缺粉丝数 → B 家族
+start_date: auto_from_publish_time_min
+end_date: auto_from_publish_time_max
+
+# ── 字段映射 ── [16 列全覆盖: 7 进 typed/中间变量, 9 进 raw_extra]
+field_mapping:
+  素人编号: account_id
+  笔记内容: raw_content           # 本表内容列叫「笔记内容」(非「文案」)
+  发布日期: publish_time           # 本表日期列叫「发布日期」(非「发布时间」); epoch ms
+  笔记链接: publish_url            # 本表链接列叫「笔记链接」(非「反馈链接」); type=15 URL 字段
+  方向: _direction_raw             # → direction_decomposition(5 种单选)
+  随贴评论: _comment_text          # → comments 表(Phase2 LLM 解析)
+  笔记状态: _intent_raw            # 本表「笔记状态」实为内容形式(直出贴/提问贴) → 走 intent_mapping
+
+# ── intent 映射 ──
+# 「笔记状态」选项: 直出贴 / 提问贴 / 可发布(选项里有但实际 0 行)
+# 直出贴=直接种草内容 → conversion; 提问贴=提问求助撬流量 → traffic
+intent_mapping:
+  直出贴: conversion
+  提问贴: traffic
+  可发布: other                    # [待确认] 选项存在但 0 行出现, 暂映 other
+
+# ── 方向拆解 ── [5 种单选方向, 全覆盖, 无多选组合]
+# content_format / target_audience 标 [待确认], 人群一律先给 ["通用"](D-010 不臆造)。
+direction_decomposition:
+  "口气 · 社交焦虑":                  # 35 条(最多)
+    content_format: 场景植入          # [待确认] 社交场景(开会/约会/面对面说话)植入
+    target_audience: ["通用"]         # [待确认]
+    user_pain_point: 口气重/牙缝塞食物残渣导致社交尴尬
+
+  "敏感牙 · 牙龈出血 · 新手 / 儿童 / 孕期":  # 31 条
+    content_format: 直给推荐          # [待确认] 针对敏感人群直推温和产品
+    target_audience: ["通用"]         # [待确认] 可能细化为 宝妈(孕期)/通用
+    user_pain_point: 牙龈敏感/出血, 传统冲牙器水柱太猛不敢用
+
+  "正畸牙套党":                       # 21 条
+    content_format: 场景植入          # [待确认] 正畸日常场景(摘牙套冲洗/午休清洁)
+    target_audience: ["通用"]         # [待确认] 可能细化为 年轻女性(隐适美主力)
+    user_pain_point: 正畸期间托槽/牙套缝隙清洁困难
+
+  "送礼 · 情侣夫妻":                 # 8 条
+    content_format: 情感叙事          # [待确认] 送礼=情感动机叙事(送父母/送伴侣)
+    target_audience: ["通用"]         # [待确认] 可能细化为 伴侣家人
+    user_pain_point: 送实用健康礼物/伴侣家人口腔护理
+
+  "职场党 · 差旅便携":               # 4 条
+    content_format: 场景植入          # [待确认] 职场/出差场景植入
+    target_audience: ["通用"]         # [待确认]
+    user_pain_point: 出差/职场午休口腔清洁不便, 需便携方案
+
+# ── tier 抽取 ──
+# 本表「流量状况」列 100% 为空(0 个取值) → 当前无任何 tier 信号。
+# 仍按 B 家族标准声明 source=状态字段(指向「流量状况」→ _status_raw),
+# 但因该列为空, 所有行 tier 将走 default=null → 数值推断兜底。
+# ⚠️ 由于本表【也无】曝光/阅读/互动列, 数值推断同样无法触发 → 全表 tier=未知。
+# 这是早期铺量表常态(内容先行, 数据后补)。待运营回收流量数据后再校准。
+tier_extraction:
+  source: 状态字段                  # 指向「流量状况」列(当前空; 未来运营填值后自动生效)
+  rules:
+    - match_contains: ["大爆"]
+      tier: 大爆
+    - match_contains: ["爆贴预备"]
+      tier: 预备
+    - match_contains: ["爆贴"]
+      tier: 爆
+    - match_contains: ["参考"]
+      tier: 参考
+    - match_contains: ["风控"]
+      tier: 风控
+    - match_contains: ["无水花"]
+      tier: 趴
+    - match_contains: ["评估中"]
+      tier: 未知
+    - default: null
+
+# ── 数值推断阈值 ──
+# 本表无互动量列 → 数值推断实际不会触发。占位写标准保守值, 待数据回收后校准。
+tier_thresholds:
+  爆: 100                            # [待确认] 无数据基准, 占位
+  大爆: 500                          # [待确认]
+
+# ── 合规 ──
+compliance:
+  base_template: null               # [待确认] 冲牙器若按医疗器械注册 → 用「医疗器械」模板; 若按个护小家电 → null
+  custom_red_flags:                  # [待确认]
+    - "禁止医疗化宣称(治疗牙周病/治愈口臭等)"
+    - "禁止绝对化表述(100%去除/彻底根治)"
+    - "涉及出血/牙龈敏感时需谨慎(平台可能限流'流血/出血'等词 → 用 emoji 替代)"
+    - "品牌反馈已要求: 紫外线杀菌/流血/滋血/出血 需 emoji 替换或同义替换"
+  blue_keyword_strategy:
+    primary: ["岸深冲牙器", "岸深C10", "便携式冲牙器"]    # [待确认]
+    secondary: ["牙缝清洁工", "冲牙器推荐"]               # [待确认]
+    avoid: []                                             # [待确认]
+
+# ── 项目专属字段(进 raw_extra) ──
+project_specific_fields_to_raw_extra:
+  - 主页链接              # 账号主页 URL(type=15)
+  - 账号名                # 账号昵称(非编号)
+  - 流量状况              # 当前 100% 空; 未来有值时可上移 field_mapping → _status_raw
+  - 笔记配图              # 笔记图片附件(type=17)
+  - 品牌反馈              # 品牌修改意见(运营备注)
+  - 随贴评论配图          # 评论区配图附件(type=17)
+  - 相关截图              # 截图附件(type=17)
+  - 图片统计              # 当前 100% 空
+  # ✅ 16 列全部交代: 7 field_mapping + 1 computed(无) + 8 raw_extra + 笔记状态(已映 _intent_raw) = 16
+
+data_supplement_needed:
+  - field: impressions, reads, interactions
+    method: 本表无任何流量数据列(曝光/阅读/互动) → 需运营后续回收或通过笔记链接调小红书 API 补录
+    estimated_rows: 99
+  - field: account_followers
+    method: 本表无粉丝数列 → 需通过主页链接调小红书 API 或人工补录
+    estimated_rows: 0
+
+# ── Sync 配置 ── (飞书坐标待用户提供)
+onboarding_meta:
+  onboarded_at: 2026-07-22
+  onboarded_by: 接表管家起草
+  strategy_lead: Ziao / 周哥
+  notes: |
+    DRAFT —— B 家族(有方向+缺粉丝数; 无巡查/检查 → 非 A; 无日期化结算 → 非 C)。
+    本表特殊点(早期铺量表):
+      1) 无曝光/阅读/互动列 → notes.impressions/reads/interactions 全 null;
+      2) 「流量状况」100% 空 → tier 全 null(无数值推断基础); 待运营回收;
+      3) 「笔记状态」实为内容形式(直出贴53/提问贴46) → 映 _intent_raw → intent_mapping;
+      4) 方向 5 种全单选, 无多选组合;
+      5) 「品牌反馈」列含修改意见(emoji 替换/配图修改等) → 进 raw_extra 留痕;
+      6) 99 行(44 素人 × ~2.25 篇/人), 全部有笔记内容(raw_content NOT NULL 可满足)。
+    待策略 lead 拍板:
+      - brand/product/category 确认(岸深/冲牙器C10/个护 or 医疗器械?)
+      - 5 方向的 content_format + target_audience
+      - 合规模板(null or 医疗器械?)+ 红线 + 蓝词
+      - intent_mapping: 直出贴→conversion / 提问贴→traffic 是否正确?
+      - tier_thresholds 占位(当前不生效)
+    下一步: 用户提供飞书坐标 → preflight → PR → 验证。
+
+sync_config:
+  source_type: feishu_api
+  feishu_app_token: UWafwphKHiJTr4ksMnWcodvHnXc   # 表标识(非密钥), 接表时已知
+  feishu_table_id: tblObopEQwBvMF41
+  feishu_view_id: null
+  sync_interval: on_demand
