@@ -69,15 +69,42 @@ def _post_onboard(base_url: str, api_key: str | None, payload: dict, timeout: in
         raise RuntimeError(f"连不上 {base_url}: {exc.reason}") from exc
 
 
-def _draft_one(entry: dict, *, remote: str | None, api_key: str | None,
-               sample_n: int, model: str | None, timeout: int) -> dict:
+def build_payload(entry: dict, *, sample_n: int, model: str | None = None) -> dict[str, Any]:
+    """条目 → `/onboard` 的请求体。**能在本地算出 id 时就送 id, 不送 url。**
+
+    ⚠️ 这不是风格问题, 是**版本错配**问题。`url` 是服务端(Railway)新加的字段, 而
+    Railway 是独立部署的 —— 代码 merge 进 GitHub ≠ 那个服务重新部署了。首次真跑
+    (2026-08-28 run#15)六张表全部拿到:
+
+        HTTP 400: {"detail":"missing required field: app_token"}
+
+    那是**旧版 app.py 的文案**:服务还跑着老代码, 不认识 url。而链接解析是纯客户端、
+    不联网的 —— 链接里已经带了 `?table=` 时, 两个 id 本地就能算出来, 送 id 则新旧
+    服务端都认。
+
+    只有链接**没带** `?table=` 时才回落到送 url:那种情况必须由服务端连飞书去列表
+    选表, 客户端(GH runner)没有飞书凭证, 本地做不到。老服务端遇到这种会回 400,
+    但那条报错本身就说明该在链接里带上表。
+    """
     payload: dict[str, Any] = {"project_id": entry["project_id"],
                                "sample_n": entry.get("sample_n") or sample_n}
-    for k in ("url", "app_token", "table_id"):
-        if entry.get(k):
-            payload[k] = entry[k]
+    app_token, table_id = entry.get("app_token"), entry.get("table_id")
+    if entry.get("url") and not (app_token and table_id):
+        info = links.parse_feishu_url(entry["url"])
+        app_token = app_token or info["token"]
+        table_id = table_id or info["table_id"]
+    if app_token and table_id:
+        payload["app_token"], payload["table_id"] = app_token, table_id
+    else:
+        payload["url"] = entry["url"]      # 缺 ?table= —— 只能让服务端去列表选表
     if model:
         payload["model"] = model
+    return payload
+
+
+def _draft_one(entry: dict, *, remote: str | None, api_key: str | None,
+               sample_n: int, model: str | None, timeout: int) -> dict:
+    payload = build_payload(entry, sample_n=sample_n, model=model)
 
     if remote:
         return _post_onboard(remote, api_key, payload, timeout)

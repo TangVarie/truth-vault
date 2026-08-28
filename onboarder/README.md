@@ -50,6 +50,13 @@ GitHub「Run workflow」填表 ──HTTP──▶ Railway /onboard(连网关+�
 - `ONBOARDER_URL` = 上面的 Railway 域名
 - `ONBOARDER_API_KEY` = 与 Railway 那个 `ONBOARDER_API_KEY` 一致
 
+> ⚠️ **改了 `onboarder/` 的代码,merge 进 main 之后要确认 Railway 真的重新部署了。**
+> 这两件事是分开的 —— 2026-08-28 首次批量真跑, 六张表全部拿到
+> `HTTP 400: missing required field: app_token`, 因为 Railway 上还跑着旧版 `app.py`
+> (它不认识新加的 `url` 字段)。看 `/health` 能确认服务活着, 但**看不出它是哪个版本**。
+> 客户端现在会尽量送 `app_token`+`table_id`(新旧都认), 所以这类错配大多不再致命;
+> 但改了服务端行为(端点、鉴权、返回字段)仍必须先确认部署。
+
 **③ 跑**:Actions →「接表 agent」→ Run workflow → 跑完日志里有「👉 点这里开 PR」链接,
 点开 merge 即审;批量汇总在 run 的 Summary 页(可直接粘进 PR 描述)。
 

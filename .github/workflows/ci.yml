@@ -2704,6 +2704,31 @@ jobs:
           assert len(_e) == 1 and not _err, ("尾部多打一个 | 不该报错", _e, _err)
           print("  ✓ 中间空列 → 报缺列; 尾部多余的 | 仍容忍")
 
+          # ── ②-e 能本地算出 id 就送 id, 不送 url(服务端版本错配) ───────
+          #
+          # `url` 是**服务端**(Railway)新加的字段, 而 Railway 是独立部署的 ——
+          # 代码 merge 进 GitHub ≠ 那个服务重新部署了。首次真跑(2026-08-28 run#15)
+          # 六张表全部拿到 `HTTP 400: missing required field: app_token`, 那是**旧版
+          # app.py 的文案**:服务还跑着老代码。
+          #
+          # 而链接解析是纯客户端、不联网的 —— 链接带了 ?table= 时两个 id 本地就能算出,
+          # 送 id 则新旧服务端都认。判据钉在**请求体形状**上:回退成"有 url 就送 url"
+          # 会红。
+          for _u in ("https://x.feishu.cn/base/App1?table=tblA",
+                     "https://x.feishu.cn/wiki/wikN?table=tblB"):   # /wiki/ 同样送 id
+              _p = batch.build_payload({"project_id": "P_p1", "url": _u, "app_token": None,
+                                        "table_id": None, "sample_n": None}, sample_n=30)
+              assert "url" not in _p and _p.get("app_token") and _p.get("table_id"), \
+                  f"链接自带 ?table= 却送了 url —— 旧版服务端会 400: {_p}"
+          # 缺 ?table= 时**只能**送 url:客户端(GH runner)没有飞书凭证, 列不了表。
+          _p = batch.build_payload({"project_id": "P_p1", "url": "https://x.feishu.cn/base/AppOnly",
+                                    "app_token": None, "table_id": None, "sample_n": None}, sample_n=30)
+          assert "url" in _p and "app_token" not in _p, _p
+          # 但重跑清单里给人看的仍是他原本贴的**链接**, 不是 id
+          assert batch._ref_of({"project_id": "T", "url": "https://x.feishu.cn/base/A?table=tblB",
+                                "app_token": None, "table_id": None}).startswith("https://")
+          print("  ✓ 链接带 ?table= → 送 id(新旧服务端都认); 缺 ?table= 才送 url")
+
           # ── ②-d 重跑清单必须真的能粘回去 ─────────────────────────────
           #
           # 汇总里那份"重跑清单"是对人的承诺。id 式若被压成 `app_token/table_id` 一列,
