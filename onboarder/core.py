@@ -19,7 +19,7 @@ from typing import Any
 
 import yaml
 
-from . import clients, corpus, vocab
+from . import clients, corpus, links, vocab
 
 DEFAULT_MODEL = os.environ.get("ONBOARDER_MODEL", "claude-sonnet-4-6")
 DISTINCT_CAP = 40   # 不同值超过这个数的列视为自由文本,只报数量不铺开(控 prompt 体积)
@@ -168,26 +168,133 @@ def _rewrite_sync_config(mapping_text: str, app_token: str, table_id: str) -> st
     return f"{body}\n\n{block}"
 
 
+def _ensure_project_id(mapping_text: str, project_id: str) -> str:
+    """把草稿里的顶层 ``project_id`` 钉成本次请求的值(§CI mapping yaml lint)。
+
+    CI 的 mapping lint 判 ``data["project_id"] != 文件名`` 直接红, 而文件名由请求
+    参数决定、yaml 里那一行由模型写 —— 两者本来就有漂的空间(模型偶尔把品牌全名或
+    表名写进去)。这不是判断项, 是**已知输入**, 和 sync_config 里的 app_token 同一
+    性质:与其让人在 PR 上修一个纯机械的字段, 不如在出草稿时就钉死。
+
+    只动**顶层**那一行(行首非空白), 不碰任何缩进块里同名的键。
+    """
+    out: list[str] = []
+    replaced = False
+    for ln in (mapping_text or "").splitlines():
+        if not replaced and ln.startswith("project_id:"):
+            if ln.strip() != f"project_id: {project_id}":
+                print(f"· 草稿的 project_id 与请求不符,已钉成 {project_id}(原:{ln.strip()})")
+            out.append(f"project_id: {project_id}")
+            replaced = True
+            continue
+        out.append(ln)
+    if replaced:
+        return "\n".join(out)
+    # 模型压根没写这个键 —— 补在最前面(yaml 顶层键无序,放哪都等价)
+    print(f"· 草稿缺 project_id,已补 {project_id}")
+    return f"project_id: {project_id}\n" + "\n".join(out)
+
+
+def _with_wiki_fallback(fn, app_token: str):
+    """跑 ``fn(app_token)``;失败了就把 token 当知识库节点换一次 obj_token 再跑一遍。
+
+    返回 ``(结果, 真正生效的 app_token)``。
+
+    /base/ 和 /wiki/ 的 token 现在都能直接当 app_token 用, 所以**成功路径上一次额外
+    调用都没有** —— 不为"可能是知识库"这件事先探一次路。只有在第一次取数就失败时,
+    才花一次调用去试"它是不是需要换 obj_token 的老式知识库节点"。
+
+    两次都失败时抛的是**第一个**异常:那才是调用方真正要看的(权限不足 / 表不存在),
+    而"这个 token 不是知识库节点"只是兜底路径的副产物, 拿它报错会把人带偏。
+    """
+    try:
+        return fn(app_token), app_token
+    except Exception as first:  # noqa: BLE001
+        try:
+            resolved = clients.resolve_wiki_node(app_token)
+        except Exception:  # noqa: BLE001
+            raise first
+        if resolved == app_token:
+            raise first
+        print(f"· 直接用该 token 取数失败,已按知识库节点换成 {resolved} 重试")
+        try:
+            return fn(resolved), resolved
+        except Exception:  # noqa: BLE001
+            raise first
+
+
+def resolve_table_ref(
+    *, url: str | None = None, app_token: str | None = None, table_id: str | None = None
+) -> tuple[str, str]:
+    """(链接 | app_token+table_id) → (app_token, table_id)。
+
+    /base/ 与 /wiki/ **同一条路径**, token 直接当 app_token 用(见 links.py 模块头)。
+    唯一可能联网的情况:链接省了 ``?table=`` —— 那时去列表, 只有一张就用它, 多张则
+    **报错并列出候选, 不猜**。猜错的代价是跑完一整轮飞书全表扫描 + 一次 LLM 调用,
+    才得到一份接错表的 mapping。
+    """
+    if url:
+        info = links.parse_feishu_url(url)          # 坏链接在这里就抛(未联网)
+        app_token = info["token"]
+        table_id = info["table_id"] or table_id
+        if not table_id:
+            tables, app_token = _with_wiki_fallback(clients.list_tables, app_token)
+            if len(tables) == 1:
+                table_id = tables[0]["table_id"]
+                print(f"· 链接没带 ?table=,该 base 只有一张表 → {tables[0].get('name')} ({table_id})")
+            else:
+                listing = "\n".join(
+                    f"    {t['table_id']}  {t.get('name')}" for t in tables
+                ) or "    (一张表都没有)"
+                # LinkError(ValueError 子类)而不是 RuntimeError —— 这是**调用方能自己
+                # 修**的输入问题(在链接里带上 ?table=), app.py 据此回 400。抛
+                # RuntimeError 的话端点回 500, 批量那侧会把它报成"服务故障", 于是人
+                # 去查 Railway 和网关, 而真正要做的只是换一条链接。(codex review)
+                raise links.LinkError(
+                    f"链接没带 ?table=,而这个 base 有 {len(tables)} 张表 —— 不猜。"
+                    f"请在链接里带上要接的那张(浏览器里点开该表再复制地址),或直接给 table_id:\n{listing}"
+                )
+        return app_token, table_id
+
+    if not app_token or not table_id:
+        # 同上:少给参数是调用方的问题, 不是服务故障。
+        raise links.LinkError("要么给 url,要么给 app_token + table_id(两者缺一不可)")
+    return app_token, table_id
+
+
 def draft(
     *,
     project_id: str,
-    app_token: str,
-    table_id: str,
+    app_token: str | None = None,
+    table_id: str | None = None,
+    url: str | None = None,
     sample_n: int = 30,
     model: str = DEFAULT_MODEL,
 ) -> dict[str, Any]:
     """确定性取数 + 单次 Anthropic 调用 → 草稿(不写盘;CLI 和 Railway 端点共用)。
 
-    返回 {mapping_yaml, review_brief, errors, uncovered, pending, is_error};
-    解析不出 mapping 时返回 {is_error, reason, raw_head}(无 mapping_yaml)。
+    表标识给 ``url``(飞书链接,``/base/`` 与 ``/wiki/`` 一视同仁)或 ``app_token`` +
+    ``table_id`` 皆可。
+
+    返回 {mapping_yaml, review_brief, errors, uncovered, pending, is_error, app_token,
+    table_id};解析不出 mapping 时返回 {is_error, reason, raw_head}(无 mapping_yaml)。
     """
+    project_id = links.safe_project_id(project_id)
+    app_token, table_id = resolve_table_ref(url=url, app_token=app_token, table_id=table_id)
     try:
-        fields = clients.list_fields(app_token, table_id)
+        # 第一次真取数。token 直接当 app_token 用;只有这一步失败, 才去试
+        # "它是不是需要换 obj_token 的知识库节点"(见 _with_wiki_fallback)。
+        # 换成功的话, 后面的样本 / distinct 全用换过的那个 —— 否则会一半用新
+        # 一半用旧, 表现为"字段拉到了但一行数据都没有"。
+        fields, app_token = _with_wiki_fallback(
+            lambda tok: clients.list_fields(tok, table_id), app_token
+        )
     except Exception as exc:  # noqa: BLE001
         # 不降级到样本列:list_fields 是【权威列清单】的唯一来源,失败时退回样本列会漏掉
         # 空列/稀有取值 → 出 D-021 校验 → 真导入时 quarantine。宁可快速失败,让人修权限。
         raise RuntimeError(
-            f"list_fields 失败({exc})—— 飞书 bot 需要对该表的【字段读权限】。"
+            f"list_fields 失败({exc})—— 飞书 bot 需要对该表的【字段读权限】"
+            "(表在知识库里的话,还要把 bot 加进该知识库)。"
             "不降级到样本列(否则空列/稀有取值会漏过 D-021 校验,真导入时 quarantine)。"
             "确认 bot 权限后重试。"
         ) from exc
@@ -208,6 +315,8 @@ def draft(
 
     # §7-B: 把已知 app_token/table_id 写进 sync_config —— 否则 daily cron 见 null 会跳过该项目。
     mapping_text = _rewrite_sync_config(mapping_text, app_token, table_id)
+    # 文件名 = <project_id>.yaml, CI mapping lint 要求 yaml 里那一行与之相等。
+    mapping_text = _ensure_project_id(mapping_text, project_id)
 
     try:
         mp = yaml.safe_load(mapping_text)
@@ -223,20 +332,32 @@ def draft(
         "uncovered": res["uncovered_columns"],
         "pending": res["pending"],
         "is_error": bool(res["errors"] or res["uncovered_columns"]),
+        # 回显解析后的表标识 —— 链接式调用时,调用方(批量/人)只给了一条 URL,
+        # 出了问题要知道它到底解到了哪张表(尤其 /wiki/ 换过 obj_token 之后)。
+        "app_token": app_token,
+        "table_id": table_id,
     }
 
 
 def run_onboarding(
     *,
     project_id: str,
-    app_token: str,
-    table_id: str,
+    app_token: str | None = None,
+    table_id: str | None = None,
+    url: str | None = None,
     sample_n: int = 30,
     model: str = DEFAULT_MODEL,
     out_dir: str = "mappings",
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """CLI 入口:dry_run 只拼 prompt;否则 draft() + 写盘 + 打印。"""
+    """CLI 入口:dry_run 只拼 prompt;否则 draft() + 写盘 + 打印。
+
+    ⚠️ project_id 在这里就归一化, 因为**文件名在这一层拼**。draft() 内部归一化只
+    影响写进 yaml 的那一行 —— 两边不一致的话, `--project-id ' TXQ_phase2 '` 会产出
+    `mappings/ TXQ_phase2 .yaml`(带空格的文件名)而内容是 `project_id: TXQ_phase2`,
+    正好撞上 CI 那条"project_id 必须等于文件名"的 lint。(codex review)
+    """
+    project_id = links.safe_project_id(project_id)
     if dry_run:
         user = build_user_message(project_id, [], {"columns": [], "rows": [], "n": 0}, {"distinct": {}})
         print("=== SYSTEM PROMPT ===\n" + SYSTEM_PROMPT)
@@ -244,7 +365,7 @@ def run_onboarding(
         return {"dry_run": True}
 
     res = draft(project_id=project_id, app_token=app_token, table_id=table_id,
-                sample_n=sample_n, model=model)
+                url=url, sample_n=sample_n, model=model)
     if "mapping_yaml" not in res:
         print("❌ " + res.get("reason", "失败") + "。原始响应前 1200 字:\n" + res.get("raw_head", ""))
         return res

@@ -26,6 +26,8 @@ class FeishuClient:
         "https://open.feishu.cn/open-apis/bitable/v1/apps/"
         "{app_token}/tables/{table_id}/fields"
     )
+    TABLES_URL = "https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables"
+    WIKI_NODE_URL = "https://open.feishu.cn/open-apis/wiki/v2/spaces/get_node"
 
     def __init__(self, app_id: str, app_secret: str):
         self.app_id = app_id
@@ -117,6 +119,58 @@ class FeishuClient:
             params["page_token"] = data["data"]["page_token"]
         return out
 
+    def list_tables(self, app_token: str, page_size: int = 100) -> list[dict[str, Any]]:
+        """列出一个 base 下的所有数据表 [{table_id, name}]。
+
+        用途只有一个:链接里省了 ``?table=`` 时把候选报出来让人选(见 core.resolve_table_ref)。
+        """
+        token = self._ensure_token()
+        url = self.TABLES_URL.format(app_token=app_token)
+        headers = {"Authorization": f"Bearer {token}"}
+        params: dict[str, Any] = {"page_size": page_size}
+        out: list[dict[str, Any]] = []
+        while True:
+            r = self._get_with_retry(url, headers, params)
+            r.raise_for_status()
+            data = r.json()
+            if data.get("code") != 0:
+                raise RuntimeError(f"Feishu list_tables error: {data}")
+            out.extend(data["data"].get("items", []))
+            if not data["data"].get("has_more"):
+                break
+            params["page_token"] = data["data"]["page_token"]
+        return out
+
+    def resolve_wiki_node(self, node_token: str) -> str:
+        """知识库节点 token → 它承载的 bitable 的 app_token(obj_token)。
+
+        ⚠️ 这一步不能省。``/wiki/<token>`` 里的 token 是**节点** id, 不是 app_token;
+        直接拿它当 app_token 调 bitable API 会得到一个跟"链接粘错了"长得一模一样的
+        404/权限错。而运营从知识库里复制链接是常态 —— 挂在知识库下的多维表, 地址栏
+        给的就是 /wiki/ 形态。
+        """
+        token = self._ensure_token()
+        headers = {"Authorization": f"Bearer {token}"}
+        r = self._get_with_retry(
+            self.WIKI_NODE_URL, headers, {"token": node_token, "obj_type": "wiki"}
+        )
+        r.raise_for_status()
+        data = r.json()
+        if data.get("code") != 0:
+            raise RuntimeError(
+                f"Feishu get_node error: {data} —— 飞书 bot 需要该知识库节点的读权限"
+                "(应用权限里的 wiki:wiki:readonly),且要把 bot 加进这个知识库。"
+            )
+        node = (data.get("data") or {}).get("node") or {}
+        obj_type = node.get("obj_type")
+        obj_token = node.get("obj_token")
+        if obj_type != "bitable" or not obj_token:
+            raise RuntimeError(
+                f"知识库节点 {node_token} 的类型是 {obj_type!r},不是多维表(bitable)"
+                " —— 这条 /wiki/ 链接指向的不是一张表。"
+            )
+        return obj_token
+
 
 def feishu_from_env() -> FeishuClient:
     app_id = os.environ.get("FEISHU_APP_ID")
@@ -174,6 +228,19 @@ def list_fields(app_token: str, table_id: str) -> list[dict[str, Any]]:
             "options": [o.get("name") for o in opts if isinstance(o, dict)],
         })
     return out
+
+
+def list_tables(app_token: str) -> list[dict[str, Any]]:
+    """一个 base 下的数据表清单 [{table_id, name}](模块级 helper,与 list_fields 对称)。"""
+    return [
+        {"table_id": t.get("table_id"), "name": t.get("name")}
+        for t in feishu_from_env().list_tables(app_token)
+    ]
+
+
+def resolve_wiki_node(node_token: str) -> str:
+    """知识库节点 token → bitable app_token(模块级 helper)。"""
+    return feishu_from_env().resolve_wiki_node(node_token)
 
 
 def distinct_values(app_token: str, table_id: str, columns: list[str], max_scan: int = 50000) -> dict[str, Any]:

@@ -3,9 +3,15 @@
 为什么在 Railway:它连得上中转站 + 飞书(实测 GitHub Actions 连不上中转站)。
 分工:本服务只【产草稿】,不碰 git;git/PR 由 GitHub Action(onboard-table.yml)做。
 
-  POST /onboard  body={project_id, app_token, table_id, sample_n?, model?}
-                 → {mapping_yaml, review_brief, errors, uncovered, pending, is_error}
+  POST /onboard  body={project_id, (url | app_token+table_id), sample_n?, model?}
+                 → {mapping_yaml, review_brief, errors, uncovered, pending, is_error,
+                    app_token, table_id}
   GET  /health   → {"ok": true}
+
+批量(多张表)**不在这里** —— 见 `onboarder/batch.py`:它在调用方(GH runner / 本地)
+逐表打这个端点。故意不做服务端批量端点,理由三条:① 单表就已逼近网关/代理的请求
+超时(全表 distinct 扫描 + 16k 输出),串起 N 张必超;② Railway 重启会丢内存里的
+批次状态;③ 逐表独立请求天然做到"一张挂了不拖垮整批",且不新增鉴权面。
 
 鉴权:设了 ONBOARDER_API_KEY 则请求须带 header `X-Onboarder-Key: <key>`;没设则放行(dev)。
 
@@ -84,18 +90,30 @@ async def onboard(
         raise HTTPException(status_code=400, detail="body must be JSON")
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="body must be a JSON object")
-    for k in ("project_id", "app_token", "table_id"):
-        if not body.get(k):
-            raise HTTPException(status_code=400, detail=f"missing required field: {k}")
+    if not body.get("project_id"):
+        raise HTTPException(status_code=400, detail="missing required field: project_id")
+    # 表标识二选一:一条飞书链接(url,含 /wiki/ 形态)或 app_token + table_id。
+    # 批量入口给的是链接 —— 运营手里只有链接, 抠 id 那一步本来就是人肉的。
+    if not body.get("url") and not (body.get("app_token") and body.get("table_id")):
+        raise HTTPException(
+            status_code=400,
+            detail="missing table ref: 给 url(飞书链接)或 app_token + table_id",
+        )
 
     try:
         res = core.draft(
             project_id=body["project_id"],
-            app_token=body["app_token"],
-            table_id=body["table_id"],
+            app_token=body.get("app_token"),
+            table_id=body.get("table_id"),
+            url=body.get("url"),
             sample_n=int(body.get("sample_n", 30) or 30),
             model=body.get("model") or core.DEFAULT_MODEL,
         )
+    except ValueError as exc:
+        # LinkError 是 ValueError 的子类; sample_n 转 int 失败也落这里。
+        # 都是**调用方的**输入问题 —— 400 而不是 500, 否则批量那侧会把它当服务
+        # 故障去重试, 而重试一万次也还是那条坏链接。
+        raise HTTPException(status_code=400, detail=f"{type(exc).__name__}: {exc}")
     except Exception as exc:  # noqa: BLE001
         logger.exception("draft crashed")
         raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")

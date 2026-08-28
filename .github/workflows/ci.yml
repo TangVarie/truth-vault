@@ -51,10 +51,12 @@ jobs:
             librarian/app.py \
             onboarder/__init__.py \
             onboarder/app.py \
+            onboarder/batch.py \
             onboarder/cli.py \
             onboarder/clients.py \
             onboarder/core.py \
             onboarder/corpus.py \
+            onboarder/links.py \
             onboarder/vocab.py \
             onboarder/eval_wtg.py \
             worker/__init__.py \
@@ -2541,6 +2543,324 @@ jobs:
           for _v in ("WORKER_API_KEY", "WORKER_ALLOW_ANONYMOUS"):
               os.environ.pop(_v, None)
           print("  ✓ key+匿名开关同时在: anonymous_allowed=False, 但 mode 点名提醒")
+          PY
+
+      - name: 批量接表 —— 链接解析 / 路径穿越闸 / 覆盖闸 / 逐表隔离
+        run: |
+          pip install -q fastapi 'httpx<0.28' 'starlette' >/dev/null
+          python - <<'PY'
+          # 接表从"一次一张"变成"一次一批"(onboarder/batch.py + links.py)。批量把三
+          # 类原来无所谓的错放大成了会真的咬人的错, 这一步逐条钉住:
+          #
+          #   ① project_id 当文件名用, 而它来自 workflow_dispatch 的自由文本输入,
+          #      随后被 git add + push —— 没有人在中间看一眼。
+          #   ② 覆盖已存在的 mapping = 把策略 lead 审过的判断项换成模型的新猜测,
+          #      而 diff 里它长得就像一次正常更新。一张表时人还看得见, 一批 6 张
+          #      没人逐个核对。
+          #   ③ 一张表挂掉不能带走整批 —— 否则第 6 张超时会让前 5 张白跑
+          #      (每张都是一次全表扫描 + 一次 LLM 调用)。
+          import io, json, os, shutil, sys, tempfile, threading
+          from contextlib import redirect_stdout
+          from http.server import BaseHTTPRequestHandler, HTTPServer
+          from pathlib import Path
+
+          from onboarder import batch, core, links
+
+          # ── ① 路径穿越:project_id 只走白名单 ──────────────────────────
+          #
+          # 判据是**被禁止的形态**能不能落盘到 mappings/ 外面, 不是"正则长什么样"。
+          for evil in ("../../.github/workflows/ci", "a/b", "..", "", ".", "-x",
+                       "x" * 80, "a\\b"):
+              try:
+                  links.safe_project_id(evil)
+                  raise AssertionError(f"project_id {evil!r} 被放行了 —— 它会当文件名落盘")
+              except links.LinkError:
+                  pass
+          for ok in ("WTG_phase1", "TXQ.phase2", "a"):
+              assert links.safe_project_id(ok) == ok
+          # 归一化必须贯穿到**拼文件名的那一层**。safe_project_id 会 strip 掉两侧空白,
+          # 而 draft() 内部的归一化只影响写进 yaml 的那一行 —— 两边不一致时
+          # `--project-id ' TXQ_phase2 '` 产出 `mappings/ TXQ_phase2 .yaml` 而内容是
+          # `project_id: TXQ_phase2`, 正好撞本文件末尾那条 mapping lint。(codex review)
+          assert links.safe_project_id(" TXQ_phase2 ") == "TXQ_phase2"
+          import inspect
+          for fn, where in ((core.run_onboarding, "core.run_onboarding"),
+                            (batch.run_batch, "batch.run_batch")):
+              assert "safe_project_id" in inspect.getsource(fn), \
+                  f"{where} 拼文件名之前没过 project_id 闸(纵深:别指望调用方记得校验)"
+          print("  ✓ project_id 白名单挡住路径穿越, 且归一化贯穿到落盘那一层")
+
+          # ── ② 链接解析:/base/ 与 /wiki/ 同一条路径 ───────────────────
+          got = links.parse_feishu_url("https://x.feishu.cn/base/App1?table=tblA&view=vewB")
+          assert (got["kind"], got["token"], got["table_id"]) == ("base", "App1", "tblA"), got
+          assert links.parse_feishu_url("https://x.feishu.cn/wiki/wikN?table=tblB")["kind"] == "wiki"
+          # 国际版 Lark 的 API 主机不同(open.larksuite.com), 而客户端固定 open.feishu.cn
+          # —— 不拦的话表现为"这张表不存在"。
+          for bad in ("https://x.larksuite.com/base/App?table=tblA",
+                      "https://evil.example.com/base/App?table=tblA",
+                      "https://x.feishu.cn/docx/AAA", ""):
+              try:
+                  links.parse_feishu_url(bad)
+                  raise AssertionError(f"{bad!r} 被当成合法飞书表链接了")
+              except links.LinkError:
+                  pass
+          print("  ✓ 链接解析: larksuite / 非飞书域名 / 非表链接 一律拒")
+
+          # /base/ 和 /wiki/ 的 token 都**直接**当 app_token 用 —— 解析阶段一次网都不联,
+          # 两种形态走同一条路径(2026-08-28 用户口径修正:飞书两种 token 都收)。
+          seen = []
+          import onboarder.clients as C
+          C.resolve_wiki_node = lambda t: (seen.append(t), "APP_FROM_WIKI")[1]
+          for u, want in (("https://x.feishu.cn/base/App?table=tblA", ("App", "tblA")),
+                          ("https://x.feishu.cn/wiki/wikN?table=tblB", ("wikN", "tblB"))):
+              assert core.resolve_table_ref(url=u) == want, u
+          assert seen == [], f"解析阶段就去换 obj_token 了(成功路径上不该有这次调用): {seen}"
+          print("  ✓ /base/ 与 /wiki/ 同一条路径, token 直接用, 解析阶段零联网")
+
+          # 兜底只在**第一次取数失败之后**才花那一次调用, 且换成功后**后续取数要用换过的
+          # 那个** —— 一半用新一半用旧会表现成"字段拉到了但一行数据都没有"。
+          seen.clear()
+          used = []
+          def _flaky(tok):
+              used.append(tok)
+              if tok != "APP_FROM_WIKI":
+                  raise RuntimeError("NOTEXIST")
+              return ["ok"]
+          assert core._with_wiki_fallback(_flaky, "wikN") == (["ok"], "APP_FROM_WIKI")
+          assert used == ["wikN", "APP_FROM_WIKI"] and seen == ["wikN"], (used, seen)
+          # 成功路径:一次就成, 不许再去换
+          seen.clear(); used.clear()
+          assert core._with_wiki_fallback(lambda t: ["ok"], "App") == (["ok"], "App")
+          assert seen == [], "第一次就成功了还去换 obj_token"
+          # 两次都失败 → 抛**第一个**异常(权限/表不存在才是要看的, 不是"它不是知识库节点")
+          C.resolve_wiki_node = lambda t: (_ for _ in ()).throw(RuntimeError("不是知识库节点"))
+          try:
+              core._with_wiki_fallback(_flaky, "App")
+              raise AssertionError("两次都失败却没抛")
+          except RuntimeError as exc:
+              assert "NOTEXIST" in str(exc), f"抛的是兜底路径的副产物, 会把人带偏: {exc}"
+          print("  ✓ 换 obj_token 只在取数失败后发生 · 换过之后后续取数跟着换 · 报错报第一个")
+
+          # 省了 ?table= 且这个 base 有多张表 → **报错并列候选**, 不猜。猜错的代价是
+          # 跑完一整轮飞书全表扫描 + 一次 LLM 调用, 才得到一份接错表的 mapping。
+          C.resolve_wiki_node = lambda t: "APP_FROM_WIKI"
+          C.list_tables = lambda a: [{"table_id": "tbl1", "name": "投放"},
+                                     {"table_id": "tbl2", "name": "结算"}]
+          try:
+              core.resolve_table_ref(url="https://x.feishu.cn/base/App")
+              raise AssertionError("多表 base 省了 ?table= 却猜了一张")
+          except links.LinkError as exc:
+              # LinkError 而不是 RuntimeError —— 见下面 ③ 的端点状态码断言。
+              assert "tbl1" in str(exc) and "tbl2" in str(exc), exc
+          C.list_tables = lambda a: [{"table_id": "tblOnly", "name": "投放"}]
+          assert core.resolve_table_ref(url="https://x.feishu.cn/base/App") == ("App", "tblOnly")
+          print("  ✓ 缺 ?table= 时: 单表自动取, 多表报候选而不猜")
+
+          # 协议 / token 长度:urlsplit 之后拿到的 token 会被原样拼进飞书 API URL。
+          for bad in ("javascript://x.feishu.cn/base/App?table=tblA",
+                      "file://x.feishu.cn/base/App?table=tblA",
+                      "https://x.feishu.cn/base/" + "A" * 200 + "?table=tblB"):
+              try:
+                  links.parse_feishu_url(bad)
+                  raise AssertionError(f"{bad[:40]!r}… 被放行了")
+              except links.LinkError:
+                  pass
+          print("  ✓ 只认 http(s) scheme · token 有长度上限")
+
+          # ── ②-b 输入错 vs 服务坏, 必须是两个状态码 ────────────────────
+          #
+          # 这两类的**处置完全相反**:400 → 换一条链接; 500 → 去查 Railway / 网关 /
+          # 飞书权限。混成一类的话, 批量汇总会把"链接没带 ?table="报成服务故障, 人就
+          # 去查完全错的方向。判据钉在**端点的状态码**上, 不是"抛了哪个异常类"
+          # —— 换等价异常不假警报, 把这条路径退回 500 会红。(codex review)
+          import os as _os
+          from fastapi.testclient import TestClient
+          import onboarder.app as OA
+          _os.environ["ONBOARDER_API_KEY"] = "k"
+          _c, _H = TestClient(OA.app), {"X-Onboarder-Key": "k"}
+          C.list_tables = lambda a: [{"table_id": "tbl1", "name": "投放"},
+                                     {"table_id": "tbl2", "name": "结算"}]
+          _r = _c.post("/onboard", json={"project_id": "P_p1",
+                                         "url": "https://x.feishu.cn/base/App"}, headers=_H)
+          assert _r.status_code == 400, f"歧义链接(调用方能自己修)回了 {_r.status_code}"
+          assert "tbl1" in _r.json()["detail"], _r.json()
+          def _boom(a):
+              raise RuntimeError("Feishu 5xx / bot 无权限")
+          C.list_tables = _boom
+          assert _c.post("/onboard", json={"project_id": "P_p1",
+                                           "url": "https://x.feishu.cn/base/App"},
+                         headers=_H).status_code == 500, "真的服务故障被降成了 4xx"
+          _os.environ.pop("ONBOARDER_API_KEY", None)
+          print("  ✓ 歧义链接=400(带候选表) · 真服务故障=500(两类没混)")
+
+          # ── ②-c 清单的空列不许把畸形条目塌成"另一张合法的表" ──────────
+          #
+          # `P | AppToken | | 50` 无差别滤空列之后成 `P | AppToken | 50`, 于是 50 被当
+          # table_id 收下(前缀检查只是警告), 清单校验还报通过 —— 少一列该是报错, 不是
+          # 换个值继续。(codex review)
+          _e, _err = links.parse_batch_spec("P_p1 | AppToken | | 50")
+          assert not _e and _err, f"畸形 id 式被塌成了合法条目: {_e}"
+          _e, _err = links.parse_batch_spec("P_p1 | https://x.feishu.cn/base/A?table=tblB |")
+          assert len(_e) == 1 and not _err, ("尾部多打一个 | 不该报错", _e, _err)
+          print("  ✓ 中间空列 → 报缺列; 尾部多余的 | 仍容忍")
+
+          # ── ②-d 重跑清单必须真的能粘回去 ─────────────────────────────
+          #
+          # 汇总里那份"重跑清单"是对人的承诺。id 式若被压成 `app_token/table_id` 一列,
+          # 粘回去会被判成缺列 —— 照着做才发现不行, 比不给更坏。判据是**往返**:
+          # 吐出来的那一行喂回解析器, 必须解出同一张表。(codex review)
+          _line = "P_p1 | " + batch._ref_of({"project_id": "P_p1", "url": None,
+                                             "app_token": "AppTok", "table_id": "tblB"})
+          _e2, _err2 = links.parse_batch_spec(_line)
+          assert len(_e2) == 1 and not _err2, (_line, _err2)
+          assert (_e2[0]["app_token"], _e2[0]["table_id"]) == ("AppTok", "tblB"), _e2[0]
+          print(f"  ✓ id 式失败项的重跑行往返一致: {_line}")
+
+          # ── ③ 清单错 → 整批一张都不跑 ────────────────────────────────
+          #
+          # 跑一半再报错会留下"部分接进来了"的中间态, 而要靠人去分辨哪几张成了。
+          entries, errs = links.parse_batch_spec(
+              "A_p1 | https://x.feishu.cn/base/App?table=tblA\n"
+              "A_p1 | https://x.feishu.cn/base/App?table=tblB\n"      # 重名 → 后一条会覆盖前一条
+              "BAD\n"                                                  # 列数不够
+              "../evil | https://x.feishu.cn/base/App?table=tblC\n")   # 路径穿越
+          assert len(entries) == 1 and len(errs) == 3, (entries, errs)
+          assert any("重复" in e for e in errs), errs
+          print("  ✓ 清单里的重名 / 缺列 / 坏 project_id 一次全报(不是报第一条就抛)")
+
+          # ── ④ 端到端:逐表隔离 + 覆盖闸 + 退出码 ──────────────────────
+          class H(BaseHTTPRequestHandler):
+              def log_message(self, *a): pass
+              def do_POST(self):
+                  body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                  HITS.append(body["project_id"])
+                  pid = body["project_id"]
+                  if pid == "BOOM_p1":
+                      self.send_response(500); self.end_headers()
+                      self.wfile.write(b'{"detail":"boom"}'); return
+                  clean = pid != "DIRTY_p1"
+                  payload = {"mapping_yaml": f"project_id: {pid}\nfield_mapping: {{}}\n",
+                             "review_brief": "brief",
+                             "errors": [] if clean else ["content_format: 取值 '瞎编' 不在词表内"],
+                             "uncovered": [] if clean else ["神秘列"],
+                             "pending": ["brand"], "is_error": not clean}
+                  raw = json.dumps(payload).encode()
+                  self.send_response(200)
+                  self.send_header("Content-Length", str(len(raw))); self.end_headers()
+                  self.wfile.write(raw)
+
+          HITS = []
+          srv = HTTPServer(("127.0.0.1", 0), H)
+          threading.Thread(target=srv.serve_forever, daemon=True).start()
+          URL = f"http://127.0.0.1:{srv.server_address[1]}"
+          out = Path(tempfile.mkdtemp())
+          SPEC = ("OK_p1    | https://x.feishu.cn/base/App?table=tbl1\n"
+                  "BOOM_p1  | https://x.feishu.cn/base/App?table=tbl2\n"
+                  "DIRTY_p1 | https://x.feishu.cn/base/App?table=tbl3\n"
+                  "OK2_p1   | https://x.feishu.cn/base/App?table=tbl4\n")
+
+          def run(argv):
+              buf = io.StringIO()
+              with redirect_stdout(buf):
+                  rc = batch.main(argv)
+              return rc, buf.getvalue()
+
+          # 中间那张 500, 后面的必须照跑完
+          rc, _ = run(["--spec", SPEC, "--remote", URL, "--api-key", "k", "--out-dir", str(out)])
+          assert HITS == ["OK_p1", "BOOM_p1", "DIRTY_p1", "OK2_p1"], \
+              f"一张表失败带走了后面的: {HITS}"
+          assert rc == 1, f"有失败/需修的表却返回 {rc}"
+          written = sorted(p.name for p in out.glob("*.yaml"))
+          assert written == ["DIRTY_p1.yaml", "OK2_p1.yaml", "OK_p1.yaml"], written
+          assert not (out / "BOOM_p1.yaml").exists(), "失败的表也写盘了(半截 mapping 比没有更坏)"
+          print("  ✓ 一张 500 不带走整批 · 只为出了草稿的表写盘 · 有问题就非 0 退出")
+
+          # 覆盖闸:已存在 → 跳过, 且**在花钱之前**跳过
+          HITS.clear()
+          (out / "OK_p1.yaml").write_text("project_id: OK_p1\n# 策略 lead 审过的\n", encoding="utf-8")
+          rc, _ = run(["--spec", "OK_p1 | https://x.feishu.cn/base/App?table=tbl1",
+                       "--remote", URL, "--api-key", "k", "--out-dir", str(out)])
+          assert HITS == [], "已存在的表还是发了请求 —— 白烧一次全表扫描 + 一次 LLM"
+          assert "审过的" in (out / "OK_p1.yaml").read_text(encoding="utf-8"), "人审内容被盖掉了"
+          assert rc == 1, "跳过了却报成功"
+          rc, _ = run(["--spec", "OK_p1 | https://x.feishu.cn/base/App?table=tbl1",
+                       "--remote", URL, "--api-key", "k", "--out-dir", str(out), "--overwrite"])
+          assert HITS == ["OK_p1"] and rc == 0
+          assert "审过的" not in (out / "OK_p1.yaml").read_text(encoding="utf-8")
+          print("  ✓ 默认不覆盖已有 mapping(且不发请求), --overwrite 才重写")
+
+          # 清单有错时一个请求都不许发
+          HITS.clear()
+          rc, _ = run(["--spec", "GOOD_p1 | https://x.feishu.cn/base/App?table=tbl1\n../evil | x",
+                       "--remote", URL, "--api-key", "k", "--out-dir", str(out)])
+          assert rc == 2 and HITS == [], f"清单有错却开跑了: rc={rc} hits={HITS}"
+          # --dry-run 同样零请求、零写盘
+          HITS.clear()
+          shutil.rmtree(out, ignore_errors=True); out.mkdir(parents=True)
+          rc, _ = run(["--spec", SPEC, "--remote", URL, "--dry-run", "--out-dir", str(out)])
+          assert rc == 0 and HITS == [] and not list(out.glob("*")), "dry-run 联网/写盘了"
+          print("  ✓ 清单错 → exit 2 零请求 · --dry-run 零请求零写盘")
+          srv.shutdown()
+
+          # ── ⑤ 汇总表格不许被异常消息撑烂 ─────────────────────────────
+          #
+          # detail 装的是 HTTP 响应体 / 飞书报错, 里面有 | 和换行是常事。这份表格
+          # 是汇总里唯一"一眼看完"的部分, 撑烂了整批结果就没人读了。
+          import re
+          row = [l for l in batch.render_summary(
+              [{"project_id": "X", "status": "failed", "ref": "u",
+                "detail": 'HTTP 500: {"a|b"\nmulti-line}' * 20,
+                "errors": [], "uncovered": [], "pending": []}]).splitlines()
+              if l.startswith("| `X`")][0]
+          assert len(re.findall(r"(?<!\\)\|", row)) == 6, f"未转义的 | 把表格撑成了: {row}"
+          assert "\n" not in row and len(row) < 250, row
+          print("  ✓ 汇总表格对含 | / 换行 / 超长的异常消息是安全的")
+
+          # ── ⑥ 草稿的 project_id 必须等于文件名 ───────────────────────
+          #
+          # 本文件末尾的 mapping lint 判 `data["project_id"] != 文件名` 直接红。文件名
+          # 由请求参数定、yaml 里那一行由模型写 —— 漂了就是一份"其它都对、只有一行
+          # 机械字段不对"的草稿在 CI 上红。它是已知输入, 不是判断项。
+          assert core._ensure_project_id("project_id: WRONG\nbrand: X\n", "TXQ_p2") \
+              .startswith("project_id: TXQ_p2")
+          assert core._ensure_project_id("brand: X\n", "TXQ_p2").startswith("project_id: TXQ_p2")
+          # 缩进块里的同名键不许被动(它是别的东西, 比如 raw_extra 里的一列)
+          assert "  project_id: inner" in core._ensure_project_id(
+              "project_id: WRONG\nblk:\n  project_id: inner\n", "TXQ_p2")
+          print("  ✓ 草稿的顶层 project_id 被钉成文件名(缩进块里的同名键不动)")
+          print("批量接表自检通过")
+          PY
+
+      - name: 接表 workflow 不把 dispatch 输入插进 shell (脚本注入)
+        run: |
+          python - <<'PY'
+          # onboard-table.yml 手里有 contents:write, 且它的输入是网页表单里的自由
+          # 文本(project_id / 飞书链接 / 批量清单)。`${{ inputs.x }}` 直接写进 run:
+          # 时, 这些文本是被**当成 shell 源码拼进脚本**的 —— 一条带反引号或分号的
+          # "表名"就能在 runner 上执行任意命令并 push。走 env: 之后它只是个变量值。
+          #
+          # 判据是**被禁止的形态**: 任何 run: 块里不许出现 ${{ inputs.* }} /
+          # ${{ github.event.inputs.* }}。secrets 同理(还会顺带泄进日志)。
+          import re, sys
+          import yaml
+
+          BAD = re.compile(r"\$\{\{\s*(inputs\.|github\.event\.inputs\.|secrets\.)")
+          bad = []
+          for path in (".github/workflows/onboard-table.yml",):
+              wf = yaml.safe_load(open(path, encoding="utf-8"))
+              for job_name, job in (wf.get("jobs") or {}).items():
+                  for idx, step in enumerate(job.get("steps") or []):
+                      script = step.get("run")
+                      if script and BAD.search(script):
+                          where = step.get("name") or f"step #{idx}"
+                          bad.append(f"{path} / {job_name} / {where}: "
+                                     f"{BAD.search(script).group(0)}…")
+          if bad:
+              print("以下 run: 块把不可信输入直接插进了 shell —— 改走 step 的 env::")
+              for b in bad:
+                  print("  ✗ " + b)
+              sys.exit(1)
+          print("  ✓ 接表 workflow 的 dispatch 输入 / secrets 都走 env, 没插进 shell")
           PY
 
       - name: daily-sync 把 409 当瞬时失败 (不拖红 · 配合 worker 互斥锁)
