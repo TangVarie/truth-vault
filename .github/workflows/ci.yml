@@ -1114,6 +1114,78 @@ jobs:
           print("  ✓ cron 跳 on_demand / 显式照跑 / daily 照跑 / None 保守不跳")
           print("\ncron skip on_demand: all checks passed")
           PY
+      - name: 假爆款最后一道网:伪爆帖/伪爆贴 帖贴混写都要标 synthetic (2026-08-28)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # 运营在「流量状态」里手写的假数据标记 —— 命中就必须 synthetic=true, 否则人工假爆款
+          # 【以真爆款身份】进飞轮 + 进看板爆款率。这道网【独立】于 tier 取值, 正因为 tier 规则的
+          # match_contains「爆帖」会把「伪爆帖500」先命中成 爆(BJS_phase1 实测)。
+          # 本 guard 的非空转证明: 旧实现是 `"伪爆贴" in s`, 对下面标 ← 的两个用例返回 False,
+          # 断言会红 —— 帖/贴 是两个字, 运营两种都写(库里 mapping 的 tier 规则早就两个都收)。
+          import re, sync_feishu_notes_to_truth_vault as s
+          RE = s._SYNTHETIC_TIER_SRC_RE
+          hit = [
+              "伪爆贴500",   # RIO 式(旧实现也认)
+              "伪爆帖500",   # ← BJS/SPX 实测写法, 旧实现漏
+              "伪20评",      # ← 人工补的假评论数, 旧实现漏
+              "伪50评",
+              "无水花 / 伪爆帖500",   # 多选串里也要认
+          ]
+          miss = ["无水花", "爆贴", "爆帖", "蓝词", "评估中", "大爆", "无水花 / 爆贴", ""]
+          bad = [v for v in hit if not RE.search(v)] + [v for v in miss if RE.search(v)]
+          assert not bad, f"synthetic 标记判定错: {bad}"
+          # 旧实现确实漏 —— 证明本 guard 不是空转
+          legacy_missed = [v for v in hit if "伪爆贴" not in v]
+          assert legacy_missed, "旧实现 `'伪爆贴' in s` 应至少漏一个用例, 否则本 guard 无意义"
+          print(f"  ✓ 命中 {len(hit)} / 放行 {len(miss)}; 旧实现会漏 {legacy_missed}")
+
+          # synthetic_reason 要点名命中的原串(排查时不用回飞书翻)
+          import inspect
+          src = inspect.getsource(s.transform_row)
+          assert "_SYNTHETIC_TIER_SRC_RE" in src, "transform_row 必须走这个正则, 不许再写死字符串"
+          assert '"伪爆贴" in tier_src_str' not in src, "旧的写死判定没删干净"
+          print("  ✓ transform_row 走 _SYNTHETIC_TIER_SRC_RE, 无写死字符串残留")
+          print("\nsynthetic 伪爆帖/伪爆贴: all checks passed")
+          PY
+      - name: tier 规则列序:短针不许遮死长针 (2026-08-28)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # `_first_matching_tier` 取首个命中 → 短针排在长针前面 = 长针整条不可达。
+          # BJS_phase1 起草稿实测踩到: 「爆帖」(→爆) 排在 「伪爆帖」(→数据异常) 前面,
+          # 于是运营手标的假数据「伪爆帖500」被判成【爆】。纯静态可查, 故做成 load_mapping 的 lint。
+          import glob, pathlib, _common
+          # ① 全部既有 mapping 必须仍 load 得过(零误报, 否则这 lint 会挡住所有 sync)
+          ok = 0
+          for f in sorted(glob.glob('../mappings/*.yaml')):
+              pid = pathlib.Path(f).stem
+              if pid.startswith('_'):
+                  continue
+              _common.load_mapping(pid)
+              ok += 1
+          assert ok >= 10, f"只扫到 {ok} 个 mapping, 路径不对?"
+          print(f"  ✓ {ok} 个既有 mapping 零误报")
+          # ② 非空转证明: 出问题的那个列序必须被拒
+          bad = [{"match_contains": ["爆贴", "爆帖"], "tier": "爆"},
+                 {"match_contains": ["伪爆帖", "伪20评"], "tier": "数据异常"}]
+          try:
+              _common._reject_shadowed_tier_rules("x.yaml", bad)
+              raise SystemExit("✗ 空转: 被遮死的列序没被拒")
+          except ValueError as e:
+              assert "伪爆帖" in str(e) and "上移" in str(e), f"报错没说清怎么修: {e}"
+          print("  ✓ 遮死的列序被拒, 且报错直接给出修法")
+          # ③ 修好的列序(长针上移)必须放行 —— 别把 lint 写成"永远拒"
+          _common._reject_shadowed_tier_rules("x.yaml", [
+              {"match_contains": ["伪爆帖", "伪20评"], "tier": "数据异常"},
+              {"match_contains": ["爆贴", "爆帖"], "tier": "爆"}])
+          # ④ 同针重复出现在多条规则里不算遮死(prev == needle 时跳过)
+          _common._reject_shadowed_tier_rules("x.yaml", [
+              {"match_contains": ["爆贴"], "tier": "爆"},
+              {"match_contains": ["爆贴"], "tier": "爆"}])
+          print("  ✓ 列序修好后放行 / 同针重复不误报")
+          print("\ntier 规则列序 lint: all checks passed")
+          PY
       - name: Supabase key validation self-check
         working-directory: scripts
         run: |
