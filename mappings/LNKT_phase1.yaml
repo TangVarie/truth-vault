@@ -1,0 +1,383 @@
+# ════════════════════════════════════════════════════════════════════
+# LNKT_phase1 · 雷诺考特鼻喷 —— Onboarding 草稿(DRAFT · schema 演化)
+# ════════════════════════════════════════════════════════════════════
+#
+# ⚠️ 本表有两处新模式(与全部历史表不同), 须策略 lead 拍板后才能最终确认:
+#   (1) 方向拆成两列:「人群方向」(3 选项) + 「内容方向」(18 选项), 无单一「方向」列;
+#   (2) 平台是抖音(v.douyin.com 链接), 不是小红书;
+#   (3) 无曝光量/阅读量/互动量独立列 —— 数据汇总以文本形式散在「数据汇总-第N次」列。
+# 草稿起点 = A 家族(WTG/RIO/TXQ 式双状态列骨架); 飞书坐标、品类待补。
+# ════════════════════════════════════════════════════════════════════
+
+version: 1.0
+
+# ── 项目元数据 ──
+project_id: LNKT_phase1
+brand: 雷诺考特                  # [待确认] 据蓝词/话题标签推断(雷诺考特鼻喷);LNKT 为内部代号
+product: 布地奈德鼻喷            # [待确认] 据蓝词推断;实际产品线待策略 lead 确认
+category: 处方药                 # [待确认] 布地奈德鼻喷国内属处方药(Rx);策略 lead 拍板
+# 全库第一个非小红书项目。策略 lead 定(2026-08-28): 就按抖音接, 不改。
+# 接表侧核过下游, TV 这半是通的(不是"应该能跑"):
+#   · notes.platform / accounts.platform 都是 TEXT NOT NULL DEFAULT 'xiaohongshu', 无 CHECK
+#   · ensure_account_exists(platform=...) 收参数, sync 传 note['platform'] → 建 douyin 素人账号 OK
+#   · sync_truth_vault_baokuan_to_sanshengliubu 的 _PLATFORM_EN_TO_SSLL 里【已有】
+#     "douyin" → "抖音"(未知平台那里是直接 raise 的, 所以有没有这行是硬判据)
+#   · parse_audience_analysis 是按文本格式解析(；分段 ：分键值), 与平台无关 →「观众分析」照常解析
+# ⚠️ 唯一没核到的一环: 三生六部那个仓的 list_reference_packs 认不认「抖音」——
+#   那是另一个 repo, 本次没有访问权, 没核。本表 sync_interval=on_demand 不会自动跑,
+#   翻 daily 之前请先在那边确认一次(_platform_for_ssll 的 docstring 第 2 步说的就是这件事)。
+platform: douyin                 # 样本链接全为 v.douyin.com → 抖音,非小红书
+schema_family: A                 # A 家族(有流量状态/笔记状态/数据回收情况/观众分析);
+                                 # ⚠️ schema 演化标注:方向拆两列(人群方向+内容方向),
+                                 # 无单一「方向」列,无 impressions/reads/interactions 独立列 ——
+                                 # 与 WTG/RIO/TXQ 先例不同,策略 lead 确认后再定
+start_date: auto_from_publish_time_min
+end_date: auto_from_publish_time_max
+
+# ════════════════════════════════════════════════════════════════════
+# 字段映射 —— 全表 53 列逐一交代
+# ════════════════════════════════════════════════════════════════════
+#
+# ⚠️ 重要:本表【无】独立的曝光量/阅读量/互动量列;数据汇总以非结构化文本散在
+#    「数据汇总-第N次」里(如"播放量：8；点赞量：0；…")。
+#    → impressions / reads / interactions 本期无法直接入库,全部为 null。
+#    → 「数据汇总-第N次」进 raw_extra,留待后续 annotation pass 解析。
+#
+# ⚠️ 本表有「人群方向」+「内容方向」两列,无单一「方向」列。
+#    草稿策略(待策略 lead 拍板):
+#      - 「内容方向」→ _direction_raw(走 direction_decomposition,对应内容形式)
+#      - 「人群方向」→ _audience_direction_raw(进 raw_extra,同时作为 target_audience 参考)
+#    原因:direction_decomposition 的 target_audience 字段按「人群方向」值预填,
+#    可省去 LLM 在 essence 层二次推断人群;但「人群方向」本身不能映成已有的类型化列,
+#    只能留 raw_extra 加 _audience_direction_raw 中间变量(待确认处理方式)。
+
+field_mapping:
+  # ── 标识 ──
+  素人编号: account_id              # → notes.account_id (FK to accounts)
+  素人ID: _account_name             # 实为账号 ID/昵称文本,暂映 _account_name(进 raw_extra 兜底)
+  反馈链接: publish_url             # → notes.publish_url (抖音链接,非飞书 URL 字段)
+
+  # ── 内容 ──
+  文案: raw_content                 # → notes.raw_content [NOT NULL]
+  发布时间: publish_time            # → notes.publish_time (datetime)
+
+  # ── tier 源 ──
+  流量状态: _status_raw             # → tier_extraction → notes.tier (WTG/RIO 式)
+
+  # ── 工作流状态(非 tier 源) ──
+  笔记状态: _note_status_raw        # 工作流状态;检测异常(非 tier 源,同 WTG/RIO/TXQ 先例)
+
+  # ── 方向(双列新模式) ──
+  内容方向: _direction_raw          # → direction_decomposition(18 种内容形式取值)
+  # 人群方向:无对应类型化列,进 raw_extra(见 project_specific_fields_to_raw_extra)
+
+  # ── 数据健康度(A 家族) ──
+  数据回收情况: data_quality_status  # → notes.data_quality_status
+
+  # ── 观众分析(确定性解析) ──
+  观众分析: _audience_raw            # → notes.actual_audience_data(sync 解析;样本格式符合)
+
+  # ── 蓝词 ──
+  蓝词字段: hit_blue_keywords        # → notes.hit_blue_keywords(事后命中蓝词,7 行有值)
+
+  # ── 评论 ──
+  随贴评论: _comment_text            # → comments 表(Phase 2 LLM 解析)
+
+# ── intent ──
+# 本表【无】「发布笔记」intent 列 → 不做意图分类,notes.intent 留空(WTG 金标准 intent=null)。
+
+# ════════════════════════════════════════════════════════════════════
+# 方向拆解 —— 以「内容方向」18 种取值为基础方向
+# ════════════════════════════════════════════════════════════════════
+#
+# ⚠️ 「内容方向」18 个实际出现值(distinct 统计):
+#   流量贴×74 / 极简提问×32 / 踩坑坦白×21 / 智商税清单体×19 / 问医生实录×19 /
+#   就医流水账×18 / 包里床头×18 / 戒药日记×16 / 和平共处×15 / 互助求助×10 /
+#   和平共处体×9 / 压箱底经验体×9 / 摊牌自查×9 / 育儿分享体×7 / 育儿分享×7 /
+#   压箱底经验×6 / 互助求助体×5 / 摊牌自查体×5
+#
+# 注意:部分内容方向存在「体」/非「体」两种写法(如"和平共处"与"和平共处体"),
+# 飞书单选选项包含两者 → 须各建一条确保全命中(sync 按精确键匹配)。
+#
+# 「人群方向」3 值(妈妈人群/学生考研党/都市打工人)对应 target_audience,
+# 每条 direction_decomposition 里的 target_audience 按【该内容方向在三类人群中的
+# 典型归属】起草,标 [待细化]。
+#
+# content_format / user_pain_point 按文案样本保守起草,全标 [待确认]。
+
+direction_decomposition:
+
+  "流量贴":                          # 74 条(最多)
+    content_format: 情感叙事          # [待确认] 样本多为情感/求助叙事撬流量
+    target_audience: ["通用"]         # [待细化] 覆盖三类人群
+    user_pain_point: 鼻炎困扰(堵/打喷嚏/依赖药物)的通用流量钩子
+
+  "极简提问":                         # 32 条
+    content_format: 提问求助          # [待确认] 极简发问格式
+    target_audience: ["通用"]         # [待细化]
+    user_pain_point: 鼻炎用药/症状的简短求助
+
+  "踩坑坦白":                         # 21 条
+    content_format: 情感叙事          # [待确认] 坦白局式踩坑叙事
+    target_audience: ["通用"]         # [待细化] 样本显示都市打工人居多
+    user_pain_point: 鼻炎用药方法错误/踩坑经历(喷法错/当救急用/越喷越频)
+
+  "智商税清单体":                     # 19 条
+    content_format: 认知重构          # [待确认] 智商税清单 → 重构选购认知
+    target_audience: ["通用"]         # [待细化]
+    user_pain_point: 鼻炎周边产品踩坑(洗鼻器/通鼻棒/喷剂依赖)
+
+  "问医生实录":                       # 19 条
+    content_format: 教程攻略          # [待确认] 实录问诊过程 → 教程/攻略
+    target_audience: ["通用"]         # [待细化] 妈妈人群/都市打工人均有
+    user_pain_point: 看诊流程不清/不知该挂哪科/用药方法不对
+
+  "就医流水账":                       # 18 条
+    content_format: 情感叙事          # [待确认] 流水账式叙事
+    target_audience: ["通用"]         # [待细化]
+    user_pain_point: 反复就医未果/辗转多科最终确诊过敏性鼻炎
+
+  "包里床头":                         # 18 条
+    content_format: 场景植入          # [待确认] 包里/床头=日常场景植入产品
+    target_audience: ["通用"]         # [待细化]
+    user_pain_point: 随身携带/睡前必备的鼻炎用药习惯
+
+  "戒药日记":                         # 16 条
+    content_format: 情感叙事          # [待确认] 日记体记录戒掉依赖药物过程
+    target_audience: ["通用"]         # [待细化] 样本显示都市打工人居多
+    user_pain_point: 依赖一喷就通型药物/换抗过敏鼻喷的戒药历程
+
+  "和平共处":                         # 15 条
+    content_format: 情感叙事          # [待确认] 与鼻炎和平共处的情感转折叙事
+    target_audience: ["通用"]         # [待细化]
+    user_pain_point: 长期鼻炎不能根治/寻找与之共存方式
+
+  "互助求助":                         # 10 条
+    content_format: 提问求助          # [待确认] 互助/求助
+    target_audience: ["通用"]         # [待细化]
+    user_pain_point: 压箱底经验征集/互相排雷
+
+  "和平共处体":                       # 9 条(同「和平共处」,写法含"体"字)
+    content_format: 情感叙事          # [待确认]
+    target_audience: ["通用"]         # [待细化]
+    user_pain_point: 长期鼻炎不能根治/寻找与之共存方式
+
+  "压箱底经验体":                     # 9 条
+    content_format: 教程攻略          # [待确认] 压箱底经验 → 经验分享/攻略
+    target_audience: ["通用"]         # [待细化] 妈妈人群/都市打工人均有
+    user_pain_point: 鼻炎用药经验积累/踩坑后找到正确方法
+
+  "摊牌自查":                         # 9 条
+    content_format: 认知重构          # [待确认] 自查式摊牌 → 重构认知
+    target_audience: ["通用"]         # [待细化]
+    user_pain_point: 鼻炎症状自查/确认是过敏还是感冒
+
+  "育儿分享体":                       # 7 条
+    content_format: 情感叙事          # [待确认] 育儿视角分享
+    target_audience: ["宝妈"]         # [待细化] 明确妈妈人群
+    user_pain_point: 娃的鼻炎用药选择/就医经历分享
+
+  "育儿分享":                         # 7 条(同「育儿分享体」,写法无"体"字)
+    content_format: 情感叙事          # [待确认]
+    target_audience: ["宝妈"]         # [待细化]
+    user_pain_point: 娃的鼻炎用药选择/就医经历分享
+
+  "压箱底经验":                       # 6 条(同「压箱底经验体」,写法无"体"字)
+    content_format: 教程攻略          # [待确认]
+    target_audience: ["通用"]         # [待细化]
+    user_pain_point: 鼻炎用药经验积累/踩坑后找到正确方法
+
+  "互助求助体":                       # 5 条(同「互助求助」,写法含"体"字)
+    content_format: 提问求助          # [待确认]
+    target_audience: ["通用"]         # [待细化]
+    user_pain_point: 压箱底经验征集/互相排雷
+
+  "摊牌自查体":                       # 5 条(同「摊牌自查」,写法含"体"字)
+    content_format: 认知重构          # [待确认]
+    target_audience: ["通用"]         # [待细化]
+    user_pain_point: 鼻炎症状自查/确认是过敏还是感冒
+
+# ════════════════════════════════════════════════════════════════════
+# tier 抽取规则(流量状态 → tier)
+# ════════════════════════════════════════════════════════════════════
+#
+# 流量状态真实取值(distinct):
+#   无水花×187 / 风控中×27 / 无水花 / 评论待删除×5 /
+#   评估中 / 无水花×3 / 无水花 / 待调整×2 / 爆贴×1 / 小爆×1
+#
+# 特殊处理:
+#   - 「小爆」(同 OKMAN 先例) → 映射为 爆(受控词表无"小爆")
+#   - 组合值含「评论待删除」/「待调整」→ 按 match_contains 优先顺序,
+#     风控 > 爆 > 趴 > 未知,复合值取最高风险级
+
+tier_extraction:
+  source: 状态字段                   # 指示用 _status_raw(即「流量状态」列)
+  rules:
+    - match_contains: ["大爆"]
+      tier: 大爆
+    - match_contains: ["爆帖预备"]   # 飞书选项含「爆帖预备」(帖)
+      tier: 预备
+    - match_contains: ["爆贴预备"]   # 兼容「爆贴预备」(贴)
+      tier: 预备
+    - match_contains: ["爆贴"]
+      tier: 爆
+    - match_contains: ["小爆"]       # LNKT 独有状态 → 映射为 爆(OKMAN 先例)
+      tier: 爆
+    - match_contains: ["风控"]       # 匹配「风控中」
+      tier: 风控
+    - match_contains: ["无水花"]
+      tier: 趴
+    - match_contains: ["评估中"]
+      tier: 未知
+    - default: null
+
+# ── 数值推断阈值 ──
+# ⚠️ [待确认] 本表无独立互动量列 → 数值推断实际无法生效(interactions=null)。
+# 此处按 WTG 保守值起草作占位,入库后跑 scripts/recommend_tier_thresholds.py 校准。
+tier_thresholds:
+  爆: 50                             # [待确认] 占位;本表互动量来自抖音「播放量」量级,
+  大爆: 500                          # [待确认] 待策略 lead 确认互动量口径后重设
+
+# ════════════════════════════════════════════════════════════════════
+# 合规
+# ════════════════════════════════════════════════════════════════════
+compliance:
+  base_template: 处方药              # [待确认] 布地奈德鼻喷=处方药级合规;策略 lead 拍板
+  custom_red_flags:                  # [待确认]
+    - "布地奈德/雷诺考特属鼻用激素类处方药;禁直接宣称'治疗鼻炎''根治'"
+    - "禁剂量数字(mg/μg)出现在正文"
+    - "禁暗示替代医疗/暗示不需就医直接自购"
+    - "禁绝对化功效('一定有效'/'彻底好了')等"
+    - "禁向未成年人直接营销(含儿童鼻炎场景需谨慎合规)"
+  blue_keyword_strategy:
+    primary: ["雷诺考特鼻喷", "布地奈德喷雾", "抗过敏鼻喷"]  # [待确认] 据蓝词字段取值
+    secondary: ["布地奈德鼻喷", "鼻炎用药", "鼻炎克星", "鼻炎喷雾"]  # [待确认]
+    avoid: ["治疗", "根治", "治愈", "处方药"]                  # [待确认]
+
+# ════════════════════════════════════════════════════════════════════
+# 项目专属字段 → raw_extra(allowlist)
+# ════════════════════════════════════════════════════════════════════
+#
+# ⚠️ 未声明列整行 quarantine(D-021),以下列均需声明。
+# 特别注意:「字段1-20」全部为空,仍需声明(preflight 确认有值再删)。
+# 「人群方向」无对应类型化列 → 以原列名进 raw_extra(保留可追溯性)。
+
+project_specific_fields_to_raw_extra:
+  # ── 人群方向(新模式,无类型化列,留原名) ──
+  - 人群方向                        # [待确认处理方式] 3值:妈妈人群/学生考研党/都市打工人
+
+  # ── 账号信息(A 家族账号列,进 raw_extra 留痕) ──
+  - 素人主页链接                    # → 账号主页链接(未来可扩 accounts 表)
+
+  # ── 时间类 ──
+  - 起量时间                        # 新列,无先例,留痕
+
+  # ── 截图/图片(不处理) ──
+  - 发布截图（含评论）
+  - 内容配图
+  - 评论配图
+  - 蓝词图片
+
+  # ── 评论状态 ──
+  - 评论状态                        # 1值:显示评论(127行)
+
+  # ── 起量情况 ──
+  - 起量情况                        # 1值:重点关注(11行)
+
+  # ── 数据回收截图+汇总文本(多次回收) ──
+  # 截图列:
+  - 数据回收-第1次
+  - 数据回收-第2次
+  - 数据回收-第3次
+  - 数据回收-最终                   # 目前 0 行有值,保留 allowlist
+  # 汇总文本列(非结构化,含播放量/点赞量等,待后续 annotation parse):
+  - 数据汇总-第1次
+  - 数据汇总-第2次
+  - 数据汇总-第3次
+  - 数据汇总-最终                   # 目前 0 行有值,保留 allowlist
+
+  # ── 父记录 ──
+  - 父记录                          # 目前 0 行有值
+  - 父记录 2                        # 305 行有值(table_id 引用)
+  - 父记录 3                        # 305 行有值
+
+  # ── 字段 1-20(全部为空,声明防 quarantine) ──
+  - 字段 1
+  - 字段 2
+  - 字段 3
+  - 字段 4
+  - 字段 5
+  - 字段 6
+  - 字段 7
+  - 字段 8
+  - 字段 9
+  - 字段 10
+  - 字段 11
+  - 字段 12
+  - 字段 13                         # distinct 报「重点关注×1」
+  - 字段 14
+  - 字段 15
+  - 字段 16
+  - 字段 17
+  - 字段 18
+  - 字段 19
+  - 字段 20
+
+# ════════════════════════════════════════════════════════════════════
+# 数据补录
+# ════════════════════════════════════════════════════════════════════
+data_supplement_needed:
+  - field: impressions / reads / interactions
+    method: |
+      本表无独立曝光/阅读/互动量列;数据散在「数据汇总-第N次」非结构化文本里
+      (格式:"播放量：X；点赞量：X；评论量：X；…")。
+      建议:后续写 annotation pass 解析「数据汇总-最终」(或第3次)文本,
+      提取播放量→impressions,点赞+评论+收藏+分享→interactions,写回 notes。
+      本期入库 impressions/reads/interactions 全为 null。
+    estimated_rows: 305
+  - field: account_followers
+    method: 本表无粉丝数列(抖音表),需通过素人主页链接调抖音 API 或人工补录
+    estimated_rows: 305
+
+# ════════════════════════════════════════════════════════════════════
+# Sync 配置(飞书坐标待补)
+# ════════════════════════════════════════════════════════════════════
+onboarding_meta:
+  onboarded_at: 2026-07-XX           # 待填
+  onboarded_by: 接表 agent 起草
+  strategy_lead: (待填)
+  notes: |
+    DRAFT —— 本表有 3 处与历史表不同的新模式,须策略 lead 拍板:
+
+    [新模式 1] 方向双列:「人群方向」(3值) + 「内容方向」(18值)
+      草稿策略:「内容方向」→ _direction_raw + direction_decomposition;
+      「人群方向」→ raw_extra(同时作为 target_audience 起草参考)。
+      待确认:人群方向是否需要独立建立 audience_decomposition 或合并进 direction 键名?
+
+    [新模式 2] 平台=抖音(douyin)
+      样本链接全为 v.douyin.com;素人主页链接也是抖音链接。
+      与历史表(小红书)不同,待确认 sync 脚本是否支持抖音 feishu_api 路径,
+      「观众分析」格式是否与 WTG parse_audience_analysis 兼容(样本看格式相同,可解析)。
+
+    [新模式 3] 无独立互动量/曝光量/阅读量列
+      数据汇总文本在「数据汇总-第N次」里(非结构化)。
+      tier 数值推断本期失效(interactions=null)。
+      建议后续 annotation pass 解析最终回收的汇总文本写回 notes。
+
+    其余待确认项:
+      - brand(雷诺考特?)/ product(布地奈德鼻喷?)/ category(处方药?) → 策略 lead 拍板
+      - 18 种内容方向的 content_format / target_audience / user_pain_point → 审 direction_decomposition
+      - 「小爆」→ 爆 的 tier 映射是否合适(同 OKMAN 先例)
+      - tier_thresholds 本期无效;待互动量口径确认后重设
+      - 合规红线/蓝词策略 → 策略 lead 拍板
+      - 飞书坐标(app_token / table_id)→ 待填
+
+    流程:策略 lead 拍板上述决策 → 补飞书坐标 → preflight 拉真表校正
+    → PR → 显式 sync(dry_run → 实跑) → backfill essence。
+
+sync_config:
+  source_type: feishu_api
+  feishu_app_token: Wr2abOtEjaU5RBsiJUcc75S8njd   # 表标识(非密钥), 接表时已知
+  feishu_table_id: tblLR4p8MJ0XY0SH
+  feishu_view_id: null
+  sync_interval: on_demand
