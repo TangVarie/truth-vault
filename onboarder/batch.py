@@ -43,6 +43,11 @@ STATUS_ICON = {"ok": "✅", "needs_fix": "⚠️", "failed": "❌", "skipped": "
 
 def _post_onboard(base_url: str, api_key: str | None, payload: dict, timeout: int) -> dict:
     """POST <base>/onboard。只用标准库 —— runner 上不装依赖(见模块头 ②)。"""
+    # urlopen 认 file:// / ftp:// 这些 —— 一个配错(或被改)的 ONBOARDER_URL 就会变成
+    # 读本地文件。这个值来自 GitHub secret(运维控制), 风险不高, 但 urlopen 配非 http
+    # scheme 本就该显式收窄。
+    if not base_url.startswith(("http://", "https://")):
+        raise RuntimeError(f"--remote 只接受 http(s):// 地址,收到 {base_url!r}")
     req = urllib.request.Request(
         base_url.rstrip("/") + "/onboard",
         data=json.dumps(payload).encode("utf-8"),
@@ -91,7 +96,16 @@ def _draft_one(entry: dict, *, remote: str | None, api_key: str | None,
 
 
 def _ref_of(entry: dict) -> str:
-    return entry.get("url") or f"{entry.get('app_token')}/{entry.get('table_id')}"
+    """条目 → 清单里那一行 `|` 右边的原样写法。
+
+    ⚠️ id 式必须还原成**两列**(`app_token | table_id`), 不能压成 `app_token/table_id`。
+    这个字符串会被 render_summary 拼成"重跑清单"给人粘回 tables 输入 —— 压成一列的话
+    粘回去会被判成"缺 table_id"。一份粘不回去的重跑清单比没有更坏:它是汇总里明确
+    承诺过的东西, 人照着做才发现不行。(codex review)
+    """
+    if entry.get("url"):
+        return entry["url"]
+    return f"{entry.get('app_token')} | {entry.get('table_id')}"
 
 
 # ── 编排 ────────────────────────────────────────────────────────────────────
@@ -118,7 +132,11 @@ def run_batch(
     results: list[dict] = []
 
     for i, entry in enumerate(entries, start=1):
-        pid = entry["project_id"]
+        # 纵深防御:落盘就在这一层, 所以路径穿越闸也要在这一层再挡一次。走 main() 的
+        # 调用一定过了 parse_batch_spec 的闸, 但 run_batch 是公开函数 —— 判据该钉在
+        # "拼文件名之前", 不是"某个调用方记得先校验"。
+        pid = links.safe_project_id(entry["project_id"])
+        entry = {**entry, "project_id": pid}   # 归一化后的值要贯穿到请求, 不只用于文件名
         yaml_path = out / f"{pid}.yaml"
         brief_path = out / f"{pid}.brief.md"
         head = f"[{i}/{len(entries)}] {pid}"

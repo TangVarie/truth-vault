@@ -246,14 +246,19 @@ def resolve_table_ref(
                 listing = "\n".join(
                     f"    {t['table_id']}  {t.get('name')}" for t in tables
                 ) or "    (一张表都没有)"
-                raise RuntimeError(
+                # LinkError(ValueError 子类)而不是 RuntimeError —— 这是**调用方能自己
+                # 修**的输入问题(在链接里带上 ?table=), app.py 据此回 400。抛
+                # RuntimeError 的话端点回 500, 批量那侧会把它报成"服务故障", 于是人
+                # 去查 Railway 和网关, 而真正要做的只是换一条链接。(codex review)
+                raise links.LinkError(
                     f"链接没带 ?table=,而这个 base 有 {len(tables)} 张表 —— 不猜。"
                     f"请在链接里带上要接的那张(浏览器里点开该表再复制地址),或直接给 table_id:\n{listing}"
                 )
         return app_token, table_id
 
     if not app_token or not table_id:
-        raise RuntimeError("要么给 url,要么给 app_token + table_id(两者缺一不可)")
+        # 同上:少给参数是调用方的问题, 不是服务故障。
+        raise links.LinkError("要么给 url,要么给 app_token + table_id(两者缺一不可)")
     return app_token, table_id
 
 
@@ -345,7 +350,14 @@ def run_onboarding(
     out_dir: str = "mappings",
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """CLI 入口:dry_run 只拼 prompt;否则 draft() + 写盘 + 打印。"""
+    """CLI 入口:dry_run 只拼 prompt;否则 draft() + 写盘 + 打印。
+
+    ⚠️ project_id 在这里就归一化, 因为**文件名在这一层拼**。draft() 内部归一化只
+    影响写进 yaml 的那一行 —— 两边不一致的话, `--project-id ' TXQ_phase2 '` 会产出
+    `mappings/ TXQ_phase2 .yaml`(带空格的文件名)而内容是 `project_id: TXQ_phase2`,
+    正好撞上 CI 那条"project_id 必须等于文件名"的 lint。(codex review)
+    """
+    project_id = links.safe_project_id(project_id)
     if dry_run:
         user = build_user_message(project_id, [], {"columns": [], "rows": [], "n": 0}, {"distinct": {}})
         print("=== SYSTEM PROMPT ===\n" + SYSTEM_PROMPT)

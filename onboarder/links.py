@@ -31,8 +31,9 @@ from urllib.parse import parse_qs, unquote, urlsplit
 # 闭集式白名单 —— 不是"过滤掉危险字符", 是"只允许这些字符"(黑名单永远漏)。
 _PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
-# 飞书各类 token 的字符集(base/wiki/table/view 都是这个形状)
-_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+# 飞书各类 token 的字符集(base/wiki/table/view 都是这个形状)。有长度上限 ——
+# 无上限的话, 一条构造出来的超长"token"会被原样拼进 API URL 打出去。
+_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 # 已知的飞书主机后缀(国内版)。larksuite 是国际版, API 主机不同 —— 单独报错。
 _FEISHU_HOSTS = (".feishu.cn", ".feishu.net")
@@ -97,6 +98,10 @@ def parse_feishu_url(url: str) -> dict[str, Any]:
         raw = "https://" + raw
 
     parts = urlsplit(raw)
+    if parts.scheme not in ("http", "https"):
+        # 没写 scheme 的会在上面补成 https, 所以走到这里的都是**显式**写了别的 ——
+        # javascript: / file: / data: 这类不该被当成一条表链接收下。
+        raise LinkError(f"链接的协议是 {parts.scheme!r},只认 http / https:{url!r}")
     host = (parts.hostname or "").lower()
     if not host:
         raise LinkError(f"解析不出主机名:{url!r}")
@@ -172,7 +177,14 @@ def parse_batch_spec(text: str) -> tuple[list[dict[str, Any]], list[str]]:
         if not line:
             continue
         cols = [c.strip() for c in line.split("|")]
-        cols = [c for c in cols if c != ""]
+        # 只剥**尾部**空列(`A | url |` 这种手滑), 中间的空列必须留着。
+        #
+        # ⚠️ 原来是无差别滤掉所有空列 —— 那会把一条畸形条目**变成另一条看着合法的**:
+        #    `P | AppToken | | 50` 塌成 `P | AppToken | 50`, 于是 `50` 被当成 table_id
+        #    收下(前缀检查只是警告不是拒绝), 清单校验还报通过, 真跑时打一个必死的
+        #    远程请求。少一列该是"缺 table_id"的报错, 不是"换一个值继续"。(codex review)
+        while cols and cols[-1] == "":
+            cols.pop()
         if len(cols) < 2:
             errors.append(
                 f"第 {lineno} 条 {line!r}:至少要 2 列 —— "
@@ -208,6 +220,10 @@ def parse_batch_spec(text: str) -> tuple[list[dict[str, Any]], list[str]]:
                     )
                 entry["app_token"] = _clean_token(rest[0], label="app_token")
                 entry["table_id"] = _clean_token(rest[1], label="table_id", expect_prefix="tbl")
+                # 空列现在留在 cols 里了(见上), 所以这两个可能是 None —— 必须显式拒,
+                # 否则会带着 table_id=None 一路跑到远程请求那一步。
+                if not entry["app_token"] or not entry["table_id"]:
+                    raise LinkError("id 式的 app_token / table_id 都不能为空(是不是少了一列?)")
                 tail = rest[2:]
             if tail:
                 if not tail[0].isdigit():

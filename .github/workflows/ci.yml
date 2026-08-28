@@ -2547,6 +2547,7 @@ jobs:
 
       - name: 批量接表 —— 链接解析 / 路径穿越闸 / 覆盖闸 / 逐表隔离
         run: |
+          pip install -q fastapi 'httpx<0.28' 'starlette' >/dev/null
           python - <<'PY'
           # 接表从"一次一张"变成"一次一批"(onboarder/batch.py + links.py)。批量把三
           # 类原来无所谓的错放大成了会真的咬人的错, 这一步逐条钉住:
@@ -2577,7 +2578,17 @@ jobs:
                   pass
           for ok in ("WTG_phase1", "TXQ.phase2", "a"):
               assert links.safe_project_id(ok) == ok
-          print("  ✓ project_id 白名单挡住路径穿越(它会拼成 mappings/<id>.yaml 并被 push)")
+          # 归一化必须贯穿到**拼文件名的那一层**。safe_project_id 会 strip 掉两侧空白,
+          # 而 draft() 内部的归一化只影响写进 yaml 的那一行 —— 两边不一致时
+          # `--project-id ' TXQ_phase2 '` 产出 `mappings/ TXQ_phase2 .yaml` 而内容是
+          # `project_id: TXQ_phase2`, 正好撞本文件末尾那条 mapping lint。(codex review)
+          assert links.safe_project_id(" TXQ_phase2 ") == "TXQ_phase2"
+          import inspect
+          for fn, where in ((core.run_onboarding, "core.run_onboarding"),
+                            (batch.run_batch, "batch.run_batch")):
+              assert "safe_project_id" in inspect.getsource(fn), \
+                  f"{where} 拼文件名之前没过 project_id 闸(纵深:别指望调用方记得校验)"
+          print("  ✓ project_id 白名单挡住路径穿越, 且归一化贯穿到落盘那一层")
 
           # ── ② 链接解析:/base/ 与 /wiki/ 同一条路径 ───────────────────
           got = links.parse_feishu_url("https://x.feishu.cn/base/App1?table=tblA&view=vewB")
@@ -2638,11 +2649,72 @@ jobs:
           try:
               core.resolve_table_ref(url="https://x.feishu.cn/base/App")
               raise AssertionError("多表 base 省了 ?table= 却猜了一张")
-          except RuntimeError as exc:
+          except links.LinkError as exc:
+              # LinkError 而不是 RuntimeError —— 见下面 ③ 的端点状态码断言。
               assert "tbl1" in str(exc) and "tbl2" in str(exc), exc
           C.list_tables = lambda a: [{"table_id": "tblOnly", "name": "投放"}]
           assert core.resolve_table_ref(url="https://x.feishu.cn/base/App") == ("App", "tblOnly")
           print("  ✓ 缺 ?table= 时: 单表自动取, 多表报候选而不猜")
+
+          # 协议 / token 长度:urlsplit 之后拿到的 token 会被原样拼进飞书 API URL。
+          for bad in ("javascript://x.feishu.cn/base/App?table=tblA",
+                      "file://x.feishu.cn/base/App?table=tblA",
+                      "https://x.feishu.cn/base/" + "A" * 200 + "?table=tblB"):
+              try:
+                  links.parse_feishu_url(bad)
+                  raise AssertionError(f"{bad[:40]!r}… 被放行了")
+              except links.LinkError:
+                  pass
+          print("  ✓ 只认 http(s) scheme · token 有长度上限")
+
+          # ── ②-b 输入错 vs 服务坏, 必须是两个状态码 ────────────────────
+          #
+          # 这两类的**处置完全相反**:400 → 换一条链接; 500 → 去查 Railway / 网关 /
+          # 飞书权限。混成一类的话, 批量汇总会把"链接没带 ?table="报成服务故障, 人就
+          # 去查完全错的方向。判据钉在**端点的状态码**上, 不是"抛了哪个异常类"
+          # —— 换等价异常不假警报, 把这条路径退回 500 会红。(codex review)
+          import os as _os
+          from fastapi.testclient import TestClient
+          import onboarder.app as OA
+          _os.environ["ONBOARDER_API_KEY"] = "k"
+          _c, _H = TestClient(OA.app), {"X-Onboarder-Key": "k"}
+          C.list_tables = lambda a: [{"table_id": "tbl1", "name": "投放"},
+                                     {"table_id": "tbl2", "name": "结算"}]
+          _r = _c.post("/onboard", json={"project_id": "P_p1",
+                                         "url": "https://x.feishu.cn/base/App"}, headers=_H)
+          assert _r.status_code == 400, f"歧义链接(调用方能自己修)回了 {_r.status_code}"
+          assert "tbl1" in _r.json()["detail"], _r.json()
+          def _boom(a):
+              raise RuntimeError("Feishu 5xx / bot 无权限")
+          C.list_tables = _boom
+          assert _c.post("/onboard", json={"project_id": "P_p1",
+                                           "url": "https://x.feishu.cn/base/App"},
+                         headers=_H).status_code == 500, "真的服务故障被降成了 4xx"
+          _os.environ.pop("ONBOARDER_API_KEY", None)
+          print("  ✓ 歧义链接=400(带候选表) · 真服务故障=500(两类没混)")
+
+          # ── ②-c 清单的空列不许把畸形条目塌成"另一张合法的表" ──────────
+          #
+          # `P | AppToken | | 50` 无差别滤空列之后成 `P | AppToken | 50`, 于是 50 被当
+          # table_id 收下(前缀检查只是警告), 清单校验还报通过 —— 少一列该是报错, 不是
+          # 换个值继续。(codex review)
+          _e, _err = links.parse_batch_spec("P_p1 | AppToken | | 50")
+          assert not _e and _err, f"畸形 id 式被塌成了合法条目: {_e}"
+          _e, _err = links.parse_batch_spec("P_p1 | https://x.feishu.cn/base/A?table=tblB |")
+          assert len(_e) == 1 and not _err, ("尾部多打一个 | 不该报错", _e, _err)
+          print("  ✓ 中间空列 → 报缺列; 尾部多余的 | 仍容忍")
+
+          # ── ②-d 重跑清单必须真的能粘回去 ─────────────────────────────
+          #
+          # 汇总里那份"重跑清单"是对人的承诺。id 式若被压成 `app_token/table_id` 一列,
+          # 粘回去会被判成缺列 —— 照着做才发现不行, 比不给更坏。判据是**往返**:
+          # 吐出来的那一行喂回解析器, 必须解出同一张表。(codex review)
+          _line = "P_p1 | " + batch._ref_of({"project_id": "P_p1", "url": None,
+                                             "app_token": "AppTok", "table_id": "tblB"})
+          _e2, _err2 = links.parse_batch_spec(_line)
+          assert len(_e2) == 1 and not _err2, (_line, _err2)
+          assert (_e2[0]["app_token"], _e2[0]["table_id"]) == ("AppTok", "tblB"), _e2[0]
+          print(f"  ✓ id 式失败项的重跑行往返一致: {_line}")
 
           # ── ③ 清单错 → 整批一张都不跑 ────────────────────────────────
           #
