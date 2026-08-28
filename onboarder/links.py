@@ -9,9 +9,12 @@ table_id 长什么样。原来的入口(CLI / workflow_dispatch)要求先把这�
   · safe_project_id   : project_id 会当**文件名**用(mappings/<id>.yaml)→ 必须先消毒
   · parse_batch_spec  : 一段多行/分号清单 → 逐条 {project_id, url|app_token+table_id}
 
-⚠️ 三种"看着能跑、其实是另一回事"的链接,这里显式区分,不猜:
-  · /wiki/<token>  —— 知识库节点。token **不是** app_token,要再调一次 wiki API 换
-                      obj_token;直接当 app_token 用会拿到 404/权限错,而错在哪完全看不出来。
+⚠️ /base/ 与 /wiki/ **一视同仁**:两者的 token 都直接当 app_token 用,解析路径完全相同
+   (kind 只作为信息回报,core 不据此分叉)。飞书的多维表 API 现在两种 token 都收。
+   万一某张表的 token 不能直接用, core 在**第一次取字段失败之后**才去换一次 obj_token
+   重试 —— 成功路径上零额外调用。
+
+⚠️ 另两种"看着能跑、其实是另一回事"的,这里显式拦掉,不猜:
   · larksuite.com  —— 国际版 Lark,API 主机是 open.larksuite.com,而本仓客户端固定
                       open.feishu.cn。不拦的话表现为"这张表不存在"。
   · 没有 ?table=   —— 多表 base 的链接省略 table 时是**歧义**,不是缺省。由 core 去

@@ -195,24 +195,50 @@ def _ensure_project_id(mapping_text: str, project_id: str) -> str:
     return f"project_id: {project_id}\n" + "\n".join(out)
 
 
+def _with_wiki_fallback(fn, app_token: str):
+    """跑 ``fn(app_token)``;失败了就把 token 当知识库节点换一次 obj_token 再跑一遍。
+
+    返回 ``(结果, 真正生效的 app_token)``。
+
+    /base/ 和 /wiki/ 的 token 现在都能直接当 app_token 用, 所以**成功路径上一次额外
+    调用都没有** —— 不为"可能是知识库"这件事先探一次路。只有在第一次取数就失败时,
+    才花一次调用去试"它是不是需要换 obj_token 的老式知识库节点"。
+
+    两次都失败时抛的是**第一个**异常:那才是调用方真正要看的(权限不足 / 表不存在),
+    而"这个 token 不是知识库节点"只是兜底路径的副产物, 拿它报错会把人带偏。
+    """
+    try:
+        return fn(app_token), app_token
+    except Exception as first:  # noqa: BLE001
+        try:
+            resolved = clients.resolve_wiki_node(app_token)
+        except Exception:  # noqa: BLE001
+            raise first
+        if resolved == app_token:
+            raise first
+        print(f"· 直接用该 token 取数失败,已按知识库节点换成 {resolved} 重试")
+        try:
+            return fn(resolved), resolved
+        except Exception:  # noqa: BLE001
+            raise first
+
+
 def resolve_table_ref(
     *, url: str | None = None, app_token: str | None = None, table_id: str | None = None
 ) -> tuple[str, str]:
-    """(链接 | app_token+table_id) → (app_token, table_id)。链接式才可能联网。
+    """(链接 | app_token+table_id) → (app_token, table_id)。
 
-    三种要联网的情况都在这里, 不散到调用方:
-      · /wiki/ 链接 → 换 obj_token(见 clients.resolve_wiki_node 的说明)
-      · 链接省了 ?table= 且这个 base 只有一张表 → 就用那张
-      · 省了 ?table= 但有多张 → **报错并列出候选**, 不猜。猜错的代价是跑完一整轮
-        飞书全表扫描 + 一次 LLM 调用, 才得到一份接错表的 mapping。
+    /base/ 与 /wiki/ **同一条路径**, token 直接当 app_token 用(见 links.py 模块头)。
+    唯一可能联网的情况:链接省了 ``?table=`` —— 那时去列表, 只有一张就用它, 多张则
+    **报错并列出候选, 不猜**。猜错的代价是跑完一整轮飞书全表扫描 + 一次 LLM 调用,
+    才得到一份接错表的 mapping。
     """
     if url:
         info = links.parse_feishu_url(url)          # 坏链接在这里就抛(未联网)
-        token = info["token"]
-        app_token = clients.resolve_wiki_node(token) if info["kind"] == "wiki" else token
+        app_token = info["token"]
         table_id = info["table_id"] or table_id
         if not table_id:
-            tables = clients.list_tables(app_token)
+            tables, app_token = _with_wiki_fallback(clients.list_tables, app_token)
             if len(tables) == 1:
                 table_id = tables[0]["table_id"]
                 print(f"· 链接没带 ?table=,该 base 只有一张表 → {tables[0].get('name')} ({table_id})")
@@ -242,7 +268,8 @@ def draft(
 ) -> dict[str, Any]:
     """确定性取数 + 单次 Anthropic 调用 → 草稿(不写盘;CLI 和 Railway 端点共用)。
 
-    表标识给 ``url``(飞书链接,含 /wiki/ 形态)或 ``app_token`` + ``table_id`` 皆可。
+    表标识给 ``url``(飞书链接,``/base/`` 与 ``/wiki/`` 一视同仁)或 ``app_token`` +
+    ``table_id`` 皆可。
 
     返回 {mapping_yaml, review_brief, errors, uncovered, pending, is_error, app_token,
     table_id};解析不出 mapping 时返回 {is_error, reason, raw_head}(无 mapping_yaml)。
@@ -250,12 +277,19 @@ def draft(
     project_id = links.safe_project_id(project_id)
     app_token, table_id = resolve_table_ref(url=url, app_token=app_token, table_id=table_id)
     try:
-        fields = clients.list_fields(app_token, table_id)
+        # 第一次真取数。token 直接当 app_token 用;只有这一步失败, 才去试
+        # "它是不是需要换 obj_token 的知识库节点"(见 _with_wiki_fallback)。
+        # 换成功的话, 后面的样本 / distinct 全用换过的那个 —— 否则会一半用新
+        # 一半用旧, 表现为"字段拉到了但一行数据都没有"。
+        fields, app_token = _with_wiki_fallback(
+            lambda tok: clients.list_fields(tok, table_id), app_token
+        )
     except Exception as exc:  # noqa: BLE001
         # 不降级到样本列:list_fields 是【权威列清单】的唯一来源,失败时退回样本列会漏掉
         # 空列/稀有取值 → 出 D-021 校验 → 真导入时 quarantine。宁可快速失败,让人修权限。
         raise RuntimeError(
-            f"list_fields 失败({exc})—— 飞书 bot 需要对该表的【字段读权限】。"
+            f"list_fields 失败({exc})—— 飞书 bot 需要对该表的【字段读权限】"
+            "(表在知识库里的话,还要把 bot 加进该知识库)。"
             "不降级到样本列(否则空列/稀有取值会漏过 D-021 校验,真导入时 quarantine)。"
             "确认 bot 权限后重试。"
         ) from exc

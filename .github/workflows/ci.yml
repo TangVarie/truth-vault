@@ -2579,11 +2579,9 @@ jobs:
               assert links.safe_project_id(ok) == ok
           print("  ✓ project_id 白名单挡住路径穿越(它会拼成 mappings/<id>.yaml 并被 push)")
 
-          # ── ② 链接解析:三种"看着能跑、其实是另一回事" ────────────────
+          # ── ② 链接解析:/base/ 与 /wiki/ 同一条路径 ───────────────────
           got = links.parse_feishu_url("https://x.feishu.cn/base/App1?table=tblA&view=vewB")
           assert (got["kind"], got["token"], got["table_id"]) == ("base", "App1", "tblA"), got
-          # /wiki/ 的 token **不是** app_token。这条最容易悄悄错:直接拿它调 bitable
-          # 会得到一个跟"链接粘错了"一模一样的报错。
           assert links.parse_feishu_url("https://x.feishu.cn/wiki/wikN?table=tblB")["kind"] == "wiki"
           # 国际版 Lark 的 API 主机不同(open.larksuite.com), 而客户端固定 open.feishu.cn
           # —— 不拦的话表现为"这张表不存在"。
@@ -2595,29 +2593,56 @@ jobs:
                   raise AssertionError(f"{bad!r} 被当成合法飞书表链接了")
               except links.LinkError:
                   pass
-          print("  ✓ base/wiki 分开; larksuite / 非飞书域名 / 非表链接 一律拒")
+          print("  ✓ 链接解析: larksuite / 非飞书域名 / 非表链接 一律拒")
 
-          # wiki 换 obj_token 这一步不能被跳过(判据钉行为, 不钉函数名)
+          # /base/ 和 /wiki/ 的 token 都**直接**当 app_token 用 —— 解析阶段一次网都不联,
+          # 两种形态走同一条路径(2026-08-28 用户口径修正:飞书两种 token 都收)。
           seen = []
           import onboarder.clients as C
           C.resolve_wiki_node = lambda t: (seen.append(t), "APP_FROM_WIKI")[1]
-          C.list_tables = lambda a: [{"table_id": "tbl1", "name": "投放"},
-                                     {"table_id": "tbl2", "name": "结算"}]
-          assert core.resolve_table_ref(url="https://x.feishu.cn/wiki/wikN?table=tblB") \
-              == ("APP_FROM_WIKI", "tblB")
-          assert seen == ["wikN"], "wiki 节点 token 被直接当 app_token 用了"
-          # 普通 base 链接一次网都不该联
+          for u, want in (("https://x.feishu.cn/base/App?table=tblA", ("App", "tblA")),
+                          ("https://x.feishu.cn/wiki/wikN?table=tblB", ("wikN", "tblB"))):
+              assert core.resolve_table_ref(url=u) == want, u
+          assert seen == [], f"解析阶段就去换 obj_token 了(成功路径上不该有这次调用): {seen}"
+          print("  ✓ /base/ 与 /wiki/ 同一条路径, token 直接用, 解析阶段零联网")
+
+          # 兜底只在**第一次取数失败之后**才花那一次调用, 且换成功后**后续取数要用换过的
+          # 那个** —— 一半用新一半用旧会表现成"字段拉到了但一行数据都没有"。
           seen.clear()
-          assert core.resolve_table_ref(url="https://x.feishu.cn/base/App?table=tblA") == ("App", "tblA")
-          assert seen == []
+          used = []
+          def _flaky(tok):
+              used.append(tok)
+              if tok != "APP_FROM_WIKI":
+                  raise RuntimeError("NOTEXIST")
+              return ["ok"]
+          assert core._with_wiki_fallback(_flaky, "wikN") == (["ok"], "APP_FROM_WIKI")
+          assert used == ["wikN", "APP_FROM_WIKI"] and seen == ["wikN"], (used, seen)
+          # 成功路径:一次就成, 不许再去换
+          seen.clear(); used.clear()
+          assert core._with_wiki_fallback(lambda t: ["ok"], "App") == (["ok"], "App")
+          assert seen == [], "第一次就成功了还去换 obj_token"
+          # 两次都失败 → 抛**第一个**异常(权限/表不存在才是要看的, 不是"它不是知识库节点")
+          C.resolve_wiki_node = lambda t: (_ for _ in ()).throw(RuntimeError("不是知识库节点"))
+          try:
+              core._with_wiki_fallback(_flaky, "App")
+              raise AssertionError("两次都失败却没抛")
+          except RuntimeError as exc:
+              assert "NOTEXIST" in str(exc), f"抛的是兜底路径的副产物, 会把人带偏: {exc}"
+          print("  ✓ 换 obj_token 只在取数失败后发生 · 换过之后后续取数跟着换 · 报错报第一个")
+
           # 省了 ?table= 且这个 base 有多张表 → **报错并列候选**, 不猜。猜错的代价是
           # 跑完一整轮飞书全表扫描 + 一次 LLM 调用, 才得到一份接错表的 mapping。
+          C.resolve_wiki_node = lambda t: "APP_FROM_WIKI"
+          C.list_tables = lambda a: [{"table_id": "tbl1", "name": "投放"},
+                                     {"table_id": "tbl2", "name": "结算"}]
           try:
               core.resolve_table_ref(url="https://x.feishu.cn/base/App")
               raise AssertionError("多表 base 省了 ?table= 却猜了一张")
           except RuntimeError as exc:
               assert "tbl1" in str(exc) and "tbl2" in str(exc), exc
-          print("  ✓ /wiki/ 必换 obj_token · 多表 base 缺 ?table= 时报候选而不猜")
+          C.list_tables = lambda a: [{"table_id": "tblOnly", "name": "投放"}]
+          assert core.resolve_table_ref(url="https://x.feishu.cn/base/App") == ("App", "tblOnly")
+          print("  ✓ 缺 ?table= 时: 单表自动取, 多表报候选而不猜")
 
           # ── ③ 清单错 → 整批一张都不跑 ────────────────────────────────
           #

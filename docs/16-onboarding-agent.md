@@ -235,8 +235,9 @@ direction 拆解 / tier 阈值 / 合规 / 元数据仍是 `[待确认]` 草稿�
   N 张，超时那一刻**已跑完的表也一起没了**。逐表独立请求才有"第 6 张挂了，前 5 张还在"。
 - **已存在的 `mappings/<id>.yaml` 默认跳过，且在起草之前跳。** 里面的判断项是策略 lead
   审过的，是原则 1 那道人工闸门的唯一实物；新草稿盖上去在 diff 里就像一次正常更新。
-- **链接解析不猜。** `/wiki/` 的 token 不是 `app_token`、`larksuite.com` 的 API 主机
-  不同、缺 `?table=` 在多表 base 上是歧义 —— 三种都显式区分（`onboarder/links.py`）。
+- **链接解析不猜。** `/base/` 与 `/wiki/` 走同一条路径（token 直接当 `app_token`，解析
+  阶段零联网；取数失败才兜底换一次 `obj_token`）；`larksuite.com` 的 API 主机不同、
+  缺 `?table=` 在多表 base 上是歧义 —— 这两种显式拦掉（`onboarder/links.py`）。
 
 ## 下一步
 

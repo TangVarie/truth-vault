@@ -107,10 +107,15 @@ python -m onboarder.cli --project-id WTG_phase1 \
 python -m onboarder.cli --project-id X --dry-run
 ```
 
-**链接的三个坑**(`links.py` 显式区分,不猜):`/wiki/<token>` 是知识库**节点** id,不是
-`app_token`(要再换一次 `obj_token`,飞书 bot 需要该知识库的读权限);`larksuite.com` 是
-国际版 Lark,API 主机不同 —— 直接拒,不然表现为"这张表不存在";链接缺 `?table=` 时,
-单表 base 自动取那张、多表 base 报出候选让你选。
+**链接怎么处理**:`/base/` 和 `/wiki/` **一视同仁** —— token 直接当 `app_token` 用,解析
+阶段一次网都不联。万一某张表的 token 不能直接用,才在**第一次取字段失败之后**去换一次
+`obj_token` 重试(成功路径上零额外调用)。
+
+另外两种显式拦掉、不猜:`larksuite.com` 是国际版 Lark、API 主机不同(不拦的话表现为
+"这张表不存在");链接缺 `?table=` 时,单表 base 自动取那张、多表 base 报出候选让你选。
+
+> 表在知识库里的话,飞书 bot 除了表的读权限,还要**被加进那个知识库**——否则第一步
+> `list_fields` 就会报权限错。
 > Windows 看产物别用 `type`(乱码),用 `Get-Content -Encoding UTF8 out\WTG_phase1.yaml`。
 
 ## 验收 · WTG 金标准
