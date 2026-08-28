@@ -2564,7 +2564,10 @@ jobs:
           from http.server import BaseHTTPRequestHandler, HTTPServer
           from pathlib import Path
 
+          import yaml
+
           from onboarder import batch, core, links
+          from onboarder import vocab as ov
 
           # ── ① 路径穿越:project_id 只走白名单 ──────────────────────────
           #
@@ -2714,6 +2717,11 @@ jobs:
           # 而链接解析是纯客户端、不联网的 —— 链接带了 ?table= 时两个 id 本地就能算出,
           # 送 id 则新旧服务端都认。判据钉在**请求体形状**上:回退成"有 url 就送 url"
           # 会红。
+          #
+          # ⚠️ 这条断言管的是**入参形状**, 不是"任何 token 都取得到数"。/wiki/ 的 token
+          #    能否直接当 app_token 用取决于飞书 —— 新服务端取数失败还能换 obj_token,
+          #    旧服务端没那一步, 而客户端补救不了(runner 没有飞书凭证)。那种情况的出路是
+          #    重部署 Railway, 不是改这里:送 url 只会让旧服务端 400, 严格更差。(codex review)
           for _u in ("https://x.feishu.cn/base/App1?table=tblA",
                      "https://x.feishu.cn/wiki/wikN?table=tblB"):   # /wiki/ 同样送 id
               _p = batch.build_payload({"project_id": "P_p1", "url": _u, "app_token": None,
@@ -2728,6 +2736,29 @@ jobs:
           assert batch._ref_of({"project_id": "T", "url": "https://x.feishu.cn/base/A?table=tblB",
                                 "app_token": None, "table_id": None}).startswith("https://")
           print("  ✓ 链接带 ?table= → 送 id(新旧服务端都认); 缺 ?table= 才送 url")
+
+          # ── ②-f 「待确认」不许系统性报 0 ─────────────────────────────
+          #
+          # 这个方向的错是**最坏的那种**:汇总里「待确认 0」会让人以为"没什么要拍板的,
+          # 可以合了", 而真相恰好相反 —— README 原则 1 那道人工闸门正是靠这些标记提示的。
+          #
+          # vocab.validate_mapping 的 pending 判的是字段【值】是不是占位符, 而模型的实际
+          # 写法是【值填真实词表值 + 把 [待确认] 写进行尾注释】, 注释在 safe_load 之后就
+          # 没了。首批真跑(run#16)实测:TUGE 草稿 32 处 [待确认]、ANSHEN 22 处, 汇总那一
+          # 列都报 0。(eval_wtg 的文档字符串早写了这个坑, 只是当时只用在别处。)
+          _real = ("project_id: P_p1\n"
+                   "direction_decomposition:\n"
+                   '  "上岸反馈":\n'
+                   "    content_format: 情感叙事          # [待确认] 上岸经历分享\n"
+                   '    target_audience: ["通用"]         # [待确认]\n')
+          _v = ov.validate_mapping(yaml.safe_load(_real), columns=None)
+          assert len(_v["pending"]) == 0, \
+              "校验器居然看见注释里的 [待确认] 了? 那这条断言的前提变了, 该重写"
+          assert batch.count_pending({"mapping_yaml": _real, "pending": _v["pending"]}) == 2, \
+              "注释里的 [待确认] 没被数进来 —— 汇总会报 0, 读的人会以为没东西要拍板"
+          # 值本身是占位符的那种也不能漏(两条来源取较大者)
+          assert batch.count_pending({"mapping_yaml": "a: b\n", "pending": ["x", "y", "z"]}) == 3
+          print("  ✓ 「待确认」同时数注释标记与校验器 pending(不会系统性报 0)")
 
           # ── ②-d 重跑清单必须真的能粘回去 ─────────────────────────────
           #
