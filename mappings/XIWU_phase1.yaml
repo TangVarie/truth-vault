@@ -1,0 +1,225 @@
+# ════════════════════════════════════════════════════════════════════
+# XIWU_phase1 · 西屋按摩椅 —— Onboarding 草稿(DRAFT · A 家族)
+# ════════════════════════════════════════════════════════════════════
+# 产品: 西屋按摩椅(型号 GT33 为主力 SKU, 含白色款)
+# 投放策略: 小红书素人铺量, 以提问求助/情感叙事切入, 评论区植入品牌/型号
+# 真实列名 / 方向取值 / 未声明列 已据 30 行样本 + 字段清单起草;
+# 待 preflight 拉全表校正(尤其 direction_decomposition 的真实组合取值)。
+# ════════════════════════════════════════════════════════════════════
+
+version: 1.0
+
+# ── 项目元数据 ──
+project_id: XIWU_phase1
+brand: 西屋                     # [待确认] 字段清单/文案里出现「西屋」「西屋GT33」; 正式品牌名待策略 lead 确认
+product: 按摩椅                 # [待确认] 主力 SKU = GT33; 是否写成「GT33按摩椅」或「按摩椅系列」待策略 lead 确认
+category: 家居家电              # [待确认] 按摩椅属家居家电; 若归医疗器械(有按摩功能)请策略 lead 拍板
+platform: xiaohongshu
+schema_family: A                # 有「是否巡查」「巡查状态」「最近检查时间」「已确认存活」→ A 家族指纹成立
+                                # ⚠️ 但本期这 4 列全部为空(distinct=0); 保留为前向 allowlist, 同 OKMAN_phase1 先例
+start_date: auto_from_publish_time_min
+end_date: auto_from_publish_time_max
+
+# ════════════════════════════════════════════════════════════════════
+# 字段映射 — 30 列全部交代(13 进 typed 列/中间变量 + 17 进 raw_extra), 一条不漏
+# ════════════════════════════════════════════════════════════════════
+field_mapping:
+  # ── 标识 ──
+  素人编号: account_id              # → notes.account_id (FK to accounts)
+
+  # ── 内容 ──
+  文案: raw_content                 # → notes.raw_content [NOT NULL]
+  发布时间: publish_time            # → notes.publish_time (datetime)
+  反馈链接: publish_url             # → notes.publish_url
+
+  # ── tier 源 ──
+  # 本表与 WTG/RIO表1/TXQ/OKMAN 同款: 状态拆两列(发布状态=工作流, 流量状态=表现/tier 源)
+  流量状态: _status_raw             # → tier_extraction → notes.tier
+
+  # ── 方向 ──
+  方向: _direction_raw              # → direction_decomposition (流量贴 / 产品贴)
+
+  # ── 数据回收(数字, parse_numeric 自动转) ──
+  曝光数: impressions               # 本表用「数」(A 家族 WTG 表用「量」; 本表用「数」, 同 RIO表2/docs/03 先例)
+  阅读数: reads
+  互动数: interactions
+
+  # ── 蓝词(事后命中蓝词) ──
+  蓝词字段: hit_blue_keywords       # → notes.hit_blue_keywords (82 行有值; 13 种选项已知)
+
+  # ── 评论 ──
+  随贴评论: _comment_text           # → comments 表(Phase 2 LLM 解析)
+
+  # ── 观众分析 → 确定性解析进 actual_audience_data ──
+  # 样本中有值行格式为「性别分布：男性42%，女性58%；年龄分布：...；城市分布：...」
+  # 与 WTG/TXQ/OKMAN 的 _audience_raw 格式一致, 可确定性解析。
+  # ⚠️ 部分行观众分析内容为「性别分布：；年龄分布：；城市分布：」(键有值但数值空) —— sync 解析出 null 正常, 不影响入库
+  观众分析: _audience_raw           # → notes.actual_audience_data (JSONB)
+
+  # ── 笔记状态 → 检测伪爆贴 ──
+  # 发布状态选项含「已发布/预备内容/待发布/定时发布/内容待定/待审稿/修改中」;
+  # 30行样本全为「已发布」; 若出现「关注」等人工假数据信号 → synthetic flag
+  发布状态: _note_status_raw        # → 含"关注"则 data_quality_flags.synthetic=true
+
+# ── intent ──
+# 本表【无】「发布笔记」intent 列 → 不做意图分类, notes.intent 留空(WTG/TXQ/OKMAN 金标准 intent=null)
+
+# ════════════════════════════════════════════════════════════════════
+# 方向拆解 [待确认 · 需策略 lead review]
+# ════════════════════════════════════════════════════════════════════
+# 飞书「方向」distinct: 流量贴×184 / 产品贴×38; 仅 2 种取值, 全单选无组合。
+# 注意: 字段清单选项里有「提问帖」「产品贴(重复)」「流量贴」, 但 distinct 实际只出现「流量贴」「产品贴」。
+# 「提问帖」在 distinct 中未出现 → 不建条目(出现时 preflight 会报 dirs_missing, 届时补)。
+#
+# 文案样本全部是「流量贴」, 风格高度一致: 提问求助(「求推荐」「有没有姐妹」「先斩后奏成功过吗」)
+# + 情感场景(父母腰背/产后/送礼/打工人颈椎) + 评论区植入西屋品牌/GT33型号。
+# 「产品贴」在样本中无例, 推断为直接产品介绍/横评; 待 preflight 看真实文案确认。
+#
+# ⚠️ 流量贴内部场景差异较大(送礼父母/产后宝妈/打工人/学生党/中奖选购)——
+#    是否拆 sub_directions 是关键判断项, 留策略 lead 决定(见 review brief)。
+#    草稿先按两个基础方向各写一条; 不为潜在场景造 sub_directions。
+
+direction_decomposition:
+
+  "流量贴":                         # 184 条(主力); 提问求助/情感叙事切入, 不直接推产品
+    content_format: 提问求助        # [待确认] 样本文案几乎全是提问求助格式(「求推荐」「有没有买过的」「纠结死了」)
+    target_audience: ["通用"]       # [待细化] 样本涵盖多人群(孝顺子女/宝妈/打工人/学生党); 见 review brief
+    user_pain_point: 有按摩需求但不知如何选购(送父母礼物/腰背不适/产后恢复/打工人颈椎/线下按摩贵)  # [待确认]
+
+  "产品贴":                         # 38 条; 推断为直接产品介绍/横评; 无样本文案
+    content_format: 直给推荐        # [待确认] 无样本文案, 按方向名推断; preflight 后应看真实文案确认
+    target_audience: ["通用"]       # [待细化]
+    user_pain_point: 直接了解西屋按摩椅产品特性/型号差异/使用体验  # [待确认]
+
+# ════════════════════════════════════════════════════════════════════
+# tier 抽取规则(流量状态 → tier)
+# ════════════════════════════════════════════════════════════════════
+# 流量状态 distinct(222 行):
+#   无水花×184, 评估中/无水花×10, 爆贴×7, 评估中×3, 爆帖预备×2,
+#   评估中/爆帖预备/无水花×1, 无水花/评估中×1, 爆帖预备/无水花×1,
+#   无水花/爆帖预备×1, 评估中/爆帖预备×1, 评估中/爆帖预备/爆贴×1
+# ⚠️ 字段清单选项里有「爆贴」「爆帖预备」「爆贴预备」三种近似写法(帖/贴/预备/预备混用);
+#    distinct 实测只出现「爆贴」「爆帖预备」→ match_contains 规则需同时覆盖两种拼写以防万一。
+# 字段清单还有「关注评论」「重点关注」「控评&置顶✅」「风控中」等选项, 本期 distinct 未出现;
+#    保留 match_contains["风控"] 覆盖「风控中」; 其余选项 → default: null 兜底。
+# 「起量时间」列(distinct 仅 9 行有值)→ 不作 tier 源, 进 raw_extra 留痕。
+
+tier_extraction:
+  source: 状态字段                  # 指示用 _status_raw (即「流量状态」列)
+  rules:
+    - match_contains: ["大爆"]
+      tier: 大爆
+    - match_contains: ["爆帖预备", "爆贴预备"]  # 两种拼写均覆盖
+      tier: 预备
+    - match_contains: ["爆贴", "爆帖"]          # 覆盖「爆贴」「爆帖」两种拼写
+      tier: 爆
+    - match_contains: ["风控"]                  # 覆盖「风控中」
+      tier: 风控
+    - match_contains: ["无水花"]
+      tier: 趴
+    - match_contains: ["评估中"]
+      tier: 未知
+    - default: null
+
+# ════════════════════════════════════════════════════════════════════
+# tier 数值阈值 [待确认]
+# ════════════════════════════════════════════════════════════════════
+# 样本 30 行互动数分布(有值行): 2/2/3/5/8/8/9/9/10/192(1 条爆贴)。
+# 爆贴样本(流量状态=爆贴): 互动192, 曝光41009, 阅读7978 → 高互动量级。
+# 无水花样本: 互动 2–10(低)。
+# 全表 distinct 互动数 45 个不同值; 无法从 30 行样本精确估算分布, 推荐保守起点:
+# 爆=100(覆盖「爆贴」量级, 排开低互动趴帖) / 大爆=1000。[待确认: 入库后跑分布脚本校准]
+tier_thresholds:
+  爆: 100                           # [待确认] 保守起点; 入库后跑 recommend_tier_thresholds.py 校准
+  大爆: 1000                        # [待确认]
+
+# ════════════════════════════════════════════════════════════════════
+# 合规配置 [待确认]
+# ════════════════════════════════════════════════════════════════════
+compliance:
+  base_template: 家居家电           # [待确认] 若 category 改医疗器械则需升级合规模板
+  custom_red_flags:
+    - "家居家电/按摩椅: 禁止宣称医疗功效(治疗腰椎间盘突出/颈椎病等疾病)"  # [待确认]
+    - "禁止绝对化表述(最好用/唯一/根治)"                                    # [待确认]
+    - "若归医疗器械类: 需按器械广告规范, 禁止夸大疗效"                       # [待确认]
+  blue_keyword_strategy:
+    primary: ["西屋按摩椅", "西屋GT33", "西屋gt33"]   # [待确认] 据蓝词字段高频值; 策略 lead 确认
+    secondary: ["按摩椅", "西屋按摩椅gt33", "精钢机芯"]  # [待确认]
+    avoid: []                        # [待确认]
+
+# ════════════════════════════════════════════════════════════════════
+# 项目专属字段 → raw_extra (allowlist · 17 列)
+# ════════════════════════════════════════════════════════════════════
+# 未列入此处且未在 field_mapping 声明的列 → 整行 quarantine (D-021)。
+# 下列列全部进 raw_extra 留痕, 不做二次处理。
+project_specific_fields_to_raw_extra:
+  # ── 图片/附件列(不处理) ──
+  - 内容配图
+  - 评论配图
+  - 发布截图
+  - 相关截图
+  - 蓝词图片
+  # ── 工作流状态列(非 tier 源) ──
+  - 评论状态                # 选项: 显示评论/改评显示/暂未显示/无需控评/没有显示; 本期 distinct=显示评论×190
+  - 爆帖置顶评论            # 选项(8): 待置顶/成功/待做评论等; 本期 distinct=0(全空); 保留为前向 allowlist
+  # ── A 家族巡查列(本期全空; 保留前向 allowlist, 同 OKMAN_phase1 先例) ──
+  - 是否巡查
+  - 巡查状态
+  - 已确认存活
+  - 最近检查时间
+  # ── 数值副本列(int 副本, 主值已在 field_mapping 映射) ──
+  - 曝光副本
+  - 阅读副本
+  - 互动副本
+  # ── 其他业务列 ──
+  - 起量时间               # 仅 9 行有值; 时间戳, 记录开始起量的时间点; 非 publish_time
+  - 数据整理               # 自由文本运营备注(如「曝光量：383；阅读量：69；互动量：3」); 非 tier 源
+  - 备注                   # 本期 distinct=0; 保留前向 allowlist
+  - 父记录                 # 飞书内部关联字段(→ tbl82wlYwFOEeMBs)
+
+# ════════════════════════════════════════════════════════════════════
+# 数据补录需求
+# ════════════════════════════════════════════════════════════════════
+data_supplement_needed:
+  - field: account_followers
+    method: 本表无粉丝数/帐号昵称/主页链接列 → 需通过 publish_url 调小红书 API 或人工补录
+    estimated_rows: 0
+  - field: actual_audience_data
+    method: 观众分析列已接 sync 确定性解析(_common.parse_audience_analysis); 但样本显示多数行数值为空(「性别分布：；年龄分布：；城市分布：」) → sync 解析出 null 正常, 无需额外补录; 有值行(如 互动192 的爆贴行)可正常解析。
+    estimated_rows: 0
+
+# ════════════════════════════════════════════════════════════════════
+# Sync 配置 [飞书坐标待用户提供]
+# ════════════════════════════════════════════════════════════════════
+onboarding_meta:
+  onboarded_at: 2026-08-XX          # 待填
+  onboarded_by: 接表 agent 起草(据 30 行样本 + 字段清单)
+  strategy_lead: (待填)
+  notes: |
+    DRAFT —— A 家族(有巡查/检查列, 本期全空), 结构近 WTG_phase1/OKMAN_phase1/TXQ_phase1。
+    特殊点:
+      1) 指标列用「数」(曝光数/阅读数/互动数), 同 RIO表2/docs/03 先例(非「量」);
+      2) 无 intent 列(同 WTG 金标准, intent=null);
+      3) 方向仅 2 种取值(流量贴/产品贴), 全单选无组合;
+         「流量贴」文案样本全是「提问求助+情感场景」套路; 「产品贴」无样本;
+      4) 流量贴内部场景分化明显(送礼父母/产后/打工人/学生党/中奖选购) → 是否拆 sub_directions 留策略 lead 决策;
+      5) 蓝词字段 13 种选项, 82 行有值, 集中在「西屋gt33/西屋GT33/西屋按摩椅gt33」;
+      6) 观众分析: 大部分行值为空(仅键无数值), 只有高互动帖有完整分布数据;
+      7) brand/product/category 三项均需策略 lead 拍板(见 review brief);
+      8) 「爆帖置顶评论」字段本期 distinct=0, 未进 field_mapping → pinned_comment; 保留在 raw_extra 前向 allowlist。
+         若后续有控评需求, 把该列上移 field_mapping: 爆帖置顶评论: pinned_comment。
+    待 preflight 拉全表校正:
+      1) field_mapping 真实列名对齐(特别确认「数」vs「量」命名无误);
+      2) 未声明列 → 补进 raw_extra(否则 D-021 整行 quarantine);
+      3) 「方向」真实取值(确认「提问帖」是否真实出现, distinct 里未见但字段选项有);
+      4) tier 阈值 入库后跑 recommend_tier_thresholds.py 校准;
+      5) 飞书坐标(feishu_app_token / feishu_table_id)待用户提供后填入。
+    autowriter 映射不需配(D-038 通道2 退役)。
+    preflight 干净 → PR → 显式 Daily TV sync(dry_run → 实跑)→ 验证 OK 再翻 daily → backfill essence。
+
+sync_config:
+  source_type: feishu_api
+  feishu_app_token: P0YbbWpIUa6PsBsPi9pcApGknLf   # 表标识(非密钥), 接表时已知
+  feishu_table_id: tbl82wlYwFOEeMBs
+  feishu_view_id: null
+  sync_interval: on_demand
