@@ -43,6 +43,7 @@ import requests
 from supabase import Client
 
 from _common import (
+    assert_db_schema_ready,
     ensure_account_exists,
     ensure_project_exists,
     extract_tier,
@@ -58,6 +59,7 @@ from _common import (
     quarantine_record,
     resolve_feishu_tables,
     setup_logger,
+    skip_on_demand_on_cron,
     update_project_date_range,
     _direction_key,
     _iso_now,
@@ -249,16 +251,10 @@ _NOTE_DATA_SIGNALS = (
 _SYNTHETIC_TIER_SRC_RE = re.compile(r"伪爆[贴帖]|伪\d+评")
 
 
-def _skip_on_demand_on_cron(sync_interval: str | None, scheduled: bool) -> bool:
-    """夜间 cron(scheduled=True)是否应跳过该项目。
-
-    sync_interval=on_demand 的项目【只】在显式 dispatch / 改成 daily 后才进夜间 cron ——
-    防新接的表(填了飞书坐标但还没 preflight 验证)被 02:00 cron 自动灌、把未声明列的真内容行
-    quarantine(codex PR#67 review)。on_demand 是 onboarder 起草的安全默认: 接表填坐标 →
-    preflight → 显式跑验证 → 改 daily 入 cron。保守: 只有【确实 cron】且【确实 on_demand】才跳,
-    显式 dispatch / 本地手跑(scheduled=False)照跑(不挡人工操作)。
-    """
-    return scheduled and sync_interval == "on_demand"
+# 判据本体已移到 _common.skip_on_demand_on_cron —— daily-sync 里【每一步】自动处理都要用
+# 同一份(D-047: 2026-08-30 之前它只挡住入库这一步, essence 标注那步没挡)。
+# 这里保留同名薄别名: 既有 CI 守卫按这个名字取, 且本模块内部调用点不必改。
+_skip_on_demand_on_cron = skip_on_demand_on_cron
 
 
 def transform_row(
@@ -933,6 +929,19 @@ def main() -> int:
 
     fs = FeishuClient(app_id, app_secret)
     sb = get_supabase_client()
+
+    # ── 库结构前置闸 (D-046) ──
+    # 本脚本是 daily-sync 的【第一步】, 所以在这里核【整条链路】会写的列(不只 notes):
+    # 后面的 comments / essence / curate 若撞上缺列, 也在这里就一次性报出来, 而不是
+    # 让夜里那一轮跑到一半才炸。只读探测, 亚秒级。
+    # 2026-08-27 的教训: 缺列不会降级, 是【每一条 upsert 各失败一次】, 几百条一样的
+    # traceback 把唯一有用的那行淹了, 连红 4 天才有人看见。
+    # dry_run 也照跑 —— 恰恰是 dry_run 最该提前发现这个。
+    try:
+        assert_db_schema_ready(sb)
+    except RuntimeError as exc:
+        logger.error("%s", exc)
+        return 2
 
     # Make sure truth_vault.projects has the row before any notes go in —
     # `notes.project_id` has a FK to it and would reject every insert

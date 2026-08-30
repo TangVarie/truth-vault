@@ -1676,3 +1676,183 @@ BJS 这张表上两个缺陷刚好叠在一起，后果是最坏的那种：
   真要改 tier 本身的取值，是策略口径问题，留给策略 lead。
 - BJS_phase1 的草稿仍需在 PR 上把那两条规则**调序**后再 merge：lint 会挡住它进 sync，
   但草稿分支上的 yaml 尚未被 lint 覆盖（草稿还没进 `mappings/`）。
+
+---
+
+## D-046 · 写库的列必须先落库：迁移没跑 = 每一条 upsert 都失败，且要 4 天才有人看见
+
+**日期**: 2026-08-30
+
+**What**: 把 `schemas/notes_v1_9_last_seen_reconcile.sql` 应用到生产 Supabase
+（`truth_vault.notes` 加 `last_seen_at` / `last_seen_run_id` + 索引）。
+
+**故障**: Daily TV sync **连红 4 天**（run #133 08-27 → #136 08-30），每次
+`feishu_sync` 步骤挂在 RIO_phase1 / WTG_phase1 上：
+
+```
+PGRST204: Could not find the 'last_seen_at' column of 'notes' in the schema cache
+```
+
+**根因不是代码，是「合并 ≠ 部署」**：PR #109（COR-011 对账，08-27 合并）让
+`transform_row` 在**每一条** note upsert 里带上 `last_seen_at` / `last_seen_run_id`，
+但那两列所在的迁移 `notes_v1_9` **从来没在生产库上跑过**。第一个变红的 run
+（#133）就是 #109 合并后的第一次 cron —— 时间线与报错列名双向吻合。
+
+`scripts/README.md` 早就把这条写成硬前置，原文：
+
+> ⚠️ **这一条是硬前置, 不是可选**: 没跑它的库上，**每一条 note 的 upsert 都会失败**
+> （column does not exist），而不是降级。
+
+**所以文档没缺，缺的是【强制】。** 这是本仓第二次栽在同一类问题上 ——
+2026-08-28 接表时六张表全报 `missing required field: app_token`，
+根因是 Railway 上还跑着旧版 `app.py`（D-044 的部署提醒段）。两次都是
+「代码进了 main，承载它的运行时没跟上」，而两次都**没有任何症状**能提前暴露：
+`/health` 照常 200，CI 照常绿，只有真跑起来才炸。
+
+**为什么这次的表现形式特别坏**：
+
+- 不是整步一次性失败，是**逐行**失败 → 日志里几百条一模一样的 traceback，
+  真正的一行信息（缺哪个列）被淹在里面；
+- **当天 16 个项目里只有 RIO / WTG 报错**，于是整轮看起来像"个别项目有问题"，
+  而不是"库结构不对"。但那 14 个**不是"没事"，是压根没走到 upsert** —— 这一点
+  一开始写错了（codex review 指出，2026-08-30 按 run #136 日志核实订正）：
+
+  | 情况 | 项目数 | 实际发生了什么 |
+  |---|---|---|
+  | `sync_interval: on_demand` | **13** | 夜间 cron 直接跳过，**一行都没读** |
+  | `daily` 且全部 quarantine | 1（OKMAN） | `total 350 / quarantined 350 / upserted 0` → `pending_notes` 空，没有可写的行 |
+  | `daily` 且真写库 | 2（RIO / WTG） | `errors 391` / `errors 710` —— 全部是这个缺列错 |
+
+  **没有"新行 vs 老行"这回事**：`upsert_notes_batch` 每轮把该项目**所有**有效行
+  重写一遍，不查存在性也不比对是否变化。所以判据是「这轮有没有行走到 upsert」，
+  跟"有没有新数据"无关。把它记成"只有有新行的项目才命中"会把下一个人往
+  "查哪个项目有新数据"的方向带偏 —— 而正确的方向是"查哪个项目今晚真的写了库"。
+
+- 另外 `last_seen_*` 只在 **full_scan** 时才盖（无 `--limit` 截断、无飞书抓取失败、
+  `errors == 0`、非 dry-run，见 `sync_feishu_notes_to_truth_vault.py:1068-1079`）。
+  这构成一个**自锁**：第一条 upsert 失败 → `errors > 0` → 后续轮次连戳都不盖了，
+  但**失败照旧**，因为 payload 是在盖戳之前就带上这两列的。
+- `feishu_sync` 之后的步骤（comments / essence / curate / ssll）**全绿**，
+  汇总行只有一句 `failed steps: feishu_sync`，很容易被读成偶发。
+
+**Rejected**:
+
+- ❌ **在 sync 里 try/except 掉这个列**（缺列就不写）。那正是 COR-011 要避免的：
+  对账证据一旦可以静默缺失，`last_seen_at IS NULL` 就同时意味着"还没同步过"和
+  "库没升级"，而这两者的处置完全相反。宁可炸。
+- ❌ **只把 README 写得更醒目**。它已经写得够醒目了（三行 ⚠️ + 空库实测记录），
+  仍然漏了 —— 靠人读文档记得跑迁移，不是护栏。
+
+**Implications** —— 已做（2026-08-30，策略 lead 拍板"待办做"）:
+
+`_common.assert_db_schema_ready()`，接在 `sync_feishu_notes_to_truth_vault.main()` 里
+`get_supabase_client()` 之后、第一次写库之前。缺列 → 立刻 `exit 2`，消息点名缺哪些列、
+该跑哪个迁移文件。**把「4 天 × 逐行 traceback」压成「5 秒 × 一行」。**
+
+**探测手法**：拿要写的列做一次 `select ... limit 0`。列不存在时 PostgREST 直接回
+42703 —— 这不是推测，正是那次事故日志里对账查询打出来的那条 warning。比读
+`information_schema` 省事（PostgREST 不暴露它），也不用为此建 RPC；全程只读。
+成功路径每张表一次往返（9 张，亚秒级），只有失败时才逐列复探一遍把缺的**全部**点名
+（PostgREST 一次只报第一个，不复探就得一次修一个、来回好几轮）。
+
+**为什么装在 sync 而不是各脚本各管各的**：sync 是 daily-sync 的第一步，在这里核
+**整条链路**会写的列，后面 comments / essence / curate / ssll 的漂移也在开跑前就报出来，
+而不是夜里跑到一半才炸。
+
+**列清单怎么来的**：2026-08-30 用一个 workflow 把 7 个写库脚本并行盘了一遍，
+再拿结果对生产库 `information_schema` 做**确定性核对**（当时 128 列全部存在，
+即补上 v1_9 之后没有残留漂移）。随后一轮**对抗盘点**抓到手工清单的真洞：
+`notes.synced_to_ssll_at` / `synced_ssll_reference_sample_id`（只记了 autowriter
+那对孪生列，漏了 ssll 这对）+ 整张 `flywheel_librarian_cache`（它在 `librarian/`
+不在 `scripts/`，按脚本盘点必然漏）。**手工列清单会漏，这就是证据。**
+
+**三类故意不收**（写进代码注释，免得下一个人"顺手补全"反而弄坏闸）:
+
+- **触发器写的列**（`era_tag` / `updated_at` / `ingested_at` / `audit_log.*`）——
+  我们的代码从不发它们，且列与触发器出自同一个迁移文件，不可能只缺一半，
+  收进来只白花往返。
+- **另一个库的表**（`public.reference_samples` 在三生六部那个实例）—— 本函数拿的是
+  TV 的 client，探不到，也不该由 TV 的 sync 替它把关。
+- **autowriter schema** —— 跑在另一条链路上，挂了不该拖红夜间 TV 同步。
+
+**守卫**：CI 新增一道，对旧行为反证过会红 —— 精确复现 2026-08-27 那次（notes 缺
+`last_seen_at` + `last_seen_run_id`），断言两列**都**被点名、且报错说清该跑哪个迁移；
+另断言清单没被删残（表 ≥ 6、notes 列 ≥ 30、必核列在场），以及**闸真的接在
+`main()` 上且排在第一次写库之前** —— 只写函数不接线是这类护栏最常见的死法。
+
+---
+
+## D-047 · `on_demand` 闸要覆盖【每一个】自动处理步骤，不只是入库
+
+**日期**: 2026-08-30
+
+**What**: 判据本体移到 `_common.skip_on_demand_on_cron`（单一来源），新增
+`scripts/skip_on_cron.py` 作 CLI shim，接进 `daily-sync.yml` 的 **essence 标注**那一步。
+
+**Why**: `sync_interval: on_demand` 那道闸的注释白纸黑字写着它防的是
+「新接的表（填了飞书坐标但还没 preflight 验证）被 02:00 cron 自动灌」。
+但它**只实现了一半** —— 入库那步调 `_skip_on_demand_on_cron`，
+而 essence 那步是裸 `for f in ../mappings/*.yaml` 全遍历，
+**`sync_interval` 在整个 essence 路径里一次都没出现**。
+
+后果不是"多跑一点"：
+
+- 笔记一落库，**当晚**就被 LLM 按**还没拍板**的 `direction_decomposition` 标注；
+- 标注按 `essence_annotated_at IS NULL` 取 → **标完即固化**，不会自动重标；
+- 再顺着 经验卡 → 三生六部 → autowriter 传下去。
+
+也就是说 README 原则 1 那道人工闸门（判断权归策略 lead）被绕过了，
+而且是**静默**绕过 —— 日志里只会看到一行 `✅ essence 已全部标完`。
+
+这次接六张表时撞上：六张全是 `on_demand`、共 120 处 `[待确认]`，
+只要跑一次实跑 sync，第二天早上那 120 处провisional 判断就进飞轮了。
+
+**判据必须只有一份**：essence 那步没有在 bash 里重写一遍 `grep on_demand`，
+而是调 `skip_on_cron.py`，它内部就是入库那步用的同一个函数。两份判据漂开的表现是
+"某一步悄悄多跑了一批没验证过的表" —— 没有任何症状，正是本仓反复栽的那类。
+
+**exit 2 取"照跑"而不是"跳过"**：`skip_on_cron.py` 判不了时（mapping 读不出来）
+返回 2，调用方**照跑**。跳过是静默少干活、查起来毫无线索；照跑最多多标一次（幂等，
+且下游本来就要人审）。宁可吵不可静。
+
+**Rejected**:
+
+- ❌ **在 essence 的 bash 循环里直接写 yaml 判断**。判据会漂，且漂开无症状。
+- ❌ **让 `count_unannotated_essence.py` 对 on_demand 项目返回 0**。那会让日志打出
+  `✅ essence 已全部标完` —— 一句**假话**。跳过就要说跳过。
+
+**`curate` 是同一个泄漏口的另一张嘴 —— 已一并补（2026-08-30，策略 lead 选 A）**:
+
+`curate_flywheel_lessons.py` 是**全局单次调用**，`fetch_uncurated_cards()` 只按
+`is_curated=false`（+ 可选 `project`）取，不看 `sync_interval`。而它的候选视图
+`v_flywheel_lesson_cards` 的 WHERE 只有
+`tier ∈ (爆,大爆,参考)` + `tier_source ≠ 数值推断` + `publish_time IS NOT NULL`
+—— **完全不要求先有 essence**。所以本次补的 essence 闸**挡不住 curate**。
+
+**为什么只能在调用方修**：curate 的 LLM 调用跑在 **Railway worker** 上，而
+`TV_SCHEDULED_RUN` 只存在于 GitHub Actions 的 job 环境里 —— 把判断塞进
+`curate_flywheel_lessons.py`，它在 worker 上会**永远判成"非 cron"**，等于没加。
+改 worker 协议（给 `/curate` 加个 `scheduled` 字段）则是又一次「合并 ≠ 部署」的风险，
+而这一轮已经被它咬过两次（Railway 旧版 `app.py`、迁移没落库）。
+`/curate` 只收单个 `project`、没有"排除某些"，所以调用方只剩**按项目循环**一条路。
+
+**预算仍然全局共享，不是每个项目各给一份**（这一条是本次实现里最要紧的取舍）：
+
+`CUR_LIMIT`（15）原本兼着两个作用 —— 「每日够用」+「单请求 >~15 张会撞 worker
+5min 超时」。天真的循环写法会变成 `N × 15`，把每晚的 LLM 账单乘以项目数；
+而共享一个 `remaining`、按每个项目**实际策展数**递减，两个作用都保住，
+**总量与改动前一致**。待办没做完是幂等的（`is_curated=false`），下轮 cron 续 ——
+与改动前同一条路。
+
+**截断不许静默**：预算用完时把**剩下哪些项目**点名进 `::notice::`。
+否则日志看着就像"全都策展过了" —— 而这正是本仓反复栽的那类静默。
+实测 16 个项目 / 预算 15 / 每个吃 2 → 跑 8 + 推迟 8 = 16，一个都没丢。
+
+**逐项目隔离**：一个项目系统性失败不再带走其余项目（与 essence 段同构），
+但仍 `fail_count++`，收尾判红。
+
+**守卫**：CI 那道 D-047 守卫扩到 curate —— 断言已接闸、闸在**真正发请求那一行**之前
+（判据钉在 `-X POST "${WORKER_URL%/}/curate"` 上，不是任何出现 `/curate` 的地方：
+注释里也会提到它，拿它比位置会把守卫变成在考注释怎么写 —— 这条是写守卫时它自己
+先把我拦下来的）、按项目循环、预算共享递减、截断不静默、逐项目隔离。
+已反证：把 curate 的闸拆掉，守卫变红。

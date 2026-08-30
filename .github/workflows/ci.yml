@@ -1148,6 +1148,156 @@ jobs:
           print("  ✓ transform_row 走 _SYNTHETIC_TIER_SRC_RE, 无写死字符串残留")
           print("\nsynthetic 伪爆帖/伪爆贴: all checks passed")
           PY
+      - name: on_demand 闸对【每一个】自动处理步骤都生效 (D-047)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # 那道闸的本意是"没经 preflight 验证的表不许被夜间 cron 自动处理"。
+          # 2026-08-30 之前它只挡住了【入库】: essence 那步是裸 `for f in mappings/*.yaml`
+          # 全遍历, sync_interval 在整个 essence 路径里一次都没出现。后果不是多跑一点 ——
+          # 笔记一落库, 当晚就被 LLM 按【还没拍板】的方向拆解标注, 而标注按
+          # essence_annotated_at IS NULL 取, 标完即固化, 再顺着经验卡 → 三生六部 →
+          # autowriter 传下去。判断权那道人工闸(README 原则 1)就这么被绕过了。
+          import os, subprocess, sys, yaml, pathlib
+          import _common as c
+
+          # ① 判据必须只有【一份】—— 入库那步用的和 essence 那步用的是同一个函数
+          import sync_feishu_notes_to_truth_vault as s
+          assert s._skip_on_demand_on_cron is c.skip_on_demand_on_cron, \
+              "入库那步没用 _common 里那份判据 —— 两份判据迟早漂开, 而漂开没有症状"
+
+          # ② 真值表
+          f = c.skip_on_demand_on_cron
+          assert f("on_demand", True)  is True,  "cron + on_demand → 必须跳过"
+          assert f("on_demand", False) is False, "显式 dispatch → 不许挡人工"
+          assert f("daily", True)      is False, "daily 项目照跑"
+          assert f(None, True)         is False, "没写 sync_interval → 保守照跑"
+          print("  ✓ 判据单一来源 + 真值表")
+
+          # ③ CLI shim 的退出码语义(bash 循环按它分支)
+          env = dict(os.environ, PYTHONPATH=os.getcwd())
+          def rc(project, scheduled):
+              e = dict(env); e["TV_SCHEDULED_RUN"] = "true" if scheduled else ""
+              return subprocess.run([sys.executable, "skip_on_cron.py", project],
+                                    capture_output=True, env=e).returncode
+          on_demand = next(p.stem for p in pathlib.Path("../mappings").glob("*.yaml")
+                           if not p.stem.startswith("_")
+                           and ((yaml.safe_load(p.read_text()).get("sync_config") or {})
+                                .get("sync_interval") == "on_demand"))
+          daily = next(p.stem for p in pathlib.Path("../mappings").glob("*.yaml")
+                       if not p.stem.startswith("_")
+                       and ((yaml.safe_load(p.read_text()).get("sync_config") or {})
+                            .get("sync_interval") == "daily"))
+          assert rc(on_demand, True)  == 0, "on_demand + cron 应 exit 0(跳过)"
+          assert rc(on_demand, False) == 1, "on_demand + 显式 应 exit 1(照跑)"
+          assert rc(daily, True)      == 1, "daily + cron 应 exit 1(照跑)"
+          # 判不了时【照跑】而不是【跳过】: 静默少干活查不出来, 多干一次是幂等的
+          assert rc("NO_SUCH_PROJECT_xyz", True) == 2, "读不出 mapping 应 exit 2"
+          print("  ✓ CLI 退出码: 0=跳过 / 1=照跑 / 2=判不了(调用方照跑)")
+
+          # ④ essence 那一步真的接上了这道闸 —— 只写工具不接线是这类护栏最常见的死法
+          wf = yaml.safe_load(pathlib.Path("../.github/workflows/daily-sync.yml").read_text())
+          steps = [s for s in wf["jobs"]["sync"]["steps"] if s.get("run")]
+          ess = [s for s in steps if "annotate-essence" in s["run"]]
+          assert ess, "找不到 essence 那一步"
+          body = ess[0]["run"]
+          assert "skip_on_cron.py" in body, "essence 步骤没接 on_demand 闸(D-047 回归)"
+          assert body.index("skip_on_cron.py") < body.index("annotate-essence"), \
+              "闸必须在真正发起标注请求之前"
+          print("  ✓ daily-sync 的 essence 步骤已接闸, 且在发请求之前")
+
+          # ⑤ curate 是同一泄漏口的【第二张嘴】—— 它的候选视图 v_flywheel_lesson_cards
+          #    不要求 essence(WHERE 只有 tier/tier_source/publish_time), 所以 essence
+          #    那道闸挡不住它。只挡一张嘴比不挡更危险: 会让人以为已经挡住了。
+          cur = [s for s in steps if "/curate" in s["run"]]
+          assert cur, "找不到 curate 那一步"
+          cbody = cur[0]["run"]
+          assert "skip_on_cron.py" in cbody, "curate 步骤没接 on_demand 闸(D-047 回归)"
+          # 判据钉在【真正发请求那一行】上, 不是任何出现 "/curate" 的地方 ——
+          # 注释里也会提到 /curate, 拿它比位置会把守卫变成在考注释怎么写。
+          POST = '-X POST "${WORKER_URL%/}/curate"'
+          assert POST in cbody, "找不到 curate 的 curl 请求行(改了写法就同步改这条守卫)"
+          assert cbody.index("skip_on_cron.py") < cbody.index(POST), \
+              "闸必须在真正发起 curate 请求之前"
+          # 必须是【按项目循环】: 全局单次调用没法排除某些项目(/curate 只收单个 project)
+          assert 'for f in ../mappings/*.yaml' in cbody, "curate 必须按项目循环, 否则闸无处可插"
+          assert '\\"project\\":\\"$p\\"' in cbody, "循环里必须把当前项目传给 /curate"
+          # 预算必须【共享】而不是每项目各给一份 —— 加闸门不该顺手把账单乘以项目数
+          assert "remaining=$CUR_LIMIT" in cbody, "curate 预算要全局共享(remaining), 不是每项目各 CUR_LIMIT"
+          assert "remaining - n" in cbody or "remaining-n" in cbody, "预算没有随实际策展数递减"
+          # 预算截断不许静默 —— 必须说清谁被推迟到下轮
+          assert "deferred" in cbody and "留到下轮" in cbody, "预算用完要点名哪些项目被推迟, 不许静默截断"
+          # 一个项目挂了不该带走其余项目, 但收尾仍要判红
+          assert "fail_count" in cbody and "exit 1" in cbody, "curate 失败要计数并在收尾判红"
+          print("  ✓ curate 步骤: 已接闸 / 按项目循环 / 预算共享递减 / 截断不静默 / 逐项目隔离")
+          print("\non_demand 闸覆盖: all checks passed")
+          PY
+      - name: 库结构前置闸:代码写的列必须先落库 (D-046, 2026-08-27 实测连红 4 天)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # 2026-08-27: PR #109 让每条 note upsert 都带 notes.last_seen_at, 而迁移
+          # notes_v1_9 从没在生产库跑过 → 【每一条 upsert 各失败一次】(不是降级),
+          # 几百条一样的 traceback 淹掉唯一有用那行, daily sync 连红 4 天才被发现。
+          # 本 guard 守的是那道闸: 缺列必须在【开跑前】一次性点名, 且说清该跑哪个迁移。
+          import inspect, _common as c
+
+          # ① 清单本身别退化成空(有人删空了 = 闸门失效, 但测试仍会"通过")
+          assert len(c._REQUIRED_COLUMNS) >= 6, "必核的表少于 6 张, 清单八成被删残了"
+          notes_cols = c._REQUIRED_COLUMNS["notes"]
+          assert len(notes_cols) >= 30, f"notes 只列了 {len(notes_cols)} 列, 太少"
+          for must in ("last_seen_at", "last_seen_run_id", "raw_content", "tier"):
+              assert must in notes_cols, f"notes 必核列漏了 {must}"
+
+          # ② 用假 client 精确复现那次事故, 断言"会红"
+          class FakeQ:
+              def __init__(s, have): s.have = have
+              def select(s, cols): s.req = cols.split(","); return s
+              def limit(s, n): return s
+              def execute(s):
+                  miss = [x for x in s.req if x not in s.have]
+                  if miss: raise RuntimeError(f"column does not exist: {miss[0]}")
+                  return {"data": []}
+          class FakeClient:
+              def __init__(s, m): s.m = m
+              def schema(s, _): return s
+              def table(s, t): return FakeQ(s.m.get(t, set()))
+
+          full = {t: set(v) for t, v in c._REQUIRED_COLUMNS.items()}
+          c.assert_db_schema_ready(FakeClient(full))          # 列齐 → 必须静默通过
+
+          broken = {t: set(v) for t, v in c._REQUIRED_COLUMNS.items()}
+          broken["notes"] -= {"last_seen_at", "last_seen_run_id"}
+          try:
+              c.assert_db_schema_ready(FakeClient(broken))
+              raise SystemExit("✗ 空转: 缺列没被拦 —— 这正是 4 天没人发现的那个场景")
+          except RuntimeError as e:
+              msg = str(e)
+              # 两个列都要点名: PostgREST 一次只报第一个, 逐列复探就是为了这个
+              assert "last_seen_at" in msg and "last_seen_run_id" in msg, \
+                  f"没把缺的列点全(只报第一个 = 一次修一个, 要来回好几轮): {msg}"
+              assert "notes_v1_9_last_seen_reconcile.sql" in msg, "没说清该跑哪个迁移文件"
+          print("  ✓ 复现 2026-08-27 事故 → 被拦, 两列都点名 + 指出迁移文件")
+
+          # ③ 未知来源的缺列不能静默 —— 要落回 README Step 0 提示
+          b2 = {t: set(v) for t, v in c._REQUIRED_COLUMNS.items()}
+          b2["comments"] -= {"comment_role"}
+          try:
+              c.assert_db_schema_ready(FakeClient(b2)); raise SystemExit("✗ 空转")
+          except RuntimeError as e:
+              assert "comments.comment_role" in str(e) and "Step 0" in str(e)
+          print("  ✓ 不在迁移映射里的缺列: 仍点名 + 落回 Step 0 提示")
+
+          # ④ 闸必须真的接在 sync 的 main() 上, 且在【写入之前】——
+          #    只写函数不接线, 是这类护栏最常见的死法。
+          import sync_feishu_notes_to_truth_vault as s
+          src = inspect.getsource(s.main)
+          assert "assert_db_schema_ready" in src, "sync main() 没调用这道闸"
+          assert src.index("assert_db_schema_ready") < src.index("ensure_project_exists"), \
+              "闸必须在第一次写库(ensure_project_exists)之前"
+          print("  ✓ 已接在 sync main() 里, 且排在第一次写库之前")
+          print("\n库结构前置闸: all checks passed")
+          PY
       - name: tier 规则列序:短针不许遮死长针 (2026-08-28)
         working-directory: scripts
         run: |

@@ -184,6 +184,18 @@ jobs:
             p=$(basename "$f" .yaml)
             [ "$p" = "_template" ] && continue
             [ -n "$PROJECT_FILTER" ] && [ "$p" != "$PROJECT_FILTER" ] && continue
+            # ── on_demand 闸 (D-047) ──
+            # 入库那一步早就跳过 on_demand 项目了(防没验证过的表被自动灌), 但这一步
+            # 以前是裸遍历 —— 于是笔记一落库, 当晚就被 LLM 按【还没拍板】的方向拆解标注,
+            # 而标注按 essence_annotated_at IS NULL 取, 标完即固化、顺着经验卡 →
+            # 三生六部 → autowriter 传下去。那道闸的本意只实现了一半。
+            # 判据走 skip_on_cron.py(内部就是入库那步用的同一个函数), 不在这儿重写一遍。
+            # exit 2 = 判不了 → 照跑(静默少干活比多干一次更难查)。
+            python skip_on_cron.py "$p"; rc=$?
+            if [ "$rc" = "0" ]; then
+              echo "  ⏭  $p sync_interval=on_demand → 夜间 cron 跳过 essence(与入库同一道闸, D-047)"
+              continue
+            fi
             echo "─── essence annotate (worker) · project=$p · 每日上限=$WORKER_LIMIT · 每请求≤$ESS_REQ_MAX ───"
             budget=$WORKER_LIMIT
             ok_batches=0   # 本项目本轮成功的子批数(>0 = 本轮已有进展)
@@ -259,47 +271,92 @@ jobs:
             # 20s+40s 骑不过去, 白等; 直接归瞬时、下轮再来才是设计的那条路。
             case "$2" in 409|502|503|504) echo transient ;; *) echo systemic ;; esac
           }
-          BODY="{\"limit\":${CUR_LIMIT},\"dry_run\":$DRY"
-          [ -n "$PROJECT_FILTER" ] && BODY="$BODY,\"project\":\"$PROJECT_FILTER\""
-          BODY="$BODY}"
-          echo "─── curate (worker) ───"
-          # 捕获 curl 退出码(不再一律 code=000 掩盖)—— 区分超时 vs 配置/连通错(PR#65 review)。
-          # PR#86 review: curate 是这跑里【唯一/最后】碰 worker 的步骤(稳态下 essence 无待办、不发 curl,
-          # 不校验 URL)→ 不能把"连不上"一律降级,否则坏 WORKER_URL 静默漏过。改为【连接级失败退避重试】:
-          # Railway worker 临时挂/冷启/重启 → 重试骑过(变绿);真坏(DNS拼错/拒连/URL错)三次都失败 → 仍判红。
-          for attempt in 1 2 3; do
-            if code=$(curl -sS -w '%{http_code}' -o /tmp/cur.json --max-time 900 \
-              -X POST "${WORKER_URL%/}/curate" \
-              -H "X-Worker-Key: $WORKER_API_KEY" -H 'content-type: application/json' \
-              -d "$BODY"); then
-              curl_rc=0
-            else
-              curl_rc=$?; code=000   # curl 失败时 http_code 不可靠, 记 000; 真因看 curl_rc
+          # ── on_demand 闸 (D-047 第二张嘴) ──
+          # curate 以前是【全局单次调用】: fetch_uncurated_cards() 只按 is_curated=false 取,
+          # 不看 sync_interval; 而它的候选视图 v_flywheel_lesson_cards 的 WHERE 只有
+          # tier ∈ (爆,大爆,参考) + tier_source ≠ 数值推断 + publish_time NOT NULL ——
+          # 【不要求先有 essence】。所以 essence 那道闸挡不住它: 没验证过的表一落库,
+          # 它的爆款当晚就被策展成经验卡进书架 → 三生六部 → autowriter。
+          #
+          # 判据不能塞进 curate_flywheel_lessons.py —— 那个脚本跑在 Railway worker 上,
+          # 而 TV_SCHEDULED_RUN 只存在于本 job 的环境里, 塞进去会永远判成"非 cron"。
+          # /curate 又只收单个 project(没有"排除某些"), 所以只能在调用方按项目循环。
+          #
+          # ⚠️ 预算【仍是全局共享的 CUR_LIMIT】, 不是每个项目各给一份 ——
+          # 加闸门不该顺手把每晚的 LLM 账单乘以项目数。15 这个数原本兼着两个作用:
+          # 「每日够用」+「单请求 >~15 张会撞 worker 5min 超时」; 共享预算两个都保住。
+          # 待办没做完是幂等的(is_curated=false), 下轮 cron 续 —— 与改动前同一条路。
+          remaining=$CUR_LIMIT
+          fail_count=0
+          done_any=0
+          deferred=""
+          for f in ../mappings/*.yaml; do
+            p=$(basename "$f" .yaml)
+            [ "$p" = "_template" ] && continue
+            [ -n "$PROJECT_FILTER" ] && [ "$p" != "$PROJECT_FILTER" ] && continue
+            python skip_on_cron.py "$p"; rc=$?
+            if [ "$rc" = "0" ]; then
+              echo "  ⏭  $p sync_interval=on_demand → 夜间 cron 跳过 curate(与入库/essence 同一道闸)"
+              continue
             fi
-            # || echo false: 防 502/超时的非 JSON body 让 jq(退出码 5)在 bash -e 下崩整步。
-            ok=$(jq -r '.ok // false' /tmp/cur.json 2>/dev/null || echo false)
-            { [ "$code" = "200" ] && [ "$ok" = "true" ]; } && break
-            [ "$attempt" -ge 3 ] && break
-            # 仅对【连接级 / 网关 5xx】退避重试(够到但中断 6/7 临时不可达 28/52/56/18 + 502/503/504);
-            # 4xx/200+ok=false 等是确定性结果, 立即往下判, 不浪费重试。
-            case "$curl_rc" in 6|7|28|52|56|18) echo "  curate worker 不可达(curl_rc=$curl_rc), 第 ${attempt}/3 次退避重试…"; sleep $((attempt * 20)); continue ;; esac
-            case "$code" in 502|503|504) echo "  curate worker 网关 $code, 第 ${attempt}/3 次退避重试…"; sleep $((attempt * 20)); continue ;; esac
-            break
-          done
-          echo "HTTP $code · curl_rc=$curl_rc · ok=$ok · returncode=$(jq -r '.returncode // "?"' /tmp/cur.json 2>/dev/null || echo '?')"
-          jq -r '.stdout_tail // ""' /tmp/cur.json 2>/dev/null | tail -8
-          if [ "$code" != "200" ] || [ "$ok" != "true" ]; then
+            # 预算耗尽: 不静默截断 —— 明说还剩谁没跑, 否则日志看着像"全都策展过了"。
+            if [ "$remaining" -le 0 ]; then deferred="$deferred $p"; continue; fi
+            BODY="{\"limit\":${remaining},\"dry_run\":$DRY,\"project\":\"$p\"}"
+            echo "─── curate (worker) · project=$p · 本轮剩余预算=$remaining ───"
+            # 捕获 curl 退出码(不再一律 code=000 掩盖)—— 区分超时 vs 配置/连通错(PR#65 review)。
+            # PR#86 review: curate 是这跑里【唯一/最后】碰 worker 的步骤(稳态下 essence 无待办、不发 curl,
+            # 不校验 URL)→ 不能把"连不上"一律降级,否则坏 WORKER_URL 静默漏过。改为【连接级失败退避重试】:
+            # Railway worker 临时挂/冷启/重启 → 重试骑过(变绿);真坏(DNS拼错/拒连/URL错)三次都失败 → 仍判红。
+            for attempt in 1 2 3; do
+              if code=$(curl -sS -w '%{http_code}' -o /tmp/cur.json --max-time 900 \
+                -X POST "${WORKER_URL%/}/curate" \
+                -H "X-Worker-Key: $WORKER_API_KEY" -H 'content-type: application/json' \
+                -d "$BODY"); then
+                curl_rc=0
+              else
+                curl_rc=$?; code=000   # curl 失败时 http_code 不可靠, 记 000; 真因看 curl_rc
+              fi
+              # || echo false: 防 502/超时的非 JSON body 让 jq(退出码 5)在 bash -e 下崩整步。
+              ok=$(jq -r '.ok // false' /tmp/cur.json 2>/dev/null || echo false)
+              { [ "$code" = "200" ] && [ "$ok" = "true" ]; } && break
+              [ "$attempt" -ge 3 ] && break
+              # 仅对【连接级 / 网关 5xx】退避重试(够到但中断 6/7 临时不可达 28/52/56/18 + 502/503/504);
+              # 4xx/200+ok=false 等是确定性结果, 立即往下判, 不浪费重试。
+              case "$curl_rc" in 6|7|28|52|56|18) echo "  curate worker 不可达(curl_rc=$curl_rc), 第 ${attempt}/3 次退避重试…"; sleep $((attempt * 20)); continue ;; esac
+              case "$code" in 502|503|504) echo "  curate worker 网关 $code, 第 ${attempt}/3 次退避重试…"; sleep $((attempt * 20)); continue ;; esac
+              break
+            done
+            echo "HTTP $code · curl_rc=$curl_rc · ok=$ok · returncode=$(jq -r '.returncode // "?"' /tmp/cur.json 2>/dev/null || echo '?')"
+            jq -r '.stdout_tail // ""' /tmp/cur.json 2>/dev/null | tail -8
+            if [ "$code" = "200" ] && [ "$ok" = "true" ]; then
+              done_any=1
+              # 扣掉这个项目真策展了几张(worker 回的 Done: {"ok": N,...});取不到就保守按 0 扣,
+              # 宁可多跑一轮也别把预算算没了导致后面的项目被静默跳过。
+              # 只认 `"ok": <数字>`(curate_flywheel_lessons 的 Done 行)。要求至少一位数字 ——
+              # 否则 `"ok": true` 这种会匹配出空串, $((remaining - )) 直接语法错。
+              n=$(jq -r '.stdout_tail // ""' /tmp/cur.json 2>/dev/null \
+                  | grep -o '"ok": *[0-9][0-9]*' | tail -1 | grep -o '[0-9][0-9]*$' || true)
+              [ -n "$n" ] && remaining=$((remaining - n))
+              continue
+            fi
             jq -r '.stderr_tail // ""' /tmp/cur.json 2>/dev/null | tail -8
             # curate 是 best-effort 富集、幂等(is_curated=false 下轮续)。同 essence 的容忍:
             # - 瞬时(curl 超时/边缘掐断 · 502/503/504 网关)= Railway 偶发 → 只告警不拖红
             #   (NUC_1 实测: essence 跑满后紧接的 curate 撞 HTTP 000, 此前是它 exit 1 拖红整 run)。
             # - 系统性(curl DNS/拒连/URL错 · 4xx 鉴权 · 200+ok=false=worker 真跑了但全军覆没 #56)→ 判红。
+            # 改成循环之后: 一个项目挂了【不带走其余项目】(与 essence 段同构), 但仍会在收尾判红。
             if [ "$(worker_fail_kind "$curl_rc" "$code")" = "transient" ]; then
-              echo "::warning::curate 瞬时失败(curl_rc=$curl_rc HTTP $code ok=$ok); 幂等下轮 cron 续, 不拖红。"
+              echo "::warning::curate $p 瞬时失败(curl_rc=$curl_rc HTTP $code ok=$ok); 幂等下轮 cron 续, 不拖红。"
             else
-              echo "::error::curate failed (curl_rc=$curl_rc HTTP $code ok=$ok) —— 配置/连通/鉴权 或 全军覆没, 需排查。"
-              exit 1
+              echo "::error::curate $p 失败(curl_rc=$curl_rc HTTP $code ok=$ok) —— 配置/连通/鉴权 或 全军覆没, 需排查。"
+              fail_count=$((fail_count + 1))
             fi
+          done
+          [ -n "$deferred" ] && echo "::notice::curate 本轮预算($CUR_LIMIT)用完, 这些项目留到下轮 cron:$deferred"
+          [ "$done_any" = "0" ] && [ "$fail_count" = "0" ] && echo "  (本轮没有项目需要 curate 或全被 on_demand 闸跳过)"
+          if [ "$fail_count" -gt 0 ]; then
+            echo "::error::curate failed for $fail_count project(s)"
+            exit 1
           fi
 
       - name: TV 爆款 → sanshengliubu.reference_samples (通道 1)
