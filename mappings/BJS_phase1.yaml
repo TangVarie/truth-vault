@@ -20,16 +20,26 @@ field_mapping:
   随贴评论: _comment_text
   蓝词字段: hit_blue_keywords
 
+# 定稿 2026-08-30 —— 依据是【入库后 43 行全量文案】, 不再是起草时的 30 行样本。
+# 起草稿按方向名推的两个值都不对, 已按实际文案改:
+#   · 「好物分享-产品贴」不是直给推荐 —— 随机抽 7 条标题: 给娃开学备货 / 婆婆非要炖鱼汤
+#     僵持十分钟 / 二手群收闲置算明白一笔账 / 网课护眼备货 / 澳洲保健品还能买吗 …
+#     几乎都是【先起一个家庭生活场景, 再落到选购判断】→ 场景植入。
+#   · 「提问贴」不是提问求助 —— 6 条全是【关系冲突叙事】: 退了小区群 / 跟亲戚翻脸 /
+#     被老同学笑死 / 跟老公冷战三天 / 老公买的瓶瓶罐罐吃灰 / 半夜给娃喂药。
+#     没有一条在提问, 钩子都是人际摩擦 → 情感叙事。
+# 人群从「通用」改「宝妈」: 43 行文案里娃/老大老二/婆婆/老公/网课/开学反复出现,
+# 叙述者身份是确定的, 不是 D-010 意义上的"臆造"。
 direction_decomposition:
   "好物分享-产品贴":
-    content_format: 直给推荐                      # [待确认]
-    target_audience: ["通用"]                     # [待确认]
-    user_pain_point: 儿童DHA+叶黄素营养补充需求   # [待确认]
-  
+    content_format: 场景植入                      # 家庭场景切入 + 成分/选购判断落点
+    target_audience: ["宝妈"]
+    user_pain_point: 儿童DHA+叶黄素选购中怕踩坑(成分表看不懂/怕交智商税/怕买到杂牌)
+
   "提问贴":
-    content_format: 提问求助                      # [待确认]
-    target_audience: ["通用"]                     # [待确认]
-    user_pain_point: 儿童营养品选购决策困惑       # [待确认]
+    content_format: 情感叙事                      # 关系冲突(婆婆/老公/亲戚/同学)作钩子, 落到营养认知
+    target_audience: ["宝妈"]
+    user_pain_point: 家人在儿童营养上认知不一致, 沟通受挫
 
 tier_extraction:
   source: 状态字段
@@ -55,9 +65,14 @@ tier_extraction:
       tier: 未知
     - default: null
 
+# 定稿 2026-08-30: 这两个数【现在不生效, 也不该现在定】——
+# 本表 field_mapping 里没有 曝光/阅读/互动 任何一列, 入库 43 行 interactions 全 null,
+# 而数值推断只在【tier 源为空 且 有互动数】时兜底。实测 43 行 tier 100% 来自「流量状态」
+# (42 无水花 + 1「无水花/爆贴」), 数值推断一次都没触发过。
+# 保留一个保健品档位的占位值(与 SPX 同量级), 等飞书补上指标列、真有数据了再按分布校准。
 tier_thresholds:
-  爆: 100                                         # [待确认]
-  大爆: 500                                       # [待确认]
+  爆: 100                                         # 占位, 不生效(无指标列)
+  大爆: 500                                       # 占位, 不生效
 
 compliance:
   base_template: 保健品
@@ -84,9 +99,11 @@ compliance:
   #   secondary: 藻源DHA / Informed Sport认证(← 串台, 运动营养反兴奋剂认证) / AMAG 9298
   # 其中「百健士」「儿童藻油」是从【文案样本】读出来的, 相对可信;
   # 「SPORTSIX」「Informed Sport认证」明确来自那列串台的选项, 是错的。
+  # 2026-08-30 实跑后复核: 43 行入库, hit_blue_keywords 仍然 0 行有值 ——
+  # 与起草时判断一致, 留空的前提没有变。补的时机仍是"运营换完选项并开始填值"。
   blue_keyword_strategy:
-    primary: []                                   # [待确认] 见上: 等飞书蓝词列有值再填
-    secondary: []                                 # [待确认]
+    primary: []                                   # 空是【结论】不是待办: 见上, 没有可信来源
+    secondary: []
     avoid: []
 
 project_specific_fields_to_raw_extra:
