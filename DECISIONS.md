@@ -1676,3 +1676,58 @@ BJS 这张表上两个缺陷刚好叠在一起，后果是最坏的那种：
   真要改 tier 本身的取值，是策略口径问题，留给策略 lead。
 - BJS_phase1 的草稿仍需在 PR 上把那两条规则**调序**后再 merge：lint 会挡住它进 sync，
   但草稿分支上的 yaml 尚未被 lint 覆盖（草稿还没进 `mappings/`）。
+
+---
+
+## D-046 · 写库的列必须先落库：迁移没跑 = 每一条 upsert 都失败，且要 4 天才有人看见
+
+**日期**: 2026-08-30
+
+**What**: 把 `schemas/notes_v1_9_last_seen_reconcile.sql` 应用到生产 Supabase
+（`truth_vault.notes` 加 `last_seen_at` / `last_seen_run_id` + 索引）。
+
+**故障**: Daily TV sync **连红 4 天**（run #133 08-27 → #136 08-30），每次
+`feishu_sync` 步骤挂在 RIO_phase1 / WTG_phase1 上：
+
+```
+PGRST204: Could not find the 'last_seen_at' column of 'notes' in the schema cache
+```
+
+**根因不是代码，是「合并 ≠ 部署」**：PR #109（COR-011 对账，08-27 合并）让
+`transform_row` 在**每一条** note upsert 里带上 `last_seen_at` / `last_seen_run_id`，
+但那两列所在的迁移 `notes_v1_9` **从来没在生产库上跑过**。第一个变红的 run
+（#133）就是 #109 合并后的第一次 cron —— 时间线与报错列名双向吻合。
+
+`scripts/README.md` 早就把这条写成硬前置，原文：
+
+> ⚠️ **这一条是硬前置, 不是可选**: 没跑它的库上，**每一条 note 的 upsert 都会失败**
+> （column does not exist），而不是降级。
+
+**所以文档没缺，缺的是【强制】。** 这是本仓第二次栽在同一类问题上 ——
+2026-08-28 接表时六张表全报 `missing required field: app_token`，
+根因是 Railway 上还跑着旧版 `app.py`（D-044 的部署提醒段）。两次都是
+「代码进了 main，承载它的运行时没跟上」，而两次都**没有任何症状**能提前暴露：
+`/health` 照常 200，CI 照常绿，只有真跑起来才炸。
+
+**为什么这次的表现形式特别坏**：
+
+- 不是整步一次性失败，是**逐行**失败 → 日志里几百条一模一样的 traceback，
+  真正的一行信息（缺哪个列）被淹在里面；
+- 失败只发生在**有新行要写**的项目上。当天 16 个项目里只有 RIO / WTG 命中，
+  其余 14 个"跑过了"—— 于是整轮看起来像"个别项目有问题"，而不是"库结构不对"；
+- `feishu_sync` 之后的步骤（comments / essence / curate / ssll）**全绿**，
+  汇总行只有一句 `failed steps: feishu_sync`，很容易被读成偶发。
+
+**Rejected**:
+
+- ❌ **在 sync 里 try/except 掉这个列**（缺列就不写）。那正是 COR-011 要避免的：
+  对账证据一旦可以静默缺失，`last_seen_at IS NULL` 就同时意味着"还没同步过"和
+  "库没升级"，而这两者的处置完全相反。宁可炸。
+- ❌ **只把 README 写得更醒目**。它已经写得够醒目了（三行 ⚠️ + 空库实测记录），
+  仍然漏了 —— 靠人读文档记得跑迁移，不是护栏。
+
+**Implications / 待办**（未做，需拍板）:
+
+- 缺一道 **fail-fast 的 schema 前置检查**：sync 开跑前核一次"本脚本会写的列在库里
+  是否都存在"，缺了就在第一步用一句话报出来（含要跑哪个迁移文件），
+  而不是让几百行 upsert 各自撞同一堵墙。把「4 天 × 逐行 traceback」压成「5 秒 × 一行」。

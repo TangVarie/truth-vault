@@ -30,9 +30,21 @@ category: OTC药
 #   · sync_truth_vault_baokuan_to_sanshengliubu 的 _PLATFORM_EN_TO_SSLL 里【已有】
 #     "douyin" → "抖音"(未知平台那里是直接 raise 的, 所以有没有这行是硬判据)
 #   · parse_audience_analysis 是按文本格式解析(；分段 ：分键值), 与平台无关 →「观众分析」照常解析
-# ⚠️ 唯一没核到的一环: 三生六部那个仓的 list_reference_packs 认不认「抖音」——
-#   那是另一个 repo, 本次没有访问权, 没核。本表 sync_interval=on_demand 不会自动跑,
-#   翻 daily 之前请先在那边确认一次(_platform_for_ssll 的 docstring 第 2 步说的就是这件事)。
+# 三生六部那一环已核(2026-08-30, 由用户在 ssll 仓核实):
+#   list_reference_packs 对 platform 是【纯字符串精确匹配】—— 一句 eq("platform", x),
+#   裸 TEXT 列, 没有枚举/白名单/大小写或中英别名折叠。库里存的是中文「抖音」。
+#   → 【写入侧安全】: _platform_for_ssll 把 douyin 翻成「抖音」再写, 精确命中。这条路通。
+#
+# ⚠️ 但那边【读取侧】有个既有隐患, 而本表会是第一个让它显形的项目:
+#   ssll 的 vibe loop 取样本时把 prompt_matrix 格子里的 platform 原样透传给
+#   list_reference_packs, 中间零转换; 而格子的平台名上游【两套写法并存】——
+#   crown_prince.md 的 schema 示例用英文 slug ["xiaohongshu","douyin"], 中书省
+#   有时输出中文。格子若写成 "douyin", 查库就是 eq("platform","douyin"), 对着库里的
+#   「抖音」行 0 命中 —— 不报错, 静默退回静态兜底样本, 只在日志留一条 R-022 警告
+#   (platforms_missed 里出现英文 slug、platforms_hit 为空 = 就是这个)。
+#   在本表之前库里没有抖音行, 写 "douyin" 查 0 条本来就"正常", 坑不显形;
+#   本表灌进抖音数据之后, 同样查 0 条就变成【真的漏掉了本可用的样本】。
+#   这是 ssll 仓的事(TV 这边改不了), 翻 daily 时值得同步提醒那边对齐平台名写法。
 platform: douyin                 # 样本链接全为 v.douyin.com → 抖音,非小红书
 schema_family: A                 # A 家族(有流量状态/笔记状态/数据回收情况/观众分析);
                                  # ⚠️ schema 演化标注:方向拆两列(人群方向+内容方向),
