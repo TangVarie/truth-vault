@@ -1805,7 +1805,7 @@ PGRST204: Could not find the 'last_seen_at' column of 'notes' in the schema cach
 而且是**静默**绕过 —— 日志里只会看到一行 `✅ essence 已全部标完`。
 
 这次接六张表时撞上：六张全是 `on_demand`、共 120 处 `[待确认]`，
-只要跑一次实跑 sync，第二天早上那 120 处провisional 判断就进飞轮了。
+只要跑一次实跑 sync，第二天早上那 120 处 provisional 判断就进飞轮了。
 
 **判据必须只有一份**：essence 那步没有在 bash 里重写一遍 `grep on_demand`，
 而是调 `skip_on_cron.py`，它内部就是入库那步用的同一个函数。两份判据漂开的表现是
@@ -1856,3 +1856,43 @@ PGRST204: Could not find the 'last_seen_at' column of 'notes' in the schema cach
 注释里也会提到它，拿它比位置会把守卫变成在考注释怎么写 —— 这条是写守卫时它自己
 先把我拦下来的）、按项目循环、预算共享递减、截断不静默、逐项目隔离。
 已反证：把 curate 的闸拆掉，守卫变红。
+
+---
+
+### 第三张嘴：通道1（TV 爆款 → 三生六部）—— 唯一跨库的那张（2026-08-30，同日补）
+
+补完 essence 和 curate、正要跑六张表实跑时发现的：`daily-sync.yml` 的
+**通道1** 那一步（`sync_truth_vault_baokuan_to_sanshengliubu.py`）
+**连项目循环都没有** —— 一句全局调用，而 `fetch_pending_baokuan()` 只按
+`tier ∈ (爆,大爆,参考)` + `tier_source ≠ 数值推断` + 12 个月内 + `synced_to_ssll_at IS NULL`
+取，**`sync_interval` 全程不出现**。
+
+**为什么这张最要紧**：前两张的后果都还留在 `truth_vault` 自己家里（essence 标注、
+经验卡都在本库，改 mapping 后还能重跑）。这一张把内容写进**另一个 Supabase** 的
+`public.reference_samples` —— 三生六部的高权重检索池，直接喂写作引擎。
+而 `build_reference_sample()` 带过去的字段里就有 `target_audience` 和方向拆解，
+**正是那 120 处 `[待确认]` 本身**。推过去就追不回来：本仓唯一的自愈回收路径
+`retract_stale_synthetic_from_ssll` 只认 synthetic，不认"方向拆错了"。
+
+实测代价：六张表 preflight 合计 **1025 行会入库、27 条燃料（爆+大爆）**。
+不补这道闸，实跑当晚这 27 条就带着 provisional 判断进了写作引擎。
+
+**这次闸装在脚本里，不是 bash 循环里** —— 与 curate 的结论**相反**，因为前提不同：
+这个脚本跑在 **GitHub runner** 上（不像 curate 在 Railway worker 上），
+`TV_SCHEDULED_RUN` 拿得到。判据仍是 `_common.skip_on_demand_on_cron` 那一份，
+只是调用点在 Python 里。**判据在哪儿跑，决定闸装在哪儿** —— 这是三张嘴各自形态
+不同的唯一原因，不是风格差异。
+
+**回收不受闸管**：`retract_stale_synthetic_from_ssll` 排在闸之前、不带过滤。
+闸挡的是"往外推"，不是"把推错的拉回来" —— 后者任何时候都该跑。
+CI 守卫把这个顺序钉死了。
+
+**跳过要点名**：拦下多少条、分别属于哪些项目，`logger.info` 打出来。
+静默过滤会让日志看着像"这些项目本来就没爆款"。
+
+**判不了照推**：项目没有 mapping 文件 / yaml 读不出来 → 照推，与 `skip_on_cron.py`
+的 exit 2 同取向。
+
+**守卫**：CI 的 D-047 守卫加第 ⑥ 段。已反证三种回归各被不同断言抓住 ——
+① 闸函数留着但 `main()` 不调（"只写工具不接线"，这类护栏最常见的死法）；
+② 闸装到回收之前，把回收也一起挡了；③ 判不了时取向反了（跳过而非照推）。
