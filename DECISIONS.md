@@ -1821,7 +1821,7 @@ PGRST204: Could not find the 'last_seen_at' column of 'notes' in the schema cach
 - ❌ **让 `count_unannotated_essence.py` 对 on_demand 项目返回 0**。那会让日志打出
   `✅ essence 已全部标完` —— 一句**假话**。跳过就要说跳过。
 
-**遗留（未做，需拍板）—— `curate` 是同一个泄漏口的另一张嘴**:
+**`curate` 是同一个泄漏口的另一张嘴 —— 已一并补（2026-08-30，策略 lead 选 A）**:
 
 `curate_flywheel_lessons.py` 是**全局单次调用**，`fetch_uncurated_cards()` 只按
 `is_curated=false`（+ 可选 `project`）取，不看 `sync_interval`。而它的候选视图
@@ -1829,12 +1829,30 @@ PGRST204: Could not find the 'last_seen_at' column of 'notes' in the schema cach
 `tier ∈ (爆,大爆,参考)` + `tier_source ≠ 数值推断` + `publish_time IS NOT NULL`
 —— **完全不要求先有 essence**。所以本次补的 essence 闸**挡不住 curate**。
 
-没有一并修的原因（不是忘了）:
+**为什么只能在调用方修**：curate 的 LLM 调用跑在 **Railway worker** 上，而
+`TV_SCHEDULED_RUN` 只存在于 GitHub Actions 的 job 环境里 —— 把判断塞进
+`curate_flywheel_lessons.py`，它在 worker 上会**永远判成"非 cron"**，等于没加。
+改 worker 协议（给 `/curate` 加个 `scheduled` 字段）则是又一次「合并 ≠ 部署」的风险，
+而这一轮已经被它咬过两次（Railway 旧版 `app.py`、迁移没落库）。
+`/curate` 只收单个 `project`、没有"排除某些"，所以调用方只剩**按项目循环**一条路。
 
-1. curate 的 LLM 调用跑在 **Railway worker** 上，而 `TV_SCHEDULED_RUN` 只存在于
-   GitHub Actions 的 job 环境里 —— 把判断塞进脚本，它在 worker 上永远判成"非 cron"。
-2. 从调用方修只有一条路：把那次全局调用拆成**按项目循环**（`/curate` 只收单个
-   `project`，没有"排除某些"）。那要重排一整块带退避重试的 bash，还会把每晚的
-   LLM 预算从「一次 15 张」变成「N × 15 张」—— 是**成本形状的改变**，该由人定。
-3. 改 worker 协议则意味着又一次「合并 ≠ 部署」的风险，而这一轮已经被它咬过两次
-   （Railway 旧版 `app.py`、迁移没落库）。
+**预算仍然全局共享，不是每个项目各给一份**（这一条是本次实现里最要紧的取舍）：
+
+`CUR_LIMIT`（15）原本兼着两个作用 —— 「每日够用」+「单请求 >~15 张会撞 worker
+5min 超时」。天真的循环写法会变成 `N × 15`，把每晚的 LLM 账单乘以项目数；
+而共享一个 `remaining`、按每个项目**实际策展数**递减，两个作用都保住，
+**总量与改动前一致**。待办没做完是幂等的（`is_curated=false`），下轮 cron 续 ——
+与改动前同一条路。
+
+**截断不许静默**：预算用完时把**剩下哪些项目**点名进 `::notice::`。
+否则日志看着就像"全都策展过了" —— 而这正是本仓反复栽的那类静默。
+实测 16 个项目 / 预算 15 / 每个吃 2 → 跑 8 + 推迟 8 = 16，一个都没丢。
+
+**逐项目隔离**：一个项目系统性失败不再带走其余项目（与 essence 段同构），
+但仍 `fail_count++`，收尾判红。
+
+**守卫**：CI 那道 D-047 守卫扩到 curate —— 断言已接闸、闸在**真正发请求那一行**之前
+（判据钉在 `-X POST "${WORKER_URL%/}/curate"` 上，不是任何出现 `/curate` 的地方：
+注释里也会提到它，拿它比位置会把守卫变成在考注释怎么写 —— 这条是写守卫时它自己
+先把我拦下来的）、按项目循环、预算共享递减、截断不静默、逐项目隔离。
+已反证：把 curate 的闸拆掉，守卫变红。

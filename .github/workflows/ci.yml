@@ -1205,6 +1205,31 @@ jobs:
           assert body.index("skip_on_cron.py") < body.index("annotate-essence"), \
               "闸必须在真正发起标注请求之前"
           print("  ✓ daily-sync 的 essence 步骤已接闸, 且在发请求之前")
+
+          # ⑤ curate 是同一泄漏口的【第二张嘴】—— 它的候选视图 v_flywheel_lesson_cards
+          #    不要求 essence(WHERE 只有 tier/tier_source/publish_time), 所以 essence
+          #    那道闸挡不住它。只挡一张嘴比不挡更危险: 会让人以为已经挡住了。
+          cur = [s for s in steps if "/curate" in s["run"]]
+          assert cur, "找不到 curate 那一步"
+          cbody = cur[0]["run"]
+          assert "skip_on_cron.py" in cbody, "curate 步骤没接 on_demand 闸(D-047 回归)"
+          # 判据钉在【真正发请求那一行】上, 不是任何出现 "/curate" 的地方 ——
+          # 注释里也会提到 /curate, 拿它比位置会把守卫变成在考注释怎么写。
+          POST = '-X POST "${WORKER_URL%/}/curate"'
+          assert POST in cbody, "找不到 curate 的 curl 请求行(改了写法就同步改这条守卫)"
+          assert cbody.index("skip_on_cron.py") < cbody.index(POST), \
+              "闸必须在真正发起 curate 请求之前"
+          # 必须是【按项目循环】: 全局单次调用没法排除某些项目(/curate 只收单个 project)
+          assert 'for f in ../mappings/*.yaml' in cbody, "curate 必须按项目循环, 否则闸无处可插"
+          assert '\\"project\\":\\"$p\\"' in cbody, "循环里必须把当前项目传给 /curate"
+          # 预算必须【共享】而不是每项目各给一份 —— 加闸门不该顺手把账单乘以项目数
+          assert "remaining=$CUR_LIMIT" in cbody, "curate 预算要全局共享(remaining), 不是每项目各 CUR_LIMIT"
+          assert "remaining - n" in cbody or "remaining-n" in cbody, "预算没有随实际策展数递减"
+          # 预算截断不许静默 —— 必须说清谁被推迟到下轮
+          assert "deferred" in cbody and "留到下轮" in cbody, "预算用完要点名哪些项目被推迟, 不许静默截断"
+          # 一个项目挂了不该带走其余项目, 但收尾仍要判红
+          assert "fail_count" in cbody and "exit 1" in cbody, "curate 失败要计数并在收尾判红"
+          print("  ✓ curate 步骤: 已接闸 / 按项目循环 / 预算共享递减 / 截断不静默 / 逐项目隔离")
           print("\non_demand 闸覆盖: all checks passed")
           PY
       - name: 库结构前置闸:代码写的列必须先落库 (D-046, 2026-08-27 实测连红 4 天)
