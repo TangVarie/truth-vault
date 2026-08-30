@@ -127,6 +127,149 @@ def get_supabase_client() -> Client:
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# 库结构前置检查 (D-046)
+# ─────────────────────────────────────────────────────────────────────────
+#
+# 治的是「合并 ≠ 部署」: 代码里新写一个列, 而承载它的迁移没在生产库跑过。
+#
+# 2026-08-27 真出过一次: PR #109 让每条 note upsert 都带 notes.last_seen_at,
+# 迁移 notes_v1_9 却从没跑 → **每一条 upsert 都 PGRST204 失败**, 而且是
+# 【逐行】失败 —— 几百条一模一样的 traceback 把唯一有用那行信息淹了; 又只在
+# "有新行要写"的项目上命中(当天 16 个项目只炸 2 个), 于是整轮看着像个别项目
+# 抽风。daily sync 连红 4 天才被发现。
+#
+# 所以这道闸的价值不在"能发现", 而在【把 4 天 × 逐行 traceback 压成 5 秒 × 一行】。
+#
+# 探测手法: 拿这些列做一次 `select ... limit 0`。列不存在时 PostgREST 直接回
+# 42703 "column X does not exist" —— 这不是推测, 正是那次事故日志里对账查询
+# 打出来的那条 warning。比读 information_schema 省事(PostgREST 不暴露它),
+# 也不用为此建 RPC; 全程只读, limit 0 不取数据。
+# 成功路径每张表一次往返(~9 次, 亚秒级), 只有失败时才逐列再探一遍点名。
+
+# 本仓 sync 链路会写的列。来源: 2026-08-30 用 workflow 把 7 个写库脚本逐个盘了一遍,
+# 再拿结果对生产库 information_schema 做确定性核对(当时 128 列全部存在)。
+# 新增写入列时【必须】同步加到这里 —— 否则这道闸就漏掉了它, 事故会原样重演。
+_REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
+    "notes": (
+        "note_id", "project_id", "feishu_record_id", "platform",
+        "raw_content", "publish_url", "publish_time", "account_id",
+        "tier", "tier_source", "intent", "title",
+        "impressions", "reads", "interactions",
+        "content_format", "target_audience", "user_pain_point", "product_focus",
+        "direction_subtype", "hit_blue_keywords", "target_blue_keywords",
+        "pinned_comment", "raw_extra",
+        "data_quality_status", "data_quality_flags",
+        "actual_audience_data", "audience_actual_synced_at",
+        "last_seen_at", "last_seen_run_id",
+        "essence_annotated_at", "essence_annotated_by",
+        "essence_annotation_mode", "essence_vocab_version",
+        "emotional_valence", "emotional_lever", "emotional_intensity",
+        "human_truth_archetype", "inferred_audience_profile", "trend_dependencies",
+        "source_autowriter_item_id", "source_autowriter_version_id",
+        "synced_autowriter_item_id", "synced_to_aw_at",
+        # ssll 那对孪生列 —— sync_truth_vault_baokuan_to_sanshengliubu.mark_synced()
+        # 每条推成功的爆款都写, retract 分支再置 NULL。手工列清单时漏过一次
+        # (只记了 autowriter 那对), 靠 2026-08-30 那轮对抗盘点抓回来。
+        "synced_to_ssll_at", "synced_ssll_reference_sample_id",
+    ),
+    "accounts": ("account_id", "platform", "owner_type", "first_seen_at"),
+    "comments": (
+        "comment_id", "note_id", "project_id", "content", "comment_role",
+        "comment_order", "parent_comment_id", "is_pinned", "is_displayed", "created_at",
+    ),
+    "metric_snapshots": (
+        "note_id", "source", "window_label", "collected_at", "hours_since_publish",
+        "impressions", "reads", "interactions", "likes", "saves", "shares",
+        "comments_count", "hit_blue_keywords", "keyword_rank", "search_rank",
+    ),
+    "projects": (
+        "project_id", "brand", "product", "category", "platform", "mapping_config",
+        "schema_family", "start_date", "end_date", "tier_thresholds",
+    ),
+    "prepublish_evaluations": (
+        "autowriter_item_id", "evaluator_type", "evaluator_id", "decision", "created_at",
+    ),
+    "flywheel_lesson_annotations": (
+        "note_id", "why_it_worked", "transferable_tactic", "hook_type", "structure",
+        "curated_at", "curated_by", "curator_version",
+    ),
+    "undeclared_fields_quarantine": (
+        "project_id", "feishu_record_id", "undeclared_field_names",
+        "raw_row", "reason", "status", "quarantined_at",
+    ),
+    # librarian/core.py put_cache() 写的 —— 不在 scripts/ 下, 所以按脚本盘点时会漏。
+    # 收进来是因为 daily-sync 确实碰这张表(prune_librarian_cache 那一步)。
+    "flywheel_librarian_cache": (
+        "cache_key", "consumer", "project_id", "brief_digest",
+        "library_version", "selected", "created_at", "last_hit_at",
+    ),
+}
+
+# ── 以下三类【故意不收】, 免得下一个人"顺手补全"反而把闸弄坏 ──────────────
+#
+# ① 触发器写的列: notes.era_tag / notes.updated_at / notes.ingested_at /
+#    projects.updated_at / accounts.updated_at / flywheel_lesson_annotations.updated_at
+#    / audit_log.* —— 这些【我们的代码从来不发】, 是 schemas/notes_v1_2.sql 里的
+#    BEFORE/AFTER 触发器写的。而列和触发器出自【同一个迁移文件】, 不可能只缺一半:
+#    列没了触发器也没了, 于是"触发器要写一个不存在的列"这种态压根构造不出来。
+#    收进来只会白花往返, 不会多挡住任何东西。
+#
+# ② 另一个库的表: public.reference_samples 在【三生六部那个 Supabase 实例】上,
+#    不是本库。本函数拿的是 TV 的 client, 探不到, 也不该由 TV 的 sync 替它把关。
+#
+# ③ autowriter schema: 本函数只探 truth_vault。autowriter 的漂移该由写它的那个
+#    脚本自己把关(它跑在另一条链路上, 挂了不该拖红夜间 TV 同步)。
+
+# 哪个迁移文件加的 —— 报错时直接把"该跑哪个"说出来, 别让人再去翻 README 对清单。
+# 只列【后加的、容易漏跑】的; 其余落回通用提示(建表迁移漏了的话报错会非常明显)。
+_COLUMN_MIGRATION: dict[str, str] = {
+    "last_seen_at":     "schemas/notes_v1_9_last_seen_reconcile.sql",
+    "last_seen_run_id": "schemas/notes_v1_9_last_seen_reconcile.sql",
+}
+
+
+def assert_db_schema_ready(client: Client, tables: Optional[Iterable[str]] = None) -> None:
+    """开跑前核一次: 本仓会写的列在库里是否都存在; 缺了就【立刻】停, 别逐行撞墙。
+
+    tables 不给就核 _REQUIRED_COLUMNS 全部。放在任何写入之前调用。
+    列都在 → 静默返回。缺列 → RuntimeError, 消息里点名缺哪些、该跑哪个迁移。
+    """
+    names = tuple(tables) if tables is not None else tuple(_REQUIRED_COLUMNS)
+    missing: list[str] = []
+    for table in names:
+        cols = _REQUIRED_COLUMNS.get(table)
+        if not cols:
+            continue
+        try:
+            client.schema("truth_vault").table(table).select(",".join(cols)).limit(0).execute()
+        except Exception:
+            # 整批探失败 → 逐列再探一遍, 把【所有】缺的列一次点全。
+            # (PostgREST 一次只报第一个缺的, 一次修一个要来回好几轮。)
+            for col in cols:
+                try:
+                    client.schema("truth_vault").table(table).select(col).limit(0).execute()
+                except Exception:
+                    missing.append(f"truth_vault.{table}.{col}")
+    if not missing:
+        return
+    migrations = sorted({
+        _COLUMN_MIGRATION[m.rsplit(".", 1)[-1]]
+        for m in missing if m.rsplit(".", 1)[-1] in _COLUMN_MIGRATION
+    })
+    todo = ("请先应用: " + " · ".join(migrations)) if migrations else (
+        "请对照 scripts/README.md 的「Step 0 · 必做前置 migrations」逐条确认 schemas/ 下的迁移都跑过了"
+    )
+    raise RuntimeError(
+        f"库结构没跟上代码 —— 本仓会写的 {len(missing)} 个列在生产库里不存在:\n"
+        + "\n".join(f"    · {m}" for m in missing)
+        + f"\n  {todo}\n"
+        "  (这道闸是 D-046: 2026-08-27 同类问题让 daily sync 连红 4 天 —— "
+        "当时是每条 upsert 各撞一次墙, 几百条 traceback 淹掉了唯一有用的那行。"
+        "现在改成开跑前一次性报出来。)"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # Mapping yaml
 # ─────────────────────────────────────────────────────────────────────────
 

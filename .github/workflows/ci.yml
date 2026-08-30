@@ -1148,6 +1148,72 @@ jobs:
           print("  ✓ transform_row 走 _SYNTHETIC_TIER_SRC_RE, 无写死字符串残留")
           print("\nsynthetic 伪爆帖/伪爆贴: all checks passed")
           PY
+      - name: 库结构前置闸:代码写的列必须先落库 (D-046, 2026-08-27 实测连红 4 天)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # 2026-08-27: PR #109 让每条 note upsert 都带 notes.last_seen_at, 而迁移
+          # notes_v1_9 从没在生产库跑过 → 【每一条 upsert 各失败一次】(不是降级),
+          # 几百条一样的 traceback 淹掉唯一有用那行, daily sync 连红 4 天才被发现。
+          # 本 guard 守的是那道闸: 缺列必须在【开跑前】一次性点名, 且说清该跑哪个迁移。
+          import inspect, _common as c
+
+          # ① 清单本身别退化成空(有人删空了 = 闸门失效, 但测试仍会"通过")
+          assert len(c._REQUIRED_COLUMNS) >= 6, "必核的表少于 6 张, 清单八成被删残了"
+          notes_cols = c._REQUIRED_COLUMNS["notes"]
+          assert len(notes_cols) >= 30, f"notes 只列了 {len(notes_cols)} 列, 太少"
+          for must in ("last_seen_at", "last_seen_run_id", "raw_content", "tier"):
+              assert must in notes_cols, f"notes 必核列漏了 {must}"
+
+          # ② 用假 client 精确复现那次事故, 断言"会红"
+          class FakeQ:
+              def __init__(s, have): s.have = have
+              def select(s, cols): s.req = cols.split(","); return s
+              def limit(s, n): return s
+              def execute(s):
+                  miss = [x for x in s.req if x not in s.have]
+                  if miss: raise RuntimeError(f"column does not exist: {miss[0]}")
+                  return {"data": []}
+          class FakeClient:
+              def __init__(s, m): s.m = m
+              def schema(s, _): return s
+              def table(s, t): return FakeQ(s.m.get(t, set()))
+
+          full = {t: set(v) for t, v in c._REQUIRED_COLUMNS.items()}
+          c.assert_db_schema_ready(FakeClient(full))          # 列齐 → 必须静默通过
+
+          broken = {t: set(v) for t, v in c._REQUIRED_COLUMNS.items()}
+          broken["notes"] -= {"last_seen_at", "last_seen_run_id"}
+          try:
+              c.assert_db_schema_ready(FakeClient(broken))
+              raise SystemExit("✗ 空转: 缺列没被拦 —— 这正是 4 天没人发现的那个场景")
+          except RuntimeError as e:
+              msg = str(e)
+              # 两个列都要点名: PostgREST 一次只报第一个, 逐列复探就是为了这个
+              assert "last_seen_at" in msg and "last_seen_run_id" in msg, \
+                  f"没把缺的列点全(只报第一个 = 一次修一个, 要来回好几轮): {msg}"
+              assert "notes_v1_9_last_seen_reconcile.sql" in msg, "没说清该跑哪个迁移文件"
+          print("  ✓ 复现 2026-08-27 事故 → 被拦, 两列都点名 + 指出迁移文件")
+
+          # ③ 未知来源的缺列不能静默 —— 要落回 README Step 0 提示
+          b2 = {t: set(v) for t, v in c._REQUIRED_COLUMNS.items()}
+          b2["comments"] -= {"comment_role"}
+          try:
+              c.assert_db_schema_ready(FakeClient(b2)); raise SystemExit("✗ 空转")
+          except RuntimeError as e:
+              assert "comments.comment_role" in str(e) and "Step 0" in str(e)
+          print("  ✓ 不在迁移映射里的缺列: 仍点名 + 落回 Step 0 提示")
+
+          # ④ 闸必须真的接在 sync 的 main() 上, 且在【写入之前】——
+          #    只写函数不接线, 是这类护栏最常见的死法。
+          import sync_feishu_notes_to_truth_vault as s
+          src = inspect.getsource(s.main)
+          assert "assert_db_schema_ready" in src, "sync main() 没调用这道闸"
+          assert src.index("assert_db_schema_ready") < src.index("ensure_project_exists"), \
+              "闸必须在第一次写库(ensure_project_exists)之前"
+          print("  ✓ 已接在 sync main() 里, 且排在第一次写库之前")
+          print("\n库结构前置闸: all checks passed")
+          PY
       - name: tier 规则列序:短针不许遮死长针 (2026-08-28)
         working-directory: scripts
         run: |

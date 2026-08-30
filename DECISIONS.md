@@ -1726,8 +1726,39 @@ PGRST204: Could not find the 'last_seen_at' column of 'notes' in the schema cach
 - ❌ **只把 README 写得更醒目**。它已经写得够醒目了（三行 ⚠️ + 空库实测记录），
   仍然漏了 —— 靠人读文档记得跑迁移，不是护栏。
 
-**Implications / 待办**（未做，需拍板）:
+**Implications** —— 已做（2026-08-30，策略 lead 拍板"待办做"）:
 
-- 缺一道 **fail-fast 的 schema 前置检查**：sync 开跑前核一次"本脚本会写的列在库里
-  是否都存在"，缺了就在第一步用一句话报出来（含要跑哪个迁移文件），
-  而不是让几百行 upsert 各自撞同一堵墙。把「4 天 × 逐行 traceback」压成「5 秒 × 一行」。
+`_common.assert_db_schema_ready()`，接在 `sync_feishu_notes_to_truth_vault.main()` 里
+`get_supabase_client()` 之后、第一次写库之前。缺列 → 立刻 `exit 2`，消息点名缺哪些列、
+该跑哪个迁移文件。**把「4 天 × 逐行 traceback」压成「5 秒 × 一行」。**
+
+**探测手法**：拿要写的列做一次 `select ... limit 0`。列不存在时 PostgREST 直接回
+42703 —— 这不是推测，正是那次事故日志里对账查询打出来的那条 warning。比读
+`information_schema` 省事（PostgREST 不暴露它），也不用为此建 RPC；全程只读。
+成功路径每张表一次往返（9 张，亚秒级），只有失败时才逐列复探一遍把缺的**全部**点名
+（PostgREST 一次只报第一个，不复探就得一次修一个、来回好几轮）。
+
+**为什么装在 sync 而不是各脚本各管各的**：sync 是 daily-sync 的第一步，在这里核
+**整条链路**会写的列，后面 comments / essence / curate / ssll 的漂移也在开跑前就报出来，
+而不是夜里跑到一半才炸。
+
+**列清单怎么来的**：2026-08-30 用一个 workflow 把 7 个写库脚本并行盘了一遍，
+再拿结果对生产库 `information_schema` 做**确定性核对**（当时 128 列全部存在，
+即补上 v1_9 之后没有残留漂移）。随后一轮**对抗盘点**抓到手工清单的真洞：
+`notes.synced_to_ssll_at` / `synced_ssll_reference_sample_id`（只记了 autowriter
+那对孪生列，漏了 ssll 这对）+ 整张 `flywheel_librarian_cache`（它在 `librarian/`
+不在 `scripts/`，按脚本盘点必然漏）。**手工列清单会漏，这就是证据。**
+
+**三类故意不收**（写进代码注释，免得下一个人"顺手补全"反而弄坏闸）:
+
+- **触发器写的列**（`era_tag` / `updated_at` / `ingested_at` / `audit_log.*`）——
+  我们的代码从不发它们，且列与触发器出自同一个迁移文件，不可能只缺一半，
+  收进来只白花往返。
+- **另一个库的表**（`public.reference_samples` 在三生六部那个实例）—— 本函数拿的是
+  TV 的 client，探不到，也不该由 TV 的 sync 替它把关。
+- **autowriter schema** —— 跑在另一条链路上，挂了不该拖红夜间 TV 同步。
+
+**守卫**：CI 新增一道，对旧行为反证过会红 —— 精确复现 2026-08-27 那次（notes 缺
+`last_seen_at` + `last_seen_run_id`），断言两列**都**被点名、且报错说清该跑哪个迁移；
+另断言清单没被删残（表 ≥ 6、notes 列 ≥ 30、必核列在场），以及**闸真的接在
+`main()` 上且排在第一次写库之前** —— 只写函数不接线是这类护栏最常见的死法。

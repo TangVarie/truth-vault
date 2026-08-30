@@ -43,6 +43,7 @@ import requests
 from supabase import Client
 
 from _common import (
+    assert_db_schema_ready,
     ensure_account_exists,
     ensure_project_exists,
     extract_tier,
@@ -933,6 +934,19 @@ def main() -> int:
 
     fs = FeishuClient(app_id, app_secret)
     sb = get_supabase_client()
+
+    # ── 库结构前置闸 (D-046) ──
+    # 本脚本是 daily-sync 的【第一步】, 所以在这里核【整条链路】会写的列(不只 notes):
+    # 后面的 comments / essence / curate 若撞上缺列, 也在这里就一次性报出来, 而不是
+    # 让夜里那一轮跑到一半才炸。只读探测, 亚秒级。
+    # 2026-08-27 的教训: 缺列不会降级, 是【每一条 upsert 各失败一次】, 几百条一样的
+    # traceback 把唯一有用的那行淹了, 连红 4 天才有人看见。
+    # dry_run 也照跑 —— 恰恰是 dry_run 最该提前发现这个。
+    try:
+        assert_db_schema_ready(sb)
+    except RuntimeError as exc:
+        logger.error("%s", exc)
+        return 2
 
     # Make sure truth_vault.projects has the row before any notes go in —
     # `notes.project_id` has a FK to it and would reject every insert

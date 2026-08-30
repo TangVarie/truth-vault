@@ -87,6 +87,45 @@ direction_decomposition:
     target_audience: ["通用"]         # [待确认]
     user_pain_point: 签约前的退费/信任顾虑
 
+  # ── 多选组合键(2026-08-30 按 preflight run #24 实测补) ──────────────
+  # 飞书「方向」是多选; sync 侧把多选 cell 用 ", " 拼成【一个键】去查
+  # direction_decomposition(_common._direction_key), 【不会】自动拆成基础方向
+  # ——「多选拆成基础方向分别套用」在 onboarder/README 里还是待办, 没实现。
+  # 所以组合值必须显式建键, 否则那些行拿不到 content_format/target_audience。
+  # 先例: RIO/TXQ 的「多选组合取基础方向口径」。
+  #
+  # 下面 4 条的第二个词是【运营标签】(客资可能 / 严格控评), 不描述内容形式,
+  # 所以直接沿用前面那个【内容方向】已起草的口径 —— 这一步是机械套用, 不是新判断:
+  # 无论策略 lead 最后把运营标签定成 A/B/C 哪种处理(见 brief 第 6 节),
+  # 内容形式都仍由前面那个内容方向决定, 所以这样填不会预设结论。
+  "要不要找机构, 客资可能":          # 3 条 —— 同「要不要找机构」
+    content_format: 提问求助          # [待确认] 随基础方向
+    target_audience: ["通用"]         # [待确认]
+    user_pain_point: 纠结要不要报机构(附:有客资转化潜力)
+
+  "付款与签约提问帖, 严格控评":      # 2 条 —— 同「付款与签约提问帖」
+    content_format: 提问求助          # [待确认] 随基础方向
+    target_audience: ["通用"]         # [待确认]
+    user_pain_point: 付款/签约后的求证与求安慰(附:需严格控评)
+
+  "上岸反馈, 客资可能":              # 1 条 —— 同「上岸反馈」
+    content_format: 情感叙事          # [待确认] 随基础方向
+    target_audience: ["通用"]         # [待确认]
+    user_pain_point: 上岸后的经历复盘(附:有客资转化潜力)
+
+  "签约顾虑正面答, 严格控评":        # 1 条 —— 同「签约顾虑正面答」
+    content_format: 认知重构          # [待确认] 随基础方向
+    target_audience: ["通用"]         # [待确认]
+    user_pain_point: 签约前的退费/信任顾虑(附:需严格控评)
+
+  # ⚠️ 还有 3 条组合【故意没建键】—— 它们是两个【内容方向】相组合, 取哪个当口径
+  #    是真判断, 不是机械套用, 留给策略 lead:
+  #      · '上岸反馈, offer 谈薪'        1 条 (情感叙事 vs 教程攻略)
+  #      · '上岸反馈, 签约顾虑正面答'     1 条 (情感叙事 vs 认知重构)
+  #      · '情绪价值与社会化, 服务细节拆解' 1 条 (情感叙事 vs 教程攻略)
+  #    这 3 行仍会正常入库(正文/tier 都在), 只是拿不到 content_format/target_audience,
+  #    等定了再补键。不建键比瞎填一个更诚实。
+
 tier_extraction:
   source: 状态字段                    # 指示用 _status_raw(即「流量状态」列)
   rules:
