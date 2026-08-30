@@ -1238,34 +1238,42 @@ jobs:
           #    只按 tier/publish_time/synced_to_ssll_at 取, sync_interval 全程不出现。
           ssll = [s for s in steps if "sync_truth_vault_baokuan_to_sanshengliubu.py" in s["run"]]
           assert ssll, "找不到通道1(→ 三生六部)那一步"
+          sbody = ssll[0]["run"]
+          # workflow 的 project 输入写着"只跑某个项目" —— 这一步以前不认, 定向跑也全局推
+          assert "PROJECT_FILTER" in sbody and "--project" in sbody, \
+              "通道1 步骤要认 PROJECT_FILTER(workflow 的 project 输入承诺了'只跑某个项目')"
           import sync_truth_vault_baokuan_to_sanshengliubu as ss
           import inspect
-          # 闸装在脚本里而不是 bash 循环里: 这个脚本【跑在 GitHub runner 上】(不像 curate 在
-          # Railway worker 上), TV_SCHEDULED_RUN 拿得到, 不必把调用拆成按项目循环。
-          src = inspect.getsource(ss)
-          assert "TV_SCHEDULED_RUN" in src, \
-              "通道1 脚本读不到 TV_SCHEDULED_RUN → 闸永远不会触发(D-047 回归)"
           m = inspect.getsource(ss.main)
-          for probe in ("retract_stale_synthetic_from_ssll(", "drop_on_demand_under_cron(",
+          for probe in ("retract_stale_synthetic_from_ssll(", "drop_on_demand_projects(",
                         "insert_reference_sample("):
               assert probe in m, f"main() 里找不到 {probe} —— 改了结构就同步改这条守卫"
-          assert m.index("drop_on_demand_under_cron(") < m.index("insert_reference_sample("), \
+          assert m.index("drop_on_demand_projects(") < m.index("insert_reference_sample("), \
               "闸必须在真正往三生六部写之前"
           # 回收【不】受闸管: 闸挡的是"往外推", 不是"把推错的拉回来"
-          assert m.index("retract_stale_synthetic_from_ssll(") < m.index("drop_on_demand_under_cron("), \
+          assert m.index("retract_stale_synthetic_from_ssll(") < m.index("drop_on_demand_projects("), \
               "synthetic 回收不该被 on_demand 闸挡住(任何时候都该跑)"
 
           #    行为(非空跑): 拿真 mappings 里的 on_demand / daily 各一个项目对拍。
           rows = [{"project_id": on_demand, "note_id": "a"},
                   {"project_id": daily, "note_id": "b"},
                   {"project_id": "NO_SUCH_PROJECT_xyz", "note_id": "c"}]
-          kept, gated = ss.drop_on_demand_under_cron(rows, False)
-          assert len(kept) == 3 and gated == {}, "显式 dispatch 不许挡人工"
-          kept, gated = ss.drop_on_demand_under_cron(rows, True)
+          # 与 essence/curate 那两道【故意不同】: 这一道跨库单向, 不看是不是 cron ——
+          # 手动触发不会让 mapping 里的 [待确认] 变成已拍板。默认(不带豁免)就该拦。
+          kept, gated = ss.drop_on_demand_projects(rows)
           assert [n["note_id"] for n in kept] == ["b", "c"], \
-              "夜间 cron 应只拦 on_demand;判不了的项目要【照推】(静默少推查不出来)"
+              "on_demand 项目任何时候都不推(不只是 cron);判不了的要【照推】(静默少推查不出来)"
           assert gated == {on_demand: 1}, f"被拦下的项目要点名报出来, 实际 {gated}"
-          print("  ✓ 通道1(跨库)步骤: 闸在写入前 / 回收不受闸管 / on_demand 拦下且点名 / 判不了照推")
+          # 豁免必须是【指名道姓的那一个开关】, 不能被 --project 顺手带出来
+          kept, gated = ss.drop_on_demand_projects(rows, include_on_demand=True)
+          assert len(kept) == 3 and gated == {}, "--include-on-demand 应放行全部"
+          argv = inspect.getsource(ss.main)
+          assert "--include-on-demand" in argv, "豁免开关没在 CLI 上暴露"
+          assert "args.include_on_demand" in argv, "豁免开关没接到闸上"
+          assert "args.project" not in argv.split("drop_on_demand_projects(")[1].split(")")[0], \
+              "--project 不许自带豁免: 一个开关一个意思, 免得'定向跑一下'变成'同意推进写作引擎'"
+          print("  ✓ 通道1(跨库)步骤: 认 PROJECT_FILTER / 闸在写入前 / 回收不受闸管 /"
+                " 任何一次跑都拦 on_demand 且点名 / 判不了照推 / 豁免不被 --project 带出")
           print("\non_demand 闸覆盖: all checks passed")
           PY
       - name: 库结构前置闸:代码写的列必须先落库 (D-046, 2026-08-27 实测连红 4 天)
