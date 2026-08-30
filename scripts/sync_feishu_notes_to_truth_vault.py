@@ -59,6 +59,7 @@ from _common import (
     quarantine_record,
     resolve_feishu_tables,
     setup_logger,
+    skip_on_demand_on_cron,
     update_project_date_range,
     _direction_key,
     _iso_now,
@@ -250,16 +251,10 @@ _NOTE_DATA_SIGNALS = (
 _SYNTHETIC_TIER_SRC_RE = re.compile(r"伪爆[贴帖]|伪\d+评")
 
 
-def _skip_on_demand_on_cron(sync_interval: str | None, scheduled: bool) -> bool:
-    """夜间 cron(scheduled=True)是否应跳过该项目。
-
-    sync_interval=on_demand 的项目【只】在显式 dispatch / 改成 daily 后才进夜间 cron ——
-    防新接的表(填了飞书坐标但还没 preflight 验证)被 02:00 cron 自动灌、把未声明列的真内容行
-    quarantine(codex PR#67 review)。on_demand 是 onboarder 起草的安全默认: 接表填坐标 →
-    preflight → 显式跑验证 → 改 daily 入 cron。保守: 只有【确实 cron】且【确实 on_demand】才跳,
-    显式 dispatch / 本地手跑(scheduled=False)照跑(不挡人工操作)。
-    """
-    return scheduled and sync_interval == "on_demand"
+# 判据本体已移到 _common.skip_on_demand_on_cron —— daily-sync 里【每一步】自动处理都要用
+# 同一份(D-047: 2026-08-30 之前它只挡住入库这一步, essence 标注那步没挡)。
+# 这里保留同名薄别名: 既有 CI 守卫按这个名字取, 且本模块内部调用点不必改。
+_skip_on_demand_on_cron = skip_on_demand_on_cron
 
 
 def transform_row(

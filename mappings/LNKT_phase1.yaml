@@ -382,8 +382,16 @@ onboarding_meta:
       ensure_account_exists 收 platform 参数 · _PLATFORM_EN_TO_SSLL 已有 douyin→抖音
       (未知平台那里直接 raise, 所以有没有这行是硬判据) ·
       parse_audience_analysis 按文本格式解析与平台无关。
-      ⚠️ 仍未核: 三生六部仓的 list_reference_packs 认不认「抖音」(另一个 repo)。
-      本表 on_demand 不自动跑; 翻 daily 前要在那边确认。
+      三生六部那一环【已核实】(2026-08-30, 用户在 ssll 仓核的) —— 详见文件抬头
+      platform 那段注释。结论不是简单的"认/不认":
+        · 写入侧【通】: list_reference_packs 是纯字符串精确匹配, 库里存中文「抖音」,
+          而 _platform_for_ssll 正是把 douyin 翻成「抖音」再写, 精确命中。
+        · 读取侧【有既有隐患】: ssll 的 vibe loop 把 prompt_matrix 格子里的 platform
+          原样透传、零转换, 而格子上游中英两套写法并存。格子若写英文 slug "douyin",
+          查库 0 命中 → 不报错, 静默退回静态兜底样本, 只留一条 R-022 警告。
+      ⚠️ 翻 daily 时要做的不再是"去确认认不认", 而是【提醒 ssll 那边对齐平台名写法】——
+      本表是第一个往库里灌抖音行的项目, 在此之前写 "douyin" 查 0 条本来就"正常",
+      灌进来之后同样查 0 条就变成真的漏掉了本可用的样本。
 
     [新模式 3] 无独立互动量/曝光量/阅读量列
       数据汇总文本在「数据汇总-第N次」里(非结构化)。

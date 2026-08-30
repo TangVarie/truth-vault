@@ -1713,8 +1713,25 @@ PGRST204: Could not find the 'last_seen_at' column of 'notes' in the schema cach
 
 - 不是整步一次性失败，是**逐行**失败 → 日志里几百条一模一样的 traceback，
   真正的一行信息（缺哪个列）被淹在里面；
-- 失败只发生在**有新行要写**的项目上。当天 16 个项目里只有 RIO / WTG 命中，
-  其余 14 个"跑过了"—— 于是整轮看起来像"个别项目有问题"，而不是"库结构不对"；
+- **当天 16 个项目里只有 RIO / WTG 报错**，于是整轮看起来像"个别项目有问题"，
+  而不是"库结构不对"。但那 14 个**不是"没事"，是压根没走到 upsert** —— 这一点
+  一开始写错了（codex review 指出，2026-08-30 按 run #136 日志核实订正）：
+
+  | 情况 | 项目数 | 实际发生了什么 |
+  |---|---|---|
+  | `sync_interval: on_demand` | **13** | 夜间 cron 直接跳过，**一行都没读** |
+  | `daily` 且全部 quarantine | 1（OKMAN） | `total 350 / quarantined 350 / upserted 0` → `pending_notes` 空，没有可写的行 |
+  | `daily` 且真写库 | 2（RIO / WTG） | `errors 391` / `errors 710` —— 全部是这个缺列错 |
+
+  **没有"新行 vs 老行"这回事**：`upsert_notes_batch` 每轮把该项目**所有**有效行
+  重写一遍，不查存在性也不比对是否变化。所以判据是「这轮有没有行走到 upsert」，
+  跟"有没有新数据"无关。把它记成"只有有新行的项目才命中"会把下一个人往
+  "查哪个项目有新数据"的方向带偏 —— 而正确的方向是"查哪个项目今晚真的写了库"。
+
+- 另外 `last_seen_*` 只在 **full_scan** 时才盖（无 `--limit` 截断、无飞书抓取失败、
+  `errors == 0`、非 dry-run，见 `sync_feishu_notes_to_truth_vault.py:1068-1079`）。
+  这构成一个**自锁**：第一条 upsert 失败 → `errors > 0` → 后续轮次连戳都不盖了，
+  但**失败照旧**，因为 payload 是在盖戳之前就带上这两列的。
 - `feishu_sync` 之后的步骤（comments / essence / curate / ssll）**全绿**，
   汇总行只有一句 `failed steps: feishu_sync`，很容易被读成偶发。
 
@@ -1762,3 +1779,62 @@ PGRST204: Could not find the 'last_seen_at' column of 'notes' in the schema cach
 `last_seen_at` + `last_seen_run_id`），断言两列**都**被点名、且报错说清该跑哪个迁移；
 另断言清单没被删残（表 ≥ 6、notes 列 ≥ 30、必核列在场），以及**闸真的接在
 `main()` 上且排在第一次写库之前** —— 只写函数不接线是这类护栏最常见的死法。
+
+---
+
+## D-047 · `on_demand` 闸要覆盖【每一个】自动处理步骤，不只是入库
+
+**日期**: 2026-08-30
+
+**What**: 判据本体移到 `_common.skip_on_demand_on_cron`（单一来源），新增
+`scripts/skip_on_cron.py` 作 CLI shim，接进 `daily-sync.yml` 的 **essence 标注**那一步。
+
+**Why**: `sync_interval: on_demand` 那道闸的注释白纸黑字写着它防的是
+「新接的表（填了飞书坐标但还没 preflight 验证）被 02:00 cron 自动灌」。
+但它**只实现了一半** —— 入库那步调 `_skip_on_demand_on_cron`，
+而 essence 那步是裸 `for f in ../mappings/*.yaml` 全遍历，
+**`sync_interval` 在整个 essence 路径里一次都没出现**。
+
+后果不是"多跑一点"：
+
+- 笔记一落库，**当晚**就被 LLM 按**还没拍板**的 `direction_decomposition` 标注；
+- 标注按 `essence_annotated_at IS NULL` 取 → **标完即固化**，不会自动重标；
+- 再顺着 经验卡 → 三生六部 → autowriter 传下去。
+
+也就是说 README 原则 1 那道人工闸门（判断权归策略 lead）被绕过了，
+而且是**静默**绕过 —— 日志里只会看到一行 `✅ essence 已全部标完`。
+
+这次接六张表时撞上：六张全是 `on_demand`、共 120 处 `[待确认]`，
+只要跑一次实跑 sync，第二天早上那 120 处провisional 判断就进飞轮了。
+
+**判据必须只有一份**：essence 那步没有在 bash 里重写一遍 `grep on_demand`，
+而是调 `skip_on_cron.py`，它内部就是入库那步用的同一个函数。两份判据漂开的表现是
+"某一步悄悄多跑了一批没验证过的表" —— 没有任何症状，正是本仓反复栽的那类。
+
+**exit 2 取"照跑"而不是"跳过"**：`skip_on_cron.py` 判不了时（mapping 读不出来）
+返回 2，调用方**照跑**。跳过是静默少干活、查起来毫无线索；照跑最多多标一次（幂等，
+且下游本来就要人审）。宁可吵不可静。
+
+**Rejected**:
+
+- ❌ **在 essence 的 bash 循环里直接写 yaml 判断**。判据会漂，且漂开无症状。
+- ❌ **让 `count_unannotated_essence.py` 对 on_demand 项目返回 0**。那会让日志打出
+  `✅ essence 已全部标完` —— 一句**假话**。跳过就要说跳过。
+
+**遗留（未做，需拍板）—— `curate` 是同一个泄漏口的另一张嘴**:
+
+`curate_flywheel_lessons.py` 是**全局单次调用**，`fetch_uncurated_cards()` 只按
+`is_curated=false`（+ 可选 `project`）取，不看 `sync_interval`。而它的候选视图
+`v_flywheel_lesson_cards` 的 WHERE 只有
+`tier ∈ (爆,大爆,参考)` + `tier_source ≠ 数值推断` + `publish_time IS NOT NULL`
+—— **完全不要求先有 essence**。所以本次补的 essence 闸**挡不住 curate**。
+
+没有一并修的原因（不是忘了）:
+
+1. curate 的 LLM 调用跑在 **Railway worker** 上，而 `TV_SCHEDULED_RUN` 只存在于
+   GitHub Actions 的 job 环境里 —— 把判断塞进脚本，它在 worker 上永远判成"非 cron"。
+2. 从调用方修只有一条路：把那次全局调用拆成**按项目循环**（`/curate` 只收单个
+   `project`，没有"排除某些"）。那要重排一整块带退避重试的 bash，还会把每晚的
+   LLM 预算从「一次 15 张」变成「N × 15 张」—— 是**成本形状的改变**，该由人定。
+3. 改 worker 协议则意味着又一次「合并 ≠ 部署」的风险，而这一轮已经被它咬过两次
+   （Railway 旧版 `app.py`、迁移没落库）。

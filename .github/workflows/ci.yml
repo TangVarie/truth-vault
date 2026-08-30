@@ -1148,6 +1148,65 @@ jobs:
           print("  ✓ transform_row 走 _SYNTHETIC_TIER_SRC_RE, 无写死字符串残留")
           print("\nsynthetic 伪爆帖/伪爆贴: all checks passed")
           PY
+      - name: on_demand 闸对【每一个】自动处理步骤都生效 (D-047)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # 那道闸的本意是"没经 preflight 验证的表不许被夜间 cron 自动处理"。
+          # 2026-08-30 之前它只挡住了【入库】: essence 那步是裸 `for f in mappings/*.yaml`
+          # 全遍历, sync_interval 在整个 essence 路径里一次都没出现。后果不是多跑一点 ——
+          # 笔记一落库, 当晚就被 LLM 按【还没拍板】的方向拆解标注, 而标注按
+          # essence_annotated_at IS NULL 取, 标完即固化, 再顺着经验卡 → 三生六部 →
+          # autowriter 传下去。判断权那道人工闸(README 原则 1)就这么被绕过了。
+          import os, subprocess, sys, yaml, pathlib
+          import _common as c
+
+          # ① 判据必须只有【一份】—— 入库那步用的和 essence 那步用的是同一个函数
+          import sync_feishu_notes_to_truth_vault as s
+          assert s._skip_on_demand_on_cron is c.skip_on_demand_on_cron, \
+              "入库那步没用 _common 里那份判据 —— 两份判据迟早漂开, 而漂开没有症状"
+
+          # ② 真值表
+          f = c.skip_on_demand_on_cron
+          assert f("on_demand", True)  is True,  "cron + on_demand → 必须跳过"
+          assert f("on_demand", False) is False, "显式 dispatch → 不许挡人工"
+          assert f("daily", True)      is False, "daily 项目照跑"
+          assert f(None, True)         is False, "没写 sync_interval → 保守照跑"
+          print("  ✓ 判据单一来源 + 真值表")
+
+          # ③ CLI shim 的退出码语义(bash 循环按它分支)
+          env = dict(os.environ, PYTHONPATH=os.getcwd())
+          def rc(project, scheduled):
+              e = dict(env); e["TV_SCHEDULED_RUN"] = "true" if scheduled else ""
+              return subprocess.run([sys.executable, "skip_on_cron.py", project],
+                                    capture_output=True, env=e).returncode
+          on_demand = next(p.stem for p in pathlib.Path("../mappings").glob("*.yaml")
+                           if not p.stem.startswith("_")
+                           and ((yaml.safe_load(p.read_text()).get("sync_config") or {})
+                                .get("sync_interval") == "on_demand"))
+          daily = next(p.stem for p in pathlib.Path("../mappings").glob("*.yaml")
+                       if not p.stem.startswith("_")
+                       and ((yaml.safe_load(p.read_text()).get("sync_config") or {})
+                            .get("sync_interval") == "daily"))
+          assert rc(on_demand, True)  == 0, "on_demand + cron 应 exit 0(跳过)"
+          assert rc(on_demand, False) == 1, "on_demand + 显式 应 exit 1(照跑)"
+          assert rc(daily, True)      == 1, "daily + cron 应 exit 1(照跑)"
+          # 判不了时【照跑】而不是【跳过】: 静默少干活查不出来, 多干一次是幂等的
+          assert rc("NO_SUCH_PROJECT_xyz", True) == 2, "读不出 mapping 应 exit 2"
+          print("  ✓ CLI 退出码: 0=跳过 / 1=照跑 / 2=判不了(调用方照跑)")
+
+          # ④ essence 那一步真的接上了这道闸 —— 只写工具不接线是这类护栏最常见的死法
+          wf = yaml.safe_load(pathlib.Path("../.github/workflows/daily-sync.yml").read_text())
+          steps = [s for s in wf["jobs"]["sync"]["steps"] if s.get("run")]
+          ess = [s for s in steps if "annotate-essence" in s["run"]]
+          assert ess, "找不到 essence 那一步"
+          body = ess[0]["run"]
+          assert "skip_on_cron.py" in body, "essence 步骤没接 on_demand 闸(D-047 回归)"
+          assert body.index("skip_on_cron.py") < body.index("annotate-essence"), \
+              "闸必须在真正发起标注请求之前"
+          print("  ✓ daily-sync 的 essence 步骤已接闸, 且在发请求之前")
+          print("\non_demand 闸覆盖: all checks passed")
+          PY
       - name: 库结构前置闸:代码写的列必须先落库 (D-046, 2026-08-27 实测连红 4 天)
         working-directory: scripts
         run: |

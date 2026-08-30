@@ -184,6 +184,18 @@ jobs:
             p=$(basename "$f" .yaml)
             [ "$p" = "_template" ] && continue
             [ -n "$PROJECT_FILTER" ] && [ "$p" != "$PROJECT_FILTER" ] && continue
+            # ── on_demand 闸 (D-047) ──
+            # 入库那一步早就跳过 on_demand 项目了(防没验证过的表被自动灌), 但这一步
+            # 以前是裸遍历 —— 于是笔记一落库, 当晚就被 LLM 按【还没拍板】的方向拆解标注,
+            # 而标注按 essence_annotated_at IS NULL 取, 标完即固化、顺着经验卡 →
+            # 三生六部 → autowriter 传下去。那道闸的本意只实现了一半。
+            # 判据走 skip_on_cron.py(内部就是入库那步用的同一个函数), 不在这儿重写一遍。
+            # exit 2 = 判不了 → 照跑(静默少干活比多干一次更难查)。
+            python skip_on_cron.py "$p"; rc=$?
+            if [ "$rc" = "0" ]; then
+              echo "  ⏭  $p sync_interval=on_demand → 夜间 cron 跳过 essence(与入库同一道闸, D-047)"
+              continue
+            fi
             echo "─── essence annotate (worker) · project=$p · 每日上限=$WORKER_LIMIT · 每请求≤$ESS_REQ_MAX ───"
             budget=$WORKER_LIMIT
             ok_batches=0   # 本项目本轮成功的子批数(>0 = 本轮已有进展)

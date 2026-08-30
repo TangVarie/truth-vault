@@ -315,6 +315,23 @@ def load_mapping(project_id: str) -> dict:
     return m
 
 
+def skip_on_demand_on_cron(sync_interval: Optional[str], scheduled: bool) -> bool:
+    """夜间 cron(scheduled=True)是否应跳过该项目。
+
+    sync_interval=on_demand 的项目【只】在显式 dispatch / 改成 daily 后才进夜间 cron ——
+    防新接的表(填了飞书坐标但还没 preflight 验证)被 02:00 cron 自动灌(codex PR#67 review)。
+    on_demand 是 onboarder 起草的安全默认: 接表填坐标 → preflight → 显式跑验证 → 改 daily。
+    保守: 只有【确实 cron】且【确实 on_demand】才跳; 显式 dispatch / 本地手跑照跑, 不挡人工。
+
+    ⚠️ 这个判据 daily-sync 里【每一个自动处理步骤】都要用同一份 —— 2026-08-30 之前它只
+    挡住了「入库」那一步, essence 标注那步是裸 `for f in mappings/*.yaml` 全遍历, 于是
+    on_demand 项目的笔记一落库, 当晚就会被 LLM 按【还没拍板】的方向拆解标注, 而标注按
+    essence_annotated_at IS NULL 取, 标完即固化、顺着经验卡→三生六部→autowriter 传下去。
+    那道闸的本意("没验证过的表不许自动处理")被只实现了一半。见 D-047。
+    """
+    return scheduled and sync_interval == "on_demand"
+
+
 def _reject_shadowed_tier_rules(path, rules: list[dict]) -> None:
     """规则列序里靠前的短针,不许把靠后的长针整条遮死。
 
