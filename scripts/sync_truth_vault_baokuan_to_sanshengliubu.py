@@ -11,6 +11,10 @@ public.reference_samples（sanshengliubu 保持在 public schema，D-024）。
     python sync_truth_vault_baokuan_to_sanshengliubu.py --project NUC_phase1
     python sync_truth_vault_baokuan_to_sanshengliubu.py --dry-run
 
+⚠️ 默认【不推】sync_interval=on_demand 的项目 —— 没翻 daily = 还没拍板, 而这一步是
+   跨库单向的(写进三生六部的生产检索池, 推过去追不回来)。要单推走 --include-on-demand;
+   `--project X` 不自带这个豁免。详见 drop_on_demand_projects() 的 docstring。
+
 幂等性:
     主键: public.reference_samples.source_truth_vault_note_id（专门加的
           干净索引列，由 sanshengliubu-patches/001_add_source_tv_note_id.sql
@@ -34,7 +38,14 @@ import sys
 import uuid
 from typing import Any
 
-from _common import fetch_all_pages, get_supabase_client, setup_logger, _iso_now
+from _common import (
+    fetch_all_pages,
+    get_supabase_client,
+    load_mapping,
+    setup_logger,
+    skip_on_demand_on_cron,
+    _iso_now,
+)
 
 
 logger = setup_logger("sync_tv_baokuan_to_ssll")
@@ -153,6 +164,79 @@ def fetch_pending_baokuan(
         r for r in rows
         if not (_is_synthetic(r) and r.get("tier") in ("爆", "大爆"))
     ]
+
+
+def drop_on_demand_projects(
+    pending: list[dict[str, Any]],
+    include_on_demand: bool = False,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """把 sync_interval=on_demand 项目的爆款从待推列表里摘掉。
+
+    D-047 的第三张嘴, 也是【唯一跨库】的那张: 入库 / essence / curate 都在 truth_vault
+    自己家里, 而这一步把内容写进另一个 Supabase 的 public.reference_samples ——
+    三生六部检索池, 直接喂写作引擎。一旦推过去, TV 这边再改 mapping 也追不回来
+    (只有 synthetic 那条自愈路径能回收, 见 retract_stale_synthetic_from_ssll)。
+
+    为什么之前漏了: 这一步在 daily-sync.yml 里【根本没有项目循环】—— 一句
+    `python sync_truth_vault_baokuan_to_sanshengliubu.py` 全局跑, 而 fetch_pending_baokuan
+    只按 tier/publish_time/synced_to_ssll_at 取, 不看 sync_interval。所以一张没验证过的
+    表笔记落库的当晚, 它的爆款就进了写作引擎的参考池 —— 带着还是 [待确认] 的
+    target_audience / 方向拆解一起过去(build_reference_sample 会把这些字段写进样本)。
+
+    ⚠️ 这一道与 essence / curate 那两道【故意不同】: 那两道只挡夜间 cron、不挡人工
+    (`skip_on_demand_on_cron(si, scheduled)` 的第二个参数是真实的 scheduled),
+    本道对【任何一次跑】都挡, 不看是不是 cron。因为风险类别不同:
+
+        essence / curate : 写在 truth_vault 自己家里, 幂等, 改完 mapping 能重跑。
+        通道1(本步)      : 一次性写进另一个团队的生产检索池, 没有回头路。
+
+    "手动触发"并不会让 mapping 里那些 [待确认] 变成已拍板。接表 SOP 的顺序是
+    preflight → 显式跑一次验证 → 拍板 → 翻 daily; 中间那次【验证性质的实跑】
+    如果顺手把结果推进另一个团队的生产检索池, 那不叫验证。
+
+    要单推某个还没翻 daily 的项目, 走 `--include-on-demand`(指名道姓的那条路);
+    永久的那条是把它翻成 daily —— 与 LNKT yaml 里
+    "翻 daily 时要同步提醒 ssll 那边对齐平台名写法" 说的是同一个时刻。
+    注意 `--project X` 【不】自带这个豁免: 一个开关一个意思, 免得"我只是想定向跑一下"
+    顺手变成"我同意把它推进写作引擎"。
+
+    判据仍走 _common.skip_on_demand_on_cron —— 与入库/essence/curate 同一份, 不重写,
+    只是第二个参数恒为 True(本步把每一次跑都当 cron 对待, 见上)。
+    判不了(项目没有 mapping 文件 / yaml 读不出来)→ 【照推】, 与 skip_on_cron.py 的
+    exit 2 同取向: 静默少推查起来毫无线索, 多推最多是下游多一条本来就要人审的样本。
+
+    回收(retract_stale_synthetic_from_ssll)【不】受这道闸管 —— 它是把已经推错的东西
+    拉回来, 任何时候都该跑; 闸挡的是"往外推", 不是"往回收"。
+
+    返回 (要推的行, {被跳过的 project_id: 行数})。
+    """
+    if include_on_demand:
+        return pending, {}
+    cache: dict[str, bool] = {}          # project_id → 该跳过吗(每个项目只读一次 yaml)
+
+    def _should_skip(project_id: str) -> bool:
+        if project_id not in cache:
+            try:
+                sync_interval = (
+                    (load_mapping(project_id).get("sync_config") or {}).get("sync_interval")
+                )
+            except Exception as exc:      # noqa: BLE001 —— 判不了就照推
+                logger.warning(
+                    "读不出 %s 的 mapping(%s) → 判不了, 按【照推】处理", project_id, exc
+                )
+                sync_interval = None
+            cache[project_id] = skip_on_demand_on_cron(sync_interval, True)
+        return cache[project_id]
+
+    kept: list[dict[str, Any]] = []
+    skipped: dict[str, int] = {}
+    for note in pending:
+        pid = note.get("project_id") or ""
+        if _should_skip(pid):
+            skipped[pid] = skipped.get(pid, 0) + 1
+        else:
+            kept.append(note)
+    return kept, skipped
 
 
 def retract_stale_synthetic_from_ssll(
@@ -521,6 +605,11 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--limit", type=int, default=0,
                         help="Stop after N notes (debug)")
+    parser.add_argument(
+        "--include-on-demand", action="store_true",
+        help="连 sync_interval=on_demand 的项目也推(默认不推 —— 没翻 daily = 还没拍板, "
+             "而推进三生六部检索池是【没有回头路】的一步; 见 drop_on_demand_projects)",
+    )
     args = parser.parse_args()
 
     sb = get_supabase_client()
@@ -530,6 +619,17 @@ def main() -> int:
     retracted = retract_stale_synthetic_from_ssll(sb, project_filter=args.project, dry_run=args.dry_run)
     pending = fetch_pending_baokuan(sb, project_filter=args.project)
     logger.info("Found %d baokuan pending sync to sanshengliubu", len(pending))
+    # on_demand 闸 (D-047 第三张嘴, 唯一跨库的一张)。放在 fetch 之后而不是塞进查询里:
+    # 判据是 mapping 文件里的 sync_interval, 不是库里的列, PostgREST 查不了。
+    pending, gated = drop_on_demand_projects(pending, args.include_on_demand)
+    if gated:
+        # 明说跳了谁跳了多少 —— 静默过滤会让日志看着像"这些项目本来就没爆款"。
+        logger.info(
+            "on_demand 闸拦下 %d 条不推三生六部: %s;"
+            " 该项目翻 daily(或本次加 --include-on-demand)后照推",
+            sum(gated.values()),
+            json.dumps(gated, ensure_ascii=False, sort_keys=True),
+        )
 
     stats = {"synced": 0, "recovered": 0, "retracted": retracted, "errors": 0}
     for i, note in enumerate(pending):

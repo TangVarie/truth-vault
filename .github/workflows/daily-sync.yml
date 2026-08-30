@@ -367,7 +367,20 @@ jobs:
         run: |
           DRYRUN=""
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRYRUN="--dry-run"
-          python sync_truth_vault_baokuan_to_sanshengliubu.py $DRYRUN
+          # workflow 的 project 输入写着"只跑某个项目", 但这一步以前不认它 —— 定向跑
+          # 一个项目照样全局推。补上(脚本本来就有 --project)。
+          PROJ=""
+          [ -n "$PROJECT_FILTER" ] && PROJ="--project $PROJECT_FILTER"
+          # ── on_demand 闸 (D-047 第三张嘴) ──
+          # 这道闸【在脚本里】, 不在这儿的 bash 里: 本脚本跑在 GitHub runner 上, 判据
+          # (mapping 的 sync_interval)读得到; 不像 curate 跑在 Railway worker 上、
+          # 只能在调用方按项目循环。判据在哪儿跑决定闸装在哪儿。
+          # 也不看 TV_SCHEDULED_RUN —— 与 essence/curate 那两道故意不同: 那两道写在
+          # truth_vault 自己家里、幂等, 只挡 cron 不挡人工就够; 这一道跨库单向
+          # (写进三生六部生产检索池, 推过去追不回来), 手动触发并不会让 mapping 里的
+          # [待确认] 变成已拍板, 所以【任何一次跑】都挡, 直到该项目翻 daily。
+          # 要单推某个还没翻 daily 的项目: 加 --include-on-demand(指名道姓的那条路)。
+          python sync_truth_vault_baokuan_to_sanshengliubu.py $DRYRUN $PROJ
 
       # 通道2 push 已退役 (D-038 / docs/15): TV 不再写 autowriter.items;
       # aw 改为 write-time 主动 pull 馆员书架 (见上 curate_sync 步骤策展经验卡)。

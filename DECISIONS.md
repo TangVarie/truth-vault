@@ -1805,7 +1805,7 @@ PGRST204: Could not find the 'last_seen_at' column of 'notes' in the schema cach
 而且是**静默**绕过 —— 日志里只会看到一行 `✅ essence 已全部标完`。
 
 这次接六张表时撞上：六张全是 `on_demand`、共 120 处 `[待确认]`，
-只要跑一次实跑 sync，第二天早上那 120 处провisional 判断就进飞轮了。
+只要跑一次实跑 sync，第二天早上那 120 处 provisional 判断就进飞轮了。
 
 **判据必须只有一份**：essence 那步没有在 bash 里重写一遍 `grep on_demand`，
 而是调 `skip_on_cron.py`，它内部就是入库那步用的同一个函数。两份判据漂开的表现是
@@ -1856,3 +1856,75 @@ PGRST204: Could not find the 'last_seen_at' column of 'notes' in the schema cach
 注释里也会提到它，拿它比位置会把守卫变成在考注释怎么写 —— 这条是写守卫时它自己
 先把我拦下来的）、按项目循环、预算共享递减、截断不静默、逐项目隔离。
 已反证：把 curate 的闸拆掉，守卫变红。
+
+---
+
+### 第三张嘴：通道1（TV 爆款 → 三生六部）—— 唯一跨库的那张（2026-08-30，同日补）
+
+补完 essence 和 curate、正要跑六张表实跑时发现的：`daily-sync.yml` 的
+**通道1** 那一步（`sync_truth_vault_baokuan_to_sanshengliubu.py`）
+**连项目循环都没有** —— 一句全局调用，而 `fetch_pending_baokuan()` 只按
+`tier ∈ (爆,大爆,参考)` + `tier_source ≠ 数值推断` + 12 个月内 + `synced_to_ssll_at IS NULL`
+取，**`sync_interval` 全程不出现**。
+
+**为什么这张最要紧**：前两张的后果都还留在 `truth_vault` 自己家里（essence 标注、
+经验卡都在本库，改 mapping 后还能重跑）。这一张把内容写进**另一个 Supabase** 的
+`public.reference_samples` —— 三生六部的高权重检索池，直接喂写作引擎。
+而 `build_reference_sample()` 带过去的字段里就有 `target_audience` 和方向拆解，
+**正是那 120 处 `[待确认]` 本身**。推过去就追不回来：本仓唯一的自愈回收路径
+`retract_stale_synthetic_from_ssll` 只认 synthetic，不认"方向拆错了"。
+
+实测代价：六张表 preflight 合计 **1025 行会入库、27 条燃料（爆+大爆）**。
+不补这道闸，实跑当晚这 27 条就带着 provisional 判断进了写作引擎。
+
+**闸装在脚本里，不是 bash 循环里** —— 与 curate 的结论**相反**，因为前提不同：
+这个脚本跑在 **GitHub runner** 上（不像 curate 在 Railway worker 上），
+mapping 的 `sync_interval` 读得到，不必把调用拆成按项目循环。
+**判据在哪儿跑，决定闸装在哪儿** —— 这是三张嘴形态各不相同的唯一原因，不是风格差异。
+
+### 这一道【不看是不是 cron】—— 与前两道故意不同
+
+前两道传的是真实的 `scheduled`，「只挡 cron、不挡人工」。这一道恒传 `True`，
+**任何一次跑都挡**，直到该项目翻 `daily`。因为风险类别不同：
+
+| | 写到哪 | 可逆吗 |
+|---|---|---|
+| essence / curate | `truth_vault` 自己家里 | 幂等，改完 mapping 能重跑 |
+| **通道1（本步）** | **另一个团队的生产检索池** | **没有回头路** |
+
+**"手动触发"并不会让那 120 处 `[待确认]` 变成已拍板。** 接表 SOP 的顺序是
+preflight → 显式跑一次验证 → 拍板 → 翻 `daily`；中间那次**验证性质的实跑**
+如果顺手把结果推进另一个团队的生产检索池，那不叫验证。
+
+这一条不是事后补的原则 —— 是被自己的实跑逼出来的：补完只挡 cron 那版之后，
+准备跑六张表时才意识到 `workflow_dispatch` 下 `TV_SCHEDULED_RUN=false`，
+**我自己那次实跑照样会把 27 条推过去**。闸挡住了 cron，没挡住我。
+
+**代价实测为零**：查了生产库，除 `RIO_phase1`（10 条待推，而它是 `daily`）外，
+**所有 `on_demand` 项目的 ssll 待推量都是 0** —— 存量早推完了（它们的入库本来就被
+cron 闸挡着，没有新行进来）。所以这道闸对现有项目是 no-op，只对新表生效。
+
+**豁免是一个专门的开关，不是 `--project`**：`--include-on-demand`。
+`--project X` **不**自带豁免 —— 一个开关一个意思，免得"我只是想定向跑一下"
+顺手变成"我同意把它推进写作引擎"。永久的那条路是翻 `daily`，
+与 LNKT yaml 里"翻 daily 时要同步提醒 ssll 那边对齐平台名写法"说的是同一个时刻。
+
+**顺带修的**：这一步以前**根本不认 `PROJECT_FILTER`** —— workflow 的 `project` 输入
+自己写着"只跑某个项目"，而定向跑一个项目时它照样全局推。脚本本来就有 `--project`，
+接上就是。
+
+**回收不受闸管**：`retract_stale_synthetic_from_ssll` 排在闸之前、不带过滤。
+闸挡的是"往外推"，不是"把推错的拉回来" —— 后者任何时候都该跑。
+CI 守卫把这个顺序钉死了。
+
+**跳过要点名**：拦下多少条、分别属于哪些项目，`logger.info` 打出来。
+静默过滤会让日志看着像"这些项目本来就没爆款"。
+
+**判不了照推**：项目没有 mapping 文件 / yaml 读不出来 → 照推，与 `skip_on_cron.py`
+的 exit 2 同取向。
+
+**守卫**：CI 的 D-047 守卫加第 ⑥ 段。已反证这些回归各被不同断言抓住 ——
+① 闸函数留着但 `main()` 不调（"只写工具不接线"，这类护栏最常见的死法）；
+② 闸装到回收之前，把回收也一起挡了；③ 判不了时取向反了（跳过而非照推）；
+④ 闸退回"只挡 cron"；⑤ `--project` 顺手带出豁免；⑥ 步骤不认 `PROJECT_FILTER`。
+行为断言用的是 `mappings/` 里真实的 on_demand / daily 项目各一个，不是构造的假数据。
