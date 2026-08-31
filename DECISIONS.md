@@ -2104,3 +2104,56 @@ direction_from_content:
 - ❌ **顺手把流量贴再拆细**（送礼父母/产后/打工人/学生党）。现在拆等于先验地分好类，
   沿用 mapping 里写死的那句：真要拆是后面看飞轮回收效果再说。要拆的话，位置就是这个块 ——
   策略 lead 这次说的「要进一步区分就用正文自己做」正是指这里。
+
+---
+
+## D-050 · 六张表从 `on_demand` 翻成 `daily`
+
+**日期**: 2026-08-31 · **决定人**: 策略 lead · **范围**: TUGE / ANSHEN / LNKT / XIWU / BJS / SPX
+
+### 翻掉意味着什么
+
+`on_demand` 挡的是【夜间 cron 的四步】(D-047)，翻成 `daily` 是四步一起开：
+
+| 步骤 | 翻掉之后 |
+|---|---|
+| ① feishu → truth_vault 入库 | 每晚自动灌新行 |
+| ② essence 标注(LLM) | 每晚每项目 ≤ `WORKER_LIMIT`(默认 **15**) 条 |
+| ③ curate 飞轮经验卡 | 爆款数量级，随之开 |
+| ④ **通道1 → sanshengliubu.reference_samples** | **跨库写另一个团队的生产检索池** |
+
+第 ④ 步是唯一不可逆的一步，所以翻之前把首跑会推多少条数出来了：
+
+| 项目 | 会推去 ssll |
+|---|---|
+| XIWU | 9 (爆) |
+| TUGE | 8 (爆7 + 大爆1) |
+| SPX | 5 (爆) |
+| LNKT | 2 (爆1 + 参考1) |
+| BJS | 1 (爆) |
+| ANSHEN | 0 |
+| **合计** | **25** |
+
+口径同 `fetch_pending_baokuan`：tier ∈ (爆/大爆/参考)、`tier_source ≠ 数值推断`、12 个月内、
+未同步过、指标型 tier 排除 synthetic。**数值推断的行推不出去** —— XIWU 那 2 条阈值升上来的
+爆就卡在这道闸上，这正是 D-048 定的口径在起作用。
+
+essence 有每项目每晚 15 条的封顶，1025 条积压会分十几个晚上标完，不会一夜烧穿预算。
+
+### 翻之前核过、结论是【不挡】的两件事
+
+- **LNKT 是 `douyin`，其余五张是 `xiaohongshu`。** 本仓这侧 `_platform_for_ssll` 早就有
+  `douyin → 抖音` 的显式映射，不会 silent fallback 写英文。剩下的不确定在 ssll 那侧
+  —— 它的 `list_reference_packs` 有没有真的按「抖音」检索没人确认过。**最坏情况是那 2 条
+  躺在 reference_samples 里没人取**，不是写坏数据，所以不挡这次翻。要用起来得 ssll 那边确认。
+- **BJS 飞书「蓝词字段」的选项还是 SPORTSIX 的。** 翻之前查了库：
+  **BJS 的 `hit_blue_keywords` 一条都没有值**(SPX 那边 35 条有值、全是 SPORTSIX 的词，那是对的)。
+  所以现在【没有错数据入库】，问题是运营一旦开始打标就会从错的选项里挑。
+  这是要在运营开始填之前修掉的事，不是这次翻的阻断项。
+  ⚠️ 之前把这条说成「翻 daily 的前置条件」是说重了 —— 实际数据里它还没发生。
+
+### 还留在 `on_demand` 的
+
+HXZ_FB / HXZ_QD / NRT_phase2 / NRT_phase3 / NUC_phase1(前五个 `TableIdNotFound`，接不上飞书)
+/ TGV_phase1 / TXQ_phase1。D-047 的 CI 守卫要求库里至少各有一个 `on_demand` 和一个 `daily`
+项目来跑真值表，这批留着顺带满足了这个前提。
