@@ -189,4 +189,7 @@ sync_config:
   feishu_app_token: PLB3wBG1eiiOfXkApE2cerOonKu   # 表标识(非密钥), 接表时已知
   feishu_table_id: tbl4cA6tdO4CIE6F
   feishu_view_id: null
-  sync_interval: on_demand
+  # 2026-08-31 由策略 lead 拍板从 on_demand 翻成 daily(六张表一起)。
+  # 翻之前核过: preflight 全绿、tier 口径定稿、通道1 首跑会推 25 条爆款进 ssll。
+  # 翻掉意味着这张表进夜间 cron 的【全部四步】: 入库 / essence / curate / 通道1。
+  sync_interval: daily
