@@ -172,6 +172,11 @@ CREATE POLICY versions_owner ON versions
 ALTER TABLE versions ADD COLUMN IF NOT EXISTS embedding vector(768);
 CREATE INDEX IF NOT EXISTS versions_embedding_idx
     ON versions USING ivfflat (embedding vector_cosine_ops);
+-- (item_id, version_num) 唯一: 两个同步器并发给同一 item 写同一版本号时,
+-- "先查后插"的竞态窗口会撞出重复 version_num → best_version_id 歧义 (审计 COR-010)。
+-- 唯一索引让数据库层面直接拒绝重复, 而不是靠应用层先查后插的窗口。
+CREATE UNIQUE INDEX IF NOT EXISTS versions_item_version_uniq
+    ON versions (item_id, version_num);
 
 -- Memories
 CREATE TABLE IF NOT EXISTS memories (
@@ -312,7 +317,7 @@ AS $$
         COUNT(*) FILTER (WHERE i.status = 'approved')           AS approved,
         COUNT(*) FILTER (WHERE i.status = 'pending')            AS pending,
         COUNT(*) FILTER (WHERE i.status = 'needs_revision')     AS needs_revision
-    FROM items i
+    FROM autowriter.items i
     WHERE i.batch_id = ANY(batch_ids)
     GROUP BY i.batch_id;
 $$;

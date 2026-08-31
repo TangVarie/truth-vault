@@ -409,6 +409,68 @@ jobs:
 
           print("COR-011 自检通过")
           PY
+      - name: 隔离计失败, 阻止把还在飞书的行报成消失 (审计 COR-002)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          import inspect
+          import sync_feishu_notes_to_truth_vault as M
+
+          src = inspect.getsource(M.main)
+
+          # ── undeclared 隔离分支必须累加 errors ──
+          # 锚点 "continue  # Don't upsert" 只在 undeclared 分支出现。
+          und = src[src.index("undeclared_fields"):src.index("continue  # Don't upsert")]
+          assert 'stats["errors"] += 1' in und, \
+              "undeclared 隔离分支没把 errors 加一 —— records_all_ok 会恒真, 对账报假消失"
+
+          # ── 缺必填隔离分支: 非占位行计失败, 占位行不计 ──
+          # 空占位(父记录占位/评论碎片)是正常噪音, 不计失败; 有 note-like 信号
+          # 却缺正文的行才是真丢数, 必须计失败。
+          missing = src[src.index("REQUIRED_NOTE_FIELDS ="):src.index("# Collect for the batched write")]
+          assert 'stats["empty_placeholder"] += 1' in missing, "空占位分支的计数锚点丢了"
+          assert 'stats["errors"] += 1' in missing, \
+              "缺必填(非占位)隔离分支没把 errors 加一"
+
+          # records_all_ok 必须由 errors 驱动 —— 隔离/抓取失败/transform 异常都会累加,
+          # 任何隔离项都把 full_scan 拉成 False, 破坏性对账不再推进。
+          assert 'records_all_ok = stats["errors"] == 0' in src, \
+              "records_all_ok 不再由 errors 驱动"
+
+          print("  ✓ 隔离计失败, 存在隔离项时禁止推进对账 (COR-002)")
+          PY
+      - name: SQL 侧审计修复回归 (COR-005/010/019/024)
+        run: |
+          python - <<'PY'
+          import pathlib
+
+          def text(p):
+              return pathlib.Path(p).read_text(encoding="utf-8")
+
+          # COR-005: fresh install 的 batch_item_counts 清空 search_path 后必须用
+          # schema 限定表名, 否则运行时 relation does not exist。
+          f007 = text("autowriter-migrations/007_fresh_install_autowriter_schema.sql")
+          assert "FROM autowriter.items i" in f007, \
+              "COR-005: batch_item_counts 仍用未限定的 items 表名"
+
+          # COR-010: versions 必须有 (item_id, version_num) 唯一约束。
+          assert "versions_item_version_uniq" in f007, \
+              "COR-010: versions 缺 (item_id, version_num) 唯一索引"
+
+          # COR-019: claim 必须限制 attempts < max_attempts, 否则毒任务无限领取。
+          for p, name in ((text("autowriter-migrations/008_jobs_table.sql"), "008"),
+                          (text("sanshengliubu-patches/004_jobs_table.sql"), "004")):
+              assert "attempts < max_attempts" in p, \
+                  f"COR-019: {name} claim_one_job 缺 attempts < max_attempts 闸"
+
+          # COR-024: publish_time 清空时 era 也要清空; 未来日期衰减夹到 [0,1]。
+          assert "NEW.era_tag := NULL" in text("schemas/notes_v1_2.sql"), \
+              "COR-024: fill_era_tag 没有清空 era 的分支"
+          assert "LEAST(1.0::double precision" in text("schemas/notes_v1_4_flywheel_lesson_cards.sql"), \
+              "COR-024: recency_weight 没夹到 [0,1]"
+
+          print("  ✓ COR-005/010/019/024 SQL 侧回归通过")
+          PY
       - name: 评论身份按内容而不是按位置 (跨库审计 COR-013)
         working-directory: scripts
         run: |
@@ -1299,6 +1361,13 @@ jobs:
           # 原本解析得出来的值一个都不许变
           assert c.parse_numeric("2187") == 2187.0 and c.parse_numeric("1,234") == 1234.0
           assert c.parse_numeric("１２３") == 123.0 and c.parse_numeric(12.5) == 12.5
+          # 非有限数必须拒绝 (审计 COR-018): NaN/Inf(含字符串 "nan"/"inf"/"1e999" 溢出)
+          # 会炸掉下游 int()/写库, 或把脏值写进指标列。一律当"无数据"。
+          import math
+          for bad in (float("nan"), float("inf"), float("-inf"),
+                      "nan", "inf", "-inf", "Infinity", "1e999"):
+              assert c.parse_numeric(bad) is None, bad
+          assert math.isfinite(c.parse_numeric(12.5))
           print("  ✓ parse_numeric 万/w/亿 + 边界 + 旧行为不变")
 
           # ② parse_kv_metrics: 只收纯数值键, 【比率键一律跳过】。
@@ -2002,6 +2071,20 @@ jobs:
               hrs, win = s._derive_metric_window(pt)
               assert win == expected, f"pt={pt!r} expected {expected}, got {win}"
           print(f"  ✓ all {len(cases)} hours-since-publish window cases pass")
+
+          # COR-017: 同一时刻带 +08:00 与带 Z 的串必须落到同一个窗口。
+          # 旧实现 .replace(tzinfo=None) 把 +08:00 的墙钟直接当 UTC 减, 同一瞬间
+          # 会偏 8 小时。取 2 小时前: Z 串落在 "2h"(0-3h), 旧代码对 +08 串会算成
+          # 负小时 → "ad_hoc"(未来), 新代码两者都是 "2h"。
+          from datetime import timezone as _tz
+          base = datetime.now(_tz.utc) - timedelta(hours=2)
+          z_str = base.isoformat(timespec="seconds").replace("+00:00", "Z")
+          plus8_str = base.astimezone(_tz(timedelta(hours=8))).isoformat(timespec="seconds")
+          hz, wz = s._derive_metric_window(z_str)
+          hp, wp = s._derive_metric_window(plus8_str)
+          assert (wz, wp) == ("2h", "2h"), f"Z={wz} +08={wp}"
+          assert hz == hp, f"同一时刻 Z={hz}h +08={hp}h 小时数不同"
+          print("  ✓ 同一时刻 Z / +08:00 落在同一窗口 (COR-017)")
           PY
       - name: recommend_tier_thresholds percentile helper
         working-directory: scripts

@@ -770,6 +770,10 @@ BEGIN
         NEW.era_tag := EXTRACT(YEAR FROM NEW.publish_time)::TEXT
                        || ' Q'
                        || EXTRACT(QUARTER FROM NEW.publish_time)::TEXT;
+    ELSE
+        -- COR-024: 源日期被清空时 era 也要跟着清空。原来只处理 NOT NULL 分支,
+        -- publish_time 一旦变 NULL, era_tag 会残留上一个时代的标签(旧时代残留)。
+        NEW.era_tag := NULL;
     END IF;
     RETURN NEW;
 END;
