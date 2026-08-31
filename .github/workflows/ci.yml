@@ -469,7 +469,19 @@ jobs:
           assert "LEAST(1.0::double precision" in text("schemas/notes_v1_4_flywheel_lesson_cards.sql"), \
               "COR-024: recency_weight 没夹到 [0,1]"
 
-          print("  ✓ COR-005/010/019/024 SQL 侧回归通过")
+          # 升级路径: 修复不能只写在历史基线(已部署环境升级时不重跑历史迁移),
+          # 必须有增量迁移, 且写进 scripts/README.md 的「第一次部署」Step 0 清单。
+          f009 = text("autowriter-migrations/009_fix_batch_item_counts_and_version_uniq.sql")
+          assert "FROM autowriter.items i" in f009, "009 迁移缺 batch_item_counts 表名限定"
+          assert "versions_item_version_uniq" in f009, "009 迁移缺 versions 唯一索引"
+          v10 = text("schemas/notes_v1_10_era_clear_and_decay_clamp.sql")
+          assert "NEW.era_tag := NULL" in v10, "v1_10 迁移缺 era 清空"
+          assert "LEAST(1.0::double precision" in v10, "v1_10 迁移缺衰减夹取"
+          readme = text("scripts/README.md")
+          assert "notes_v1_10_era_clear_and_decay_clamp.sql" in readme, "部署清单缺 v1_10"
+          assert "009_fix_batch_item_counts_and_version_uniq.sql" in readme, "部署清单缺 autowriter 009"
+
+          print("  ✓ COR-005/010/019/024 SQL 侧回归通过 (含升级迁移路径)")
           PY
       - name: 评论身份按内容而不是按位置 (跨库审计 COR-013)
         working-directory: scripts

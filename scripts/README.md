@@ -97,12 +97,14 @@ CI 和 daily-sync workflow 都优先读 `.lock`; `.txt` 仅作为 "high-level in
 #              补上 v1_9      → 通过
 #            v1_6 / v1_7 / v1_8 是**只改视图**的, 漏了只是视图旧, 不挡写入;
 #            v1_9 是唯一动 notes 表结构的。(codex review COR-011)
+#   - schemas/notes_v1_10_era_clear_and_decay_clamp.sql → era 清空 + 未来日期衰减夹取 (审计 COR-024, CREATE OR REPLACE)
 #   - autowriter-migrations/001_create_autowriter_schema.sql → 把 autowriter 表从 public 迁到 autowriter schema
 #   - autowriter-migrations/002_add_external_source.sql     → items 加 (external_source, external_source_id) 列
 #         + per-user partial UNIQUE (user_id, external_source, external_source_id) WHERE external_source IS NOT NULL.
 #         注意: autowriter 本体代码不知道这两列, 只有 TV sync 写入它们.
 #         (2026-05-22 audit P2-5 修正: 实际 unique 是 3-tuple, 不是 2-tuple, 让 per-user 副本不冲突.)
 #   - autowriter-migrations/003_add_example_label_proposal.sql → items 加 example_label_proposal 列 (extract_negative 用)
+#   - autowriter-migrations/009_fix_batch_item_counts_and_version_uniq.sql → batch_item_counts 表名限定 + versions 唯一索引 (审计 COR-005/010)
 #   - sanshengliubu-patches/001_add_source_tv_note_id.sql   → reference_samples 加 source_truth_vault_note_id 列 + 索引
 #         前提: ssll 已经跑过自己的 db/migrations/005_reference_samples_v2.sql (v2 "证据包" 列).
 # Step 1: 共享 Supabase 已就绪（autowriter schema 已迁移，truth_vault schema 已建表）
