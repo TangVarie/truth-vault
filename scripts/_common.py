@@ -609,6 +609,7 @@ def parse_numeric(value: Any) -> Optional[float]:
         - int / float                  → unchanged
         - str "1,234"  "1，234"          → 1234.0 (Chinese/English thousands)
         - str "１２３"                    → 123.0 (full-width digits)
+        - str "1.4万" "3.2w" "1.2亿"      → 14000.0 / 32000.0 / 120000000.0 (中文万位)
         - str "/" "-" "" "无" "N/A" ... → None
         - None                          → None
         - list/dict (non-numeric)       → None
@@ -629,6 +630,17 @@ def parse_numeric(value: Any) -> Optional[float]:
     # full-width digits to ASCII via str.translate.
     fullwidth = str.maketrans("０１２３４５６７８９．", "0123456789.")
     s2 = s.translate(fullwidth).replace(",", "").replace("，", "")
+    # 中文数量级后缀(2026-08-31 补)。小红书/抖音的后台在数大了之后会显示「1.4万」而不是
+    # 14000 —— 在这之前这类值走到下面的 float() 会 ValueError → 返回 None, 也就是
+    # 【静默丢掉】。丢的还偏偏是表现最好的那批行(只有数大了才会显示成万), 等于把高分行
+    # 系统性地从指标里择出去。LNKT_phase1 的「数据汇总」文本里实测 2 行如此, 全库其余 1 行。
+    # 只在原本会返回 None 的路径上补, 所以不会改变任何已经解析成功的值。
+    _SUFFIX = {"万": 1e4, "w": 1e4, "W": 1e4, "亿": 1e8}
+    if s2 and s2[-1] in _SUFFIX:
+        try:
+            return float(s2[:-1]) * _SUFFIX[s2[-1]]
+        except ValueError:
+            return None
     try:
         return float(s2)
     except ValueError:
@@ -684,6 +696,49 @@ def _audience_text(value: Any) -> str:
             for x in value
         )
     return str(value)
+
+
+def parse_kv_metrics(value: Any) -> dict[str, float]:
+    """把「键：值；键：值」半结构化文本解析成 {键: 数值}。
+
+    与 parse_audience_analysis 是【同一形状】的文本(；分段, ：分键值), 所以共用
+    _audience_text 做富文本归一 —— 那个函数本身与"受众"无关, 只是把
+    str / dict{text} / list[富文本run] 拍平成一段连续文本。
+
+    用途: 有些飞书表不给独立的指标列, 而是把一次数据回收的所有指标塞进一个文本 cell。
+    LNKT_phase1(抖音)的「数据汇总-第N次」就是这样:
+        "播放量：2187；点赞量：77；评论量：11；分享量：0；收藏量：2；划走率：49.18%；…"
+
+    解析口径:
+      - 只取【纯数值】键。带 % 的比率键(划走率/完读率/…)一律【跳过】——
+        它们与计数键混在同一段文本里, 若按裸数字收会把 "49.18%" 当成 49.18 个单位,
+        而调用方要的是计数。要比率请另写解析, 不要放宽这里。
+      - 千分位逗号(1,234)会被 parse_numeric 处理; 空段 / 无值 / "无" 跳过。
+      - 同名键重复出现取【最后一个】(与 dict 赋值语义一致, 实测未出现重复)。
+      - 解析不出任何键 → 返回空 dict(不是 None), 调用方按"这个快照没数据"处理。
+    """
+    text = _audience_text(value).strip()
+    if not text:
+        return {}
+    out: dict[str, float] = {}
+    for seg in re.split(r"[；;]", text):
+        parts = re.split(r"[：:]", seg.strip(), maxsplit=1)
+        if len(parts) != 2:
+            continue
+        key, raw = parts[0].strip(), parts[1].strip()
+        if not key or not raw or raw in ("无", "-"):
+            continue
+        # 比率键显式跳过。注意这是【防御层】而不是当前唯一屏障 —— 今天的 parse_numeric
+        # 对 "49.18%" 本来就返回 None, 所以去掉这两行行为暂时不变。留着是因为
+        # parse_numeric 是全仓共用的, 哪天有人给它加上"识别百分号"这种健壮性改造,
+        # 比率就会静默流进计数指标(下游拿一个百分数去比互动量阈值)。CI 守卫用
+        # monkeypatch 把 parse_numeric 换成会吃 % 的版本, 专门测这一层还在。
+        if "%" in raw:
+            continue
+        num = parse_numeric(raw)
+        if num is not None:
+            out[key] = num
+    return out
 
 
 def parse_audience_analysis(value: Any) -> Optional[dict]:
