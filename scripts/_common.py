@@ -601,6 +601,52 @@ def _direction_key(value: Any) -> str:
     return "" if value is None else str(value)
 
 
+def infer_direction_from_content(
+    text: Any,
+    spec: Optional[dict],
+) -> Optional[dict[str, Any]]:
+    """当飞书「方向」单元格的值【不在】direction_decomposition 里时, 退回用正文判方向。
+
+    ⚠️ 这不是给 mapping 补方向用的通用工具, 是给【方向列被写坏了】兜底用的。
+    调用点(transform_row)只在 direction_decomposition 查不到时才进来 —— 运营填对了的
+    方向永远压过正文推断, 一行都不覆盖。规则本身必须写在 mapping 里(D-021 同款纪律:
+    判据是声明出来的, 不是藏在代码里的), 没配 direction_from_content 的项目行为不变。
+
+    spec 形状(见 mappings/XIWU_phase1.yaml):
+        default: 流量贴                     # 所有 rules 都不命中时的落点
+        rules:
+          - direction: 产品贴
+            require: ["西屋", "GT33"]       # 【任一】命中 → 这条规则的正向条件成立
+            unless:  ["求推荐", "纠结"]      # 【任一】命中 → 这条规则作废, 继续看下一条
+
+    返回 {"direction": ..., "by": "正文推断", "rule": <序号或 "default">,
+          "matched": [...]}, 或 None(没配 spec / 正文为空 / 连 default 都没给)。
+    返回值会原样写进 raw_extra._direction_inferred —— 推断出来的东西必须自带出处,
+    下游不能把它和运营手填的方向混为一谈(同 D-048 里 tier_source='数值推断' 的口径)。
+    """
+    if not spec:
+        return None
+    s = _audience_text(text).strip()
+    if not s:
+        return None
+    for idx, rule in enumerate(spec.get("rules") or []):
+        direction = rule.get("direction")
+        if not direction:
+            continue
+        hits = [kw for kw in (rule.get("require") or []) if kw and kw in s]
+        if not hits:
+            continue
+        if any(kw in s for kw in (rule.get("unless") or []) if kw):
+            continue
+        return {"direction": direction, "by": "正文推断",
+                "rule": idx, "matched": hits}
+    default = spec.get("default")
+    if not default:
+        return None
+    return {"direction": default, "by": "正文推断",
+            "rule": "default", "matched": []}
+
+
 def parse_numeric(value: Any) -> Optional[float]:
     """Robustly convert a Feishu cell value to a number, or None if it's
     one of the conventional 'no data' tokens.

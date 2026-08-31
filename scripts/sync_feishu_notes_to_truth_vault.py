@@ -49,6 +49,7 @@ from _common import (
     extract_tier,
     fetch_all_pages,
     get_supabase_client,
+    infer_direction_from_content,
     load_mapping,
     make_note_id,
     map_intent,
@@ -438,14 +439,40 @@ def transform_row(
         # raw direction stays in raw_extra so an annotation pass can resolve
         # it. excluded_directions is honored as 'quarantine via tier_source'.
         decomposition = (mapping.get("direction_decomposition") or {}).get(dir_key)
-        if decomposition is not None and "sub_directions" not in decomposition:
+
+        # ── 方向列被写坏时的正文兜底(D-049) ──────────────────────────────
+        # 只在【查不到】时进来: 运营填对了的方向永远压过正文推断, 一行都不覆盖。
+        # 触发场景是 XIWU —— 2026-08-24 起整批新行的「方向」被填成了「已发布」,
+        # 那是「发布状态」的取值。方向列拿不到 → 这些行 content_format /
+        # target_audience / user_pain_point 全空, 等于白入库。
+        #
+        # ⚠️ 推断出来的方向【只用来 lift content_format 那几列】, 不参与下面的
+        # tier_threshold_override, 也不参与 excluded_directions —— 那两个都按
+        # 【运营填的原值】判。理由同 D-048: tier 是钱字段, 不让任何推断去动它。
+        lifted = decomposition
+        if decomposition is None:
+            inferred = infer_direction_from_content(
+                note.get("raw_content"), mapping.get("direction_from_content"))
+            cand = ((mapping.get("direction_decomposition") or {})
+                    .get((inferred or {}).get("direction")))
+            if inferred is not None and cand is not None:
+                lifted = cand
+                note.setdefault("raw_extra", {})["_direction_inferred"] = inferred
+                # 同时把【源头问题】记下来: 方向列里躺着 mapping 不认识的值。
+                # 不进 synthetic(那把闸是挡伪爆贴的), 只是可查、可在看板上摊开。
+                flags = dict(note.get("data_quality_flags") or {})
+                flags["direction_unmapped"] = {
+                    "raw": dir_key, "inferred": inferred["direction"]}
+                note["data_quality_flags"] = flags
+
+        if lifted is not None and "sub_directions" not in lifted:
             for col in ("content_format", "target_audience",
                         "user_pain_point", "product_focus"):
-                val = decomposition.get(col)
+                val = lifted.get(col)
                 if val is not None and col not in note:
                     note[col] = val
-            if decomposition.get("intent_override") is not None:
-                note["intent"] = decomposition["intent_override"]
+            if lifted.get("intent_override") is not None:
+                note["intent"] = lifted["intent_override"]
 
         # 方向级 tier_threshold_override: 与有没有 sub_directions 无关(它是【方向级】阈值)——
         # 单方向 AND NUC 式粗方向(含 sub_directions)都该 honor, 故放 sub_directions 守卫【外面】。

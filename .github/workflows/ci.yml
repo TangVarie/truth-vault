@@ -1372,6 +1372,98 @@ jobs:
           print("  ✓ 配了指标解析的项目没有顺手留着占位阈值")
           print("\n指标键值文本解析: all checks passed")
           PY
+      - name: 方向列被写坏时的正文兜底 —— 只兜底、不越权 (D-049)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          import pathlib, yaml
+          import _common as c
+          import sync_feishu_notes_to_truth_vault as s
+
+          SPEC = {"default": "流量贴",
+                  "rules": [{"direction": "产品贴",
+                             "require": ["西屋", "GT33"],
+                             "unless": ["求推荐", "纠结"]}]}
+
+          # ① 规则语义: require 是【任一命中】, unless 是【任一命中就作废】。
+          r = c.infer_direction_from_content("我家的西屋GT33用了三天", SPEC)
+          assert r["direction"] == "产品贴" and r["rule"] == 0 and r["matched"] == ["西屋", "GT33"], r
+          # 点了名但还在纠结 → unless 作废这条规则 → 落 default。这一条是整套判据的
+          # 关键: 没买的人在正文里把 GT33 当候选款报价, 照样点名。
+          r = c.infer_direction_from_content("看了下西屋GT33七千, 纠结要不要买", SPEC)
+          assert r["direction"] == "流量贴" and r["rule"] == "default", r
+          assert c.infer_direction_from_content("求推荐一款按摩椅", SPEC)["direction"] == "流量贴"
+          # 没配 spec / 正文为空 → 什么都不做(老项目行为必须一字不变)
+          assert c.infer_direction_from_content("西屋GT33", None) is None
+          assert c.infer_direction_from_content("", SPEC) is None
+          assert c.infer_direction_from_content(None, SPEC) is None
+          # default 都没给 → 宁可不判
+          assert c.infer_direction_from_content("随便一段话", {"rules": []}) is None
+          print("  ✓ require/unless/default 语义 + 没配就不动")
+
+          # ② 【本守卫的重点】: 运营填对了的方向, 一行都不许被推断覆盖。
+          mp = c.load_mapping("XIWU_phase1")
+          assert mp.get("direction_from_content"), "XIWU 的 direction_from_content 没了"
+          BASE = {"素人编号": "T1", "文案": "【标题】t 【正文】我家西屋GT33用了三天",
+                  "发布时间": "2026-08-24", "反馈链接": "https://x", "流量状态": "无水花"}
+          def run(**extra):
+              n, _, _ = s.transform_row(mp, "rec", {**BASE, **extra})
+              return n
+          # 正文长得像产品贴, 但方向列明明白白写着「流量贴」→ 必须听运营的
+          n = run(**{"方向": "流量贴"})
+          assert n["content_format"] == "提问求助", n["content_format"]
+          assert "_direction_inferred" not in (n.get("raw_extra") or {}), n["raw_extra"]
+          assert "direction_unmapped" not in (n.get("data_quality_flags") or {})
+          print("  ✓ 方向填对的行不碰(推断不覆盖运营)")
+
+          # ③ 方向列是脏值 → 才走正文, 且【必须留下出处】。
+          n = run(**{"方向": "已发布"})
+          assert n["content_format"] == "场景植入", n.get("content_format")
+          inf = (n.get("raw_extra") or {}).get("_direction_inferred")
+          assert inf and inf["direction"] == "产品贴" and inf["by"] == "正文推断", inf
+          flag = (n.get("data_quality_flags") or {}).get("direction_unmapped")
+          assert flag == {"raw": "已发布", "inferred": "产品贴"}, flag
+          # 脏方向 + 正文是提问求助 → 落 default 流量贴, 同样留出处
+          n2 = run(**{"方向": "已发布", "文案": "【标题】t 【正文】姐妹们求推荐按摩椅"})
+          assert n2["content_format"] == "提问求助", n2.get("content_format")
+          assert (n2["raw_extra"]["_direction_inferred"]["direction"]) == "流量贴"
+          print("  ✓ 脏方向才走正文 + raw_extra/flags 双留痕")
+
+          # ④ 推断【不许】碰 tier —— 同 D-048 的口径: tier 是钱字段。
+          #    脏方向那行 tier 只能来自「流量状态」, tier_source 不能变。
+          assert n["tier_source"] == "状态字段" and n["tier"] == "趴", (n["tier_source"], n["tier"])
+          # 代码层面也钉住: threshold override / excluded_directions 用的是【原始】方向,
+          # 不是推断出来的那个。改坏了这两行, 推断就能间接改 tier。
+          src = pathlib.Path("sync_feishu_notes_to_truth_vault.py").read_text()
+          body = src.split("dir_threshold_override = None", 1)[1].split("# ── Numeric tier fallback", 1)[0]
+          for needle in ('if decomposition and isinstance(decomposition.get("tier_threshold_override")',
+                         'if excluded.get("direction") == dir_key:'):
+              assert needle in body, f"tier 相关分支被改成了推断值? 找不到: {needle}"
+          assert "lifted" in body and body.index("lifted = decomposition") < body.index(
+              'if lifted is not None and "sub_directions" not in lifted'), "兜底顺序被改了"
+          print("  ✓ 推断只 lift content_format 那几列, 不参与 tier 判定")
+
+          # ⑤ 配了 direction_from_content 的项目, 它指到的方向必须真的在
+          #    direction_decomposition 里 —— 否则推断出来是个查不到的名字, 白推。
+          for f in sorted(pathlib.Path("../mappings").glob("*.yaml")):
+              if f.stem.startswith("_"):
+                  continue
+              d = yaml.safe_load(f.read_text()) or {}
+              spec = d.get("direction_from_content")
+              if not spec:
+                  continue
+              dd = d.get("direction_decomposition") or {}
+              names = [r.get("direction") for r in (spec.get("rules") or [])]
+              if spec.get("default"):
+                  names.append(spec["default"])
+              assert names, f"{f.stem} 的 direction_from_content 一个方向都没给"
+              for name in names:
+                  assert name in dd, (
+                      f"{f.stem} 的正文兜底会推出「{name}」, 但 direction_decomposition "
+                      f"里没有它 → 推了也拿不到 content_format。")
+          print("  ✓ 兜底推出来的方向都能在 direction_decomposition 里查到")
+          print("\n方向正文兜底: all checks passed")
+          PY
       - name: 库结构前置闸:代码写的列必须先落库 (D-046, 2026-08-27 实测连红 4 天)
         working-directory: scripts
         run: |
