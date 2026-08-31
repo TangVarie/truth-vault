@@ -56,6 +56,7 @@ from _common import (
     parse_numeric,
     parse_feishu_date,
     parse_audience_analysis,
+    parse_kv_metrics,
     quarantine_record,
     resolve_feishu_tables,
     setup_logger,
@@ -304,6 +305,51 @@ def transform_row(
             intermediates[schema_target] = value
         else:
             note[schema_target] = _coerce_value(schema_target, value)
+
+    # ── metrics_from_kv_text: 指标藏在「键：值；」文本 cell 里的表 ────────────────
+    #   yaml: metrics_from_kv_text:
+    #           sources: [数据汇总-第1次, 数据汇总-第2次, 数据汇总-第3次]   # 【从旧到新】
+    #           anchor: 播放量
+    #           extract: { impressions: [播放量], interactions: [点赞量,评论量,分享量,收藏量] }
+    #
+    # 背景(LNKT_phase1 / 抖音): 这张表没有独立的曝光/互动列, 一次数据回收的所有指标被塞进
+    # 一个文本 cell。实测 214/299 行有值, 20 个核心键在每个快照里都出现, 格式完全规整。
+    #
+    # 【取最后一个有值的快照, 不取各键的最大值】—— 两条理由:
+    #   ① 一行的各项指标必须来自【同一次回收】, 否则播放量取第2次、点赞量取第3次, 拼出来的
+    #      互动率是假的;
+    #   ② 实测 154 行三次都有的里面, 12 行出现"晚的快照反而更小"(累计值不该降)。成因至少三种:
+    #      第1次之后塌掉(像换了条帖, 1202→96)、第3次原样等于第1次(把旧值又粘了一遍)、
+    #      小幅回落(评论被删)。没有一条规则对三种都对, 而取最大值会在第一种上把 104 放大成
+    #      1202 —— 凭空造爆款正是本仓今天一整天在防的事。取最后一次永远不会大于运营最近一次读数。
+    # 但【不静默】: 遇到"更早的快照 anchor 更大"就在 data_quality_flags 里标出来, 可查。
+    kv_spec = mapping.get("metrics_from_kv_text") or {}
+    if kv_spec.get("sources") and kv_spec.get("extract"):
+        anchor_key = kv_spec.get("anchor")
+        snapshots = [
+            (col, parse_kv_metrics(raw_fields.get(col)))
+            for col in kv_spec["sources"]
+        ]
+        non_empty = [(col, m) for col, m in snapshots if m]
+        if non_empty:
+            picked_col, picked = non_empty[-1]          # sources 按从旧到新排, 取最后一个
+            for target_col, src_keys in kv_spec["extract"].items():
+                if note.get(target_col) is not None:    # 不覆盖 field_mapping 的真值
+                    continue
+                vals = [picked[k] for k in src_keys if k in picked]
+                if vals:
+                    total = sum(vals)
+                    note[target_col] = int(total) if target_col in _NUMERIC_COLS else total
+            if anchor_key:
+                seen = [m[anchor_key] for _, m in non_empty if anchor_key in m]
+                if seen and picked.get(anchor_key) is not None and max(seen) > picked[anchor_key]:
+                    flags = dict(note.get("data_quality_flags") or {})
+                    flags["metrics_snapshot_regressed"] = {
+                        "picked": picked_col,
+                        "picked_value": picked[anchor_key],
+                        "max_seen": max(seen),
+                    }
+                    note["data_quality_flags"] = flags
 
     # ── computed_fields: 合成数值列(早期表无单一「互动量」, 只有 点赞/收藏/分享/评论 分列)──
     #   yaml:  computed_fields: { interactions: { sum: [点赞数, 收藏数, 分享数, 评论数] } }

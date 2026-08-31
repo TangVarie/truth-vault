@@ -1276,6 +1276,102 @@ jobs:
                 " 任何一次跑都拦 on_demand 且点名 / 判不了照推 / 豁免不被 --project 带出")
           print("\non_demand 闸覆盖: all checks passed")
           PY
+      - name: 指标藏在键值文本里的表 —— 解析口径 + 别顺手激活占位阈值 (D-048)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # 2026-08-31: 给 LNKT_phase1(抖音)把「数据汇总-第N次」文本里的指标解析上了。
+          # 这一步真正的风险不在解析本身, 而在【解析成功的那一刻, 原本"不生效的占位阈值"
+          # 会立刻变成生效的】—— LNKT 当时挂着 爆:50, 而实测运营标「无水花」的行互动最高
+          # 到 555, 一上线就会把一大批趴自动升成爆。这道守卫把这个连带关系钉死。
+          import yaml, pathlib, inspect
+          import _common as c
+          import sync_feishu_notes_to_truth_vault as s
+
+          # ① parse_numeric: 中文数量级后缀。补它是因为「1.4万」以前会 ValueError → None,
+          #    也就是【静默丢掉】, 而且丢的偏偏是数大到显示成万的高分行。
+          assert c.parse_numeric("1.4万") == 14000.0
+          assert c.parse_numeric("3.2w") == 32000.0
+          assert c.parse_numeric("1.2亿") == 120000000.0
+          # 边界: 裸后缀 / 带字母 / bool 仍必须 None(不能因为补后缀而放宽)
+          for bad in ("万", "abc万", "", "无", "/", True, None, ["x"]):
+              assert c.parse_numeric(bad) is None, bad
+          # 原本解析得出来的值一个都不许变
+          assert c.parse_numeric("2187") == 2187.0 and c.parse_numeric("1,234") == 1234.0
+          assert c.parse_numeric("１２３") == 123.0 and c.parse_numeric(12.5) == 12.5
+          print("  ✓ parse_numeric 万/w/亿 + 边界 + 旧行为不变")
+
+          # ② parse_kv_metrics: 只收纯数值键, 【比率键一律跳过】。
+          #    计数键和比率键混在同一段文本里, 若把 "49.18%" 当 49.18 收进来, 下游会拿
+          #    一个百分数去和互动量比阈值。
+          m = c.parse_kv_metrics("播放量：2187；点赞量：77；划走率：49.18%；文案完读率：75%")
+          assert m == {"播放量": 2187.0, "点赞量": 77.0}, m
+          # ⚠️ 上面那条【测不到】比率跳过这一层: 今天的 parse_numeric 对 "49.18%" 本来
+          #    就返回 None, 所以把 % 跳过删掉这条断言照样过(实测确认过)。真正要防的是
+          #    "哪天有人给全仓共用的 parse_numeric 加上识别百分号" —— 那时比率会静默流进
+          #    计数指标。所以把 parse_numeric 换成会吃 % 的版本, 专门测这一层还在。
+          _orig = c.parse_numeric
+          try:
+              c.parse_numeric = lambda v: _orig(str(v).rstrip("%")) if isinstance(v, str) else _orig(v)
+              assert c.parse_numeric("49.18%") == 49.18      # 先确认 patch 真的生效了
+              m2 = c.parse_kv_metrics("播放量：2187；划走率：49.18%；文案完读率：75%")
+              assert m2 == {"播放量": 2187.0}, ("比率键漏进计数指标了", m2)
+          finally:
+              c.parse_numeric = _orig
+          assert c.parse_kv_metrics("") == {} and c.parse_kv_metrics(None) == {}
+          assert c.parse_kv_metrics("播放量：；点赞量：无；评论量：5") == {"评论量": 5.0}
+          # 富文本(list[dict{text}])要能归一 —— 与 parse_audience_analysis 同一条路
+          assert c.parse_kv_metrics([{"text": "播放量：12；"}, {"text": "点赞量：3"}]) == {
+              "播放量": 12.0, "点赞量": 3.0}
+          print("  ✓ parse_kv_metrics 只收计数键 / 跳过比率 / 富文本归一 / 空段")
+
+          # ③ 取值规则: 取【最后一个有值的快照】, 不取各键最大值。
+          #    理由(实测): 154 行三次都有的里 12 行"晚的快照反而更小", 成因至少三种;
+          #    取最大值会把其中"第1次之后塌掉"那种(1202→104)放大成 1202 = 凭空造爆款。
+          mp = c.load_mapping("LNKT_phase1")
+          BASE = {"笔记内容": "【标题】t 【正文】v", "方向": "流量贴", "人群方向": "都市打工人"}
+          S = lambda p, z: f"播放量：{p}；点赞量：{z}；评论量：0；分享量：0；收藏量：0；划走率：9%"
+          def run(**snaps):
+              n, _, _ = s.transform_row(mp, "rec", {**BASE, **snaps})
+              return n
+          n = run(**{"数据汇总-第1次": S(1202, 40), "数据汇总-第2次": S(96, 2), "数据汇总-第3次": S(104, 3)})
+          assert n["impressions"] == 104, n["impressions"]      # 取最后一次, 不是 1202
+          reg = (n.get("data_quality_flags") or {}).get("metrics_snapshot_regressed")
+          assert reg and reg["max_seen"] == 1202 and reg["picked_value"] == 104, reg
+          # 中间快照为空要能跳过, 取到真正最后一个有值的
+          n = run(**{"数据汇总-第1次": S(10, 1), "数据汇总-第2次": "", "数据汇总-第3次": S(900, 30)})
+          assert n["impressions"] == 900 and "metrics_snapshot_regressed" not in (
+              n.get("data_quality_flags") or {})
+          # 一行的各项指标必须同源(都来自被选中的那个快照), 不许逐键取最大
+          n = run(**{"数据汇总-第1次": S(1202, 400), "数据汇总-第3次": S(104, 3)})
+          assert n["impressions"] == 104 and n["interactions"] == 3, (n["impressions"], n["interactions"])
+          # 完全没有指标文本 → 【整个键都不写】(不是写成 None, 更不是写 0 冒充有数据)。
+          # 用 .get() 而不是 [] —— 断言的是"没有这个键", 拿 [] 取会 KeyError 而不是断言失败。
+          empty = run()
+          assert "impressions" not in empty and "interactions" not in empty, sorted(empty)
+          print("  ✓ 取最后一次快照 / 跳过空快照 / 各指标同源 / 无数据不写 0 / 回退要标记")
+
+          # ④ 【本守卫的重点】: 一张表一旦能解析出 interactions, 它的 tier_thresholds
+          #    就不再是"占位"。所以凡是配了 metrics_from_kv_text 的项目, 要么没有阈值
+          #    (= 明确不做数值推断), 要么它的阈值必须【高于运营亲手标为「趴」的最高互动】——
+          #    否则等于把运营判死的帖自动升成爆。
+          for f in sorted(pathlib.Path("../mappings").glob("*.yaml")):
+              if f.stem.startswith("_"):
+                  continue
+              d = yaml.safe_load(f.read_text()) or {}
+              if not d.get("metrics_from_kv_text"):
+                  continue
+              th = d.get("tier_thresholds")
+              assert not th, (
+                  f"{f.stem} 同时配了 metrics_from_kv_text 和 tier_thresholds。"
+                  "指标一解析出来阈值就生效了 —— 要么摘掉阈值, 要么先拿真实分布证明它"
+                  "高于运营标『趴』的最高互动, 并把依据写在 yaml 里再放开这条守卫。")
+              spec = d["metrics_from_kv_text"]
+              assert spec.get("sources") and spec.get("extract"), f"{f.stem} 配置不完整"
+              assert isinstance(spec["sources"], list) and len(spec["sources"]) >= 1
+          print("  ✓ 配了指标解析的项目没有顺手留着占位阈值")
+          print("\n指标键值文本解析: all checks passed")
+          PY
       - name: 库结构前置闸:代码写的列必须先落库 (D-046, 2026-08-27 实测连红 4 天)
         working-directory: scripts
         run: |
