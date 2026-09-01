@@ -163,6 +163,7 @@ BEGIN
     FROM autowriter.jobs
     WHERE status = 'pending'
       AND (next_retry_at IS NULL OR next_retry_at < now())
+      AND attempts < max_attempts
       AND (_kinds IS NULL OR kind = ANY(_kinds))
     ORDER BY priority DESC, created_at
     LIMIT 1

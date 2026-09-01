@@ -79,9 +79,13 @@ WITH eligible AS (
         -- 0.37、比"半衰期5年"衰减偏快)。永不归零(老卡留低权重、不丢):
         --   1 年≈0.87 · 2 年≈0.76 · 5 年≈0.50 · 10 年≈0.25。
         -- age_months = epoch/(86400*30)。必须 double precision 保列类型不变 (CREATE OR REPLACE)。
-        power(0.5::double precision,
-              (EXTRACT(epoch FROM now()::timestamp without time zone - n.publish_time)
-               / (86400.0 * 30.0 * 60.0))::double precision) AS recency_weight
+        -- COR-024: 未来 publish_time(操作笔误/预排笔记)会让 age_months 为负,
+        -- power(0.5, 负数) > 1, rank_score 越界。LEAST 夹到 [0,1], 未来日期不再
+        -- 反超当下爆款。过去日期 power < 1, LEAST 不改变原值。
+        LEAST(1.0::double precision,
+              power(0.5::double precision,
+                    (EXTRACT(epoch FROM now()::timestamp without time zone - n.publish_time)
+                     / (86400.0 * 30.0 * 60.0))::double precision)) AS recency_weight
     FROM truth_vault.notes n
     JOIN truth_vault.projects p ON p.project_id = n.project_id
     WHERE n.tier = ANY (ARRAY['爆', '大爆', '参考'])

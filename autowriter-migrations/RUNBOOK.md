@@ -15,6 +15,7 @@ Truth Vault 通道 2 集成 patch 包. 把 autowriter 从独立 Supabase 实例�
 | `006_backfill_tv_synced_user_id.sql` | 把历史 TV-synced batches/items 的 user_id 改回 projects.owner_id (audit 2026-05-21 RLS 修复) | 002 完成 + truth-vault sync 脚本已升级到 resolve_aw_project_owner |
 | `007_fresh_install_autowriter_schema.sql` | 在共享 Supabase 上**从零创建** autowriter schema + 8 张表 + RLS + grants + RPC (含 TV 集成列, 跑完无需 002/003) | 仅场景 C：共享 Supabase 上从来没装过 autowriter，数据要么是空, 要么后续从老 Supabase 通过 `scripts/migrate_autowriter_across_supabase.py` 迁过来 |
 | `008_jobs_table.sql` | R-018: persistent job queue 替代 _queue_worker / _quick_gen_worker daemon thread (Sprint 2+) | 001 + 002 完成 |
+| `009_fix_batch_item_counts_and_version_uniq.sql` | 审计 COR-005/010 升级修复: `batch_item_counts` 表名 schema 限定 + `versions` 加 `(item_id, version_num)` 唯一索引 | 已部署的 autowriter schema (场景 A/B, 或已跑过 007) |
 | `RUNBOOK.md` | 本文件 | — |
 
 R-017 / R-018 worker process 代码 / R-020 文件拆分方案见 truth-vault
@@ -73,6 +74,8 @@ PGPASSWORD=<service_password> psql -h <shared_supabase_host> -U postgres \
     -d postgres -f 001_create_autowriter_schema.sql
 psql ... -f 002_add_external_source.sql
 psql ... -f 003_add_example_label_proposal.sql
+# 审计 COR-005/010 升级修复 (已部署 schema 必跑; fresh install 场景 C 已内置, no-op):
+psql ... -f 009_fix_batch_item_counts_and_version_uniq.sql
 ```
 
 ### Step 4 · Supabase Dashboard 暴露 autowriter schema
@@ -127,7 +130,7 @@ python sync_truth_vault_baokuan_to_autowriter_items.py --dry-run --limit 5
 
 ## 部署步骤 (场景 B)
 
-跳过 Step 2, 跑 002 + 003. 其余同上.
+跳过 Step 2, 跑 002 + 003 + 009. 其余同上.
 
 ## Auth / RLS 注意
 

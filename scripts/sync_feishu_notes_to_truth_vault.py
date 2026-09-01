@@ -640,10 +640,13 @@ def _derive_metric_window(publish_time_iso: str | None) -> tuple[int | None, str
     if not publish_time_iso:
         return None, "ad_hoc"
     try:
-        from datetime import datetime as _dt
+        from datetime import datetime as _dt, timezone as _tz
         pt = _dt.fromisoformat(str(publish_time_iso).replace("Z", "+00:00"))
         if pt.tzinfo is not None:
-            pt = pt.replace(tzinfo=None)
+            # COR-017: 转换成 UTC 再剥时区, 而不是 .replace(tzinfo=None) 直接丢弃时区。
+            # 原来把 "+08:00" 的墙钟当成 UTC 来减, 同一时刻会被算成偏了 8 小时,
+            # 导致 window_label 落错桶(指标快照的时间窗跟着错)。
+            pt = pt.astimezone(_tz.utc).replace(tzinfo=None)
         delta = _dt.utcnow() - pt
     except (ValueError, TypeError):
         return None, "ad_hoc"
@@ -1090,6 +1093,10 @@ def main() -> int:
                         raw_fields, undeclared, reason="undeclared_fields",
                     )
                 stats["quarantined"] += 1
+                # COR-002: 隔离的这条在飞书里【还在】, 只是这次没处理成 —— 不算
+                # 完整扫描。不把它计进 errors 的话 records_all_ok 恒真, 对账会把
+                # 这条(上一轮盖过戳的话)报成"消失了/移走了/改了 record_id"。
+                stats["errors"] += 1
                 continue  # Don't upsert; require human review first
 
             # Required-field check: truth_vault.notes has NOT NULL constraints
@@ -1113,6 +1120,10 @@ def main() -> int:
                         "record_id=%s missing required fields: %s → quarantine",
                         feishu_record_id, missing,
                     )
+                    # COR-002: 这是一条本该是笔记、却缺正文的行 —— 它在飞书里还在,
+                    # 只是这次没处理成。计进 errors 让 records_all_ok=False, 阻止对账
+                    # 把它报成"消失了"。空占位行(父记录占位/评论碎片)是正常噪音, 不计。
+                    stats["errors"] += 1
                 if not args.dry_run:
                     quarantine_record(
                         sb, mapping["project_id"], feishu_record_id,

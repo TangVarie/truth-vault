@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import math
 import os
 import re
 import sys
@@ -666,7 +667,8 @@ def parse_numeric(value: Any) -> Optional[float]:
     if value is None:
         return None
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value)
+        f = float(value)
+        return f if math.isfinite(f) else None
     if not isinstance(value, str):
         return None
     s = value.strip()
@@ -684,13 +686,17 @@ def parse_numeric(value: Any) -> Optional[float]:
     _SUFFIX = {"万": 1e4, "w": 1e4, "W": 1e4, "亿": 1e8}
     if s2 and s2[-1] in _SUFFIX:
         try:
-            return float(s2[:-1]) * _SUFFIX[s2[-1]]
-        except ValueError:
+            f = float(s2[:-1]) * _SUFFIX[s2[-1]]
+            return f if math.isfinite(f) else None
+        except (ValueError, OverflowError):
             return None
     try:
-        return float(s2)
-    except ValueError:
+        f = float(s2)
+    except (ValueError, OverflowError):
         return None
+    # COR-018: NaN / Inf(含字符串 "nan"/"inf"/"1e999" 溢出)会被 int() 之类
+    # 下游操作炸掉, 或把脏数据写进指标列。非有限一律当"无数据"处理。
+    return f if math.isfinite(f) else None
 
 
 def parse_feishu_date(value: Any) -> Optional[str]:
