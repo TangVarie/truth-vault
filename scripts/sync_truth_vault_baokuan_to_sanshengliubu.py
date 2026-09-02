@@ -406,7 +406,9 @@ def build_reference_sample(note: dict, comments: list[dict]) -> dict:
         "top_comments": top_comments,
         # platform: write sanshengliubu's display value (中文) so its
         # list_reference_packs filter `.eq("platform", "小红书")` finds us.
-        "platform":   _platform_for_ssll(proj.get("platform") or note.get("platform")),
+        # D-052: 先看笔记自己的 platform —— SPX 里继承来的抖音行 platform=douyin, 项目仍是小红书;
+        # 原来先看项目会把抖音爆款按「小红书」推给 ssll。老行 note.platform 本来就等于项目的, 行为不变。
+        "platform":   _platform_for_ssll(note.get("platform") or proj.get("platform")),
         "category":   proj.get("category"),
         "ai_analysis": ai_analysis,
         # ── Other top-level columns the canonical write path sets ──

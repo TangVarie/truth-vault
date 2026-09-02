@@ -1581,6 +1581,66 @@ jobs:
           print(f"  ✓ 闸行原样在 bash -e 下跑通: daily/cron→1, on_demand/cron→0, 读不出→2 ({daily}/{on_demand})")
           print("\non_demand 闸 bash -e: all checks passed")
           PY
+      - name: 名册行不算丢正文的笔记 + 抖音行沿用上一行文案只在同素人时继承 (D-052)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          import pathlib, yaml
+          import _common as c
+          import sync_feishu_notes_to_truth_vault as s
+          import sync_truth_vault_baokuan_to_sanshengliubu as ssll
+
+          # ① 占位判据只看 反馈链接(owner 2026-09-02): 名册行(素人编号+主页链接)= 空占位, 不计错;
+          #    有链接没正文的行 = 真笔记丢正文, 计错。
+          assert tuple(s._NOTE_DATA_SIGNALS) == ("publish_url",), s._NOTE_DATA_SIGNALS
+          mp = c.load_mapping("TUGE_phase1")
+          roster = {"素人编号": "LH100", "主页链接": {"link": "https://www.xiaohongshu.com/user/profile/x", "text": "x"},
+                    "父记录": [{"type": "text", "table_id": "t", "text_arr": []}]}
+          n, _, und = s.transform_row(mp, "r1", roster); assert und == [], und
+          assert not n.get("raw_content") and not any(n.get(k) for k in s._NOTE_DATA_SIGNALS), "名册行该判空占位"
+          posted = dict(roster, **{"反馈链接": "https://xhslink.cn/o/abc"})
+          n, _, _ = s.transform_row(mp, "r2", posted)
+          assert any(n.get(k) for k in s._NOTE_DATA_SIGNALS), "有反馈链接没正文 → 是真笔记丢正文, 该计错"
+          print("  ✓ 名册行=空占位 / 有链接没正文=计错")
+
+          # ② 继承: 只有 when 行 + 自己没正文 + 上一行有正文 + require_same 一致 才继承; 其余点名。
+          mp = c.load_mapping("SPX_phase1"); spec = mp["content_inherit_from_previous_row"]
+          assert spec["when"] == {"方向": "抖音"} and spec["require_same"] == ["素人编号"]
+          col = next(k for k, v in mp["field_mapping"].items() if v == "raw_content")
+          xhs = {"素人编号": "1002", "方向": "运动补给-产品贴", col: "【标题】t【正文】v", "笔记链接": {"link": "https://xhslink.cn/o/1"}}
+          dy  = {"素人编号": "1002", "方向": "抖音", "笔记链接": {"link": "https://v.douyin.com/a/"}, "曝光量": 14}
+          out, meta, why = s.inherit_content_from_previous_row(dy, xhs, "recXHS", spec, col)
+          assert why is None and out[col] == xhs[col] and out["方向"] == xhs["方向"], (why, out)
+          assert meta == {"from": "recXHS", "overrides": {"方向": "抖音"}}, meta
+          assert "方向" not in dy or dy["方向"] == "抖音", "不许改入参"
+          # 上一行素人不同 → 点名, 不猜
+          _, meta, why = s.inherit_content_from_previous_row(dict(dy, 素人编号="9999"), xhs, "recXHS", spec, col)
+          assert meta is None and why == "inherit_parent_mismatch:素人编号", why
+          # 没有上一行 / 上一行没正文 → 点名
+          assert s.inherit_content_from_previous_row(dy, None, None, spec, col)[2] == "inherit_parent_not_found"
+          assert s.inherit_content_from_previous_row(dy, {"素人编号": "1002"}, "x", spec, col)[2] == "inherit_parent_not_found"
+          # 非 when 行 / 自己有正文 → 原样, 不碰
+          assert s.inherit_content_from_previous_row(xhs, None, None, spec, col) == (xhs, None, None)
+          assert s.inherit_content_from_previous_row(dict(dy, **{col: "自己有"}), xhs, "r", spec, col)[1] is None
+          # 没配 spec 的项目 → 完全不动
+          assert s.inherit_content_from_previous_row(dy, xhs, "r", None, col) == (dy, None, None)
+          # 主循环里 prev 只在【非 when 行】上更新 —— 抖音行不能当下一条抖音行的父
+          src = pathlib.Path("sync_feishu_notes_to_truth_vault.py").read_text(encoding="utf-8")
+          assert "if not is_when_row:\n                prev_raw, prev_id = " in src, "prev 更新条件被改了"
+          assert 'reason=inh_reason' in src and 'stats["errors"] += 1' in src.split("reason=inh_reason", 1)[1][:400], "找不到父行必须隔离且计错"
+          # 继承后的行: platform 覆写 + 双留痕
+          assert 'note["platform"] = inherit_spec["platform_override"]' in src
+          assert '"_content_inherited_from"' in src and '"content_inherited"' in src
+          print("  ✓ 继承只在 同素人+上一行有正文 时发生; 对不上点名隔离; 抖音行不当父; 留痕+platform")
+
+          # ③ ssll: 平台先看笔记自己的 —— 继承来的抖音行是 douyin, 项目是小红书
+          src2 = pathlib.Path("sync_truth_vault_baokuan_to_sanshengliubu.py").read_text(encoding="utf-8")
+          assert 'note.get("platform") or proj.get("platform")' in src2
+          assert 'proj.get("platform") or note.get("platform")' not in src2, "又改回先看项目了"
+          assert ssll._platform_for_ssll("douyin") == "抖音"
+          print("  ✓ ssll 平台取值: 笔记优先于项目")
+          print("\n名册行/抖音行继承: all checks passed")
+          PY
       - name: 库结构前置闸:代码写的列必须先落库 (D-046, 2026-08-27 实测连红 4 天)
         working-directory: scripts
         run: |

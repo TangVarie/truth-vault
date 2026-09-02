@@ -146,6 +146,18 @@ compliance:
     avoid: []
 
 # ── 项目专属字段(进 raw_extra) ── [30 列已全覆盖 field_mapping,此处仅图片/附件类]
+# ── 抖音行沿用小红书文案 ── 2026-09-02 owner 口径(D-052)
+# 表里 50 行 方向=「抖音」、链接是 v.douyin.com、有指标、没有「笔记内容」。运营的录入约定:
+# 一条小红书文案拿去发抖音, 就在那行【下面】加一条抖音记录, 不重复写文案。
+# 引擎按视图顺序拿"上一行"的文案; 上一行必须同一个 素人编号, 对不上就隔离并点名
+# (运营说"中间乱了一次" —— 乱掉的那段会以 inherit_parent_* 的理由躺在隔离表里, 不会被配错)。
+# 方向也一并继承(抖音行自己的「抖音」留在 raw_extra._inherited_overrides), platform 标成 douyin。
+content_inherit_from_previous_row:
+  when: {方向: 抖音}
+  require_same: [素人编号]
+  also_inherit: [方向]
+  platform_override: douyin
+
 project_specific_fields_to_raw_extra:
   - 笔记配图                        # 图片 URL/附件(188 个不同值)
   - 随贴评论配图                    # 评论配图(46 个不同值)
