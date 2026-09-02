@@ -276,9 +276,10 @@ def inherit_content_from_previous_row(
 
     返回 (raw_fields', meta, reason):
       · 不是 when 指定的行 / 自己有正文       → 原样返回, meta=None, reason=None
-      · 上一行有正文且 require_same 的列一致  → 复制正文(+also_inherit 的列), meta 记来源与被覆盖的原值
-      · 找不到父行 / 列对不上                → 原样返回, reason 点名 —— 调用方隔离, 【不】猜。
-        运营说"中间乱了一次": 乱掉的那段就落在这里, 按名字能捞出来, 不会被静默配错正文。
+      · 紧挨着的上一条是非 when 行且有正文    → 复制正文(+also_inherit 的列), meta 记来源与被覆盖的原值
+      · 上一条还是 when 行(抖音接抖音)        → reason=inherit_prev_row_is_same_kind, 判不了, 调用方隔离
+      · 没有上一条 / 上一条没正文            → reason=inherit_parent_not_found
+        owner 2026-09-02: 只看挨不挨着, 与素人编号无关。"中间乱了一次"= 抖音接抖音那段, 按名字能捞出来。
     """
     if not spec:
         return raw_fields, None, None
@@ -287,9 +288,15 @@ def inherit_content_from_previous_row(
         return raw_fields, None, None
     if raw_fields.get(content_col):
         return raw_fields, None, None
-    if not prev_raw or not prev_raw.get(content_col):
+    if not prev_raw:
         return raw_fields, None, "inherit_parent_not_found"
-    for k in spec.get("require_same") or []:
+    # owner 2026-09-02: 只看【挨不挨着】。紧挨着的上一条是小红书 → 沿用; 上一条还是抖音 → 这条判不了
+    # (运营说"中间乱了一次"就是这种: 两条抖音连着, 谁的文案是谁的已经说不清), 隔离并点名。
+    if all(_direction_key(prev_raw.get(k)) == str(v) for k, v in when.items()):
+        return raw_fields, None, "inherit_prev_row_is_same_kind"
+    if not prev_raw.get(content_col):
+        return raw_fields, None, "inherit_parent_not_found"
+    for k in spec.get("require_same") or []:      # 可选的额外闸; SPX 不配(owner: 与素人编号无关)
         if _direction_key(raw_fields.get(k)) != _direction_key(prev_raw.get(k)):
             return raw_fields, None, f"inherit_parent_mismatch:{k}"
     out = dict(raw_fields)
@@ -1117,7 +1124,7 @@ def main() -> int:
 
     inherit_spec = mapping.get("content_inherit_from_previous_row") or None
     content_col = next((k for k, v in mapping["field_mapping"].items() if v == "raw_content"), None)
-    prev_raw: dict[str, Any] | None = None      # 上一条【非 when 行】(抖音行不能当下一条抖音行的父)
+    prev_raw: dict[str, Any] | None = None      # 【紧挨着】的上一条(不管是什么行)
     prev_id: str | None = None
     for item in _iter_all_records():
         if args.limit and stats["total"] >= args.limit:
@@ -1130,10 +1137,8 @@ def main() -> int:
         if inherit_spec and content_col:
             raw_fields, inherited_meta, inh_reason = inherit_content_from_previous_row(
                 raw_fields, prev_raw, prev_id, inherit_spec, content_col)
-            when = inherit_spec.get("when") or {}
-            is_when_row = all(_direction_key(item.get("fields", {}).get(k)) == str(v) for k, v in when.items())
-            if not is_when_row:
-                prev_raw, prev_id = item.get("fields", {}), feishu_record_id
+            # prev 每一条都更新 —— 判据是【紧挨着】的上一条是什么, 抖音接抖音要能被看见(helper 里判)。
+            prev_raw, prev_id = item.get("fields", {}), feishu_record_id
             if inh_reason:
                 logger.warning("record_id=%s 抖音行找不到可继承的上一行小红书文案(%s, 素人=%s) → quarantine",
                                feishu_record_id, inh_reason, raw_fields.get("素人编号"))

@@ -1605,18 +1605,20 @@ jobs:
 
           # ② 继承: 只有 when 行 + 自己没正文 + 上一行有正文 + require_same 一致 才继承; 其余点名。
           mp = c.load_mapping("SPX_phase1"); spec = mp["content_inherit_from_previous_row"]
-          assert spec["when"] == {"方向": "抖音"} and spec["require_same"] == ["素人编号"]
+          assert spec["when"] == {"方向": "抖音"} and not spec.get("require_same"), "owner: 与素人编号无关, 只看挨不挨着"
           col = next(k for k, v in mp["field_mapping"].items() if v == "raw_content")
           xhs = {"素人编号": "1002", "方向": "运动补给-产品贴", col: "【标题】t【正文】v", "笔记链接": {"link": "https://xhslink.cn/o/1"}}
-          dy  = {"素人编号": "1002", "方向": "抖音", "笔记链接": {"link": "https://v.douyin.com/a/"}, "曝光量": 14}
+          dy  = {"素人编号": "9999", "方向": "抖音", "笔记链接": {"link": "https://v.douyin.com/a/"}, "曝光量": 14}
+          # 紧挨着的上一条是小红书 → 沿用, 素人编号不同也沿用
           out, meta, why = s.inherit_content_from_previous_row(dy, xhs, "recXHS", spec, col)
           assert why is None and out[col] == xhs[col] and out["方向"] == xhs["方向"], (why, out)
           assert meta == {"from": "recXHS", "overrides": {"方向": "抖音"}}, meta
-          assert "方向" not in dy or dy["方向"] == "抖音", "不许改入参"
-          # 上一行素人不同 → 点名, 不猜
-          _, meta, why = s.inherit_content_from_previous_row(dict(dy, 素人编号="9999"), xhs, "recXHS", spec, col)
-          assert meta is None and why == "inherit_parent_mismatch:素人编号", why
-          # 没有上一行 / 上一行没正文 → 点名
+          assert dy["方向"] == "抖音" and col not in dy, "不许改入参"
+          # 上一条还是抖音(哪怕它已经继承到了正文) → 判不了, 点名
+          dy_prev = dict(dy, **{col: "上一条抖音继承来的正文"})
+          _, meta, why = s.inherit_content_from_previous_row(dy, dy_prev, "recDY", spec, col)
+          assert meta is None and why == "inherit_prev_row_is_same_kind", why
+          # 没有上一条 / 上一条没正文(空行、名册行) → 点名
           assert s.inherit_content_from_previous_row(dy, None, None, spec, col)[2] == "inherit_parent_not_found"
           assert s.inherit_content_from_previous_row(dy, {"素人编号": "1002"}, "x", spec, col)[2] == "inherit_parent_not_found"
           # 非 when 行 / 自己有正文 → 原样, 不碰
@@ -1624,14 +1626,16 @@ jobs:
           assert s.inherit_content_from_previous_row(dict(dy, **{col: "自己有"}), xhs, "r", spec, col)[1] is None
           # 没配 spec 的项目 → 完全不动
           assert s.inherit_content_from_previous_row(dy, xhs, "r", None, col) == (dy, None, None)
-          # 主循环里 prev 只在【非 when 行】上更新 —— 抖音行不能当下一条抖音行的父
+          # 主循环里 prev 【每一条】都更新 —— 判的是紧挨着的上一条, 抖音接抖音必须能被看见
           src = pathlib.Path("sync_feishu_notes_to_truth_vault.py").read_text(encoding="utf-8")
-          assert "if not is_when_row:\n                prev_raw, prev_id = " in src, "prev 更新条件被改了"
-          assert 'reason=inh_reason' in src and 'stats["errors"] += 1' in src.split("reason=inh_reason", 1)[1][:400], "找不到父行必须隔离且计错"
+          loop = src.split("for item in _iter_all_records():", 1)[1]
+          assert "prev_raw, prev_id = item.get(\"fields\", {}), feishu_record_id" in loop, "prev 更新没了"
+          assert "is_when_row" not in loop, "prev 又变成只在非抖音行更新了 —— 抖音接抖音就看不见了"
+          assert 'reason=inh_reason' in src and 'stats["errors"] += 1' in src.split("reason=inh_reason", 1)[1][:400], "判不了必须隔离且计错"
           # 继承后的行: platform 覆写 + 双留痕
           assert 'note["platform"] = inherit_spec["platform_override"]' in src
           assert '"_content_inherited_from"' in src and '"content_inherited"' in src
-          print("  ✓ 继承只在 同素人+上一行有正文 时发生; 对不上点名隔离; 抖音行不当父; 留痕+platform")
+          print("  ✓ 只看挨不挨着: 上一条小红书→沿用(素人编号无关); 上一条抖音→判不了点名; 空行→点名; 留痕+platform")
 
           # ③ ssll: 平台先看笔记自己的 —— 继承来的抖音行是 douyin, 项目是小红书
           src2 = pathlib.Path("sync_truth_vault_baokuan_to_sanshengliubu.py").read_text(encoding="utf-8")

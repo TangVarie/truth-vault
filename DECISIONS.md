@@ -2286,15 +2286,16 @@ owner 说去看了没有这种情况。重核原始行：
 ```yaml
 content_inherit_from_previous_row:
   when: {方向: 抖音}          # 只对这些行
-  require_same: [素人编号]    # 上一行必须同一个素人, 否则不继承
   also_inherit: [方向]        # 方向也拿上一行的(抖音行自己的「抖音」留在 raw_extra)
   platform_override: douyin
 ```
 
-**"中间乱了一次"是这套设计的核心约束**：乱掉的那段位置对不上，如果按位置盲继承会把别人的
-文案配给它。所以 `require_same: 素人编号` 是硬闸 —— 对不上就隔离，理由点名
-`inherit_parent_mismatch:素人编号` / `inherit_parent_not_found`，按名字能整段捞出来，不会被静默配错。
-抖音行自己不能当下一条抖音行的父（prev 只在非 when 行上更新）。
+**owner 的判据只有一条：挨不挨着。** 紧挨着的上一条是小红书 → 沿用它的文案，**与素人编号无关**
+（我第一版加的 `require_same: 素人编号` 是多余的闸，owner 说无关，摘了；引擎里留作可选项，SPX 不配）。
+紧挨着的上一条还是抖音 → **这条判不了**，隔离并点名 `inherit_prev_row_is_same_kind`
+—— "中间乱了一次"就是抖音接抖音那段，按名字能整段捞出来，不会被静默配错。
+上一条是空行/名册行（没正文）→ `inherit_parent_not_found`。
+所以 prev 是【每一条】都更新的紧挨着的上一条，不是"上一条小红书"。
 
 继承来的行双留痕：`raw_extra._content_inherited_from`（谁的正文）、`raw_extra._inherited_overrides`
 （盖掉了哪些原值）、`data_quality_flags.content_inherited=true`；`platform` 标成 douyin。
@@ -2304,10 +2305,9 @@ content_inherit_from_previous_row:
 
 ### 拿不准、留给 owner 的
 
-- 50 条抖音行里，**素人编号是否和上一行小红书的一致**没法从库里验（位置不落库）。
-  如果一致，继承直接生效；如果抖音号用的是另一套编号，全部 50 条会以 `inherit_parent_mismatch`
-  躺在隔离表里 —— 不会配错，但也一条进不来，那时要么改 `require_same`，要么在飞书加一列「对应小红书记录」（关联字段）。
-  **加关联列是更稳的长期做法**：位置乱了也不怕。
+- 50 条里有多少是"抖音接抖音"（判不了的那段）库里验不了（位置不落库），合并跑一次就知道：
+  它们会以 `inherit_prev_row_is_same_kind` 躺在隔离表里。那一段要么运营在飞书把顺序理回来，
+  要么加一列「对应小红书记录」关联字段 —— **加关联列是更稳的长期做法**，位置再乱也不怕。
 - 方向=「抖音」不在 SPX 的 direction_decomposition 里 —— 现在靠 `also_inherit: [方向]` 绕过；
   抖音行要不要有自己的方向体系，另说。
 
