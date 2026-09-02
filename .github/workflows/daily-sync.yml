@@ -191,7 +191,9 @@ jobs:
             # 三生六部 → autowriter 传下去。那道闸的本意只实现了一半。
             # 判据走 skip_on_cron.py(内部就是入库那步用的同一个函数), 不在这儿重写一遍。
             # exit 2 = 判不了 → 照跑(静默少干活比多干一次更难查)。
-            python skip_on_cron.py "$p"; rc=$?
+            # ⚠️ 不能写成 `python skip_on_cron.py "$p"; rc=$?` —— 步骤默认 `bash -e`, 退出码 1
+            #    (= 照跑)会在 rc=$? 之前就把整步掐死, 一行输出都没有(D-051, 8/31~9/2 连红三晚)。
+            rc=0; python skip_on_cron.py "$p" || rc=$?
             if [ "$rc" = "0" ]; then
               echo "  ⏭  $p sync_interval=on_demand → 夜间 cron 跳过 essence(与入库同一道闸, D-047)"
               continue
@@ -294,7 +296,9 @@ jobs:
             p=$(basename "$f" .yaml)
             [ "$p" = "_template" ] && continue
             [ -n "$PROJECT_FILTER" ] && [ "$p" != "$PROJECT_FILTER" ] && continue
-            python skip_on_cron.py "$p"; rc=$?
+            # ⚠️ 不能写成 `python skip_on_cron.py "$p"; rc=$?` —— 步骤默认 `bash -e`, 退出码 1
+            #    (= 照跑)会在 rc=$? 之前就把整步掐死, 一行输出都没有(D-051, 8/31~9/2 连红三晚)。
+            rc=0; python skip_on_cron.py "$p" || rc=$?
             if [ "$rc" = "0" ]; then
               echo "  ⏭  $p sync_interval=on_demand → 夜间 cron 跳过 curate(与入库/essence 同一道闸)"
               continue

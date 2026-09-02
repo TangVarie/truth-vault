@@ -1545,6 +1545,42 @@ jobs:
           print("  ✓ 兜底推出来的方向都能在 direction_decomposition 里查到")
           print("\n方向正文兜底: all checks passed")
           PY
+      - name: on_demand 闸在 bash -e 下不许把「照跑」当崩溃 (D-051, 8/31~9/2 essence/curate 连红三晚)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          import os, pathlib, re, subprocess, sys, yaml
+          wf = pathlib.Path("../.github/workflows/daily-sync.yml").read_text(encoding="utf-8")
+          gate_lines = [l.strip() for l in wf.splitlines()
+                        if "skip_on_cron.py" in l and not l.strip().startswith("#")]
+          assert len(gate_lines) >= 2, f"essence/curate 两步都该接闸, 只找到 {gate_lines}"
+          # ① 形态: 裸调 `cmd; rc=$?` 在 bash -e 下, 退出码 1(=照跑)会先把整步掐死。
+          #    D-047 的守卫只查了 "skip_on_cron.py" 这个字符串在不在, 没查退出码怎么被消费 —— 空跑了。
+          for l in gate_lines:
+              assert not re.search(r'skip_on_cron\.py\s+"\$p"\s*;\s*rc=\$\?', l), \
+                  f"又写成裸调了(bash -e 会在 rc=\\$? 之前退出): {l}"
+              assert ("|| rc=$?" in l) or l.startswith("if "), f"退出码没被 || / if 接住: {l}"
+          # ② 【真的跑】: 把 workflow 里那一行原样丢进 bash -e, 后面跟一个哨兵。
+          #    daily+cron → 闸说 1(照跑), 哨兵必须打印; on_demand+cron → 0; 读不出 → 2。
+          def sub(m): return m.get("sync_config", {}).get("sync_interval")
+          maps = {p.stem: yaml.safe_load(p.read_text()) or {} for p in pathlib.Path("../mappings").glob("*.yaml")
+                  if not p.stem.startswith("_")}
+          daily = next(k for k, m in maps.items() if sub(m) == "daily")
+          on_demand = next(k for k, m in maps.items() if sub(m) == "on_demand")
+          line = gate_lines[0]
+          def run(project, scheduled):
+              env = dict(os.environ, TV_SCHEDULED_RUN="true" if scheduled else "", p=project)
+              r = subprocess.run(["bash", "-e", "-c", line + '; echo "SENTINEL rc=$rc"'],
+                                 capture_output=True, text=True, env=env)
+              m = re.search(r"SENTINEL rc=(\d)", r.stdout)
+              return (int(m.group(1)) if m else None), r.returncode
+          assert run(daily, True)     == (1, 0), f"daily+cron 该走到哨兵且 rc=1, 实际 {run(daily, True)}"
+          assert run(on_demand, True) == (0, 0), f"on_demand+cron 该 rc=0, 实际 {run(on_demand, True)}"
+          assert run("NO_SUCH_PROJECT_xyz", True) == (2, 0), "读不出 mapping 该 rc=2 且不掐步"
+          assert run(daily, False)    == (1, 0), "显式 dispatch 也是照跑(1), 同样不能掐步"
+          print(f"  ✓ 闸行原样在 bash -e 下跑通: daily/cron→1, on_demand/cron→0, 读不出→2 ({daily}/{on_demand})")
+          print("\non_demand 闸 bash -e: all checks passed")
+          PY
       - name: 库结构前置闸:代码写的列必须先落库 (D-046, 2026-08-27 实测连红 4 天)
         working-directory: scripts
         run: |
