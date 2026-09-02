@@ -1585,7 +1585,7 @@ jobs:
         working-directory: scripts
         run: |
           python - <<'PY'
-          import pathlib, yaml
+          import pathlib, re, yaml
           import _common as c
           import sync_feishu_notes_to_truth_vault as s
           import sync_truth_vault_baokuan_to_sanshengliubu as ssll
@@ -1642,7 +1642,34 @@ jobs:
           assert 'note.get("platform") or proj.get("platform")' in src2
           assert 'proj.get("platform") or note.get("platform")' not in src2, "又改回先看项目了"
           assert ssll._platform_for_ssll("douyin") == "抖音"
-          print("  ✓ ssll 平台取值: 笔记优先于项目")
+          # codex review on #122: 优先级翻了但 fetch_pending_baokuan 的 select 没选 note 级 platform,
+          # note.get("platform") 永远 None → 等于没翻。把 select 字符串从源码里抠出来, 去掉
+          # projects(...) 那个嵌套组, 断言顶层列里有 platform。
+          fn = src2.split("def fetch_pending_baokuan", 1)[1].split("def ", 1)[0]
+          # 字符串字面量里有 projects(...) 的括号, 所以按「连续的 "..." 字面量」抓, 不按括号抓
+          sel = re.search(r'\.select\(((?:\s*"[^"]*"\s*)+)\)', fn, re.S).group(1)
+          sel_flat = " ".join(re.findall(r'"([^"]*)"', sel))
+          top = re.sub(r"projects\([^)]*\)", "", sel_flat)
+          cols = [c.strip() for c in top.split(",") if c.strip()]
+          assert "platform" in cols, f"fetch_pending_baokuan 的 select 没选 note 级 platform: {cols}"
+          # 功能断言: note 是 douyin、项目是 xiaohongshu → 推给 ssll 的是「抖音」
+          note = {
+                        "note_id": "TST_P_rec1",
+                        "project_id": "TST_P",
+                        "raw_content": "title line\nbody continues",
+                        "tier": "爆",
+                        "intent": "traffic",
+                        "publish_url": "https://example.com/x",
+                        "target_audience": ["20-29"],
+                        "hit_blue_keywords": ["k1"],
+                        "platform": "xiaohongshu",
+                        "projects": {"brand": "TST", "category": "保健品", "platform": "xiaohongshu"},
+                    }
+          note["platform"] = "douyin"; note["projects"]["platform"] = "xiaohongshu"
+          assert ssll.build_reference_sample(note, [])["platform"] == "抖音"
+          note["platform"] = None
+          assert ssll.build_reference_sample(note, [])["platform"] == "小红书", "note 没 platform 时回落到项目"
+          print("  ✓ ssll 平台取值: 笔记优先于项目, 且 select 真的选了 note 级 platform")
           print("\n名册行/抖音行继承: all checks passed")
           PY
       - name: 库结构前置闸:代码写的列必须先落库 (D-046, 2026-08-27 实测连红 4 天)

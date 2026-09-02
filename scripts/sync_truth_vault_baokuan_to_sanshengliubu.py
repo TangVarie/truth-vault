@@ -136,7 +136,10 @@ def fetch_pending_baokuan(
     q = (
         sb.schema("truth_vault")
         .table("notes")
-        .select("note_id, project_id, raw_content, hit_blue_keywords, "
+        # D-052(codex review on #122): note 级 platform 必须在这里显式选出来 —— 下面
+        # build_reference_sample 先看 note.platform 再看项目的; 不选的话 note.get("platform")
+        # 永远是 None, 优先级翻了等于没翻, 抖音行照样按小红书推。
+        .select("note_id, project_id, platform, raw_content, hit_blue_keywords, "
                 "tier, tier_source, intent, publish_url, publish_time, "
                 "target_audience, data_quality_flags, projects(category, brand, platform)")
         .in_("tier", ["爆", "大爆", "参考"])
