@@ -136,7 +136,10 @@ def fetch_pending_baokuan(
     q = (
         sb.schema("truth_vault")
         .table("notes")
-        .select("note_id, project_id, raw_content, hit_blue_keywords, "
+        # D-052(codex review on #122): note 级 platform 必须在这里显式选出来 —— 下面
+        # build_reference_sample 先看 note.platform 再看项目的; 不选的话 note.get("platform")
+        # 永远是 None, 优先级翻了等于没翻, 抖音行照样按小红书推。
+        .select("note_id, project_id, platform, raw_content, hit_blue_keywords, "
                 "tier, tier_source, intent, publish_url, publish_time, "
                 "target_audience, data_quality_flags, projects(category, brand, platform)")
         .in_("tier", ["爆", "大爆", "参考"])
@@ -406,7 +409,9 @@ def build_reference_sample(note: dict, comments: list[dict]) -> dict:
         "top_comments": top_comments,
         # platform: write sanshengliubu's display value (中文) so its
         # list_reference_packs filter `.eq("platform", "小红书")` finds us.
-        "platform":   _platform_for_ssll(proj.get("platform") or note.get("platform")),
+        # D-052: 先看笔记自己的 platform —— SPX 里继承来的抖音行 platform=douyin, 项目仍是小红书;
+        # 原来先看项目会把抖音爆款按「小红书」推给 ssll。老行 note.platform 本来就等于项目的, 行为不变。
+        "platform":   _platform_for_ssll(note.get("platform") or proj.get("platform")),
         "category":   proj.get("category"),
         "ai_analysis": ai_analysis,
         # ── Other top-level columns the canonical write path sets ──

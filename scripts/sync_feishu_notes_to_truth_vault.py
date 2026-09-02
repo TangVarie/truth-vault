@@ -237,7 +237,10 @@ _LINEAGE_COLS = tuple(_LINEAGE_FK_COLS) + _LINEAGE_RAW_EXTRA_COLS
 # → 静默计数、收尾出一行汇总。反之: 有这些信号却缺 raw_content = 真数据异常(本该是笔记却丢了正文)
 # → 仍逐条 WARNING。注: 发布时间/蓝词记录【不】算 note-like 信号(评论碎片也常带), 故不在此列。
 _NOTE_DATA_SIGNALS = (
-    "account_id", "publish_url", "impressions", "reads", "interactions", "tier",
+    # 2026-09-02 owner 定的口径(D-052): 一条缺正文的行算不算「本该是笔记」, 只看【反馈链接非空】。
+    # 之前把 账号/曝光/阅读/互动/tier 也算信号, 结果 TUGE 的素人名册行(只有 素人编号+主页链接,
+    # 64 行)被当成"丢了正文的笔记"逐条计错、把 feishu_sync 拖红。名册行不是笔记。
+    "publish_url",
 )
 
 # 「运营在 tier 源里手写的假数据标记」—— 命中 → data_quality_flags.synthetic=true。
@@ -258,6 +261,52 @@ _SYNTHETIC_TIER_SRC_RE = re.compile(r"伪爆[贴帖]|伪\d+评")
 # 这里保留同名薄别名: 既有 CI 守卫按这个名字取, 且本模块内部调用点不必改。
 _skip_on_demand_on_cron = skip_on_demand_on_cron
 
+
+
+def inherit_content_from_previous_row(
+    raw_fields: dict[str, Any],
+    prev_raw: dict[str, Any] | None,
+    prev_id: str | None,
+    spec: dict | None,
+    content_col: str,
+) -> tuple[dict[str, Any], dict[str, Any] | None, str | None]:
+    """SPX 的录入约定(owner 2026-09-02, D-052): 一条小红书文案拿去发抖音时, 运营在那行【下面】
+    加一条抖音记录, 不重复写文案 —— 正文在上一行。飞书 list_records 按视图顺序返回, 所以
+    "上一行"在 sync 时是可见的, 只是没人接住。
+
+    返回 (raw_fields', meta, reason):
+      · 不是 when 指定的行 / 自己有正文       → 原样返回, meta=None, reason=None
+      · 紧挨着的上一条是非 when 行且有正文    → 复制正文(+also_inherit 的列), meta 记来源与被覆盖的原值
+      · 上一条还是 when 行(抖音接抖音)        → reason=inherit_prev_row_is_same_kind, 判不了, 调用方隔离
+      · 没有上一条 / 上一条没正文            → reason=inherit_parent_not_found
+        owner 2026-09-02: 只看挨不挨着, 与素人编号无关。"中间乱了一次"= 抖音接抖音那段, 按名字能捞出来。
+    """
+    if not spec:
+        return raw_fields, None, None
+    when = spec.get("when") or {}
+    if not when or not all(_direction_key(raw_fields.get(k)) == str(v) for k, v in when.items()):
+        return raw_fields, None, None
+    if raw_fields.get(content_col):
+        return raw_fields, None, None
+    if not prev_raw:
+        return raw_fields, None, "inherit_parent_not_found"
+    # owner 2026-09-02: 只看【挨不挨着】。紧挨着的上一条是小红书 → 沿用; 上一条还是抖音 → 这条判不了
+    # (运营说"中间乱了一次"就是这种: 两条抖音连着, 谁的文案是谁的已经说不清), 隔离并点名。
+    if all(_direction_key(prev_raw.get(k)) == str(v) for k, v in when.items()):
+        return raw_fields, None, "inherit_prev_row_is_same_kind"
+    if not prev_raw.get(content_col):
+        return raw_fields, None, "inherit_parent_not_found"
+    for k in spec.get("require_same") or []:      # 可选的额外闸; SPX 不配(owner: 与素人编号无关)
+        if _direction_key(raw_fields.get(k)) != _direction_key(prev_raw.get(k)):
+            return raw_fields, None, f"inherit_parent_mismatch:{k}"
+    out = dict(raw_fields)
+    overrides: dict[str, Any] = {}
+    out[content_col] = prev_raw[content_col]
+    for k in spec.get("also_inherit") or []:
+        if k in prev_raw:
+            overrides[k] = raw_fields.get(k)
+            out[k] = prev_raw[k]
+    return out, {"from": prev_id, "overrides": overrides}, None
 
 def transform_row(
     mapping: dict,
@@ -1073,6 +1122,10 @@ def main() -> int:
                 fetch_failed.append(_sp["table_id"])
                 stats["errors"] += 1
 
+    inherit_spec = mapping.get("content_inherit_from_previous_row") or None
+    content_col = next((k for k, v in mapping["field_mapping"].items() if v == "raw_content"), None)
+    prev_raw: dict[str, Any] | None = None      # 【紧挨着】的上一条(不管是什么行)
+    prev_id: str | None = None
     for item in _iter_all_records():
         if args.limit and stats["total"] >= args.limit:
             truncated_by_limit = True
@@ -1080,8 +1133,32 @@ def main() -> int:
         stats["total"] += 1
         feishu_record_id = item.get("record_id", "")
         raw_fields = item.get("fields", {})
+        inherited_meta = None
+        if inherit_spec and content_col:
+            raw_fields, inherited_meta, inh_reason = inherit_content_from_previous_row(
+                raw_fields, prev_raw, prev_id, inherit_spec, content_col)
+            # prev 每一条都更新 —— 判据是【紧挨着】的上一条是什么, 抖音接抖音要能被看见(helper 里判)。
+            prev_raw, prev_id = item.get("fields", {}), feishu_record_id
+            if inh_reason:
+                logger.warning("record_id=%s 抖音行找不到可继承的上一行小红书文案(%s, 素人=%s) → quarantine",
+                               feishu_record_id, inh_reason, raw_fields.get("素人编号"))
+                if not args.dry_run:
+                    quarantine_record(sb, mapping["project_id"], feishu_record_id,
+                                      raw_fields, [content_col], reason=inh_reason)
+                stats["quarantined"] += 1
+                stats["errors"] += 1
+                continue
         try:
             note, metric, undeclared = transform_row(mapping, feishu_record_id, raw_fields)
+            if inherited_meta:
+                # 继承来的正文必须自带出处(同 D-048/D-049 的口径): 谁的正文、盖掉了哪些原值。
+                note.setdefault("raw_extra", {})["_content_inherited_from"] = inherited_meta["from"]
+                note["raw_extra"]["_inherited_overrides"] = inherited_meta["overrides"]
+                flags = dict(note.get("data_quality_flags") or {})
+                flags["content_inherited"] = True
+                note["data_quality_flags"] = flags
+                if inherit_spec.get("platform_override"):
+                    note["platform"] = inherit_spec["platform_override"]
             if undeclared:
                 logger.warning(
                     "record_id=%s has undeclared fields: %s → quarantine",

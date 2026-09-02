@@ -1545,6 +1545,133 @@ jobs:
           print("  ✓ 兜底推出来的方向都能在 direction_decomposition 里查到")
           print("\n方向正文兜底: all checks passed")
           PY
+      - name: on_demand 闸在 bash -e 下不许把「照跑」当崩溃 (D-051, 8/31~9/2 essence/curate 连红三晚)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          import os, pathlib, re, subprocess, sys, yaml
+          wf = pathlib.Path("../.github/workflows/daily-sync.yml").read_text(encoding="utf-8")
+          gate_lines = [l.strip() for l in wf.splitlines()
+                        if "skip_on_cron.py" in l and not l.strip().startswith("#")]
+          assert len(gate_lines) >= 2, f"essence/curate 两步都该接闸, 只找到 {gate_lines}"
+          # ① 形态: 裸调 `cmd; rc=$?` 在 bash -e 下, 退出码 1(=照跑)会先把整步掐死。
+          #    D-047 的守卫只查了 "skip_on_cron.py" 这个字符串在不在, 没查退出码怎么被消费 —— 空跑了。
+          for l in gate_lines:
+              assert not re.search(r'skip_on_cron\.py\s+"\$p"\s*;\s*rc=\$\?', l), \
+                  f"又写成裸调了(bash -e 会在 rc=\\$? 之前退出): {l}"
+              assert ("|| rc=$?" in l) or l.startswith("if "), f"退出码没被 || / if 接住: {l}"
+          # ② 【真的跑】: 把 workflow 里那一行原样丢进 bash -e, 后面跟一个哨兵。
+          #    daily+cron → 闸说 1(照跑), 哨兵必须打印; on_demand+cron → 0; 读不出 → 2。
+          def sub(m): return m.get("sync_config", {}).get("sync_interval")
+          maps = {p.stem: yaml.safe_load(p.read_text()) or {} for p in pathlib.Path("../mappings").glob("*.yaml")
+                  if not p.stem.startswith("_")}
+          daily = next(k for k, m in maps.items() if sub(m) == "daily")
+          on_demand = next(k for k, m in maps.items() if sub(m) == "on_demand")
+          line = gate_lines[0]
+          def run(project, scheduled):
+              env = dict(os.environ, TV_SCHEDULED_RUN="true" if scheduled else "", p=project)
+              r = subprocess.run(["bash", "-e", "-c", line + '; echo "SENTINEL rc=$rc"'],
+                                 capture_output=True, text=True, env=env)
+              m = re.search(r"SENTINEL rc=(\d)", r.stdout)
+              return (int(m.group(1)) if m else None), r.returncode
+          assert run(daily, True)     == (1, 0), f"daily+cron 该走到哨兵且 rc=1, 实际 {run(daily, True)}"
+          assert run(on_demand, True) == (0, 0), f"on_demand+cron 该 rc=0, 实际 {run(on_demand, True)}"
+          assert run("NO_SUCH_PROJECT_xyz", True) == (2, 0), "读不出 mapping 该 rc=2 且不掐步"
+          assert run(daily, False)    == (1, 0), "显式 dispatch 也是照跑(1), 同样不能掐步"
+          print(f"  ✓ 闸行原样在 bash -e 下跑通: daily/cron→1, on_demand/cron→0, 读不出→2 ({daily}/{on_demand})")
+          print("\non_demand 闸 bash -e: all checks passed")
+          PY
+      - name: 名册行不算丢正文的笔记 + 抖音行沿用上一行文案只在同素人时继承 (D-052)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          import pathlib, re, yaml
+          import _common as c
+          import sync_feishu_notes_to_truth_vault as s
+          import sync_truth_vault_baokuan_to_sanshengliubu as ssll
+
+          # ① 占位判据只看 反馈链接(owner 2026-09-02): 名册行(素人编号+主页链接)= 空占位, 不计错;
+          #    有链接没正文的行 = 真笔记丢正文, 计错。
+          assert tuple(s._NOTE_DATA_SIGNALS) == ("publish_url",), s._NOTE_DATA_SIGNALS
+          mp = c.load_mapping("TUGE_phase1")
+          roster = {"素人编号": "LH100", "主页链接": {"link": "https://www.xiaohongshu.com/user/profile/x", "text": "x"},
+                    "父记录": [{"type": "text", "table_id": "t", "text_arr": []}]}
+          n, _, und = s.transform_row(mp, "r1", roster); assert und == [], und
+          assert not n.get("raw_content") and not any(n.get(k) for k in s._NOTE_DATA_SIGNALS), "名册行该判空占位"
+          posted = dict(roster, **{"反馈链接": "https://xhslink.cn/o/abc"})
+          n, _, _ = s.transform_row(mp, "r2", posted)
+          assert any(n.get(k) for k in s._NOTE_DATA_SIGNALS), "有反馈链接没正文 → 是真笔记丢正文, 该计错"
+          print("  ✓ 名册行=空占位 / 有链接没正文=计错")
+
+          # ② 继承: 只有 when 行 + 自己没正文 + 上一行有正文 + require_same 一致 才继承; 其余点名。
+          mp = c.load_mapping("SPX_phase1"); spec = mp["content_inherit_from_previous_row"]
+          assert spec["when"] == {"方向": "抖音"} and not spec.get("require_same"), "owner: 与素人编号无关, 只看挨不挨着"
+          col = next(k for k, v in mp["field_mapping"].items() if v == "raw_content")
+          xhs = {"素人编号": "1002", "方向": "运动补给-产品贴", col: "【标题】t【正文】v", "笔记链接": {"link": "https://xhslink.cn/o/1"}}
+          dy  = {"素人编号": "9999", "方向": "抖音", "笔记链接": {"link": "https://v.douyin.com/a/"}, "曝光量": 14}
+          # 紧挨着的上一条是小红书 → 沿用, 素人编号不同也沿用
+          out, meta, why = s.inherit_content_from_previous_row(dy, xhs, "recXHS", spec, col)
+          assert why is None and out[col] == xhs[col] and out["方向"] == xhs["方向"], (why, out)
+          assert meta == {"from": "recXHS", "overrides": {"方向": "抖音"}}, meta
+          assert dy["方向"] == "抖音" and col not in dy, "不许改入参"
+          # 上一条还是抖音(哪怕它已经继承到了正文) → 判不了, 点名
+          dy_prev = dict(dy, **{col: "上一条抖音继承来的正文"})
+          _, meta, why = s.inherit_content_from_previous_row(dy, dy_prev, "recDY", spec, col)
+          assert meta is None and why == "inherit_prev_row_is_same_kind", why
+          # 没有上一条 / 上一条没正文(空行、名册行) → 点名
+          assert s.inherit_content_from_previous_row(dy, None, None, spec, col)[2] == "inherit_parent_not_found"
+          assert s.inherit_content_from_previous_row(dy, {"素人编号": "1002"}, "x", spec, col)[2] == "inherit_parent_not_found"
+          # 非 when 行 / 自己有正文 → 原样, 不碰
+          assert s.inherit_content_from_previous_row(xhs, None, None, spec, col) == (xhs, None, None)
+          assert s.inherit_content_from_previous_row(dict(dy, **{col: "自己有"}), xhs, "r", spec, col)[1] is None
+          # 没配 spec 的项目 → 完全不动
+          assert s.inherit_content_from_previous_row(dy, xhs, "r", None, col) == (dy, None, None)
+          # 主循环里 prev 【每一条】都更新 —— 判的是紧挨着的上一条, 抖音接抖音必须能被看见
+          src = pathlib.Path("sync_feishu_notes_to_truth_vault.py").read_text(encoding="utf-8")
+          loop = src.split("for item in _iter_all_records():", 1)[1]
+          assert "prev_raw, prev_id = item.get(\"fields\", {}), feishu_record_id" in loop, "prev 更新没了"
+          assert "is_when_row" not in loop, "prev 又变成只在非抖音行更新了 —— 抖音接抖音就看不见了"
+          assert 'reason=inh_reason' in src and 'stats["errors"] += 1' in src.split("reason=inh_reason", 1)[1][:400], "判不了必须隔离且计错"
+          # 继承后的行: platform 覆写 + 双留痕
+          assert 'note["platform"] = inherit_spec["platform_override"]' in src
+          assert '"_content_inherited_from"' in src and '"content_inherited"' in src
+          print("  ✓ 只看挨不挨着: 上一条小红书→沿用(素人编号无关); 上一条抖音→判不了点名; 空行→点名; 留痕+platform")
+
+          # ③ ssll: 平台先看笔记自己的 —— 继承来的抖音行是 douyin, 项目是小红书
+          src2 = pathlib.Path("sync_truth_vault_baokuan_to_sanshengliubu.py").read_text(encoding="utf-8")
+          assert 'note.get("platform") or proj.get("platform")' in src2
+          assert 'proj.get("platform") or note.get("platform")' not in src2, "又改回先看项目了"
+          assert ssll._platform_for_ssll("douyin") == "抖音"
+          # codex review on #122: 优先级翻了但 fetch_pending_baokuan 的 select 没选 note 级 platform,
+          # note.get("platform") 永远 None → 等于没翻。把 select 字符串从源码里抠出来, 去掉
+          # projects(...) 那个嵌套组, 断言顶层列里有 platform。
+          fn = src2.split("def fetch_pending_baokuan", 1)[1].split("def ", 1)[0]
+          # 字符串字面量里有 projects(...) 的括号, 所以按「连续的 "..." 字面量」抓, 不按括号抓
+          sel = re.search(r'\.select\(((?:\s*"[^"]*"\s*)+)\)', fn, re.S).group(1)
+          sel_flat = " ".join(re.findall(r'"([^"]*)"', sel))
+          top = re.sub(r"projects\([^)]*\)", "", sel_flat)
+          cols = [c.strip() for c in top.split(",") if c.strip()]
+          assert "platform" in cols, f"fetch_pending_baokuan 的 select 没选 note 级 platform: {cols}"
+          # 功能断言: note 是 douyin、项目是 xiaohongshu → 推给 ssll 的是「抖音」
+          note = {
+                        "note_id": "TST_P_rec1",
+                        "project_id": "TST_P",
+                        "raw_content": "title line\nbody continues",
+                        "tier": "爆",
+                        "intent": "traffic",
+                        "publish_url": "https://example.com/x",
+                        "target_audience": ["20-29"],
+                        "hit_blue_keywords": ["k1"],
+                        "platform": "xiaohongshu",
+                        "projects": {"brand": "TST", "category": "保健品", "platform": "xiaohongshu"},
+                    }
+          note["platform"] = "douyin"; note["projects"]["platform"] = "xiaohongshu"
+          assert ssll.build_reference_sample(note, [])["platform"] == "抖音"
+          note["platform"] = None
+          assert ssll.build_reference_sample(note, [])["platform"] == "小红书", "note 没 platform 时回落到项目"
+          print("  ✓ ssll 平台取值: 笔记优先于项目, 且 select 真的选了 note 级 platform")
+          print("\n名册行/抖音行继承: all checks passed")
+          PY
       - name: 库结构前置闸:代码写的列必须先落库 (D-046, 2026-08-27 实测连红 4 天)
         working-directory: scripts
         run: |

@@ -227,6 +227,9 @@ compliance:
 # ── 项目专属字段(进 raw_extra) ──
 project_specific_fields_to_raw_extra:
   - 主页链接
+  # ── 2026-09-02 新列(D-051): 运营 8/31 起加的两列, 一出现整表 231 行全被 D-021 隔离(含原来 40 行好的)──
+  - 下次巡查时间                    # 公式列(Excel 序列日), 每行都有值 → 不声明就全表隔离
+  - 起量时间                        # 同 BJS/LNKT/XIWU 先例: 不作 tier 源, 进 raw_extra 留痕
   - 账号名
   - 笔记ID
   - 平台

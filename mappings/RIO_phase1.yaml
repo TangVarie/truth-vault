@@ -145,6 +145,7 @@ compliance:
 # 待 preflight 报活表"未声明列"后据实增删(不声明 = 出现即整行 quarantine, 丢真笔记 D-021)。
 project_specific_fields_to_raw_extra:
   # —— preflight(读 391 行)实测未声明列, 全收进 raw_extra(否则整行 quarantine, D-021 丢真笔记)——
+  - 父记录                          # 2026-09-02(D-051): 6/19 起 409 行子记录(只有 方向+父记录)被隔离, 表 800 行只进 391; 同 BJS/LNKT 先例
   - 数据整理
   - 是否巡查
   - 相关截图

@@ -250,6 +250,7 @@ compliance:
 # 下列列全部进 raw_extra 留痕, 不做二次处理。
 project_specific_fields_to_raw_extra:
   # ── 图片/附件列(不处理) ──
+  - 图有问题                        # 2026-09-02(D-051): 运营 QA 勾选框(true/false), 留痕
   - 内容配图
   - 评论配图
   - 发布截图
