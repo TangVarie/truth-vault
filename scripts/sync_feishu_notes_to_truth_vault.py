@@ -1167,7 +1167,15 @@ def main() -> int:
                 if not args.dry_run:
                     quarantine_record(
                         sb, mapping["project_id"], feishu_record_id,
-                        raw_fields, undeclared, reason="undeclared_fields",
+                        raw_fields, undeclared,
+                        # 原因串必须带上【是哪几列】(D-053)。隔离表按 (project, record, reason)
+                        # 去重 + ignore_duplicates 保住 reviewer 状态; reason 恒为 "undeclared_fields"
+                        # 时, 同一条记录第二次因【另一批新列】被隔离会被整条丢掉 —— 表里留着的还是
+                        # 上一次那批列的 raw_row。OKMAN 就是这样: 9/3~9/4 因「评论关键词」隔离 346 行,
+                        # 隔离表里却只有 8/21「链接文本」那批(D-051 早已声明掉的旧列), 于是
+                        # 「按隔离表里的真实值判该怎么声明」(D-051 定的动作)拿到的是过期的错。
+                        # sorted 是必须的: 飞书返回列序不保证稳定, 不排序会让同一批列产生多个 reason。
+                        reason=f"undeclared_fields:{','.join(sorted(undeclared))}",
                     )
                 stats["quarantined"] += 1
                 # COR-002: 隔离的这条在飞书里【还在】, 只是这次没处理成 —— 不算

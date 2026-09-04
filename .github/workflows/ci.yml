@@ -1672,6 +1672,39 @@ jobs:
           print("  ✓ ssll 平台取值: 笔记优先于项目, 且 select 真的选了 note 级 platform")
           print("\n名册行/抖音行继承: all checks passed")
           PY
+      - name: 隔离原因串必须带上是哪几列 + OKMAN 评论关键词已声明 (D-053, 9/3~9/4 夜跑连红)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          import pathlib
+          import _common as c
+          import sync_feishu_notes_to_truth_vault as s
+
+          # ① 9/3 起运营在 OKMAN 表加了「评论关键词」→ D-021 整行隔离, 346 行一条没进。
+          #    同 TUGE 先例(运营定义的评论区蓝词)→ raw_extra。
+          mp = c.load_mapping("OKMAN_phase1")
+          row = {"文案": "正文", "反馈链接": {"link": "https://x", "text": "x"},
+                 "评论关键词": ["艾时达口溶膜", "快充口溶膜"]}
+          note, _, und = s.transform_row(mp, "rOK", row)
+          assert und == [], f"OKMAN「评论关键词」还没声明, 整表照样隔离: {und}"
+          assert note["raw_extra"]["评论关键词"] == ["艾时达口溶膜", "快充口溶膜"], note.get("raw_extra")
+          # 同一列在 TUGE 早有先例, 两张表口径必须一致
+          assert "评论关键词" in c.load_mapping("TUGE_phase1")["project_specific_fields_to_raw_extra"]
+
+          # ② 隔离表按 (project, record, reason) 去重且 ignore_duplicates(保 reviewer 状态)。
+          #    reason 恒为 "undeclared_fields" 时, 同一条记录第二次因【另一批新列】被隔离
+          #    会被整条丢掉 —— 表里留着的还是上一批列的 raw_row。OKMAN 实测: 9/3~9/4 因
+          #    「评论关键词」隔离 346 行, 隔离表里最新一条却停在 8/21「链接文本」(D-051 早已
+          #    声明掉的旧列), 于是 D-051 定的动作「按隔离表里的真实值判该怎么声明」拿到过期的错。
+          src = pathlib.Path("sync_feishu_notes_to_truth_vault.py").read_text(encoding="utf-8")
+          assert 'reason="undeclared_fields"' not in src, "原因串又写死成 undeclared_fields 了 —— 换一批新列就会被旧行吞掉"
+          assert 'reason=f"undeclared_fields:{\',\'.join(sorted(undeclared))}"' in src, \
+              "undeclared 隔离的原因串必须带上排序后的列名"
+          # sorted 不是可选的: 飞书返回列序不保证稳定, 不排序 → 同一批列产生多个 reason → 隔离表里堆重复行
+          und_branch = src[src.index("if undeclared:"):src.index("continue  # Don't upsert")]
+          assert "sorted(undeclared)" in und_branch, "列名没排序, 同一批列会写出多个 reason"
+          print("  ✓ OKMAN 评论关键词进 raw_extra(同 TUGE) · 隔离原因串带排序列名, 新一批列不再被旧行吞掉")
+          PY
       - name: 库结构前置闸:代码写的列必须先落库 (D-046, 2026-08-27 实测连红 4 天)
         working-directory: scripts
         run: |
