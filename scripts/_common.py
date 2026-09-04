@@ -911,6 +911,51 @@ def quarantine_record(
     )
 
 
+# 「已知待办」= 人已经看过、决定先这么放着的隔离行(D-053, owner 2026-09-04)。
+# 判据只有 status 一列, 且【只认人改过的值】:
+#   pending  = sync 刚写进去、没人看过           → 是新情况, 照常计错、照常红
+#   reviewed = 人看过了, review_decision 记着结论 → 已知待办, 不计错(红转黄)
+#   rejected = 人决定这行就这么忽略               → 同上
+#   resolved = 人认为已经修好了 —— 又冒出来说明【没修好或者退回去了】, 是新情况, 红
+# quarantine_record 写的永远是 'pending' 且 ignore_duplicates=True(不覆盖已有行),
+# 所以 sync 自己【没法】把自己豁免掉 —— 名单只能由人在隔离表里改 status 建立。
+_QUARANTINE_ACKED_STATUSES = ("reviewed", "rejected")
+
+
+def fetch_acknowledged_quarantine(
+    client: Client, project_id: str,
+) -> set[tuple[str, str]]:
+    """本项目里【人已经认领过】的隔离行, 返回 {(feishu_record_id, reason)}。
+
+    键是 (record, reason) 而不是单个 record —— 和隔离表的去重键、和 D-053 让
+    reason 带上列名那条改动是同一套: 认领了「评论关键词」那次隔离, 不等于顺带
+    认领了这条记录以后因【别的新列】被隔离。换一批列 = 换一个 reason = 新起一行,
+    status 回到 'pending' → 照常红。
+
+    读不到就返回空集(降级成"一条都没认领"= 全部照常计错), 不把整轮同步打死:
+    这道闸的作用是把红压成黄, 读不到时保持红是安全的方向。
+    """
+    try:
+        rows = fetch_all_pages(
+            client.schema("truth_vault")
+            .table("undeclared_fields_quarantine")
+            .select("quarantine_id, feishu_record_id, reason, status")
+            .eq("project_id", project_id)
+            .in_("status", list(_QUARANTINE_ACKED_STATUSES)),
+            order_by="quarantine_id",
+        )
+    except Exception as exc:
+        logger.warning(
+            "读取 %s 的已认领隔离行失败(%s) —— 本轮按「一条都没认领」处理, 隔离照常计错。",
+            project_id, exc,
+        )
+        return set()
+    return {
+        (r["feishu_record_id"], r["reason"])
+        for r in rows if r.get("feishu_record_id")
+    }
+
+
 def ensure_account_exists(
     client: Client,
     account_id: Optional[str],

@@ -58,6 +58,7 @@ from _common import (
     parse_feishu_date,
     parse_audience_analysis,
     parse_kv_metrics,
+    fetch_acknowledged_quarantine,
     quarantine_record,
     resolve_feishu_tables,
     setup_logger,
@@ -1076,8 +1077,10 @@ def main() -> int:
 
     # metrics_* / accounts_failed 是 COR-008 补的: 让"这次同步到底丢没丢东西"
     # 出现在 Done 那一行里, 而不是只散落在几十条 logger.exception 之间。
+    # known_backlog (D-053): 隔离行里【人已经认领过】的那些。它们仍然是"这次没处理成",
+    # 所以照样挡住盖戳和对账(见下方 records_all_ok), 只是不进 errors、不把退出码变红。
     stats = {"total": 0, "upserted": 0, "quarantined": 0,
-             "empty_placeholder": 0, "errors": 0,
+             "empty_placeholder": 0, "errors": 0, "known_backlog": 0,
              "metrics_written": 0, "metrics_failed": 0,
              "metrics_skipped_fk": 0, "accounts_failed": 0}
     # Collect transformed rows, then write in batches after the loop (one
@@ -1122,6 +1125,33 @@ def main() -> int:
                 fetch_failed.append(_sp["table_id"])
                 stats["errors"] += 1
 
+    # ── 「已知待办」名单(D-053, owner 2026-09-04)────────────────────────
+    # 隔离表里人已经认领过的行(status=reviewed/rejected)。命中的隔离不计进 errors,
+    # 于是"只剩已知待办"的一轮退出码是 0(红转黄); 名单外的新隔离照常红。
+    # 一次性拉一遍, 循环里只查内存 —— 每行一次查询会把这一步拖成几百次往返。
+    # dry-run 不拉: 它本来就不写隔离表, 也不该依赖库里的状态。
+    acked_quarantine: set[tuple[str, str]] = (
+        set() if args.dry_run
+        else fetch_acknowledged_quarantine(sb, mapping["project_id"])
+    )
+    if acked_quarantine:
+        logger.info("已知待办名单: %d 条隔离行人已认领(status=reviewed/rejected), 命中的不计错",
+                    len(acked_quarantine))
+
+    def _count_quarantined(record_id: str, reason: str) -> None:
+        """隔离一条: 认领过的进 known_backlog, 没认领过的进 errors。
+
+        两边都算"这次没处理成" —— records_all_ok 用的是两者之和, 所以【盖戳和对账
+        的严格程度一格没松】。这一点是本改动的要害: 隔离行没被 upsert, 也就没盖上
+        本次 last_seen 戳; 要是让它进了对账, 会被报成"消失了"(COR-002/COR-011
+        堵的就是这个洞)。红转黄只动退出码, 不动对账。
+        """
+        stats["quarantined"] += 1
+        if (record_id, reason) in acked_quarantine:
+            stats["known_backlog"] += 1
+        else:
+            stats["errors"] += 1
+
     inherit_spec = mapping.get("content_inherit_from_previous_row") or None
     content_col = next((k for k, v in mapping["field_mapping"].items() if v == "raw_content"), None)
     prev_raw: dict[str, Any] | None = None      # 【紧挨着】的上一条(不管是什么行)
@@ -1145,8 +1175,7 @@ def main() -> int:
                 if not args.dry_run:
                     quarantine_record(sb, mapping["project_id"], feishu_record_id,
                                       raw_fields, [content_col], reason=inh_reason)
-                stats["quarantined"] += 1
-                stats["errors"] += 1
+                _count_quarantined(feishu_record_id, inh_reason)
                 continue
         try:
             note, metric, undeclared = transform_row(mapping, feishu_record_id, raw_fields)
@@ -1160,6 +1189,7 @@ def main() -> int:
                 if inherit_spec.get("platform_override"):
                     note["platform"] = inherit_spec["platform_override"]
             if undeclared:
+                und_reason = f"undeclared_fields:{','.join(sorted(undeclared))}"
                 logger.warning(
                     "record_id=%s has undeclared fields: %s → quarantine",
                     feishu_record_id, undeclared,
@@ -1175,13 +1205,12 @@ def main() -> int:
                         # 隔离表里却只有 8/21「链接文本」那批(D-051 早已声明掉的旧列), 于是
                         # 「按隔离表里的真实值判该怎么声明」(D-051 定的动作)拿到的是过期的错。
                         # sorted 是必须的: 飞书返回列序不保证稳定, 不排序会让同一批列产生多个 reason。
-                        reason=f"undeclared_fields:{','.join(sorted(undeclared))}",
+                        reason=und_reason,
                     )
-                stats["quarantined"] += 1
                 # COR-002: 隔离的这条在飞书里【还在】, 只是这次没处理成 —— 不算
-                # 完整扫描。不把它计进 errors 的话 records_all_ok 恒真, 对账会把
+                # 完整扫描。不把它算进"没处理成"的话 records_all_ok 恒真, 对账会把
                 # 这条(上一轮盖过戳的话)报成"消失了/移走了/改了 record_id"。
-                stats["errors"] += 1
+                _count_quarantined(feishu_record_id, und_reason)
                 continue  # Don't upsert; require human review first
 
             # Required-field check: truth_vault.notes has NOT NULL constraints
@@ -1198,24 +1227,24 @@ def main() -> int:
                 is_empty_placeholder = missing == ["raw_content"] and not any(
                     note.get(k) for k in _NOTE_DATA_SIGNALS
                 )
+                miss_reason = f"missing_required:{','.join(missing)}"
+                if not args.dry_run:
+                    quarantine_record(
+                        sb, mapping["project_id"], feishu_record_id,
+                        raw_fields, missing, reason=miss_reason,
+                    )
                 if is_empty_placeholder:
                     stats["empty_placeholder"] += 1
+                    stats["quarantined"] += 1
                 else:
                     logger.warning(
                         "record_id=%s missing required fields: %s → quarantine",
                         feishu_record_id, missing,
                     )
                     # COR-002: 这是一条本该是笔记、却缺正文的行 —— 它在飞书里还在,
-                    # 只是这次没处理成。计进 errors 让 records_all_ok=False, 阻止对账
+                    # 只是这次没处理成。算进"没处理成"让 records_all_ok=False, 阻止对账
                     # 把它报成"消失了"。空占位行(父记录占位/评论碎片)是正常噪音, 不计。
-                    stats["errors"] += 1
-                if not args.dry_run:
-                    quarantine_record(
-                        sb, mapping["project_id"], feishu_record_id,
-                        raw_fields, missing,
-                        reason=f"missing_required:{','.join(missing)}",
-                    )
-                stats["quarantined"] += 1
+                    _count_quarantined(feishu_record_id, miss_reason)
                 continue
 
             # Collect for the batched write after the loop. Dedupe the account
@@ -1242,14 +1271,21 @@ def main() -> int:
     #
     #    stats["errors"] 到这里已经累计了: 抓取失败、quarantine、缺必填、
     #    transform_row 异常。任何一项非零 → 这次不算完整扫描。
-    records_all_ok = stats["errors"] == 0
+    #
+    # ⚠️ D-053 的「已知待办」(known_backlog)必须**加回来**再判。认领只是说"这行
+    #    我知道、先这么放着", 不是说"这行处理成了" —— 它照样没被 upsert、照样没盖
+    #    上本次 last_seen 戳。漏掉它 records_all_ok 就会在还有隔离行时变真, 对账把
+    #    那些行报成"消失了", 正是 COR-002/COR-011 堵掉的洞。红转黄【只动退出码】。
+    records_all_ok = (stats["errors"] + stats["known_backlog"]) == 0
     full_scan = (not truncated_by_limit) and (not fetch_failed) \
         and records_all_ok and (not args.dry_run)
     if not full_scan and not args.dry_run:
         logger.warning(
-            "本次不是完整同步(--limit 截断=%s · 抓取失败的表=%s · 处理失败条数=%d), "
+            "本次不是完整同步(--limit 截断=%s · 抓取失败的表=%s · 处理失败条数=%d"
+            "(其中已知待办 %d, 不计错但同样没盖戳)), "
             "**不盖 last_seen 戳、也不做对账** —— 半新半旧的 last_seen 比没有更坏。",
-            truncated_by_limit, fetch_failed or "无", stats["errors"],
+            truncated_by_limit, fetch_failed or "无",
+            stats["errors"] + stats["known_backlog"], stats["known_backlog"],
         )
     if full_scan:
         for n in pending_notes:
@@ -1421,6 +1457,15 @@ def main() -> int:
             "跳过 %d 行空占位/评论碎片行(无正文、无账号/指标/链接等实质信号; 已 quarantine 留档, 未逐条告警)",
             stats["empty_placeholder"],
         )
+    if stats["known_backlog"]:
+        # 「黄」得看得见, 否则就是把红压回去了(D-051 拒绝过那条路)。GitHub Actions
+        # 的 job 只有红/绿, 所以用 ::warning 注解 —— 它出现在 run 摘要顶部, 点得进来。
+        msg = (f"{mapping['project_id']}: {stats['known_backlog']} 条隔离行是【已知待办】"
+               f"(人已在隔离表认领), 本轮不计错。它们仍未入库, 也仍挡着 last_seen/对账 —— "
+               f"要么补数据要么改口径, 别让它一直挂着。")
+        logger.warning(msg)
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            print(f"::warning title=已知待办隔离 ({mapping['project_id']})::{msg}", flush=True)
     logger.info("Done: %s", json.dumps(stats, ensure_ascii=False))
     return 0 if stats["errors"] == 0 else 1
 

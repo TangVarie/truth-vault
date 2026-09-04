@@ -418,26 +418,37 @@ jobs:
 
           src = inspect.getsource(M.main)
 
-          # ── undeclared 隔离分支必须累加 errors ──
+          # 2026-09-04(D-053): 三处计数点收敛到 _count_quarantined() —— 它按「人认领过没有」
+          # 分流进 known_backlog 或 errors, 两边都算"这次没处理成"。所以本 guard 从
+          # 「断 errors += 1 这个字符串」改成断【真正要守的那件事】: 每个隔离分支都得走计数,
+          # 且 records_all_ok 必须把两个计数器【都】算上。只断字符串的话, 分流一重构就成空跑守卫。
+
+          # ── undeclared 隔离分支必须走计数 ──
           # 锚点 "continue  # Don't upsert" 只在 undeclared 分支出现。
           und = src[src.index("undeclared_fields"):src.index("continue  # Don't upsert")]
-          assert 'stats["errors"] += 1' in und, \
-              "undeclared 隔离分支没把 errors 加一 —— records_all_ok 会恒真, 对账报假消失"
+          assert "_count_quarantined(" in und, \
+              "undeclared 隔离分支没走计数 —— records_all_ok 会恒真, 对账报假消失"
 
           # ── 缺必填隔离分支: 非占位行计失败, 占位行不计 ──
           # 空占位(父记录占位/评论碎片)是正常噪音, 不计失败; 有 note-like 信号
           # 却缺正文的行才是真丢数, 必须计失败。
           missing = src[src.index("REQUIRED_NOTE_FIELDS ="):src.index("# Collect for the batched write")]
           assert 'stats["empty_placeholder"] += 1' in missing, "空占位分支的计数锚点丢了"
-          assert 'stats["errors"] += 1' in missing, \
-              "缺必填(非占位)隔离分支没把 errors 加一"
+          assert "_count_quarantined(" in missing, \
+              "缺必填(非占位)隔离分支没走计数"
 
-          # records_all_ok 必须由 errors 驱动 —— 隔离/抓取失败/transform 异常都会累加,
-          # 任何隔离项都把 full_scan 拉成 False, 破坏性对账不再推进。
-          assert 'records_all_ok = stats["errors"] == 0' in src, \
-              "records_all_ok 不再由 errors 驱动"
+          # ── 计数本体: 没认领过的必须进 errors ──
+          cq = src[src.index("def _count_quarantined"):src.index("inherit_spec = mapping.get")]
+          assert 'stats["errors"] += 1' in cq and 'stats["known_backlog"] += 1' in cq, \
+              "_count_quarantined 不再分流 errors / known_backlog"
 
-          print("  ✓ 隔离计失败, 存在隔离项时禁止推进对账 (COR-002)")
+          # records_all_ok 必须由【两个计数器之和】驱动 —— 隔离/抓取失败/transform 异常都会累加,
+          # 任何隔离项(含已认领的)都把 full_scan 拉成 False, 破坏性对账不再推进。
+          # 已认领 ≠ 处理成了: 它照样没盖上 last_seen 戳, 放进对账就会被报成"消失了"。
+          assert 'records_all_ok = (stats["errors"] + stats["known_backlog"]) == 0' in src, \
+              "records_all_ok 漏掉了 known_backlog —— 已认领的隔离行会让对账报假消失"
+
+          print("  ✓ 隔离走计数, 存在任何隔离项(含已认领)时禁止推进对账 (COR-002 + D-053)")
           PY
       - name: SQL 侧审计修复回归 (COR-005/010/019/024)
         run: |
@@ -1631,7 +1642,9 @@ jobs:
           loop = src.split("for item in _iter_all_records():", 1)[1]
           assert "prev_raw, prev_id = item.get(\"fields\", {}), feishu_record_id" in loop, "prev 更新没了"
           assert "is_when_row" not in loop, "prev 又变成只在非抖音行更新了 —— 抖音接抖音就看不见了"
-          assert 'reason=inh_reason' in src and 'stats["errors"] += 1' in src.split("reason=inh_reason", 1)[1][:400], "判不了必须隔离且计错"
+          # 2026-09-04(D-053): 计数收敛到 _count_quarantined(认领过→known_backlog, 否则→errors),
+          # 两边都算"没处理成"。没认领的照样红 —— 行为由 D-053 那个驱动 main() 的 guard 兜底。
+          assert 'reason=inh_reason' in src and '_count_quarantined(' in src.split("reason=inh_reason", 1)[1][:400], "判不了必须隔离且走计数"
           # 继承后的行: platform 覆写 + 双留痕
           assert 'note["platform"] = inherit_spec["platform_override"]' in src
           assert '"_content_inherited_from"' in src and '"content_inherited"' in src
@@ -1698,12 +1711,93 @@ jobs:
           #    声明掉的旧列), 于是 D-051 定的动作「按隔离表里的真实值判该怎么声明」拿到过期的错。
           src = pathlib.Path("sync_feishu_notes_to_truth_vault.py").read_text(encoding="utf-8")
           assert 'reason="undeclared_fields"' not in src, "原因串又写死成 undeclared_fields 了 —— 换一批新列就会被旧行吞掉"
-          assert 'reason=f"undeclared_fields:{\',\'.join(sorted(undeclared))}"' in src, \
-              "undeclared 隔离的原因串必须带上排序后的列名"
-          # sorted 不是可选的: 飞书返回列序不保证稳定, 不排序 → 同一批列产生多个 reason → 隔离表里堆重复行
+          # 断行为不断字面量: 把源码里那一行 und_reason 的右手边抠出来真跑一遍 ——
+          # 同一批列不管来的顺序如何, 必须算出【同一个】带列名的 reason。
+          # sorted 不是可选的: 飞书返回列序不保证稳定, 不排序 → 同一批列产生多个 reason
+          # → 隔离表堆重复行, 而"已知待办"名单是按 (record, reason) 认领的, reason 一飘就认不上。
           und_branch = src[src.index("if undeclared:"):src.index("continue  # Don't upsert")]
-          assert "sorted(undeclared)" in und_branch, "列名没排序, 同一批列会写出多个 reason"
+          rhs = und_branch[und_branch.index("und_reason ="):].split("\n")[0].split("=", 1)[1].strip()
+          r1 = eval(rhs, {}, {"undeclared": ["评论关键词", "链接文本"]})
+          r2 = eval(rhs, {}, {"undeclared": ["链接文本", "评论关键词"]})   # 同一批列, 顺序反过来
+          assert r1 == r2, f"列序一变 reason 就变了({r1!r} vs {r2!r}) —— 没排序"
+          assert r1.startswith("undeclared_fields:"), r1
+          assert "评论关键词" in r1 and "链接文本" in r1, f"reason 没带上是哪几列: {r1!r}"
+          assert eval(rhs, {}, {"undeclared": ["评论关键词"]}) != r1, "不同的列集必须是不同的 reason"
+
           print("  ✓ OKMAN 评论关键词进 raw_extra(同 TUGE) · 隔离原因串带排序列名, 新一批列不再被旧行吞掉")
+          PY
+      - name: 已知待办名单只把红转黄, 一格也不许松开对账 (D-053, owner 2026-09-04)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # owner 2026-09-04: SPX 那 27 行(抖音接抖音)维持隔离、等运营理飞书, 但夜跑不能
+          # 因此天天红 —— 天天红的 CI 等于没有 CI(OKMAN 静默丢行一个月就是这么来的)。
+          # 于是: 隔离表里【人已认领】(status=reviewed/rejected)的行不计 errors。
+          #
+          # 这道闸最容易出的事故是顺手把对账也松开: 认领只是"我知道这行", 不是"处理成了"。
+          # 它照样没被 upsert、照样没盖上本次 last_seen 戳 —— 放它进对账, 会被报成
+          # "消失了"(COR-002/COR-011 堵掉的洞)。所以下面【驱动真的 main() 循环】验三件事,
+          # 不靠读源码字符串。
+          import io, json, logging, os, sys
+          os.environ.setdefault("FEISHU_APP_ID", "x"); os.environ.setdefault("FEISHU_APP_SECRET", "y")
+          import sync_feishu_notes_to_truth_vault as s
+
+          XHS = {"record_id": "rXHS", "fields": {"素人编号": "1", "笔记内容": "原文案", "方向": "提问贴",
+                                                 "笔记链接": {"link": "https://xhs/1", "text": "t"}}}
+          DY1 = {"record_id": "rDY1", "fields": {"素人编号": "2", "方向": "抖音",
+                                                 "笔记链接": {"link": "https://v.douyin.com/a", "text": "t"}}}
+          DY2 = {"record_id": "rDY2", "fields": {"素人编号": "3", "方向": "抖音",
+                                                 "笔记链接": {"link": "https://v.douyin.com/b", "text": "t"}}}
+
+          def run(acked):
+              cap = {}
+              class FakeFeishu:
+                  def __init__(self, *a, **k): pass
+                  def list_records(self, *a, **k): return iter([XHS, DY1, DY2])
+              s.FeishuClient = FakeFeishu
+              s.get_supabase_client = lambda *a, **k: object()
+              s.assert_db_schema_ready = lambda *a, **k: None
+              s.ensure_project_exists = lambda *a, **k: None
+              s.quarantine_record = lambda *a, **k: None
+              s.fetch_acknowledged_quarantine = lambda sb, pid: set(acked)
+              s.ensure_accounts_batch = lambda *a, **k: []
+              s.upsert_metrics_batch = lambda *a, **k: (0, [])
+              s.update_project_date_range = lambda *a, **k: None
+              def fake_upsert(sb, notes, dry_run=False):
+                  cap["notes"] = notes
+                  return [n["note_id"] for n in notes]
+              s.upsert_notes_batch = fake_upsert
+              buf = io.StringIO(); h = logging.StreamHandler(buf); s.logger.addHandler(h)
+              sys.argv = ["x", "SPX_phase1"]
+              rc = s.main()
+              s.logger.removeHandler(h)
+              log = buf.getvalue()
+              return rc, json.loads(log.split("Done: ")[1].split("\n")[0]), cap.get("notes", []), log
+
+          # ① 没人认领 → 照常红(名单外的新隔离不许被顺手放过)
+          rc, st, _, _ = run([])
+          assert rc == 1 and st["errors"] == 1 and st["known_backlog"] == 0, (rc, st)
+
+          # ② 人已认领 → 退出码转绿, 但【盖戳和对账照样挡住】
+          rc, st, notes, log = run([("rDY2", "inherit_prev_row_is_same_kind")])
+          assert rc == 0 and st["errors"] == 0 and st["known_backlog"] == 1, (rc, st)
+          assert st["quarantined"] == 1, st
+          stamped = [n for n in notes if n.get("last_seen_at")]
+          assert not stamped, f"已知待办把 full_scan 放真了 —— {len(stamped)} 条被盖了 last_seen 戳, 对账会报假消失"
+          assert "不盖 last_seen 戳、也不做对账" in log, "对账闸没挡住"
+          assert "其中已知待办 1" in log, "没在告警里说清有几条是已知待办"
+          assert "别让它一直挂着" in log, "黄得看不见 = 把红压回去了"
+
+          # ③ 认领的是【另一个 reason】→ 不许被顺带豁免(和隔离表去重键、和带列名的 reason 同一套)
+          rc, st, _, _ = run([("rDY2", "undeclared_fields:某列")])
+          assert rc == 1 and st["errors"] == 1 and st["known_backlog"] == 0, (rc, st)
+
+          # ④ sync 自己不能把自己豁免掉: 写进去的永远是 pending, 名单只认人改过的 status
+          import _common as c
+          assert c._QUARANTINE_ACKED_STATUSES == ("reviewed", "rejected"), c._QUARANTINE_ACKED_STATUSES
+          assert "pending" not in c._QUARANTINE_ACKED_STATUSES, "pending 进名单 = 隔离自动豁免自己, 这道闸就废了"
+          assert "resolved" not in c._QUARANTINE_ACKED_STATUSES, "resolved 又冒出来说明没修好, 得红"
+          print("  ✓ 未认领→红 · 已认领→绿但不盖戳不对账 · 换 reason 不顺带豁免 · pending/resolved 不进名单")
           PY
       - name: 库结构前置闸:代码写的列必须先落库 (D-046, 2026-08-27 实测连红 4 天)
         working-directory: scripts
