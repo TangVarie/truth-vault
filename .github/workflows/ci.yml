@@ -2191,6 +2191,30 @@ jobs:
           for live, tgt in (("发布时间", "publish_time"), ("反馈链接", "publish_url"), ("流量状态", "_status_raw")):
               assert fm.get(live) == tgt, f"{live} 应该映到 {tgt}, 实际 {fm.get(live)!r}"
 
+          # ③ 2026-09-11: owner 按 D-056 的报错去飞书建了「数据整理」键值文本列
+          #    (曝光量：X；阅读量：Y；互动量：Z, 与 BJS 同名列同格式, 实测 123 行有值)。
+          #    这里断的同样是【值真的落到了三个指标字段】—— 只把它声明进 raw_extra 的话,
+          #    undeclared 会变空、夜跑转绿, 而 impressions/reads/interactions 仍旧全 NULL,
+          #    D-056 那道闸也就白设了。
+          row = mk(full20); row["数据整理"] = "曝光量：107；阅读量：7；互动量：1"
+          note, metric, und = s.transform_row(mp, "r", row)
+          assert und == [], f"数据整理 没声明: {und}"
+          assert (note.get("impressions"), note.get("reads"), note.get("interactions")) == (107, 7, 1),               ("数据整理 没接上三个指标字段, 只是躺在 raw_extra 里 —— "
+               f"impressions={note.get('impressions')} reads={note.get('reads')} "
+               f"interactions={note.get('interactions')}")
+          assert metric.get("impressions") == 107, "指标没同时进 metric_snapshots"
+          #    接上指标之后数值推断才真的会跑, 所以本表【故意不配阈值】(同 D-048 守卫的口径):
+          #    实测 123 行有指标的行里 **122 行运营亲手标成「无水花」= 趴**, 这些趴贴互动量
+          #    最高才 12。任何 <=12 的阈值都会把运营判死的帖升成爆, 任何 >12 的现在一条都不中。
+          #    本表 tier 有确定性来源(「流量状况」列), 不需要靠数字猜。
+          assert not mp.get("tier_thresholds"), (
+              f"ANSHEN 又配上了数值推断阈值 {mp.get('tier_thresholds')} —— 实测 122/123 行是运营"
+              "标的趴贴且互动量最高 12, 这会把判死的帖自动升成爆(D-048)")
+          note2, _, _ = s.transform_row(mp, "r", dict(
+              row, 流量状态=["无水花"], 数据整理="曝光量：2417；阅读量：300；互动量：12"))
+          assert note2["tier"] == "趴", (
+              f"运营标了无水花, 却被数字推成 {note2['tier']} —— 数值推断不该覆盖人工判定")
+
           print("  ✓ ANSHEN 三种真实行形状 undeclared=[] · 改名三列真的落到 publish_time/publish_url/tier · 旧名已摘")
           PY
       - name: 库结构前置闸:代码写的列必须先落库 (D-046, 2026-08-27 实测连红 4 天)
