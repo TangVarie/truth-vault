@@ -463,6 +463,44 @@ def _detect_missing_capabilities(
     return missing
 
 
+def _failed_rows_already_in_db(
+    client, project_id: str, record_ids: set[str],
+) -> set[str]:
+    """这一轮没处理成的行里, 【库里已经有 note】的那些 → note_id 集合。
+
+    对账的判据是「库里这条 note 这轮没盖上戳 → 它可能从飞书消失了」。一条行没处理成
+    就不会盖戳, 所以:
+      · 它在库里**已经有 note** → 这条 note 会被误报成「消失了」。必须挡住对账。
+      · 它在库里**根本没有 note** → 它对对账一个字都贡献不了, 挡也没用。
+
+    SPX 就是后一种: 那 27 行「抖音接抖音」从来没进过库(实测 27/27 无对应 note),
+    却把整个项目的对账挡了 11 天, 期间攒下 209 条从没盖过戳的 note、其中 160 条
+    已经有下游产物。挡一件不可能发生的事, 代价是真的孤儿行没人盘。
+
+    ⚠️ 读不到库 → 返回**全部** id(退回旧行为: 全挡)。这道闸是放宽, 放宽的前提查不到
+       就不该放宽。
+    """
+    if not record_ids:
+        return set()
+    ids = sorted(f"{project_id}_{r}" for r in record_ids)
+    found: set[str] = set()
+    try:
+        for i in range(0, len(ids), 100):     # in_() 走 URL, 分批免得撑爆
+            chunk = ids[i:i + 100]
+            rows = fetch_all_pages(
+                client.schema("truth_vault").table("notes").select("note_id")
+                .eq("project_id", project_id).in_("note_id", chunk),
+                order_by="note_id",
+            )
+            found.update(r["note_id"] for r in rows)
+    except Exception as exc:
+        logger.warning(
+            "对账前置检查: 读 notes 失败(%s) —— 按最保守处理, 当成这些行在库里都有 note,"
+            "本轮照旧不盖戳不对账。", exc)
+        return set(ids)
+    return found
+
+
 def transform_row(
     mapping: dict,
     feishu_record_id: str,
@@ -1256,6 +1294,9 @@ def main() -> int:
     # seen_cols 是这一轮飞书真的返回过的所有列名 —— 用来反查【已声明的核心列消失了】。
     undeclared_seen: set[str] = set()
     seen_cols: set[str] = set()
+    # 这一轮【没处理成】的飞书 record_id。用来判对账能不能放行: 只有当其中某条
+    # 在库里已经有 note 时, 不盖戳才会导致误报(见 _failed_rows_already_in_db)。
+    failed_record_ids: set[str] = set()
     # Collect transformed rows, then write in batches after the loop (one
     # upsert per chunk instead of ~3 REST calls per record — see *_batch above).
     pending_notes: list[dict[str, Any]] = []
@@ -1320,6 +1361,7 @@ def main() -> int:
         堵的就是这个洞)。红转黄只动退出码, 不动对账。
         """
         stats["quarantined"] += 1
+        failed_record_ids.add(record_id)
         if (record_id, reason) in acked_quarantine:
             stats["known_backlog"] += 1
         else:
@@ -1418,6 +1460,7 @@ def main() -> int:
                 pending_metrics.append(metric)
         except Exception as exc:
             logger.exception("record_id=%s failed: %s", feishu_record_id, exc)
+            failed_record_ids.add(feishu_record_id)
             stats["errors"] += 1
 
     # ── Batch write (FK order: project → accounts → notes → metrics) ──
@@ -1477,16 +1520,39 @@ def main() -> int:
                 "这一轮没有新的未声明列 —— 那就不是改名, 是【删列】或者运营不再填了。",
             )
 
-    records_all_ok = (stats["errors"] + stats["known_backlog"]) == 0
+    # ── 对账能不能放行(D-058, 2026-09-11 收窄)────────────────────────────────
+    # 原判据是「这一轮有任何一条没处理成 → 不盖戳、不对账」。方向对, 但过宽:
+    # 对账真正怕的是【库里已有的 note 这轮没盖上戳, 被报成消失了】。一条没处理成的行
+    # 要造成这个后果, 前提是**它在库里已经有 note**。从来没进过库的行, 挡也挡不出什么。
+    #
+    # SPX 就卡在这个过宽上: 27 行「抖音接抖音」owner 定了维持隔离(改不了), 实测
+    # 27/27 在库里没有对应 note —— 却把整个项目的对账挡了 11 天(8/31 至今),
+    # 期间攒下 209 条从没盖过戳的 note, 其中 160 条已经有下游产物(ssll/精华)。
+    # 挡一件不可能发生的事, 代价是真的孤儿行没人盘。
+    #
+    # ⚠️ 收窄的只有【每行】那一类。整张表抓取失败(fetch_failed)和 --limit 截断照旧
+    #    无条件挡: 那两种情况下**没被返回的行根本没进过这一轮**, 库里的 note 会成片
+    #    地没盖戳, 正是对账会漏报/误报的样子。
+    blocking_failures = _failed_rows_already_in_db(
+        sb, mapping["project_id"], failed_record_ids,
+    ) if (failed_record_ids and not args.dry_run) else set()
+    records_all_ok = not blocking_failures
     full_scan = (not truncated_by_limit) and (not fetch_failed) \
         and records_all_ok and (not args.dry_run)
     if not full_scan and not args.dry_run:
         logger.warning(
-            "本次不是完整同步(--limit 截断=%s · 抓取失败的表=%s · 处理失败条数=%d"
-            "(其中已知待办 %d, 不计错但同样没盖戳)), "
+            "本次不是完整同步(--limit 截断=%s · 抓取失败的表=%s · 没处理成 %d 条"
+            "(其中已知待办 %d), 其中 %d 条在库里已有 note、不盖戳会被对账误报成消失), "
             "**不盖 last_seen 戳、也不做对账** —— 半新半旧的 last_seen 比没有更坏。",
             truncated_by_limit, fetch_failed or "无",
             stats["errors"] + stats["known_backlog"], stats["known_backlog"],
+            len(blocking_failures),
+        )
+    elif failed_record_ids and not args.dry_run:
+        logger.info(
+            "有 %d 条没处理成, 但它们在库里都没有对应 note(挡对账也挡不出什么) → "
+            "**照常盖戳并对账**(D-058)。退出码仍按 errors 算, 该红还红。",
+            len(failed_record_ids),
         )
     if full_scan:
         for n in pending_notes:
@@ -1702,8 +1768,10 @@ def main() -> int:
     if stats["known_backlog"]:
         # 「黄」得看得见, 否则就是把红压回去了(D-051 拒绝过那条路)。GitHub Actions
         # 的 job 只有红/绿, 所以用 ::warning 注解 —— 它出现在 run 摘要顶部, 点得进来。
+        _still_blocking = "且其中有行在库里已有 note, 仍挡着 last_seen/对账" \
+            if blocking_failures else "它们在库里没有对应 note, 已不再挡对账(D-058)"
         msg = (f"{mapping['project_id']}: {stats['known_backlog']} 条隔离行是【已知待办】"
-               f"(人已在隔离表认领), 本轮不计错。它们仍未入库, 也仍挡着 last_seen/对账 —— "
+               f"(人已在隔离表认领), 本轮不计错。它们**仍未入库**, {_still_blocking} —— "
                f"要么补数据要么改口径, 别让它一直挂着。")
         logger.warning(msg)
         if os.environ.get("GITHUB_ACTIONS") == "true":
