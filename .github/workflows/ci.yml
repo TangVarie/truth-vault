@@ -2013,9 +2013,17 @@ jobs:
           # 存量库里填过哪些列 —— 只用来喂 D-055 那道闸, 让它在本守卫里全程闭嘴,
           # 免得两道闸的红搅在一起分不清是谁报的。
           NEVER_FILLED: list[str] = []
+          _LM0 = s.load_mapping
 
-          def run(rows, *, argv=("OKMAN_phase1",), acked=frozenset()):
+          def run(rows, *, argv=("OKMAN_phase1",), acked=frozenset(), platform=None):
               cap = {}
+              if platform:
+                  # 换掉 mapping 的 platform, 其余照旧 —— 专门验【main() 真把 platform
+                  # 传下去了】。上面那几条单元断言只证明函数本身对, 调用点漏传照样绿。
+                  _real_lm = s.load_mapping
+                  s.load_mapping = lambda pid: {**_real_lm(pid), "platform": platform}
+              else:
+                  s.load_mapping = _LM0
               class _Q:
                   def schema(q, *a): return q
                   def table(q, *a): return q
@@ -2099,14 +2107,39 @@ jobs:
           assert st["missing_capabilities"] == [], \
               f"--limit 截断也报 → 每次抽样调试都红: {st}"
 
-          # ⑧ 报了错**不许**顺手把对账也停掉。这条是位置的守卫:
+          # ⑧ 「全部指标」按**平台**算。抖音创作者面板只有播放量, 没有曝光/阅读之分 ——
+          #    实测 LNKT(全库唯一 platform: douyin)的「数据汇总」20 项里没有阅读量, 也不可能有。
+          #    要求它 = 让运营去填一个平台不产出的数字, 永久红在谁也改不好的地方。
+          #    小红书一项不减: 同一份缺阅读量的数据换成小红书项目照样红。
+          from _common import load_mapping as _lm8
+          assert _lm8("LNKT_phase1")["platform"] == "douyin", "LNKT 不再是抖音表, 这条用例的前提没了"
+          dy = [{"impressions": 1, "interactions": 1, "tier": "爆", "publish_time": "2026-01-01",
+                 "content_format": "情感叙事", "account_id": "a1"}]          # 无 reads
+          assert s._detect_missing_capabilities(dy, "douyin") == [], \
+              f"对抖音表要阅读量 —— 运营改不好, 夜跑会永久红: {s._detect_missing_capabilities(dy, 'douyin')}"
+          assert [c for c, _ in s._detect_missing_capabilities(dy, "xiaohongshu")] == ["reads"], \
+              "小红书也不要阅读量了 —— 减项减过头, 15 张小红书表全失守"
+          assert [c for c, _ in s._detect_missing_capabilities(dy)] == ["reads"], \
+              "不传平台时默认放过 —— 新平台接进来会静默失守, 默认必须是全量要求"
+          # 抖音也**只**减阅读量这一项, 别顺手把曝光互动也放了
+          assert set(c for c, _ in s._detect_missing_capabilities(
+              [{"tier": "爆", "publish_time": "x", "content_format": "y", "account_id": "z"}],
+              "douyin")) == {"impressions", "interactions"}, "抖音减项减多了"
+          #    ——— 上面三条只验函数; 下面这两条驱动真的 main(), 验【调用点真把 platform 传了】。
+          rc, st, _, _ = run([drop("阅读量")], platform="douyin")
+          assert rc == 0 and st["missing_capabilities"] == [], \
+              f"main() 没把 platform 传给自检 —— 抖音表照样被要阅读量: {st}"
+          rc, st, _, _ = run([drop("阅读量")])          # 同一批数据, 小红书 → 照样红
+          assert rc == 1 and st["missing_capabilities"] == ["reads"], st
+
+          # ⑨ 报了错**不许**顺手把对账也停掉。这条是位置的守卫:
           #    "这张表没有阅读量"和"这一轮扫得完不完整"无关, 把自检塞到 full_scan
           #    前面去的话, LNKT 会从此永久停对账(SPX 已经 11 天没对过账了)。
           rc, st, notes, _ = run([drop("曝光量", "阅读量", "互动量")])
           assert rc == 1 and notes and notes[0].get("last_seen_at"), \
               "要害字段报错把 last_seen/对账 一起拦了 —— 孤儿行会攒到没人收得动"
 
-          print("  ✓ 三指标全要 · 0 不算空 · tier 未知算空 · 不给认领 · 截断不误报 · 不拦对账")
+          print("  ✓ 三指标全要 · 0 不算空 · tier 未知算空 · 不给认领 · 截断不误报 · 按平台减项 · 不拦对账")
           PY
       - name: 运营改列名要改 field_mapping, 不是塞 raw_extra (D-054, ANSHEN 9/10 全表隔离)
         working-directory: scripts

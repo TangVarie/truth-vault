@@ -410,6 +410,21 @@ def _detect_missing_core_columns(
 #     放进必备名单等于天天对 10 个项目误报, 这道闸就没人看了。要改口径请直接加在这里。
 #   · **raw_content 没进名单**: 它已经被 missing_required 那道行级闸管着, 而且管得更死
 #     (缺正文的行直接隔离不入库)。放这儿是重复计错, 不放不漏。
+#
+# ⚠️ 「全部指标」得按**平台**算, 不是一张名单套所有表。抖音的创作者面板只有【播放量】,
+#    根本没有曝光/阅读之分。实测 LNKT(platform: douyin, 全库唯一一张抖音表)的「数据汇总」
+#    文本是这 20 项: 播放量/点赞量/评论量/分享量/收藏量/划走率/文案展开率/平均浏览图片数/
+#    封面点击率/文案完读率/评论进入率/点赞率/评论率/收藏率/分享率/主页访问率/不感兴趣率/
+#    下载量/涨粉量/脱粉量 —— 里面**没有阅读量**, 而且不可能有。
+#    对抖音表要求 reads = 要求运营去填一个平台不产出的数字, 只会红到天荒地老也改不好,
+#    而「天天红的 CI 等于没有 CI」正是这套东西一直在治的病(D-053 开篇)。
+#    所以按平台减项; 小红书那 15 张表一项不减。
+#    注: 判据是**项目**的 platform。SPX 是小红书项目、里面夹着 23 条抖音行, 它的表有
+#    「阅读量」列且运营真填了(23/23 非空)—— 所以 SPX 照旧要 reads, 不受这条影响。
+_CAPABILITY_NOT_ON_PLATFORM: dict[str, frozenset[str]] = {
+    "douyin": frozenset({"reads"}),
+}
+
 _REQUIRED_CAPABILITIES: tuple[tuple[str, str], ...] = (
     ("impressions",    "曝光量"),
     ("reads",          "阅读量"),
@@ -426,14 +441,22 @@ _CAPABILITY_EMPTY: dict[str, tuple] = {"tier": (None, "", "未知")}
 _CAPABILITY_EMPTY_DEFAULT: tuple = (None, "", [], {})
 
 
-def _detect_missing_capabilities(notes: list[dict]) -> list[tuple[str, str]]:
+def _detect_missing_capabilities(
+    notes: list[dict], platform: str | None = None,
+) -> list[tuple[str, str]]:
     """整轮 notes 里**一条都没值**的要害字段 → [(列名, 中文名), ...]。
+
+    `platform` 为该平台不存在的指标减项(见 _CAPABILITY_NOT_ON_PLATFORM): 抖音没有
+    阅读量这个概念, 要求它等于永久红在一个谁也改不好的地方。不传就按全量要求。
 
     注意判据是 `not in empty` 而不是布尔真值: 曝光量 **0 是数据**(这条笔记真的没人看),
     `if n.get(col)` 会把它当成空, 于是一张全是 0 的表被报成"产不出曝光" —— 那是误报。
     """
+    skip = _CAPABILITY_NOT_ON_PLATFORM.get(platform or "", frozenset())
     missing: list[tuple[str, str]] = []
     for col, label in _REQUIRED_CAPABILITIES:
+        if col in skip:
+            continue
         empty = _CAPABILITY_EMPTY.get(col, _CAPABILITY_EMPTY_DEFAULT)
         if not any(n.get(col) not in empty for n in notes):
             missing.append((col, label))
@@ -1505,7 +1528,8 @@ def main() -> int:
     #    D-053 那条"认领转黄"是给【个别行有问题】用的; 整列产不出不是待办, 是这张表白同步了,
     #    认领它等于把"这个项目在看板上不存在"这件事按成黄的然后没人再看。
     # 前提三条(缺一就跳过, 不然是误报): 这一轮真有行落下来 / 没被 --limit 截断 / 没有抓取失败的表。
-    missing_caps = _detect_missing_capabilities(pending_notes) if (
+    missing_caps = _detect_missing_capabilities(
+        pending_notes, mapping.get("platform")) if (
         pending_notes and not truncated_by_limit and not fetch_failed) else []
     if missing_caps:
         stats["missing_capabilities"] = [c for c, _ in missing_caps]
