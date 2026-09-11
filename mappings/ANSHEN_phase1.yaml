@@ -40,8 +40,13 @@ end_date: auto_from_publish_time_max
 field_mapping:
   素人编号: account_id
   笔记内容: raw_content           # 本表内容列叫「笔记内容」(非「文案」)
-  发布日期: publish_time           # 本表日期列叫「发布日期」(非「发布时间」); epoch ms
-  笔记链接: publish_url            # 本表链接列叫「笔记链接」(非「反馈链接」); type=15 URL 字段
+  # 2026-09-10(D-054): 运营把这三列在飞书里【就地改名】成了全库通用的那套名字
+  # (同一张表 tblObopEQwBvMF41, 不是换表)。9/10 夜跑 268 行全隔离, 旧名
+  # 「发布日期」「笔记链接」「流量状况」在飞书返回里【一行都不存在】了。
+  # 改的是 field_mapping 的键, 不是往 raw_extra 塞 —— 塞进去 publish_time /
+  # publish_url / tier 源会全部变 NULL, 正是 D-053 E 段那个 LNKT 教训。
+  发布时间: publish_time           # 原「发布日期」; epoch ms
+  反馈链接: publish_url            # 原「笔记链接」; type=15 URL 字段(同 OKMAN 的列名)
   方向: _direction_raw             # → direction_decomposition(5 种单选)
   随贴评论: _comment_text          # → comments 表(Phase2 LLM 解析)
   笔记状态: _intent_raw            # 本表「笔记状态」实为内容形式(直出贴/提问贴) → 走 intent_mapping
@@ -50,7 +55,7 @@ field_mapping:
   # 和 brief 里写着"未来运营填值后自动生效" —— 那是假的, 不映就永远喂不到 _status_raw,
   # 运营填了值 tier 还是 null, 而且没有任何症状。现在映上, 那句话才成立。
   # 当前 100% 为空 → 每行走 rules 的 default=null, 与之前行为完全一致(不是新风险)。
-  流量状况: _status_raw
+  流量状态: _status_raw            # 2026-09-10 改名: 原「流量状况」, 现在就是 B 家族的标准名
 
 # ── intent 映射 ──
 # 「笔记状态」选项: 直出贴 / 提问贴 / 可发布(选项里有但实际 0 行)
@@ -164,6 +169,25 @@ project_specific_fields_to_raw_extra:
   - 随贴评论配图          # 评论区配图附件(type=17)
   - 相关截图              # 截图附件(type=17)
   - 图片统计              # 当前 100% 空
+  # ── 2026-09-10(D-054): 运营新加的【巡查/监控】列族, 143 行带全套 ──
+  # 四列在 OKMAN(A 家族)早有 raw_extra 先例: 是否巡查/巡查状态/已确认存活/最近检查时间。
+  - 下次巡查时间          # 公式列(Excel 序列日 46275.95…), 212 行有值 → 同 TUGE 先例(D-051, 同名同形)
+  - 最近检查时间
+  - 巡查状态
+  - 是否巡查
+  - 已确认存活
+  - 连续失败次数
+  - 排队刷新
+  - 诊断信息
+  - 平台                  # 冗余列(已知 platform) —— 同 SPX 先例
+  - 置顶状态
+  - 评论状态
+  - 评论关键词            # 运营定义的评论区蓝词 —— 同 TUGE / OKMAN(D-053 A 段)先例
+  - 评论区快照
+  - 负面状态
+  - 负面词
+  - 负面评论快照
+  - 实时数据.评论数
   # 已交代 15 列 = 8 field_mapping(含「流量状况」→ _status_raw、「笔记状态」→ _intent_raw)
   #              + 7 raw_extra。真实列数以 preflight 为准, 见上方 field_mapping 那段注释。
 
