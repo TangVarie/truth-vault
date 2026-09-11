@@ -7,7 +7,8 @@ preflight_mapping.py — 接新表前的【只读体检】(不写库、不调 LL
 再真跑。把过去"在 prod 真跑→看炸什么→修"收敛成"接表前一键体检"。
 
 为什么需要它: 历次接表(NRT_2 / NUC)反复踩的"便宜就能提前抓"的坑都在【数据形状】层:
-  · 漏声明列 → D-021 整行 quarantine(NRT_2 曾因此丢 482 行真内容)
+  · 漏声明列 → 值只会躺在 raw_extra._undeclared 没人看(D-055 起不再整行丢; 在那之前
+    NRT_2 曾因此丢 482 行真内容)
   · 品类不在受控闭集 → sync 第一条 INSERT 撞 notes.category CHECK(R-009)
   · 方向不在 direction_decomposition → 拿不到 content_format/audience/子方向
   · intent_mapping 没覆盖 → intent 全 'other'
@@ -19,7 +20,8 @@ preflight_mapping.py — 接新表前的【只读体检】(不写库、不调 LL
 
 用法 : python preflight_mapping.py <project_id> [--limit N] [--show N]
 环境 : FEISHU_APP_ID / FEISHU_APP_SECRET(只读飞书)。【不需要】Supabase / worker 任何凭据。
-退出 : 0 = 无阻断问题(可真跑); 1 = 有该先修的问题(未声明列丢真内容 / 品类非法); 2 = 用法/配置错。
+退出 : 0 = 无阻断问题(可真跑); 1 = 有该先修的问题(品类非法 / transform 异常); 2 = 用法/配置错。
+       ⚠️ 未声明列自 D-055 起【不再阻断】—— 真 sync 会吸收它们、行照常入库, 体检必须照着投影。
 """
 from __future__ import annotations
 
@@ -73,8 +75,8 @@ def project_rows(mapping: dict, records, show_cap: int) -> dict:
         "n": 0,
         "present_cols": Counter(),         # 表里出现过的列 → 行数
         "undeclared_cols": Counter(),      # 未声明列 → 行数
-        "undeclared_with_content": Counter(),  # 未声明列 ∩ 该行有正文(=真笔记会被整行 quarantine)
-        "proj": Counter(),                 # upsert / q_undeclared / q_empty / q_anomaly / error
+        "undeclared_with_content": Counter(),  # 未声明列 ∩ 该行有正文(D-055 起不再丢行, 只是值进 _undeclared)
+        "proj": Counter(),                 # upsert / absorbed / q_empty / q_anomaly / error
         "tiers": Counter(),
         "tier_src": Counter(),
         "intents": Counter(),
@@ -109,13 +111,16 @@ def project_rows(mapping: dict, records, show_cap: int) -> dict:
             continue
 
         has_content = bool(note.get("raw_content"))
-        if undeclared:  # 真 sync: undeclared 优先于缺正文判 → 整行 quarantine
+        if undeclared:
+            # D-055(owner 2026-09-11)起真 sync **不再**因未声明列挡下整行: 值收进
+            # raw_extra["_undeclared"], 行照常入库。preflight 的全部价值就是"照着真 sync
+            # 投影一遍", 所以这里也必须跟着走 —— 还按整行 quarantine 算的话, 一张真 sync
+            # 收得下的表会被接表流程拦在门外, 而且分布统计会平白少掉这些行。
             for c in undeclared:
                 s["undeclared_cols"][c] += 1
                 if has_content:
                     s["undeclared_with_content"][c] += 1
-            s["proj"]["q_undeclared"] += 1
-            continue
+            s["proj"]["absorbed"] += 1
         if not has_content:  # 缺 raw_content → 空占位(静默)vs 真异常(有 note 信号)
             is_empty = not any(note.get(k) for k in _NOTE_DATA_SIGNALS)
             s["proj"]["q_empty" if is_empty else "q_anomaly"] += 1
@@ -178,7 +183,7 @@ def main() -> int:
 
     sc = mapping.get("sync_config") or {}
     # 多表合并(sync_config.tables)时逐表都体检 —— 列覆盖/分布在所有表上聚合, 否则只查
-    # 第一张表会漏掉第二张表的未声明列(D-021 整行 quarantine 丢真笔记)。
+    # 第一张表会漏掉第二张表的未声明列(值会静默躺进 raw_extra._undeclared 没人看)。
     specs = resolve_feishu_tables(sc)
     configured = [sp for sp in specs if sp["app_token"] and sp["table_id"]]
     if not configured:
@@ -212,20 +217,20 @@ def main() -> int:
     # ── 3. 列覆盖 ──
     _hr("3. 列覆盖")
     if s["undeclared_cols"]:
-        n_lost = sum(s["undeclared_with_content"].values())
-        print(f"  ⚠️ 未声明列 {len(s['undeclared_cols'])} 个(出现即【整行 quarantine】, D-021):")
+        n_kept = sum(s["undeclared_with_content"].values())
+        print(f"  ⚠️ 未声明列 {len(s['undeclared_cols'])} 个"
+              f"(D-055 起【不再挡行】: 值收进 raw_extra._undeclared, 行照常入库):")
         for c, cnt in s["undeclared_cols"].most_common(args.show):
             wc = s["undeclared_with_content"].get(c, 0)
-            tag = (f"  ❌ 其中 {wc} 行有正文 = 真笔记会丢!" if wc else "  (仅空行)")
+            tag = (f"  (其中 {wc} 行有正文, 值躺在 _undeclared 里)" if wc else "  (仅空行)")
             print(f"      · {c!r}: {cnt} 行{tag}")
         if len(s["undeclared_cols"]) > args.show:
             print(f"      … 余 {len(s['undeclared_cols']) - args.show} 个")
-        print(f"     → 修: 加进 mappings/{args.project_id}.yaml 的 "
-              f"project_specific_fields_to_raw_extra")
-        if n_lost:
-            blocking.append(f"{len(s['undeclared_cols'])} 个未声明列(共 {n_lost} 行有正文会丢)")
-        else:
-            warnings.append(f"{len(s['undeclared_cols'])} 个未声明列(仅空行, 不丢真内容)")
+        print(f"     → 要用哪几列就写进 mappings/{args.project_id}.yaml 的 "
+              f"project_specific_fields_to_raw_extra; 不用就一直放着。")
+        warnings.append(
+            f"{len(s['undeclared_cols'])} 个未声明列"
+            f"({n_kept} 行有正文, 已吸收不丢行)")
     else:
         print("  ✅ 无未声明列(所有列都已 field_mapping 或 raw_extra 声明)")
 
@@ -241,8 +246,9 @@ def main() -> int:
     print(f"  ⏭  空占位/评论碎片(静默)   : {p['q_empty']}")
     if p["q_anomaly"]:
         print(f"  ⚠️ 缺正文但有 note 信号(逐条告警的真异常): {p['q_anomaly']}")
-    if p["q_undeclared"]:
-        print(f"  ❌ 因未声明列被整行 quarantine: {p['q_undeclared']}")
+    if p["absorbed"]:
+        print(f"  ⚠️ 带未声明列、但照常入库的行(值进 raw_extra._undeclared, D-055): "
+              f"{p['absorbed']}")
     if p["error"]:
         print(f"  ❌ transform 异常行: {p['error']}")
         blocking.append(f"{p['error']} 行 transform 异常")

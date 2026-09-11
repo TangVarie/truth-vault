@@ -323,8 +323,18 @@ _CORE_TARGET_PROBE: dict[str, str | None] = {
 }
 
 
+# 「目标列有值」不等于「这个源列填过」—— tier 可以**不靠任何源列**产生: 互动量过阈值时
+# transform_row 直接推断出 爆/大爆 并把 tier_source 写成 '数值推断'。实测 TGV 的 14 条 tier
+# **全部**是这么来的(它的 `笔记阶段` 列在飞书里是空的, mapping 里自己注了「导出里空」)。
+# 拿「tier 有值」当「笔记阶段填过」的证据 → 那列一消失就误报, 而误报会连带停掉对账。
+# 形如 probe → (佐证列, 要排除的值)。(codex PR#125 review P2)
+_PROBE_EVIDENCE_EXCLUDE: dict[str, tuple[str, str]] = {
+    "tier": ("tier_source", "数值推断"),
+}
+
+
 def _detect_missing_core_columns(
-    client, mapping: dict, seen_cols: set[str], *, dry_run: bool = False,
+    client, mapping: dict, seen_cols: set[str],
 ) -> list[str]:
     """core 列(= field_mapping 的键)这一轮飞书一行都没返回, 【且它以前填过】→ 消失了。
 
@@ -332,28 +342,48 @@ def _detect_missing_core_columns(
     "本来就一直是空的"(LNKT 的 reads / ANSHEN 的曝光阅读互动)排除掉 ——
     没有它, 十几个项目会天天误报。
 
+    ⚠️ 一个目标列可能有【好几个源列】。RIO 同期两张飞书表列名不一样, `曝光量` 和 `曝光数`
+       都映 impressions, `流量状态` 和 `状态` 都映 _status_raw。实测库里存的原始行:
+       `曝光数` 186 行 / `曝光量` **0 行** —— 旧名早就没人用了。按单列判的话 RIO 每晚都会报
+       「曝光量消失了」(impressions 明明有值), 红 + 停对账。所以判据是**它的源列一个都没返回**
+       才算断源。(codex PR#125 review P2)
+
+    ⚠️ `_` 开头的中间量若不在 _CORE_TARGET_PROBE 里 → **不监控**。回退成拿中间量名去 select
+       的话(`_comment_text_persona` / `_published_status` / `_account_name` / `_comment_count`,
+       HXZ/NUC/NRT/LNKT 都有), PostgREST 会因为没这列直接报错, 被下面的兜底吞掉返回 [] ——
+       于是**整道闸静默失效**, 同一轮真有核心列被改名也不会报。(codex PR#125 review P1)
+
     读不到库就返回空(降级成不监控): 这道闸是加一层保险, 它自己不该把同步打死。
     """
-    candidates = {
-        col: _CORE_TARGET_PROBE.get(tgt, tgt)
-        for col, tgt in mapping["field_mapping"].items()
-        if col not in seen_cols
-    }
-    probes = sorted({t for t in candidates.values() if t})
-    if not probes or dry_run:
+    by_target: dict[str, set[str]] = {}
+    for col, tgt in mapping["field_mapping"].items():
+        probe = _CORE_TARGET_PROBE.get(tgt) if str(tgt).startswith("_") else tgt
+        if probe:
+            by_target.setdefault(probe, set()).add(col)
+    lost = {t: cols for t, cols in by_target.items() if not (cols & seen_cols)}
+    probes = sorted(lost)
+    if not probes:
         return []
+    # dry-run 也查: 这是只读探针, 而部署流程要求先手动 dry-run 一遍再真跑 ——
+    # 在那一步放过"核心列被改名", 等于把这道闸从最该拦的时刻挪开。(codex PR#125 review P2)
+    witness = {_PROBE_EVIDENCE_EXCLUDE[p][0] for p in probes if p in _PROBE_EVIDENCE_EXCLUDE}
     try:
         rows = fetch_all_pages(
             client.schema("truth_vault").table("notes")
-            .select("note_id," + ",".join(probes))
+            .select(",".join(["note_id", *probes, *sorted(witness - set(probes))]))
             .eq("project_id", mapping["project_id"]),
             order_by="note_id",
         )
     except Exception as exc:
         logger.warning("核心列消失检测: 读 notes 失败(%s) —— 本轮跳过该检测。", exc)
         return []
-    ever_filled = {p for p in probes if any(r.get(p) not in (None, "", [], {}) for r in rows)}
-    return sorted(col for col, probe in candidates.items() if probe in ever_filled)
+    ever_filled = set()
+    for p in probes:
+        exc_col, exc_val = _PROBE_EVIDENCE_EXCLUDE.get(p, (None, None))
+        if any(r.get(p) not in (None, "", [], {})
+               and not (exc_col and r.get(exc_col) == exc_val) for r in rows):
+            ever_filled.add(p)
+    return sorted(c for t in ever_filled for c in lost[t])
 
 
 # ── 兜底: 这张表【根本产不出】某个要害字段(D-056, owner 2026-09-11 定)────────────
@@ -1401,7 +1431,7 @@ def main() -> int:
     # 才叫消失; 从来就是空的(LNKT 的 reads)那种, 不见也不叫消失。
     # 这条自己会跟着数据走: 运营哪天开始填了, 它自动纳入监控。
     missing_core = _detect_missing_core_columns(
-        sb, mapping, seen_cols, dry_run=args.dry_run,
+        sb, mapping, seen_cols,
     ) if (stats["total"] > 0 and not fetch_failed and not truncated_by_limit) else []
     if missing_core:
         stats["missing_core_columns"] = len(missing_core)

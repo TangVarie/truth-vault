@@ -1166,9 +1166,13 @@ jobs:
         working-directory: scripts
         run: |
           python - <<'PY'
-          # preflight_mapping 是接新表前的只读体检(投影 = 真跑会 upsert/quarantine 多少)。
+          # preflight_mapping 是接新表前的只读体检, 它的全部价值就是【照着真 sync 投影一遍】。
+          # 所以真 sync 的行为一变, 这里必须跟着变, 否则接表流程会按一套早就不存在的规矩
+          # 把表拦在门外 —— D-055 起未声明列不再挡行, 值收进 raw_extra._undeclared 照常入库,
+          # 于是 r4(有正文 + 未声明列)从 q_undeclared 变成 upsert 且额外计一笔 absorbed。
+          # (codex PR#125 review P2: 真 sync 收得下的表, preflight 还在 exit 1)
           # 复用真 transform_row, 用真实 NUC_phase1 mapping + 合成记录 pin 住投影分类:
-          #   真笔记→upsert · 空占位/评论碎片→q_empty · 未声明列+正文→q_undeclared(且标记会丢)
+          #   真笔记→upsert · 空占位/评论碎片→q_empty · 未声明列+正文→upsert + absorbed
           #   · 未知方向→dirs_missing。
           import preflight_mapping as pf
           from _common import load_mapping
@@ -1184,16 +1188,18 @@ jobs:
           s = pf.project_rows(m, records, show_cap=8)
           p = s["proj"]
           assert s["n"] == 5, s["n"]
-          assert p["upsert"] == 2, dict(p)          # r1 + r5
+          assert p["upsert"] == 3, dict(p)          # r1 + r5 + r4(带未声明列也照常入库)
           assert p["q_empty"] == 2, dict(p)         # r2 空占位 + r3 评论碎片
-          assert p["q_undeclared"] == 1, dict(p)    # r4
+          assert p["absorbed"] == 1, dict(p)        # r4 的未声明列被吸收(**但行没丢**)
+          assert not p.get("q_undeclared"), \
+              f"preflight 还在按整行 quarantine 投影 —— 真 sync 收得下的表会被接表流程拦死: {dict(p)}"
           assert dict(s["undeclared_cols"]) == {"某未声明列": 1}, s["undeclared_cols"]
-          assert dict(s["undeclared_with_content"]) == {"某未声明列": 1}, "有正文行被未声明列拖走=该标记会丢"
+          assert dict(s["undeclared_with_content"]) == {"某未声明列": 1}, "未声明列没被点出来=待处理清单没了"
           assert s["tiers"].get("大爆") == 1, dict(s["tiers"])
           assert s["dirs_missing"].get("不存在的方向") == 1, dict(s["dirs_missing"])
           assert s["dirs_seen"].get("糖尿病相关") == 1, dict(s["dirs_seen"])
-          print("  ✓ upsert=2 / q_empty=2 / q_undeclared=1")
-          print("  ✓ 未声明列被抓 + 标记'有正文会丢'")
+          print("  ✓ upsert=3 / q_empty=2 / absorbed=1(未声明列不再丢行)")
+          print("  ✓ 未声明列仍被点名进待处理清单")
           print("  ✓ tier 大爆=1 / 未知方向标缺拆解")
           print("\npreflight_mapping projection: all checks passed")
           PY
@@ -1848,13 +1854,23 @@ jobs:
                     "reads", "interactions", "tier", "content_format", "actual_audience_data",
                     "hit_blue_keywords", "data_quality_status", "intent"]
 
-          def run(fields, ever_filled):
+          def run(fields, ever_filled, *, project="OKMAN_phase1", argv=(), rows=None):
               cap = {}
               class _Q:
+                  cols = ""
                   def schema(q, *a): return q
                   def table(q, *a): return q
-                  def select(q, *a, **k): return q
+                  def select(q, c="", **k): q.cols = c; return q
                   def eq(q, *a, **k): return q
+              def fake_pages(qb, order_by=None):
+                  # PostgREST 会因为 notes 上没这列直接报错 —— 必须照着炸, 否则
+                  # 「拿中间量名去 select」这个 bug 在守卫里是看不出来的(它被下面的
+                  # 兜底 except 吞掉返回 [], 表现成"没有核心列消失")。
+                  bad = [c for c in str(getattr(qb, "cols", "")).split(",") if c.startswith("_")]
+                  if bad:
+                      raise RuntimeError(f'column notes.{bad[0]} does not exist')
+                  return rows if rows is not None else [
+                      {"note_id": "n1", **{col: "v" for col in ever_filled}}]
               class F:
                   def __init__(f, *a, **k): pass
                   def list_records(f, *a, **k): return iter([{"record_id": "r", "fields": fields}])
@@ -1867,13 +1883,12 @@ jobs:
               s.ensure_accounts_batch = lambda *a, **k: []
               s.upsert_metrics_batch = lambda *a, **k: (0, [])
               s.update_project_date_range = lambda *a, **k: None
-              s.fetch_all_pages = lambda qb, order_by=None: [
-                  {"note_id": "n1", **{col: "v" for col in ever_filled}}]
+              s.fetch_all_pages = fake_pages
               def up(sb, notes, dry_run=False):
                   cap["notes"] = notes; return [n["note_id"] for n in notes]
               s.upsert_notes_batch = up
               buf = io.StringIO(); h = logging.StreamHandler(buf); s.logger.addHandler(h)
-              sys.argv = ["x", "OKMAN_phase1"]; rc = s.main(); s.logger.removeHandler(h)
+              sys.argv = ["x", project, *argv]; rc = s.main(); s.logger.removeHandler(h)
               log = buf.getvalue()
               return rc, json.loads(log.split("Done: ")[1].split("\n")[0]), cap.get("notes", []), log
 
@@ -1907,7 +1922,72 @@ jobs:
           assert rc == 1 and st["missing_core_columns"] == 1, st
           assert "是【删列】或者运营不再填了" in log, log[-400:]
 
-          print("  ✓ 非核心列吸收不拖红(值留 _undeclared) · 核心列消失才红 · 常空列不误报 · 改名/删列分得开")
+          # ── 下面四条是 codex PR#125 review 逐条验证后改的, 都直接调探针本体 ──
+          # 用【真的 mapping】而不是造一份, 因为这三个 bug 全是真表的形状触发的。
+          from _common import load_mapping as _lm
+          def probe(project, seen, rows):
+              class _Q:
+                  cols = ""
+                  def schema(q, *a): return q
+                  def table(q, *a): return q
+                  def select(q, c="", **k): q.cols = c; return q
+                  def eq(q, *a, **k): return q
+              def pages(qb, order_by=None):
+                  bad = [c for c in str(qb.cols).split(",") if c.startswith("_")]
+                  if bad: raise RuntimeError(f"column notes.{bad[0]} does not exist")
+                  return rows
+              s.fetch_all_pages = pages
+              return s._detect_missing_core_columns(_Q(), _lm(project), set(seen))
+
+          # ⑤ 一个目标有多个源列时, 只要还有一个源列在, 就不算断源。
+          #    RIO 同期两张表列名不一样(表1「曝光量」/表2「曝光数」, mapping 自己注了
+          #    「表1 无这些列、表2 无上面的量列」)。实测库里存的原始行: 曝光数 186 行、
+          #    曝光量 0 行 —— 按单列判的话 RIO 每晚都报「曝光量消失了」, 红 + 停对账。
+          rio_t2 = ["素人编号", "文案", "发布时间", "反馈链接", "方向",
+                    "状态", "曝光数", "阅读数", "互动数", "数据回收情况"]
+          got = probe("RIO_phase1", rio_t2, [{"note_id": "n1", "impressions": 1, "reads": 1,
+                                              "interactions": 1, "tier": "爆", "tier_source": "状态字段",
+                                              "data_quality_status": "已回收"}])
+          assert got == [], f"表2 的列名在场却报表1 的旧列名消失 → RIO 每晚红且停对账: {got}"
+
+          # ⑥ tier 可以【不靠源列】产生: 互动量过阈值 → tier_source='数值推断'。
+          #    TGV 的 14 条 tier 全部是这么来的(它的「笔记阶段」列在飞书里是空的),
+          #    拿"tier 有值"当"那列填过"的证据 → 那列一消失就误报。
+          okman_no_status = [c for c in _lm("OKMAN_phase1")["field_mapping"] if c != "流量状态"]
+          got = probe("OKMAN_phase1", okman_no_status,
+                      [{"note_id": "n1", "tier": "爆", "tier_source": "数值推断"}])
+          assert got == [], f"把数值推断出来的 tier 当成源列填过的证据(TGV 就会这样误报): {got}"
+          got = probe("OKMAN_phase1", okman_no_status,
+                      [{"note_id": "n1", "tier": "爆", "tier_source": "状态字段"}])
+          assert got == ["流量状态"], f"tier 真是那列产的, 它消失了却不报: {got}"
+
+          # ⑦ field_mapping 里 _ 开头的中间量不在白名单时【不监控】。回退成拿中间量名去
+          #    select 的话 PostgREST 直接报错 → 被兜底 except 吞掉返回 [] → 整道闸静默失效,
+          #    同一轮真有核心列被改名也不会报。HXZ/NUC/NRT/LNKT 都有这种中间量。
+          hxz = [c for c in _lm("HXZ_FB")["field_mapping"]
+                 if c not in ("随贴评论素人", "发布时间")]
+          got = probe("HXZ_FB", hxz, [{"note_id": "n1", "publish_time": "2026-01-01"}])
+          assert got == ["发布时间"], \
+              f"未知中间量把 select 毒化了 → 探针整个静默失效, 真的改名也报不出来: {got}"
+
+          # ⑧ dry-run 也要查。部署流程要求先手动 dry-run 一遍再真跑, 在那一步放过
+          #    「核心列被改名」, 等于把这道闸从最该拦的时刻挪开。
+          rc, st, _, _ = run(renamed, FILLED, argv=("--dry-run",))
+          assert st["missing_core_columns"] == 1, f"dry-run 把核心列改名检测整个跳过了: {st}"
+
+          # ⑨ _undeclared 是【当前这一行的镜像】, 不跨轮累积 —— 这是选定的口径, 钉住它。
+          #    (codex PR#125 review 提议跨轮 merge, 没采纳: 飞书按行省略空字段, 所以"这轮
+          #     没返回 A"多数时候意味着运营把 A 删了或清空了 —— merge 会让库里留着一个源头
+          #     已经没有的值, 而且没有任何一条路径会再把它清掉。待处理清单靠每轮的
+          #     ::warning 维持, 不依赖累积。要存档另起一张观察日志表, 不该挂在 note 上。)
+          _, _, n1, _ = run(dict(FULL, **{"新列A": "a1"}), FILLED)
+          _, _, n2, _ = run(dict(FULL, **{"新列B": "b1"}), FILLED)
+          assert n1[0]["raw_extra"]["_undeclared"] == {"新列A": "a1"}, n1[0]["raw_extra"]
+          assert n2[0]["raw_extra"]["_undeclared"] == {"新列B": "b1"}, \
+              f"_undeclared 跨轮累积了 —— 运营删掉的列会永远留在库里且没人清: {n2[0]['raw_extra']}"
+
+          print("  ✓ 非核心列吸收不拖红(值留 _undeclared) · 核心列消失才红 · 常空列不误报 · "
+                "改名/删列分得开 · 多源列不误报 · 数值推断 tier 不算证据 · 未知中间量不毒化探针 · dry-run 也查")
           PY
       - name: 要害字段整列产不出来 → 直接红, 不给认领 (D-056, owner 2026-09-11)
         working-directory: scripts
