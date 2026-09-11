@@ -356,6 +356,60 @@ def _detect_missing_core_columns(
     return sorted(col for col, probe in candidates.items() if probe in ever_filled)
 
 
+# ── 兜底: 这张表【根本产不出】某个要害字段(D-056, owner 2026-09-11 定)────────────
+#
+# 上面那道 _detect_missing_core_columns 有个天生的盲区, 而且是**故意**的: 它只报
+# 「以前填过、现在不见了」。于是 ANSHEN 这种【从来就没映过曝光/阅读/互动】的表,
+# 它永远不会报 —— 一列都没有和一列都没变, 在那套判据里长得一样。
+# owner 2026-09-11: "有表连我们常规要看的列都没有?比如数据什么的?这种肯定就没意义了啊"。
+#
+# 所以这里换一个问法, 不问"变没变", 直接问**这一轮到底产出了什么**: 整轮 N 行里,
+# 这个字段一条都没值 → 这张表在库里就是产不出它。库里这些字段是拿来【算】的
+# (dashboard_views_v1-v6 里 tier 41 处 / impressions 23 处 / interactions 14 处 /
+# publish_time 6 处 / content_format 4 处 / reads 3 处 / account_id 1 处), 整列空
+# 意味着这个项目在看板上**等于不存在** —— 同步跑绿了, 但同步了个寂寞。
+#
+# 名单是怎么定的(2026-09-11 按全库 16 个项目的实测非空数定, 请 owner 过目):
+#   · 三个指标**全要**, 不是"有一个就算数"(owner 原话: "不能只是单一指标是全部指标");
+#   · tier —— 飞轮和爆款率整个建在它上面, 空了等于没有正负样本;
+#   · publish_time —— 没有它就没有时序、没有 window_label、projects 的起止日期也是错的;
+#   · content_format / account_id —— 看板按形态和账号切片, 空了那两个维度整片是空白。
+#   · **intent 没进名单**: 实测 16 个项目里 10 个是 0(BJS/LNKT/OKMAN/RIO/SPX/TGV/TUGE/
+#     TXQ/WTG/XIWU), 而且 BJS_phase1.yaml:143 和 LNKT_phase1.yaml:110 白纸黑字写着
+#     "本表无 intent 列(同 WTG 金标准, intent=null)" —— 它本来就是可选的富化字段,
+#     放进必备名单等于天天对 10 个项目误报, 这道闸就没人看了。要改口径请直接加在这里。
+#   · **raw_content 没进名单**: 它已经被 missing_required 那道行级闸管着, 而且管得更死
+#     (缺正文的行直接隔离不入库)。放这儿是重复计错, 不放不漏。
+_REQUIRED_CAPABILITIES: tuple[tuple[str, str], ...] = (
+    ("impressions",    "曝光量"),
+    ("reads",          "阅读量"),
+    ("interactions",   "互动量"),
+    ("tier",           "爆款分级"),
+    ("publish_time",   "发布时间"),
+    ("content_format", "内容形态"),
+    ("account_id",     "账号"),
+)
+
+# tier 的"空"不是 NULL —— 转换器对判不出档的行写的是 '未知'(见 transform_row 的 tier 段)。
+# 按 NULL 数的话, 一张**全是未知**的表会被判成"有 tier", 而那正是要抓的情形。
+_CAPABILITY_EMPTY: dict[str, tuple] = {"tier": (None, "", "未知")}
+_CAPABILITY_EMPTY_DEFAULT: tuple = (None, "", [], {})
+
+
+def _detect_missing_capabilities(notes: list[dict]) -> list[tuple[str, str]]:
+    """整轮 notes 里**一条都没值**的要害字段 → [(列名, 中文名), ...]。
+
+    注意判据是 `not in empty` 而不是布尔真值: 曝光量 **0 是数据**(这条笔记真的没人看),
+    `if n.get(col)` 会把它当成空, 于是一张全是 0 的表被报成"产不出曝光" —— 那是误报。
+    """
+    missing: list[tuple[str, str]] = []
+    for col, label in _REQUIRED_CAPABILITIES:
+        empty = _CAPABILITY_EMPTY.get(col, _CAPABILITY_EMPTY_DEFAULT)
+        if not any(n.get(col) not in empty for n in notes):
+            missing.append((col, label))
+    return missing
+
+
 def transform_row(
     mapping: dict,
     feishu_record_id: str,
@@ -1142,6 +1196,7 @@ def main() -> int:
     stats = {"total": 0, "upserted": 0, "quarantined": 0,
              "empty_placeholder": 0, "errors": 0, "known_backlog": 0,
              "undeclared_absorbed": 0, "missing_core_columns": 0,
+             "missing_capabilities": [],
              "metrics_written": 0, "metrics_failed": 0,
              "metrics_skipped_fk": 0, "accounts_failed": 0}
     # D-055: 未声明列收进 raw_extra["_undeclared"] 之后, 这里攒一份【待处理清单】;
@@ -1409,6 +1464,36 @@ def main() -> int:
     stats["metrics_skipped_fk"] = (
         len(pending_metrics) - metrics_written - len(failed_metrics)
     )
+
+    # ── 兜底能力自检: 这张表产不出要害字段(D-056)──────────────────────────
+    #
+    # ⚠️ 位置是有讲究的: 这段**必须在 `records_all_ok` / `full_scan` 算完之后**。
+    #    它计错(红), 但**不**拦 last_seen 盖戳、**不**拦对账 —— 因为"这张表没有阅读量"
+    #    跟"这一轮扫得完不完整"是两件无关的事。放到前面去的话, LNKT 会从此永久停对账
+    #    (SPX 已经因为别的原因 11 天没对过账了, 再添一个只会让孤儿行更早失控)。
+    # ⚠️ 且**不走 _count_quarantined / known_backlog**(owner 2026-09-11: "直接红, 不给认领")。
+    #    D-053 那条"认领转黄"是给【个别行有问题】用的; 整列产不出不是待办, 是这张表白同步了,
+    #    认领它等于把"这个项目在看板上不存在"这件事按成黄的然后没人再看。
+    # 前提三条(缺一就跳过, 不然是误报): 这一轮真有行落下来 / 没被 --limit 截断 / 没有抓取失败的表。
+    missing_caps = _detect_missing_capabilities(pending_notes) if (
+        pending_notes and not truncated_by_limit and not fetch_failed) else []
+    if missing_caps:
+        stats["missing_capabilities"] = [c for c, _ in missing_caps]
+        stats["errors"] += len(missing_caps)
+        msg = (
+            f"{mapping['project_id']}: 这一轮 {len(pending_notes)} 行, "
+            f"下面这些字段【一条都没有值】—— "
+            f"{'、'.join(f'{lab}({col})' for col, lab in missing_caps)}。"
+            f"这些字段是库里拿来**算**的(爆款率/曝光/互动看板全靠它们), 整列空 = 这个项目"
+            f"在看板上等于不存在, 同步跑绿了也没意义。"
+            f"去飞书查表: ①表里根本没这列 → 让运营加列并回填历史; "
+            f"②表里有列但 mapping 没纳入/名字对不上 → 改 field_mapping 的键。"
+            f"此项**不提供「已知待办」认领**(D-056), 改好之前每晚都红。"
+        )
+        logger.error("【这张表产不出要害字段】%s", msg)
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            print(f"::error title=要害字段整列为空 ({mapping['project_id']})::{msg}",
+                  flush=True)
 
     # Roll up project-level date range from the freshly synced notes. The yaml
     # placeholders (auto_from_publish_time_min/max) aren't DATE-castable, so

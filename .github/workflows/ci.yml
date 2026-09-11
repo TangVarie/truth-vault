@@ -1760,8 +1760,13 @@ jobs:
           os.environ.setdefault("FEISHU_APP_ID", "x"); os.environ.setdefault("FEISHU_APP_SECRET", "y")
           import sync_feishu_notes_to_truth_vault as s
 
+          # ⚠️ 这一行的 发布时间/曝光量/阅读量/互动量/流量状态 是**必须留着**的:
+          #    少了它们整批就一个要害字段都产不出, D-056 那道闸会开火, 下面 errors 的
+          #    精确断言全部错位 —— 而这道闸要验的是隔离认领, 跟要害字段没关系。
           XHS = {"record_id": "rXHS", "fields": {"素人编号": "1", "笔记内容": "原文案", "方向": "提问贴",
-                                                 "笔记链接": {"link": "https://xhs/1", "text": "t"}}}
+                                                 "笔记链接": {"link": "https://xhs/1", "text": "t"},
+                                                 "发布时间": 1788710400000, "流量状态": ["爆贴"],
+                                                 "曝光量": 100, "阅读量": 80, "互动量": 12}}
           DY1 = {"record_id": "rDY1", "fields": {"素人编号": "2", "方向": "抖音",
                                                  "笔记链接": {"link": "https://v.douyin.com/a", "text": "t"}}}
           DY2 = {"record_id": "rDY2", "fields": {"素人编号": "3", "方向": "抖音",
@@ -1890,8 +1895,10 @@ jobs:
           assert "很可能就是上面那几列被【改名】了" in log, "没点名改名嫌疑(owner 2026-09-11 明确要这个)"
 
           # ③ 【防误报】常空的核心列不见了 → 不报。没有这条, 十几个项目天天红。
-          rc, st, _, _ = run({k: v for k, v in FULL.items() if k != "阅读量"},
-                             [col for col in FILLED if col != "reads"])
+          #    用「观众分析」而不是「阅读量」举例: 阅读量同属这一类(LNKT 的 reads 就是全空),
+          #    但它另外还被 D-056 的要害字段名单管着, 拿它做例子会把两道闸搅在一起。
+          rc, st, _, _ = run({k: v for k, v in FULL.items() if k != "观众分析"},
+                             [col for col in FILLED if col != "actual_audience_data"])
           assert rc == 0 and st["missing_core_columns"] == 0, \
               f"从来没填过的核心列不见了也报 → 会天天误报(LNKT reads / ANSHEN 曝光 就是这种): {st}"
 
@@ -1901,6 +1908,125 @@ jobs:
           assert "是【删列】或者运营不再填了" in log, log[-400:]
 
           print("  ✓ 非核心列吸收不拖红(值留 _undeclared) · 核心列消失才红 · 常空列不误报 · 改名/删列分得开")
+          PY
+      - name: 要害字段整列产不出来 → 直接红, 不给认领 (D-056, owner 2026-09-11)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # owner 2026-09-11: "我发现有表连我们常规要看的列都没有?比如数据什么的?这种肯定就
+          # 没意义了啊, 这种最关键的如果 mapping 的时候没有纳入, 应该需要有兜底的报错,
+          # 然后让运营去查表改表" + "全部需要在库里面算的都要盯上, 而且不能只是单一指标是
+          # 全部指标" + "直接红, 不给认领"。
+          #
+          # 为什么 D-055 那道闸兜不住: 它只报【以前填过、现在不见了】。ANSHEN 的曝光/阅读/
+          # 互动**从来就没映过**, 在那套判据里"一列都没有"和"一列都没变"长得一模一样 ——
+          # 这道闸就是专门补那个盲区的, 所以下面每一条都得真的驱动 main() 来证。
+          import io, json, logging, os, sys
+          os.environ.setdefault("FEISHU_APP_ID", "x"); os.environ.setdefault("FEISHU_APP_SECRET", "y")
+          import sync_feishu_notes_to_truth_vault as s
+
+          FULL = {"素人编号": "1", "文案": "正文", "发布时间": 1788710400000,
+                  "反馈链接": {"link": "https://x", "text": "x"}, "方向": "D10-产品贴",
+                  "流量状态": ["爆贴"], "曝光量": 100, "阅读量": 80, "互动量": 12,
+                  "数据回收情况": "已回收", "观众分析": "性别分布：男性居多",
+                  "随贴评论": "评论", "蓝词字段": ["艾时达口溶膜"], "笔记状态": "已发布"}
+          # 存量库里填过哪些列 —— 只用来喂 D-055 那道闸, 让它在本守卫里全程闭嘴,
+          # 免得两道闸的红搅在一起分不清是谁报的。
+          NEVER_FILLED: list[str] = []
+
+          def run(rows, *, argv=("OKMAN_phase1",), acked=frozenset()):
+              cap = {}
+              class _Q:
+                  def schema(q, *a): return q
+                  def table(q, *a): return q
+                  def select(q, *a, **k): return q
+                  def eq(q, *a, **k): return q
+              class F:
+                  def __init__(f, *a, **k): pass
+                  def list_records(f, *a, **k):
+                      return iter([{"record_id": f"r{i}", "fields": r}
+                                   for i, r in enumerate(rows)])
+              s.FeishuClient = F
+              s.get_supabase_client = lambda *a, **k: _Q()
+              s.assert_db_schema_ready = lambda *a, **k: None
+              s.ensure_project_exists = lambda *a, **k: None
+              s.quarantine_record = lambda *a, **k: None
+              # 「认领过」的极端情形: 隔离表里什么都认领了。要害字段照样得红。
+              s.fetch_acknowledged_quarantine = lambda sb, pid: set(acked)
+              s.ensure_accounts_batch = lambda *a, **k: []
+              s.upsert_metrics_batch = lambda *a, **k: (0, [])
+              s.update_project_date_range = lambda *a, **k: None
+              s.fetch_all_pages = lambda qb, order_by=None: [
+                  {"note_id": "n1", **{c: "v" for c in NEVER_FILLED}}]
+              def up(sb, notes, dry_run=False):
+                  cap["notes"] = notes; return [n["note_id"] for n in notes]
+              s.upsert_notes_batch = up
+              buf = io.StringIO(); h = logging.StreamHandler(buf); s.logger.addHandler(h)
+              sys.argv = ["x", *argv]; rc = s.main(); s.logger.removeHandler(h)
+              log = buf.getvalue()
+              return rc, json.loads(log.split("Done: ")[1].split("\n")[0]), cap.get("notes", []), log
+
+          drop = lambda *cols: {k: v for k, v in FULL.items() if k not in cols}
+
+          # ① 一切正常 → 不报。这条是其余各条的对照组。
+          rc, st, notes, _ = run([FULL])
+          assert rc == 0 and st["missing_capabilities"] == [], st
+
+          # ② ANSHEN 形: 三个指标一列都没有 → 红, 且**三个都点名**
+          #    (owner: "不能只是单一指标是全部指标")
+          rc, st, _, log = run([drop("曝光量", "阅读量", "互动量")])
+          assert rc == 1, f"整表没有任何指标却跑绿了: {st}"
+          assert set(st["missing_capabilities"]) == {"impressions", "reads", "interactions"}, st
+          for zh in ("曝光量", "阅读量", "互动量"):
+              assert zh in log, f"只点名了一部分指标, {zh} 没点到 —— owner 要的是全部: {log[-500:]}"
+          assert "去飞书查表" in log, "没告诉运营该去干什么, 报了也落不了地"
+
+          # ③ LNKT 形: 只缺一个指标(阅读量) → 照样红。
+          #    "有曝光有互动就算有数据"那种写法会在这里绿掉。
+          rc, st, _, _ = run([drop("阅读量")])
+          assert rc == 1 and st["missing_capabilities"] == ["reads"], \
+              f"三个指标只缺一个就放过 → 等于承认可以只看单一指标: {st}"
+
+          # ④ 【防误报】整表曝光都是 0 → 不报。0 是数据(这条笔记真的没人看),
+          #    写成 `if n.get(col)` 的话这里会绿转红。
+          rc, st, _, _ = run([dict(FULL, 曝光量=0, 阅读量=0, 互动量=0)])
+          assert rc == 0 and st["missing_capabilities"] == [], \
+              f"把 0 当成空 → 一张全是 0 的表会被报成产不出指标, 这是误报: {st}"
+
+          # ⑤ tier 的"空"是 '未知' 不是 NULL —— 全表判不出档必须报。按 NULL 数的话这里会绿。
+          #    「评估中」是 OKMAN 表里真有的状态(mappings/OKMAN_phase1.yaml:121 → tier: 未知),
+          #    互动 12 < 爆阈值 100, 所以数值兜底不会把它推上去, 落地就是一张全 '未知' 的表。
+          #    实测库里 '未知' 不是假想: SPX 28 条 / NRT_3 10 条 / RIO 5 条 …… 都是这么来的。
+          rc, st, notes, _ = run([dict(FULL, 流量状态=["评估中"])])
+          assert notes and notes[0].get("tier") == "未知", \
+              f"这条用例没造出 '未知' tier, 下面那句断言就是空跑: {notes[0].get('tier') if notes else None}"
+          assert rc == 1 and "tier" in st["missing_capabilities"], \
+              f"全表 tier 都是 '未知' 却算有 tier —— 飞轮就没有正负样本了: {st}"
+          #    tier 整个没映(NULL)当然也得报。
+          rc, st, _, _ = run([drop("流量状态")])
+          assert rc == 1 and "tier" in st["missing_capabilities"], st
+
+          # ⑥ 不给认领(owner 原话): 隔离表里全认领了, 要害字段照样计 errors,
+          #    一条也不许挪进 known_backlog 变成黄的。
+          rc, st, _, _ = run([drop("曝光量", "阅读量", "互动量")],
+                             acked={("r0", "x"), ("r0", "undeclared_fields")})
+          assert rc == 1 and st["known_backlog"] == 0 and st["errors"] >= 3, \
+              f"要害字段被路由进「已知待办」→ 红转黄, 然后就没人看了(D-056 明确不给认领): {st}"
+
+          # ⑦ 【防误报】--limit 截断时不报: 只扫了一页, "整列没值"根本没依据。
+          rc, st, _, _ = run([drop("曝光量", "阅读量", "互动量"), FULL],
+                             argv=("OKMAN_phase1", "--limit", "1"))
+          assert st["missing_capabilities"] == [], \
+              f"--limit 截断也报 → 每次抽样调试都红: {st}"
+
+          # ⑧ 报了错**不许**顺手把对账也停掉。这条是位置的守卫:
+          #    "这张表没有阅读量"和"这一轮扫得完不完整"无关, 把自检塞到 full_scan
+          #    前面去的话, LNKT 会从此永久停对账(SPX 已经 11 天没对过账了)。
+          rc, st, notes, _ = run([drop("曝光量", "阅读量", "互动量")])
+          assert rc == 1 and notes and notes[0].get("last_seen_at"), \
+              "要害字段报错把 last_seen/对账 一起拦了 —— 孤儿行会攒到没人收得动"
+
+          print("  ✓ 三指标全要 · 0 不算空 · tier 未知算空 · 不给认领 · 截断不误报 · 不拦对账")
           PY
       - name: 运营改列名要改 field_mapping, 不是塞 raw_extra (D-054, ANSHEN 9/10 全表隔离)
         working-directory: scripts
