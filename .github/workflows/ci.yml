@@ -457,13 +457,78 @@ jobs:
           assert 'stats["errors"] += 1' in cq and 'stats["known_backlog"] += 1' in cq, \
               "_count_quarantined 不再分流 errors / known_backlog"
 
-          # records_all_ok 必须由【两个计数器之和】驱动 —— 隔离/抓取失败/transform 异常都会累加,
-          # 任何隔离项(含已认领的)都把 full_scan 拉成 False, 破坏性对账不再推进。
-          # 已认领 ≠ 处理成了: 它照样没盖上 last_seen 戳, 放进对账就会被报成"消失了"。
-          assert 'records_all_ok = (stats["errors"] + stats["known_backlog"]) == 0' in src, \
-              "records_all_ok 漏掉了 known_backlog —— 已认领的隔离行会让对账报假消失"
+          # ── 对账闸: 断【行为】, 不断源码字符串 ────────────────────────────────
+          # 原来这里断的是 `records_all_ok = (errors + known_backlog) == 0` 这个字面量。
+          # 那正是本守卫开头自己警告过的写法 —— 判据一重构就成空跑。D-058 把判据收窄成
+          # 「没处理成的行里有没有【库里已经有 note】的」之后，它就失效了。
+          # 换成驱动真的 main() 验后继属性: 会造成误报的那种失败照旧挡死, 造不成的才放行。
+          import io, json, logging, os, sys
+          os.environ.setdefault("FEISHU_APP_ID", "x"); os.environ.setdefault("FEISHU_APP_SECRET", "y")
 
-          print("  ✓ 隔离走计数, 存在任何隔离项(含已认领)时禁止推进对账 (COR-002 + D-053)")
+          XHS = {"record_id": "rXHS", "fields": {"素人编号": "1", "笔记内容": "原文案", "方向": "提问贴",
+                                                 "笔记链接": {"link": "https://xhs/1", "text": "t"},
+                                                 "发布时间": 1788710400000, "流量状态": ["爆贴"],
+                                                 "曝光量": 100, "阅读量": 80, "互动量": 12}}
+          DY1 = {"record_id": "rDY1", "fields": {"素人编号": "2", "方向": "抖音",
+                                                 "笔记链接": {"link": "https://v.douyin.com/a", "text": "t"}}}
+          DY2 = {"record_id": "rDY2", "fields": {"素人编号": "3", "方向": "抖音",
+                                                 "笔记链接": {"link": "https://v.douyin.com/b", "text": "t"}}}
+
+          def run_gate(in_db):
+              """in_db = 库里已经有 note 的 note_id 集合(喂给对账前置检查那次查询)。"""
+              cap = {}
+              class _Q:
+                  def schema(q, *a): return q
+                  def table(q, *a): return q
+                  def select(q, *a, **k): return q
+                  def eq(q, *a, **k): return q
+                  def in_(q, col, vals): q.asked = list(vals); return q
+                  def or_(q, *a, **k): return q
+              qb = _Q()
+              class F:
+                  def __init__(f, *a, **k): pass
+                  def list_records(f, *a, **k): return iter([XHS, DY1, DY2])
+              M.FeishuClient = F
+              M.get_supabase_client = lambda *a, **k: qb
+              M.assert_db_schema_ready = lambda *a, **k: None
+              M.ensure_project_exists = lambda *a, **k: None
+              M.quarantine_record = lambda *a, **k: None
+              M.fetch_acknowledged_quarantine = lambda sb, pid: {("rDY2", "inherit_prev_row_is_same_kind")}
+              M.ensure_accounts_batch = lambda *a, **k: []
+              M.upsert_metrics_batch = lambda *a, **k: (0, [])
+              M.update_project_date_range = lambda *a, **k: None
+              def pages(b, order_by=None):
+                  asked = getattr(b, "asked", None)
+                  if asked is not None:                 # 对账前置检查那次 in_() 查询
+                      b.asked = None
+                      return [{"note_id": i} for i in asked if i in in_db]
+                  return []                             # 对账本身
+              M.fetch_all_pages = pages
+              def up(sb, notes, dry_run=False):
+                  cap["notes"] = notes; return [n["note_id"] for n in notes]
+              M.upsert_notes_batch = up
+              buf = io.StringIO(); h = logging.StreamHandler(buf); M.logger.addHandler(h)
+              sys.argv = ["x", "SPX_phase1"]; rc = M.main(); M.logger.removeHandler(h)
+              log = buf.getvalue()
+              return rc, json.loads(log.split("Done: ")[1].split("\n")[0]), cap.get("notes", []), log
+
+          # ① 没处理成的那行【库里已经有 note】→ 不盖戳也不对账。
+          #    这是 COR-002/COR-011 真正要守的: 那条 note 这轮没盖戳, 放进对账会被报成"消失了"。
+          rc, st, notes, log = run_gate({"SPX_phase1_rDY2"})
+          assert st["known_backlog"] == 1, st
+          assert not [n for n in notes if n.get("last_seen_at")], \
+              "没处理成的行在库里已经有 note, 却照样盖戳推进对账 —— 那条 note 会被报成假消失"
+          assert "不盖 last_seen 戳、也不做对账" in log, "对账闸没挡住"
+
+          # ② 同一条失败, 但【库里根本没有对应 note】→ 放行。
+          #    它对对账一个字都贡献不了, 挡着只会让真的孤儿行没人盘(SPX 因此停了 11 天)。
+          rc, st, notes, log = run_gate(set())
+          assert st["known_backlog"] == 1, st
+          assert [n for n in notes if n.get("last_seen_at")], \
+              "失败行在库里没有 note, 对账被白挡了 —— SPX 就是这么停了 11 天的(D-058)"
+          assert "照常盖戳并对账" in log, log[-400:]
+
+          print("  ✓ 隔离走计数; 失败行在库里有 note 时禁止推进对账, 没有 note 时放行 (COR-002 + D-053 + D-058)")
           PY
       - name: SQL 侧审计修复回归 (COR-005/010/019/024)
         run: |
@@ -1807,12 +1872,18 @@ jobs:
           rc, st, _, _ = run([])
           assert rc == 1 and st["errors"] == 1 and st["known_backlog"] == 0, (rc, st)
 
-          # ② 人已认领 → 退出码转绿, 但【盖戳和对账照样挡住】
+          # ② 人已认领 → 退出码转绿。
+          #    ⚠️ 本 guard 的 supabase 是个裸 object(), 所以 D-058 那个"失败行在库里有没有
+          #    note"的前置查询会**查不动** → 按设计退回最保守(当成都有 note)→ 照旧不盖戳。
+          #    这里把这条【降级路径】断明白, 否则这几行会变成"因为查库失败才通过"的空跑守卫。
+          #    放行那一侧由 COR-002 那道 guard 用能查动的 stub 正面验(两个分支都验)。
           rc, st, notes, log = run([("rDY2", "inherit_prev_row_is_same_kind")])
           assert rc == 0 and st["errors"] == 0 and st["known_backlog"] == 1, (rc, st)
           assert st["quarantined"] == 1, st
+          assert "对账前置检查: 读 notes 失败" in log, \
+              "查不动库时没走保守降级 —— 放宽对账的前提查不到就不该放宽(D-058)"
           stamped = [n for n in notes if n.get("last_seen_at")]
-          assert not stamped, f"已知待办把 full_scan 放真了 —— {len(stamped)} 条被盖了 last_seen 戳, 对账会报假消失"
+          assert not stamped, f"查不动库还照样盖戳 —— {len(stamped)} 条被盖了 last_seen 戳, 对账会报假消失"
           assert "不盖 last_seen 戳、也不做对账" in log, "对账闸没挡住"
           assert "其中已知待办 1" in log, "没在告警里说清有几条是已知待办"
           assert "别让它一直挂着" in log, "黄得看不见 = 把红压回去了"
@@ -2013,9 +2084,17 @@ jobs:
           # 存量库里填过哪些列 —— 只用来喂 D-055 那道闸, 让它在本守卫里全程闭嘴,
           # 免得两道闸的红搅在一起分不清是谁报的。
           NEVER_FILLED: list[str] = []
+          _LM0 = s.load_mapping
 
-          def run(rows, *, argv=("OKMAN_phase1",), acked=frozenset()):
+          def run(rows, *, argv=("OKMAN_phase1",), acked=frozenset(), platform=None):
               cap = {}
+              if platform:
+                  # 换掉 mapping 的 platform, 其余照旧 —— 专门验【main() 真把 platform
+                  # 传下去了】。上面那几条单元断言只证明函数本身对, 调用点漏传照样绿。
+                  _real_lm = s.load_mapping
+                  s.load_mapping = lambda pid: {**_real_lm(pid), "platform": platform}
+              else:
+                  s.load_mapping = _LM0
               class _Q:
                   def schema(q, *a): return q
                   def table(q, *a): return q
@@ -2099,14 +2178,39 @@ jobs:
           assert st["missing_capabilities"] == [], \
               f"--limit 截断也报 → 每次抽样调试都红: {st}"
 
-          # ⑧ 报了错**不许**顺手把对账也停掉。这条是位置的守卫:
+          # ⑧ 「全部指标」按**平台**算。抖音创作者面板只有播放量, 没有曝光/阅读之分 ——
+          #    实测 LNKT(全库唯一 platform: douyin)的「数据汇总」20 项里没有阅读量, 也不可能有。
+          #    要求它 = 让运营去填一个平台不产出的数字, 永久红在谁也改不好的地方。
+          #    小红书一项不减: 同一份缺阅读量的数据换成小红书项目照样红。
+          from _common import load_mapping as _lm8
+          assert _lm8("LNKT_phase1")["platform"] == "douyin", "LNKT 不再是抖音表, 这条用例的前提没了"
+          dy = [{"impressions": 1, "interactions": 1, "tier": "爆", "publish_time": "2026-01-01",
+                 "content_format": "情感叙事", "account_id": "a1"}]          # 无 reads
+          assert s._detect_missing_capabilities(dy, "douyin") == [], \
+              f"对抖音表要阅读量 —— 运营改不好, 夜跑会永久红: {s._detect_missing_capabilities(dy, 'douyin')}"
+          assert [c for c, _ in s._detect_missing_capabilities(dy, "xiaohongshu")] == ["reads"], \
+              "小红书也不要阅读量了 —— 减项减过头, 15 张小红书表全失守"
+          assert [c for c, _ in s._detect_missing_capabilities(dy)] == ["reads"], \
+              "不传平台时默认放过 —— 新平台接进来会静默失守, 默认必须是全量要求"
+          # 抖音也**只**减阅读量这一项, 别顺手把曝光互动也放了
+          assert set(c for c, _ in s._detect_missing_capabilities(
+              [{"tier": "爆", "publish_time": "x", "content_format": "y", "account_id": "z"}],
+              "douyin")) == {"impressions", "interactions"}, "抖音减项减多了"
+          #    ——— 上面三条只验函数; 下面这两条驱动真的 main(), 验【调用点真把 platform 传了】。
+          rc, st, _, _ = run([drop("阅读量")], platform="douyin")
+          assert rc == 0 and st["missing_capabilities"] == [], \
+              f"main() 没把 platform 传给自检 —— 抖音表照样被要阅读量: {st}"
+          rc, st, _, _ = run([drop("阅读量")])          # 同一批数据, 小红书 → 照样红
+          assert rc == 1 and st["missing_capabilities"] == ["reads"], st
+
+          # ⑨ 报了错**不许**顺手把对账也停掉。这条是位置的守卫:
           #    "这张表没有阅读量"和"这一轮扫得完不完整"无关, 把自检塞到 full_scan
           #    前面去的话, LNKT 会从此永久停对账(SPX 已经 11 天没对过账了)。
           rc, st, notes, _ = run([drop("曝光量", "阅读量", "互动量")])
           assert rc == 1 and notes and notes[0].get("last_seen_at"), \
               "要害字段报错把 last_seen/对账 一起拦了 —— 孤儿行会攒到没人收得动"
 
-          print("  ✓ 三指标全要 · 0 不算空 · tier 未知算空 · 不给认领 · 截断不误报 · 不拦对账")
+          print("  ✓ 三指标全要 · 0 不算空 · tier 未知算空 · 不给认领 · 截断不误报 · 按平台减项 · 不拦对账")
           PY
       - name: 运营改列名要改 field_mapping, 不是塞 raw_extra (D-054, ANSHEN 9/10 全表隔离)
         working-directory: scripts
@@ -2157,6 +2261,30 @@ jobs:
               assert dead not in fm, f"mapping 还指着已经不存在的旧列名 {dead}"
           for live, tgt in (("发布时间", "publish_time"), ("反馈链接", "publish_url"), ("流量状态", "_status_raw")):
               assert fm.get(live) == tgt, f"{live} 应该映到 {tgt}, 实际 {fm.get(live)!r}"
+
+          # ③ 2026-09-11: owner 按 D-056 的报错去飞书建了「数据整理」键值文本列
+          #    (曝光量：X；阅读量：Y；互动量：Z, 与 BJS 同名列同格式, 实测 123 行有值)。
+          #    这里断的同样是【值真的落到了三个指标字段】—— 只把它声明进 raw_extra 的话,
+          #    undeclared 会变空、夜跑转绿, 而 impressions/reads/interactions 仍旧全 NULL,
+          #    D-056 那道闸也就白设了。
+          row = mk(full20); row["数据整理"] = "曝光量：107；阅读量：7；互动量：1"
+          note, metric, und = s.transform_row(mp, "r", row)
+          assert und == [], f"数据整理 没声明: {und}"
+          assert (note.get("impressions"), note.get("reads"), note.get("interactions")) == (107, 7, 1),               ("数据整理 没接上三个指标字段, 只是躺在 raw_extra 里 —— "
+               f"impressions={note.get('impressions')} reads={note.get('reads')} "
+               f"interactions={note.get('interactions')}")
+          assert metric.get("impressions") == 107, "指标没同时进 metric_snapshots"
+          #    接上指标之后数值推断才真的会跑, 所以本表【故意不配阈值】(同 D-048 守卫的口径):
+          #    实测 123 行有指标的行里 **122 行运营亲手标成「无水花」= 趴**, 这些趴贴互动量
+          #    最高才 12。任何 <=12 的阈值都会把运营判死的帖升成爆, 任何 >12 的现在一条都不中。
+          #    本表 tier 有确定性来源(「流量状况」列), 不需要靠数字猜。
+          assert not mp.get("tier_thresholds"), (
+              f"ANSHEN 又配上了数值推断阈值 {mp.get('tier_thresholds')} —— 实测 122/123 行是运营"
+              "标的趴贴且互动量最高 12, 这会把判死的帖自动升成爆(D-048)")
+          note2, _, _ = s.transform_row(mp, "r", dict(
+              row, 流量状态=["无水花"], 数据整理="曝光量：2417；阅读量：300；互动量：12"))
+          assert note2["tier"] == "趴", (
+              f"运营标了无水花, 却被数字推成 {note2['tier']} —— 数值推断不该覆盖人工判定")
 
           print("  ✓ ANSHEN 三种真实行形状 undeclared=[] · 改名三列真的落到 publish_time/publish_url/tier · 旧名已摘")
           PY
