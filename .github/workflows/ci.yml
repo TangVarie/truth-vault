@@ -423,11 +423,26 @@ jobs:
           # 「断 errors += 1 这个字符串」改成断【真正要守的那件事】: 每个隔离分支都得走计数,
           # 且 records_all_ok 必须把两个计数器【都】算上。只断字符串的话, 分流一重构就成空跑守卫。
 
-          # ── undeclared 隔离分支必须走计数 ──
-          # 锚点 "continue  # Don't upsert" 只在 undeclared 分支出现。
-          und = src[src.index("undeclared_fields"):src.index("continue  # Don't upsert")]
-          assert "_count_quarantined(" in und, \
-              "undeclared 隔离分支没走计数 —— records_all_ok 会恒真, 对账报假消失"
+          # ── 2026-09-11(D-055): undeclared 不再隔离整行 ──
+          # owner 定: 未声明列按定义都是非核心列(核心 = field_mapping 的键, 都已声明),
+          # 值收进 raw_extra["_undeclared"], 行照常入库。所以这里原本那条
+          # 「undeclared 隔离分支必须走计数」已经没有对应的分支了。
+          # 但不能就这么删掉 —— 换成守【后继属性】: 这条路上的值一个都不许丢。
+          # (对账那一侧没被削弱: 行既然 upsert 了, 就盖上了 last_seen 戳, 本来就不会被报成消失。)
+          import _common as c
+          note, _, und_cols = M.transform_row(
+              c.load_mapping("OKMAN_phase1"),
+              "rD055",
+              {"文案": "正文", "反馈链接": {"link": "https://x", "text": "x"},
+               "运营刚加的列": "15"},
+          )
+          assert und_cols == ["运营刚加的列"], und_cols
+          assert note["raw_extra"]["_undeclared"] == {"运营刚加的列": "15"}, \
+              "未声明列的值必须收进 raw_extra['_undeclared'] —— 不然就是静默丢数据"
+          assert note["raw_content"] == "正文" and note["publish_url"], \
+              "同一行的核心数据必须照常进来(这正是 D-055 要换掉整行隔离的理由)"
+          assert "continue  # Don't upsert" not in src, \
+              "undeclared 又变回整行隔离了 —— 一个非核心列会重新打死整表(D-055)"
 
           # ── 缺必填隔离分支: 非占位行计失败, 占位行不计 ──
           # 空占位(父记录占位/评论碎片)是正常噪音, 不计失败; 有 note-like 信号
@@ -1709,22 +1724,25 @@ jobs:
           #    会被整条丢掉 —— 表里留着的还是上一批列的 raw_row。OKMAN 实测: 9/3~9/4 因
           #    「评论关键词」隔离 346 行, 隔离表里最新一条却停在 8/21「链接文本」(D-051 早已
           #    声明掉的旧列), 于是 D-051 定的动作「按隔离表里的真实值判该怎么声明」拿到过期的错。
+          #    ⚠️ 2026-09-11(D-055)起这一段【已被取代】: 未声明列根本不再进隔离表了
+          #    (值收进 raw_extra["_undeclared"], 行照常入库), 所以 undeclared_fields:<列名>
+          #    这个 reason 不再产生。上面那个失败模式就此不存在。
+          #    但"待处理清单不许被吞掉"这件事本身还在, 只是搬了家 —— 后继属性在这里守:
+          #    清单从【隔离表的 reason】变成了【raw_extra._undeclared 的键】, 一样不许丢、
+          #    一样要能按列名捞出来。
           src = pathlib.Path("sync_feishu_notes_to_truth_vault.py").read_text(encoding="utf-8")
-          assert 'reason="undeclared_fields"' not in src, "原因串又写死成 undeclared_fields 了 —— 换一批新列就会被旧行吞掉"
-          # 断行为不断字面量: 把源码里那一行 und_reason 的右手边抠出来真跑一遍 ——
-          # 同一批列不管来的顺序如何, 必须算出【同一个】带列名的 reason。
-          # sorted 不是可选的: 飞书返回列序不保证稳定, 不排序 → 同一批列产生多个 reason
-          # → 隔离表堆重复行, 而"已知待办"名单是按 (record, reason) 认领的, reason 一飘就认不上。
-          und_branch = src[src.index("if undeclared:"):src.index("continue  # Don't upsert")]
-          rhs = und_branch[und_branch.index("und_reason ="):].split("\n")[0].split("=", 1)[1].strip()
-          r1 = eval(rhs, {}, {"undeclared": ["评论关键词", "链接文本"]})
-          r2 = eval(rhs, {}, {"undeclared": ["链接文本", "评论关键词"]})   # 同一批列, 顺序反过来
-          assert r1 == r2, f"列序一变 reason 就变了({r1!r} vs {r2!r}) —— 没排序"
-          assert r1.startswith("undeclared_fields:"), r1
-          assert "评论关键词" in r1 and "链接文本" in r1, f"reason 没带上是哪几列: {r1!r}"
-          assert eval(rhs, {}, {"undeclared": ["评论关键词"]}) != r1, "不同的列集必须是不同的 reason"
+          assert 'reason="undeclared_fields"' not in src, "未声明列又走回隔离表了(D-055 已取消这条路)"
 
-          print("  ✓ OKMAN 评论关键词进 raw_extra(同 TUGE) · 隔离原因串带排序列名, 新一批列不再被旧行吞掉")
+          mp_ok = c.load_mapping("OKMAN_phase1")
+          two, _, cols2 = s.transform_row(mp_ok, "rA", dict(row, **{"另一个新列": "x"}))
+          assert sorted(cols2) == ["另一个新列", "评论关键词"] or "另一个新列" in two["raw_extra"]["_undeclared"]
+          assert two["raw_extra"]["_undeclared"]["另一个新列"] == "x", \
+              "第二批新列必须【并存】在清单里, 不能被上一批顶掉(这正是当初 reason 去重吞掉 OKMAN 那 346 行的形状)"
+          # 值必须原样留着 —— 清单的意义是"以后能捡回来", 只记列名不记值就白搭
+          one, _, _ = s.transform_row(mp_ok, "rB", {"文案": "正文", "某新列": {"link": "https://x"}})
+          assert one["raw_extra"]["_undeclared"]["某新列"] == {"link": "https://x"}, "值没原样留着"
+
+          print("  ✓ OKMAN 评论关键词进 raw_extra(同 TUGE) · 未声明列的待处理清单搬到 raw_extra._undeclared, 多批并存且值原样保留")
           PY
       - name: 已知待办名单只把红转黄, 一格也不许松开对账 (D-053, owner 2026-09-04)
         working-directory: scripts
@@ -1798,6 +1816,91 @@ jobs:
           assert "pending" not in c._QUARANTINE_ACKED_STATUSES, "pending 进名单 = 隔离自动豁免自己, 这道闸就废了"
           assert "resolved" not in c._QUARANTINE_ACKED_STATUSES, "resolved 又冒出来说明没修好, 得红"
           print("  ✓ 未认领→红 · 已认领→绿但不盖戳不对账 · 换 reason 不顺带豁免 · pending/resolved 不进名单")
+          PY
+      - name: 非核心列吸收不拖红, 核心列消失才红 (D-055, owner 2026-09-11)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # owner 2026-09-11: 运营在飞书加的非核心列, 他不说就是不需要进库的 —— 先收着,
+          # 等大更新再一起处理。翻这道闸的理由: 之前一个非核心列没声明就把【整行】挡在外面,
+          # 而运营加列往往是整表加(OKMAN 一列丢 346 行 / ANSHEN 一族列丢 268 行)。
+          #
+          # 翻完之后危险整个挪到另一侧, 所以这块守卫的重点是【那一侧真的看得住】:
+          #   核心列(= field_mapping 的键)从飞书消失 → 必须红, 且点名像不像改名。
+          # 判据里"它以前填过吗"那一条不是优化, 是必需的: 实测 ANSHEN 的曝光/阅读/互动/
+          # 观众分析/蓝词全 0、LNKT 的 reads 全 0、TGV 的曝光阅读全 0 —— 只看"这轮没出现"
+          # 就报, 十几个项目天天误报, 正是这套东西一直在治的病。
+          import io, json, logging, os, sys
+          os.environ.setdefault("FEISHU_APP_ID", "x"); os.environ.setdefault("FEISHU_APP_SECRET", "y")
+          import sync_feishu_notes_to_truth_vault as s
+
+          FULL = {"素人编号": "1", "文案": "正文", "发布时间": 1788710400000,
+                  "反馈链接": {"link": "https://x", "text": "x"}, "方向": "D10-产品贴",
+                  "流量状态": ["爆贴"], "曝光量": 100, "阅读量": 80, "互动量": 12,
+                  "数据回收情况": "已回收", "观众分析": "性别分布：男性居多",
+                  "随贴评论": "评论", "蓝词字段": ["艾时达口溶膜"], "笔记状态": "已发布"}
+          FILLED = ["raw_content", "publish_url", "publish_time", "account_id", "impressions",
+                    "reads", "interactions", "tier", "content_format", "actual_audience_data",
+                    "hit_blue_keywords", "data_quality_status", "intent"]
+
+          def run(fields, ever_filled):
+              cap = {}
+              class _Q:
+                  def schema(q, *a): return q
+                  def table(q, *a): return q
+                  def select(q, *a, **k): return q
+                  def eq(q, *a, **k): return q
+              class F:
+                  def __init__(f, *a, **k): pass
+                  def list_records(f, *a, **k): return iter([{"record_id": "r", "fields": fields}])
+              s.FeishuClient = F
+              s.get_supabase_client = lambda *a, **k: _Q()
+              s.assert_db_schema_ready = lambda *a, **k: None
+              s.ensure_project_exists = lambda *a, **k: None
+              s.quarantine_record = lambda *a, **k: None
+              s.fetch_acknowledged_quarantine = lambda sb, pid: set()
+              s.ensure_accounts_batch = lambda *a, **k: []
+              s.upsert_metrics_batch = lambda *a, **k: (0, [])
+              s.update_project_date_range = lambda *a, **k: None
+              s.fetch_all_pages = lambda qb, order_by=None: [
+                  {"note_id": "n1", **{col: "v" for col in ever_filled}}]
+              def up(sb, notes, dry_run=False):
+                  cap["notes"] = notes; return [n["note_id"] for n in notes]
+              s.upsert_notes_batch = up
+              buf = io.StringIO(); h = logging.StreamHandler(buf); s.logger.addHandler(h)
+              sys.argv = ["x", "OKMAN_phase1"]; rc = s.main(); s.logger.removeHandler(h)
+              log = buf.getvalue()
+              return rc, json.loads(log.split("Done: ")[1].split("\n")[0]), cap.get("notes", []), log
+
+          # ① 新增非核心列 → 吸收, 行照常入库, 不红, 且有黄色待办清单
+          rc, st, notes, log = run(dict(FULL, **{"运营新加的列": "15"}), FILLED)
+          assert rc == 0 and st["errors"] == 0 and st["upserted"] == 1, st
+          assert notes[0]["raw_extra"]["_undeclared"] == {"运营新加的列": "15"}, notes[0].get("raw_extra")
+          assert notes[0]["raw_content"] == "正文" and notes[0]["publish_url"], \
+              "同一行的核心数据必须照常进来 —— 这正是要换掉整行隔离的理由"
+          assert "运营新加了 1 个未声明列" in log and "raw_extra._undeclared" in log, \
+              "待处理清单没打出来, '攒着等大更新'就会变成'攒着没人记得'"
+
+          # ② 核心列被改名 + 该列以前填过 → 红, 并点名像改名
+          renamed = {k: v for k, v in FULL.items() if k != "发布时间"}
+          renamed["发布日期"] = 1788710400000
+          rc, st, _, log = run(renamed, FILLED)
+          assert rc == 1 and st["missing_core_columns"] == 1, st
+          assert "核心列消失" in log and "发布时间" in log, log[-400:]
+          assert "很可能就是上面那几列被【改名】了" in log, "没点名改名嫌疑(owner 2026-09-11 明确要这个)"
+
+          # ③ 【防误报】常空的核心列不见了 → 不报。没有这条, 十几个项目天天红。
+          rc, st, _, _ = run({k: v for k, v in FULL.items() if k != "阅读量"},
+                             [col for col in FILLED if col != "reads"])
+          assert rc == 0 and st["missing_core_columns"] == 0, \
+              f"从来没填过的核心列不见了也报 → 会天天误报(LNKT reads / ANSHEN 曝光 就是这种): {st}"
+
+          # ④ 核心列消失但这轮没有新列 → 红, 且说清是删列不是改名
+          rc, st, _, log = run({k: v for k, v in FULL.items() if k != "反馈链接"}, FILLED)
+          assert rc == 1 and st["missing_core_columns"] == 1, st
+          assert "是【删列】或者运营不再填了" in log, log[-400:]
+
+          print("  ✓ 非核心列吸收不拖红(值留 _undeclared) · 核心列消失才红 · 常空列不误报 · 改名/删列分得开")
           PY
       - name: 运营改列名要改 field_mapping, 不是塞 raw_extra (D-054, ANSHEN 9/10 全表隔离)
         working-directory: scripts

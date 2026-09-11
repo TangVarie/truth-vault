@@ -309,6 +309,53 @@ def inherit_content_from_previous_row(
             out[k] = prev_raw[k]
     return out, {"from": prev_id, "overrides": overrides}, None
 
+# field_mapping 的值里, `_` 开头的是【中间量】(不是 notes 的列), 要换成它真正影响的列
+# 才查得到"以前填过没有"。查不到对应列的(评论走另一张表、笔记状态只用于检测)→ 不监控,
+# 宁可漏报也不误报: 这道闸的价值全在"红了就一定是真出事", 掺了噪音就没人看了。
+_CORE_TARGET_PROBE: dict[str, str | None] = {
+    "_status_raw": "tier",
+    "_tier_source_raw": "tier",
+    "_direction_raw": "content_format",
+    "_audience_raw": "actual_audience_data",
+    "_intent_raw": "intent",
+    "_note_status_raw": None,      # 只用于检测伪爆贴, 不落任何列
+    "_comment_text": None,         # 落 comments 表, 不在 notes 上
+}
+
+
+def _detect_missing_core_columns(
+    client, mapping: dict, seen_cols: set[str], *, dry_run: bool = False,
+) -> list[str]:
+    """core 列(= field_mapping 的键)这一轮飞书一行都没返回, 【且它以前填过】→ 消失了。
+
+    "以前填过"查的是这个项目存量 note 里对应列有没有非空值。这一条把
+    "本来就一直是空的"(LNKT 的 reads / ANSHEN 的曝光阅读互动)排除掉 ——
+    没有它, 十几个项目会天天误报。
+
+    读不到库就返回空(降级成不监控): 这道闸是加一层保险, 它自己不该把同步打死。
+    """
+    candidates = {
+        col: _CORE_TARGET_PROBE.get(tgt, tgt)
+        for col, tgt in mapping["field_mapping"].items()
+        if col not in seen_cols
+    }
+    probes = sorted({t for t in candidates.values() if t})
+    if not probes or dry_run:
+        return []
+    try:
+        rows = fetch_all_pages(
+            client.schema("truth_vault").table("notes")
+            .select("note_id," + ",".join(probes))
+            .eq("project_id", mapping["project_id"]),
+            order_by="note_id",
+        )
+    except Exception as exc:
+        logger.warning("核心列消失检测: 读 notes 失败(%s) —— 本轮跳过该检测。", exc)
+        return []
+    ever_filled = {p for p in probes if any(r.get(p) not in (None, "", [], {}) for r in rows)}
+    return sorted(col for col, probe in candidates.items() if probe in ever_filled)
+
+
 def transform_row(
     mapping: dict,
     feishu_record_id: str,
@@ -426,6 +473,19 @@ def transform_row(
     for feishu_col in fields_to_raw_extra:
         if feishu_col in raw_fields:
             raw_extra[feishu_col] = raw_fields[feishu_col]
+
+    # ── 未声明列 → raw_extra["_undeclared"], 行照常入库 (D-055, owner 2026-09-11) ──
+    # owner: 运营在飞书加的非核心列, 他不说就是不需要进库的; 先收着, 等大更新再一起处理。
+    #
+    # 关键的一点(它让这件事比看上去干净): **未声明的列按定义不可能是核心列** ——
+    # 核心 = field_mapping 的键, 而那些都在 declared 里。所以这里吸收的一定是非核心列,
+    # 不存在"把核心数据静默吞掉"的风险。真正危险的是反方向: 已声明的核心列从飞书消失
+    # (改名/删除), 那一路在主循环收尾处单独判、单独红 —— 见 _missing_core_columns。
+    #
+    # 单独放在 "_undeclared" 下而不是摊平进 raw_extra: 摊平了就和【运营 review 过、
+    # 特意声明进 raw_extra】的列长得一模一样, 那份"待处理清单"就没了。
+    if undeclared:
+        raw_extra["_undeclared"] = {c: raw_fields[c] for c in undeclared}
     if raw_extra:
         note["raw_extra"] = raw_extra
 
@@ -1081,8 +1141,13 @@ def main() -> int:
     # 所以照样挡住盖戳和对账(见下方 records_all_ok), 只是不进 errors、不把退出码变红。
     stats = {"total": 0, "upserted": 0, "quarantined": 0,
              "empty_placeholder": 0, "errors": 0, "known_backlog": 0,
+             "undeclared_absorbed": 0, "missing_core_columns": 0,
              "metrics_written": 0, "metrics_failed": 0,
              "metrics_skipped_fk": 0, "accounts_failed": 0}
+    # D-055: 未声明列收进 raw_extra["_undeclared"] 之后, 这里攒一份【待处理清单】;
+    # seen_cols 是这一轮飞书真的返回过的所有列名 —— 用来反查【已声明的核心列消失了】。
+    undeclared_seen: set[str] = set()
+    seen_cols: set[str] = set()
     # Collect transformed rows, then write in batches after the loop (one
     # upsert per chunk instead of ~3 REST calls per record — see *_batch above).
     pending_notes: list[dict[str, Any]] = []
@@ -1163,6 +1228,7 @@ def main() -> int:
         stats["total"] += 1
         feishu_record_id = item.get("record_id", "")
         raw_fields = item.get("fields", {})
+        seen_cols.update(raw_fields.keys())   # D-055: 反查核心列消失用
         inherited_meta = None
         if inherit_spec and content_col:
             raw_fields, inherited_meta, inh_reason = inherit_content_from_previous_row(
@@ -1189,29 +1255,16 @@ def main() -> int:
                 if inherit_spec.get("platform_override"):
                     note["platform"] = inherit_spec["platform_override"]
             if undeclared:
-                und_reason = f"undeclared_fields:{','.join(sorted(undeclared))}"
-                logger.warning(
-                    "record_id=%s has undeclared fields: %s → quarantine",
-                    feishu_record_id, undeclared,
-                )
-                if not args.dry_run:
-                    quarantine_record(
-                        sb, mapping["project_id"], feishu_record_id,
-                        raw_fields, undeclared,
-                        # 原因串必须带上【是哪几列】(D-053)。隔离表按 (project, record, reason)
-                        # 去重 + ignore_duplicates 保住 reviewer 状态; reason 恒为 "undeclared_fields"
-                        # 时, 同一条记录第二次因【另一批新列】被隔离会被整条丢掉 —— 表里留着的还是
-                        # 上一次那批列的 raw_row。OKMAN 就是这样: 9/3~9/4 因「评论关键词」隔离 346 行,
-                        # 隔离表里却只有 8/21「链接文本」那批(D-051 早已声明掉的旧列), 于是
-                        # 「按隔离表里的真实值判该怎么声明」(D-051 定的动作)拿到的是过期的错。
-                        # sorted 是必须的: 飞书返回列序不保证稳定, 不排序会让同一批列产生多个 reason。
-                        reason=und_reason,
-                    )
-                # COR-002: 隔离的这条在飞书里【还在】, 只是这次没处理成 —— 不算
-                # 完整扫描。不把它算进"没处理成"的话 records_all_ok 恒真, 对账会把
-                # 这条(上一轮盖过戳的话)报成"消失了/移走了/改了 record_id"。
-                _count_quarantined(feishu_record_id, und_reason)
-                continue  # Don't upsert; require human review first
+                # D-055(owner 2026-09-11): 未声明列【不再隔离整行】。它们按定义都是非核心列
+                # (核心 = field_mapping 的键, 都已声明), transform_row 已经把值收进
+                # raw_extra["_undeclared"] —— 行照常入库, 只记一笔账。
+                #
+                # 为什么翻: 之前一个非核心列没声明就把【整行】挡在外面, 而运营加列往往是
+                # 整表加 —— OKMAN 一列丢 346 行、ANSHEN 一族列丢 268 行。那些列 owner 本来
+                # 就不需要, 代价却是同一批行的正文/链接/指标一起进不来。攒着等大更新处理,
+                # 前提是行得先进来。
+                undeclared_seen.update(undeclared)
+                stats["undeclared_absorbed"] += 1
 
             # Required-field check: truth_vault.notes has NOT NULL constraints
             # on raw_content (the actual note text), and INSERT would crash
@@ -1276,6 +1329,46 @@ def main() -> int:
     #    我知道、先这么放着", 不是说"这行处理成了" —— 它照样没被 upsert、照样没盖
     #    上本次 last_seen 戳。漏掉它 records_all_ok 就会在还有隔离行时变真, 对账把
     #    那些行报成"消失了", 正是 COR-002/COR-011 堵掉的洞。红转黄【只动退出码】。
+    # ── D-055 的反方向闸: 【已声明的核心列从飞书消失】(owner 2026-09-11) ──
+    #
+    # 未声明列现在一律吸收、不再拖红。危险因此整个挪到了另一侧: 核心列没了。
+    # ANSHEN 9/10 就是这个 —— 运营把「发布日期」改名成「发布时间」。要是新列被自动
+    # 吸收、旧列消失又没人管, 夜跑当晚就绿了, 而 publish_time / publish_url / tier
+    # 全部变 NULL【且没有任何症状】。所以这一侧必须红。
+    #
+    # 判据不能只看"这一轮有没有出现"。飞书 list_records 不返回空字段, 所以一列
+    # 【一直是空的】和【被删/改名了】在 API 层长得一模一样 —— 而常空的核心列是常态:
+    # 实测 ANSHEN 的 曝光/阅读/互动/观众分析/蓝词 全 0, LNKT 的 reads 全 0, TGV 的
+    # 曝光阅读全 0 …… 只看"没出现"就报, 十几个项目天天误报, 正是这套东西一直在治的病。
+    #
+    # 所以再加一个条件: 【它以前填过吗】。库里就有答案, 不用新 API 也不用维护白名单 ——
+    # 目标字段在这个项目的存量 note 里有过非空值, 说明这列本来是有数据的, 现在整轮不见
+    # 才叫消失; 从来就是空的(LNKT 的 reads)那种, 不见也不叫消失。
+    # 这条自己会跟着数据走: 运营哪天开始填了, 它自动纳入监控。
+    missing_core = _detect_missing_core_columns(
+        sb, mapping, seen_cols, dry_run=args.dry_run,
+    ) if (stats["total"] > 0 and not fetch_failed and not truncated_by_limit) else []
+    if missing_core:
+        stats["missing_core_columns"] = len(missing_core)
+        stats["errors"] += len(missing_core)
+        logger.error(
+            "【核心列消失】field_mapping 里这些列这一轮飞书一行都没返回: %s。"
+            "它们映到 %s —— 不处理的话这些字段会静默变 NULL。",
+            missing_core,
+            [mapping["field_mapping"][k] for k in missing_core],
+        )
+        if undeclared_seen:
+            logger.error(
+                "同一轮里【新冒出来】这些没声明的列: %s —— 很可能就是上面那几列被【改名】了。"
+                "对上号就改 field_mapping 的键(不是塞 raw_extra, 见 D-054); "
+                "确实是删列就从 field_mapping 摘掉; 确实一直是空的就写进 known_empty_core_columns。",
+                sorted(undeclared_seen),
+            )
+        else:
+            logger.error(
+                "这一轮没有新的未声明列 —— 那就不是改名, 是【删列】或者运营不再填了。",
+            )
+
     records_all_ok = (stats["errors"] + stats["known_backlog"]) == 0
     full_scan = (not truncated_by_limit) and (not fetch_failed) \
         and records_all_ok and (not args.dry_run)
@@ -1457,6 +1550,16 @@ def main() -> int:
             "跳过 %d 行空占位/评论碎片行(无正文、无账号/指标/链接等实质信号; 已 quarantine 留档, 未逐条告警)",
             stats["empty_placeholder"],
         )
+    if undeclared_seen:
+        # 待处理清单: 行都进来了, 只是这些列的值先躺在 raw_extra["_undeclared"] 里。
+        # 打成注解是为了它【看得见】—— 不然"攒着等大更新"就变成"攒着没人记得"。
+        msg = (f"{mapping['project_id']}: 运营新加了 {len(undeclared_seen)} 个未声明列, "
+               f"值已收进 raw_extra._undeclared, 行照常入库({stats['undeclared_absorbed']} 行受影响): "
+               f"{sorted(undeclared_seen)}。"
+               f"要用哪几列就写进 mapping, 不用就一直放着 —— 但别让它一直没人看(D-055)。")
+        logger.warning(msg)
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            print(f"::warning title=新增未声明列 ({mapping['project_id']})::{msg}", flush=True)
     if stats["known_backlog"]:
         # 「黄」得看得见, 否则就是把红压回去了(D-051 拒绝过那条路)。GitHub Actions
         # 的 job 只有红/绿, 所以用 ::warning 注解 —— 它出现在 run 摘要顶部, 点得进来。
