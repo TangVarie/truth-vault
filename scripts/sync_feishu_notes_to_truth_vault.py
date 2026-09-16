@@ -982,6 +982,23 @@ def _coerce_value(target_col: str, value: Any) -> Any:
             return ", ".join(x["text"] for x in value)
         return value
 
+    # URL 列(飞书 type=15)返回 {"link": ..., "text": ...} —— text 是【显示文字】,
+    # link 才是真地址。目前全库这两者恰好一致(运营直接粘 URL, 显示文字就是 URL 本身,
+    # 实测 SPX 453 / ANSHEN 188 / OKMAN 346 条 publish_url 全是真链接), 所以取 text
+    # 一直没出事。但只要有人给链接起个名字(「看笔记」), 存进去的就是那个名字 ——
+    # 一个用不了的 label, 而且没有任何症状。对 publish_url 这种【本身就是地址】的列,
+    # 认 link 才对; 没有 link 的(纯文本列)再回退 text。(codex PR#127 review P1)
+    # 顺带去掉首尾空白: 实测全库 5661 条 publish_url 里 **738 条前后带空白**
+    # (WTG 159 / NRT_3 21 / ANSHEN 8 …), 形如 " http://xhslink.com/o/xxx "。
+    # 带空格的 URL 对下游是坏的(点不开、比对不上), 而这一列本身就是地址, 没有哪种
+    # 情形下首尾空白是有意义的。
+    if target_col == "publish_url":
+        if isinstance(value, dict) and value.get("link"):
+            value = value["link"]
+        elif isinstance(value, dict) and "text" in value:
+            value = value["text"]
+        return value.strip() if isinstance(value, str) else value
+
     # Single-select / user cell: dict with 'text'
     if isinstance(value, dict) and "text" in value:
         return value["text"]

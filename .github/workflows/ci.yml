@@ -2298,12 +2298,29 @@ jobs:
           spx_row = {"素人编号": "1", "笔记内容": "正文", "发布时间": 1788710400000,
                      "方向": "提问贴", "流量状态": ["爆贴"], "曝光量": 100, "阅读量": 80,
                      "互动量": 12,
-                     "反馈链接": {"link": "http://xhslink.cn/o/2FfDKWygsav", "text": "x"},
+                     # text 故意写成一个【不是链接】的显示文字 —— 取错字段当场露馅
+                     "反馈链接": {"link": "http://xhslink.cn/o/2FfDKWygsav", "text": "看笔记"},
                      **{k: "v" for k in patrol}}
           note3, _, und3 = s.transform_row(spx, "rSPX", spx_row)
           assert und3 == [], f"SPX 巡查列族没声明全: {und3}"
-          assert note3.get("publish_url"), \
-              "反馈链接 没接上 publish_url —— 塞 raw_extra 能让夜跑转绿, 但链接会静默变 NULL(D-054 教训)"
+          # ⚠️ 断【等于那个 URL】而不是断真值。飞书 URL 列返回 {"link":…, "text":…},
+          #    取 text 的话这里会存成显示文字("看笔记")—— 一个用不了的 label, 而 truthy
+          #    断言照样过。fixture 故意让 text ≠ link 把这条钉死。(codex PR#127 review P1)
+          assert note3.get("publish_url") == "http://xhslink.cn/o/2FfDKWygsav", (
+              f"反馈链接 没接上 publish_url 的真地址, 实际 {note3.get('publish_url')!r} —— "
+              "要么被塞进 raw_extra(链接静默变 NULL, D-054 教训), 要么取成了显示文字")
+          #    纯文本 URL 列(没有 link 键)照样收, 并且首尾空白要去掉 ——
+          #    实测全库 5661 条 publish_url 里 738 条前后带空白, 带空格的 URL 下游用不了。
+          note4, _, _ = s.transform_row(spx, "rSPX2", dict(
+              spx_row, 反馈链接=" http://xhslink.com/o/4syvukVmfI0 "))
+          assert note4["publish_url"] == "http://xhslink.com/o/4syvukVmfI0", (
+              f"纯文本 URL 列没收好或首尾空白没去掉: {note4['publish_url']!r}")
+          #    只有 text 没有 link 的字典(非 URL 类型的单元格映到了这一列)也得收住 ——
+          #    只认 link 的话这类行会静默变 NULL。
+          note5, _, _ = s.transform_row(spx, "rSPX3", dict(
+              spx_row, 反馈链接={"text": " http://xhslink.com/o/onlytext "}))
+          assert note5["publish_url"] == "http://xhslink.com/o/onlytext", (
+              f"没有 link 键的字典没回退到 text: {note5.get('publish_url')!r}")
           assert "反馈链接" not in (note3.get("raw_extra") or {}), "反馈链接 被塞进了 raw_extra"
           assert "笔记链接" not in spx["field_mapping"], "mapping 还指着已经不存在的旧列名 笔记链接"
           assert spx["field_mapping"].get("反馈链接") == "publish_url", spx["field_mapping"].get("反馈链接")
