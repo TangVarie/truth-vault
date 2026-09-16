@@ -12,10 +12,16 @@
 > 留一项目交叉验证 AUC ≈ 0.61；最差 20% 的爆率是基线的一半；
 > 但最高分那 20% 只有 1.4 倍提升，且顶部不单调。
 
-> ⚠️ **2026-09-16 修正**：本文第一版（9/15）的全部数字是在**污染标签**上算的 ——
-> 373 个爆款里 79 个（21%）来自刷评、数值推断或运营手标的伪爆贴。
-> 清洗后的口径见 [signal-definitions.md](signal-definitions.md)，
-> 重算结果和正文实验见文末 **第八节**。旧数字保留在下文，用于对照。
+> ⚠️ **2026-09-16 修正：下文第一～七节（9/15 那版）的数字有两处已知偏差，别直接引用。**
+>
+> 1. **标签是污染的** —— 373 个爆款里 79 个（21%）来自铺评、数值推断或运营手标的伪爆贴。
+>    清洗口径见 [signal-definitions.md](signal-definitions.md) 第八节。
+> 2. **AUC 算法有 bug** —— 用了 PostgreSQL `rank()`（并列取最小秩），而 Mann–Whitney
+>    要求平均秩。低基数类别特征下并列很多（最大并列组 44 行），这不是理论瑕疵。
+>
+> **修正后的数字全部在文末第八节**，含完整可复跑 SQL。
+> 第一～七节原样保留，是为了让人能看出改了什么、以及那些**负面结论**（单项目模型更差、
+> 换数值标签更差、时间≈项目共线做不了时间留出）的方向未受影响 —— 但它们的绝对值同样偏低约 0.01。
 
 ---
 
@@ -328,34 +334,48 @@ GROUP BY 1,2 HAVING count(*) >= 40 ORDER BY 1, 3 DESC;
 
 ## 八、2026-09-16 续：清洗标签 + 正文进模型
 
+> ⚠️ **本节全部 AUC 于 2026-09-16 用中位秩重算过。**
+> 第一版用 PostgreSQL `rank()` —— 它给并列行的是**最小秩**，而 Mann–Whitney 的 AUC 公式
+> 要求**平均秩**（并列各给一半credit）。codex PR#128 P2 指出，属实。
+> 低基数类别特征下并列非常多（实测每项目最大并列组：SPX 44 行、NUC 24、OKMAN 22、NRT_3 19），
+> 所以这不是理论瑕疵。修正式：`midrank = rank() + (同分行数 − 1) / 2`。
+> 修正后各数上移约 0.01，**结论方向全部不变**。
+
 ### 8.1 先清洗标签
 
-9/15 的 0.61 是在污染标签上算的。按 [signal-definitions.md](signal-definitions.md)
-第八节的口径清洗（排除 数值推断 / 伪爆贴 / 刷 50 评 / 互动低于本项目趴中位），
+9/15 的数字是在污染标签上算的。按 [signal-definitions.md](signal-definitions.md)
+第八节的口径清洗（排除 数值推断 / 伪爆贴 / **铺评工单** / 互动低于本项目趴中位），
 正例 **373 → 294**，重跑留一项目交叉验证：
 
-| 留出项目 | 正例 | AUC（污染） | AUC（清洗） | 变化 |
+| 留出项目 | 污染正例 | AUC（污染） | 清洗正例 | AUC（清洗） |
 |---|---|---|---|---|
-| NRT_phase2 | 42 | 0.762 | 0.769 | +0.007 |
-| TUGE_phase1 | 39→11 | 0.544 | **0.662** | **+0.118** |
-| HXZ_FB | 15→14 | 0.593 | 0.607 | +0.014 |
-| OKMAN_phase1 | 37 | 0.593 | 0.604 | +0.011 |
-| NRT_phase3 | 44→43 | 0.556 | 0.574 | +0.018 |
-| SPX_phase1 | 23 | 0.625 | 0.625 | 0 |
-| XIWU_phase1 | 8→7 | 0.506 | 0.524 | +0.018 |
-| NUC_phase1 | 85 | 0.633 | 0.616 | −0.017 |
-| **RIO_phase1** | **32→13** | 0.570 | **0.464** | **−0.106** |
-| **加权** | **340→275** | **0.612** | **0.624** | **+0.012** |
+| NRT_phase2 | 42 | 0.764 | 42 | **0.771** |
+| TUGE_phase1 | 39 | 0.560 | 11 | **0.669** |
+| HXZ_QD | 6 | 0.662 | 4 | 0.650 |
+| SPX_phase1 | 23 | 0.645 | 23 | 0.643 |
+| NUC_phase1 | 85 | 0.639 | 85 | 0.621 |
+| HXZ_FB | 15 | 0.615 | 14 | 0.630 |
+| OKMAN_phase1 | 37 | 0.607 | 37 | 0.617 |
+| NRT_phase3 | 44 | 0.559 | 43 | 0.577 |
+| XIWU_phase1 | 8 | 0.508 | 7 | 0.525 |
+| **RIO_phase1** | 32 | 0.574 | 12 | **0.435** |
+| **加权** | **340** | **0.622** | **279** | **0.630** |
 
-**整体只涨 0.012，但分项目变化很大。** 两个极端值得看：
+（TXQ 清洗后只剩 1 个正例，已纳入加权但单看无意义。）
 
-- **TUGE 0.544 → 0.662**：清掉 26 条刷评爆贴之后才露出真实水平。
-- **RIO 0.570 → 0.464**：丢了 19/32 个正例（10 伪爆 + 3 数值推断 + …）。
-  **之前那 0.57 有一部分是模型学会了认「伪爆贴」这个类别** —— 那 10 条大概有共同特征。
+**整体只涨 0.008，但分项目变化很大。** 两个极端：
+
+- **TUGE 0.560 → 0.669**：清掉 28 条铺评工单爆贴之后才露出真实水平。
+- **RIO 0.574 → 0.435**：丢了 20/32 个正例。
+  **之前那 0.57 有一部分是模型学会了认「伪爆贴」这个类别** —— 那批大概有共同特征。
   假信号一拿掉，RIO 露出低于随机的真实水平。
 
 > **清洗的价值不在 AUC 涨多少，在于现在这个数字是真的。**
 > 之前每 5 个正例里有 1 个是假的。
+
+**注意 ④ 只剔「铺评工单」，不剔「起量后干预」。** 后者（控评/改评/二次评论）的爆贴
+互动中位 856~1225，比**完全没有干预信号**的爆款（303）还高 3~4 倍 —— 是真赢家。
+整体剔掉会删 39 条最真的正例。分层证据见 signal-definitions.md ⑥。
 
 ### 8.2 正文进模型
 
@@ -367,60 +387,137 @@ GROUP BY 1,2 HAVING count(*) >= 40 ORDER BY 1, 3 DESC;
 
 | 留出项目 | 正例 | 只用标签 | 只用正文 | 标签+正文 |
 |---|---|---|---|---|
-| NRT_phase2 | 42 | 0.765 | 0.758 | **0.769** |
-| NUC_phase1 | 85 | **0.618** | 0.599 | 0.611 |
-| NRT_phase3 | 41 | 0.596 | 0.696 | **0.695** |
-| OKMAN_phase1 | 34 | **0.609** | 0.557 | 0.582 |
-| HXZ_FB | 14 | 0.607 | 0.619 | **0.638** |
-| RIO_phase1 | 13 | 0.461 | 0.626 | **0.652** |
-| TUGE_phase1 | 11 | **0.662** | 0.571 | 0.584 |
-| XIWU_phase1 | 7 | **0.527** | 0.415 | 0.446 |
-| **SPX_phase1** | 23 | **0.623** | **0.320** | **0.232** |
-| **加权（全部）** | **270** | **0.628** | 0.606 | 0.610 |
-| **加权（去 SPX）** | **247** | 0.629 | 0.633 | **0.646** |
+| NRT_phase2 | 42 | 0.768 | 0.757 | **0.768** |
+| TUGE_phase1 | 11 | **0.669** | 0.571 | 0.578 |
+| SPX_phase1 | 23 | **0.642** | 0.322 | 0.233 |
+| HXZ_FB | 14 | 0.630 | 0.618 | **0.638** |
+| NUC_phase1 | 85 | **0.624** | 0.600 | 0.612 |
+| OKMAN_phase1 | 34 | **0.621** | 0.558 | 0.583 |
+| NRT_phase3 | 41 | 0.600 | 0.694 | **0.694** |
+| XIWU_phase1 | 7 | **0.526** | 0.417 | 0.447 |
+| RIO_phase1 | 12 | 0.431 | 0.625 | **0.642** |
+| **加权** | **269** | **0.635** | **0.606** | **0.610** |
 
-**读法：**
+### 8.3 怎么读这张表（以及一个不能下的结论）
 
-1. **正文单独用 ≈ 标签单独用**（0.606 vs 0.628），但**两者强弱的项目分布完全不同** ——
-   NRT_3 标签 0.596 / 正文 0.696，RIO 标签 0.461 / 正文 0.626。互补。
-2. **合并在大多数项目确实加分**：去掉 SPX 后 0.646 > 0.629，是三者里最高的。
-3. **SPX 一个项目把全局拖垮**（合并 0.232，比随机反向得多）。
+**能下的结论：**
 
-### 8.3 SPX 为什么反向
+1. **合并没有赢过标签单独用。** 0.610 vs 0.635。加正文**没有**带来整体提升。
+2. **但两套特征的强弱项目分布完全不同** —— NRT_3 标签 0.600 / 正文 0.694，
+   RIO 标签 0.431 / 正文 0.625；反过来 SPX 标签 0.642 / 正文 0.322。
+   这说明正文里**有**标签没覆盖的信号，只是跨项目迁移不稳定。
+3. **SPX 是唯一强烈反向的项目**（正文 0.322、合并 0.233）。
+
+**不能下的结论 —— 这里第一版做错了：**
+
+第一版把「去掉 SPX 之后合并 0.645 > 标签 0.634」当成正文有用的证据，还加粗了。
+**那是在用留出结果挑子集**：先看到 SPX 最差，再把它剔掉，剩下的平均当然更好看。
+codex PR#128 P1 指出这一点，属实。
+
+问题在于**上线时没有办法提前知道新项目是不是「SPX 那一类」** ——
+判断依据（爆贴正文比趴贴短）本身要看标签才能算出来。
+所以 0.645 不是对新项目的性能估计，只是一个事后的自我安慰。
+
+**诚实的数字是全项目的 0.610。**
+
+要让「排除 SPX 类项目」成为一条能用的规则，得满足两条：
+（a）判据只用**训练时就能拿到的信息**（比如正文长度分布与训练池的距离，不看标签）；
+（b）在**外层留出**上验证这条规则本身。两条都还没做。
+
+### 8.4 SPX 为什么反向（观察，不是结论）
 
 排除掉的假设：**不是同文案铺多账号**。SPX 文案重复率只有 3.9%，
-而重复率最高的 RIO（27.8%）正文模型反而是好的（0.626）。
+而重复率最高的 RIO（27.8%）正文模型反而是好的（0.625）。
 
-真实原因是**正文长度**：
+一个可能的解释是**正文长度**：
 
 | SPX | 条数 | 正文中位长度 | 互动中位 |
 |---|---|---|---|
 | 爆 | 29 | **118 字** | 80 |
 | 趴 | 386 | **253 字** | 2 |
 
-SPX 的爆贴正文只有趴贴的一半长。其它项目没这个规律，
-跨项目学来的字符权重在 SPX 上系统性反向 —— 模型把「长文案」当成爆的信号，
-在 SPX 正好反过来。
+SPX 的爆贴正文只有趴贴的一半长，其它项目没这规律 ——
+跨项目学来的字符权重把「长文案」当成爆的信号，在 SPX 正好反过来。
 
-→ **这不是 bug，是真实的项目差异。** 也再次印证第五节 ① 的结论：
-**跨项目合池训练可以，但必须项目内排序，且要接受个别项目会反向。**
+**这只是一个和数据相容的解释，不是验证过的结论**（见 8.3：它是看着标签算出来的）。
 
-### 8.4 所以正文该不该上
+### 8.5 所以正文该不该上
 
-**该上，但不是现在这个上法。**
+**现有做法：没有证据支持上。** 全项目合并 0.610 < 标签单独 0.635。
 
-- 字符二元组的天花板就在这里了（0.646 去 SPX）。它学的是字面，学不到「这是个提问帖」
-  「这是在制造对立」这种结构。
-- 真正能往上推的是**让 LLM 从正文里抽发布前可得的结构化特征**
-  （钩子类型 / 开篇形式 / 身份代入 / 具体性 / 冲突强度），再进同一套验证。
-  那是下一步，不是这一步。
-- 而且在做那件事之前，**投流信号的缺失比正文特征更卡脖子** ——
-  见 [signal-definitions.md](signal-definitions.md) 第三节。
-  没有「这条有没有获得曝光机会」，再好的内容特征也解释不了「好内容为什么没爆」。
+字符二元组学的是字面，学不到「这是个提问帖」「这是在制造对立」这种结构。
+真正值得试的是**让 LLM 从正文里抽发布前可得的结构化特征**
+（钩子类型 / 开篇形式 / 身份代入 / 具体性 / 冲突强度），再进同一套验证 ——
+但那是另一个实验，不能拿本节的结果替它背书。
 
-### 8.5 三方对比的复现 SQL
+而且在做那件事之前，**投流信号的缺失比正文特征更卡脖子** ——
+见 [signal-definitions.md](signal-definitions.md) 第三节。
+没有「这条有没有获得曝光机会」，再好的内容特征也解释不了「好内容为什么没爆」。
 
-见 git 历史里本次提交的 commit message，或直接改第六节那段打分器：
-把 `f` 这个 CTE 换成字符二元组 + 标签的并集，加一个 `kind` 列做三方切分。
-关键参数：`left(raw_content, 600)`、`regexp_replace(..., '[^\u4e00-\u9fa5a-zA-Z0-9]', '', 'g')`、
-二元组 `df >= 40 AND df <= 语料量*0.30`。
+### 8.6 复现 SQL（三方对比，含中位秩修正）
+
+```sql
+WITH pa AS (   -- 每个项目「趴」的互动中位数, 用于 ⑤ 内部自洽
+  SELECT project_id, percentile_disc(0.5) WITHIN GROUP (ORDER BY interactions) pm
+  FROM truth_vault.notes WHERE tier='趴' AND interactions IS NOT NULL GROUP BY 1
+), d AS (      -- 清洗口径的正例 + 全部「趴」, 且必须同时有标签和 >=50 字正文
+  SELECT n.note_id, n.project_id, CASE WHEN n.tier IN ('爆','大爆') THEN 1 ELSE 0 END y,
+         n.emotional_lever el, n.content_format cf,
+         n.human_truth_archetype ar, n.target_audience ta,
+         regexp_replace(left(n.raw_content,600),'[^\u4e00-\u9fa5a-zA-Z0-9]','','g') t
+  FROM truth_vault.notes n LEFT JOIN pa USING (project_id)
+  WHERE n.emotional_lever IS NOT NULL
+    AND n.raw_content IS NOT NULL AND length(n.raw_content) >= 50
+    AND ( n.tier='趴' OR ( n.tier IN ('爆','大爆')
+          AND COALESCE(n.raw_extra->>'_tier_source_raw','') NOT LIKE '%伪爆%'
+          AND NOT (n.raw_extra ? '维护评论50条' OR n.raw_extra ? '评论铺设情况')
+          AND n.tier_source <> '数值推断'
+          AND NOT (n.interactions IS NOT NULL AND pa.pm IS NOT NULL
+                   AND n.interactions <= pa.pm) ) )
+), g AS (      -- 字符二元组
+  SELECT note_id, substring(t from i for 2) bg
+  FROM d, generate_series(1, greatest(length(t)-1,1)) i WHERE length(t) >= 2
+), voc AS (    -- 剪枝: 出现在 >=40 篇 且 <=30% 语料
+  SELECT bg FROM (SELECT bg, count(DISTINCT note_id) df FROM g GROUP BY 1) q
+  WHERE df >= 40 AND df <= (SELECT count(*)*0.30 FROM d)
+), f AS (      -- 特征并集, kind 用于三方切分
+  SELECT DISTINCT g.note_id, 'T:'||g.bg feat, 'text' kind FROM g JOIN voc USING (bg)
+  UNION ALL SELECT note_id,'L:'||el,'tag' FROM d
+  UNION ALL SELECT note_id,'F:'||cf,'tag' FROM d WHERE cf IS NOT NULL
+  UNION ALL SELECT note_id,'A:'||a,'tag' FROM d, unnest(ar) a
+  UNION ALL SELECT note_id,'U:'||a,'tag' FROM d, unnest(ta) a
+), va(v) AS (VALUES ('tag'),('text'),('both')),
+fv AS (SELECT va.v, f.note_id, f.feat FROM va JOIN f ON (va.v='both' OR va.v=f.kind)),
+projs AS (SELECT DISTINCT project_id FROM d),
+lo AS (        -- 留一项目: 用其余项目算每个特征值的对数几率(Laplace 平滑)
+  SELECT fv.v, p.project_id tp, fv.feat,
+         ln((count(*) FILTER (WHERE d.y=1)+1.0)/(count(*) FILTER (WHERE d.y=0)+1.0)) w
+  FROM projs p JOIN d ON d.project_id <> p.project_id
+       JOIN fv ON fv.note_id = d.note_id
+  GROUP BY 1,2,3
+), sc AS (     -- 打分 = 该笔记命中特征的对数几率均值(按特征数归一, 避免长文案分数更极端)
+  SELECT fv.v, d.note_id, d.project_id, d.y, avg(lo.w) s
+  FROM d JOIN fv ON fv.note_id=d.note_id
+         JOIN lo ON lo.v=fv.v AND lo.tp=d.project_id AND lo.feat=fv.feat
+  GROUP BY 1,2,3,4
+), r AS (      -- ★ 中位秩: rank() 给并列最小秩, Mann-Whitney 要平均秩
+  SELECT v, project_id, y,
+         rank() OVER (PARTITION BY v, project_id ORDER BY s)
+           + (count(*) OVER (PARTITION BY v, project_id, s) - 1) / 2.0 AS mrk
+  FROM sc
+), a AS (
+  SELECT v, project_id, count(*) FILTER (WHERE y=1) pos,
+    (( sum(mrk) FILTER (WHERE y=1)
+       - count(*) FILTER (WHERE y=1)*(count(*) FILTER (WHERE y=1)+1)/2.0 )
+     / NULLIF(count(*) FILTER (WHERE y=1)::numeric * count(*) FILTER (WHERE y=0),0)) auc
+  FROM r GROUP BY 1,2
+)
+SELECT project_id, max(pos) pos,
+  round(max(auc) FILTER (WHERE v='tag'),3)  auc_标签,
+  round(max(auc) FILTER (WHERE v='text'),3) auc_正文,
+  round(max(auc) FILTER (WHERE v='both'),3) auc_合并
+FROM a GROUP BY 1 HAVING max(pos) >= 5 ORDER BY pos DESC;
+```
+
+8.1 那张污染 vs 清洗表，把上面的 `d` 换成「两套 y 定义 × 全部有标签行」、
+特征只留 `tag` 那四路即可；其余（`lo` / `sc` / `r` / `a`）原样。

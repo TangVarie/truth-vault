@@ -1319,20 +1319,28 @@ jobs:
           print("  ✓ transform_row 走 _SYNTHETIC_TIER_SRC_RE, 无写死字符串残留")
           print("\nsynthetic 伪爆帖/伪爆贴: all checks passed")
           PY
-      - name: 评论区人工干预标记 comment_maintained 与 synthetic 正交 (D-060)
+      - name: comment_maintained 分来路记录, 与 synthetic 正交 (D-060)
         working-directory: scripts
         run: |
           python - <<'PY'
-          # owner 2026-09-16: "一篇帖子可能标记为爆贴, 但其背后的原因是评论数过了50,
-          #                    但这有可能是我们刷的, 所以其真实的流量一般般"。
-          # 实测支撑(全库): TUGE 挂「维护评论50条」的爆贴互动中位 1~13, 没挂的中位 156;
-          # 「改评发布」24 条里 20 条是爆(互动中位 512) —— 那是【果不是因】, 当特征就是泄漏。
+          # owner 2026-09-16: "评论数过了50, 但这有可能是我们刷的, 所以其真实的流量一般般"
           #
-          # 本守卫钉住两件事:
-          #   (1) 三路信号都要认(tier源「控评」/ 工单列 / 评论状态后验值), 含未声明列路径;
-          #   (2) 【不许】并进 synthetic —— 真爆贴也会控评, 并进去等于把真赢家删出飞轮。
-          # 全部断【行为】不断源码字符串(D-051): 把实现改回去, 下面每一条都会红。
+          # 第一版只写一个布尔, 被 codex PR#128 P1 指出内部矛盾。查实测(爆款内按来路分):
+          #     ① 铺评工单   n=28  中位互动 13
+          #     ② 起量后干预 n=39  中位互动 856~1225
+          #     ④ 无干预信号 n=306 中位互动 303
+          # ② 比【完全没有干预信号】的爆款还高 3~4 倍 —— 是真赢家(对已爆的帖做二次运营)。
+          # 所以 codex 建议的"把 comment_maintained=true 整体剔出训练集"是【错的】,
+          # 那会删掉 39 条最真的爆款。真正的问题是一个布尔拆不开两种相反语义 → 改记 routes。
+          #
+          # 本守卫钉住四件事, 全部断行为不断源码字符串(D-051):
+          #   (1) 两条来路必须【分开】记, 不许合并;
+          #   (2) 爆帖控评置顶 / 爆帖置顶评论 两列必须认(codex P2: 此前完全漏网);
+          #   (3) routes 顺序必须【跨进程】确定, 否则 upsert 每晚写出不同 JSON;
+          #   (4) 不许并进 synthetic —— 真爆贴也会控评。
+          import os, sys, json, subprocess
           import sync_feishu_notes_to_truth_vault as s
+          TICKET, POSTHOC = s._CM_ROUTE_TICKET, s._CM_ROUTE_POSTHOC
 
           BASE = {
               "project_id": "TEST_CM", "platform": "xiaohongshu",
@@ -1341,55 +1349,81 @@ jobs:
                   {"match_contains": ["伪爆贴"], "tier": "爆"},
                   {"match_contains": ["爆贴"], "tier": "爆"},
                   {"match_contains": ["无水花"], "tier": "趴"}]},
-              "project_specific_fields_to_raw_extra": ["维护评论50条", "评论状态", "评论铺设情况"],
+              "project_specific_fields_to_raw_extra": [
+                  "维护评论50条", "评论铺设情况", "爆帖控评置顶", "爆帖置顶评论", "评论状态"],
           }
           def f(n): return n.get("data_quality_flags") or {}
+          def rt(n): return f(n).get("comment_maintained_routes")
 
-          # ① tier 源含「控评」→ 标记; 但 synthetic 必须【仍是 false】, tier 必须【不变】
+          # ① tier 源含「控评」→ 起量后干预; synthetic 仍 false; tier 不变
           n1, _, _ = s.transform_row(BASE, "r1", {"文案": "c", "状态": "爆贴 控评✅", "互动量": 500})
-          assert f(n1).get("comment_maintained") is True, f"控评没被标: {f(n1)}"
-          assert f(n1).get("synthetic") is False, f"控评被误判成假爆款 —— 真赢家会被删出飞轮: {f(n1)}"
+          assert rt(n1) == [POSTHOC], rt(n1)
+          assert f(n1).get("synthetic") is False, f"控评被误判成假爆款, 真赢家会被删出飞轮: {f(n1)}"
           assert n1["tier"] == "爆", f"这个标记不该动 tier: {n1.get('tier')!r}"
 
-          # ② 工单列(「维护评论50条」/「评论铺设情况」)非空即算
-          for col in ("维护评论50条", "评论铺设情况"):
+          # ② 铺评工单列 → 铺评工单(必须与 ① 分开)
+          for col in s._CM_TICKET_COLS:
               n, _, _ = s.transform_row(BASE, "r2", {"文案": "c", "状态": "爆贴", col: "评论1 评论2"})
-              assert f(n).get("comment_maintained") is True, f"{col} 非空没被标: {f(n)}"
+              assert rt(n) == [TICKET], f"{col} 该走铺评工单而非起量后干预: {rt(n)}"
               n0, _, _ = s.transform_row(BASE, "r2b", {"文案": "c", "状态": "爆贴", col: ""})
               assert "comment_maintained" not in f(n0), f"{col} 为空不该命中: {f(n0)}"
 
-          # ③ 「评论状态」只认后验干预值; 常规值放行
-          for v in ("改评发布", "二次评论", "改评显示"):
-              n, _, _ = s.transform_row(BASE, "r3", {"文案": "c", "状态": "爆贴", "评论状态": v})
-              assert f(n).get("comment_maintained") is True, f"{v} 没被标: {f(n)}"
+          # ③ 爆帖控评/置顶列 → 起量后干预 (codex P2: HXZ_QD 3 行全漏, HXZ_FB 9 行漏 5)
+          for col in s._CM_POSTHOC_COLS:
+              n, _, _ = s.transform_row(BASE, "r3", {"文案": "c", "状态": "爆贴", col: "x"})
+              assert rt(n) == [POSTHOC], f"{col} 该走起量后干预: {rt(n)}"
+
+          # ④ 评论状态: 只认后验干预值, 常规值放行
+          for v in s._COMMENT_MAINTAINED_STATUS:
+              n, _, _ = s.transform_row(BASE, "r4", {"文案": "c", "状态": "爆贴", "评论状态": v})
+              assert rt(n) == [POSTHOC], f"{v}: {rt(n)}"
           for v in ("没有显示", "显示评论", "正常发布", "待评论", "无需控评"):
-              n, _, _ = s.transform_row(BASE, "r3b", {"文案": "c", "状态": "爆贴", "评论状态": v})
+              n, _, _ = s.transform_row(BASE, "r4b", {"文案": "c", "状态": "爆贴", "评论状态": v})
               assert "comment_maintained" not in f(n), f"{v} 是常规状态, 不该命中: {f(n)}"
 
-          # ④ 飞书多选回的是 list —— 库里「评论状态」实际存成 '["二次评论"]', 必须认
-          n4, _, _ = s.transform_row(BASE, "r4", {"文案": "c", "状态": "爆贴", "评论状态": ["二次评论"]})
-          assert f(n4).get("comment_maintained") is True, f"list 形态漏判(库里就是这个形态): {f(n4)}"
+          # ⑤ 两条来路同时在场 → 都记, 且顺序【跨进程】确定。
+          #    set 的迭代序随 PYTHONHASHSEED 变, 单进程内测不出来 —— 第一版这条断言写成
+          #    `rt == sorted(rt)`, 反证(把 sorted 换成 list)时【没有变红】, 因为单次运行里
+          #    set 序恰好等于排序序。必须起子进程换种子才测得到。
+          n5, _, _ = s.transform_row(BASE, "r5", {"文案": "c", "状态": "爆贴 控评✅", "维护评论50条": "x"})
+          assert set(rt(n5)) == {TICKET, POSTHOC}, rt(n5)
+          probe = (
+              "import sys;sys.path.insert(0,%r);import sync_feishu_notes_to_truth_vault as s,json;"
+              "n,_,_=s.transform_row(%r,'p',{'文案':'c','状态':'爆贴 控评✅','维护评论50条':'x'});"
+              "print(json.dumps(n['data_quality_flags']['comment_maintained_routes'],ensure_ascii=False))"
+          ) % (os.getcwd(), BASE)
+          outs = set()
+          for seed in ("0", "1", "42", "12345"):
+              env = {**os.environ, "PYTHONHASHSEED": seed}
+              outs.add(subprocess.run([sys.executable, "-c", probe], capture_output=True,
+                                      text=True, env=env, check=True).stdout.strip())
+          assert len(outs) == 1, f"routes 顺序随 PYTHONHASHSEED 变, upsert 每晚会写出不同 JSON: {outs}"
+          assert json.loads(outs.pop()) == sorted([TICKET, POSTHOC]), "routes 必须排序后写"
 
-          # ⑤ 三路都不在场 → 【缺键】, 不是写 false。
+          # ⑥ 飞书多选回的是 list —— 库里「评论状态」实际存成 '["二次评论"]'
+          n6, _, _ = s.transform_row(BASE, "r6", {"文案": "c", "状态": "爆贴", "评论状态": ["二次评论"]})
+          assert rt(n6) == [POSTHOC], f"list 形态漏判(库里就是这个形态): {rt(n6)}"
+
+          # ⑦ 未声明列路径(D-055 _undeclared) —— BJS/SPX 的「评论状态」就是未声明的
+          M7 = dict(BASE); M7["project_specific_fields_to_raw_extra"] = []
+          n7, _, und7 = s.transform_row(M7, "r7", {"文案": "c", "状态": "爆贴", "爆帖置顶评论": "x"})
+          assert "爆帖置顶评论" in und7, f"前提不成立(该列应落入 undeclared): {und7}"
+          assert rt(n7) == [POSTHOC], f"_undeclared 路径漏判: {rt(n7)}"
+
+          # ⑧ 三路都不在场 → 缺键, 不是 false。
           #    写 false = 用"这张表没有控评列"冒充"这条没被控评", 是假阴性。
-          n5, _, _ = s.transform_row(BASE, "r5", {"文案": "c", "状态": "无水花", "互动量": 2})
-          assert "comment_maintained" not in f(n5), f"缺信号时必须缺键, 不许写 false: {f(n5)}"
-          assert f(n5).get("synthetic") is False, f"synthetic 的显式 false 不受影响: {f(n5)}"
+          n8, _, _ = s.transform_row(BASE, "r8", {"文案": "c", "状态": "无水花", "互动量": 2})
+          assert "comment_maintained" not in f(n8) and "comment_maintained_routes" not in f(n8), \
+              f"缺信号时必须缺键, 不许写 false: {f(n8)}"
+          assert f(n8).get("synthetic") is False, f"synthetic 的显式 false 不受影响: {f(n8)}"
 
-          # ⑥ 未声明列路径(D-055 的 _undeclared) —— BJS/SPX 的「评论状态」就是未声明的,
-          #    走不通这条路 = 同一个运营动作因为"表声明没声明"而时有时无。
-          M6 = dict(BASE); M6["project_specific_fields_to_raw_extra"] = []
-          n6, _, und6 = s.transform_row(M6, "r6", {"文案": "c", "状态": "爆贴", "评论状态": "二次评论"})
-          assert "评论状态" in und6, f"前提不成立(该列应落入 undeclared): {und6}"
-          assert f(n6).get("comment_maintained") is True, f"_undeclared 路径漏判: {f(n6)}"
+          # ⑨ 两个 flag 同时在场时互不干扰
+          n9, _, _ = s.transform_row(BASE, "r9", {"文案": "c", "状态": "伪爆贴500 控评✅", "互动量": 500})
+          assert f(n9).get("synthetic") is True and f(n9).get("comment_maintained") is True, f(n9)
+          assert rt(n9) == [POSTHOC], rt(n9)
+          assert "伪爆贴" in f(n9).get("synthetic_reason", ""), f(n9)
 
-          # ⑦ 两个 flag 同时在场时互不干扰
-          n7, _, _ = s.transform_row(BASE, "r7", {"文案": "c", "状态": "伪爆贴500 控评✅", "互动量": 500})
-          assert f(n7).get("synthetic") is True and f(n7).get("comment_maintained") is True, f(n7)
-          assert "伪爆贴" in f(n7).get("synthetic_reason", ""), f(n7)
-          assert "控评" in f(n7).get("comment_maintained_reason", ""), f(n7)
-
-          print("comment_maintained × synthetic 正交: all checks passed")
+          print("comment_maintained 分来路 × synthetic 正交: all checks passed")
           PY
       - name: on_demand 闸对【每一个】自动处理步骤都生效 (D-047)
         working-directory: scripts

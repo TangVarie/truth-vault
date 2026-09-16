@@ -274,14 +274,34 @@ _SYNTHETIC_TIER_SRC_RE = re.compile(r"伪爆[贴帖]|伪\d+评")
 #
 # 【这个 flag 是干什么用的】: 给 L2 和人看的"这条的互动量含人工成分"。训练时应当降权或
 # 单列, 不应当和自然量的爆贴混在一个正例池里。
+# 【两条来路语义相反, 必须分开记】(2026-09-16 codex PR#128 P1 逼出来的修正)
+# 第一版只写一个布尔 comment_maintained, 把下面两类混成一个值。实测它们的互动量分布
+# 正好相反(爆款内, 按来路分):
+#     ① 铺评工单   n=28  p25=3    中位=13    p75=105
+#     ② 起量后干预 n=39  p25=41+  中位=856~1225
+#     ④ 无干预信号 n=306 p25=135  中位=303
+# ② 比【完全没有干预信号】的爆款还高 3~4 倍 —— 它们是真赢家, 运营对已经爆了的帖子
+# 做二次运营。把 comment_maintained=true 整体剔出训练集会删掉 39 条最真的爆款。
+# 所以写 routes 数组, 让下游按来路各自决定, 而不是给一个它无法拆开的布尔。
+# (comment_maintained 这个布尔保留, 语义 = "任一来路命中", 向后兼容。)
+_CM_ROUTE_TICKET = "铺评工单"      # 指标可能是刷出来的 → L2 训练应剔除
+_CM_ROUTE_POSTHOC = "起量后干预"   # 指标是真的, 但含人工成分 → 保留为正例, 别当特征
+
 _COMMENT_MAINTAINED_TIER_RE = re.compile(r"控评")
-# 「评论状态」里的【后验干预】取值 —— 只有帖子已经起量了运营才会去改评/二次铺评。
+# 「评论状态」里的后验干预取值 —— 只有帖子已经起量了运营才会去改评/二次铺评。
 # 实测: 改评发布 24 条里 20 条是爆(互动中位 512); 二次评论 5 条全是爆(中位 362)。
-# ⚠️ 正因为它几乎 100% 命中爆贴, 它是【果不是因】—— 当特征喂给 L2 会让 AUC 虚高, 是泄漏。
-# 标出来就是为了让下游能【主动排除】它, 不是为了拿它当特征。
+# ⚠️ 正因为它几乎 100% 命中爆贴, 它是【果不是因】—— 当【特征】喂给 L2 会让 AUC 虚高。
+# 但它【不是】假爆款: 标了它的帖子互动量比没有任何干预信号的爆款还高。
 _COMMENT_MAINTAINED_STATUS = ("改评发布", "二次评论", "改评显示")
-# 列存在且非空即算 —— 这类列本身就是"给这条铺了多少评论"的工单。
-_COMMENT_MAINTAINED_COLS = ("维护评论50条", "评论铺设情况")
+# ① 铺评工单列: 列存在且非空即算 —— 这类列本身就是"给这条铺了多少评论"的工单。
+_CM_TICKET_COLS = ("维护评论50条", "评论铺设情况")
+# ② 起量后干预列: 列名里就写着【爆帖】+ 控评/置顶, 是对已起量帖子的二次运营。
+#   2026-09-16 codex PR#128 P2 补: 这两列此前完全在检测视野之外 ——
+#   爆帖控评置顶(HXZ_QD 3 行)全部漏网, 爆帖置顶评论(HXZ_FB 9 行)漏 5 行。
+#   ⚠️ 没有把 typed 列 pinned_comment 一并收进来: 它 127 行里 126 行是爆款, 形态与本组一致,
+#   但"记下置顶的是哪条评论"和"做了置顶这个动作"是两回事, 无法从数据分辨。
+#   已列入给运营的待确认清单(ops-request 第一部分), 确认前不猜。
+_CM_POSTHOC_COLS = ("爆帖控评置顶", "爆帖置顶评论")
 
 
 # 判据本体已移到 _common.skip_on_demand_on_cron —— daily-sync 里【每一步】自动处理都要用
@@ -854,8 +874,14 @@ def transform_row(
     #   这里没有"能判定"的对称概念 —— 一张表压根没有控评列, 不等于它的帖子没被控评,
     #   写 false 会是【假阴性冒充已核实】。宁可缺键, 让下游区分"没被控评"和"不知道"。
     cm_reasons: list[str] = []
+    cm_routes: set[str] = set()
+
+    def _cm_hit(route: str, why: str) -> None:
+        cm_routes.add(route)
+        cm_reasons.append(f"[{route}] {why}")
+
     if tier_src_seen and _COMMENT_MAINTAINED_TIER_RE.search(tier_src_str):
-        cm_reasons.append("tier 源标注「控评」")
+        _cm_hit(_CM_ROUTE_POSTHOC, "tier 源标注「控评」")
     _re_all = note.get("raw_extra") or {}
     # 未声明列被 D-055 收在 raw_extra._undeclared 下 —— 同一个信号在 BJS/SPX 走这条路
     # (「评论状态」在这两张表未声明), 在另外 11 张表走 raw_extra 顶层。两处都要看,
@@ -866,19 +892,26 @@ def transform_row(
         v = _re_all.get(col)
         return v if v not in (None, "", []) else _re_und.get(col)
 
-    for _col in _COMMENT_MAINTAINED_COLS:
+    for _col in _CM_TICKET_COLS:
         if _cm_cell(_col) not in (None, "", []):
-            cm_reasons.append(f"挂了工单列「{_col}」")
+            _cm_hit(_CM_ROUTE_TICKET, f"挂了铺评工单列「{_col}」")
+    for _col in _CM_POSTHOC_COLS:
+        if _cm_cell(_col) not in (None, "", []):
+            _cm_hit(_CM_ROUTE_POSTHOC, f"挂了爆帖控评/置顶列「{_col}」")
     _cstat = _cm_cell("评论状态")
     if _cstat not in (None, "", []):
         _cstat_s = str(_cstat)
         for _hit in _COMMENT_MAINTAINED_STATUS:
             if _hit in _cstat_s:
-                cm_reasons.append(f"评论状态「{_hit}」= 起量后的二次干预")
+                _cm_hit(_CM_ROUTE_POSTHOC, f"评论状态「{_hit}」= 起量后的二次干预")
                 break
     if cm_reasons:
         flags = dict(note.get("data_quality_flags") or {})
         flags["comment_maintained"] = True
+        # 下游按 routes 决定去留: 铺评工单 → 剔出 L2 正例; 起量后干预 → 留作正例但别当特征。
+        # sorted 是为了 upsert 幂等 —— set 的迭代序不稳定, 不排序会让同一行每晚写出不同的
+        # JSON, 看上去像数据在变。
+        flags["comment_maintained_routes"] = sorted(cm_routes)
         flags["comment_maintained_reason"] = "; ".join(cm_reasons)
         note["data_quality_flags"] = flags
 
