@@ -2310,6 +2310,32 @@ jobs:
 
           print("  ✓ ANSHEN 三种真实行形状 undeclared=[] · 改名三列真的落到 publish_time/publish_url/tier · 旧名已摘")
           print("  ✓ SPX 同一幕(笔记链接→反馈链接)也接上了 publish_url, 巡查列族已声明")
+
+          # ── ⑤ 2026-09-16 owner 定: 「反馈链接」是全库标准列名 ─────────────────
+          # 运营在按这套命名逐张改表(ANSHEN 9/10 → SPX 9/15)。每张表被改到时都红一晚,
+          # 这道守卫把口径钉住, 并且要求落后的表把新名【并列声明】成别名 —— 两个源列
+          # 映同一个目标是既有用法(RIO 曝光量/曝光数), 而 D-058 的核心列消失检测按目标
+          # 分组, 只有两个名字都不见了才报。所以改名对已经并列声明的表是无感的。
+          import glob, yaml as _y
+          legacy = []
+          for _f in sorted(glob.glob("../mappings/*.yaml")):
+              _m = _y.safe_load(open(_f, encoding="utf-8")) or {}
+              _fm = _m.get("field_mapping") or {}
+              _srcs = [k for k, v in _fm.items() if v == "publish_url"]
+              if not _srcs:
+                  continue                      # 本表不映 publish_url, 不管
+              _name = _m.get("project_id") or _f
+              assert "反馈链接" in _srcs, (
+                  f"{_name} 的 publish_url 源列是 {_srcs}, 没有「反馈链接」。"
+                  "owner 2026-09-16 定它是全库标准列名 —— 旧名可以保留成别名并列声明, "
+                  "但新名必须在, 否则运营改到这张表时会红一晚(ANSHEN/SPX 各踩过一次)。")
+              if len(_srcs) > 1:
+                  legacy.append((_name, _srcs))
+                  assert _srcs[-1] == "反馈链接", (
+                      f"{_name} 把「反馈链接」声明在旧名之前 —— transform 按声明序覆盖, "
+                      f"两名同时在场时会取到旧名: {_srcs}")
+          print(f"  ✓ 全库 publish_url 都认「反馈链接」; 仍带旧名别名的 {len(legacy)} 张: "
+                f"{[n for n, _ in legacy]}")
           PY
       - name: 库结构前置闸:代码写的列必须先落库 (D-046, 2026-08-27 实测连红 4 天)
         working-directory: scripts

@@ -27,6 +27,12 @@ field_mapping:
   笔记标题: title
   笔记内容: raw_content
   笔记链接: publish_url
+  反馈链接: publish_url            # 2026-09-16(D-059): owner 定「反馈链接」为全库标准列名。
+                                  # 与上面的旧名【并存】而不是替换 —— 本表飞书还叫旧名, 直接换
+                                  # 等于当场判核心列消失。两个源列映同一个目标是既有用法(RIO 的
+                                  # 曝光量/曝光数), 而且 D-058 的核心列消失检测按目标列分组:
+                                  # 只有【两个名字都不见了】才报。所以运营哪天改名, 这张表是无感的。
+                                  # 声明在旧名之后 = 两名同时在场时新名优先(transform 按声明序覆盖)。
   账号id: account_id              # 实为账号【昵称】(莫妮卡/Atro…), account_id 是 text, OK
   发布日期: publish_time
   笔记阶段: _status_raw           # tier 源(导出里空 → 看活表是否有值;见 tier_extraction)
