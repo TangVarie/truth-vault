@@ -276,7 +276,10 @@ truth-vault/
 | [docs/08-evolution-roadmap.md](docs/08-evolution-roadmap.md) | 4 阶段路径 |
 | [docs/99-rejected-ideas.md](docs/99-rejected-ideas.md) | 走过的弯路 |
 | [docs/26-handover-2026-06-09.md](docs/26-handover-2026-06-09.md) | 最近一次完整交接（6 月） |
-| [data-analysis/](data-analysis/) | 项目数据审计 |
+| [data-analysis/10-project-audit.md](data-analysis/10-project-audit.md) | 10 项目数据审计（schema 的由来） |
+| [data-analysis/l2-feasibility.md](data-analysis/l2-feasibility.md) | L2 可行性实测（9/16，含复现 SQL） |
+| [data-analysis/signal-definitions.md](data-analysis/signal-definitions.md) | **信号定义与标签污染实测**（9/16，读 L2 之前先读这个） |
+| [data-analysis/ops-request-2026-09-16.md](data-analysis/ops-request-2026-09-16.md) | 给运营的补数清单（6 个问题 + 8 列，可直接转发） |
 
 ## 现在在哪 / 下一步
 
@@ -286,7 +289,12 @@ truth-vault/
 
 🚧 **还欠着的**：
 
-- **L2 预测层从没启动** —— 数据量（5,949）早就过了 1k 门槛。
+- **L2 预测层从没启动** —— 数据量早就过了 1k 门槛，9/16 做过一次实测（[l2-feasibility.md](data-analysis/l2-feasibility.md)）：
+  留一项目验证 AUC ≈ 0.61，能稳定挑出最差的 20%（爆率 3.4% vs 基线 6.8%），但挑不准最好的 20%。
+  **别急着搭服务** —— 实测里「负面情绪撬动 vs 正面共鸣」项目内差 3–6 倍，这条规律本身不用模型就能交付。
+- **标签有 21% 是污染的** —— 373 个爆款里 79 个来自刷评 / 数值推断 / 运营手标的伪爆贴，
+  见 [signal-definitions.md](data-analysis/signal-definitions.md)。清洗后 AUC 0.612 → 0.624。
+- **投流数据全库不存在** —— 区分不了「内容差」和「没获得曝光机会」，这是运营侧要加的列。
 - **L3 受众层只有 1,104 条有真实数据**（19%），其余靠推断。
 - **SPX 27 条「抖音接抖音」笔记进不来** —— owner 定了不修，那批笔记的文案归属说不清。
 - **pgvector 未启用**，阶段 3 语义融合没开始。
