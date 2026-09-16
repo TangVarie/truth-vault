@@ -1319,6 +1319,78 @@ jobs:
           print("  ✓ transform_row 走 _SYNTHETIC_TIER_SRC_RE, 无写死字符串残留")
           print("\nsynthetic 伪爆帖/伪爆贴: all checks passed")
           PY
+      - name: 评论区人工干预标记 comment_maintained 与 synthetic 正交 (D-060)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # owner 2026-09-16: "一篇帖子可能标记为爆贴, 但其背后的原因是评论数过了50,
+          #                    但这有可能是我们刷的, 所以其真实的流量一般般"。
+          # 实测支撑(全库): TUGE 挂「维护评论50条」的爆贴互动中位 1~13, 没挂的中位 156;
+          # 「改评发布」24 条里 20 条是爆(互动中位 512) —— 那是【果不是因】, 当特征就是泄漏。
+          #
+          # 本守卫钉住两件事:
+          #   (1) 三路信号都要认(tier源「控评」/ 工单列 / 评论状态后验值), 含未声明列路径;
+          #   (2) 【不许】并进 synthetic —— 真爆贴也会控评, 并进去等于把真赢家删出飞轮。
+          # 全部断【行为】不断源码字符串(D-051): 把实现改回去, 下面每一条都会红。
+          import sync_feishu_notes_to_truth_vault as s
+
+          BASE = {
+              "project_id": "TEST_CM", "platform": "xiaohongshu",
+              "field_mapping": {"文案": "raw_content", "互动量": "interactions", "状态": "_status_raw"},
+              "tier_extraction": {"source": "状态字段", "rules": [
+                  {"match_contains": ["伪爆贴"], "tier": "爆"},
+                  {"match_contains": ["爆贴"], "tier": "爆"},
+                  {"match_contains": ["无水花"], "tier": "趴"}]},
+              "project_specific_fields_to_raw_extra": ["维护评论50条", "评论状态", "评论铺设情况"],
+          }
+          def f(n): return n.get("data_quality_flags") or {}
+
+          # ① tier 源含「控评」→ 标记; 但 synthetic 必须【仍是 false】, tier 必须【不变】
+          n1, _, _ = s.transform_row(BASE, "r1", {"文案": "c", "状态": "爆贴 控评✅", "互动量": 500})
+          assert f(n1).get("comment_maintained") is True, f"控评没被标: {f(n1)}"
+          assert f(n1).get("synthetic") is False, f"控评被误判成假爆款 —— 真赢家会被删出飞轮: {f(n1)}"
+          assert n1["tier"] == "爆", f"这个标记不该动 tier: {n1.get('tier')!r}"
+
+          # ② 工单列(「维护评论50条」/「评论铺设情况」)非空即算
+          for col in ("维护评论50条", "评论铺设情况"):
+              n, _, _ = s.transform_row(BASE, "r2", {"文案": "c", "状态": "爆贴", col: "评论1 评论2"})
+              assert f(n).get("comment_maintained") is True, f"{col} 非空没被标: {f(n)}"
+              n0, _, _ = s.transform_row(BASE, "r2b", {"文案": "c", "状态": "爆贴", col: ""})
+              assert "comment_maintained" not in f(n0), f"{col} 为空不该命中: {f(n0)}"
+
+          # ③ 「评论状态」只认后验干预值; 常规值放行
+          for v in ("改评发布", "二次评论", "改评显示"):
+              n, _, _ = s.transform_row(BASE, "r3", {"文案": "c", "状态": "爆贴", "评论状态": v})
+              assert f(n).get("comment_maintained") is True, f"{v} 没被标: {f(n)}"
+          for v in ("没有显示", "显示评论", "正常发布", "待评论", "无需控评"):
+              n, _, _ = s.transform_row(BASE, "r3b", {"文案": "c", "状态": "爆贴", "评论状态": v})
+              assert "comment_maintained" not in f(n), f"{v} 是常规状态, 不该命中: {f(n)}"
+
+          # ④ 飞书多选回的是 list —— 库里「评论状态」实际存成 '["二次评论"]', 必须认
+          n4, _, _ = s.transform_row(BASE, "r4", {"文案": "c", "状态": "爆贴", "评论状态": ["二次评论"]})
+          assert f(n4).get("comment_maintained") is True, f"list 形态漏判(库里就是这个形态): {f(n4)}"
+
+          # ⑤ 三路都不在场 → 【缺键】, 不是写 false。
+          #    写 false = 用"这张表没有控评列"冒充"这条没被控评", 是假阴性。
+          n5, _, _ = s.transform_row(BASE, "r5", {"文案": "c", "状态": "无水花", "互动量": 2})
+          assert "comment_maintained" not in f(n5), f"缺信号时必须缺键, 不许写 false: {f(n5)}"
+          assert f(n5).get("synthetic") is False, f"synthetic 的显式 false 不受影响: {f(n5)}"
+
+          # ⑥ 未声明列路径(D-055 的 _undeclared) —— BJS/SPX 的「评论状态」就是未声明的,
+          #    走不通这条路 = 同一个运营动作因为"表声明没声明"而时有时无。
+          M6 = dict(BASE); M6["project_specific_fields_to_raw_extra"] = []
+          n6, _, und6 = s.transform_row(M6, "r6", {"文案": "c", "状态": "爆贴", "评论状态": "二次评论"})
+          assert "评论状态" in und6, f"前提不成立(该列应落入 undeclared): {und6}"
+          assert f(n6).get("comment_maintained") is True, f"_undeclared 路径漏判: {f(n6)}"
+
+          # ⑦ 两个 flag 同时在场时互不干扰
+          n7, _, _ = s.transform_row(BASE, "r7", {"文案": "c", "状态": "伪爆贴500 控评✅", "互动量": 500})
+          assert f(n7).get("synthetic") is True and f(n7).get("comment_maintained") is True, f(n7)
+          assert "伪爆贴" in f(n7).get("synthetic_reason", ""), f(n7)
+          assert "控评" in f(n7).get("comment_maintained_reason", ""), f(n7)
+
+          print("comment_maintained × synthetic 正交: all checks passed")
+          PY
       - name: on_demand 闸对【每一个】自动处理步骤都生效 (D-047)
         working-directory: scripts
         run: |

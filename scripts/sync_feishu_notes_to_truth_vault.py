@@ -256,6 +256,33 @@ _NOTE_DATA_SIGNALS = (
 # 「伪20评」(人工补的假评论数)同属"指标不可信", 一并收 —— 这两张表的状态列就是这么写的。
 _SYNTHETIC_TIER_SRC_RE = re.compile(r"伪爆[贴帖]|伪\d+评")
 
+# ── 「评论区被人工干预」标记(2026-09-16, owner 提的信号治理)──────────────────
+# owner: "一篇帖子可能标记为爆贴, 但其背后的原因是评论数过了50, 但这有可能是我们刷的,
+#          所以其真实的流量一般般"。
+#
+# 实测这不是假设: TUGE 挂了「维护评论50条」列的爆贴, 互动量中位数是【个位数】(1/2/3/6/13);
+# 同项目没挂这列的爆贴中位数 156。那一列里存的就是 50 条水军评论的完整文案。
+# 同期 TUGE 的「实时数据.评论数」中位 48(卡在 50 门槛下沿), 而互动量中位 6 —— 评论和
+# 互动完全脱节, 因为评论是铺的、互动是真的。
+#
+# 【为什么不并进 synthetic】—— 这两件事不是一回事, 合并会误伤:
+#   · synthetic = 运营判定"这条是假爆款", 剔出飞轮是对的;
+#   · 控评/铺评 = 运营对评论区做了运营动作, 【真爆贴也会控评】。RIO 9 条控评里 8 条同时
+#     是伪爆贴500, 但 SPX 的「控评&置顶✅」挂在互动量 136 的真大爆上。
+#   把控评一律判成 synthetic, 等于把真赢家从飞轮里删掉。所以【正交、另开一个 flag】。
+#   synthetic 被 20 多处读(看板 v_dash_* / 飞轮通道1 ssll / 馆员 / ssll 回灌), 语义不动。
+#
+# 【这个 flag 是干什么用的】: 给 L2 和人看的"这条的互动量含人工成分"。训练时应当降权或
+# 单列, 不应当和自然量的爆贴混在一个正例池里。
+_COMMENT_MAINTAINED_TIER_RE = re.compile(r"控评")
+# 「评论状态」里的【后验干预】取值 —— 只有帖子已经起量了运营才会去改评/二次铺评。
+# 实测: 改评发布 24 条里 20 条是爆(互动中位 512); 二次评论 5 条全是爆(中位 362)。
+# ⚠️ 正因为它几乎 100% 命中爆贴, 它是【果不是因】—— 当特征喂给 L2 会让 AUC 虚高, 是泄漏。
+# 标出来就是为了让下游能【主动排除】它, 不是为了拿它当特征。
+_COMMENT_MAINTAINED_STATUS = ("改评发布", "二次评论", "改评显示")
+# 列存在且非空即算 —— 这类列本身就是"给这条铺了多少评论"的工单。
+_COMMENT_MAINTAINED_COLS = ("维护评论50条", "评论铺设情况")
+
 
 # 判据本体已移到 _common.skip_on_demand_on_cron —— daily-sync 里【每一步】自动处理都要用
 # 同一份(D-047: 2026-08-30 之前它只挡住入库这一步, essence 标注那步没挡)。
@@ -819,6 +846,40 @@ def transform_row(
         else:
             flags["synthetic"] = False
             flags.pop("synthetic_reason", None)
+        note["data_quality_flags"] = flags
+
+    # ── 评论区人工干预标记(见文件头 _COMMENT_MAINTAINED_* 三个常量的判据)──────────
+    # 三路信号任一成立即为 true。三路都【不在场】时不写这个键 —— 与 synthetic 的处理不同:
+    #   synthetic 只要"能判定"就显式写 true/false(否则运营改了状态旧值会残留);
+    #   这里没有"能判定"的对称概念 —— 一张表压根没有控评列, 不等于它的帖子没被控评,
+    #   写 false 会是【假阴性冒充已核实】。宁可缺键, 让下游区分"没被控评"和"不知道"。
+    cm_reasons: list[str] = []
+    if tier_src_seen and _COMMENT_MAINTAINED_TIER_RE.search(tier_src_str):
+        cm_reasons.append("tier 源标注「控评」")
+    _re_all = note.get("raw_extra") or {}
+    # 未声明列被 D-055 收在 raw_extra._undeclared 下 —— 同一个信号在 BJS/SPX 走这条路
+    # (「评论状态」在这两张表未声明), 在另外 11 张表走 raw_extra 顶层。两处都要看,
+    # 否则同一个运营动作会因为"这张表声明没声明"而时有时无。
+    _re_und = _re_all.get("_undeclared") or {}
+
+    def _cm_cell(col: str):
+        v = _re_all.get(col)
+        return v if v not in (None, "", []) else _re_und.get(col)
+
+    for _col in _COMMENT_MAINTAINED_COLS:
+        if _cm_cell(_col) not in (None, "", []):
+            cm_reasons.append(f"挂了工单列「{_col}」")
+    _cstat = _cm_cell("评论状态")
+    if _cstat not in (None, "", []):
+        _cstat_s = str(_cstat)
+        for _hit in _COMMENT_MAINTAINED_STATUS:
+            if _hit in _cstat_s:
+                cm_reasons.append(f"评论状态「{_hit}」= 起量后的二次干预")
+                break
+    if cm_reasons:
+        flags = dict(note.get("data_quality_flags") or {})
+        flags["comment_maintained"] = True
+        flags["comment_maintained_reason"] = "; ".join(cm_reasons)
         note["data_quality_flags"] = flags
 
     # Any intermediate that wasn't consumed above (e.g. _account_name,
