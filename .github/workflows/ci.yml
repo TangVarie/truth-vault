@@ -2286,7 +2286,30 @@ jobs:
           assert note2["tier"] == "趴", (
               f"运营标了无水花, 却被数字推成 {note2['tier']} —— 数值推断不该覆盖人工判定")
 
+          # ── ④ 2026-09-15/16(D-059): SPX 重演同一幕 ──────────────────────────
+          # 运营把 SPX 的「笔记链接」就地改名成「反馈链接」(与 ANSHEN 9/10 同一套全库通用
+          # 命名), 同期加了一族巡查列。9/16 夜跑实测 488 行里已有 35 行 publish_url 变 NULL。
+          # 断的还是那件事: 值真的落到 publish_url, 不是躺在 raw_extra。
+          spx = c.load_mapping("SPX_phase1")
+          patrol = ["巡查状态", "是否巡查", "是否截图", "已确认存活", "最近检查时间", "下次检查时间",
+                    "连续失败次数", "排队刷新", "诊断信息", "置顶状态", "评论状态", "评论关键词",
+                    "评论区快照", "负面状态", "负面词", "负面评论快照", "实时数据.评论数",
+                    "上次评论数", "关注情况"]
+          spx_row = {"素人编号": "1", "笔记内容": "正文", "发布时间": 1788710400000,
+                     "方向": "提问贴", "流量状态": ["爆贴"], "曝光量": 100, "阅读量": 80,
+                     "互动量": 12,
+                     "反馈链接": {"link": "http://xhslink.cn/o/2FfDKWygsav", "text": "x"},
+                     **{k: "v" for k in patrol}}
+          note3, _, und3 = s.transform_row(spx, "rSPX", spx_row)
+          assert und3 == [], f"SPX 巡查列族没声明全: {und3}"
+          assert note3.get("publish_url"), \
+              "反馈链接 没接上 publish_url —— 塞 raw_extra 能让夜跑转绿, 但链接会静默变 NULL(D-054 教训)"
+          assert "反馈链接" not in (note3.get("raw_extra") or {}), "反馈链接 被塞进了 raw_extra"
+          assert "笔记链接" not in spx["field_mapping"], "mapping 还指着已经不存在的旧列名 笔记链接"
+          assert spx["field_mapping"].get("反馈链接") == "publish_url", spx["field_mapping"].get("反馈链接")
+
           print("  ✓ ANSHEN 三种真实行形状 undeclared=[] · 改名三列真的落到 publish_time/publish_url/tier · 旧名已摘")
+          print("  ✓ SPX 同一幕(笔记链接→反馈链接)也接上了 publish_url, 巡查列族已声明")
           PY
       - name: 库结构前置闸:代码写的列必须先落库 (D-046, 2026-08-27 实测连红 4 天)
         working-directory: scripts
