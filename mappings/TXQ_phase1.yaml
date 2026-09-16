@@ -30,6 +30,12 @@ field_mapping:
   文案: raw_content
   发布时间: publish_time
   链接: publish_url               # 本表叫「链接」(非 A 家族常见的「反馈链接」, preflight 实测)
+  反馈链接: publish_url            # 2026-09-16(D-059): owner 定「反馈链接」为全库标准列名。
+                                  # 与上面的旧名【并存】而不是替换 —— 本表飞书还叫旧名, 直接换
+                                  # 等于当场判核心列消失。两个源列映同一个目标是既有用法(RIO 的
+                                  # 曝光量/曝光数), 而且 D-058 的核心列消失检测按目标列分组:
+                                  # 只有【两个名字都不见了】才报。所以运营哪天改名, 这张表是无感的。
+                                  # 声明在旧名之后 = 两名同时在场时新名优先(transform 按声明序覆盖)。
   方向: _direction_raw            # → direction_decomposition(内容形式)
   流量状态: _status_raw           # tier 源(WTG/RIO表1 式;「状态」列不存在)
   曝光量: impressions             # 本表用「量」(「数」系列不存在)

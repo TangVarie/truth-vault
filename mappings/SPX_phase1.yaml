@@ -29,7 +29,11 @@ field_mapping:
   素人编号: account_id
   笔记内容: raw_content          # 【标题】+【正文】结构化文案
   发布时间: publish_time
-  笔记链接: publish_url
+  反馈链接: publish_url            # 2026-09-15/16(D-059): 运营把「笔记链接」就地改名成
+                                  # 「反馈链接」—— 与 ANSHEN 9/10 那次(D-054)同一套全库通用命名。
+                                  # 旧名在飞书返回里一行都不剩; 改的是【键】不是塞 raw_extra:
+                                  # 塞进去的话 undeclared 立刻变空、夜跑转绿, 而 publish_url 会
+                                  # 静默变 NULL(实测已有 35 行中招)。
   方向: _direction_raw            # → direction_decomposition(3 种:提问贴/好物分享-产品贴/抖音)
   流量状态: _status_raw           # tier 源(B 家族;10 种取值含伪爆帖500等)
   曝光量: impressions
@@ -165,6 +169,29 @@ project_specific_fields_to_raw_extra:
   - 数据汇总                        # 文本汇总列(292 个不同值)
   - 父记录                          # 飞书内部关联字段
   - 平台                            # 单值「小红书」×84(冗余列,已知 platform=xiaohongshu)
+  # ── 2026-09-16(D-059): 运营同期加的【巡查/监控】列族, 488 行带全套 ──
+  # 与 ANSHEN(D-054)/TUGE/OKMAN 同一套自动巡查产物, 按同样先例进 raw_extra。
+  # ⚠️ 列名与 ANSHEN 不完全一样: 本表是「下次检查时间」(ANSHEN 是「下次巡查时间」),
+  #    另有 ANSHEN 没有的「是否截图」。按本表实际返回的列名声明, 别照抄。
+  - 巡查状态
+  - 是否巡查
+  - 是否截图                        # 本表独有(154 行), 取值如「未截图」
+  - 已确认存活
+  - 最近检查时间
+  - 下次检查时间                    # 公式列(Excel 序列日 46282.73…), 199 行有值
+  - 连续失败次数
+  - 排队刷新
+  - 诊断信息
+  - 置顶状态
+  - 评论状态
+  - 评论关键词                      # 运营定义的评论区关键词 —— 同 TUGE/OKMAN/ANSHEN 先例
+  - 评论区快照
+  - 负面状态
+  - 负面词
+  - 负面评论快照
+  - 实时数据.评论数
+  - 上次评论数                      # 巡查机器人的上一轮快照(29 行)
+  - 关注情况                        # 运营手记, 取值如 ["9/16🍟"](1 行)
 
 data_supplement_needed:
   - field: account_followers
