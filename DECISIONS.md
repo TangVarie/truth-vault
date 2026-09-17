@@ -3648,3 +3648,30 @@ v1.12 已应用（2026-09-17 09:27Z）。核对：`comments_count` 列在；CHEC
 
 - 没把 TGV 翻成 `daily`：它的数据早停更（末贴 2025-08-07），on_demand 不变。
 - 没给别的表加声明：LNKT 的阅读量走的是平台减项（抖音），其余 15 张小红书表都有这几列。
+
+## D-063 · 通道 2（TV → 写作台经验卡）在生产没在跑：夜跑装灯 + 给写作台的重新接线说明
+
+**日期**: 2026-09-17 · **发现人**: owner（「TV 往写作台回推爆款当正例的通道从未跑过」）· **复核**: 对着生产库
+
+### 复核结论
+
+这条通道有两代，两代都没真正跑起来：
+
+- **push（D-024 通道 2）一行都没写过**：`projects.mapping_to_autowriter_project_id` 16 个项目全空、注入候选 0、`autowriter.items` 带 TV 来源标记的 0 行、`notes.synced_to_aw_at` 0 行、从没进过 daily-sync；D-038（06-01）退役时它还没跑过一次。写作台里 15 条 positive 正例是运营手标的。
+- **pull（D-038 馆员）TV 侧就绪、写作台基本没在调**：书架 328 张策展卡、馆员服务活着；但 30 天写作台 82 个 batch / 713 个版本，馆员只收到 8 个 brief、集中在 3 天，最重的三天（09-02 / 09-07 / 09-10，12–15 个 batch）一次都没调。docs/10 R-032「06-05 production 拉通」是真的，但是一单实测。
+
+**为什么没人发现**：写作台那边馆员客户端 fail-open，任何失败（含 env 没配）静默返 `[]`；TV 这边夜跑只印 →ssll，通道 2 没有任何流量指标。两边都不红。R-032 自己就写过风险（R-018 Phase-2 搬 worker.py 时要把接线一并搬），最像的原因是搬丢了或新部署没带 env —— 但那在 autowriter 仓，本仓查不到。
+
+**口径**：D-038 之后 TV 回推的是经验卡（钩子/结构/可迁移手法 + 摘录）进 P2 层，不是「爆款正文当 few-shot 正例」；后者已随 D-038 放弃。
+
+### 做了什么（TV 侧能做的）
+
+- `scripts/check_librarian_traffic.py`：只读，判据只有一条 —— 过去 24h 写作台有 batch、馆员缓存零流量 → rc=1 + `::warning`。**故意不做比例启发式**：缓存按 brief 去重、重复命中只刷 `last_hit_at`，比例天然偏低，拿比例告警会天天红（D-053）。没生成时打「无从判定」而不是「健康」。哨兵行 `LIBRARIAN_TRAFFIC_CHECK_DONE rc=` 同饱和度检查的约定。
+- daily-sync 加一步 advisory（不拖红：修在 aw 仓，TV 红了也改不好），崩了靠哨兵行报「监控是瞎的」。
+- CI：report 渲染 5 组 + main 哨兵/崩溃 2 组 + 「夜跑真的接了、grep 前缀一致」。
+- 文档：`docs/27` 给写作台维护者的重新接线说明（证据 / 查三件事 / 自测 curl / 验收）；docs/10 R-032 状态改为「生产没在调」；CURRENT_STATE 加更正；docs/00 索引加 27。
+
+### 没做的 / 归写作台
+
+- 写作台生成主路径有没有 `fetch_flywheel_lessons`、部署有没有 `LIBRARIAN_URL / LIBRARIAN_API_KEY`，只能在 autowriter 仓查；fail-open 要留痕（WARN + 计数）也是那边的活。见 docs/27 §2。
+- push 一代的残留（脚本、`v_autowriter_injection_candidates`、`v_flywheel_sync_status` 的 aw 列、docs）没清，不急；先把灯装上。

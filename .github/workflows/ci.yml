@@ -3806,6 +3806,76 @@ jobs:
 
           print("\ncheck_positive_saturation.report: 8/8 cases passed")
           PY
+      - name: 通道 2 借阅流量检查 · report 渲染 + 哨兵 + 夜跑接线 (D-063)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # 2026-09-17 (D-063): 通道 2(pull/馆员)暗了三个月没人知道 —— 30 天 82 个 batch 只 8 个 brief,
+          # 最重的三天 0 次。aw 侧 fail-open 静默返 []、TV 侧只印 →ssll, 两边都不红。
+          # 本脚本在 daily-sync.yml 里是 set +e 调的, 崩了靠哨兵行判定 —— 所以 report() 必须离线
+          # 可测, main() 的哨兵/退出码必须钉死(同 check_positive_saturation)。
+          import io, os, sys, contextlib
+          import check_librarian_traffic as c
+
+          def run(stats, hours=24, gha=False):
+              buf = io.StringIO()
+              old = os.environ.get("GITHUB_ACTIONS")
+              if gha: os.environ["GITHUB_ACTIONS"] = "true"
+              else: os.environ.pop("GITHUB_ACTIONS", None)
+              try:
+                  with contextlib.redirect_stdout(buf):
+                      rc = c.report(stats, hours)
+              finally:
+                  if old is None: os.environ.pop("GITHUB_ACTIONS", None)
+                  else: os.environ["GITHUB_ACTIONS"] = old
+              return rc, buf.getvalue()
+
+          S = lambda **kw: {"aw_batches": 0, "aw_versions": 0, "lib_hits": 0, "lib_new_briefs": 0,
+                            "lib_by_consumer": {}, "aw_batches_7d": 0, "lib_hits_7d": 0, **kw}
+          # ① 复核里看到的形状: 一天 12 个 batch、0 次借阅 → 暗, rc=1, 且在 GHA 里打 ::warning
+          rc, out = run(S(aw_batches=12, aw_versions=196), gha=True)
+          assert rc == 1 and "暗着" in out and "::warning" in out and "docs/27" in out, (rc, out)
+          # ② 生成了也借了 → 通
+          rc, out = run(S(aw_batches=12, lib_hits=3, lib_new_briefs=2, lib_by_consumer={"deskcore": 3}))
+          assert rc == 0 and "通着" in out and "deskcore=3" in out, (rc, out)
+          # ③ 没生成 → 无从判, 不许当健康报, 也不许红
+          rc, out = run(S())
+          assert rc == 0 and "无从判定" in out and "通着" not in out, (rc, out)
+          # ④ 没生成但有人测馆员 → 也不红
+          rc, out = run(S(lib_hits=2, lib_new_briefs=2, lib_by_consumer={"autowriter": 2}))
+          assert rc == 0, (rc, out)
+          # ⑤ 判据是"零 vs 非零", 不是比例: 15 个 batch 只 1 次借阅也算通(缓存按 brief 去重, 比例天然偏低)
+          rc, out = run(S(aw_batches=15, lib_hits=1))
+          assert rc == 0, "比例启发式会天天红(D-053) —— 判据只能是零 vs 非零"
+
+          # ⑥ main(): 哨兵行 + 退出码 = report 的 rc; gather 崩了 → 没有哨兵(让 daily-sync 的 grep 报"崩了")
+          import unittest.mock as m, types
+          fake_common = types.SimpleNamespace(get_supabase_client=lambda: object())
+          with m.patch.dict(sys.modules, {"_common": fake_common}), \
+               m.patch.object(c, "gather", lambda sb, s, s7: S(aw_batches=3)), \
+               m.patch.object(sys, "argv", ["x"]):
+              buf = io.StringIO()
+              with contextlib.redirect_stdout(buf):
+                  rc = c.main()
+              assert rc == 1 and "LIBRARIAN_TRAFFIC_CHECK_DONE rc=1" in buf.getvalue(), buf.getvalue()[-200:]
+          def boom(sb, s, s7): raise RuntimeError("PostgREST down")
+          with m.patch.dict(sys.modules, {"_common": fake_common}), \
+               m.patch.object(c, "gather", boom), m.patch.object(sys, "argv", ["x"]):
+              buf = io.StringIO()
+              try:
+                  with contextlib.redirect_stdout(buf):
+                      c.main()
+              except RuntimeError:
+                  pass
+              else:
+                  raise AssertionError("gather 崩了不该被吞")
+              assert "LIBRARIAN_TRAFFIC_CHECK_DONE" not in buf.getvalue(), "崩了还打哨兵 → daily-sync 会以为跑完了"
+          # ⑦ daily-sync.yml 真的在调它, 且 grep 的哨兵前缀一致
+          wf = open("../.github/workflows/daily-sync.yml", encoding="utf-8").read()
+          assert "python check_librarian_traffic.py" in wf, "夜跑没接这道检查"
+          assert "LIBRARIAN_TRAFFIC_CHECK_DONE rc=" in wf, "daily-sync 的哨兵 grep 和脚本不一致"
+          print("check_librarian_traffic: 7/7 cases passed")
+          PY
       - name: Autowriter dup-error detection self-check
         working-directory: scripts
         run: |

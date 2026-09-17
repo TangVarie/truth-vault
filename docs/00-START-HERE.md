@@ -209,6 +209,7 @@ Truth Vault(Supabase prod `kduysqedrclrfevrxiie` · schema truth_vault)
 | `16-onboarding-agent` / `17-onboarder-status-handoff` | 接表 agent 设计 / 状态交接 |
 | `18-codebase-audit-2026-06-04` | 一次全库审计报告 |
 | `19-autowriter-librarian-quickstart` | autowriter 接馆员快速接入 + 自测 |
+| `27-autowriter-librarian-relink-2026-09-17` | ⚠️ 通道 2 在生产没在调(复核证据)+ 写作台重新接线说明 + 验收(D-063) |
 | `20-handover-2026-06-04` | 上线**前**的交接快照(历史) |
 | `21-handover-2026-06-05` | NRT_2 上线 + 审计后的快照(历史;已被 22 取代) |
 | `22-handover-2026-06-05-onboarding-hardened` | 4 项目 / preflight + cron 闸 / 通道2 拉通 / D-040 负面(历史;已被 25/26 取代) |

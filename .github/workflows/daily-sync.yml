@@ -434,6 +434,22 @@ jobs:
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY="--dry-run"
           python prune_librarian_cache.py --ttl-days 30 $DRY || true
 
+      - name: 通道 2 借阅流量检查 · 写作台生成了但没来借就告警 (advisory, 不 fail)
+        if: steps.check.outputs.skip != 'true' && always()
+        working-directory: scripts
+        run: |
+          # D-063 (2026-09-17): 通道 2(pull/馆员)暗了三个月没人知道 —— aw 那边 fail-open 静默返 [],
+          # TV 这边只印 →ssll。判据只有一条: 过去 24h 写作台有 batch、馆员却零流量 → ::warning。
+          # advisory 不拖红: 修在 aw 仓(接线/env), TV 红了也改不好(D-053: 天天红的 CI 等于没有 CI)。
+          # 崩了要看得见: 靠哨兵行判定, 不靠退出码(同上面饱和度检查)。只读, dry_run 也照跑。
+          set +e
+          python check_librarian_traffic.py 2>&1 | tee /tmp/librarian_traffic.log
+          set -e
+          if ! grep -q '^LIBRARIAN_TRAFFIC_CHECK_DONE rc=' /tmp/librarian_traffic.log; then
+            echo "::warning title=通道 2 借阅流量检查崩了::脚本没跑到底(没有哨兵行), \
+          上面的 traceback 是真问题 —— advisory 不拖红, 但通道 2 的监控现在是瞎的, 去修。"
+          fi
+
       - name: Show flywheel status (truth_vault.v_flywheel_sync_status)
         if: steps.check.outputs.skip != 'true' && always()
         working-directory: scripts
