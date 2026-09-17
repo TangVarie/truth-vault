@@ -230,4 +230,5 @@ sync_config:
   feishu_app_token: S72ObviZAa7P0AsueX1cpsYRnN6   # 表标识(非密钥), 接表时已知
   feishu_table_id: tblWIv6J2G3JW9Jv
   feishu_view_id: null            # 链接里的 view=vewzBBS9Rs 不钉: 视图可能带筛选, 同步要全表
-  sync_interval: on_demand        # 夜间 cron 不碰; preflight + 显式 dry_run/实跑验证 OK 再翻 daily
+  sync_interval: daily            # 2026-09-17 翻 daily: preflight(run #36) + 干跑(#172) + 实跑(#173, 195 行入库/0 隔离/0 错)验证 OK;
+                                  # essence 只标了 24/195(worker 一批 502 瞬时失败), 进夜间 cron 才会续标
