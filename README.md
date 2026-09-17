@@ -295,6 +295,8 @@ truth-vault/
 - **标签有 21% 是污染的** —— 373 个爆款里 79 个来自刷评 / 数值推断 / 运营手标的伪爆贴，
   见 [signal-definitions.md](data-analysis/signal-definitions.md)。清洗后 AUC 0.612 → 0.624。
 - **投流数据全库不存在** —— 区分不了「内容差」和「没获得曝光机会」，这是运营侧要加的列。
+- **评价来源此前不可信** —— 598 条 `prepublish_evaluations` 全部署名「人工」且 `evaluator_id` 是作者；
+  2026-09-17 已按 AW 的 `decision_source` 分流（D-061），历史行归入 `unverified` 待核验。
 - **L3 受众层只有 1,104 条有真实数据**（19%），其余靠推断。
 - **SPX 27 条「抖音接抖音」笔记进不来** —— owner 定了不修，那批笔记的文案归属说不清。
 - **pgvector 未启用**，阶段 3 语义融合没开始。

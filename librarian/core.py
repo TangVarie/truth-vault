@@ -100,17 +100,35 @@ def fetch_candidates(sb, limit: int = CANDIDATE_CAP) -> list[dict]:
 
 
 def library_version(cards: list[dict]) -> str:
-    """f(候选数, max(curated_at), 月份桶) —— 见模块 docstring。
+    """f(候选数, max(curated_at), 月份桶, 候选 ID 集合摘要) —— 见模块 docstring。
 
     去掉发布时间硬切 + essence 慢衰减后(PR#58), rank_score 会随时间连续重排, 即便没有
     新策展(recency 项缓慢缩、tier/account 固定): 旧高 tier 卡可能慢慢反超新低 tier 卡。
     缓存键若只含 (候选数, max curated_at) 会让旧排序的选择被长期命中(codex PR#58 review)。
     加一个【月份桶】把陈旧上限收到 ≤1 个月 —— 半衰期 5 年下月内重排 ~1%, 月桶足够,
-    且几乎不掉缓存命中率(本就有 30 天 TTL prune)。"""
+    且几乎不掉缓存命中率(本就有 30 天 TTL prune)。
+
+    ── 2026-09-17 外部评测 TV-03 (P1) ──────────────────────────────────────
+    前三项【合起来仍然漏】一种真实情况: 50 张候选里换掉一张, 只要候选数不变、
+    最大 curated_at 不变(被换掉的不是最新那张)、且在同一个月内, 版本串【完全一样】
+    → 缓存键不变 → 已经退出候选的旧卡继续从缓存被返回, 而且不会重新选。
+    评测方用隔离复现确认了这一点(50 张换 1 张, 返回了已退出候选的那张)。
+
+    修法: 把【候选 ID 集合】的摘要并进版本。任何一张卡进/出候选都会换版本,
+    从构造上杜绝"集合变了而版本没变"。排序后再摘要 —— 候选顺序会随 rank_score
+    连续重排, 不排序会让同一批卡因为顺序抖动而频繁掉缓存。
+
+    没有另加"命中时重新校验所选卡是否仍在候选里": 版本已含 ID 集合摘要, 同一个
+    缓存键就意味着同一批候选(除非 sha256 碰撞), 那条校验【永远不会触发】。
+    本仓的规矩是写了分支就得有用例真的走进去 —— 写不出能让它变红的用例, 就不写。
+    """
+    import hashlib
     from datetime import datetime, timezone
     month_bucket = datetime.now(timezone.utc).strftime("%Y-%m")
     max_curated = max((c.get("curated_at") or "" for c in cards), default="")
-    return f"{len(cards)}:{max_curated or 'none'}:{month_bucket}"
+    ids = sorted(str(c.get("source_note_id") or "") for c in cards)
+    id_digest = hashlib.sha256("\n".join(ids).encode("utf-8")).hexdigest()[:16]
+    return f"{len(cards)}:{max_curated or 'none'}:{month_bucket}:{id_digest}"
 
 
 # ── 缓存键 ───────────────────────────────────────────────────────────────
@@ -243,12 +261,15 @@ def _select_via_llm(brief: dict, cards: list[dict], model: str) -> list[dict]:
 
     by_id = {c.get("source_note_id"): c for c in cards}
     out = []
+    dropped: list = []
     for item in parsed["selected"][:DEFAULT_SELECT_MAX]:
         if not isinstance(item, dict):
+            dropped.append(item)
             continue
         nid = item.get("source_note_id")
         card = by_id.get(nid)
         if card is None:        # 丢弃编造的 / 不在候选里的 id
+            dropped.append(nid)
             continue
         out.append({
             "source_note_id": nid,
@@ -263,11 +284,48 @@ def _select_via_llm(brief: dict, cards: list[dict], model: str) -> list[dict]:
             "transferable_tactic": card.get("transferable_tactic"),
             "excerpt": card.get("raw_excerpt"),
         })
+    # 模型挑了东西, 但【一条都不在候选里】= 契约失败(编 id / 认错候选集), 不是
+    # "库里没有相关卡"(codex review P2)。不抛的话它会被当成 no_match:
+    #   ① 状态是 no_match, 恰好把 TV-06 要暴露的故障又藏回去;
+    #   ② 更糟的是 no_match 会【进缓存】, 同一个 brief 之后再也不调模型, 契约
+    #      失败被固化成"这个库对你没货"。
+    # 抛给上层 → 走既有降级分支: 记 exception 日志、status=degraded、返回 []
+    # (不缓存, 因为 put_cache 在 try 之后)。写稿链路照旧不阻塞。
+    if dropped and not out:
+        raise ValueError(
+            f"librarian response selected {len(dropped)} card(s), none of which are in "
+            f"the candidate set (first: {dropped[0]!r}) —— 模型编了 id 或认错了候选集"
+        )
+    if dropped:
+        logger.warning(
+            "librarian: 丢弃 %d 条不在候选内的选择(保留 %d 条); 首条: %r",
+            len(dropped), len(out), dropped[0],
+        )
     return out
 
 
 # ── 编排 ─────────────────────────────────────────────────────────────────
+# ── 2026-09-17 外部评测 TV-06 (P2) ────────────────────────────────────────
+# 旧实现: 任何内部失败都降级成 []。降级本身是【有意的】(不阻塞写稿, 见 app.py docstring),
+# 但调用方拿到的 {"selected": []} 分不出三件事:
+#     ① 库里确实没有相关卡   ② LLM 调用挂了   ③ 服务自己崩了
+# 三者的正确应对完全不同(②③ 该告警/重试, ① 不该), 混在一起等于没有可观测性。
+# 所以【保留降级】, 但把状态显式带出来。
+STATUS_OK = "ok"                  # 选到了卡
+STATUS_NO_MATCH = "no_match"      # 跑通了, 但没有相关卡(含空库)
+STATUS_DEGRADED = "degraded"      # LLM / 内部失败, 已降级返回空
+
+
+def librarian_select_detailed(brief: dict, *, model: Optional[str] = None,
+                              **kw) -> tuple[list, str]:
+    """(selected, status) —— librarian_select 的可观测版本。见上方三个 STATUS_*。"""
+    holder: dict = {}
+    out = librarian_select(brief, model=model, _status_out=holder, **kw)
+    return out, holder.get("status", STATUS_NO_MATCH if not out else STATUS_OK)
+
+
 def librarian_select(brief: dict, *, model: Optional[str] = None,
+                     _status_out: Optional[dict] = None,
                      use_cache: bool = True, dry_run: bool = False) -> Any:
     """馆员选取主入口。见模块 docstring。
 
@@ -296,6 +354,8 @@ def librarian_select(brief: dict, *, model: Optional[str] = None,
     if use_cache:
         cached = get_cache(sb, key)
         if cached is not None:
+            if _status_out is not None:
+                _status_out["status"] = STATUS_OK if cached else STATUS_NO_MATCH
             return cached
 
     try:
@@ -307,8 +367,12 @@ def librarian_select(brief: dict, *, model: Optional[str] = None,
             "librarian_select LLM 选取失败,降级返回 [] (consumer=%s project_id=%s cards=%d)",
             brief.get("consumer"), brief.get("project_id"), len(cards),
         )
+        if _status_out is not None:
+            _status_out["status"] = STATUS_DEGRADED
         return []
 
+    if _status_out is not None:
+        _status_out["status"] = STATUS_OK if selected else STATUS_NO_MATCH
     if use_cache:
         try:
             put_cache(sb, key, brief, lib_v, selected)

@@ -62,6 +62,7 @@ CURATOR_PROMPT_TEMPLATE = """你是帆谷内容飞轮的"经验策展员"。下�
 - 品牌 / 品类: {brand} / {category}
 - 情绪杠杆 (已标): {emotional_lever}
 - 目标人群 (已标): {target_audience}
+- 指标可信度: {evidence_note}
 
 ═══════════════════════════════════════════════
 笔记内容
@@ -85,7 +86,39 @@ CURATOR_PROMPT_TEMPLATE = """你是帆谷内容飞轮的"经验策展员"。下�
 def build_curator_prompt(card: dict) -> str:
     aud = card.get("target_audience")
     aud_str = ", ".join(aud) if isinstance(aud, list) else (aud or "未标")
+    # TV-05: 把证据边界写进 prompt。synthetic=true 是【运营人工判定的假爆款】
+    # (伪爆贴/刷量), 指标不可信 —— 它的写法仍可借鉴, 但"为什么有效"不能拿指标当论据。
+    # 不传这一句, 策展模型会把刷出来的数字当成功证据去解释。
+    #
+    # ⚠️ false 的那一侧【不能】写成"指标为真实回收数据"(codex review P2)。这个 flag
+    #    是三态被压成了两态:
+    #      · true          = 运营明确判定为假;
+    #      · 显式 false    = 看到了状态/流量状态源, 没有假数据字样;
+    #      · 【压根没判过】= 入库时那两个源一个都不在场 → 不写这个键 → 视图的
+    #        COALESCE(..., 'false') 把它也变成 false。
+    #    生产实测(2026-09-17): 策展库 332 张卡里 189 张 data_quality_flags 整个为
+    #    NULL, 占 57% —— 它们全都以 synthetic=false 的身份进来。也就是说旧文案对
+    #    一多半的卡断言了一件我们根本没核过的事。
+    #    退一步说, 就算显式 false 也只代表"没被标成假", 本系统从不逐条核验指标真伪。
+    #    所以只说到 flag 真正能支持的程度为止。
+    if card.get("synthetic"):
+        evidence_note = (
+            "⚠️ 本条指标【不可信】(运营判定为人工假数据)。写法可以借鉴, 但【不要】"
+            "用曝光/互动数字论证它有效, 只从内容本身讲为什么值得学。"
+        )
+    elif (card.get("tier") or "") == "参考":
+        # 参考不是靠数据进来的, 是运营人工挑的"值得参考" —— 更不能拿指标论证。
+        evidence_note = (
+            "本条是运营人工挑的「参考」, 不是靠数据达标进来的; 未被标记为人工假数据, "
+            "但指标未经逐条核验。讲「为什么有效」请以内容本身为准, 别把数字当论据。"
+        )
+    else:
+        evidence_note = (
+            "未被标记为人工假数据; 但指标未经逐条核验, 也可能压根没做过真假判定。"
+            "讲「为什么有效」时以内容本身为主, 别把具体数字当成论据。"
+        )
     return CURATOR_PROMPT_TEMPLATE.format(
+        evidence_note=evidence_note,
         tier=card.get("tier") or "?",
         brand=card.get("brand") or "(未填)",
         category=card.get("category") or "(未填)",
@@ -118,7 +151,11 @@ def fetch_uncurated_cards(sb, project_id, recurate: bool) -> list[dict]:
         .table("v_flywheel_lesson_cards")
         .select(
             "source_note_id, project_id, tier, brand, category, "
-            "emotional_lever, target_audience, raw_excerpt, is_curated, rank_score"
+            "emotional_lever, target_audience, raw_excerpt, is_curated, rank_score, "
+            # 2026-09-17 外部评测 TV-05: synthetic 此前没进 select, 策展模型因此
+            # 看不见"这条的指标是不是运营判定的假数据"。馆员的 fetch_candidates 一直
+            # 选了这一列, 只有策展这头漏了 —— 同一个证据边界必须两头一致。
+            "synthetic"
         )
     )
     if project_id:

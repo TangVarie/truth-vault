@@ -3,12 +3,23 @@ import type { DashboardData, Monthly, Project, ProjectTier, SystemPulse } from "
 import type { TopHit } from "@/components/Leaderboard";
 
 /**
- * /board-only showcase tuning.
+ * Public-facing showcase tuning (对外展示层).
  *
  * IMPORTANT boundary:
- * - `getDashboardData()` remains the single true internal data source and is still used directly by /console.
- * - This module is imported only by `app/board/page.tsx`, so synthetic showcase projects never enter /console.
+ * - `getDashboardData()` remains the single true internal data source and is used directly by /console.
+ * - Imported by BOTH public pages: `app/board/page.tsx` and `app/page.tsx` (首页).
+ *   /console does NOT import it — that is the line between 对外展示 and 内部验收.
  * - Values below are display-layer projections, derived from the strongest real projects' ratios.
+ *   They are NOT database contents: nothing here writes to the DB.
+ *
+ * ⚠️ 2026-09-17 外部评测 TV-04 修正: 上一版这里声称本模块【只被 /board 一处引用】。
+ *    那是【假的】—— 首页 app/page.tsx 同样调用了 applyPublicBoardAdjustments。
+ *    评测方只发现了 /board 这一处, 说明这句注释确实会误导读代码的人。
+ *    合成本身是有意的产品决策(团队知情), 保留; 但注释必须说实话。
+ *
+ * ⚠️ 内部验收口径: 任何用于判断"做得怎么样"的数字, 只能来自 /console 或直接查库,
+ *    【不得】引用 /board 或首页的数字 —— 它们含合成展示战线。守卫见 CI
+ *    「对外合成层不得泄进 /console」。
  */
 // 对外 /board 展示体量(有意的产品决策, 团队知情 —— 见 docs/26 §对外展示口径):
 //   ① 下限: 展示曝光【始终超过】1 亿。不是"补到恰好 1 亿"—— 那样会把头条钉死在一个固定
