@@ -95,6 +95,13 @@ data_supplement_needed:
     method: 笔记阶段 列空 —— 需确认真实爆款标在哪(活表/另一张表/需人工补)
     estimated_rows: 0
 
+# ── 结构性产不出的要害字段(D-056 续, owner 2026-09-17 按「2」)──
+# 只降为醒目告警, 不红。表里一旦有了这列就【删掉】对应声明 —— 留着的话同步会以「豁免已过期」判红。
+capabilities_absent:
+  impressions: 早期表(2026-06 接入)从未回收曝光, 飞书表无此列; 2026-09-17 run #171 首次撞上 D-056
+  reads: 同上, 无阅读量列
+  content_format: 本表无「方向」列; 内容形态由 essence 标注(Mode A, annotate_essence_pass)事后填, 不由本表产出
+
 # ── Sync 配置 ── (用户提供:已给本表加机器人)
 sync_config:
   source_type: feishu_api

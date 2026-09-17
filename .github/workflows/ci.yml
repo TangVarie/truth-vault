@@ -2813,7 +2813,73 @@ jobs:
           assert rc == 1 and notes and notes[0].get("last_seen_at"), \
               "要害字段报错把 last_seen/对账 一起拦了 —— 孤儿行会攒到没人收得动"
 
-          print("  ✓ 三指标全要 · 0 不算空 · tier 未知算空 · 不给认领 · 截断不误报 · 按平台减项 · 不拦对账")
+          # ⑩ D-056 续(owner 2026-09-17, 按「2」): 表【结构上】产不出的要害字段, 在 mapping 的
+          #    capabilities_absent 里带理由声明 → 只降为醒目告警, 不红; 没声明的照旧红。
+          #    TGV 形: 6 月接的早期表没有曝光/阅读/方向列, 6/8 之后第一次手动同步(run #171)就被判红。
+          _LM_real = _LM0
+          def _with_absent(decl, unmap=()):
+              def _lm(pid):
+                  m = _LM_real(pid)
+                  fm = {k: v for k, v in m["field_mapping"].items() if k not in unmap}
+                  return {**m, "field_mapping": fm, "capabilities_absent": decl}
+              return _lm
+          _LM0 = _with_absent({"impressions": "早期表未回收曝光", "reads": "同上"}, unmap=("曝光量", "阅读量"))
+          rc, st, _, log = run([drop("曝光量", "阅读量")])
+          _LM0 = _LM_real
+          assert rc == 0 and st["missing_capabilities"] == [], f"声明过的字段还红: {st}"
+          assert st.get("missing_capabilities_exempt") == ["impressions", "reads"], st
+          assert "已声明豁免" in log and "早期表未回收曝光" in log, "豁免要喊出来并带理由, 不许静默"
+          #    只豁免声明过的: 声明了曝光/阅读, 互动量也缺 → 互动量照旧红
+          _LM0 = _with_absent({"impressions": "x", "reads": "y"}, unmap=("曝光量", "阅读量"))
+          rc, st, _, _ = run([drop("曝光量", "阅读量", "互动量")])
+          _LM0 = _LM_real
+          assert rc == 1 and st["missing_capabilities"] == ["interactions"], f"豁免放宽到了没声明的字段: {st}"
+
+          # ⑪ 豁免自动过期: 声明为产不出的字段这一轮有值了 → 红, 让人删声明。
+          #    不然它以后再整列消失也没人知道 —— 那就把 D-056 又关掉了。
+          #    (用 content_format: 它由方向拆解产出, 不经 field_mapping, 所以不会先撞"二选一"。)
+          _LM0 = _with_absent({"content_format": "本表无方向列"})
+          rc, st, _, log = run([FULL])
+          _LM0 = _LM_real
+          assert rc == 1 and st.get("stale_capability_exemptions") == ["content_format"], f"豁免过期没红: {st}"
+          assert "豁免已过期" in log
+          #    --limit 截断时判不了"整列", 过期判定也不许乱报
+          _LM0 = _with_absent({"content_format": "x"})
+          rc, st, _, _ = run([FULL, FULL], argv=("OKMAN_phase1", "--limit", "1"))
+          _LM0 = _LM_real
+          assert st.get("stale_capability_exemptions", []) == [], f"截断也报过期 → 抽样调试就红: {st}"
+
+          # ⑫ 声明本身要合法, 而且在动任何数据之前就红: 不是要害字段 / 没写理由 / 和 field_mapping 冲突。
+          for bad in ({"likes": "x"}, {"content_format": ""}, {"content_format": None}, ["impressions"]):
+              _LM0 = _with_absent(bad)
+              try:
+                  run([FULL])
+              except ValueError as exc:
+                  assert "capabilities_absent" in str(exc), exc
+              else:
+                  raise AssertionError(f"非法的 capabilities_absent 没被拒: {bad!r}")
+              finally:
+                  _LM0 = _LM_real
+          _LM0 = _with_absent({"impressions": "x"})          # OKMAN 自己就映了 曝光量 → impressions
+          try:
+              run([FULL])
+          except ValueError as exc:
+              assert "二选一" in str(exc), exc
+          else:
+              raise AssertionError("声明产不出却又映了列 → 必须拒")
+          finally:
+              _LM0 = _LM_real
+          #    全库 mapping 的声明都得是要害字段名; TGV 的三条结构性缺失必须声明着(不然每次手动同步都红)。
+          import glob as _g, yaml as _y
+          _valid = {c for c, _ in s._REQUIRED_CAPABILITIES}
+          for _f in sorted(_g.glob("../mappings/*.yaml")):
+              _decl = _y.safe_load(open(_f, encoding="utf-8")).get("capabilities_absent") or {}
+              assert set(_decl) <= _valid, f"{_f}: capabilities_absent 里有不认识的字段 {set(_decl) - _valid}"
+          _tgv = _y.safe_load(open("../mappings/TGV_phase1.yaml", encoding="utf-8")).get("capabilities_absent") or {}
+          assert {"impressions", "reads", "content_format"} <= set(_tgv), \
+              f"TGV 的结构性缺失(曝光/阅读/方向)必须声明豁免, 不然每次手动同步都红(run #171): {_tgv}"
+
+          print("  ✓ 三指标全要 · 0 不算空 · tier 未知算空 · 不给认领 · 截断不误报 · 按平台减项 · 不拦对账 · 结构性缺失可声明豁免(会过期)")
           PY
       - name: 运营改列名要改 field_mapping, 不是塞 raw_extra (D-054, ANSHEN 9/10 全表隔离)
         working-directory: scripts
@@ -6214,6 +6280,18 @@ jobs:
               for r in ((data.get("tier_extraction") or {}).get("rules") or []):
                   if "评估中" in (r.get("match_contains") or []) and r.get("tier") != "评估中":
                       print(f"{f}: 评估中 映成了 {r.get('tier')!r}, 必须是 评估中 (D-062)"); rc = 1
+              # D-056 续(2026-09-17): 结构性产不出的要害字段可带理由声明豁免。这里只把关形状和
+              # "声明产不出却映了列"的矛盾; 字段名是否是要害字段由 python job 的 D-056 步骤对着引擎的
+              # _REQUIRED_CAPABILITIES 核(名单只住引擎一份)。
+              ca = data.get("capabilities_absent")
+              if ca is not None:
+                  if not isinstance(ca, dict) or not ca or not all(
+                          isinstance(k, str) and isinstance(v, str) and v.strip() for k, v in ca.items()):
+                      print(f"{f}: capabilities_absent 必须是 {{要害字段: 理由}} 且理由非空 (D-056 续)"); rc = 1
+                  else:
+                      clash = sorted(set(ca) & set((data.get("field_mapping") or {}).values()))
+                      if clash:
+                          print(f"{f}: capabilities_absent 声明 {clash} 产不出, field_mapping 却映了列到它 —— 二选一"); rc = 1
               print(f"{f}: OK")
           sys.exit(rc)
           PY
