@@ -10,6 +10,14 @@ sync_autowriter_decisions_to_prepublish.py
    现在按 AW 的 decision_source 分流: human / rule_based / unverified，
    evaluator_id 只填 reviewer 或规则名，绝不填作者。见 _provenance。
 
+每晚自查 (2026-09-17 追加, 见 audit_archived_provenance):
+    写入口修好只保证"以后不会再写错", 不保证"以后不会错"。TV-01 的本体是
+    **写错了几个月没人发现** —— 598 条评价顶着人工身份躺着, 直到外部评测
+    才被翻出来。所以每轮同步跑完会复核【已归档的行】, 判据只有一条:
+    每条行都应等于 _provenance() 现在会给出的结果。
+    发现"机器判定/来源不明顶着人工身份"或"evaluator_id 是作者"就返回非 0,
+    夜跑的聚合失败闸会把整个 workflow 打红并给 owner 发邮件。
+
 为什么需要这个:
     prepublish_evaluations 表 schema 已经存在（D-025），但目前没有任何
     sync 写入它，所以 v_evaluator_calibration view 永远空。把 autowriter
@@ -326,6 +334,102 @@ def fetch_pending_decisions(sb, since_iso: str | None) -> list[dict]:
     return out
 
 
+def audit_archived_provenance(sb, since_iso: str | None) -> tuple[int, int]:
+    """复核【已经归档的行】还对不对得上 AW 现在的来源。返回 (fail_n, warn_n)。
+
+    ⚠️ 为什么需要这个: TV-01 的本体不是"某次写错了", 而是**写错了没人发现** ——
+    598 条评价顶着人工身份躺了几个月, 直到外部评测才被翻出来。修好写入口只保证
+    以后不再写错, 不保证以后没人手改、没有别的路径绕进来、AW 不会改口径。
+    所以要有一条每晚自己会红的守卫。
+
+    不变量只有一条, 也只能有一条:
+        每条已归档的行, 都应等于 _provenance() 现在会给出的结果。
+    刻意【不】重写一遍判据(比如手写"human 必须带 evaluator_id"那种行内规则):
+      · 行内规则抓不到真正的 TV-01 —— `decision_source='auto_dedup'` 却被写成
+        human 的行, 带着 evaluator_id='auto_dedup', 行内规则照样放过;
+      · 行内规则会误伤合法路径 —— _provenance() 对"AW 说是人审但没记 reviewer"
+        【故意】返回 ("human", None), 那不是回归;
+      · 而且判据写两份迟早分叉, 这正是 D-061 里回填与 _provenance 打架的老毛病。
+    对着函数本身比, 上面三件事一次解决。
+
+    分两级, 因为"对不上"有两种完全不同的成因:
+
+    FAIL(要红):
+      ① 行说自己是 human, 但 _provenance() 现在不这么认为
+         —— 机器判定/来源不明顶着人工身份, 就是 TV-01 本体。本脚本写不出这种行。
+      ② evaluator_id 等于稿件作者 (item.user_id)
+         —— 旧实现的原始指纹。_provenance() 永远不会返回作者。
+
+    WARN(不红):
+      ③ 其余不一致, 典型是行还是 unverified 而 AW 后来补上了来源。
+         下一轮同步的就地升级路径会自己修好, 不该半夜把 owner 叫起来。
+
+    ⚠️ 覆盖范围 = 和同步同一个时间窗(默认 365 天)。窗口外的老行不在复核范围里;
+    要全量复核就 --since-days 0。这是取舍: 复用同步那两个查询的分页形态, 不另造
+    一套全表扫描(那会碰到 in_() 的 URL 长度上限, 得另加分批逻辑)。
+    """
+    try:
+        rows = fetch_all_pages(
+            _items_query(sb, since_iso, with_updated_at=True, with_provenance=True),
+            order_by="id")
+    except Exception as exc:
+        # 复核拿不到来源列就别猜 —— 同步主流程那边已经就此告警并降级了。
+        logger.warning("归档复核跳过(取不到 AW 来源列): %s", str(exc)[:200])
+        return 0, 0
+    if not rows:
+        return 0, 0
+
+    by_id = {r["id"]: r for r in rows}
+    existing = fetch_all_pages(
+        sb.schema("truth_vault")
+        .table("prepublish_evaluations")
+        .select("evaluation_id, autowriter_item_id, evaluator_type, evaluator_id")
+        .in_("evaluator_type", sorted(_SYNC_EVALUATOR_TYPES))
+        .in_("autowriter_item_id", list(by_id)),
+        order_by="evaluation_id",
+    )
+
+    fails: list[str] = []
+    warns: list[str] = []
+    for ev in existing:
+        item = by_id.get(ev["autowriter_item_id"])
+        if item is None:
+            continue
+        want_type, want_id = _provenance(item)
+        got_type, got_id = ev["evaluator_type"], ev["evaluator_id"]
+        if (got_type, got_id) == (want_type, want_id):
+            continue
+        author = item.get("user_id")
+        if got_type == "human" and want_type != "human":
+            fails.append(
+                f"eval={ev['evaluation_id']} item={ev['autowriter_item_id']} "
+                f"归档成 human, 但 decision_source={item.get('decision_source')!r} "
+                f"应判 {want_type}")
+        elif author and got_id is not None and str(got_id) == str(author):
+            fails.append(
+                f"eval={ev['evaluation_id']} item={ev['autowriter_item_id']} "
+                f"evaluator_id 是稿件作者 —— 作者不是审稿人")
+        else:
+            warns.append(
+                f"eval={ev['evaluation_id']} {got_type}/{got_id} → 应为 {want_type}/{want_id}")
+
+    for line in warns[:10]:
+        logger.warning("归档复核 · 待自愈: %s", line)
+    if warns:
+        logger.warning(
+            "归档复核: %d 行与 AW 现状不一致(多为 AW 事后补了来源), "
+            "下一轮同步的就地升级会修好; 想立刻纠正就重跑 "
+            "schemas/notes_v1_11_evaluator_provenance.sql(幂等且自愈)。", len(warns))
+    for line in fails[:10]:
+        logger.error("归档复核 · 【身份造假】: %s", line)
+    if fails:
+        logger.error(
+            "归档复核: %d 行的评价身份站不住(TV-01 类)。本脚本写不出这种行 —— "
+            "查是不是有旧版本在跑、有人手改过表, 或 AW 改了 decision_source 口径。"
+            "修法: 重跑 schemas/notes_v1_11_evaluator_provenance.sql。", len(fails))
+    return len(fails), len(warns)
+
+
 def _is_duplicate_error(exc: Exception) -> bool:
     """Detect SQLSTATE 23505 (unique_violation) from supabase-py errors."""
     code = getattr(exc, "code", None) or getattr(exc, "pgcode", None)
@@ -488,8 +592,19 @@ def main() -> int:
             logger.exception("item_id=%s failed: %s", item["id"], exc)
             stats["errors"] += 1
 
+    # 写完再复核一遍已归档的行 —— 见 audit_archived_provenance 的 docstring。
+    # dry-run 也跑: 它读的是库里【已经存在】的行, 跟本轮写不写无关。
+    audit_fail, audit_warn = 0, 0
+    try:
+        audit_fail, audit_warn = audit_archived_provenance(sb, since_iso)
+    except Exception:
+        # 复核本身挂了不该把同步判成失败(同步已经成功了), 但必须喊出来。
+        logger.exception("归档复核执行失败 —— 本轮同步结果不受影响, 但复核没跑成")
+    stats["audit_identity_fail"] = audit_fail
+    stats["audit_pending_selfheal"] = audit_warn
+
     logger.info("Done: %s", json.dumps(stats, ensure_ascii=False))
-    return 0 if stats["errors"] == 0 else 1
+    return 0 if stats["errors"] == 0 and audit_fail == 0 else 1
 
 
 if __name__ == "__main__":

@@ -1434,6 +1434,7 @@ jobs:
           # AW 的 autowriter.items 早有 decision_source/reviewer_id/decided_at, 一个没读。
           # 生产核过: 598 条评价全是 human, 而对应 item 的 decision_source 全为 NULL ——
           # "机器判定被洗成人工"还没真发生, 但 AW 一开始写那列就会静默发生。
+          import sys as _sys
           import sync_autowriter_decisions_to_prepublish as m
 
           # ① 来源 → 身份映射。'不认识就不猜', 绝不默认成人工。
@@ -1559,6 +1560,74 @@ jobs:
           assert "i-done" not in got, "同类型已归档的 item 必须幂等跳过"
           assert got["i-stale"]["_upgrade_evaluation_id"] == "e4", \
               "已有 unverified 且来源补上了 → 就地升级, 不另插"
+
+          # ⑦ 已归档的行要每晚自查 —— TV-01 的本体是"写错了几个月没人发现"。
+          #    不变量只有一条: 每条行都应等于 _provenance() 现在会给的结果。
+          #    刻意不另写"human 必须带 evaluator_id"那种行内规则, 见函数 docstring。
+          AUDIT_ITEMS = [
+              # a 合法: 人审且记了 reviewer
+              {"id": "a", "status": "approved", "user_id": "author-a", "created_at": "2026-09-01",
+               "decision_source": "human", "reviewer_id": "rev-1"},
+              # b 合法【且是关键用例】: AW 说是人审但没记 reviewer → _provenance 给 (human, None)。
+              #   "human 必须带 evaluator_id" 那条判据会在这里误报 —— 它不是回归。
+              {"id": "b", "status": "approved", "user_id": "author-b", "created_at": "2026-09-01",
+               "decision_source": "human", "reviewer_id": None},
+              # c TV-01 本体: 机器判定顶着人工身份
+              {"id": "c", "status": "approved", "user_id": "author-c", "created_at": "2026-09-01",
+               "decision_source": "auto_dedup"},
+              # d TV-01 本体: 来源不明顶着人工身份(生产上 598 条的原始形态)
+              {"id": "d", "status": "approved", "user_id": "author-d", "created_at": "2026-09-01",
+               "decision_source": None},
+              # e 作者冒充审稿人 —— 只有这一条能把第二条 FAIL 判据单独测出来
+              #   (类型对得上, 光比 type 抓不到)
+              {"id": "e", "status": "approved", "user_id": "author-e", "created_at": "2026-09-01",
+               "decision_source": "human", "reviewer_id": None},
+              # f 会自愈的漂移: 行还是 unverified, AW 后来补了来源 → WARN 不是 FAIL
+              {"id": "f", "status": "approved", "user_id": "author-f", "created_at": "2026-09-01",
+               "decision_source": "auto_dedup"},
+              # g 机器判定顶着人工身份, 但 evaluator_id 【不是】作者 —— 只有第一条
+              #   FAIL 判据能抓到它。没有这条的话 c/d 会被"作者"那条顺手兜住,
+              #   拿掉第一条判据测试仍然全绿(反证时真的发生了)。
+              {"id": "g", "status": "approved", "user_id": "author-g", "created_at": "2026-09-01",
+               "decision_source": "auto_dedup"},
+          ]
+          AUDIT_EVALS = [
+              {"evaluation_id": "1", "autowriter_item_id": "a", "evaluator_type": "human",      "evaluator_id": "rev-1"},
+              {"evaluation_id": "2", "autowriter_item_id": "b", "evaluator_type": "human",      "evaluator_id": None},
+              {"evaluation_id": "3", "autowriter_item_id": "c", "evaluator_type": "human",      "evaluator_id": "author-c"},
+              {"evaluation_id": "4", "autowriter_item_id": "d", "evaluator_type": "human",      "evaluator_id": "author-d"},
+              {"evaluation_id": "5", "autowriter_item_id": "e", "evaluator_type": "human",      "evaluator_id": "author-e"},
+              {"evaluation_id": "6", "autowriter_item_id": "f", "evaluator_type": "unverified", "evaluator_id": None},
+              {"evaluation_id": "7", "autowriter_item_id": "g", "evaluator_type": "human",      "evaluator_id": "rev-9"},
+          ]
+          class SB3:
+              def schema(self, name): self._s = name; return self
+              def table(self, _): return PQ(AUDIT_ITEMS if self._s == "autowriter" else AUDIT_EVALS)
+          fail_n, warn_n = m.audit_archived_provenance(SB3(), None)
+          assert fail_n == 4, f"c/d/e/g 四条身份造假必须判 FAIL, 实得 {fail_n}"
+          assert warn_n == 1, f"f 那条自愈漂移只该 WARN, 实得 warn={warn_n}"
+
+          # 合法的两条【绝不能】被判成问题 —— 尤其 b: 运营用 review_drafts 之后,
+          # 真人审稿会合法地产生 human 行, 判据不能把第一次真人审稿当事故。
+          class SBOK:
+              def schema(self, name): self._s = name; return self
+              def table(self, _):
+                  return PQ([i for i in AUDIT_ITEMS if i["id"] in ("a", "b")]
+                            if self._s == "autowriter"
+                            else [e for e in AUDIT_EVALS if e["autowriter_item_id"] in ("a", "b")])
+          assert m.audit_archived_provenance(SBOK(), None) == (0, 0), \
+              "带 reviewer 的人审 + AW 没记 reviewer 的人审, 都是合法的, 不许报"
+
+          # ⑧ 复核判 FAIL 必须真的能把这一步打红(它在夜跑的聚合失败闸里)。
+          import unittest.mock as _mock
+          with _mock.patch.object(m, "get_supabase_client", lambda: SB3()), \
+               _mock.patch.object(m, "fetch_pending_decisions", lambda sb, since: []), \
+               _mock.patch.object(_sys, "argv", ["x", "--dry-run"]):
+              assert m.main() == 1, "复核发现身份造假时, main 必须返回非 0 让夜跑变红"
+          with _mock.patch.object(m, "get_supabase_client", lambda: SBOK()), \
+               _mock.patch.object(m, "fetch_pending_decisions", lambda sb, since: []), \
+               _mock.patch.object(_sys, "argv", ["x", "--dry-run"]):
+              assert m.main() == 0, "干净库不许红"
 
           print("TV-01 评价来源: all checks passed")
           PY
