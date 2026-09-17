@@ -520,6 +520,37 @@ def _detect_missing_capabilities(
     return missing
 
 
+def _capabilities_absent(mapping: dict) -> dict[str, str]:
+    """mapping.capabilities_absent → {要害字段: 理由}。形状不对就抛 —— 接表时就红, 不带病上线。
+
+    D-056 续(owner 2026-09-17, 按「2」): 表【结构上】产不出的要害字段可以带理由声明豁免,
+    怎么用见 main() 里自检那段。三条硬规矩:
+      · 只能是 _REQUIRED_CAPABILITIES 里的字段名(别的字段本来就不盯, 声明了也是误会);
+      · 理由非空 —— 它是给审 PR 的人看的, 豁免必须被人看见;
+      · 不能同时在 field_mapping 里映了列到它 —— "声明产不出"却又映了列, 自相矛盾, 二选一。
+    """
+    raw = mapping.get("capabilities_absent") or {}
+    pid = mapping.get("project_id")
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"{pid}: capabilities_absent 必须是 {{要害字段: 理由}} 的映射, 不是 {type(raw).__name__}")
+    valid = {c for c, _ in _REQUIRED_CAPABILITIES}
+    mapped = set((mapping.get("field_mapping") or {}).values())
+    out: dict[str, str] = {}
+    for col, reason in raw.items():
+        if col not in valid:
+            raise ValueError(
+                f"{pid}: capabilities_absent 里的 {col!r} 不是要害字段(可选: {sorted(valid)})")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError(
+                f"{pid}: capabilities_absent.{col} 必须写理由(非空字符串, 给审 PR 的人看)")
+        if col in mapped:
+            raise ValueError(
+                f"{pid}: capabilities_absent 声明 {col} 产不出, field_mapping 却映了一列到它 —— 二选一")
+        out[col] = reason.strip()
+    return out
+
+
 def _failed_rows_already_in_db(
     client, project_id: str, record_ids: set[str],
 ) -> set[str]:
@@ -1307,6 +1338,8 @@ def main() -> int:
     args = parser.parse_args()
 
     mapping = load_mapping(args.project_id)
+    # D-056 续: 结构性产不出的要害字段的声明, 在动任何数据之前先把形状核了(错了就在这里红)。
+    capabilities_absent = _capabilities_absent(mapping)
     sync_config = mapping.get("sync_config") or {}
 
     # 夜间 cron 跳过未启用项目(sync_interval=on_demand): 防新接的表(填了坐标但还没 preflight
@@ -1405,6 +1438,7 @@ def main() -> int:
              "empty_placeholder": 0, "errors": 0, "known_backlog": 0,
              "undeclared_absorbed": 0, "missing_core_columns": 0,
              "missing_capabilities": [],
+             "missing_capabilities_exempt": [], "stale_capability_exemptions": [],
              "metrics_written": 0, "metrics_failed": 0,
              "metrics_skipped_fk": 0, "accounts_failed": 0}
     # D-055: 未声明列收进 raw_extra["_undeclared"] 之后, 这里攒一份【待处理清单】;
@@ -1711,9 +1745,39 @@ def main() -> int:
     #    D-053 那条"认领转黄"是给【个别行有问题】用的; 整列产不出不是待办, 是这张表白同步了,
     #    认领它等于把"这个项目在看板上不存在"这件事按成黄的然后没人再看。
     # 前提三条(缺一就跳过, 不然是误报): 这一轮真有行落下来 / 没被 --limit 截断 / 没有抓取失败的表。
+    guard_ran = bool(pending_notes) and not truncated_by_limit and not fetch_failed
     missing_caps = _detect_missing_capabilities(
-        pending_notes, mapping.get("platform")) if (
-        pending_notes and not truncated_by_limit and not fetch_failed) else []
+        pending_notes, mapping.get("platform")) if guard_ran else []
+    # D-056 续(owner 2026-09-17, 按「2」): 表【结构上】产不出的要害字段, 可以在 mapping 的
+    # capabilities_absent 里【带理由】声明 —— 声明过的只降为醒目告警(每轮都喊), 没声明的照旧红。
+    # 这不是认领: 认领是"这批行有问题、先记着"(逐行, D-053); 豁免是"这张表没有这一列, 理由写在
+    # mapping 里供人审"(逐列, 进 PR)。TGV 这种 6 月接的早期表没有曝光/阅读/方向列, 6/8 之后
+    # 第一次手动同步(run #171, 2026-09-17)就被判红 —— 数据全对, 红的是一件谁也改不好的事。
+    # 豁免会自动过期: 声明为产不出的字段这一轮真有值了 → 红, 让人把声明删掉; 声明留着 = 它以后
+    # 再整列消失也没人知道, 那等于把 D-056 又关掉了。
+    checked = {c for c, _ in _REQUIRED_CAPABILITIES} - _CAPABILITY_NOT_ON_PLATFORM.get(
+        mapping.get("platform") or "", frozenset())
+    exempt_hits = [(c, lab) for c, lab in missing_caps if c in capabilities_absent]
+    missing_caps = [(c, lab) for c, lab in missing_caps if c not in capabilities_absent]
+    stale = [c for c in capabilities_absent
+             if guard_ran and c in checked and c not in {m for m, _ in exempt_hits}]
+    if exempt_hits:
+        stats["missing_capabilities_exempt"] = [c for c, _ in exempt_hits]
+        for c, lab in exempt_hits:
+            logger.warning(
+                "【要害字段缺失·已声明豁免】%s: %s(%s) 这一轮整列空 —— 理由: %s。"
+                "豁免不等于修好; 表里一旦有了这列, 删掉 capabilities_absent 里的声明。",
+                mapping["project_id"], lab, c, capabilities_absent[c])
+    if stale:
+        stats["stale_capability_exemptions"] = stale
+        stats["errors"] += len(stale)
+        logger.error(
+            "【豁免已过期】%s: capabilities_absent 声明为产不出的 %s 这一轮有值了 —— "
+            "删掉声明, 让 D-056 重新盯它(声明留着 = 它以后再整列消失也没人知道)。",
+            mapping["project_id"], "、".join(stale))
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            print(f"::error title=要害字段豁免已过期 ({mapping['project_id']})::"
+                  f"{'、'.join(stale)} 有值了, 删掉 capabilities_absent 里的声明", flush=True)
     if missing_caps:
         stats["missing_capabilities"] = [c for c, _ in missing_caps]
         stats["errors"] += len(missing_caps)
