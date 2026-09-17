@@ -65,9 +65,18 @@ CREATE UNIQUE INDEX idx_tv_evals_aw_item_evaluator_uniq
     WHERE autowriter_item_id IS NOT NULL
       AND evaluator_type IN ('human', 'rule_based', 'unverified');
 
--- ── ③ 回填历史 human 行 ───────────────────────────────────────────────────
--- 只回填【能证明来源未知】的行: 对应 AW item 的 decision_source IS NULL。
--- 不盲扫全表改 —— 万一以后有别的路径写进真正的人工评价, 不能一起误伤。
+-- ── ③ 回填: 把同步管的三类 evaluator 行对齐到 AW 的真实来源 ────────────────
+-- 只动【本同步拥有的三类】(human / rule_based / unverified) 且 join 得上 AW item 的行。
+-- persona / critic / model 是别的链路写的, 一概不碰。
+--
+-- ⚠️ 映射必须和 scripts/sync_autowriter_decisions_to_prepublish.py 的 _provenance()
+--    【逐字一致】(codex review P2)。第一版写成 `decision_source IS NOT NULL AND
+--    <> 'human' → rule_based`, 于是空串 / 纯空格 / 没见过的新取值(比如某天 AW 加的
+--    'auto_v2')全被当成 rule_based, 而同步脚本对同一个值给的是 unverified ——
+--    同一条 item 归到哪一类, 取决于是迁移先跑还是同步先跑。而且一旦写成
+--    rule_based 就再也修不回来: 老的四条分支都只看 evaluator_type='human' 的行。
+--    所以这里改成【按目标态收敛】: 算出该是什么, 和现状不同就改。天然幂等,
+--    也天然可自愈 —— 被上一版写歪的行, 再跑一次就纠正了。
 --
 -- ⚠️ 判据必须是【那三列在不在】, 不能只判表在不在。
 --    CI 的 autowriter.items 是个 stub(id/status/example_label/user_id + 002/003 加的几列),
@@ -77,7 +86,8 @@ CREATE UNIQUE INDEX idx_tv_evals_aw_item_evaluator_uniq
 DO $$
 DECLARE
     n_updated INT := 0;
-    has_cols BOOLEAN;
+    n_blocked INT := 0;
+    has_cols  BOOLEAN;
 BEGIN
     SELECT count(*) = 3 INTO has_cols
       FROM information_schema.columns
@@ -85,57 +95,68 @@ BEGIN
        AND column_name IN ('decision_source', 'reviewer_id', 'decided_at');
 
     IF has_cols THEN
-        -- (a) 来源未知 → unverified, 且清掉 evaluator_id。
-        --     作者不是审稿人: 留着 owner 等于继续声称"这条是他评的"。
+        -- target: _provenance() 的 SQL 镜像。s = 去空白后的 decision_source。
+        --   s 为空        → ('unverified', NULL)          来源未知, 不猜, 也不留作者
+        --   s = 'human'   → ('human', reviewer_id)        人审; 无 reviewer 则留空
+        --   s ∈ 机器三种  → ('rule_based', s)             记具体规则名, 可分开统计
+        --   其余          → ('unverified', s)             没见过的新取值: 不猜, 但留痕
+        WITH target AS (
+            SELECT e.evaluation_id,
+                   CASE WHEN s.v IS NULL             THEN 'unverified'
+                        WHEN s.v = 'human'           THEN 'human'
+                        WHEN s.v IN ('auto_hard_rule', 'auto_dedup', 'system')
+                                                     THEN 'rule_based'
+                        ELSE 'unverified' END           AS want_type,
+                   CASE WHEN s.v IS NULL             THEN NULL
+                        WHEN s.v = 'human'           THEN i.reviewer_id::TEXT
+                        ELSE s.v END                    AS want_id
+              FROM truth_vault.prepublish_evaluations e
+              JOIN autowriter.items i ON i.id = e.autowriter_item_id
+              CROSS JOIN LATERAL (SELECT nullif(btrim(i.decision_source), '') AS v) s
+             WHERE e.evaluator_type IN ('human', 'rule_based', 'unverified')
+        ),
+        -- 同一条 item 的目标类型若已被【另一行】占着, 改过去会撞唯一索引。
+        -- 这种行是历史脏数据(同步的就地升级路径不会造出来), 只报数不硬改,
+        -- 免得整个迁移因为一条脏数据回滚。
+        todo AS (
+            SELECT t.* FROM target t
+              JOIN truth_vault.prepublish_evaluations e USING (evaluation_id)
+             WHERE (e.evaluator_type, e.evaluator_id)
+                   IS DISTINCT FROM (t.want_type, t.want_id)
+               AND NOT EXISTS (
+                     SELECT 1 FROM truth_vault.prepublish_evaluations x
+                      WHERE x.autowriter_item_id = e.autowriter_item_id
+                        AND x.evaluator_type     = t.want_type
+                        AND x.evaluation_id     <> e.evaluation_id)
+        )
         UPDATE truth_vault.prepublish_evaluations e
-           SET evaluator_type = 'unverified',
-               evaluator_id   = NULL
-          FROM autowriter.items i
-         WHERE e.autowriter_item_id = i.id
-           AND e.evaluator_type = 'human'
-           AND i.decision_source IS NULL;
+           SET evaluator_type = todo.want_type,
+               evaluator_id   = todo.want_id
+          FROM todo
+         WHERE e.evaluation_id = todo.evaluation_id;
         GET DIAGNOSTICS n_updated = ROW_COUNT;
-        RAISE NOTICE 'TV-01 回填(a) 来源未知: % 行 human → unverified', n_updated;
+        RAISE NOTICE 'TV-01 回填: % 行对齐到 AW 真实来源', n_updated;
 
-        -- (b) 来源已知【且不是人工】→ rule_based, evaluator_id 记具体规则名。
-        --     生产上今天没有这种行(598 条源全空), 但只修"今天恰好存在的那一种"不够 ——
-        --     AW 哪天补写了 decision_source 再跑本迁移, 这批必须也能被纠正,
-        --     否则机器判定会以人工身份永久留在校准表里。
-        UPDATE truth_vault.prepublish_evaluations e
-           SET evaluator_type = 'rule_based',
-               evaluator_id   = i.decision_source
-          FROM autowriter.items i
-         WHERE e.autowriter_item_id = i.id
-           AND e.evaluator_type = 'human'
-           AND i.decision_source IS NOT NULL
-           AND i.decision_source <> 'human';
-        GET DIAGNOSTICS n_updated = ROW_COUNT;
-        RAISE NOTICE 'TV-01 回填(b) 机器判定: % 行 human → rule_based', n_updated;
-
-        -- (c) 确实是人工, 但 evaluator_id 填的是作者 → 换成真正的 reviewer。
-        --     只在 reviewer_id 在场时改; 缺 reviewer 的人工决定留在 human 但把
-        --     evaluator_id 清掉 —— 宁可"人工但不知是谁", 不要"错认成作者审的"。
-        UPDATE truth_vault.prepublish_evaluations e
-           SET evaluator_id = i.reviewer_id::TEXT
-          FROM autowriter.items i
-         WHERE e.autowriter_item_id = i.id
-           AND e.evaluator_type = 'human'
-           AND i.decision_source = 'human'
-           AND i.reviewer_id IS NOT NULL
-           AND e.evaluator_id IS DISTINCT FROM i.reviewer_id::TEXT;
-        GET DIAGNOSTICS n_updated = ROW_COUNT;
-        RAISE NOTICE 'TV-01 回填(c) 审稿人归位: % 行 evaluator_id 作者 → reviewer', n_updated;
-
-        UPDATE truth_vault.prepublish_evaluations e
-           SET evaluator_id = NULL
-          FROM autowriter.items i
-         WHERE e.autowriter_item_id = i.id
-           AND e.evaluator_type = 'human'
-           AND i.decision_source = 'human'
-           AND i.reviewer_id IS NULL
-           AND e.evaluator_id IS NOT NULL;
-        GET DIAGNOSTICS n_updated = ROW_COUNT;
-        RAISE NOTICE 'TV-01 回填(d) 人工但无 reviewer: % 行 evaluator_id 清空', n_updated;
+        SELECT count(*) INTO n_blocked
+          FROM truth_vault.prepublish_evaluations e
+          JOIN autowriter.items i ON i.id = e.autowriter_item_id
+          CROSS JOIN LATERAL (SELECT nullif(btrim(i.decision_source), '') AS v) s
+          CROSS JOIN LATERAL (SELECT CASE
+                        WHEN s.v IS NULL   THEN 'unverified'
+                        WHEN s.v = 'human' THEN 'human'
+                        WHEN s.v IN ('auto_hard_rule', 'auto_dedup', 'system')
+                                           THEN 'rule_based'
+                        ELSE 'unverified' END AS want_type) w
+         WHERE e.evaluator_type IN ('human', 'rule_based', 'unverified')
+           AND e.evaluator_type <> w.want_type
+           AND EXISTS (SELECT 1 FROM truth_vault.prepublish_evaluations x
+                        WHERE x.autowriter_item_id = e.autowriter_item_id
+                          AND x.evaluator_type     = w.want_type
+                          AND x.evaluation_id     <> e.evaluation_id);
+        IF n_blocked > 0 THEN
+            RAISE WARNING 'TV-01 回填: % 行没能对齐 —— 目标类型已被同一 item 的另一行占着, '
+                          '属历史脏数据, 需人工判定留哪条。', n_blocked;
+        END IF;
     ELSE
         RAISE NOTICE 'TV-01 回填: 跳过 —— autowriter.items 没有 decision_source/reviewer_id/decided_at '
                      '三列(CI stub 或未跑 AW 的 deskcore 迁移)。历史行维持原状, 不猜来源。';

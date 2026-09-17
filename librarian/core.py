@@ -261,12 +261,15 @@ def _select_via_llm(brief: dict, cards: list[dict], model: str) -> list[dict]:
 
     by_id = {c.get("source_note_id"): c for c in cards}
     out = []
+    dropped: list = []
     for item in parsed["selected"][:DEFAULT_SELECT_MAX]:
         if not isinstance(item, dict):
+            dropped.append(item)
             continue
         nid = item.get("source_note_id")
         card = by_id.get(nid)
         if card is None:        # 丢弃编造的 / 不在候选里的 id
+            dropped.append(nid)
             continue
         out.append({
             "source_note_id": nid,
@@ -281,6 +284,23 @@ def _select_via_llm(brief: dict, cards: list[dict], model: str) -> list[dict]:
             "transferable_tactic": card.get("transferable_tactic"),
             "excerpt": card.get("raw_excerpt"),
         })
+    # 模型挑了东西, 但【一条都不在候选里】= 契约失败(编 id / 认错候选集), 不是
+    # "库里没有相关卡"(codex review P2)。不抛的话它会被当成 no_match:
+    #   ① 状态是 no_match, 恰好把 TV-06 要暴露的故障又藏回去;
+    #   ② 更糟的是 no_match 会【进缓存】, 同一个 brief 之后再也不调模型, 契约
+    #      失败被固化成"这个库对你没货"。
+    # 抛给上层 → 走既有降级分支: 记 exception 日志、status=degraded、返回 []
+    # (不缓存, 因为 put_cache 在 try 之后)。写稿链路照旧不阻塞。
+    if dropped and not out:
+        raise ValueError(
+            f"librarian response selected {len(dropped)} card(s), none of which are in "
+            f"the candidate set (first: {dropped[0]!r}) —— 模型编了 id 或认错了候选集"
+        )
+    if dropped:
+        logger.warning(
+            "librarian: 丢弃 %d 条不在候选内的选择(保留 %d 条); 首条: %r",
+            len(dropped), len(out), dropped[0],
+        )
     return out
 
 

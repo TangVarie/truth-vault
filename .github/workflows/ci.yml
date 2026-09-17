@@ -1464,6 +1464,13 @@ jobs:
           assert not m._is_missing_provenance(E("permission denied for table items"))
           assert not m._is_missing_provenance(E("column updated_at does not exist")), \
               "updated_at 的错该走它自己的降级路径, 不能被这条吞掉"
+          # 判据里不能有光秃秃的 "column" —— 本机 PG16 实测这条是 42702 而不是缺列,
+          # 旧写法会把它吞成"缺列"并静默降级。updated_at 那条同款, 一起钉住。
+          assert not m._is_missing_provenance(E('column reference "decision_source" is ambiguous')), \
+              "42702 列名歧义不是缺列, 不能吞成降级 (codex review P2)"
+          assert not m._is_missing_updated_at(E('column reference "updated_at" is ambiguous'))
+          assert m._is_missing_updated_at(E("column items.updated_at does not exist")), \
+              "真正的缺列必须仍然判得出来"
 
           # ④ 真正写出去的行
           rows = []
@@ -1493,7 +1500,65 @@ jobs:
                                      "_upgrade_evaluation_id": "ev-77"})
           kind, r = rows[-1]
           assert kind == "update", f"应 UPDATE 升级而不是 INSERT: {kind}"
-          assert r == {"evaluator_type": "human", "evaluator_id": "rev-9"}, r
+          # 升级要把整行对齐: decision 也可能过期(approved→needs_revision),
+          # 只换身份会在校准表里留着旧判决, 比"没这行"更糟 —— 看着像已核对过。
+          assert r.get("decision") == "pass", f"升级必须同时刷新 decision: {r}"
+          assert r["evaluator_type"] == "human" and r["evaluator_id"] == "rev-9", r
+          assert "created_at" not in r, f"decided_at 缺席时不该拿同步时刻去覆盖旧时间: {r}"
+          m.insert_evaluation(SB(), {"id": "i4", "status": "needs_revision", "user_id": "a",
+                                     "decision_source": "auto_dedup",
+                                     "decided_at": "2026-08-08T00:00:00Z",
+                                     "_upgrade_evaluation_id": "ev-78"})
+          _, r = rows[-1]
+          assert r.get("decision") == "revise", f"升级必须同时刷新 decision: {r}"
+          assert r["created_at"] == "2026-08-08T00:00:00Z", \
+              f"拿到 decided_at 就该把当初退而求其次的同步时刻纠正过来: {r}"
+
+          # ⑥ 别家链路的评价(persona/critic/model)【不得】把决策同步顶掉。
+          #    放宽 existing 查询的类型时引入过这个回归: have 非空 → elif have: continue
+          #    → 有 persona 评价的 item 永远进不了校准表。
+          class PQ:
+              def __init__(self, rows): self.rows, self.f = rows, []
+              def select(self, _): return self
+              def in_(self, col, vals): self.f.append((col, list(vals))); return self
+              def or_(self, *a, **k): return self
+              def gte(self, *a, **k): return self
+              def order(self, _): return self
+              def range(self, a, b):
+                  rs = self.rows
+                  for col, vals in self.f:
+                      rs = [r for r in rs if r.get(col) in vals]
+                  self.page = rs[a:b + 1]; return self
+              def execute(self): return type("R", (), {"data": self.page})()
+          ITEMS = [
+              {"id": "i-persona", "status": "approved", "user_id": "u", "created_at": "2026-09-01",
+               "decision_source": "human", "reviewer_id": "rev-1"},
+              {"id": "i-done",    "status": "approved", "user_id": "u", "created_at": "2026-09-01",
+               "decision_source": "human", "reviewer_id": "rev-1"},
+              {"id": "i-stale",   "status": "approved", "user_id": "u", "created_at": "2026-09-01",
+               "decision_source": "auto_dedup"},
+          ]
+          EVALS = [
+              {"evaluation_id": "e1", "autowriter_item_id": "i-persona",
+               "evaluator_type": "persona", "evaluator_id": "p1"},
+              {"evaluation_id": "e2", "autowriter_item_id": "i-persona",
+               "evaluator_type": "model", "evaluator_id": None},
+              {"evaluation_id": "e3", "autowriter_item_id": "i-done",
+               "evaluator_type": "human", "evaluator_id": "rev-1"},
+              {"evaluation_id": "e4", "autowriter_item_id": "i-stale",
+               "evaluator_type": "unverified", "evaluator_id": None},
+          ]
+          class SB2:
+              def schema(self, name): self._s = name; return self
+              def table(self, _): return PQ(ITEMS if self._s == "autowriter" else EVALS)
+          got = {r["id"]: r for r in m.fetch_pending_decisions(SB2(), None)}
+          assert "i-persona" in got, \
+              "只有 persona/model 评价的 item 必须照常归档 —— 那是别的链路, 与本同步正交"
+          assert "_upgrade_evaluation_id" not in got["i-persona"], \
+              "persona 行不是本同步的 unverified, 不能被就地改写"
+          assert "i-done" not in got, "同类型已归档的 item 必须幂等跳过"
+          assert got["i-stale"]["_upgrade_evaluation_id"] == "e4", \
+              "已有 unverified 且来源补上了 → 就地升级, 不另插"
 
           print("TV-01 评价来源: all checks passed")
           PY
@@ -1525,7 +1590,18 @@ jobs:
           real = cur.build_curator_prompt({"tier": "爆", "raw_excerpt": "x", "synthetic": False})
           fake = cur.build_curator_prompt({"tier": "爆", "raw_excerpt": "x", "synthetic": True})
           assert "不可信" in fake, "synthetic 卡必须明确告诉策展模型指标不可信 (TV-05)"
-          assert "不可信" not in real and "真实回收数据" in real, real[:200]
+          assert "不可信" not in real, real[:200]
+          # ⚠️ false 那一侧【不能】断言"指标为真实回收数据"(codex review P2):
+          #    synthetic 是三态压成两态 —— true / 显式 false / 压根没判过, 而视图的
+          #    COALESCE(...,'false') 把第三种也变成 false。生产实测 332 张卡里 189 张
+          #    (57%) data_quality_flags 整个为 NULL, 旧文案等于对一多半的卡断言了
+          #    一件我们根本没核过的事。
+          for txt in (real, cur.build_curator_prompt({"tier": "爆", "raw_excerpt": "x"})):
+              assert "真实回收数据" not in txt, \
+                  f"没被标假 ≠ 已核验为真, 不得对策展模型这么说: {txt[:200]}"
+              assert "未经逐条核验" in txt, txt[:200]
+          ref = cur.build_curator_prompt({"tier": "参考", "raw_excerpt": "x", "synthetic": False})
+          assert "人工挑" in ref, "参考是人工挑的, 不是数据达标进来的, 得说清楚"
           print("TV-03 / TV-05: all checks passed")
           PY
       - name: 馆员不得阻塞事件循环, 空结果与故障要分得开 (TV-06)
@@ -1548,6 +1624,37 @@ jobs:
               if _status_out is not None:
                   _status_out["status"] = st
               return [] if mode in ("degraded", "empty") else [{"source_note_id": "n1"}]
+          # ①b 模型挑了卡但【一条都不在候选里】= 契约失败, 不是"库里没货"。
+          #     旧实现静默丢掉全部 → 返回 [] → 报成 no_match 【并进缓存】,
+          #     同一个 brief 之后再也不调模型, 契约失败被固化成"这个库对你没货"。
+          CARDS = [{"source_note_id": "real-1", "curated_at": "2026-09-01", "tier": "爆"}]
+          core.fetch_candidates = lambda sb, **kw: list(CARDS)
+          core.get_supabase = lambda *a, **k: object()
+          core.get_cache = lambda sb, key: None
+          cached_writes = []
+          core.put_cache = lambda sb, key, brief, lib_v, sel: cached_writes.append(key)
+
+          core.call_anthropic = lambda *a, **k: '{"selected": [{"source_note_id": "made-up-1"}]}'
+          st = {}
+          assert core.librarian_select({"consumer": "t"}, _status_out=st) == []
+          assert st["status"] == "degraded", \
+              f"全是编造 id 必须报 degraded 而不是 no_match: {st}"
+          assert not cached_writes, "契约失败的空结果【不得】进缓存 (codex review P2)"
+
+          # 真的没货(模型规规矩矩返回空) 仍然是 no_match, 且照常缓存 —— 不能矫枉过正。
+          core.call_anthropic = lambda *a, **k: '{"selected": []}'
+          st = {}
+          assert core.librarian_select({"consumer": "t"}, _status_out=st) == []
+          assert st["status"] == "no_match", st
+          assert cached_writes, "真正的 no_match 仍应进缓存"
+
+          # 部分编造: 留下真的那条, 不整单作废。
+          core.call_anthropic = lambda *a, **k: (
+              '{"selected": [{"source_note_id": "made-up-1"}, {"source_note_id": "real-1"}]}')
+          st = {}
+          out = core.librarian_select({"consumer": "t"}, _status_out=st)
+          assert [c["source_note_id"] for c in out] == ["real-1"] and st["status"] == "ok", (out, st)
+
           core.librarian_select = fake
           assert core.librarian_select_detailed({"_mode": "ok"})[1] == "ok"
           assert core.librarian_select_detailed({"_mode": "empty"})[1] == "no_match"
@@ -5690,28 +5797,45 @@ jobs:
               ('00000000-0000-0000-0000-0000000000b1','approved',NULL,NULL,NULL),
               ('00000000-0000-0000-0000-0000000000b2','approved','auto_dedup',NULL,now()),
               ('00000000-0000-0000-0000-0000000000b3','approved','human',
-               '00000000-0000-0000-0000-0000000000c9',now()) ON CONFLICT DO NOTHING;
+               '00000000-0000-0000-0000-0000000000c9',now()),
+              -- 没见过的新取值 / 空串: 同步脚本的 _provenance() 给的是 unverified,
+              -- 回填必须给同一个答案(codex review P2: 旧版一律 rule_based, 两头打架)。
+              ('00000000-0000-0000-0000-0000000000b4','approved','auto_v2_2027',NULL,now()),
+              ('00000000-0000-0000-0000-0000000000b5','approved','   ',NULL,now()),
+              -- 已经被写歪成 rule_based 的行, 再跑一次迁移必须能纠回来
+              ('00000000-0000-0000-0000-0000000000b6','approved',NULL,NULL,NULL)
+              ON CONFLICT DO NOTHING;
             INSERT INTO truth_vault.prepublish_evaluations
               (autowriter_item_id, evaluator_type, evaluator_id, decision) VALUES
               ('00000000-0000-0000-0000-0000000000b1','human','author-1','pass'),
               ('00000000-0000-0000-0000-0000000000b2','human','author-2','pass'),
-              ('00000000-0000-0000-0000-0000000000b3','human','author-3','pass')
+              ('00000000-0000-0000-0000-0000000000b3','human','author-3','pass'),
+              ('00000000-0000-0000-0000-0000000000b4','human','author-4','pass'),
+              ('00000000-0000-0000-0000-0000000000b5','human','author-5','pass'),
+              ('00000000-0000-0000-0000-0000000000b6','rule_based','auto_v2_2027','pass')
               ON CONFLICT DO NOTHING;"
           psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_11_evaluator_provenance.sql
-          GOT=$(psql -v ON_ERROR_STOP=1 -t -c "SELECT
-              (SELECT evaluator_type FROM truth_vault.prepublish_evaluations
-                 WHERE autowriter_item_id='00000000-0000-0000-0000-0000000000b1')
-            ||'|'|| (SELECT evaluator_type FROM truth_vault.prepublish_evaluations
-                 WHERE autowriter_item_id='00000000-0000-0000-0000-0000000000b2')
-            ||'|'|| coalesce((SELECT evaluator_id FROM truth_vault.prepublish_evaluations
-                 WHERE autowriter_item_id='00000000-0000-0000-0000-0000000000b3'),'(null)');" | tr -d ' ')
-          WANT="unverified|rule_based|00000000-0000-0000-0000-0000000000c9"
+          # ⑤ 回填逐条对着 _provenance() 的口径验, 外加"能自愈"。
+          #    用 evaluator_type||'/'||evaluator_id 一起验 —— 只验 type 的话,
+          #    "类型对了但 evaluator_id 还留着作者"这种半拉子修复会蒙混过关。
+          GOT=$(psql -v ON_ERROR_STOP=1 -t -A -c "SELECT string_agg(
+              right(autowriter_item_id::text,2) ||'='|| evaluator_type
+              ||'/'|| coalesce(evaluator_id,'-'), ' ' ORDER BY autowriter_item_id)
+            FROM truth_vault.prepublish_evaluations
+            WHERE autowriter_item_id IN (
+              '00000000-0000-0000-0000-0000000000b1','00000000-0000-0000-0000-0000000000b2',
+              '00000000-0000-0000-0000-0000000000b3','00000000-0000-0000-0000-0000000000b4',
+              '00000000-0000-0000-0000-0000000000b5','00000000-0000-0000-0000-0000000000b6');")
+          WANT="b1=unverified/- b2=rule_based/auto_dedup b3=human/00000000-0000-0000-0000-0000000000c9 b4=unverified/auto_v2_2027 b5=unverified/- b6=unverified/-"
           if [ "$GOT" != "$WANT" ]; then
-            echo "❌ 回填没按来源分流。期望 $WANT, 实得 $GOT"
-            echo "   (来源空→unverified / 机器判定→rule_based / 人工→evaluator_id 换成 reviewer)"
+            echo "❌ 回填口径与同步脚本 _provenance() 不一致。"
+            echo "   期望: $WANT"
+            echo "   实得: $GOT"
+            echo "   (空→unverified/空 · 机器三种→rule_based/规则名 · human→reviewer ·"
+            echo "    没见过的新取值→unverified 但留痕 · 空白串→unverified · 写歪的行要能自愈)"
             exit 1
           fi
-          echo "✓ v1.11: unverified 可写, 唯一索引覆盖同步三类(persona 多行不受影响), 回填三条路径都对"
+          echo "✓ v1.11: unverified 可写, 唯一索引覆盖同步三类(persona 多行不受影响), 回填与 _provenance 同口径且可自愈"
       - name: Apply security revoke (anon/authenticated write on public.* ) (+ idempotency)
         # 撤 anon/authenticated 对 5 张 public 表的写权限(读保留,不开 RLS)。
         # guarded:表/角色不存在则跳过 → 裸 PG / CI 为 no-op。REVOKE 幂等,两遍验。
