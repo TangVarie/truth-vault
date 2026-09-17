@@ -248,6 +248,33 @@ jobs:
               raise SystemExit("\n词表漂移:\n  - " + "\n  - ".join(bad))
           print("\ncontrolled vocab JSON in sync with docs/05 + notes_v1_7")
           PY
+      - name: scripts/README Step 0 必须列全 schemas/notes_v1_*.sql (codex review on #130)
+        run: |
+          python - <<'PY'
+          # _common._REQUIRED_COLUMNS 的 preflight 一发现缺列就拒绝同步, 而"哪份迁移给哪列"只写在
+          # README Step 0 的清单里。#130 加了 comments_count(v1.12), 清单却停在 v1.10(v1.11 也漏了)
+          # —— 按 README 新装的库跑到第一次同步就死在 preflight。清单和目录逐个对, 两个方向都对。
+          import glob, re, sys
+          readme = open("scripts/README.md", encoding="utf-8").read()
+          m = re.search(r"# Step 0 .*?(?=\n# Step 1)", readme, re.S)
+          assert m, "README 里找不到 Step 0 … Step 1 这一段, 清单格式变了?"
+          step0 = m.group(0)
+          # 不是 sync 前置、因而【不该】出现在 Step 0 的文件, 必须显式登记并写明理由 —— 不许静默跳过。
+          NOT_STEP0 = {
+              "notes_v1_2_cross_schema_views.sql": "D-029 部署顺序第 4 步: 要等 ssll/autowriter 两个 schema 就绪, 不是 sync 的前置",
+          }
+          files = sorted(f.split("/")[-1] for f in glob.glob("schemas/notes_v1_*.sql"))
+          missing = [f for f in files if f not in step0 and f not in NOT_STEP0]
+          listed = re.findall(r"schemas/(notes_v1_[A-Za-z0-9_]+\.sql)", step0)
+          ghosts = sorted(set(listed) - set(files))
+          stale_exempt = sorted(f for f in NOT_STEP0 if f not in files or f in step0)
+          if missing or ghosts or stale_exempt:
+              sys.exit(f"README Step 0 迁移清单与 schemas/ 不符: 漏列={missing} 不存在={ghosts} "
+                       f"登记为'不在 Step 0'却已列入或已不存在={stale_exempt}")
+          for f, why in NOT_STEP0.items():
+              print(f"  {f}: 不在 Step 0 (已登记: {why})")
+          print(f"  ✓ README Step 0 列全了 {len(files) - len(NOT_STEP0)} 份 notes_v1_*.sql, 且没有幽灵条目")
+          PY
       - name: Comment parser unit tests
         working-directory: scripts
         run: |
@@ -1039,6 +1066,12 @@ jobs:
           #   和 metric_snapshots, 其余 metric-only 列(likes/saves/…)仍不得漏进 notes payload。
           import sync_feishu_notes_to_truth_vault as s
 
+          # 门槛常数与 notes_v1_12 里 v_tier_discrepancy 的 50/100 是同一对数字(sql job 用
+          # 49/50/99/100 四个边界钉着视图)。改这里必须同步改视图和那组夹具 —— 判据两处各写一份
+          # 是 D-061 的老毛病, 但视图是只读复核、不是第二个写入口, 所以允许, 只是要钉死。
+          assert (s._COMMENT_TIER_BAO, s._COMMENT_TIER_DABAO) == (50, 100), \
+              "评论数门槛变了: 同步改 schemas/notes_v1_12_comment_tier.sql 的 v_tier_discrepancy + CI sql 夹具 ⑦"
+
           mapping = {
               "project_id": "TEST_P", "platform": "xiaohongshu",
               "field_mapping": {
@@ -1125,6 +1158,26 @@ jobs:
               assert nf.get("intent") in _ENUM, nf.get("intent")
           print("  ✓ list[str]/list[dict]/str + 多选→mixed + 未知→other,intent 恒为合法 enum(不崩不撞 CHECK)")
 
+          # ⑦ ensure_project_exists 每轮把已废的 tier_thresholds【显式】写 NULL(codex review on #130 P2
+          #   的延伸): notes_v1_12 清过一次, 但合并前主干旧代码若再跑一次夜跑, 会按旧 yaml 把它写回,
+          #   而迁移不会跑第二次回填 —— 靠"不送这列"收敛不了, 每轮写 NULL 才自愈。
+          #   用一份还带着 tier_thresholds 的旧式 mapping 喂它(模拟主干上的旧 yaml)。
+          import _common as C
+          captured = {}
+          class _T:
+              def upsert(self, row, **k): captured.update(row); return self
+              def execute(self): return None
+          class _SB:
+              def schema(self, _): return self
+              def table(self, _): return _T()
+          C.ensure_project_exists(_SB(), {"project_id": "P_old", "brand": "b", "product": "p",
+                                          "category": "其他", "tier_thresholds": {"爆": 30, "大爆": 100},
+                                          "tier_extraction": {"source": "状态字段", "rules": []}})
+          assert "tier_thresholds" in captured and captured["tier_thresholds"] is None, \
+              f"已废的 tier_thresholds 必须显式写 NULL(每轮自愈), 实得 {captured.get('tier_thresholds', '<未送>')!r}"
+          assert "tier_thresholds" not in captured["mapping_config"], \
+              "mapping_config 快照不该再带 tier_thresholds"
+          print("  ✓ ensure_project_exists 每轮把已废 tier_thresholds 写 NULL, 快照不再带这个键")
           print("\ntransform_row tier(评论数尺子)+metric+intent: all checks passed")
           PY
       - name: transform_row autowriter lineage FK self-check (R-031)
@@ -1512,6 +1565,12 @@ jobs:
                "decision_source": "human", "reviewer_id": "rev-1"},
               {"id": "i-stale",   "status": "approved", "user_id": "u", "created_at": "2026-09-01",
                "decision_source": "auto_dedup"},
+              # AW 改口径: 已归档成 rule_based/auto_dedup, 现在 AW 说是人审
+              {"id": "i-flip",    "status": "approved", "user_id": "u", "created_at": "2026-09-01",
+               "decision_source": "human", "reviewer_id": "rev-2"},
+              # 换 reviewer: 已归档 human/rev-1, 现在 AW 记的是 rev-2
+              {"id": "i-rev",     "status": "approved", "user_id": "u", "created_at": "2026-09-01",
+               "decision_source": "human", "reviewer_id": "rev-2"},
           ]
           EVALS = [
               {"evaluation_id": "e1", "autowriter_item_id": "i-persona",
@@ -1522,6 +1581,10 @@ jobs:
                "evaluator_type": "human", "evaluator_id": "rev-1"},
               {"evaluation_id": "e4", "autowriter_item_id": "i-stale",
                "evaluator_type": "unverified", "evaluator_id": None},
+              {"evaluation_id": "e5", "autowriter_item_id": "i-flip",
+               "evaluator_type": "rule_based", "evaluator_id": "auto_dedup"},
+              {"evaluation_id": "e6", "autowriter_item_id": "i-rev",
+               "evaluator_type": "human", "evaluator_id": "rev-1"},
           ]
           class SB2:
               def schema(self, name): self._s = name; return self
@@ -1534,6 +1597,14 @@ jobs:
           assert "i-done" not in got, "同类型已归档的 item 必须幂等跳过"
           assert got["i-stale"]["_upgrade_evaluation_id"] == "e4", \
               "已有 unverified 且来源补上了 → 就地升级, 不另插"
+          # 其余漂移也要收敛(codex review on #130, P2): 只收敛 unverified 的话, AW 改口径
+          # (auto_dedup → human)或换 reviewer 的行会被 `have` 非空永久跳过, 复核每晚 WARN
+          # 一次却永远修不好, 夜跑照样绿。
+          assert got["i-flip"]["_upgrade_evaluation_id"] == "e5", \
+              "已有 rule_based 行、AW 改口径成 human → 就地收敛那一行, 不能跳过"
+          assert got["i-rev"]["_upgrade_evaluation_id"] == "e6", \
+              "已有 human 行但 reviewer 换了 → 就地收敛, 不能跳过"
+          assert got["i-flip"]["_upgrade_from"] == ("rule_based", "auto_dedup")
 
           # ⑦ 已归档的行要每晚自查 —— TV-01 的本体是"写错了几个月没人发现"。
           #    不变量只有一条: 每条行都应等于 _provenance() 现在会给的结果。
@@ -1564,6 +1635,15 @@ jobs:
               #   拿掉第一条判据测试仍然全绿(反证时真的发生了)。
               {"id": "g", "status": "approved", "user_id": "author-g", "created_at": "2026-09-01",
                "decision_source": "auto_dedup"},
+              # h AW 上游自己把作者填成了 reviewer(自己审自己): 归档行与 _provenance() 相等。
+              #   "相等即通过"的短路会把它悄悄放过(codex review on #130, P2) —— 要报, 但它不是
+              #   同步造假、不是 TV-01: WARN 不红。第一次真人自审不能变成半夜事故。
+              {"id": "h", "status": "approved", "user_id": "author-h", "created_at": "2026-09-01",
+               "decision_source": "human", "reviewer_id": "author-h"},
+              # j 同一 item 两条同步行(human 已一致 + 一条陈旧 unverified): 校准表数两次, 同步只会
+              #   收敛其中一条、收敛不了另一条 —— 唯一一种"永远修不好"的漂移, 要红。
+              {"id": "j", "status": "approved", "user_id": "author-j", "created_at": "2026-09-01",
+               "decision_source": "human", "reviewer_id": "rev-1"},
           ]
           AUDIT_EVALS = [
               {"evaluation_id": "1", "autowriter_item_id": "a", "evaluator_type": "human",      "evaluator_id": "rev-1"},
@@ -1573,13 +1653,29 @@ jobs:
               {"evaluation_id": "5", "autowriter_item_id": "e", "evaluator_type": "human",      "evaluator_id": "author-e"},
               {"evaluation_id": "6", "autowriter_item_id": "f", "evaluator_type": "unverified", "evaluator_id": None},
               {"evaluation_id": "7", "autowriter_item_id": "g", "evaluator_type": "human",      "evaluator_id": "rev-9"},
+              {"evaluation_id": "8", "autowriter_item_id": "h", "evaluator_type": "human",      "evaluator_id": "author-h"},
+              {"evaluation_id": "9", "autowriter_item_id": "j", "evaluator_type": "human",      "evaluator_id": "rev-1"},
+              {"evaluation_id": "10", "autowriter_item_id": "j", "evaluator_type": "unverified", "evaluator_id": None},
           ]
           class SB3:
               def schema(self, name): self._s = name; return self
               def table(self, _): return PQ(AUDIT_ITEMS if self._s == "autowriter" else AUDIT_EVALS)
           fail_n, warn_n = m.audit_archived_provenance(SB3(), None)
-          assert fail_n == 4, f"c/d/e/g 四条身份造假必须判 FAIL, 实得 {fail_n}"
-          assert warn_n == 1, f"f 那条自愈漂移只该 WARN, 实得 warn={warn_n}"
+          assert fail_n == 5, f"c/d/e/g 四条身份造假 + j 一条重复同步行, 必须判 FAIL, 实得 {fail_n}"
+          assert warn_n == 2, f"f 自愈漂移 + h 上游自审, 只该 WARN, 实得 warn={warn_n}"
+          # 每个用例单独跑一遍, 免得一条判据顺手兜住另一条(这一串抓过两次空断言)。
+          def audit_only(*ids):
+              class SBx:
+                  def schema(self, name): self._s = name; return self
+                  def table(self, _):
+                      return PQ([i for i in AUDIT_ITEMS if i["id"] in ids] if self._s == "autowriter"
+                                else [e for e in AUDIT_EVALS if e["autowriter_item_id"] in ids])
+              return m.audit_archived_provenance(SBx(), None)
+          assert audit_only("h") == (0, 1), "上游自审: 相等短路不能把它吞掉, 也不能判成造假"
+          assert audit_only("j") == (1, 0), "同一 item 两条同步行: 唯一一种修不好的漂移, 要红"
+          assert audit_only("e") == (1, 0), "作者被填成 reviewer 而 AW 没这么说: 造假"
+          assert audit_only("g") == (1, 0), "机器判定顶着人工身份(evaluator_id 不是作者): 造假"
+          assert audit_only("f") == (0, 1), "unverified 后来补了来源: 只 WARN"
 
           # 合法的两条【绝不能】被判成问题 —— 尤其 b: 运营用 review_drafts 之后,
           # 真人审稿会合法地产生 human 行, 判据不能把第一次真人审稿当事故。
@@ -1591,6 +1687,46 @@ jobs:
                             else [e for e in AUDIT_EVALS if e["autowriter_item_id"] in ("a", "b")])
           assert m.audit_archived_provenance(SBOK(), None) == (0, 0), \
               "带 reviewer 的人审 + AW 没记 reviewer 的人审, 都是合法的, 不许报"
+
+          # ⑦-b 复核在"没有 updated_at 列"的库上也要真的跑(codex review on #130, P2):
+          #    README 那份 fresh-install 建库脚本里 items 没有这一列; 同步主流程会降级,
+          #    复核第一版却把这个 42703 吞成 (0, 0) —— 每晚报"复核干净", 其实一行没查。
+          class PQNoUpd(PQ):
+              def select(self, cols):
+                  if "updated_at" in cols:
+                      raise Exception("column items.updated_at does not exist (42703)")
+                  return self
+          class SB5:
+              def schema(self, name): self._s = name; return self
+              def table(self, _):
+                  return PQNoUpd(AUDIT_ITEMS) if self._s == "autowriter" else PQ(AUDIT_EVALS)
+          assert m.audit_archived_provenance(SB5(), None) == (5, 2), \
+              "缺 updated_at 列时复核必须降级后照常复核, 不能吞成 (0, 0)"
+          # 别的错不许吞 —— 吞成 (0, 0) 就是"没查却报干净"。判据只认那一种缺列。
+          class PQBoom(PQ):
+              def select(self, cols): raise Exception("connection timeout")
+          class SB6:
+              def schema(self, name): self._s = name; return self
+              def table(self, _):
+                  return PQBoom(AUDIT_ITEMS) if self._s == "autowriter" else PQ(AUDIT_EVALS)
+          try:
+              m.audit_archived_provenance(SB6(), None)
+          except Exception as exc:
+              assert "timeout" in str(exc), exc
+          else:
+              raise AssertionError("复核把无关错误吞成了'干净' —— 降级判据必须窄")
+          # 缺来源三列 → 没有可比的口径, 跳过但要喊(主流程已按 unverified 归档)
+          class PQNoProv(PQ):
+              def select(self, cols):
+                  if "decision_source" in cols:
+                      raise Exception("column items.decision_source does not exist (42703)")
+                  return self
+          class SB7:
+              def schema(self, name): self._s = name; return self
+              def table(self, _):
+                  return PQNoProv(AUDIT_ITEMS) if self._s == "autowriter" else PQ(AUDIT_EVALS)
+          assert m.audit_archived_provenance(SB7(), None) == (0, 0), \
+              "缺来源列时没有可比口径, 只能跳过(主流程那边已经告警)"
 
           # ⑧ 复核判 FAIL 必须真的能把这一步打红(它在夜跑的聚合失败闸里)。
           import unittest.mock as _mock
@@ -5865,9 +6001,19 @@ jobs:
           echo "✓ v1.11: unverified 可写, 唯一索引覆盖同步三类(persona 多行不受影响), 回填与 _provenance 同口径且可自愈"
       - name: Apply v1.12 comment-count tier (+ idempotency)
         run: |
+          # 回填只在【首次升级】时跑一次(判据: comments_count 列此前不存在), 所以旧式 数值推断
+          # 夹具必须在第一次应用之前就位 —— 放在后面的话回填已经跳过, 什么也验不到。
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          INSERT INTO truth_vault.projects (project_id, brand, product, category)
+            VALUES ('CI_D062', 'b', 'p', '其他') ON CONFLICT DO NOTHING;
+          INSERT INTO truth_vault.notes (note_id, project_id, raw_content, tier, tier_source, raw_extra) VALUES
+            ('CI_D062_bf_pinggu', 'CI_D062', 'c', '爆', '数值推断', '{"_tier_source_raw": "[''评估中'']"}'::jsonb),
+            ('CI_D062_bf_other',  'CI_D062', 'c', '爆', '数值推断', '{"_tier_source_raw": "[''关注'']"}'::jsonb),
+            ('CI_D062_bf_none',   'CI_D062', 'c', '爆', '数值推断', NULL);
+          SQL
           psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_12_comment_tier.sql
           psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_12_comment_tier.sql
-      - name: Sanity-check v1.12 (comments_count 在 / 评估中 进 CHECK / 数值推断回填三条路径 + 幂等)
+      - name: Sanity-check v1.12 (comments_count 在 / 评估中 进 CHECK / 回填三条路径 + 首次判据 / 阈值清空 / 视图换口径)
         run: |
           # ① 判爆的依据得是 typed 列
           psql -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM information_schema.columns
@@ -5884,15 +6030,8 @@ jobs:
               VALUES ('CI_D062_bad', 'CI_D062', 'c', '瞎写');" 2>/dev/null; then
             echo "❌ tier CHECK 被放空了: '瞎写' 都能进"; exit 1
           fi
-          # ③ 回填三条路径: 造三条旧式 数值推断 行, 重跑迁移, 逐条核 ——
+          # ③ 回填三条路径(夹具在上一步、首次应用之前就位): 逐条核 ——
           #    状态里有 评估中 → 评估中/状态字段; 状态在场但不是 → 未知/状态字段; 没状态 → NULL/NULL
-          psql -v ON_ERROR_STOP=1 <<'SQL'
-          INSERT INTO truth_vault.notes (note_id, project_id, raw_content, tier, tier_source, raw_extra) VALUES
-            ('CI_D062_bf_pinggu', 'CI_D062', 'c', '爆', '数值推断', '{"_tier_source_raw": "[''评估中'']"}'::jsonb),
-            ('CI_D062_bf_other',  'CI_D062', 'c', '爆', '数值推断', '{"_tier_source_raw": "[''关注'']"}'::jsonb),
-            ('CI_D062_bf_none',   'CI_D062', 'c', '爆', '数值推断', NULL);
-          SQL
-          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_12_comment_tier.sql
           Q="SELECT string_agg(replace(note_id,'CI_D062_bf_','') ||'='|| coalesce(tier,'-') ||'/'|| coalesce(tier_source,'-'), ' ' ORDER BY note_id)
              FROM truth_vault.notes WHERE note_id LIKE 'CI_D062_bf_%'"
           GOT=$(psql -v ON_ERROR_STOP=1 -tA -c "$Q")
@@ -5900,11 +6039,49 @@ jobs:
           if [ "$GOT" != "$WANT" ]; then
             echo "❌ 数值推断回填没按状态分流。期望 [$WANT] 实得 [$GOT]"; exit 1
           fi
-          # ④ 幂等: 再跑一次, 已没有 数值推断 行, 三条必须原样
+          # ④ 幂等: 再跑一次, 三条回填过的行必须原样(首次判据: 列已在 → 回填跳过)
           psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_12_comment_tier.sql
           GOT2=$(psql -v ON_ERROR_STOP=1 -tA -c "$Q")
           [ "$GOT2" = "$WANT" ] || { echo "❌ 第二次跑迁移改了回填过的行: [$GOT2]"; exit 1; }
-          echo "✓ v1.12: comments_count 在 / 评估中 可写 / 瞎写仍被拒 / 回填三条路径 + 幂等"
+          # ⑤ 重跑不许清掉【新引擎】推出来的行(codex review on #130, P1): 新引擎写的也是
+          #    tier_source='数值推断', 光看标签分不出新旧。第一版无条件清所有 数值推断 行, 重跑一次
+          #    就会把 TGV 按评论数推回来的 爆/大爆 清掉 —— on-demand 表会一直错下去。
+          #    造一条新式推断行(有评论数), 再跑迁移, 必须原样。
+          psql -v ON_ERROR_STOP=1 -c "INSERT INTO truth_vault.notes (note_id, project_id, raw_content, tier, tier_source, comments_count)
+              VALUES ('CI_D062_new_inferred', 'CI_D062', 'c', '大爆', '数值推断', 203);"
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_12_comment_tier.sql
+          GOT3=$(psql -v ON_ERROR_STOP=1 -tA -c "SELECT coalesce(tier,'-')||'/'||coalesce(tier_source,'-') FROM truth_vault.notes WHERE note_id='CI_D062_new_inferred'")
+          [ "$GOT3" = "大爆/数值推断" ] || { echo "❌ 重跑迁移清掉了新引擎按评论数推出来的行: [$GOT3]"; exit 1; }
+          # ⑥ 项目级互动量阈值清空 + mapping_config 快照里的键剥掉(codex review on #130, P2):
+          #    ensure_project_exists() 对 None 不写, 旧值会一直留在库里, 旧视图还拿它算。
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          UPDATE truth_vault.projects
+             SET tier_thresholds = '{"爆": 30, "大爆": 100}'::jsonb,
+                 mapping_config  = '{"version": 1, "tier_thresholds": {"爆": 30}}'::jsonb
+           WHERE project_id = 'CI_D062';
+          SQL
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_12_comment_tier.sql
+          GOT4=$(psql -v ON_ERROR_STOP=1 -tA -c "SELECT coalesce(tier_thresholds::text,'NULL')||' '||(mapping_config ? 'tier_thresholds')::text FROM truth_vault.projects WHERE project_id='CI_D062'")
+          [ "$GOT4" = "NULL false" ] || { echo "❌ 旧的 tier_thresholds 没清干净(列值 / mapping_config 键): [$GOT4]"; exit 1; }
+          # ⑦ v_tier_discrepancy 改成评论数口径: 不再依赖 tier_thresholds(上面刚清空, 旧定义会一行不出),
+          #    门槛与引擎常数是同一对数字(50/100, python job 那边钉着)。49/50/99/100 四个边界 + 两种
+          #    不该入围的行(数值推断来源 / 没有评论数)逐个验。
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          INSERT INTO truth_vault.notes (note_id, project_id, raw_content, tier, tier_source, comments_count) VALUES
+            ('CI_D062_v_over',   'CI_D062', 'c', '爆',     '状态字段', 49),
+            ('CI_D062_v_ok50',   'CI_D062', 'c', '爆',     '状态字段', 50),
+            ('CI_D062_v_soft',   'CI_D062', 'c', '大爆',   '状态字段', 99),
+            ('CI_D062_v_ok100',  'CI_D062', 'c', '大爆',   '状态字段', 100),
+            ('CI_D062_v_under',  'CI_D062', 'c', '趴',     '状态字段', 50),
+            ('CI_D062_v_under2', 'CI_D062', 'c', '评估中', '状态字段', 100),
+            ('CI_D062_v_infer',  'CI_D062', 'c', '爆',     '数值推断', 10),
+            ('CI_D062_v_nocc',   'CI_D062', 'c', '爆',     '状态字段', NULL);
+          SQL
+          GOT5=$(psql -v ON_ERROR_STOP=1 -tA -c "SELECT string_agg(replace(note_id,'CI_D062_v_','')||'='||discrepancy_type, ' ' ORDER BY note_id)
+              FROM truth_vault.v_tier_discrepancy WHERE project_id='CI_D062'")
+          WANT5="over=over_marked soft=over_marked_soft under=under_marked under2=under_marked"
+          [ "$GOT5" = "$WANT5" ] || { echo "❌ v_tier_discrepancy 没按评论数口径判。期望 [$WANT5] 实得 [$GOT5]"; exit 1; }
+          echo "✓ v1.12: comments_count 在 / 评估中 可写 / 瞎写仍被拒 / 回填三条路径 + 首次判据 + 幂等 / 阈值清空 / 视图评论数口径"
       - name: Apply security revoke (anon/authenticated write on public.* ) (+ idempotency)
         # 撤 anon/authenticated 对 5 张 public 表的写权限(读保留,不开 RLS)。
         # guarded:表/角色不存在则跳过 → 裸 PG / CI 为 no-op。REVOKE 幂等,两遍验。
@@ -6039,4 +6216,25 @@ jobs:
                       print(f"{f}: 评估中 映成了 {r.get('tier')!r}, 必须是 评估中 (D-062)"); rc = 1
               print(f"{f}: OK")
           sys.exit(rc)
+          PY
+      - name: 每张 mapping 都要过 onboarder 的词表硬校验 (codex review on #130)
+        run: |
+          python - <<'PY'
+          # #130 把 16 张 mapping 的 评估中 映成了新档位 评估中, 而 onboarder/vocab.py 的 TIERS 和
+          # schemas/controlled_vocab_v0_2.json 还是 9 值 —— onboarder 用同一个校验器起草 / 校验
+          # mapping, 会把按新模板生成的每一张都判成 error, 而库的 CHECK 早已接受这个值。
+          # 之前没有任何 CI 步骤拿 validate_mapping 过一遍已上线的 mapping, 所以漂了也没人知道。
+          import glob, sys, yaml
+          from onboarder import vocab as ov
+          files = sorted(glob.glob("mappings/*.yaml"))
+          bad = []
+          for f in files:
+              res = ov.validate_mapping(yaml.safe_load(open(f, encoding="utf-8")), columns=None)
+              if res["errors"]:
+                  bad.append(f"{f}: " + "; ".join(res["errors"]))
+          if bad:
+              sys.exit("mapping 与 onboarder 词表漂移(改了 mapping 的取值要同步 onboarder/vocab.py + "
+                       "schemas/controlled_vocab_v0_2.json + docs/05 §对应节):\n  - " + "\n  - ".join(bad))
+          assert "评估中" in ov.TIERS, "onboarder TIERS 缺 评估中 —— 它是库 CHECK 里的正式档位(notes_v1_12)"
+          print(f"  ✓ {len(files)} 张 mapping 全部通过 onboarder 词表硬校验")
           PY

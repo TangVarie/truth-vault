@@ -23,7 +23,7 @@ TARGET_AUDIENCES = (
     "学生党", "宝妈", "伴侣家人", "病患家属", "通用",
 )  # docs/04 line 123(11 值)
 
-TIERS = ("大爆", "爆", "预备", "参考", "风控", "趴", "未知", "删除", "数据异常")  # docs/05 §10(9 值)= notes_v1_3 tier CHECK
+TIERS = ("大爆", "爆", "预备", "参考", "风控", "趴", "评估中", "未知", "删除", "数据异常")  # docs/05 §10(10 值)= notes_v1_12 tier CHECK(D-062 加 评估中: 20~50 条评论的正式档位)
 
 TIER_SOURCES = ("状态字段", "备注字段")  # tier_extraction.source 闭集(sync 只认这两个)
 
@@ -133,7 +133,7 @@ def vocab_reference() -> str:
     return (
         "content_format(8): " + " / ".join(CONTENT_FORMATS) + "\n"
         "target_audience(11): " + " / ".join(TARGET_AUDIENCES) + "\n"
-        "tier(9): " + " / ".join(TIERS) + "\n"
+        "tier(10): " + " / ".join(TIERS) + "\n"
         "tier_extraction.source(只能二选一): " + " / ".join(TIER_SOURCES) + "\n"
         "intent(5): " + " / ".join(INTENTS) + "\n"
         "schema_family: " + " / ".join(SCHEMA_FAMILIES) + "\n"

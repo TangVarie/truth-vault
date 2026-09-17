@@ -76,8 +76,9 @@ python sync_feishu_notes_to_truth_vault.py WTG_phase1            # 或加 --dry-
 （`人工补录` 是 schema 合法 tier_source、权重 0.2）。先用质量复核 view 找候选：
 
 ```sql
--- 哪些笔记的人工标 tier 与互动量推断矛盾，或哪条数值推断爆款值得转人工
-SELECT note_id, marked_tier, numeric_implied_tier, tier_source, interactions, discrepancy_type
+-- 哪些笔记的人工标 tier 与评论数门槛矛盾（D-062 起视图按评论数判：爆 ≥ 50 / 大爆 ≥ 100；
+-- 互动量只作参考列，不参与判定）
+SELECT note_id, marked_tier, numeric_implied_tier, tier_source, comments_count, discrepancy_type
 FROM truth_vault.v_tier_discrepancy WHERE project_id = 'WTG_phase1';
 
 -- 复核确认后，把指定笔记转成人工确认（示例）

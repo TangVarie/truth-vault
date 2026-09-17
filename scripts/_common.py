@@ -187,6 +187,7 @@ _REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
     "projects": (
         "project_id", "brand", "product", "category", "platform", "mapping_config",
         "schema_family", "start_date", "end_date", "tier_thresholds",
+        # tier_thresholds 已废(D-062), 但同步每轮仍显式写 NULL(见 ensure_project_exists), 所以列仍是前置。
     ),
     "prepublish_evaluations": (
         "autowriter_item_id", "evaluator_type", "evaluator_id", "decision", "created_at",
@@ -1011,7 +1012,7 @@ def ensure_project_exists(client: Client, mapping: dict) -> None:
 
     Update semantics (split mapping-owned vs manually-curated):
       • mapping-owned fields (brand / product / category / platform /
-        schema_family / tier_thresholds / mapping_config) ARE updated on
+        schema_family / mapping_config) ARE updated on
         re-sync. The yaml is the source of truth — if NRT_phase2's category
         flips from 处方药 to OTC药 (vocab v1 §9), the DB row should reflect
         that on the next sync.
@@ -1037,7 +1038,7 @@ def ensure_project_exists(client: Client, mapping: dict) -> None:
         k: v for k, v in mapping.items()
         if k in {
             "version", "schema_family", "intent_mapping",
-            "tier_extraction", "tier_thresholds", "data_supplement_needed",
+            "tier_extraction", "data_supplement_needed",
             "project_specific_fields_to_raw_extra",
         }
     }
@@ -1049,12 +1050,18 @@ def ensure_project_exists(client: Client, mapping: dict) -> None:
         "category":       mapping.get("category") or "其他",
         "platform":       mapping.get("platform", "xiaohongshu"),
         "schema_family":  mapping.get("schema_family"),
-        "tier_thresholds": mapping.get("tier_thresholds") or None,
+        # tier_thresholds(项目级互动量阈值)已废(D-062): 不再写。yaml 校验拒绝这个键, 而这里的
+        # None 过滤意味着"不送 = 库里旧值原样留着" —— 旧值由 notes_v1_12 一次性清空
+        # (codex review on #130)。
         "mapping_config": mapping_snapshot,
     }
     # Trim None values that would violate NOT NULL CHECKs (brand/product/category
     # are NOT NULL).  Defaults above cover that, so this is belt-and-suspenders.
     row = {k: v for k, v in row.items() if v is not None}
+    # 已废的项目级互动量阈值【显式】写 NULL, 每轮都写: notes_v1_12 清过一次, 但合并前主干上的
+    # 旧代码若再跑一次夜跑, 会按旧 yaml 把它写回来, 而迁移不会再跑第二次回填 —— 靠"不送这列"
+    # 收敛不了, 只有每轮写 NULL 才自愈(D-062, codex review on #130 P2 的延伸)。
+    row["tier_thresholds"] = None
 
     # ignore_duplicates omitted → default UPDATE-on-conflict. Updates every
     # column present in `row`; columns absent from `row` (the cross-system
