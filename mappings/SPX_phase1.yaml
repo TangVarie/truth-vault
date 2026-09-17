@@ -162,6 +162,13 @@ content_inherit_from_previous_row:
   platform_override: douyin
 
 project_specific_fields_to_raw_extra:
+  # ── 投流(2026-09-17 运营对齐 Q7, 见 data-analysis/ops-answers-2026-09-17.md)──
+  # 运营定的三个人工列, 机器不得覆盖。先按 allowlist 收进 raw_extra 留痕;
+  # 等飞书里真建出来、「维护情况」的多选取值定了, 再升成 typed 列(D-062)。
+  # 现在声明是为了它们一出现就有名有姓, 不落进 _undeclared 天天告警。
+  - 维护情况                # 多选: 准备/已做投流(具体选项待运营给)
+  - 维护时间                # 时间: 投流时间
+  - 维护效果                # 数字: 投流后的曝光量增长
   - 笔记配图                        # 图片 URL/附件(188 个不同值)
   - 随贴评论配图                    # 评论配图(46 个不同值)
   - 相关截图                        # 截图(289 个不同值)
