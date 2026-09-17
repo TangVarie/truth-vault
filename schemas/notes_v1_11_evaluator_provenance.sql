@@ -56,14 +56,22 @@ CREATE UNIQUE INDEX idx_tv_evals_aw_item_evaluator_uniq
 -- 只回填【能证明来源未知】的行: 对应 AW item 的 decision_source IS NULL。
 -- 不盲扫全表改 —— 万一以后有别的路径写进真正的人工评价, 不能一起误伤。
 --
--- ⚠️ CI 的空库里没有 autowriter schema, 所以整段包在 DO 里按 schema 存在与否分流,
---    否则 psql -v ON_ERROR_STOP=1 会在 CI 直接炸。生产上照常执行。
+-- ⚠️ 判据必须是【那三列在不在】, 不能只判表在不在。
+--    CI 的 autowriter.items 是个 stub(id/status/example_label/user_id + 002/003 加的几列),
+--    表【在】但三列【不在】—— 只判表存在的话, 下面 UPDATE 引用 i.decision_source 会直接
+--    ERROR: column does not exist, 把整个 sql job 打红。
+--    生产上三列齐备, 照常执行。这跟同步脚本的降级哲学是同一条: 读不到来源就别猜。
 DO $$
 DECLARE
     n_updated INT := 0;
+    has_cols BOOLEAN;
 BEGIN
-    IF EXISTS (SELECT 1 FROM information_schema.tables
-               WHERE table_schema = 'autowriter' AND table_name = 'items') THEN
+    SELECT count(*) = 3 INTO has_cols
+      FROM information_schema.columns
+     WHERE table_schema = 'autowriter' AND table_name = 'items'
+       AND column_name IN ('decision_source', 'reviewer_id', 'decided_at');
+
+    IF has_cols THEN
         -- (a) 来源未知 → unverified, 且清掉 evaluator_id。
         --     作者不是审稿人: 留着 owner 等于继续声称"这条是他评的"。
         UPDATE truth_vault.prepublish_evaluations e
@@ -116,7 +124,8 @@ BEGIN
         GET DIAGNOSTICS n_updated = ROW_COUNT;
         RAISE NOTICE 'TV-01 回填(d) 人工但无 reviewer: % 行 evaluator_id 清空', n_updated;
     ELSE
-        RAISE NOTICE 'TV-01 回填: 跳过(本库没有 autowriter.items, 多半是 CI 空库)';
+        RAISE NOTICE 'TV-01 回填: 跳过 —— autowriter.items 没有 decision_source/reviewer_id/decided_at '
+                     '三列(CI stub 或未跑 AW 的 deskcore 迁移)。历史行维持原状, 不猜来源。';
     END IF;
 END $$;
 

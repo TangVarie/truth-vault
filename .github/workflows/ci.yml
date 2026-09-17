@@ -5640,20 +5640,10 @@ jobs:
         run: |
           psql -v ON_ERROR_STOP=1 -c "SELECT notes_total, feishu_n, annotated_n, ssll_n, aw_n, snaps_n, pipeline_runs_n, server_now FROM public.v_dash_system_pulse;"
       - name: Apply v1.11 evaluator provenance (+ idempotency)
-        env:
-          PGHOST: localhost
-          PGUSER: postgres
-          PGPASSWORD: postgres
-          PGDATABASE: postgres
         run: |
           psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_11_evaluator_provenance.sql
           psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_11_evaluator_provenance.sql
       - name: Sanity-check v1.11 (unverified 可写 / 唯一索引扩到全类型 / 回填能跑)
-        env:
-          PGHOST: localhost
-          PGUSER: postgres
-          PGPASSWORD: postgres
-          PGDATABASE: postgres
         run: |
           # ① 'unverified' 进了 CHECK —— 这是 TV-01 的核心: 来源未知 ≠ 人工
           psql -v ON_ERROR_STOP=1 -c "INSERT INTO truth_vault.prepublish_evaluations
@@ -5674,13 +5664,23 @@ jobs:
             VALUES ('00000000-0000-0000-0000-0000000000aa','model','pass');"
           # ④ 回填分支: 造一个 autowriter.items 让 DO 块真的走进回填, 而不是每次都走
           #    "跳过(CI 空库)" —— 写了分支就得有用例真的走进去。
+          # ⚠️ 本步骤跑在「Apply integration migration packs」【之后】, 那时
+          #    autowriter.items 已经是个 stub(id/status/example_label/user_id + 002/003 加的列),
+          #    既【不是】我们要的形状, 也【没有】决策来源三列。所以:
+          #      · CREATE 用 IF NOT EXISTS(已存在就是 no-op);
+          #      · 三列用 ADD COLUMN IF NOT EXISTS 补上 —— 不补的话迁移会走"跳过"分支,
+          #        下面的断言就永远测不到真正的回填逻辑(写了分支就得有用例真的走进去);
+          #      · INSERT 必须【显式列名】, 位置插入会因为 stub 的列序/列数不同而错位或报错。
           psql -v ON_ERROR_STOP=1 -c "CREATE SCHEMA IF NOT EXISTS autowriter;
             CREATE TABLE IF NOT EXISTS autowriter.items (id UUID PRIMARY KEY, status TEXT,
-              user_id UUID, decision_source TEXT, reviewer_id UUID, decided_at TIMESTAMPTZ);
-            INSERT INTO autowriter.items VALUES
-              ('00000000-0000-0000-0000-0000000000b1','approved',NULL,NULL,NULL,NULL),
-              ('00000000-0000-0000-0000-0000000000b2','approved',NULL,'auto_dedup',NULL,now()),
-              ('00000000-0000-0000-0000-0000000000b3','approved',NULL,'human',
+              user_id UUID);
+            ALTER TABLE autowriter.items ADD COLUMN IF NOT EXISTS decision_source TEXT;
+            ALTER TABLE autowriter.items ADD COLUMN IF NOT EXISTS reviewer_id UUID;
+            ALTER TABLE autowriter.items ADD COLUMN IF NOT EXISTS decided_at TIMESTAMPTZ;
+            INSERT INTO autowriter.items (id, status, decision_source, reviewer_id, decided_at) VALUES
+              ('00000000-0000-0000-0000-0000000000b1','approved',NULL,NULL,NULL),
+              ('00000000-0000-0000-0000-0000000000b2','approved','auto_dedup',NULL,now()),
+              ('00000000-0000-0000-0000-0000000000b3','approved','human',
                '00000000-0000-0000-0000-0000000000c9',now()) ON CONFLICT DO NOTHING;
             INSERT INTO truth_vault.prepublish_evaluations
               (autowriter_item_id, evaluator_type, evaluator_id, decision) VALUES
