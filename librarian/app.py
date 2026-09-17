@@ -9,6 +9,8 @@
       brief、收 selected。
 
 降级: 任何内部错误都返回 {"selected": []}(消费方据此回退到自有正例), 不抛 500 阻塞写稿。
+      2026-09-17(TV-06) 起同时返回 `status`: ok / no_match / degraded / error ——
+      降级照旧不抛 500, 但调用方能分出"没有相关卡"和"服务出问题了"。
       鉴权失败 → 401; body 不是 JSON object → 400。
 
 部署 (Railway): root = repo 根 (让 `librarian` 包可导入),
@@ -28,7 +30,11 @@ import os
 
 from fastapi import FastAPI, Header, HTTPException, Request
 
-from .core import librarian_select
+from starlette.concurrency import run_in_threadpool
+
+from .core import (STATUS_DEGRADED, librarian_select_detailed)
+
+STATUS_ERROR = "error"   # 应用层崩溃(core 之外), 与 core 的 degraded 区分开
 
 # 仓库根的共享鉴权闸(跨库审计 SUP-001)。三个服务的 Railway root 都是 repo
 # 根(见各自 railway.json 的 startCommand `uvicorn <svc>.app:app`), 所以顶层
@@ -87,13 +93,16 @@ async def librarian(
     if not isinstance(brief, dict):
         raise HTTPException(status_code=400, detail="brief must be a JSON object")
 
+    # TV-06: ① 同步的选卡流程(同步 DB + 同步模型请求)不能直接在 async 路由里跑 ——
+    #   它会占住事件循环, 一次慢调用把同进程的其它请求一起拖住。挪进线程池。
+    #   ② status 字段让调用方分得出"没有相关卡"和"服务出问题了" —— 之前两者都是
+    #   HTTP 200 + 空 selected, 完全一样。selected 的形状不变, 老消费方不受影响。
     try:
-        selected = librarian_select(brief)
-        # librarian_select 在空库/LLM 失败时已返回 []; 这里再兜一层结构保证。
+        selected, status = await run_in_threadpool(librarian_select_detailed, brief)
         if not isinstance(selected, list):
-            selected = []
+            selected, status = [], STATUS_DEGRADED
     except Exception:
         logger.exception("librarian_select crashed; returning [] for graceful fallback")
-        selected = []
+        selected, status = [], STATUS_ERROR
 
-    return {"selected": selected}
+    return {"selected": selected, "status": status}

@@ -62,6 +62,7 @@ CURATOR_PROMPT_TEMPLATE = """你是帆谷内容飞轮的"经验策展员"。下�
 - 品牌 / 品类: {brand} / {category}
 - 情绪杠杆 (已标): {emotional_lever}
 - 目标人群 (已标): {target_audience}
+- 指标可信度: {evidence_note}
 
 ═══════════════════════════════════════════════
 笔记内容
@@ -85,7 +86,17 @@ CURATOR_PROMPT_TEMPLATE = """你是帆谷内容飞轮的"经验策展员"。下�
 def build_curator_prompt(card: dict) -> str:
     aud = card.get("target_audience")
     aud_str = ", ".join(aud) if isinstance(aud, list) else (aud or "未标")
+    # TV-05: 把证据边界写进 prompt。synthetic=true 是【运营人工判定的假爆款】
+    # (伪爆贴/刷量), 指标不可信 —— 它的写法仍可借鉴, 但"为什么有效"不能拿指标当论据。
+    # 不传这一句, 策展模型会把刷出来的数字当成功证据去解释。
+    evidence_note = (
+        "⚠️ 本条指标【不可信】(运营判定为人工假数据)。写法可以借鉴, 但【不要】"
+        "用曝光/互动数字论证它有效, 只从内容本身讲为什么值得学。"
+        if card.get("synthetic") else
+        "指标为真实回收数据。"
+    )
     return CURATOR_PROMPT_TEMPLATE.format(
+        evidence_note=evidence_note,
         tier=card.get("tier") or "?",
         brand=card.get("brand") or "(未填)",
         category=card.get("category") or "(未填)",
@@ -118,7 +129,11 @@ def fetch_uncurated_cards(sb, project_id, recurate: bool) -> list[dict]:
         .table("v_flywheel_lesson_cards")
         .select(
             "source_note_id, project_id, tier, brand, category, "
-            "emotional_lever, target_audience, raw_excerpt, is_curated, rank_score"
+            "emotional_lever, target_audience, raw_excerpt, is_curated, rank_score, "
+            # 2026-09-17 外部评测 TV-05: synthetic 此前没进 select, 策展模型因此
+            # 看不见"这条的指标是不是运营判定的假数据"。馆员的 fetch_candidates 一直
+            # 选了这一列, 只有策展这头漏了 —— 同一个证据边界必须两头一致。
+            "synthetic"
         )
     )
     if project_id:

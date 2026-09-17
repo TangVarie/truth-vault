@@ -2,8 +2,13 @@
 sync_autowriter_decisions_to_prepublish.py
 ═══════════════════════════════════════════════════════════════════════════
 
-把 autowriter.items 上的运营审稿决定（approved / needs_revision）反向同步
-到 truth_vault.prepublish_evaluations，作为人类 evaluator 的判断日志。
+把 autowriter.items 上的审稿决定（approved / needs_revision）反向同步
+到 truth_vault.prepublish_evaluations。
+
+⚠️ 2026-09-17 (外部评测 TV-01) 之前这里写的是"作为人类 evaluator 的判断日志",
+   而实现把【所有】决策一律标成 evaluator_type='human'、evaluator_id=作者。
+   现在按 AW 的 decision_source 分流: human / rule_based / unverified，
+   evaluator_id 只填 reviewer 或规则名，绝不填作者。见 _provenance。
 
 为什么需要这个:
     prepublish_evaluations 表 schema 已经存在（D-025），但目前没有任何
@@ -23,8 +28,13 @@ sync_autowriter_decisions_to_prepublish.py
       已经在表里了, 哪天接通 lineage 就能反推过去.
 
 幂等性:
-    每个 (autowriter_item_id, evaluator_type='human') 元组只写一次。重跑
-    会跳过已经有 prepublish_evaluations 行的 items。
+    每个 (autowriter_item_id, evaluator_type) 元组只写一次 —— 2026-09-17 从
+    写死的 'human' 改成"本轮会写的那个类型"(TV-01)。按写死的 'human' 去重会
+    让已存在的 rule_based / unverified 行被当成"还没同步", 每晚重插一次。
+
+    另有一条【升级】路径: 之前来源未知归成 unverified 的行, 等 AW 补上
+    decision_source 之后就地 UPDATE 成 human/rule_based, 不另插一行
+    (另插会让同一条 item 在校准表里被数两次)。
 
     2026-05-22 audit P1/P2-4 加强: schemas/notes_v1_2.sql 现在带 partial
     UNIQUE INDEX (autowriter_item_id, evaluator_type) WHERE evaluator_type
@@ -94,7 +104,49 @@ _STATUS_TO_DECISION = {
 }
 
 
-def _items_query(sb, since_iso: str | None, *, with_updated_at: bool):
+# ── 决策来源 → evaluator 身份 (2026-09-17, 外部评测 TV-01) ──────────────────
+# 旧实现把【所有】AW 决策一律写成 evaluator_type='human', evaluator_id=item.user_id
+# (稿件作者)。AW 的 autowriter.items 其实早有 decision_source / reviewer_id /
+# decided_at 三列, 一个都没读。
+#
+# 生产实况(2026-09-17 核): 598 条评价全是 human, 而对应 598 条 item 的
+# decision_source 【全为 NULL】—— 所以"机器判定被洗成人工"目前还没真发生,
+# 真实的坏是: 598 条来源其实未知, 却都署名人工、且署到了作者头上。
+# AW 哪天开始写那一列, 旧实现会一声不响地继续洗。
+#
+# 口径:
+#   · 'human' 这个身份【只发给能证明是人审的行】, 且 evaluator_id 必须是 reviewer;
+#   · 机器判定 → rule_based, evaluator_id 记具体规则名(auto_dedup 等), 可分开统计;
+#   · 来源缺失 / 不认识的新取值 → unverified。【不认识就不猜】, 宁可标"待核验"
+#     也不默认成人工 —— 默认成人工正是本次要修的病。
+_MACHINE_DECISION_SOURCES = frozenset({"auto_hard_rule", "auto_dedup", "system"})
+_EVAL_TYPE_UNVERIFIED = "unverified"
+
+
+def _provenance(item: dict) -> tuple[str, str | None]:
+    """(evaluator_type, evaluator_id) —— 见上方口径。
+
+    故意【不】接受 "看起来像人工" 的模糊输入: 只有 decision_source 恰好等于
+    'human' 才给 human 身份, 其余一律不是。
+    """
+    src = item.get("decision_source")
+    src = src.strip() if isinstance(src, str) else None
+    if not src:
+        return _EVAL_TYPE_UNVERIFIED, None
+    if src == "human":
+        reviewer = item.get("reviewer_id")
+        reviewer = str(reviewer).strip() if reviewer else ""
+        # 人工但拿不到 reviewer: 仍算人工(来源明确说了是人审), 但 evaluator_id 留空 ——
+        # 填作者等于错认"他自己审了自己", 那是旧实现的错。
+        return "human", (reviewer or None)
+    if src in _MACHINE_DECISION_SOURCES:
+        return "rule_based", src
+    # 没见过的新取值: 不猜。标 unverified 并把原串留在 evaluator_id 里, 方便排查。
+    return _EVAL_TYPE_UNVERIFIED, src
+
+
+def _items_query(sb, since_iso: str | None, *, with_updated_at: bool,
+                 with_provenance: bool = True):
     """建 autowriter.items 的查询. with_updated_at=False 是【降级形态】.
 
     时间窗 = created_at OR updated_at, 理由见模块 docstring「迟到决策」.
@@ -104,6 +156,9 @@ def _items_query(sb, since_iso: str | None, *, with_updated_at: bool):
     cols = "id, status, user_id, created_at"
     if with_updated_at:
         cols += ", updated_at"
+    if with_provenance:
+        # TV-01: 这三列决定 evaluator 身份。拿不到就只能写 unverified。
+        cols += ", decision_source, reviewer_id, decided_at"
     q = (
         sb.schema("autowriter")
         .table("items")
@@ -121,6 +176,18 @@ def _items_query(sb, since_iso: str | None, *, with_updated_at: bool):
     # 是站得住的. supabase-py 2.30 渲染成
     #   or=(created_at.gte."…",updated_at.gte."…")
     return q.or_(f'created_at.gte."{since_iso}",updated_at.gte."{since_iso}"')
+
+
+def _is_missing_provenance(exc: Exception) -> bool:
+    """这个异常是不是"autowriter.items 没有 decision_source/reviewer_id/decided_at"?
+
+    与 _is_missing_updated_at 同款窄判据。降级后【写 unverified 而不是 human】——
+    读不到来源时把行标成人工, 正是 TV-01 要修的病, 降级路径不能把它带回来。
+    """
+    msg = str(exc).lower()
+    if not any(c in msg for c in ("decision_source", "reviewer_id", "decided_at")):
+        return False
+    return any(k in msg for k in ("42703", "does not exist", "column"))
 
 
 def _is_missing_updated_at(exc: Exception) -> bool:
@@ -158,36 +225,73 @@ def fetch_pending_decisions(sb, since_iso: str | None) -> list[dict]:
       · 降级到旧口径 = 恰好是本次改动之前的行为, 不会比以前更差。
       · 判据窄到只认这一种异常, 其余照旧抛。
     """
-    try:
-        rows = fetch_all_pages(
-            _items_query(sb, since_iso, with_updated_at=True), order_by="id")
-    except Exception as exc:
-        if not _is_missing_updated_at(exc):
-            raise
-        logger.warning(
-            "autowriter.items 没有 updated_at 列 —— 时间窗降级回【只按 "
-            "created_at】, 迟到的人工决策会重新开始漏收。"
-            "补法: 在目标库上跑 autowriter 仓的 migrations/001_deskcore.sql。"
-            "原始错误: %s", str(exc)[:200],
-        )
-        rows = fetch_all_pages(
-            _items_query(sb, since_iso, with_updated_at=False), order_by="id")
+    # 两级降级, 各自判据都窄: 先试"带来源三列", 再试"带 updated_at", 最后旧口径。
+    def _fetch(*, prov: bool) -> list[dict]:
+        try:
+            return fetch_all_pages(
+                _items_query(sb, since_iso, with_updated_at=True, with_provenance=prov),
+                order_by="id")
+        except Exception as exc:
+            if not _is_missing_updated_at(exc):
+                raise
+            logger.warning(
+                "autowriter.items 没有 updated_at 列 —— 时间窗降级回【只按 "
+                "created_at】, 迟到的人工决策会重新开始漏收。"
+                "补法: 在目标库上跑 autowriter 仓的 migrations/001_deskcore.sql。"
+                "原始错误: %s", str(exc)[:200],
+            )
+            return fetch_all_pages(
+                _items_query(sb, since_iso, with_updated_at=False, with_provenance=prov),
+                order_by="id")
 
-    # Exclude items that already have a 'human' eval row.
+    try:
+        rows = _fetch(prov=True)
+    except Exception as exc:
+        if not _is_missing_provenance(exc):
+            raise
+        # ⚠️ 降级【不是】退回旧行为。旧行为是"读不到来源就当人工", 那正是 TV-01。
+        # 这里退回的是"读不到来源就全标 unverified" —— 少了分辨力, 但不会造假身份。
+        logger.warning(
+            "autowriter.items 缺 decision_source/reviewer_id/decided_at —— "
+            "本轮【全部】按 evaluator_type=unverified 归档(不会标成人工)。"
+            "补法: 在目标库上跑 autowriter 仓的 deskcore 迁移。原始错误: %s",
+            str(exc)[:200],
+        )
+        rows = _fetch(prov=False)
+
     if not rows:
         return []
+    # 去重按 (item_id, 我们这次会写的 evaluator_type) —— 不能再按写死的 'human' 筛:
+    # 那样一条已存在的 rule_based 行会被当成"还没同步", 每晚重插一次。
     item_ids = [r["id"] for r in rows]
     existing = fetch_all_pages(
         sb.schema("truth_vault")
         .table("prepublish_evaluations")
-        # evaluation_id 只为分页排序用(同一 item 可能有多条 human 评价)。
-        .select("evaluation_id, autowriter_item_id")
-        .eq("evaluator_type", "human")
+        # evaluation_id 只为分页排序用(同一 item 可能有多条不同类型的评价)。
+        .select("evaluation_id, autowriter_item_id, evaluator_type, evaluator_id")
         .in_("autowriter_item_id", item_ids),
         order_by="evaluation_id",
     )
-    existing_ids = {r["autowriter_item_id"] for r in existing}
-    return [r for r in rows if r["id"] not in existing_ids]
+    by_item: dict[str, dict[str, dict]] = {}
+    for r in existing:
+        by_item.setdefault(r["autowriter_item_id"], {})[r["evaluator_type"]] = r
+
+    out: list[dict] = []
+    for r in rows:
+        want_type, want_id = _provenance(r)
+        have = by_item.get(r["id"], {})
+        if want_type in have:
+            continue                      # 同类型已归档 → 幂等跳过
+        stale = have.get(_EVAL_TYPE_UNVERIFIED)
+        if stale is not None and want_type != _EVAL_TYPE_UNVERIFIED:
+            # 之前来源未知归成 unverified, 现在 AW 补上了来源 → 【就地升级】,
+            # 不另插一行。另插会让同一条 item 在校准表里被数两次。
+            r = {**r, "_upgrade_evaluation_id": stale["evaluation_id"]}
+        elif have:
+            # 已经有别的确定类型的行(比如已核实的 human), 不去动它。
+            continue
+        out.append(r)
+    return out
 
 
 def _is_duplicate_error(exc: Exception) -> bool:
@@ -211,18 +315,36 @@ def insert_evaluation(sb, item: dict, dry_run: bool = False) -> bool:
     loser gets 23505; we treat that as success-by-other-worker, not error.
     """
     decision = _STATUS_TO_DECISION[item["status"]]
+    evaluator_type, evaluator_id = _provenance(item)
     row = {
         "autowriter_item_id": item["id"],
-        "evaluator_type": "human",
-        "evaluator_id": str(item.get("user_id") or ""),
+        "evaluator_type": evaluator_type,
+        # ⚠️ 绝不再退回 item["user_id"](作者)。作者不是审稿人 —— 见 _provenance。
+        "evaluator_id": evaluator_id,
         "decision": decision,
         # score_json / reasoning / pred_tier_class / actual_tier all NULL —
         # see module docstring "限制" for the lineage gap that prevents
         # filling these.
-        "created_at": _iso_now(),
+        # 决策时间优先用 AW 的 decided_at(真正做决定的时刻), 缺了才退回"同步时刻"。
+        "created_at": item.get("decided_at") or _iso_now(),
     }
+    upgrade_id = item.get("_upgrade_evaluation_id")
     if dry_run:
-        logger.info("[dry-run] would insert evaluation %s", row)
+        logger.info("[dry-run] would %s evaluation %s",
+                    "upgrade" if upgrade_id else "insert", row)
+        return True
+    if upgrade_id:
+        # 就地升级此前的 unverified 行(AW 补上来源之后), 不另插。
+        (
+            sb.schema("truth_vault")
+            .table("prepublish_evaluations")
+            .update({"evaluator_type": row["evaluator_type"],
+                     "evaluator_id": row["evaluator_id"]})
+            .eq("evaluation_id", upgrade_id)
+            .execute()
+        )
+        logger.info("upgraded evaluation %s: unverified → %s",
+                    upgrade_id, row["evaluator_type"])
         return True
     try:
         (
