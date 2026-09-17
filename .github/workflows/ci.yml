@@ -5643,13 +5643,15 @@ jobs:
         run: |
           psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_11_evaluator_provenance.sql
           psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_11_evaluator_provenance.sql
-      - name: Sanity-check v1.11 (unverified 可写 / 唯一索引扩到全类型 / 回填能跑)
+      - name: Sanity-check v1.11 (unverified 可写 / 唯一索引覆盖同步三类且不误伤 persona / 回填能跑)
         run: |
           # ① 'unverified' 进了 CHECK —— 这是 TV-01 的核心: 来源未知 ≠ 人工
           psql -v ON_ERROR_STOP=1 -c "INSERT INTO truth_vault.prepublish_evaluations
             (autowriter_item_id, evaluator_type, decision)
             VALUES ('00000000-0000-0000-0000-0000000000aa','unverified','pass');"
-          # ② 唯一索引不再只管 human: 同一 item 的同一非 human 类型必须被拒。
+          # ② 唯一索引不再只管 human, 但也【不是】全类型: 只覆盖本同步会写的三类。
+          #    同一 item 的同一 unverified 必须被拒 —— 而 persona 多行必须仍然允许
+          #    (第 19 步就造了同一 item 两条 persona, 扩到全类型会让建索引直接失败)。
           #    ⚠️ 用显式 if, 【不要】写成 `! cmd || (echo; exit 1)` —— 那个 exit 在子 shell 里,
           #    退的是子 shell 不是本步骤, 断言会变成空跑(本守卫第一版就是这么写的, 反证没红)。
           if psql -q -v ON_ERROR_STOP=1 -c "INSERT INTO truth_vault.prepublish_evaluations
@@ -5662,6 +5664,13 @@ jobs:
           psql -v ON_ERROR_STOP=1 -c "INSERT INTO truth_vault.prepublish_evaluations
             (autowriter_item_id, evaluator_type, decision)
             VALUES ('00000000-0000-0000-0000-0000000000aa','model','pass');"
+          # ④ 索引【不得】误伤 persona 这类"一条 item 多行"的合法用法。
+          #    这正是第一版扩到全类型时 CI 炸掉的原因, 必须钉住。
+          psql -v ON_ERROR_STOP=1 -c "INSERT INTO truth_vault.prepublish_evaluations
+            (autowriter_item_id, evaluator_type, evaluator_id, decision) VALUES
+            ('00000000-0000-0000-0000-0000000000ab','persona','p1','pass'),
+            ('00000000-0000-0000-0000-0000000000ab','persona','p2','revise');" \
+            || { echo "❌ 同一 item 的多条 persona 评价被索引挡住了 —— 那是合法用法"; exit 1; }
           # ④ 回填分支: 造一个 autowriter.items 让 DO 块真的走进回填, 而不是每次都走
           #    "跳过(CI 空库)" —— 写了分支就得有用例真的走进去。
           # ⚠️ 本步骤跑在「Apply integration migration packs」【之后】, 那时
@@ -5702,7 +5711,7 @@ jobs:
             echo "   (来源空→unverified / 机器判定→rule_based / 人工→evaluator_id 换成 reviewer)"
             exit 1
           fi
-          echo "✓ v1.11: unverified 可写, 唯一索引覆盖全类型, 回填三条路径都对"
+          echo "✓ v1.11: unverified 可写, 唯一索引覆盖同步三类(persona 多行不受影响), 回填三条路径都对"
       - name: Apply security revoke (anon/authenticated write on public.* ) (+ idempotency)
         # 撤 anon/authenticated 对 5 张 public 表的写权限(读保留,不开 RLS)。
         # guarded:表/角色不存在则跳过 → 裸 PG / CI 为 no-op。REVOKE 幂等,两遍验。

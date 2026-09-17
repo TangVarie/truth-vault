@@ -42,15 +42,28 @@ ALTER TABLE truth_vault.prepublish_evaluations
 --   WHERE autowriter_item_id IS NOT NULL AND evaluator_type = 'human'
 -- 当时全表只写 human, 所以够用。现在同步会写 human / rule_based / unverified
 -- 三类, 谓词里的 evaluator_type='human' 会让另外两类【完全没有并发防线】。
--- 去掉那个条件即可: 键仍是 (item_id, evaluator_type), 所以同一条 item 依然允许
--- 并存不同类型的评价(比如人工 + 未来的 model critic), 只是同类型不许重复。
+--
+-- ⚠️ 但【不能】简单去掉谓词扩到全类型。第一版就是那么写的, CI 直接炸:
+--      ERROR: could not create unique index "idx_tv_evals_aw_item_evaluator_uniq"
+--    因为同一条 item 有【两条 persona 评价】(evaluator_id = p1 / p2)。
+--    那不是脏数据 —— 多个 persona 各自评同一条稿本来就是这张表的预期用法,
+--    critic / model 同理。原索引只覆盖 human, 正是因为【只有 human 这一类
+--    "一条 item 最多一条"】, 而当时只有 human 会被写入。
+--    "收紧约束总是更安全"是个错觉: 收紧会把本来合法的数据判成非法。
+--
+-- 所以谓词从"只有 human"扩成"本同步会写的那三类", 不多不少:
+--   · 这三类每条 item 至多一行(AW 的 decision_source 每条 item 只有一个值),
+--     所以唯一性是它们的真实语义;
+--   · persona / critic / model / autowriter_select_best 不受影响, 照旧可以多行。
+-- 相对原索引是严格加强(human 的保护一点没少), 对其余类型则一点没动。
 --
 -- 索引名保持不变 —— scripts/verify_supabase_state.sql 按这个名字断言它存在。
 DROP INDEX IF EXISTS truth_vault.idx_tv_evals_aw_item_evaluator_uniq;
 
 CREATE UNIQUE INDEX idx_tv_evals_aw_item_evaluator_uniq
     ON truth_vault.prepublish_evaluations (autowriter_item_id, evaluator_type)
-    WHERE autowriter_item_id IS NOT NULL;
+    WHERE autowriter_item_id IS NOT NULL
+      AND evaluator_type IN ('human', 'rule_based', 'unverified');
 
 -- ── ③ 回填历史 human 行 ───────────────────────────────────────────────────
 -- 只回填【能证明来源未知】的行: 对应 AW item 的 decision_source IS NULL。
