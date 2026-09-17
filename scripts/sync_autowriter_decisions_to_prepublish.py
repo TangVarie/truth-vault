@@ -10,6 +10,14 @@ sync_autowriter_decisions_to_prepublish.py
    现在按 AW 的 decision_source 分流: human / rule_based / unverified，
    evaluator_id 只填 reviewer 或规则名，绝不填作者。见 _provenance。
 
+每晚自查 (2026-09-17 追加, 见 audit_archived_provenance):
+    写入口修好只保证"以后不会再写错", 不保证"以后不会错"。TV-01 的本体是
+    **写错了几个月没人发现** —— 598 条评价顶着人工身份躺着, 直到外部评测
+    才被翻出来。所以每轮同步跑完会复核【已归档的行】, 判据只有一条:
+    每条行都应等于 _provenance() 现在会给出的结果。
+    发现"机器判定/来源不明顶着人工身份"或"evaluator_id 是作者"就返回非 0,
+    夜跑的聚合失败闸会把整个 workflow 打红并给 owner 发邮件。
+
 为什么需要这个:
     prepublish_evaluations 表 schema 已经存在（D-025），但目前没有任何
     sync 写入它，所以 v_evaluator_calibration view 永远空。把 autowriter
@@ -32,9 +40,12 @@ sync_autowriter_decisions_to_prepublish.py
     写死的 'human' 改成"本轮会写的那个类型"(TV-01)。按写死的 'human' 去重会
     让已存在的 rule_based / unverified 行被当成"还没同步", 每晚重插一次。
 
-    另有一条【升级】路径: 之前来源未知归成 unverified 的行, 等 AW 补上
-    decision_source 之后就地 UPDATE 成 human/rule_based, 不另插一行
-    (另插会让同一条 item 在校准表里被数两次)。
+    另有一条【就地收敛】路径: 已归档的行若与 _provenance() 现在的结果不一致
+    —— 来源未知归成 unverified 之后 AW 补上了 decision_source、AW 改了口径
+    (rule_based ↔ human)、换了 reviewer —— 就地 UPDATE 那一行, 不另插
+    (另插会让同一条 item 在校准表里被数两次)。2026-09-17 之前只有
+    "unverified → 确定类型"这一种会收敛, 其余漂移每晚被复核 WARN 一次却
+    永远修不好、夜跑照样绿(codex review on #130)。
 
     2026-05-22 audit P1/P2-4 加强: schemas/notes_v1_2.sql 现在带 partial
     UNIQUE INDEX (autowriter_item_id, evaluator_type) WHERE evaluator_type
@@ -226,9 +237,36 @@ def _is_missing_updated_at(exc: Exception) -> bool:
     return _looks_like_undefined_column(msg)
 
 
+def _fetch_items(sb, since_iso: str | None, *, prov: bool) -> list[dict]:
+    """取时间窗内的 autowriter.items; 目标库没有 updated_at 列时降级回只按 created_at 并告警。
+
+    同步主流程和归档复核【共用】这一份降级逻辑 —— 复核第一版自己写了一遍"带
+    updated_at 取一次、失败就算了", 在 README 那份 fresh-install 建库脚本装出来的库
+    (items 没有 updated_at)上每晚报"复核干净", 其实一行没查(codex review on #130)。
+    降级判据窄到只认"缺 updated_at 列"这一种错, 其余照旧抛。
+    """
+    try:
+        return fetch_all_pages(
+            _items_query(sb, since_iso, with_updated_at=True, with_provenance=prov),
+            order_by="id")
+    except Exception as exc:
+        if not _is_missing_updated_at(exc):
+            raise
+        logger.warning(
+            "autowriter.items 没有 updated_at 列 —— 时间窗降级回【只按 "
+            "created_at】, 迟到的人工决策会重新开始漏收。"
+            "补法: 在目标库上跑 autowriter 仓的 migrations/001_deskcore.sql。"
+            "原始错误: %s", str(exc)[:200],
+        )
+        return fetch_all_pages(
+            _items_query(sb, since_iso, with_updated_at=False, with_provenance=prov),
+            order_by="id")
+
+
 def fetch_pending_decisions(sb, since_iso: str | None) -> list[dict]:
-    """Find autowriter items with a status that maps to a decision, that
-    don't yet have a 'human' prepublish_evaluations row.
+    """Find autowriter items with a status that maps to a decision whose
+    prepublish_evaluations row is missing, or no longer equals _provenance()
+    (那种带 _upgrade_evaluation_id, 由 insert_evaluation 就地收敛)。
 
     Returns list of dicts with: id (item_id), status, user_id, created_at,
     以及 updated_at —— **除非**该列不存在(降级路径, 见下), 那时没有这个键。
@@ -250,26 +288,9 @@ def fetch_pending_decisions(sb, since_iso: str | None) -> list[dict]:
       · 判据窄到只认这一种异常, 其余照旧抛。
     """
     # 两级降级, 各自判据都窄: 先试"带来源三列", 再试"带 updated_at", 最后旧口径。
-    def _fetch(*, prov: bool) -> list[dict]:
-        try:
-            return fetch_all_pages(
-                _items_query(sb, since_iso, with_updated_at=True, with_provenance=prov),
-                order_by="id")
-        except Exception as exc:
-            if not _is_missing_updated_at(exc):
-                raise
-            logger.warning(
-                "autowriter.items 没有 updated_at 列 —— 时间窗降级回【只按 "
-                "created_at】, 迟到的人工决策会重新开始漏收。"
-                "补法: 在目标库上跑 autowriter 仓的 migrations/001_deskcore.sql。"
-                "原始错误: %s", str(exc)[:200],
-            )
-            return fetch_all_pages(
-                _items_query(sb, since_iso, with_updated_at=False, with_provenance=prov),
-                order_by="id")
-
+    # updated_at 那一级住在 _fetch_items 里, 与归档复核共用同一份。
     try:
-        rows = _fetch(prov=True)
+        rows = _fetch_items(sb, since_iso, prov=True)
     except Exception as exc:
         if not _is_missing_provenance(exc):
             raise
@@ -281,7 +302,7 @@ def fetch_pending_decisions(sb, since_iso: str | None) -> list[dict]:
             "补法: 在目标库上跑 autowriter 仓的 deskcore 迁移。原始错误: %s",
             str(exc)[:200],
         )
-        rows = _fetch(prov=False)
+        rows = _fetch_items(sb, since_iso, prov=False)
 
     if not rows:
         return []
@@ -310,20 +331,150 @@ def fetch_pending_decisions(sb, since_iso: str | None) -> list[dict]:
     for r in rows:
         want_type, want_id = _provenance(r)
         have = by_item.get(r["id"], {})
-        if want_type in have:
-            continue                      # 同类型已归档 → 幂等跳过
-        stale = have.get(_EVAL_TYPE_UNVERIFIED)
-        if stale is not None and want_type != _EVAL_TYPE_UNVERIFIED:
-            # 之前来源未知归成 unverified, 现在 AW 补上了来源 → 【就地升级】,
-            # 不另插一行。另插会让同一条 item 在校准表里被数两次。
-            r = {**r, "_upgrade_evaluation_id": stale["evaluation_id"]}
-        elif have:
-            # 已经有【本同步写的】别的确定类型的行(比如已核实的 human), 不去动它。
-            # have 已在查询处按 _SYNC_EVALUATOR_TYPES 过滤, 所以 persona 之类
-            # 别家的评价不会走到这里把决策吞掉。
+        if not have:
+            out.append(r)                 # 还没归档 → 插入
             continue
-        out.append(r)
+        # 已有【本同步写的】行 → 挑一条来收敛。have 已在查询处按 _SYNC_EVALUATOR_TYPES
+        # 过滤, 所以 persona/critic/model 之类别家的评价不会走到这里把决策吞掉。
+        # 挑法: 优先同类型的行(通常已一致, 或只是换了 reviewer / 规则名), 其次此前来源
+        # 未知的 unverified(经典的"AW 补上来源"升级), 再其次别的类型(AW 改了口径:
+        # rule_based ↔ human)。只挑一条: 唯一索引是 (item, type), 改到目标类型时那个
+        # 类型在 have 里必然还没有行, 不会撞。
+        # ⚠️ 2026-09-17 之前这里对"同类型已有"和"已有别的确定类型"一律 continue, 于是
+        #   只有 unverified → 确定类型 会收敛; AW 把 auto_dedup 改口成 human、换 reviewer、
+        #   改规则名的行永远跳过, 复核每晚 WARN 一次却修不好(codex review on #130 P2)。
+        cur = (have.get(want_type)
+               or have.get(_EVAL_TYPE_UNVERIFIED)
+               or next(iter(have.values())))
+        if (cur["evaluator_type"], cur["evaluator_id"]) == (want_type, want_id):
+            continue                      # 已与 _provenance() 一致 → 幂等跳过
+        out.append({**r, "_upgrade_evaluation_id": cur["evaluation_id"],
+                    "_upgrade_from": (cur["evaluator_type"], cur["evaluator_id"])})
     return out
+
+
+def audit_archived_provenance(sb, since_iso: str | None) -> tuple[int, int]:
+    """复核【已经归档的行】还对不对得上 AW 现在的来源。返回 (fail_n, warn_n)。
+
+    ⚠️ 为什么需要这个: TV-01 的本体不是"某次写错了", 而是**写错了没人发现** ——
+    598 条评价顶着人工身份躺了几个月, 直到外部评测才被翻出来。修好写入口只保证
+    以后不再写错, 不保证以后没人手改、没有别的路径绕进来、AW 不会改口径。
+    所以要有一条每晚自己会红的守卫。
+
+    不变量只有一条, 也只能有一条:
+        每条已归档的行, 都应等于 _provenance() 现在会给出的结果。
+    刻意【不】重写一遍判据(比如手写"human 必须带 evaluator_id"那种行内规则):
+      · 行内规则抓不到真正的 TV-01 —— `decision_source='auto_dedup'` 却被写成
+        human 的行, 带着 evaluator_id='auto_dedup', 行内规则照样放过;
+      · 行内规则会误伤合法路径 —— _provenance() 对"AW 说是人审但没记 reviewer"
+        【故意】返回 ("human", None), 那不是回归;
+      · 而且判据写两份迟早分叉, 这正是 D-061 里回填与 _provenance 打架的老毛病。
+    对着函数本身比, 上面三件事一次解决。
+
+    分两级, 因为"对不上"有几种完全不同的成因:
+
+    FAIL(要红):
+      ① 行说自己是 human, 但 _provenance() 现在不这么认为
+         —— 机器判定/来源不明顶着人工身份, 就是 TV-01 本体。本脚本写不出这种行。
+      ② evaluator_id 等于稿件作者 (item.user_id), 而 AW 上游【没有】这么说
+         —— 旧实现的原始指纹: 本脚本不会替 AW 把作者填成 reviewer。
+         ⚠️ 这条判在"相等即通过"之前: AW 上游若把 reviewer_id 填成了作者本人,
+         _provenance() 会原样返回作者, 归档行与它相等, 光靠相等短路会把这一行
+         悄悄放过(codex review on #130)。那种情形归 ④, 不是造假。
+      ③ 同一条 item 有多条本同步写的行 —— 校准表数两次; 同步只会收敛其中一条,
+         另一条永远修不好。这是唯一一种"下一轮不会自愈"的漂移, 所以要红。
+
+    WARN(不红):
+      ④ AW 上游自己把作者填成了 reviewer(自己审自己) —— 归档如实照录, 不是同步
+         造假, 也不是 TV-01; 但校准时要打折, 所以要看得见。第一次真人自审不能
+         变成半夜事故。
+      ⑤ 其余不一致 —— 行还是 unverified 而 AW 后来补了来源、AW 改了口径、换了
+         reviewer。fetch_pending_decisions 的就地收敛路径下一轮会修好(2026-09-17
+         起收敛所有类型, 不只 unverified), 不该半夜把 owner 叫起来。
+
+    ⚠️ 覆盖范围 = 和同步同一个时间窗(默认 365 天)。窗口外的老行不在复核范围里;
+    要全量复核就 --since-days 0。这是取舍: 复用同步那两个查询的分页形态, 不另造
+    一套全表扫描(那会碰到 in_() 的 URL 长度上限, 得另加分批逻辑)。
+
+    降级与失败: 目标库没有 items.updated_at 时和主流程一样降级到只按 created_at,
+    照常复核; 缺 decision_source 三列时没有可比的口径, 跳过并告警(主流程已全按
+    unverified 归档); 其余错误照抛 —— 吞成 (0, 0) 就是"没查却报干净"。
+    """
+    try:
+        rows = _fetch_items(sb, since_iso, prov=True)
+    except Exception as exc:
+        if not _is_missing_provenance(exc):
+            raise
+        logger.warning(
+            "归档复核跳过: AW 缺 decision_source/reviewer_id/decided_at, 没有可比的口径"
+            "(同步主流程已就此告警并全按 unverified 归档): %s", str(exc)[:200])
+        return 0, 0
+    if not rows:
+        return 0, 0
+
+    by_id = {r["id"]: r for r in rows}
+    existing = fetch_all_pages(
+        sb.schema("truth_vault")
+        .table("prepublish_evaluations")
+        .select("evaluation_id, autowriter_item_id, evaluator_type, evaluator_id")
+        .in_("evaluator_type", sorted(_SYNC_EVALUATOR_TYPES))
+        .in_("autowriter_item_id", list(by_id)),
+        order_by="evaluation_id",
+    )
+
+    fails: list[str] = []
+    warns: list[str] = []
+    per_item: dict[str, list[dict]] = {}
+    for ev in existing:
+        if ev["autowriter_item_id"] in by_id:
+            per_item.setdefault(ev["autowriter_item_id"], []).append(ev)
+
+    for item_id, evs in per_item.items():
+        item = by_id[item_id]
+        if len(evs) > 1:
+            fails.append(
+                f"item={item_id} 有 {len(evs)} 条本同步写的评价行"
+                f"({', '.join(str(e['evaluator_type']) for e in evs)}) —— 校准表数两次, "
+                f"同步收敛不了, 要人工删到一条")
+            continue
+        ev = evs[0]
+        want_type, want_id = _provenance(item)
+        got_type, got_id = ev["evaluator_type"], ev["evaluator_id"]
+        author = item.get("user_id")
+        tag = f"eval={ev['evaluation_id']} item={item_id}"
+        if author is not None and got_id is not None and str(got_id) == str(author):
+            if (got_type, got_id) == (want_type, want_id):
+                warns.append(f"{tag} AW 上游 reviewer_id 就是稿件作者(自己审自己) —— "
+                             f"如实照录, 校准时要打折")
+            else:
+                fails.append(f"{tag} evaluator_id 是稿件作者, 而 AW 没这么说 —— 作者不是审稿人")
+            continue
+        if (got_type, got_id) == (want_type, want_id):
+            continue
+        if got_type == "human" and want_type != "human":
+            fails.append(
+                f"{tag} 归档成 human, 但 decision_source={item.get('decision_source')!r} "
+                f"应判 {want_type}")
+        else:
+            warns.append(f"{tag} {got_type}/{got_id} → 应为 {want_type}/{want_id}, "
+                         f"下一轮同步就地收敛")
+
+    for line in warns[:10]:
+        logger.warning("归档复核 · WARN: %s", line)
+    if warns:
+        logger.warning(
+            "归档复核: %d 行要看一眼(与 AW 现状不一致的, 下一轮同步会就地收敛; "
+            "上游自审的只是提醒)。想立刻纠正不一致就重跑 "
+            "schemas/notes_v1_11_evaluator_provenance.sql(幂等且自愈)。", len(warns))
+    for line in fails[:10]:
+        logger.error("归档复核 · 【FAIL】: %s", line)
+    if fails:
+        logger.error(
+            "归档复核: %d 项站不住(身份造假 TV-01 类 / 同一 item 多条同步行)。本脚本写不出"
+            "这种行 —— 查是不是有旧版本在跑、有人手改过表, 或 AW 改了 decision_source 口径。"
+            "身份造假的修法: 重跑 schemas/notes_v1_11_evaluator_provenance.sql; "
+            "多条同步行要人工删到一条。", len(fails))
+    return len(fails), len(warns)
 
 
 def _is_duplicate_error(exc: Exception) -> bool:
@@ -363,11 +514,11 @@ def insert_evaluation(sb, item: dict, dry_run: bool = False) -> bool:
     upgrade_id = item.get("_upgrade_evaluation_id")
     if dry_run:
         logger.info("[dry-run] would %s evaluation %s",
-                    "upgrade" if upgrade_id else "insert", row)
+                    "converge" if upgrade_id else "insert", row)
         return True
     if upgrade_id:
-        # 就地升级此前的 unverified 行(AW 补上来源之后), 不另插。
-        # ⚠️ 升级要把【整行】对齐到 item 现在的状态, 不能只换身份(codex review P2):
+        # 就地收敛此前的行(unverified 补上来源 / AW 改口径 / 换 reviewer), 不另插。
+        # ⚠️ 收敛要把【整行】对齐到 item 现在的状态, 不能只换身份(codex review P2):
         #   · decision —— 两次同步之间 status 可能从 approved 变成 needs_revision,
         #     只改身份会让校准表里留着旧判决, 而且比"没这行"更糟(看着像已核对过);
         #   · created_at —— 旧行是"来源未知"时写的, 那时只能退回同步时刻; 现在
@@ -386,8 +537,10 @@ def insert_evaluation(sb, item: dict, dry_run: bool = False) -> bool:
             .eq("evaluation_id", upgrade_id)
             .execute()
         )
-        logger.info("upgraded evaluation %s: unverified → %s (decision=%s)",
-                    upgrade_id, row["evaluator_type"], row["decision"])
+        frm = item.get("_upgrade_from") or ("?", "?")
+        logger.info("converged evaluation %s: %s/%s → %s/%s (decision=%s)",
+                    upgrade_id, frm[0], frm[1], row["evaluator_type"],
+                    row["evaluator_id"], row["decision"])
         return True
     try:
         (
@@ -488,8 +641,19 @@ def main() -> int:
             logger.exception("item_id=%s failed: %s", item["id"], exc)
             stats["errors"] += 1
 
+    # 写完再复核一遍已归档的行 —— 见 audit_archived_provenance 的 docstring。
+    # dry-run 也跑: 它读的是库里【已经存在】的行, 跟本轮写不写无关。
+    audit_fail, audit_warn = 0, 0
+    try:
+        audit_fail, audit_warn = audit_archived_provenance(sb, since_iso)
+    except Exception:
+        # 复核本身挂了不该把同步判成失败(同步已经成功了), 但必须喊出来。
+        logger.exception("归档复核执行失败 —— 本轮同步结果不受影响, 但复核没跑成")
+    stats["audit_fail"] = audit_fail    # 身份造假 / 同一 item 多条同步行 → 红
+    stats["audit_warn"] = audit_warn    # 下一轮会收敛的漂移 / 上游自审 → 只提醒
+
     logger.info("Done: %s", json.dumps(stats, ensure_ascii=False))
-    return 0 if stats["errors"] == 0 else 1
+    return 0 if stats["errors"] == 0 and audit_fail == 0 else 1
 
 
 if __name__ == "__main__":

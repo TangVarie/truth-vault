@@ -24,6 +24,7 @@ end_date: 2026-XX-XX             # 待填
 
 # ── 字段映射 ── [据实际导出列;待 preflight 拉活表校正]
 field_mapping:
+  评论数: comments_count           # D-062: 判爆依据(本表评论数是累计值, 不是巡查实时值)
   笔记标题: title
   笔记内容: raw_content
   笔记链接: publish_url
@@ -40,7 +41,7 @@ field_mapping:
 intent_mapping: {}               # 本表无「发布笔记」intent 列 → intent 一律 null
 
 # ── 合成互动量 ── 本表无单一「互动量」, 只有 点赞/收藏/分享/评论 分列。
-# 求和写进 notes.interactions —— 支撑 数值推断 tier(本表唯一 tier 信号)+ 看板互动展示。
+# 求和写进 notes.interactions —— 看板互动展示。数值推断自 D-062 起只看 comments_count(上面已单独映)。
 # 源四列仍在 raw_extra 声明并留分项明细(见下)。需引擎 computed_fields 支持(本次随表加)。
 computed_fields:
   interactions:
@@ -61,13 +62,8 @@ tier_extraction:
       tier: 删除
     - default: null
 
-# ── 数值推断阈值 ── TGV 无人工 tier 标注 → 用合成互动量按阈值推断(tier_source=数值推断,
-# 【不计入验证级爆款】, 只为浮出高互动帖供语料/飞轮)。据导出实测分布(median=10, p90≈505,
-# max≈3973):爆=500(≈top10%, ~14条) / 大爆=2000(top~4%, ~5条)。
-# ⚠️ [待校准] 入库后跑 scripts/recommend_tier_thresholds.py 复核。
-tier_thresholds:
-  爆: 500
-  大爆: 2000
+# tier_thresholds 已废(D-062, 2026-09-17): 判爆只看评论数, 全项目统一 爆≥50/大爆≥100,
+# 由同步脚本按 comments_count 推断; 不再按项目配互动量阈值(那把尺子和运营的不是一把)。
 
 compliance:
   base_template: 保健品
@@ -84,7 +80,6 @@ compliance:
 #   - 话题标签: ; 分隔多标签, 暂留 raw_extra(未来可拆成 hashtags TEXT[])。
 #   - ip发布地址 / 父记录: 无对应列, 留痕。
 project_specific_fields_to_raw_extra:
-  - 评论数
   - 点赞数
   - 收藏数
   - 分享数

@@ -10,6 +10,7 @@ start_date: auto_from_publish_time_min
 end_date: auto_from_publish_time_max
 
 field_mapping:
+  实时数据.评论数: comments_count   # D-062: 判爆的唯一依据(实时总评论数, 含铺评), 巡查机器人抓的
   素人编号: account_id
   笔记内容: raw_content
   发布时间: publish_time
@@ -62,19 +63,17 @@ tier_extraction:
     - match_contains: ["无水花"]
       tier: 趴
     - match_contains: ["评估中"]
-      tier: 未知
+      tier: 评估中
     - default: null
 
 # 定稿 2026-08-30: 这两个数【现在不生效, 也不该现在定】——
 # 本表 field_mapping 里没有 曝光/阅读/互动 任何一列, 入库 43 行 interactions 全 null,
 # 而数值推断只在【tier 源为空 且 有互动数】时兜底。实测 43 行 tier 100% 来自「流量状态」
 # (42 无水花 + 1「无水花/爆贴」), 数值推断一次都没触发过。
-# 保留一个保健品档位的占位值(与 SPX 同量级), 等飞书补上指标列、真有数据了再按分布校准。
 # ── 指标: 本表没有独立的 曝光/阅读/互动 数值列, 9/1 起运营在「数据整理」里以键值文本填 ──
-# 2026-09-02(D-051): 同 LNKT 的 D-048 机制。解析成功那一刻, 原来那组「占位, 不生效」的
-# tier_thresholds(爆 100 / 大爆 500)就会变成【生效的】—— 而这两个数没有任何依据。
-# 所以按 D-048 的口径【整块摘掉】, tier 全部以「流量状态」为准; 要不要数值推断、阈值多少,
-# 等表里有了真实分布再拿数据定(CI 守卫 D-048 ④ 也不允许两者并存)。
+# 2026-09-02(D-051): 同 LNKT 的 D-048 机制。
+# D-062(2026-09-17): 数值推断只看 comments_count(本表已映「实时数据.评论数」, 此前落在
+# _undeclared 里), 与这里解析出的互动量无关; 项目级互动量阈值整个作废。
 metrics_from_kv_text:
   sources: ["数据整理"]
   anchor: 曝光量
@@ -116,6 +115,13 @@ compliance:
     avoid: []
 
 project_specific_fields_to_raw_extra:
+  # ── 投流(2026-09-17 运营对齐 Q7, 见 data-analysis/ops-answers-2026-09-17.md)──
+  # 运营定的三个人工列, 机器不得覆盖。先按 allowlist 收进 raw_extra 留痕;
+  # 等飞书里真建出来、「维护情况」的多选取值定了, 再升成 typed 列(D-062)。
+  # 现在声明是为了它们一出现就有名有姓, 不落进 _undeclared 天天告警。
+  - 维护情况                # 多选: 准备/已做投流(具体选项待运营给)
+  - 维护时间                # 时间: 投流时间
+  - 维护效果                # 数字: 投流后的曝光量增长
   - 起量时间
   - 数据整理                        # 2026-09-02(D-051): 9/1 起运营加的键值文本列「曝光量：X；阅读量：Y；互动量：Z」, 43 行被隔离; 也是下方 metrics_from_kv_text 的源
   - 笔记配图

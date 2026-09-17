@@ -119,16 +119,11 @@ tier_extraction:
     - match_contains: ["无水花"]
       tier: 趴
     - match_contains: ["评估中"]
-      tier: 未知
+      tier: 评估中
     - default: null
 
-# ── 数值推断阈值 ──
-# 据互动副本分布: median≈2, P90≈14, P99≈274, max=3737。
-# 爆贴样本(流量状态含"爆贴"): 互动 374(77066 曝光)级别。
-# 推荐起点: 爆=100 / 大爆=1000。(策略 lead 定 2026-07-20 · ⑥)
-tier_thresholds:
-  爆: 100                            # 策略 lead 定; 起点, 跑50条后可再校准
-  大爆: 1000                         # 策略 lead 定
+# tier_thresholds 已废(D-062, 2026-09-17): 判爆只看评论数, 全项目统一 爆≥50/大爆≥100,
+# 由同步脚本按 comments_count 推断; 不再按项目配互动量阈值(那把尺子和运营的不是一把)。
 
 # ── 合规 ──
 compliance:

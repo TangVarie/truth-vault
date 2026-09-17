@@ -38,6 +38,7 @@ end_date: auto_from_publish_time_max
 # 真实列数以 preflight 拉全表为准(D-021: 未声明列会 quarantine 整行, 所以宁可先按 15
 # 声明、preflight 报出缺的再补, 也不要凑一个数字)。
 field_mapping:
+  实时数据.评论数: comments_count   # D-062: 判爆的唯一依据(实时总评论数, 含铺评), 巡查机器人抓的
   素人编号: account_id
   笔记内容: raw_content           # 本表内容列叫「笔记内容」(非「文案」)
   # 2026-09-10(D-054): 运营把这三列在飞书里【就地改名】成了全库通用的那套名字
@@ -129,7 +130,7 @@ tier_extraction:
     - match_contains: ["无水花"]
       tier: 趴
     - match_contains: ["评估中"]
-      tier: 未知
+      tier: 评估中
     - default: null
 
 # ── 数值推断阈值: 本表【故意不配】(2026-09-11)──────────────────────────────
@@ -144,8 +145,8 @@ tier_extraction:
 #   两头都没有意义, 而留着一个"现在不生效"的数就是在等以后有人顺手调低它。
 #
 # 本表的 tier 有【确定性来源】(「流量状况」列 → 上方 tier_extraction), 不需要靠数字猜。
-# 什么时候再考虑加回来: 运营开始标出 爆贴/大爆 之后, 用 recommend_tier_thresholds.py
-# 按真实分布算, 并且算出来的值必须高于那时候「趴」的最高互动。
+# D-062(2026-09-17): 数值推断改为只看 comments_count(本表已映「实时数据.评论数」),
+# 项目级互动量阈值整个作废 —— 上面这段是它作废前的依据, 留作历史。
 
 # ── 指标藏在键值文本里(2026-09-11, owner 建的列)──────────────────────────────
 # owner 2026-09-11 在飞书加了「数据整理」列, 格式与 BJS 同名列完全一致:
@@ -153,10 +154,7 @@ tier_extraction:
 # 上线当晚这列以「未声明列」被 D-055 收进 raw_extra._undeclared —— 值一条没丢,
 # 123 行都在, 只差这里把它接到 impressions/reads/interactions 上。
 #
-# ⚠️ 接上之后 tier_thresholds 从"占位"变成【真的会参与判定】。先量过分布再接:
-#    123 行的互动量 max=12 / 均值 1.8 / p90=5, 曝光量 max=2417。
-#    按 爆=100 判, **一条都不会被数值推断成爆款** —— 不会凭空造出假爆款进飞轮。
-#    等数据攒够了按真实分布校准(recommend_tier_thresholds.py)。
+# 接上指标【不会】触发数值推断: D-062 起数值推断只看 comments_count, 与 interactions 无关。
 metrics_from_kv_text:
   sources: ["数据整理"]
   anchor: 曝光量
@@ -186,6 +184,13 @@ compliance:
 
 # ── 项目专属字段(进 raw_extra) ──
 project_specific_fields_to_raw_extra:
+  # ── 投流(2026-09-17 运营对齐 Q7, 见 data-analysis/ops-answers-2026-09-17.md)──
+  # 运营定的三个人工列, 机器不得覆盖。先按 allowlist 收进 raw_extra 留痕;
+  # 等飞书里真建出来、「维护情况」的多选取值定了, 再升成 typed 列(D-062)。
+  # 现在声明是为了它们一出现就有名有姓, 不落进 _undeclared 天天告警。
+  - 维护情况                # 多选: 准备/已做投流(具体选项待运营给)
+  - 维护时间                # 时间: 投流时间
+  - 维护效果                # 数字: 投流后的曝光量增长
   - 主页链接              # 账号主页 URL(type=15)
   - 账号名                # 账号昵称(非编号)
   - 笔记配图              # 笔记图片附件(type=17)
@@ -211,7 +216,6 @@ project_specific_fields_to_raw_extra:
   - 负面状态
   - 负面词
   - 负面评论快照
-  - 实时数据.评论数
   # ── 2026-09-11: owner 新建的列。「数据整理」是上方 metrics_from_kv_text 的源,
   #    仍在此声明留痕(同 BJS 先例: 源列既进 raw_extra 也做指标源)。
   - 数据整理
@@ -247,7 +251,7 @@ onboarding_meta:
       - 5 方向的 content_format + target_audience
       - 合规模板(null or 医疗器械?)+ 红线 + 蓝词
       - intent_mapping: 直出贴→conversion / 提问贴→traffic 是否正确?
-      - tier_thresholds 占位(当前不生效)
+      - tier_thresholds 已废(D-062, 数值推断只看评论数)
     下一步: 用户提供飞书坐标 → preflight → PR → 验证。
 
 sync_config:

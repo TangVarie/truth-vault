@@ -370,7 +370,17 @@ _CORE_TARGET_PROBE: dict[str, str | None] = {
 }
 
 
-# 「目标列有值」不等于「这个源列填过」—— tier 可以**不靠任何源列**产生: 互动量过阈值时
+# ── 数值推断的尺子 (2026-09-17 运营对齐 Q1, D-062) ─────────────────────────
+# 运营: 爆贴【只看评论数】, 全项目统一 —— 爆 ≥ 50 / 大爆 ≥ 100 (评估中 20~50 / 趴 < 20)。
+# 有评论数的 5 个项目逐行验过, 手标与这两个门槛几乎全对上。所以数值推断只认 comments_count、
+# 只用这两个常数; 此前按【互动量】过项目级 tier_thresholds 的那套已删 —— 那是另一把尺子,
+# 43 条推断里 12 条从「评估中」(按口径就不是爆)升上来, WTG 互动量 33 就成了爆。
+# 【只向上推】: 没有状态、评论数够线 → 爆/大爆; 评论数不够线不推 趴/评估中 —— 刚发的帖
+# 评论数天然少, 推 趴 等于替运营判死。评估中 有自己的正式档位, 不再算"未知"。
+_COMMENT_TIER_BAO = 50
+_COMMENT_TIER_DABAO = 100
+
+# 「目标列有值」不等于「这个源列填过」—— tier 可以**不靠任何源列**产生: 评论数过线时
 # transform_row 直接推断出 爆/大爆 并把 tier_source 写成 '数值推断'。实测 TGV 的 14 条 tier
 # **全部**是这么来的(它的 `笔记阶段` 列在飞书里是空的, mapping 里自己注了「导出里空」)。
 # 拿「tier 有值」当「笔记阶段填过」的证据 → 那列一消失就误报, 而误报会连带停掉对账。
@@ -721,8 +731,6 @@ def transform_row(
             mapping["intent_mapping"],
         )
         consumed_intermediates.add("_intent_raw")
-    # 方向级 tier 阈值覆盖(单方向配置可选, docs/04 Step 3)。默认 None → 数值兜底用项目级。
-    dir_threshold_override = None
     if "_direction_raw" in intermediates:
         raw_dir = intermediates["_direction_raw"]
         # Always keep the raw value in raw_extra for traceability/annotation
@@ -749,8 +757,8 @@ def transform_row(
         # target_audience / user_pain_point 全空, 等于白入库。
         #
         # ⚠️ 推断出来的方向【只用来 lift content_format 那几列】, 不参与下面的
-        # tier_threshold_override, 也不参与 excluded_directions —— 那两个都按
-        # 【运营填的原值】判。理由同 D-048: tier 是钱字段, 不让任何推断去动它。
+        # excluded_directions —— 那个按【运营填的原值】判。理由同 D-048: tier 是钱字段,
+        # 不让任何推断去动它。
         lifted = decomposition
         if decomposition is None:
             inferred = infer_direction_from_content(
@@ -776,13 +784,6 @@ def transform_row(
             if lifted.get("intent_override") is not None:
                 note["intent"] = lifted["intent_override"]
 
-        # 方向级 tier_threshold_override: 与有没有 sub_directions 无关(它是【方向级】阈值)——
-        # 单方向 AND NUC 式粗方向(含 sub_directions)都该 honor, 故放 sub_directions 守卫【外面】。
-        # 只有 content_format/audience 等确定性 lift 才依赖单方向(codex PR#60 review)。
-        # 形如 {爆: N, 大爆: M}(可部分)—— 下方数值兜底用它盖项目级 tier_thresholds。
-        if decomposition and isinstance(decomposition.get("tier_threshold_override"), dict):
-            dir_threshold_override = decomposition["tier_threshold_override"]
-
         # Honor excluded_directions (NRT_phase3's "女性自发, 男性自发" anomaly):
         # mark as data-anomalous so downstream training queries filter it out
         # without losing the row.
@@ -792,24 +793,21 @@ def transform_row(
                 note["tier_source"] = "数据异常"
                 break
 
-    # ── Numeric tier fallback (Gap 1) ──
-    # When no text-based rule fired (tier is None) OR the status mapped to
-    # the placeholder "未知" (e.g. NUC's "评估中" → "未知"), assign a tier by
-    # threshold if interactions data already shows a clear hit. Without the
-    # "未知" check, an operator-pending row whose data already qualifies for
-    # 爆/大爆 would stay 未知 forever and never reach the flywheel downstream.
-    # tier_source is overwritten to '数值推断' only when we actually promote.
+    # ── Numeric tier fallback —— 只认评论数 (D-062) ──
+    # 没有文本规则命中(tier None)或映成占位的「未知」时, 若评论数已经过线就推 爆/大爆,
+    # 免得一条数据上已经达标的帖永远停在 未知、进不了飞轮。尺子见 _COMMENT_TIER_*。
+    #   · 只看 comments_count。没有评论数的项目【不推断】—— 互动量不是判爆依据, 拿它猜
+    #     就是 2026-09-17 前的错(运营口径见 ops-answers Q1)。
+    #   · 「评估中」不在这里: 它现在是正式档位(mapping 映成 评估中 而非 未知), 运营明说
+    #     20~50 条评论的帖不用动。若哪张表还把它映成 未知, CI 的 mapping 守卫会红。
+    #   · 只向上推, 不推 趴/评估中 (新帖评论数天然少)。tier_source 只在真推了时才改写。
     existing_tier = note.get("tier")
-    if existing_tier in (None, "未知") and note.get("interactions") is not None:
-        # 项目级阈值, 被该方向的 tier_threshold_override 覆盖(方向级 > 项目级)。
-        thresholds = dict(mapping.get("tier_thresholds") or {})
-        if dir_threshold_override:
-            thresholds.update(dir_threshold_override)
-        n_interactions = note["interactions"]
-        if "大爆" in thresholds and n_interactions >= thresholds["大爆"]:
+    if existing_tier in (None, "未知") and note.get("comments_count") is not None:
+        n_comments = note["comments_count"]
+        if n_comments >= _COMMENT_TIER_DABAO:
             note["tier"] = "大爆"
             note["tier_source"] = "数值推断"
-        elif "爆" in thresholds and n_interactions >= thresholds["爆"]:
+        elif n_comments >= _COMMENT_TIER_BAO:
             note["tier"] = "爆"
             note["tier_source"] = "数值推断"
 
@@ -898,6 +896,12 @@ def transform_row(
     for _col in _CM_POSTHOC_COLS:
         if _cm_cell(_col) not in (None, "", []):
             _cm_hit(_CM_ROUTE_POSTHOC, f"挂了爆帖控评/置顶列「{_col}」")
+    # typed 列 pinned_comment(模板把「爆帖置顶评论」映到这里)—— 映成 typed 列的表在
+    # raw_extra 里查不到那一列, 上面那个循环会漏掉它(生产 127 行, 126 行是爆款)。
+    # 运营 2026-09-17 确认: 这列填的是「第一屏有没有置顶显示」; 置顶只有作者能做、
+    # 列名就叫爆帖置顶评论 → 属起量后干预。owner 拍板并入 route ② (D-062)。
+    if note.get("pinned_comment") not in (None, "", []):
+        _cm_hit(_CM_ROUTE_POSTHOC, "typed 列 pinned_comment 非空 = 做了置顶")
     _cstat = _cm_cell("评论状态")
     if _cstat not in (None, "", []):
         _cstat_s = str(_cstat)
@@ -933,9 +937,11 @@ def transform_row(
     # "column does not exist". Strip them out of `note` before returning so
     # the structural boundary is enforced at the transformer, not by hope.
     metric: dict[str, Any] = {}
-    notes_and_metric_cols = ("impressions", "reads", "interactions", "hit_blue_keywords")
-    metric_only_cols = ("likes", "saves", "shares", "comments_count",
-                        "search_rank", "keyword_rank")
+    # comments_count 2026-09-17 起是 notes 的 typed 列(notes_v1_12, D-062): 它是判爆的唯一
+    # 依据, 不能只活在 metric_snapshots 里。仍同时扇出到 metric_snapshots(和 interactions 一样)。
+    notes_and_metric_cols = ("impressions", "reads", "interactions", "comments_count",
+                             "hit_blue_keywords")
+    metric_only_cols = ("likes", "saves", "shares", "search_rank", "keyword_rank")
     all_metric_cols = notes_and_metric_cols + metric_only_cols
     if any(c in note for c in all_metric_cols):
         # Compute hours_since_publish + best-fit window_label from publish_time

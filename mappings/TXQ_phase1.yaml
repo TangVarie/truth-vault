@@ -98,15 +98,11 @@ tier_extraction:
     - match_contains: ["无水花"]
       tier: 趴
     - match_contains: ["评估中"]
-      tier: 未知
+      tier: 评估中
     - default: null
 
-# ── 数值推断阈值 —— 仅对【无状态】帖子兜底(状态字段优先)。
-# ⚠️ [待校准] TXQ 小样本(审计 63 行)无既往互动规模数据;入库后跑
-# scripts/recommend_tier_thresholds.py 复核。起点沿用 RIO 保守值。
-tier_thresholds:
-  爆: 100
-  大爆: 500
+# tier_thresholds 已废(D-062, 2026-09-17): 判爆只看评论数, 全项目统一 爆≥50/大爆≥100,
+# 由同步脚本按 comments_count 推断; 不再按项目配互动量阈值(那把尺子和运营的不是一把)。
 
 compliance:
   base_template: null

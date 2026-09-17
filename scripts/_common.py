@@ -156,6 +156,7 @@ _REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
         "raw_content", "publish_url", "publish_time", "account_id",
         "tier", "tier_source", "intent", "title",
         "impressions", "reads", "interactions",
+        "comments_count",   # D-062: 判爆依据, notes_v1_12 加的
         "content_format", "target_audience", "user_pain_point", "product_focus",
         "direction_subtype", "hit_blue_keywords", "target_blue_keywords",
         "pinned_comment", "raw_extra",
@@ -186,6 +187,7 @@ _REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
     "projects": (
         "project_id", "brand", "product", "category", "platform", "mapping_config",
         "schema_family", "start_date", "end_date", "tier_thresholds",
+        # tier_thresholds 已废(D-062), 但同步每轮仍显式写 NULL(见 ensure_project_exists), 所以列仍是前置。
     ),
     "prepublish_evaluations": (
         "autowriter_item_id", "evaluator_type", "evaluator_id", "decision", "created_at",
@@ -226,6 +228,7 @@ _REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
 _COLUMN_MIGRATION: dict[str, str] = {
     "last_seen_at":     "schemas/notes_v1_9_last_seen_reconcile.sql",
     "last_seen_run_id": "schemas/notes_v1_9_last_seen_reconcile.sql",
+    "comments_count":   "schemas/notes_v1_12_comment_tier.sql",   # D-062
 }
 
 
@@ -369,10 +372,13 @@ def _reject_shadowed_tier_rules(path, rules: list[dict]) -> None:
 # ─────────────────────────────────────────────────────────────────────────
 
 # 状态【等级】优先级 —— 多选状态栏同时挂多个状态时, 取等级最高的那个为准。
-# 数值只表相对大小; 顺序对齐既有规则表(大爆>爆>预备>参考>风控>趴>未知), 唯一修正是把
+# 数值只表相对大小; 顺序对齐既有规则表(大爆>爆>预备>参考>风控>趴>评估中>未知), 唯一修正是把
 # 【爆】提到【预备】之上: 爆贴预备升成爆贴/大爆后, 不能再被列序里靠前的「预备」规则截胡
 # (那会把已验证的爆款错判成预备、漏出爆款口径 —— 见本次修复)。所有 mapping 共用此表。
-_TIER_RANK = {"大爆": 7, "爆": 6, "预备": 5, "参考": 4, "风控": 3, "趴": 2, "未知": 1}
+# 2026-09-17 (D-062): 评估中 成为正式档位(评论数 20~50), 插在 趴 之下、未知 之上 ——
+#   运营的多选状态是追加式的(['评估中','无水花'] = 先评估、后判死), 后来的判决要能压过它,
+#   所以 趴 仍高于 评估中; 而它比 未知 有信息, 高于 未知。其余相对顺序一个没动。
+_TIER_RANK = {"大爆": 8, "爆": 7, "预备": 6, "参考": 5, "风控": 4, "趴": 3, "评估中": 2, "未知": 1}
 
 
 def _status_tokens(raw_status: Any) -> list[str]:
@@ -1006,7 +1012,7 @@ def ensure_project_exists(client: Client, mapping: dict) -> None:
 
     Update semantics (split mapping-owned vs manually-curated):
       • mapping-owned fields (brand / product / category / platform /
-        schema_family / tier_thresholds / mapping_config) ARE updated on
+        schema_family / mapping_config) ARE updated on
         re-sync. The yaml is the source of truth — if NRT_phase2's category
         flips from 处方药 to OTC药 (vocab v1 §9), the DB row should reflect
         that on the next sync.
@@ -1032,7 +1038,7 @@ def ensure_project_exists(client: Client, mapping: dict) -> None:
         k: v for k, v in mapping.items()
         if k in {
             "version", "schema_family", "intent_mapping",
-            "tier_extraction", "tier_thresholds", "data_supplement_needed",
+            "tier_extraction", "data_supplement_needed",
             "project_specific_fields_to_raw_extra",
         }
     }
@@ -1044,12 +1050,18 @@ def ensure_project_exists(client: Client, mapping: dict) -> None:
         "category":       mapping.get("category") or "其他",
         "platform":       mapping.get("platform", "xiaohongshu"),
         "schema_family":  mapping.get("schema_family"),
-        "tier_thresholds": mapping.get("tier_thresholds") or None,
+        # tier_thresholds(项目级互动量阈值)已废(D-062): 不再写。yaml 校验拒绝这个键, 而这里的
+        # None 过滤意味着"不送 = 库里旧值原样留着" —— 旧值由 notes_v1_12 一次性清空
+        # (codex review on #130)。
         "mapping_config": mapping_snapshot,
     }
     # Trim None values that would violate NOT NULL CHECKs (brand/product/category
     # are NOT NULL).  Defaults above cover that, so this is belt-and-suspenders.
     row = {k: v for k, v in row.items() if v is not None}
+    # 已废的项目级互动量阈值【显式】写 NULL, 每轮都写: notes_v1_12 清过一次, 但合并前主干上的
+    # 旧代码若再跑一次夜跑, 会按旧 yaml 把它写回来, 而迁移不会再跑第二次回填 —— 靠"不送这列"
+    # 收敛不了, 只有每轮写 NULL 才自愈(D-062, codex review on #130 P2 的延伸)。
+    row["tier_thresholds"] = None
 
     # ignore_duplicates omitted → default UPDATE-on-conflict. Updates every
     # column present in `row`; columns absent from `row` (the cross-system

@@ -215,9 +215,9 @@ Sprint 0 的目标是**主链路上线 + 飞轮通道接通**，不是完整三�
 
 **主题**: 把延后清单里 🟡 慢性病分类的全部 10 项落地。决定标准: "几乎肯定要做、只是不急"的事现在做完成本最低，等触发条件出现再补反而要在压力下交付。
 
-**Item 1 · Tier 阈值自适应 recommender** (`scripts/recommend_tier_thresholds.py`)
-- 按项目算近 N 天 interactions 的 P50/P75/P90/P95, 对比 yaml 当前阈值, 输出 markdown 报告
-- **不自动改 yaml**, 给 Ziao 决策依据; 经验法则: drift > 50% 就要考虑调
+**Item 1 · Tier 阈值自适应 recommender** (`scripts/recommend_tier_thresholds.py`) —— **已于 2026-09-17 删除 (D-062)**
+- 原按项目算近 N 天 interactions 的分位数对比 yaml 阈值。运营对齐后判爆只看评论数、全项目统一 爆≥50/大爆≥100,
+  项目级互动量阈值(`tier_thresholds`)整个作废, 这个工具随之退役。
 
 **Item 2 · Essence vocab v0.2 → v0.3 通用迁移工具** (`scripts/migrate_essence_vocab.py`)
 - 读 yaml 描述的 "old_value → new_value" 映射, UPDATE 历史 essence 标注

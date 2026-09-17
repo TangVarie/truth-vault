@@ -83,7 +83,7 @@ CI 和 daily-sync workflow 都优先读 `.lock`; `.txt` 仅作为 "high-level in
 # Step 0 · 必做前置 migrations (跑 sync 之前必须应用，否则 preflight 会 400):
 #   - schemas/notes_v1_2.sql                          → 建 truth_vault schema
 #   - schemas/notes_v1_3_reference_tier.sql           → tier 加「参考」+ supersede 注入/飞轮视图
-#   - schemas/notes_v1_2_tier_discrepancy_view.sql    → tier 矛盾复核视图
+#   - schemas/notes_v1_2_tier_discrepancy_view.sql    → tier 矛盾复核视图 (v1.12 会把它重定义成评论数口径)
 #   - schemas/notes_v1_4_flywheel_lesson_cards.sql    → 飞轮策展库 (经验卡表 + v_flywheel_lesson_cards 视图)
 #   - schemas/notes_v1_5_librarian_cache.sql          → 馆员结果缓存表 (pull / D-038)
 #   - schemas/notes_v1_6_sync_status_pending_fix.sql  → v_flywheel_sync_status 的 pending_* 对齐 (视图)
@@ -98,6 +98,9 @@ CI 和 daily-sync workflow 都优先读 `.lock`; `.txt` 仅作为 "high-level in
 #            v1_6 / v1_7 / v1_8 是**只改视图**的, 漏了只是视图旧, 不挡写入;
 #            v1_9 是唯一动 notes 表结构的。(codex review COR-011)
 #   - schemas/notes_v1_10_era_clear_and_decay_clamp.sql → era 清空 + 未来日期衰减夹取 (审计 COR-024, CREATE OR REPLACE)
+#   - schemas/notes_v1_11_evaluator_provenance.sql    → prepublish_evaluations 加 unverified 类型 + 唯一索引覆盖同步三类 + 回填评价身份 (TV-01 / D-061)
+#   - schemas/notes_v1_12_comment_tier.sql            → notes 加 comments_count(判爆依据, preflight 必查) + tier CHECK 加「评估中」
+#         + 首次升级时把旧的互动量推断退回未推断 + 清空 projects.tier_thresholds + v_tier_discrepancy 改评论数口径 (D-062)
 #   - autowriter-migrations/001_create_autowriter_schema.sql → 把 autowriter 表从 public 迁到 autowriter schema
 #   - autowriter-migrations/002_add_external_source.sql     → items 加 (external_source, external_source_id) 列
 #         + per-user partial UNIQUE (user_id, external_source, external_source_id) WHERE external_source IS NOT NULL.
