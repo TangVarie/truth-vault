@@ -1,0 +1,231 @@
+# ════════════════════════════════════════════════════════════════════
+# HATHERINE_phase1 · 小韩痘痘贴 —— Onboarding 草稿(DRAFT · A 家族)
+# ════════════════════════════════════════════════════════════════════
+# 产品: hatherine 痘痘贴(韩国品牌, Olive Young 热门款, 分场景型号)
+# 投放策略: 小红书素人铺量, 以产品功能说明/囤货方案/不破皮痘场景切入
+# 真实列名 / 方向取值 据 30 行样本 + 字段清单起草;
+# 待 preflight 拉全表校正(尤其 direction_decomposition 的真实组合取值)。
+# ════════════════════════════════════════════════════════════════════
+
+version: 1.0
+
+# ── 项目元数据 ──
+project_id: HATHERINE_phase1
+brand: hatherine                # [待确认] 小韩/hatherine, 品牌英文名
+product: 痘痘贴                 # [待确认] 分场景型号(粉色催熟/深蓝吸液/浅蓝76片日常)
+category: 个护                  # [待确认] 痘痘贴属个护, 非医疗器械
+platform: xiaohongshu
+schema_family: A                # A 家族指纹: 有「是否巡查」「巡查状态」「最近检查时间」「已确认存活」
+start_date: auto_from_publish_time_min
+end_date: auto_from_publish_time_max
+
+# ════════════════════════════════════════════════════════════════════
+# 字段映射 — 41 列全部交代(14 进 typed 列/中间变量 + 27 进 raw_extra), 一条不漏
+# ════════════════════════════════════════════════════════════════════
+field_mapping:
+  # ── 标识 ──
+  素人编号: account_id
+
+  # ── 内容 ──
+  笔记内容: raw_content           # 本表内容列叫「笔记内容」(非「文案」)
+  发布时间: publish_time
+  反馈链接: publish_url
+
+  # ── tier 源 ──
+  流量状态: _status_raw           # tier 源(A 家族; 多选; 含「重点控评」「关注后续流量」等)
+
+  # ── 方向 ──
+  方向: _direction_raw            # → direction_decomposition(8 种基础方向)
+
+  # ── 数据回收(数字) ──
+  曝光量: impressions
+  阅读量: reads
+  互动数: interactions            # 本表用「互动数」(非「互动量」)
+  实时数据.评论数: comments_count # D-062: 判爆依据(巡查机器人实时抓取)
+
+  # ── 蓝词(事后命中蓝词) ──
+  蓝词字段: hit_blue_keywords     # → notes.hit_blue_keywords(40 行有值; 14 种选项)
+
+  # ── 评论 ──
+  随贴评论: _comment_text         # → comments 表(Phase 2 LLM 解析)
+
+  # ── 笔记状态 → 检测伪爆贴 ──
+  笔记状态: _note_status_raw      # 工作流状态(非 tier 源; 可检测异常)
+
+# ── intent ──
+# 本表【无】「发布笔记」intent 列 → 不做意图分类, notes.intent 留空(WTG 金标准)
+
+# ════════════════════════════════════════════════════════════════════
+# 方向拆解 —— [待确认] 按方向名 + 文案样本起草
+# ════════════════════════════════════════════════════════════════════
+# 飞书「方向」8 种取值(全单选, 无组合):
+#   产品-全家桶×35 / 产品-76贴囤货×34 / 产品-功能说明×31 / 流量-不破皮痘×31 /
+#   产品-微针×27 / 产品-oly上架×19 / 流量-破皮痘×11 / 产品-对比×7
+#
+# ⚠️ content_format / target_audience / user_pain_point 全标 [待确认],
+#    需策略 lead review(我按文案样本推的, 不是拍板)。
+
+direction_decomposition:
+
+  "产品-全家桶":                    # 35 条(最多); 粉色+深蓝+浅蓝三盒组合
+    content_format: 直给推荐        # [待确认] 产品组合推荐
+    target_audience: ["通用"]       # [待确认]
+    user_pain_point: [待确认] 不同阶段痘痘需要不同处理方案, 一次备齐
+
+  "产品-76贴囤货":                  # 34 条; 浅蓝76片组合装(圆形+方形双尺寸)
+    content_format: 直给推荐        # [待确认] 囤货方案
+    target_audience: ["通用"]       # [待确认]
+    user_pain_point: [待确认] 小包装用着用着就没了, 需要大包量囤货
+
+  "产品-功能说明":                  # 31 条
+    content_format: 教程攻略        # [待确认] 产品功能说明/使用方法
+    target_audience: ["通用"]       # [待确认]
+    user_pain_point: [待确认] 不知道痘痘贴怎么分场景使用
+
+  "流量-不破皮痘":                  # 31 条; 粉色款(没破痘专用, 催熟)
+    content_format: 场景植入        # [待确认] 未破痘急救场景
+    target_audience: ["通用"]       # [待确认]
+    user_pain_point: [待确认] 红肿硬块痘, 需要催熟不能闷
+
+  "产品-微针":                      # 27 条
+    content_format: 直给推荐        # [待确认] 微针型痘痘贴产品推荐
+    target_audience: ["通用"]       # [待确认]
+    user_pain_point: [待确认] 需要促进吸收的微针痘痘贴
+
+  "产品-oly上架":                   # 19 条; Olive Young 上架/测评
+    content_format: 横评对比        # [待确认] OliveYoung 店内横评对比
+    target_audience: ["通用"]       # [待确认]
+    user_pain_point: [待确认] Olive Young 里痘痘贴选择困难
+
+  "流量-破皮痘":                    # 11 条; 深蓝款(破痘专用, 吸液隔菌)
+    content_format: 场景植入        # [待确认] 已破痘急救场景
+    target_audience: ["通用"]       # [待确认]
+    user_pain_point: [待确认] 破痘有渗液, 需要封口防感染
+
+  "产品-对比":                      # 7 条; 与竞品对比
+    content_format: 横评对比        # [待确认] 竞品对比
+    target_audience: ["通用"]       # [待确认]
+    user_pain_point: [待确认] 不知道选哪个品牌的痘痘贴
+
+# ════════════════════════════════════════════════════════════════════
+# tier 抽取规则(流量状态 → tier)
+# ════════════════════════════════════════════════════════════════════
+# 流量状态 distinct(169 行):
+#   无水花×145, 观察中×23, 评估中×1
+# 字段清单选项还有: 重点控评/关注后续流量/风控中/爆贴/大爆/疑似限流(本期未出现)
+# ⚠️ 流量状态为多选字段, 按 match_contains 优先级命中
+
+tier_extraction:
+  source: 状态字段
+  rules:
+    - match_contains: ["大爆"]
+      tier: 大爆
+    - match_contains: ["爆贴"]
+      tier: 爆
+    - match_contains: ["风控"]      # 匹配「风控中」
+      tier: 风控
+    - match_contains: ["无水花"]
+      tier: 趴
+    - match_contains: ["评估中"]
+      tier: 评估中
+    - match_contains: ["观察中"]    # 冷启动窗口 → 未知
+      tier: 未知
+    - default: null
+
+# tier_thresholds 已废(D-062, 2026-09-17): 判爆只看评论数, 全项目统一 爆≥50/大爆≥100,
+# 由同步脚本按 comments_count 推断; 不再按项目配互动量阈值。
+
+# ════════════════════════════════════════════════════════════════════
+# 合规配置 —— [待确认]
+# ════════════════════════════════════════════════════════════════════
+compliance:
+  base_template: null             # [待确认] 个护无强制模板; 有客户红线再填
+  custom_red_flags:               # [待确认]
+    - "个护/痘痘贴: 禁止宣称医疗功效(治疗/治愈痤疮/消除痘印等)"
+    - "禁止绝对化表述(最好用/唯一/根治/100%)"
+    - "禁止暗示替代医疗(严重痘痘需就医, 不能暗示贴片可替代)"
+  blue_keyword_strategy:          # [待确认] 据蓝词字段实测 14 种选项起草
+    primary: ["hatherine", "hatherine痘痘贴"]
+    secondary: ["老虎痘痘贴", "痘痘贴", "小韩OY", "hatherine圆贴"]
+    avoid: []
+
+# ════════════════════════════════════════════════════════════════════
+# 项目专属字段 → raw_extra (allowlist · 27 列)
+# ════════════════════════════════════════════════════════════════════
+project_specific_fields_to_raw_extra:
+  - 平台                          # 冗余列(全为「小红书」)
+  - 起量时间                      # 本期 distinct=0; 保留前向 allowlist
+  - 拍摄记录                      # 素人拍摄批次(cc1/星星2/虎鲸鲸1 等)
+  - 笔记配图
+  - 随贴评论配图
+  - 备注列                        # 本期 distinct=0
+  - 蓝词图片                      # 本期 distinct=0
+  - 是否截图                      # 巡查截图标记(未截图×42)
+  - 评论关键词                    # 运营定义的评论区关键词(代/hatherine)
+  - 评论状态                      # 显示评论/没有显示
+  - 负面词                        # 竞品关键词监控(朵可丽/KKV/羽素/Snp 等 12 种)
+  - 负面状态                      # 无负面×158
+  - 负面评论快照
+  - 置顶状态                      # 无置顶×169
+  - 评论区快照
+  - 相关截图
+  - 数据整理                      # 人工录入的文本汇总
+  - 是否巡查                      # True×169
+  - 排队刷新                      # False×169
+  - 上次评论数                    # 巡查机器人上一轮快照
+  - 巡查状态                      # 正常×168 / 刷新失败×1
+  - 最近检查时间                  # A 家族巡查时间戳
+  - 下次巡查时间                  # 公式列(Excel 序列日)
+  - 父记录                        # 飞书内部关联字段
+  - 诊断信息                      # 巡查诊断结果文本
+  - 连续失败次数                  # 巡查失败计数(0×169)
+  - 已确认存活                    # True×169
+
+# ════════════════════════════════════════════════════════════════════
+# 数据补录需求
+# ════════════════════════════════════════════════════════════════════
+data_supplement_needed:
+  - field: account_followers
+    method: 本表无粉丝数/帐号昵称/主页链接列 → 需通过 publish_url 调小红书 API 或人工补录
+    estimated_rows: 0
+
+# ════════════════════════════════════════════════════════════════════
+# Sync 配置 [飞书坐标待用户提供]
+# ════════════════════════════════════════════════════════════════════
+onboarding_meta:
+  onboarded_at: 2025-XX-XX
+  onboarded_by: 接表管家起草(据 30 行样本 + 字段清单)
+  strategy_lead: [待指定]
+  notes: |
+    DRAFT —— A 家族(有巡查/检查列), 结构近 WTG/OKMAN/TXQ/XIWU。
+    特殊点:
+      1) 产品=hatherine 痘痘贴(韩国品牌, 分场景型号: 粉色催熟/深蓝吸液/浅蓝76片日常);
+      2) 无 intent 列(同 WTG 金标准, intent=null);
+      3) 方向 8 种取值(全单选, 无组合), 分「产品」「流量」两大类;
+      4) 蓝词字段 14 种选项, 40 行有值, 集中在「hatherine」品牌名;
+      5) 负面词监控 12 种竞品(朵可丽/KKV/羽素/Snp/海龟爸爸/护妍/焕彩星星/OY/live/VT老虎/EasyDerm/are);
+      6) 评论关键词: 代/hatherine(运营定义的评论区植入词);
+      7) 本期 tier 分布: 趴145/观察中23/评估中1, 无爆款(正常, 随投放积累);
+      8) 互动数最高 11(中位 1), 典型早期铺量表;
+      9) 内容列叫「笔记内容」(非「文案」); 指标列用「互动数」(非「互动量」)。
+    待 preflight 拉全表校正:
+      1) field_mapping 真实列名对齐(确认 41 列全覆盖);
+      2) 未声明列 → 补进 raw_extra(否则 D-021 整行 quarantine);
+      3) 「方向」真实取值全命中(8 种基础方向);
+      4) tier 阈值 已废(D-062, 数值推断只看评论数);
+      5) 飞书坐标(feishu_app_token / feishu_table_id)待用户提供。
+    待策略 lead 拍板:
+      - brand 中文名(小韩 or hatherine or 其他)
+      - product 准确表述(痘痘贴 or 分场景痘痘贴组合)
+      - category(个护 or 医疗器械? 按产品本位定)
+      - 8 个方向的 content_format/target_audience/user_pain_point
+      - 合规红线 + 蓝词策略
+    autowriter 映射不需配(D-038 通道2 退役)。
+    preflight 干净 → PR → 显式 Daily TV sync(dry_run → 实跑)→ 验证 OK 再翻 daily → backfill essence。
+
+sync_config:
+  source_type: feishu_api
+  feishu_app_token: S72ObviZAa7P0AsueX1cpsYRnN6   # 表标识(非密钥), 接表时已知
+  feishu_table_id: tblWIv6J2G3JW9Jv
+  feishu_view_id: null
+  sync_interval: on_demand
