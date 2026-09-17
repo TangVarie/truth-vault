@@ -63,7 +63,7 @@ curl -sS -X POST "$LIBRARIAN_URL/librarian" \
    from truth_vault.flywheel_librarian_cache order by last_hit_at desc limit 20;
    ```
    应出现一条 `consumer=autowriter`（或 `deskcore`）、时间是刚才那一单的行。同一个 brief 反复生成只刷 `last_hit_at`，不新增行，这是缓存命中，也算通。
-3. 从此每晚 02:00Z TV 夜跑多了一步「通道 2 借阅流量检查」：过去 24h 写作台有 batch 而馆员零流量就打 `::warning`（advisory，不拖红 —— 修在你们仓，TV 红了也改不好）。接好后它应该安静。
+3. 从此每晚 02:00Z TV 夜跑多了一步「通道 2 借阅流量检查」：过去 48h（与每日夜跑重叠）写作台有 batch 而馆员没被写作台调过就打 `::warning`（advisory，不拖红 —— 修在你们仓，TV 红了也改不好）。只数 `consumer` 为 `autowriter` / `deskcore` 的流量，ssll 或诊断 curl 的不算 —— 所以**别改 brief 里的 `consumer` 值**，改了要告诉 TV。接好后它应该安静。
 4. 生成出来的稿子 system prompt 里应有 `[真实爆款参照 · 系统按本次选题从帆谷飞轮库匹配]` 那一节（docs/22 §2）。
 
 ## 5. TV 侧已做 / 不用你们做

@@ -3666,7 +3666,7 @@ v1.12 已应用（2026-09-17 09:27Z）。核对：`comments_count` 列在；CHEC
 
 ### 做了什么（TV 侧能做的）
 
-- `scripts/check_librarian_traffic.py`：只读，判据只有一条 —— 过去 24h 写作台有 batch、馆员缓存零流量 → rc=1 + `::warning`。**故意不做比例启发式**：缓存按 brief 去重、重复命中只刷 `last_hit_at`，比例天然偏低，拿比例告警会天天红（D-053）。没生成时打「无从判定」而不是「健康」。哨兵行 `LIBRARIAN_TRAFFIC_CHECK_DONE rc=` 同饱和度检查的约定。
+- `scripts/check_librarian_traffic.py`：只读，判据只有一条 —— 过去 48h 写作台有 batch、馆员没被写作台调过 → rc=1 + `::warning`。只数 `autowriter` / `deskcore` 两个 consumer（馆员是共享服务，ssll / 诊断 curl 的流量不能替写作台证明通着）；窗口 48h 与每日 cron 重叠，夜跑晚点或漏跑一天不留空档（这两条是 Codex 复审 #133 的两个 P2，都验实）。**故意不做比例启发式**：缓存按 brief 去重、重复命中只刷 `last_hit_at`，比例天然偏低，拿比例告警会天天红（D-053）。没生成时打「无从判定」而不是「健康」。哨兵行 `LIBRARIAN_TRAFFIC_CHECK_DONE rc=` 同饱和度检查的约定。
 - daily-sync 加一步 advisory（不拖红：修在 aw 仓，TV 红了也改不好），崩了靠哨兵行报「监控是瞎的」。
 - CI：report 渲染 5 组 + main 哨兵/崩溃 2 组 + 「夜跑真的接了、grep 前缀一致」。
 - 文档：`docs/27` 给写作台维护者的重新接线说明（证据 / 查三件事 / 自测 curl / 验收）；docs/10 R-032 状态改为「生产没在调」；CURRENT_STATE 加更正；docs/00 索引加 27。
