@@ -219,14 +219,11 @@ tier_extraction:
     - match_contains: ["无水花"]
       tier: 趴
     - match_contains: ["评估中"]
-      tier: 未知
+      tier: 评估中
     - default: null
 
-# ── Tier 数值阈值 ──
-# 基于 NUC_1 实际互动量分布（爆 min=148, 大爆 min=694 中位=983）
-tier_thresholds:
-  爆: 150
-  大爆: 700
+# tier_thresholds 已废(D-062, 2026-09-17): 判爆只看评论数, 全项目统一 爆≥50/大爆≥100,
+# 由同步脚本按 comments_count 推断; 不再按项目配互动量阈值(那把尺子和运营的不是一把)。
 
 # ════════════════════════════════════════════════════════════════════
 # 合规

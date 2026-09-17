@@ -3506,7 +3506,7 @@ P1 → `i-persona`; 升级整行 → `decision` + `created_at` 两半分别反�
 ### 待 owner 拍板（会改看板爆款数，不自作主张）
 
 1. **数值推断换尺子**：有评论数的项目按评论数 ≥50/≥100 推断，没有的不推断；评估中不再升。
-   看板影响：TXQ 9→1、RIO 32→23、WTG 3→0、XIWU 11→9、HXZ_QD 6→4、HXZ_FB 15→14、TUGE 46→42、TGV 不变。
+   看板影响：TXQ 9→1、RIO 32→23、WTG 3→0、XIWU 11→9、HXZ_QD 6→4、HXZ_FB 15→14、TUGE 46→42、TGV 14→**0**（它 14 条全是推断，退回后要等这张 on-demand 表跑一次同步才按评论数回到 14，其中 9 条升为大爆）。
 2. **评估中升正式 tier 值**（改 CHECK + 映射）。
 3. **加 `comment_count` typed 列**，接 `实时数据.评论数` / `评论数`。判爆依据不该只以 raw_extra 键存在。
 4. `pinned_comment` 并入 route ② 起量后干预。
@@ -3514,3 +3514,56 @@ P1 → `i-persona`; 升级整行 → `decision` + `created_at` 两半分别反�
 ### 不归本仓
 
 - 「起量时间」的判据改法 —— 飞书自动化，找它的维护者。
+
+---
+
+## D-062 续 · owner 拍板「按运营口径改全套」—— 判爆只看评论数，落到代码
+
+**日期**: 2026-09-17 · **拍板**: owner 选「按运营口径改全套（推荐）」+「pinned_comment 并进起量后干预」。
+
+### 改了什么
+
+| 层 | 改动 |
+|---|---|
+| 库 | `notes_v1_12_comment_tier.sql`：`notes.comments_count` 列；tier CHECK 加 `评估中`；把 43 条按互动量数值推断的行退回未推断（评估中 12 → `评估中/状态字段`，无状态 31 → `NULL/NULL`），下一轮同步按评论数重推 |
+| 引擎 | 数值推断只认 `comments_count`，常数 `_COMMENT_TIER_BAO=50 / _DABAO=100`，全项目统一；**只向上推**，不推 趴/评估中；`评估中` 不再当 未知；删掉 `tier_thresholds` / `tier_threshold_override` 整条互动量路径；`comments_count` 升为 notes 的 typed 列（同时扇出 metric_snapshots）；typed 列 `pinned_comment` 非空 → route `起量后干预` |
+| mapping | 16 张 + 模板：`评估中 → 评估中`；`tier_thresholds` 块整个删除，留一行废弃说明；ANSHEN/SPX/TUGE/BJS 把 `实时数据.评论数` 从 allowlist 升到 `comments_count`；TGV `评论数 → comments_count`（累计值，同时仍参与互动量求和）；NRT_3 那个没人消费的 `_comment_count` 中间量改成 typed |
+| `_common.py` | `_TIER_RANK` 插入 评估中（趴 之下、未知 之上：运营多选状态是追加式的，后来的判决要压过它）；`_REQUIRED_COLUMNS` + 缺列→迁移文件提示表加 `comments_count` |
+| 退役 | `scripts/recommend_tier_thresholds.py` 删除（它算的是互动量分位数，尺子作废了）；SOP Step 5 重写 |
+| CI | 数值推断守卫整段重写（6 组）；D-048 ④ / 源码 grep / ANSHEN 三处不再断阈值；yaml 校验拒绝 `tier_thresholds` / `tier_threshold_override` / `评估中→未知`；sql job 加 v1.12 apply + 回填三条路径 + 幂等；D-060 加 ⑩ |
+
+### 为什么迁移里不重写推断规则
+
+迁移只把旧推断行**退回未推断**，重推交给同步脚本。D-061 里回填 SQL 与 `_provenance()` 各写一遍判据、随即分叉的教训还热着 —— 判据只能有一份，住在引擎里。代价是没有评论数的项目（TXQ 8 / HXZ 3）那些行会停在 NULL；按新口径它们本来就不该被推。
+
+### 一个没料到的副作用：CI 的 D-056 守卫红了
+
+它拿 OKMAN 真实的「评估中 → 未知」规则造一张全 `未知` 的表来测「未知算空 tier」。评估中 变成真档位后这条用例造不出 未知 了 —— **它自己的前提断言先红了**（「这条用例没造出 '未知' tier, 下面那句断言就是空跑」），而不是静默变绿。改成临时注入一条「观察中 → 未知」规则，并加一条反向断言：全 评估中 的表**算有 tier**，不得误报。
+
+### 又抓到一条空断言（这一串的第六条）
+
+D-060 ⑩ 第一版：去掉 `pinned_comment` 分支，flag 照样 True —— 因为 BASE 夹具为了测 HXZ 那种未映射的表，把「爆帖置顶评论」列在 raw_extra allowlist 里；值同时落进 raw_extra，按列名找的循环把它兜住了。夹具把那列从 allowlist 摘掉后，反证才真的红。
+
+顺带确认了一个引擎行为：**一列同时出现在 field_mapping 和 allowlist 里，值会两边都落**。这次改 mapping 时把升成 typed 的列从 allowlist 摘干净了，就是为了不双落。
+
+### 反证清单（全部「还原修复即变红」）
+
+| 守卫 | 反证 | 结果 |
+|---|---|---|
+| 数值推断 ② | 把旧的互动量分支放回去 | 红：`没有评论数却被推了 tier=爆` |
+| 数值推断 ③ | 让 评估中 也可被推 | 红 |
+| 数值推断 ④ | 不够线往下推 趴 | 红 |
+| 数值推断 ⑥ | `comments_count` 退回 metric-only | 红 |
+| D-060 ⑩ | 去掉 pinned_comment 分支 | 红（夹具隔离后） |
+| yaml ①②③ | 塞回 `tier_thresholds` / `评估中→未知` / 方向级 override | 三条各自红 |
+| sql 回填 | 评估中 分支写成 未知；第二条 UPDATE 去掉 数值推断 限定 | 两条各自红 |
+
+本地：sql job 37 步全绿，python job 57 个守卫全绿（pip 那步是容器环境差异），yaml 校验 16 张全过。
+
+### 生产
+
+v1.12 已应用（2026-09-17 09:27Z）。核对：`comments_count` 列在；CHECK 含 评估中；`数值推断` 43 → **0**；tier=评估中 **12**（RIO 3 / TUGE 4 / WTG 3 / XIWU 2，与预测逐条吻合）；NULL/NULL 490 → 521（+31 = 无状态的推断行）；爆款 337，少的 43 条就是那批。看板当下：TXQ 9→1、RIO 32→23、TUGE 46→42、XIWU 11→9、HXZ_QD 6→4、HXZ_FB 15→14、WTG 3→0、**TGV 14→0**。TGV 是 on-demand 表，合并后手动跑一次 `Daily TV sync`（project=TGV_phase1）它就按评论数回到 14。⚠️ 在 #130 合并前，主干上的**旧代码**若再跑一次夜跑，会按旧尺子把那 12 条评估中重新推成爆 —— 无害，新代码合并后的第一轮会纠回来。
+
+### 不归本仓 / 留给运营的三问
+
+起量时间自动化的判据改法；铺评完成标记（途鸽一个勾选框）；「维护情况」多选的最终选项。见 `data-analysis/ops-reply-2026-09-17.md`。

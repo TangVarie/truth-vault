@@ -241,13 +241,11 @@ tier_extraction:
     - match_contains: ["无水花"]
       tier: 趴
     - match_contains: ["评估中"]
-      tier: 未知
+      tier: 评估中
     - default: null
 
-# ── Tier 数值阈值 ──
-tier_thresholds:
-  爆: 200
-  大爆: 1500
+# tier_thresholds 已废(D-062, 2026-09-17): 判爆只看评论数, 全项目统一 爆≥50/大爆≥100,
+# 由同步脚本按 comments_count 推断; 不再按项目配互动量阈值(那把尺子和运营的不是一把)。
 
 # ════════════════════════════════════════════════════════════════════
 # 合规

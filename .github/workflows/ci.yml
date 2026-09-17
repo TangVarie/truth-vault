@@ -1027,87 +1027,76 @@ jobs:
 
           print("\nsub_direction classification: all 7 checks passed")
           PY
-      - name: transform_row tier fallback + metric-only stripping self-check
+      - name: transform_row tier fallback (只看评论数, D-062) + metric split self-check
         working-directory: scripts
         run: |
           python - <<'PY'
-          # Two regressions the new tests defend against:
-          #   1. Item 2 — tier="未知" (mapped from "评估中") + interactions over
-          #      threshold should auto-promote to 爆/大爆, not stay 未知.
-          #   2. Item 3 — metric-only cols (likes/saves/shares/comments_count/
-          #      search_rank/keyword_rank) must NOT end up in the notes payload,
-          #      they only belong in metric_snapshots.
+          # 2026-09-17 (D-062, 运营对齐 Q1): 判爆【只看评论数】, 全项目统一 爆≥50 / 大爆≥100。
+          #   旧版按互动量过项目级 tier_thresholds 推断 —— 那是另一把尺子: 43 条推断里 12 条
+          #   从「评估中」升上来(按口径根本不是爆), WTG 互动量 33 就成了爆。
+          #   这一步守: ① 只认 comments_count, 互动量再高也不推; ② 评估中 是正式档位, 不再当
+          #   未知 被推; ③ 只向上推; ④ 人工 tier 永远压过推断; ⑤ comments_count 同时进 notes
+          #   和 metric_snapshots, 其余 metric-only 列(likes/saves/…)仍不得漏进 notes payload。
           import sync_feishu_notes_to_truth_vault as s
 
           mapping = {
-              "project_id": "TEST_P",
-              "platform": "xiaohongshu",
+              "project_id": "TEST_P", "platform": "xiaohongshu",
               "field_mapping": {
-                  "文案":   "raw_content",
-                  "互动量": "interactions",
-                  "点赞":   "likes",
-                  "收藏":   "saves",
-                  "评论数": "comments_count",
-                  "状态":   "_status_raw",
+                  "文案": "raw_content", "互动量": "interactions",
+                  "点赞": "likes", "收藏": "saves",
+                  "实时数据.评论数": "comments_count",
+                  "状态": "_status_raw",
               },
-              "tier_thresholds": {"爆": 100, "大爆": 1000},
-              "tier_extraction": {
-                  "source": "状态字段",
-                  "rules": [
-                      {"match_contains": ["大爆"], "tier": "大爆"},
-                      {"match_contains": ["评估中"], "tier": "未知"},
-                  ],
-              },
+              "tier_extraction": {"source": "状态字段", "rules": [
+                  {"match_contains": ["大爆"], "tier": "大爆"},
+                  {"match_contains": ["评估中"], "tier": "评估中"},
+                  {"default": None},
+              ]},
           }
+          def row(**kw):
+              r = {"文案": "c"}; r.update(kw); return r
 
-          # Case A: 评估中 + interactions=500 (over 爆 threshold) → must promote to 爆.
-          # The old code only fired numeric fallback when tier was None; "评估中"
-          # mapped to "未知" so it stayed there forever.
-          note_a, metric_a, _ = s.transform_row(
-              mapping, "recA",
-              {"文案": "content", "状态": "评估中", "互动量": 500, "点赞": 12, "收藏": 3, "评论数": 7},
-          )
-          assert note_a["tier"] == "爆", f"expected '爆' after numeric fallback, got {note_a.get('tier')!r}"
-          assert note_a["tier_source"] == "数值推断", note_a.get("tier_source")
-          print("  ✓ 评估中 + interactions>=爆 threshold promotes to 爆")
+          # ① 没有人工 tier + 评论数过线 → 推 爆 / 大爆, tier_source=数值推断 (边界含 50/100, 运营: ≥)
+          n, m, _ = s.transform_row(mapping, "r1", row(**{"实时数据.评论数": 60, "互动量": 5, "点赞": 1, "收藏": 2}))
+          assert n["tier"] == "爆" and n["tier_source"] == "数值推断", (n.get("tier"), n.get("tier_source"))
+          n, _, _ = s.transform_row(mapping, "r2", row(**{"实时数据.评论数": 120}))
+          assert n["tier"] == "大爆" and n["tier_source"] == "数值推断", n.get("tier")
+          assert s.transform_row(mapping, "r2b", row(**{"实时数据.评论数": 50}))[0]["tier"] == "爆"
+          assert s.transform_row(mapping, "r2c", row(**{"实时数据.评论数": 100}))[0]["tier"] == "大爆"
+          print("  ✓ 评论数 ≥50 → 爆, ≥100 → 大爆 (数值推断)")
 
-          # Case B: 评估中 + interactions=2000 (over 大爆) → must promote to 大爆
-          note_b, _, _ = s.transform_row(
-              mapping, "recB",
-              {"文案": "c", "状态": "评估中", "互动量": 2000},
-          )
-          assert note_b["tier"] == "大爆", note_b.get("tier")
-          print("  ✓ 评估中 + interactions>=大爆 threshold promotes to 大爆")
+          # ② 互动量再高, 没有评论数就【不推】—— 互动量不是判爆依据。
+          #    (反证: 把旧的 interactions 分支放回去, 这条会红)
+          n, _, _ = s.transform_row(mapping, "r3", row(**{"互动量": 5000}))
+          assert n.get("tier") is None and n.get("tier_source") != "数值推断", \
+              f"没有评论数却被推了 tier={n.get('tier')} —— 又拿互动量当尺子了 (D-062)"
+          print("  ✓ 互动量 5000 但无评论数 → 不推断")
 
-          # Case C: 评估中 + interactions=50 (below 爆) → stays 未知
-          note_c, _, _ = s.transform_row(
-              mapping, "recC",
-              {"文案": "c", "状态": "评估中", "互动量": 50},
-          )
-          assert note_c["tier"] == "未知", note_c.get("tier")
-          # tier_source should NOT be overwritten to 数值推断 since no promotion happened
-          assert note_c.get("tier_source") != "数值推断", note_c.get("tier_source")
-          print("  ✓ below-threshold 未知 stays 未知 (no false promotion)")
+          # ③ 评估中 是正式档位: 映成 评估中, 且评论数过线也【不】被推 ——
+          #    运营明说 20~50 条的帖不用动; 评论数涨过 50 由运营改标, 脚本不越权。
+          n, _, _ = s.transform_row(mapping, "r4", row(**{"状态": "评估中", "实时数据.评论数": 60}))
+          assert n["tier"] == "评估中" and n["tier_source"] == "状态字段", (n.get("tier"), n.get("tier_source"))
+          print("  ✓ 评估中 保持 评估中, 不被数值推断越权")
 
-          # Case D: tier_source for an explicit 大爆 rule fire (not numeric fallback)
-          note_d, _, _ = s.transform_row(
-              mapping, "recD",
-              {"文案": "c", "状态": "大爆", "互动量": 50},
-          )
-          assert note_d["tier"] == "大爆" and note_d["tier_source"] == "状态字段", note_d
-          print("  ✓ explicit 状态字段 rule wins over numeric fallback")
+          # ④ 只向上推: 评论数不够线不推 趴/评估中 (新帖评论数天然少)
+          for c in (30, 0):
+              n, _, _ = s.transform_row(mapping, f"r5_{c}", row(**{"实时数据.评论数": c}))
+              assert n.get("tier") is None, f"评论数 {c} 不该被推成 {n.get('tier')}"
+          print("  ✓ 不够线不推 趴/评估中")
 
-          # Case E: metric-only cols (likes/saves/comments_count) belong in
-          # metric_snapshots but NEVER in the notes payload (notes table has no
-          # such columns; a future direct mapping would crash UPSERT). interactions
-          # IS a valid notes column AND a metric_snapshot column, so it stays.
-          assert "likes" not in note_a, "likes leaked into note payload"
-          assert "saves" not in note_a, "saves leaked into note payload"
-          assert "comments_count" not in note_a, "comments_count leaked into note payload"
-          assert "interactions" in note_a, "interactions is a real notes column, should remain"
-          assert metric_a["likes"] == 12 and metric_a["saves"] == 3 and metric_a["comments_count"] == 7
-          assert metric_a["interactions"] == 500
-          print("  ✓ metric-only cols stripped from note payload, retained in metric snapshot")
+          # ⑤ 人工 tier 永远压过推断 (评论数只有 10 也是大爆, 因为运营这么标)
+          n, _, _ = s.transform_row(mapping, "r6", row(**{"状态": "大爆", "实时数据.评论数": 10}))
+          assert n["tier"] == "大爆" and n["tier_source"] == "状态字段", n
+          print("  ✓ 状态字段 压过数值推断")
+
+          # ⑥ comments_count 是 notes 的 typed 列(notes_v1_12), 也扇出到 metric_snapshots;
+          #    likes/saves 仍是 metric-only, 不得漏进 notes payload。
+          n, m, _ = s.transform_row(mapping, "r7", row(**{"实时数据.评论数": 7, "互动量": 500, "点赞": 12, "收藏": 3}))
+          assert n.get("comments_count") == 7, f"comments_count 没进 notes payload: {sorted(n)}"
+          assert m["comments_count"] == 7 and m["interactions"] == 500 and m["likes"] == 12 and m["saves"] == 3
+          assert "likes" not in n and "saves" not in n, "metric-only 列漏进 notes payload"
+          assert "interactions" in n
+          print("  ✓ comments_count 进 notes + metric; likes/saves 只进 metric")
 
           # Case F (PR#51/#52 regression): Feishu 可能把「发布笔记」返回成 LIST
           # (多选 / list[str]) — map_intent 必须经 _direction_key 展平,不能直接拿
@@ -1136,38 +1125,7 @@ jobs:
               assert nf.get("intent") in _ENUM, nf.get("intent")
           print("  ✓ list[str]/list[dict]/str + 多选→mixed + 未知→other,intent 恒为合法 enum(不崩不撞 CHECK)")
 
-          # Case G (PR#60 / D-036 审计): 方向级 tier_threshold_override 覆盖项目级阈值
-          # (docs/04 + _template 写了此项, 但此前代码从不读 → 设了也静默无效)。
-          mapping_thr = {
-              "project_id": "TEST_THR", "platform": "xiaohongshu",
-              "field_mapping": {"文案": "raw_content", "互动量": "interactions", "方向": "_direction_raw"},
-              "tier_thresholds": {"爆": 100, "大爆": 1000},
-              "direction_decomposition": {
-                  "高门槛方向": {"content_format": "直给推荐", "target_audience": ["通用"],
-                              "tier_threshold_override": {"爆": 500}},
-                  "普通方向":   {"content_format": "直给推荐", "target_audience": ["通用"]},
-              },
-          }
-          # 高门槛方向: override 爆=500 → 互动 200 不升级, 600 升级到 爆
-          note_g1, _, _ = s.transform_row(mapping_thr, "recG1", {"文案": "c", "方向": "高门槛方向", "互动量": 200})
-          assert note_g1.get("tier") is None, ("override 应让 200<500 不 promote, got", note_g1.get("tier"))
-          note_g2, _, _ = s.transform_row(mapping_thr, "recG2", {"文案": "c", "方向": "高门槛方向", "互动量": 600})
-          assert note_g2.get("tier") == "爆", note_g2.get("tier")
-          # 普通方向(无 override): 用项目级 爆=100 → 互动 200 升级到 爆
-          note_g3, _, _ = s.transform_row(mapping_thr, "recG3", {"文案": "c", "方向": "普通方向", "互动量": 200})
-          assert note_g3.get("tier") == "爆", note_g3.get("tier")
-          # 含 sub_directions 的【粗方向】也要 honor override(codex PR#60: 之前嵌在单方向守卫内 → 失效)
-          mapping_thr["direction_decomposition"]["粗方向"] = {
-              "tier_threshold_override": {"爆": 500},
-              "sub_directions": [{"name": "子A", "content_format": "情感叙事", "target_audience": ["通用"]}],
-          }
-          note_g4, _, _ = s.transform_row(mapping_thr, "recG4", {"文案": "c", "方向": "粗方向", "互动量": 200})
-          assert note_g4.get("tier") is None, ("含 sub_directions 的方向也应 honor override(200<500)", note_g4.get("tier"))
-          note_g5, _, _ = s.transform_row(mapping_thr, "recG5", {"文案": "c", "方向": "粗方向", "互动量": 600})
-          assert note_g5.get("tier") == "爆", note_g5.get("tier")
-          print("  ✓ tier_threshold_override: 单方向 + 含 sub_directions 粗方向都 honor 方向级阈值(普通用项目级)")
-
-          print("\ntransform_row tier+metric+intent+threshold_override: all 7 checks passed")
+          print("\ntransform_row tier(评论数尺子)+metric+intent: all checks passed")
           PY
       - name: transform_row autowriter lineage FK self-check (R-031)
         working-directory: scripts
@@ -1422,6 +1380,22 @@ jobs:
           assert f(n9).get("synthetic") is True and f(n9).get("comment_maintained") is True, f(n9)
           assert rt(n9) == [POSTHOC], rt(n9)
           assert "伪爆贴" in f(n9).get("synthetic_reason", ""), f(n9)
+
+          # ⑩ typed 列 pinned_comment 非空 → 起量后干预 (D-062, owner 拍板并入 route ②)。
+          #    模板把「爆帖置顶评论」映成 typed 列, raw_extra 里查不到那一列 —— 上面按列名找的
+          #    循环会漏掉它(生产 127 行, 126 行是爆款)。运营确认这列记的是"第一屏有没有置顶显示",
+          #    置顶只有作者能做 → 属起量后动作。
+          #    ⚠️ 夹具要把这列【从 allowlist 里拿掉】: BASE 为了测 HXZ 那种未映射的表把它列在
+          #    raw_extra allowlist 里, 留着的话值会同时落进 raw_extra, 上面按列名找的循环就把它
+          #    兜住了 —— 反证时去掉 typed 分支 flag 照样 True, 断言变成空跑(第一版就是这样)。
+          MP10 = dict(BASE, field_mapping={**BASE["field_mapping"], "爆帖置顶评论": "pinned_comment"},
+                      project_specific_fields_to_raw_extra=[c for c in BASE.get("project_specific_fields_to_raw_extra", [])
+                                                            if c != "爆帖置顶评论"])
+          n10, _, _ = s.transform_row(MP10, "r10", {"文案": "c", "状态": "爆贴", "互动量": 300, "爆帖置顶评论": "第一条置顶"})
+          assert f(n10).get("comment_maintained") is True and rt(n10) == [POSTHOC], f(n10)
+          assert "pinned_comment" in f(n10).get("comment_maintained_reason", ""), f(n10)
+          n10b, _, _ = s.transform_row(MP10, "r10b", {"文案": "c", "状态": "爆贴", "互动量": 300, "爆帖置顶评论": ""})
+          assert "comment_maintained" not in f(n10b), f"置顶列为空不该算干预: {f(n10b)}"
 
           print("comment_maintained 分来路 × synthetic 正交: all checks passed")
           PY
@@ -2016,25 +1990,19 @@ jobs:
           assert "impressions" not in empty and "interactions" not in empty, sorted(empty)
           print("  ✓ 取最后一次快照 / 跳过空快照 / 各指标同源 / 无数据不写 0 / 回退要标记")
 
-          # ④ 【本守卫的重点】: 一张表一旦能解析出 interactions, 它的 tier_thresholds
-          #    就不再是"占位"。所以凡是配了 metrics_from_kv_text 的项目, 要么没有阈值
-          #    (= 明确不做数值推断), 要么它的阈值必须【高于运营亲手标为「趴」的最高互动】——
-          #    否则等于把运营判死的帖自动升成爆。
+          # ④ 配了 metrics_from_kv_text 的项目: 配置本身要完整。
+          #    (D-062 之前这里还断言"不能同时配 tier_thresholds" —— 那个键已整个作废,
+          #     yaml job 的 mapping 守卫拒绝它, 这里不再重复。解析出的互动量不再参与判 tier。)
           for f in sorted(pathlib.Path("../mappings").glob("*.yaml")):
               if f.stem.startswith("_"):
                   continue
               d = yaml.safe_load(f.read_text()) or {}
               if not d.get("metrics_from_kv_text"):
                   continue
-              th = d.get("tier_thresholds")
-              assert not th, (
-                  f"{f.stem} 同时配了 metrics_from_kv_text 和 tier_thresholds。"
-                  "指标一解析出来阈值就生效了 —— 要么摘掉阈值, 要么先拿真实分布证明它"
-                  "高于运营标『趴』的最高互动, 并把依据写在 yaml 里再放开这条守卫。")
               spec = d["metrics_from_kv_text"]
               assert spec.get("sources") and spec.get("extract"), f"{f.stem} 配置不完整"
               assert isinstance(spec["sources"], list) and len(spec["sources"]) >= 1
-          print("  ✓ 配了指标解析的项目没有顺手留着占位阈值")
+          print("  ✓ 配了指标解析的项目配置完整")
           print("\n指标键值文本解析: all checks passed")
           PY
       - name: 方向列被写坏时的正文兜底 —— 只兜底、不越权 (D-049)
@@ -2097,13 +2065,15 @@ jobs:
           # ④ 推断【不许】碰 tier —— 同 D-048 的口径: tier 是钱字段。
           #    脏方向那行 tier 只能来自「流量状态」, tier_source 不能变。
           assert n["tier_source"] == "状态字段" and n["tier"] == "趴", (n["tier_source"], n["tier"])
-          # 代码层面也钉住: threshold override / excluded_directions 用的是【原始】方向,
-          # 不是推断出来的那个。改坏了这两行, 推断就能间接改 tier。
+          # 代码层面也钉住: excluded_directions 用的是【原始】方向, 不是推断出来的那个。
+          # 改坏了这一行, 推断就能间接改 tier。(方向级 tier_threshold_override 已随 D-062 作废,
+          # 引擎里不得再出现; 项目级 tier_thresholds 同理。)
           src = pathlib.Path("sync_feishu_notes_to_truth_vault.py").read_text()
-          body = src.split("dir_threshold_override = None", 1)[1].split("# ── Numeric tier fallback", 1)[0]
-          for needle in ('if decomposition and isinstance(decomposition.get("tier_threshold_override")',
-                         'if excluded.get("direction") == dir_key:'):
-              assert needle in body, f"tier 相关分支被改成了推断值? 找不到: {needle}"
+          body = src.split('if "_direction_raw" in intermediates:', 1)[1].split("# ── Numeric tier fallback", 1)[0]
+          needle = 'if excluded.get("direction") == dir_key:'
+          assert needle in body, f"excluded_directions 被改成了推断值? 找不到: {needle}"
+          assert "tier_threshold_override" not in src, "方向级阈值覆盖已废(D-062), 引擎里不该再读它"
+          assert 'mapping.get("tier_thresholds")' not in src, "项目级互动量阈值已废(D-062), 引擎里不该再读它"
           assert "lifted" in body and body.index("lifted = decomposition") < body.index(
               'if lifted is not None and "sub_directions" not in lifted'), "兜底顺序被改了"
           print("  ✓ 推断只 lift content_format 那几列, 不参与 tier 判定")
@@ -2640,14 +2610,24 @@ jobs:
               f"把 0 当成空 → 一张全是 0 的表会被报成产不出指标, 这是误报: {st}"
 
           # ⑤ tier 的"空"是 '未知' 不是 NULL —— 全表判不出档必须报。按 NULL 数的话这里会绿。
-          #    「评估中」是 OKMAN 表里真有的状态(mappings/OKMAN_phase1.yaml:121 → tier: 未知),
-          #    互动 12 < 爆阈值 100, 所以数值兜底不会把它推上去, 落地就是一张全 '未知' 的表。
-          #    实测库里 '未知' 不是假想: SPX 28 条 / NRT_3 10 条 / RIO 5 条 …… 都是这么来的。
-          rc, st, notes, _ = run([dict(FULL, 流量状态=["评估中"])])
+          #    2026-09-17 (D-062) 之前这条用 OKMAN 真实的「评估中 → 未知」规则造 '未知'; 现在
+          #    评估中 是正式档位(评论数 20~50), 全库没有哪条规则再产 '未知' 了。但这个性质仍要守
+          #    (库里还有 115 行历史 '未知', 而且哪张表若把待定状态映成 未知, 不能算它有 tier),
+          #    所以临时给 mapping 注入一条「观察中 → 未知」规则来造它。OKMAN 没有评论数列,
+          #    数值推断(只看 comments_count)不会把它推上去, 落地就是一张全 '未知' 的表。
+          _LM_real = _LM0
+          _LM0 = lambda pid: (lambda m: {**m, "tier_extraction": {**m["tier_extraction"],
+                     "rules": [{"match_contains": ["观察中"], "tier": "未知"}, *m["tier_extraction"]["rules"]]}})(_LM_real(pid))
+          rc, st, notes, _ = run([dict(FULL, 流量状态=["观察中"])])
+          _LM0 = _LM_real
           assert notes and notes[0].get("tier") == "未知", \
               f"这条用例没造出 '未知' tier, 下面那句断言就是空跑: {notes[0].get('tier') if notes else None}"
           assert rc == 1 and "tier" in st["missing_capabilities"], \
               f"全表 tier 都是 '未知' 却算有 tier —— 飞轮就没有正负样本了: {st}"
+          #    评估中 是真档位: 一张全 评估中 的表【算有 tier】, 不得误报成产不出要害字段。
+          rc, st, notes, _ = run([dict(FULL, 流量状态=["评估中"])])
+          assert notes and notes[0].get("tier") == "评估中", notes[0].get("tier") if notes else None
+          assert "tier" not in st["missing_capabilities"], f"评估中 被当成空 tier 误报了 (D-062): {st}"
           #    tier 整个没映(NULL)当然也得报。
           rc, st, _, _ = run([drop("流量状态")])
           assert rc == 1 and "tier" in st["missing_capabilities"], st
@@ -2761,13 +2741,8 @@ jobs:
                f"impressions={note.get('impressions')} reads={note.get('reads')} "
                f"interactions={note.get('interactions')}")
           assert metric.get("impressions") == 107, "指标没同时进 metric_snapshots"
-          #    接上指标之后数值推断才真的会跑, 所以本表【故意不配阈值】(同 D-048 守卫的口径):
-          #    实测 123 行有指标的行里 **122 行运营亲手标成「无水花」= 趴**, 这些趴贴互动量
-          #    最高才 12。任何 <=12 的阈值都会把运营判死的帖升成爆, 任何 >12 的现在一条都不中。
-          #    本表 tier 有确定性来源(「流量状况」列), 不需要靠数字猜。
-          assert not mp.get("tier_thresholds"), (
-              f"ANSHEN 又配上了数值推断阈值 {mp.get('tier_thresholds')} —— 实测 122/123 行是运营"
-              "标的趴贴且互动量最高 12, 这会把判死的帖自动升成爆(D-048)")
+          #    接上指标【不会】触发数值推断: D-062 起数值推断只看 comments_count, 与互动量无关。
+          #    下面这条断的是"人工标了无水花, 数字再好也不能翻案"。
           note2, _, _ = s.transform_row(mp, "r", dict(
               row, 流量状态=["无水花"], 数据整理="曝光量：2417；阅读量：300；互动量：12"))
           assert note2["tier"] == "趴", (
@@ -3393,23 +3368,6 @@ jobs:
           assert (wz, wp) == ("2h", "2h"), f"Z={wz} +08={wp}"
           assert hz == hp, f"同一时刻 Z={hz}h +08={hp}h 小时数不同"
           print("  ✓ 同一时刻 Z / +08:00 落在同一窗口 (COR-017)")
-          PY
-      - name: recommend_tier_thresholds percentile helper
-        working-directory: scripts
-        run: |
-          python - <<'PY'
-          # 简单 percentile 函数, 不依赖 numpy. 必须能算对 P50 / P75 / P90 才能
-          # 给 yaml 阈值建议; 算错的话 recommendations 全是噪音.
-          import recommend_tier_thresholds as r
-
-          # Known values
-          assert r._pct([], 50) is None
-          assert r._pct([42], 99) == 42
-          assert r._pct([1, 2, 3, 4, 5], 50) == 3
-          assert r._pct([1, 2, 3, 4], 50) == 2.5
-          assert r._pct([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 75) == 7.75
-          assert r._pct([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 90) == 9.1
-          print("  ✓ _pct returns correct values across 6 cases")
           PY
       - name: Autowriter injection diversity filter self-check (D-036)
         working-directory: scripts
@@ -5905,6 +5863,48 @@ jobs:
             exit 1
           fi
           echo "✓ v1.11: unverified 可写, 唯一索引覆盖同步三类(persona 多行不受影响), 回填与 _provenance 同口径且可自愈"
+      - name: Apply v1.12 comment-count tier (+ idempotency)
+        run: |
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_12_comment_tier.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_12_comment_tier.sql
+      - name: Sanity-check v1.12 (comments_count 在 / 评估中 进 CHECK / 数值推断回填三条路径 + 幂等)
+        run: |
+          # ① 判爆的依据得是 typed 列
+          psql -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM information_schema.columns
+            WHERE table_schema='truth_vault' AND table_name='notes' AND column_name='comments_count'" \
+            | grep -q 1 || { echo "❌ notes.comments_count 没建出来 (D-062)"; exit 1; }
+          # ② 评估中 进了 CHECK —— 瞎写的值仍被拒(证明 CHECK 没被放空)
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          INSERT INTO truth_vault.projects (project_id, brand, product, category)
+            VALUES ('CI_D062', 'b', 'p', '其他') ON CONFLICT DO NOTHING;
+          INSERT INTO truth_vault.notes (note_id, project_id, raw_content, tier, tier_source)
+            VALUES ('CI_D062_pinggu_ok', 'CI_D062', 'c', '评估中', '状态字段');
+          SQL
+          if psql -q -v ON_ERROR_STOP=1 -c "INSERT INTO truth_vault.notes (note_id, project_id, raw_content, tier)
+              VALUES ('CI_D062_bad', 'CI_D062', 'c', '瞎写');" 2>/dev/null; then
+            echo "❌ tier CHECK 被放空了: '瞎写' 都能进"; exit 1
+          fi
+          # ③ 回填三条路径: 造三条旧式 数值推断 行, 重跑迁移, 逐条核 ——
+          #    状态里有 评估中 → 评估中/状态字段; 状态在场但不是 → 未知/状态字段; 没状态 → NULL/NULL
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          INSERT INTO truth_vault.notes (note_id, project_id, raw_content, tier, tier_source, raw_extra) VALUES
+            ('CI_D062_bf_pinggu', 'CI_D062', 'c', '爆', '数值推断', '{"_tier_source_raw": "[''评估中'']"}'::jsonb),
+            ('CI_D062_bf_other',  'CI_D062', 'c', '爆', '数值推断', '{"_tier_source_raw": "[''关注'']"}'::jsonb),
+            ('CI_D062_bf_none',   'CI_D062', 'c', '爆', '数值推断', NULL);
+          SQL
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_12_comment_tier.sql
+          Q="SELECT string_agg(replace(note_id,'CI_D062_bf_','') ||'='|| coalesce(tier,'-') ||'/'|| coalesce(tier_source,'-'), ' ' ORDER BY note_id)
+             FROM truth_vault.notes WHERE note_id LIKE 'CI_D062_bf_%'"
+          GOT=$(psql -v ON_ERROR_STOP=1 -tA -c "$Q")
+          WANT="none=-/- other=未知/状态字段 pinggu=评估中/状态字段"
+          if [ "$GOT" != "$WANT" ]; then
+            echo "❌ 数值推断回填没按状态分流。期望 [$WANT] 实得 [$GOT]"; exit 1
+          fi
+          # ④ 幂等: 再跑一次, 已没有 数值推断 行, 三条必须原样
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_12_comment_tier.sql
+          GOT2=$(psql -v ON_ERROR_STOP=1 -tA -c "$Q")
+          [ "$GOT2" = "$WANT" ] || { echo "❌ 第二次跑迁移改了回填过的行: [$GOT2]"; exit 1; }
+          echo "✓ v1.12: comments_count 在 / 评估中 可写 / 瞎写仍被拒 / 回填三条路径 + 幂等"
       - name: Apply security revoke (anon/authenticated write on public.* ) (+ idempotency)
         # 撤 anon/authenticated 对 5 张 public 表的写权限(读保留,不开 RLS)。
         # guarded:表/角色不存在则跳过 → 裸 PG / CI 为 no-op。REVOKE 幂等,两遍验。
@@ -6026,6 +6026,17 @@ jobs:
               if data.get("project_id") != f.stem:
                   print(f"{f}: project_id={data.get('project_id')!r} doesn't match filename")
                   rc = 1
+              # D-062 (2026-09-17): 判爆只看评论数, 全项目统一 —— 项目级互动量阈值整个作废。
+              for bad in ("tier_thresholds", "tier_threshold_override"):
+                  if bad in data:
+                      print(f"{f}: 含已废键 {bad} (D-062: 判爆只看评论数, 项目级互动量阈值作废)"); rc = 1
+              for dname, d in ((data.get("direction_decomposition") or {}).items()):
+                  if isinstance(d, dict) and "tier_threshold_override" in d:
+                      print(f"{f}: 方向「{dname}」还有 tier_threshold_override (已废, D-062)"); rc = 1
+              # 评估中 是 20~50 条评论的正式档位, 不是 未知 —— 映成 未知 会让它被数值推断越权。
+              for r in ((data.get("tier_extraction") or {}).get("rules") or []):
+                  if "评估中" in (r.get("match_contains") or []) and r.get("tier") != "评估中":
+                      print(f"{f}: 评估中 映成了 {r.get('tier')!r}, 必须是 评估中 (D-062)"); rc = 1
               print(f"{f}: OK")
           sys.exit(rc)
           PY

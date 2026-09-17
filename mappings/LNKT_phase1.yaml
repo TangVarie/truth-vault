@@ -316,7 +316,7 @@ tier_extraction:
     - match_contains: ["无水花"]
       tier: 趴
     - match_contains: ["评估中"]
-      tier: 未知
+      tier: 评估中
     - default: null
 
 # ── 数值推断阈值 —— 2026-08-31 【整块摘掉, 这是结论】 ──────────────────
@@ -337,12 +337,8 @@ tier_extraction:
 #   · 设 556(高于趴的最高) → 唯一那条真爆(412)反而够不着, 且这个数没有任何依据;
 # 所以【不设】。tier 全部以运营的「流量状态」为准, 缺状态的行保持未定 —— 诚实。
 #
-# 引擎行为已核: sync_feishu_notes_to_truth_vault.py 里 thresholds = mapping.get(
-# "tier_thresholds") or {}, 随后 "爆" in thresholds 为 False → 不提升。缺这个键是
-# 安全的, 不是漏配。recommend_tier_thresholds.py 也会跳过没有阈值的项目。
-#
-# 什么时候该回来重设: 运营开始按互动量判爆款(那时趴和爆会分开), 或者攒够更多
-# 「爆贴」样本能看出一条线。口径见 SPX/XIWU —— 卡在确定趴的上限与运营标爆的下限之间。
+# D-062(2026-09-17): 数值推断只看 comments_count, 本表没有评论数列 → 不推断;
+# tier 全部以「流量状态」为准。项目级互动量阈值整个作废, 上面的分布分析留作历史。
 
 # ════════════════════════════════════════════════════════════════════
 # 合规
@@ -503,14 +499,14 @@ onboarding_meta:
       已定(2026-08-30): 本期接受无指标入库; 解析回填【该做】且已勘明可行(299 行里 214 行
       有值, 格式与 parse_audience_analysis 同形, 可确定性解析, 取有值的最大 N 作当期值,
       播放量→impressions / 点赞+评论+分享+收藏→interactions 走已有的 computed_fields.sum)。
-      这是一次引擎侧改动, 不在本次 mapping 定稿范围内, 口径已钉在 tier_thresholds 那段。
+      这是一次引擎侧改动, 不在本次 mapping 定稿范围内。(数值推断口径见 D-062: 只看评论数)
 
     定稿记录(2026-08-30, 依据 299 行入库全量, 不再是 30 行样本):
       - category = OTC药(2026-08-28 策略 lead), base_template 仍走处方药档(NRT 先例)
       - brand=雷诺考特 / product=布地奈德鼻喷 —— 正文明写, 已确认
       - 18 种内容方向的 content_format / target_audience 全部按真实标题定稿, 逐条附依据
       - 「小爆」由 爆 改 参考 —— 本表同时使用「爆贴」和「小爆」, 运营自己在做区分
-      - tier_thresholds 仍是占位(无指标), 校准口径已写明
+      - tier_thresholds 已废(D-062); 本表无评论数列, 不做数值推断
       - 合规红线按真实文案补了 2 条(起效时间承诺 / 不良反应与儿童减量), 蓝词策略确认
       - 飞书坐标(app_token / table_id)→ 待填
 

@@ -1104,6 +1104,9 @@ ALTER TABLE truth_vault.audit_log                    ENABLE ROW LEVEL SECURITY;
 --     且 daily-sync 飞轮状态步骤读不到 total_reference 等列。CI sql 任务已纳入此步。
 -- 1c. 执行 notes_v1_2_tier_discrepancy_view.sql（在 1 之后；只依赖 notes/projects,
 --     与 1b 无先后）—— 建 v_tier_discrepancy 标注质量复核 gate。
+-- 1d. 执行 notes_v1_12_comment_tier.sql（必须在 1b 之后, 它最后一次定义 tier CHECK）——
+--     加 notes.comments_count(判爆依据) + tier CHECK 加「评估中」+ 把旧的按互动量
+--     数值推断的行退回未推断状态(D-062, 2026-09-17)。CI sql 任务已纳入此步。
 -- 2. sanshengliubu 在 public schema 部署（已有，不动）
 -- 3. autowriter 迁移到 autowriter schema（避免 public.projects 冲突）
 -- 4. 三个 schema 就绪后，执行 notes_v1_2_cross_schema_views.sql

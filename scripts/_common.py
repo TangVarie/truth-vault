@@ -156,6 +156,7 @@ _REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
         "raw_content", "publish_url", "publish_time", "account_id",
         "tier", "tier_source", "intent", "title",
         "impressions", "reads", "interactions",
+        "comments_count",   # D-062: 判爆依据, notes_v1_12 加的
         "content_format", "target_audience", "user_pain_point", "product_focus",
         "direction_subtype", "hit_blue_keywords", "target_blue_keywords",
         "pinned_comment", "raw_extra",
@@ -226,6 +227,7 @@ _REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
 _COLUMN_MIGRATION: dict[str, str] = {
     "last_seen_at":     "schemas/notes_v1_9_last_seen_reconcile.sql",
     "last_seen_run_id": "schemas/notes_v1_9_last_seen_reconcile.sql",
+    "comments_count":   "schemas/notes_v1_12_comment_tier.sql",   # D-062
 }
 
 
@@ -369,10 +371,13 @@ def _reject_shadowed_tier_rules(path, rules: list[dict]) -> None:
 # ─────────────────────────────────────────────────────────────────────────
 
 # 状态【等级】优先级 —— 多选状态栏同时挂多个状态时, 取等级最高的那个为准。
-# 数值只表相对大小; 顺序对齐既有规则表(大爆>爆>预备>参考>风控>趴>未知), 唯一修正是把
+# 数值只表相对大小; 顺序对齐既有规则表(大爆>爆>预备>参考>风控>趴>评估中>未知), 唯一修正是把
 # 【爆】提到【预备】之上: 爆贴预备升成爆贴/大爆后, 不能再被列序里靠前的「预备」规则截胡
 # (那会把已验证的爆款错判成预备、漏出爆款口径 —— 见本次修复)。所有 mapping 共用此表。
-_TIER_RANK = {"大爆": 7, "爆": 6, "预备": 5, "参考": 4, "风控": 3, "趴": 2, "未知": 1}
+# 2026-09-17 (D-062): 评估中 成为正式档位(评论数 20~50), 插在 趴 之下、未知 之上 ——
+#   运营的多选状态是追加式的(['评估中','无水花'] = 先评估、后判死), 后来的判决要能压过它,
+#   所以 趴 仍高于 评估中; 而它比 未知 有信息, 高于 未知。其余相对顺序一个没动。
+_TIER_RANK = {"大爆": 8, "爆": 7, "预备": 6, "参考": 5, "风控": 4, "趴": 3, "评估中": 2, "未知": 1}
 
 
 def _status_tokens(raw_status: Any) -> list[str]:

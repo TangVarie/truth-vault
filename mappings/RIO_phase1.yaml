@@ -115,15 +115,11 @@ tier_extraction:
     - match_contains: ["无水花"]
       tier: 趴
     - match_contains: ["评估中"]
-      tier: 未知
+      tier: 评估中
     - default: null
 
-# ── 数值推断阈值 —— 仅对【无状态】帖子兜底(状态字段优先)。
-# DECISIONS D-001: RIO 一期 爆款互动 500+、趴帖互动 3。故起点 爆=100 / 大爆=500。
-# ⚠️ [待校准] 入库后跑 scripts/recommend_tier_thresholds.py 复核。
-tier_thresholds:
-  爆: 100
-  大爆: 500
+# tier_thresholds 已废(D-062, 2026-09-17): 判爆只看评论数, 全项目统一 爆≥50/大爆≥100,
+# 由同步脚本按 comments_count 推断; 不再按项目配互动量阈值(那把尺子和运营的不是一把)。
 
 # ── 数据质量策略 ──
 # 伪爆贴(synthetic)判定走【通用规则】(见 sync_feishu transform_row), 无需项目级 opt-in:
