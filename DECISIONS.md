@@ -3648,3 +3648,70 @@ v1.12 已应用（2026-09-17 09:27Z）。核对：`comments_count` 列在；CHEC
 
 - 没把 TGV 翻成 `daily`：它的数据早停更（末贴 2025-08-07），on_demand 不变。
 - 没给别的表加声明：LNKT 的阅读量走的是平台减项（抖音），其余 15 张小红书表都有这几列。
+
+## D-063 · 通道 2（TV → 写作台经验卡）在生产没在跑：夜跑装灯 + 给写作台的重新接线说明
+
+**日期**: 2026-09-17 · **发现人**: owner（「TV 往写作台回推爆款当正例的通道从未跑过」）· **复核**: 对着生产库
+
+### 复核结论
+
+这条通道有两代，两代都没真正跑起来：
+
+- **push（D-024 通道 2）一行都没写过**：`projects.mapping_to_autowriter_project_id` 16 个项目全空、注入候选 0、`autowriter.items` 带 TV 来源标记的 0 行、`notes.synced_to_aw_at` 0 行、从没进过 daily-sync；D-038（06-01）退役时它还没跑过一次。写作台里 15 条 positive 正例是运营手标的。
+- **pull（D-038 馆员）TV 侧就绪、写作台基本没在调**：书架 328 张策展卡、馆员服务活着；但 30 天写作台 82 个 batch / 713 个版本，馆员只收到 8 个 brief、集中在 3 天，最重的三天（09-02 / 09-07 / 09-10，12–15 个 batch）一次都没调。docs/10 R-032「06-05 production 拉通」是真的，但是一单实测。
+
+**为什么没人发现**：写作台那边馆员客户端 fail-open，任何失败（含 env 没配）静默返 `[]`；TV 这边夜跑只印 →ssll，通道 2 没有任何流量指标。两边都不红。R-032 自己就写过风险（R-018 Phase-2 搬 worker.py 时要把接线一并搬），最像的原因是搬丢了或新部署没带 env —— 但那在 autowriter 仓，本仓查不到。
+
+**口径**：D-038 之后 TV 回推的是经验卡（钩子/结构/可迁移手法 + 摘录）进 P2 层，不是「爆款正文当 few-shot 正例」；后者已随 D-038 放弃。
+
+### 做了什么（TV 侧能做的）
+
+- `scripts/check_librarian_traffic.py`：只读，判据只有一条 —— 过去 48h 写作台有 batch、馆员没被写作台调过 → rc=1 + `::warning`。只数 `autowriter` / `deskcore` 两个 consumer（馆员是共享服务，ssll / 诊断 curl 的流量不能替写作台证明通着）；窗口 48h 与每日 cron 重叠，夜跑晚点或漏跑一天不留空档（这两条是 Codex 复审 #133 的两个 P2，都验实）。**故意不做比例启发式**：缓存按 brief 去重、重复命中只刷 `last_hit_at`，比例天然偏低，拿比例告警会天天红（D-053）。没生成时打「无从判定」而不是「健康」。哨兵行 `LIBRARIAN_TRAFFIC_CHECK_DONE rc=` 同饱和度检查的约定。
+- daily-sync 加一步 advisory（不拖红：修在 aw 仓，TV 红了也改不好），崩了靠哨兵行报「监控是瞎的」。
+- CI：report 渲染 5 组 + main 哨兵/崩溃 2 组 + 「夜跑真的接了、grep 前缀一致」。
+- 文档：`docs/27` 给写作台维护者的重新接线说明（证据 / 查三件事 / 自测 curl / 验收）；docs/10 R-032 状态改为「生产没在调」；CURRENT_STATE 加更正；docs/00 索引加 27。
+
+### 没做的 / 归写作台
+
+- 写作台生成主路径有没有 `fetch_flywheel_lessons`、部署有没有 `LIBRARIAN_URL / LIBRARIAN_API_KEY`，只能在 autowriter 仓查；fail-open 要留痕（WARN + 计数）也是那边的活。见 docs/27 §2。
+- push 一代的残留（脚本、`v_autowriter_injection_candidates`、`v_flywheel_sync_status` 的 aw 列、docs）没清，不急；先把灯装上。
+
+## D-064 · 写作台库内按内容对照 + 回填 `notes.source_autowriter_*`：TV 接受，条件是 ingested 不回填、两列改口径
+
+**日期**: 2026-09-18 · **提出**: 写作台（deskcore `tv-sync`，aw migrations 009/010，aw PR #83）· **核对**: TV 对着生产库 · **拍板**: owner
+
+### 背景
+
+R-031（06-05）让 TV 能从飞书表的六个 `_source_autowriter_*` 列提升 lineage，但三周没有一张表带过这些列，`notes.source_autowriter_*` 6161 行全 NULL；写作台的模型对比 `v_model_comparison` 一直空集，「爆没爆」回不到写作台。写作台改为在共享 Supabase 里按内容对：`autowriter.tv_project_map` + `autowriter.tv_note_links`（首版 1870 条 TV 笔记 → 写作台版本），`--write-tv` 经 SECURITY DEFINER RPC `deskcore_tv_backfill_lineage` 回填 TV 两列。写作台自己定的规矩是「那是 TV 的列，回填前跟 TV 打招呼」，owner 转来问 TV 确不确认。
+
+### TV 核对了什么（全部对着生产库）
+
+- 目标列 6161 行全 NULL；RPC 只更新 `source_autowriter_version_id IS NULL` 的行，`item_id` 走 COALESCE；只有 postgres / service_role 有 EXECUTE（anon / authenticated 已 REVOKE）。
+- 夜跑不会冲掉：`transform_row` 只在飞书列存在且非空时才给 note dict 带这两个 key，PostgREST upsert 不碰缺席的列。
+- 触发器：`audit_row_change` 只记 diff（每次回填 1 行 `audit_log`，actor=authenticator / postgrest）；`updated_at` 被顶到当天，TV 没有按 `notes.updated_at` 增量的流程（只有看板 `max(updated_at)`）。
+- 生产库里这两列**没有**跨 schema 外键（`notes_v1_2.sql` 注释说有，实际没建）；悬空指针靠 `verify_supabase_state.sql` 两条检查。
+- 首版 1870 条对照里 1465 条是 `ingested`：写作台把 TV 里对不上的笔记复制进去新建的版本（全部 09-17 建，ai_engine=deskcore，status=pending）。写回去等于说「这条笔记来源于版本 X」而 X 是从它复制出来的，因果倒置；`v_model_comparison` 会多 1465 行 deskcore，胜率 = 项目基线，没有信息量。
+- 真对上的 380 条（body_exact 244 / title_exact 124 / fuzzy 12）里约 208 条 `lag_days < 0`（写作台记录比发布晚，title_exact 中位数晚 7 天）：多数也是发布后补进写作台的，内容相同但方向不可知。
+
+### 决定
+
+1. **接受回填**。TV 不改代码、不部署。
+2. **`ingested` 不回填、不标 synced、`--rematch` 也不重对**（写作台已改，aw PR #83：重对只会对上它自己变成 body_exact 再被写回，直接堵死）。
+3. **两列语义改口径：「写作台里对应的版本」**，不再当「生成来源」；要看方向查 `autowriter.tv_note_links.lag_days`。`v_model_comparison` 的 deskcore 一档因此是「写作台持有副本」的胜率，不是「写作台写的」的胜率；aw 文档同口径。
+4. aw 迁移 010 给 `tv_project_map / tv_note_links / ingest_locks / versions_num_backup_20260826` 开 RLS（原先只有 service_role 表级 GRANT，anon 本来读不到，按惯例补上）；写作台以后若加删版本路径，顺手清 TV 两列。
+5. 这类 schema 级对接的规矩，同 D-056 的精神：**谁的列谁定语义**，对方只填 NULL、不覆盖。
+
+### 首跑结果（09-18，aw 跑完、TV 复核）
+
+`notes.source_autowriter_version_id` 非空 0 → **404**（body_exact 268 / title_exact 124 / fuzzy 12；比 TV 核时的 380 多 24 条：09-17 那 24 条「表内重复 / 指纹库已有」这次按开头哈希对上了），404 条 item_id 同步填满、都与 `tv_note_links.version_id` 一致，落在 ingested 笔记上 0 行；1466 条 ingested 一条没写、synced 全空；四张表 `relrowsecurity=true`；`v_model_comparison` 有行了（deskcore 按项目 5 行 + TUGE 5 条 LLM/manual 样本）。之前那 1 条 ambiguous 人工看过，两版候选都是同标题的评论稿，按对不上补录，TV 两列没动。
+
+### 发现的顺手问题（未改，待 owner）
+
+- **TV 夜跑实际起跑时间**：cron 声明 `0 2 * * *`，但最近 20 次 schedule 运行的创建时间在 06:36–08:33 UTC（GitHub 整点排程拥堵，文档明说整点是高负载时段）。aw cron 04:00 UTC 因此跑在 TV 前面 → 当天新笔记隔天才对上。**owner 拍板 TV 改（09-18）**：cron 挪到 `17 2 * * *`（02:17 UTC = 10:17 北京，非整点）。验收：接下来几天 schedule 运行的创建时间落在 04:00 UTC 之前；若仍拖到之后，改让 aw 挪到 ≥ 10:00 UTC。
+- `schemas/notes_v1_2.sql` 里「跨 schema FK」的注释与生产不符；docs/09 push 一代的 `synced_autowriter_item_id` 回写设计仍在文档里（D-063 已记 push 残留不急）。
+
+### 没做的
+
+- 没改 `v_model_comparison`：没有自动流程消费它，deskcore 档的口径写进文档即可。
+- 没动 `_LINEAGE_FK_COLS`：飞书表哪天真带六列，TV 自己的值覆盖写作台回填的，方向正确。
+- 文档只补三处（docs/10 R-031、本条、CURRENT_STATE），按 owner 09-18 的口径。

@@ -335,9 +335,9 @@ python preview_injection_candidates.py --project NUC_phase1
 1. 编辑 `.github/workflows/daily-sync.yml`, **取消** 头部的 `# schedule:` 注释段:
    ```yaml
    schedule:
-     - cron: '0 2 * * *'   # 02:00 UTC = 10:00 北京时间
+     - cron: '17 2 * * *'  # 02:17 UTC = 10:17 北京时间 (非整点, 避开 GitHub 整点排队, D-064)
    ```
-2. Commit + push 到 main. GitHub Actions 第二天 02:00 UTC 自动跑.
+2. Commit + push 到 main. GitHub Actions 第二天 02:17 UTC 自动跑.
 3. 第一次想立刻试: repo → Actions → Daily TV sync → Run workflow → dry_run=true → Run. 看 logs.
 4. dry_run=true 跑过后再 dry_run=false 实跑一次, 验证写入真到 Supabase.
 

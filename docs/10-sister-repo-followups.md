@@ -1553,6 +1553,44 @@ autowriter 维护者. **工时**: 30 分钟 (改 2-N 个 policy 定义 + 重跑�
 
 ## R-031 · 飞书 lineage 列 → notes.source_autowriter_*_id 脚本支持
 
+> ⚠️ **2026-09-18 改道 —— 飞书手抄六列作废，改为写作台在库内按内容对照、回填 TV 两列**（决策 [D-064](../DECISIONS.md#d-064)）
+>
+> 06-05 的脚本支持是真的，但闭环从没转起来：三周里没有一张飞书表带过 `_source_autowriter_*` 六列
+> （运营手抄 UUID 不现实），`notes.source_autowriter_*` 6161 行全 NULL。写作台
+> （[autowriter](https://github.com/TangVarie/autowriter) `migrations/009_tv_links.sql` + deskcore `tv-sync`，aw PR #83）
+> 改为**在共享 Supabase 里按内容对**：`autowriter.tv_project_map`（TV `project_id` ↔ 写作台项目）+
+> `autowriter.tv_note_links`（每条 TV 笔记 → 写作台版本，`match_kind` = body_exact / title_exact / fuzzy /
+> ambiguous / unmatched / ingested / tv_lineage），对不上的复制进写作台新建版本（`ingested`）。
+> `--write-tv` 经 SECURITY DEFINER RPC `deskcore_tv_backfill_lineage` 回填 `source_autowriter_version_id / item_id`，
+> **只填 NULL 的行**，只有 service_role 能调。
+>
+> **TV 侧核过（2026-09-18，对着生产库）**：两列全空 → 安全目标；夜跑 `transform_row` 只在飞书列存在且非空时才给
+> note dict 带这两个 key，upsert 不会把回填冲成 NULL；触发器只记 diff（`audit_log` 一行一条），`updated_at` 会顶到
+> 当天但 TV 没有按它增量的流程；生产库里这两列**没有**跨 schema 外键（`notes_v1_2.sql` 注释说有，实际没建），
+> 悬空指针靠 `verify_supabase_state.sql` 两条检查兜底。
+>
+> **和写作台约定的条件**（全部已落地）：
+> 1. `ingested` 不回填、不标 synced，`--rematch` 也不重对：那些版本是从这条笔记复制出来的，不是它的来源；
+>    写回去会让 `v_model_comparison` 多 1466 行 deskcore 的循环样本。
+> 2. 两列语义改口径：**「写作台里对应的版本」，不再当「生成来源」**。回填的 404 条里约 208 条 `lag_days < 0`
+>    （写作台记录比发布晚，title_exact 中位数晚 7 天），多数是发布后补进写作台的；看方向查
+>    `autowriter.tv_note_links.lag_days`。
+> 3. aw cron 每日 04:00 UTC 跑 `tv-sync --all --write-tv`。⚠️ TV 夜跑 cron 原声明 `0 2 * * *`，但 GitHub 排程实际
+>    起跑 06:36–08:33 UTC（最近 20 次 schedule 运行的创建时间），aw 那趟跑在 TV 之前，新笔记**隔天**才对上。
+>    owner 拍板 **TV 改**：cron 挪到 `17 2 * * *`（02:17 UTC，非整点；GitHub 文档明说整点是高负载时段）。
+>    验收：接下来几天 schedule 运行的创建时间应落在 04:00 UTC 之前；若仍拖到 04:00 之后，就换 aw 挪到 ≥ 10:00 UTC。
+> 4. aw 迁移 010 给 `tv_project_map / tv_note_links / ingest_locks / versions_num_backup_20260826` 开 RLS
+>    （原先只有 service_role 的表级 GRANT，anon 本来就读不到，按 Supabase 惯例补上，已核 `relrowsecurity=true`）。
+> 5. 写作台现在没有删版本的路径；以后加了要顺手清 TV 里指向它的两列（已写进 aw runbook）。
+>
+> **首跑结果（2026-09-18 aw 跑完、TV 复核）**：`notes.source_autowriter_version_id` 非空 0 → **404**
+> （body_exact 268 / title_exact 124 / fuzzy 12，item_id 同步填满，404 条都与 `tv_note_links.version_id` 一致，
+> 落在 ingested 笔记上 0 行）；1466 条 `ingested` 一条没写；`v_model_comparison` 从空集变为有行
+> （deskcore 一档按项目 + TUGE 5 条 LLM/manual 样本）。
+>
+> **TV 侧不改代码、不部署**：`_LINEAGE_FK_COLS` 那段保留，飞书表哪天真带了六列，TV 自己的值会覆盖写作台回填的
+> （aw 只填 NULL，方向正确）。下面 06-05 的记录保留作背景。
+
 > ✅ **已解决 (Session #17, 2026-06-05)** —— 下游 autowriter 回灌闭环要上线, 触发条件已到。
 > `transform_row` 已加 `_LINEAGE_FK_COLS` (item/version UUID → FK 列) + `_LINEAGE_RAW_EXTRA_COLS`
 > (其余 4 列 → raw_extra), 6 列全局预声明不再 quarantine; CI 加 `transform_row autowriter
@@ -1866,7 +1904,7 @@ NULL），只写 `.gte("updated_at", …)` 会把将来可能出现的 NULL 行*
 | R-027 | autowriter schema 漂移告警 | aw | ✅ 完成 | aw: `update_project` 列漂移从静默改为 UI 显式告警. |
 | R-028 | sanshengliubu stage-level resume | ssll | ⏳ P3 backlog | 1-2 天 + schema 改动. 触发条件 (sanshengliubu `docs/architecture.md`): matrix > 30 cells 时 resume 成本显著. |
 | R-029 | autowriter RLS auth.uid() 每行重算 | aw | ✅ 完成 | TV 即时修 (2 policy) 已应用 + aw 源码同步 (全 10 表 11 处 RLS policy 包 `(select auth.uid())` + 8 个 FK 覆盖索引). advisor auth_rls_initplan + unindexed_fk(autowriter) 均清零. |
-| R-031 | 飞书 lineage 列 → notes.source_autowriter_*_id 脚本支持 | TV | ✅ 已解决 (2026-06-05) | `transform_row` 加 `_LINEAGE_FK_COLS`/`_LINEAGE_RAW_EXTRA_COLS`: 6 列全局声明不再 quarantine + 2 UUID 自动进 FK 列, 其余 4 列进 raw_extra. CI 守 R-031 self-check; docs/11 改"✅ 现状". 见本文 § R-031. |
-| R-032 | autowriter 通道2 改 pull (调 LLM 馆员 + 注入) | TV + aw | ✅ 已解决 · production 拉通 (2026-06-05) | aw `librarian_client.py` + `app.py:_queue_worker_impl` fetch + `memory.py` 注入 P2; 实测一单借回 5 张经验卡、馆员缓存有真实流量. env 在 aw 部署 secrets (LIBRARIAN_URL/API_KEY/TIMEOUT_SEC). 见本文 § R-032 + docs/22 §2. |
+| R-031 | 飞书 lineage 列 → notes.source_autowriter_*_id 脚本支持 | TV + aw | ⚠️ 2026-09-18 改道 (D-064): 飞书手抄六列作废, 写作台**库内按内容对照** + `--write-tv` 回填 (aw 009/010, PR #83) | 06-05 的 `_LINEAGE_FK_COLS` 保留 (TV 自己的值覆盖 aw 回填). 首跑 `notes.source_autowriter_*` 0 → 404 行 (body_exact 268 / title_exact 124 / fuzzy 12); 1466 条 `ingested` 不回填; 两列语义改为「写作台里对应的版本」, 方向查 `autowriter.tv_note_links.lag_days`. TV 夜跑 cron 挪到 `17 2 * * *` 避开整点排队 (原 02:00 声明实际 ~07:00 起跑, 落在 aw 04:00 之后); 验收看 schedule 起跑时间. 见本文 § R-031. |
+| R-032 | autowriter 通道2 改 pull (调 LLM 馆员 + 注入) | TV + aw | ⚠️ 2026-09-17 复核: **生产没在调**(30 天 82 batch 只 8 brief, 最重三天 0 次; 06-05 那次拉通是一单实测) → 重新接线说明 [docs/27](27-autowriter-librarian-relink-2026-09-17.md), TV 侧夜跑加借阅流量守卫 (D-063) · 此前: ✅ production 拉通 (2026-06-05) | aw `librarian_client.py` + `app.py:_queue_worker_impl` fetch + `memory.py` 注入 P2; 实测一单借回 5 张经验卡、馆员缓存有真实流量. env 在 aw 部署 secrets (LIBRARIAN_URL/API_KEY/TIMEOUT_SEC). 见本文 § R-032 + docs/22 §2. |
 | R-033 | ssll 通道1 切到 LLM 馆员 (可选升级) | ssll | ⏳ 可选 | R-022 的 category-filter 已能用; 馆员(D-038)上线后 ssll 可升级共用同一馆员. 不阻塞, 降级回退现有 retrieve_reference_packs. |
 | R-034 | autowriter 写作台内核外置为 MCP (deskcore) | aw + TV | ✅ 完成 (2026-08-23) | **deskcore 落 aw 仓不落 TV**(曾误写成 TV 服务, 违反 README 边界, 已撤回). TV 已出 `schemas/controlled_vocab_v0_2.json`(供 aw vendor) + v1_8 正例饱和度盲点修复. 见本文 § R-034 + [D-041](../DECISIONS.md#d-041). |
