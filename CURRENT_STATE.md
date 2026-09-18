@@ -4,7 +4,7 @@
 **当前阶段**: 飞轮已转起来 —— **8 项目入库 (3,407 篇 / 验证级爆款 200 / 书架 118 卡 / 累计曝光 37.3M)**, 通道1(ssll)+ 通道2(pull/馆员)都 live, 对外看板已上线 Vercel。**当前状态/待办权威 = [docs/26-handover-2026-06-09.md](docs/26-handover-2026-06-09.md);从零到现在的完整对齐 = [docs/00-START-HERE.md](docs/00-START-HERE.md)**。
 > ⚠️ 下方 Session #9~#17 记录是历史时间线快照(数字停在当时);**最新真实数字 + 06-07→09 变更见 docs/26**。
 > ⚠️ **2026-09-17 更正**: 上一行「通道2(pull/馆员)都 live」不成立 —— 复核发现写作台在生产**基本没在调馆员**(30 天 82 batch 只 8 brief, 最重三天 0 次; 06-05 的拉通是一单实测)。TV 侧书架/馆员正常, 修在 autowriter 仓; 见 [docs/27](docs/27-autowriter-librarian-relink-2026-09-17.md) + D-063。夜跑自 D-063 起有「通道 2 借阅流量检查」, 暗着会 `::warning`。
-> ✅ **2026-09-18**: 写作台 ↔ TV 稿子对照落地 (aw 侧 `tv-sync --write-tv`, 每日 04:00 UTC): `notes.source_autowriter_*` 从全 NULL → **404 行** (body_exact 268 / title_exact 124 / fuzzy 12; 1466 条 `ingested` 副本不回填)。两列语义改为「写作台里对应的版本」(不是生成来源, 方向查 `autowriter.tv_note_links.lag_days`)。TV 不改代码。见 D-064 + docs/10 R-031。⚠️ 夜跑 cron 声明 02:00 UTC 但实际起跑 ~07:00 UTC (GitHub 排程延迟), aw 那趟跑在 TV 前面, 新笔记隔天对上; 待拍板挪谁。
+> ✅ **2026-09-18**: 写作台 ↔ TV 稿子对照落地 (aw 侧 `tv-sync --write-tv`, 每日 04:00 UTC): `notes.source_autowriter_*` 从全 NULL → **404 行** (body_exact 268 / title_exact 124 / fuzzy 12; 1466 条 `ingested` 副本不回填)。两列语义改为「写作台里对应的版本」(不是生成来源, 方向查 `autowriter.tv_note_links.lag_days`)。TV 不改代码。见 D-064 + docs/10 R-031。夜跑 cron 原声明 02:00 UTC 但实际起跑 ~07:00 UTC (GitHub 整点排队), 落在 aw 04:00 之后; owner 拍板 TV 改 → cron 挪到 `17 2 * * *` (非整点), 验收看接下来几天的起跑时间。
 **当前会话编号**: #17 (后续 06-05~09 迭代见 docs/22 / 25 / 26)
 
 会话进度脉络:

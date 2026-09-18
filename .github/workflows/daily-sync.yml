@@ -1,6 +1,8 @@
 name: Daily TV sync
 
 # 2026-06-01 (Session #15): schedule 已启用 (每日 02:00 UTC = 10:00 北京时间).
+# 2026-09-18 (D-064): 改成 02:17 UTC 非整点 —— 整点排程在 GitHub 是高负载时段, 之前最近 20 次
+#   实际 06:36–08:33 UTC 才起跑, 落在写作台 tv-sync cron (04:00 UTC) 之后, 新笔记隔天才对上。
 # secrets 已配齐, 手动 dry-run / 真跑验证过 (通道1 已通, MF65 已同步).
 # ⚠️ GitHub 定时任务只从【默认分支】的 workflow 文件触发 —— 所以本改动必须
 #    合并进默认分支 (main) 后 cron 才真正开始跑; 停在 feature 分支上不会触发.
@@ -40,8 +42,10 @@ on:
         type: boolean
         default: false
   schedule:
-    # 02:00 UTC = 10:00 北京时间. 飞书表通常这之前已经填好昨日数据.
-    - cron: '0 2 * * *'
+    # 02:17 UTC = 10:17 北京时间. 飞书表通常这之前已经填好昨日数据.
+    # 非整点分钟是故意的 (GitHub 文档: 整点是 schedule 高负载时段, 会排队几小时); 写作台的
+    # tv-sync cron 在 04:00 UTC, 这趟必须在它之前跑完, 否则新笔记隔天才对上 (D-064)。
+    - cron: '17 2 * * *'
 
 # 同一时刻只允许一个 daily-sync 在跑。cron 与手动 workflow_dispatch 会撞:
 # 两个 run 各自快照同一批 essence_annotated_at IS NULL 的笔记 → 重复烧 LLM、

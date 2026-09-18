@@ -3707,7 +3707,7 @@ R-031（06-05）让 TV 能从飞书表的六个 `_source_autowriter_*` 列提升
 
 ### 发现的顺手问题（未改，待 owner）
 
-- **TV 夜跑实际起跑时间**：cron 声明 `0 2 * * *`，但最近 20 次 schedule 运行的创建时间在 06:36–08:33 UTC（GitHub 整点排程拥堵，文档明说整点是高负载时段）。aw cron 04:00 UTC 因此跑在 TV 前面 → 当天新笔记隔天才对上。要同天对上：aw 挪到 ≥ 09:30 UTC，或 TV 把 cron 改成非整点分钟（谁挪由 owner 定）。
+- **TV 夜跑实际起跑时间**：cron 声明 `0 2 * * *`，但最近 20 次 schedule 运行的创建时间在 06:36–08:33 UTC（GitHub 整点排程拥堵，文档明说整点是高负载时段）。aw cron 04:00 UTC 因此跑在 TV 前面 → 当天新笔记隔天才对上。**owner 拍板 TV 改（09-18）**：cron 挪到 `17 2 * * *`（02:17 UTC = 10:17 北京，非整点）。验收：接下来几天 schedule 运行的创建时间落在 04:00 UTC 之前；若仍拖到之后，改让 aw 挪到 ≥ 10:00 UTC。
 - `schemas/notes_v1_2.sql` 里「跨 schema FK」的注释与生产不符；docs/09 push 一代的 `synced_autowriter_item_id` 回写设计仍在文档里（D-063 已记 push 残留不急）。
 
 ### 没做的
