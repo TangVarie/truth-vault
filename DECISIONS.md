@@ -3898,3 +3898,30 @@ tag-only 留一项目加权 AUC：v1 0.630（286 正例）/ v2 0.631（285）。
 
 - 没改 l2-feasibility.md 和 signal-definitions.md 里的 SQL 原文：那是 9/16 的实验记录，改了就不是记录了。本条和报告 §五 说明以后怎么用视图复现。
 - 没决定 `v_l2_labels_v1` 什么时候退役：等 docs/28 闸二第一轮跑完、用它对过账再删。
+
+---
+
+## D-066 续 · 生产部署记录（09-19）：v1_10 六月就在部署清单里，生产一直没 apply；今天连同 v1_14 / v1_15 一起补上
+
+**日期**: 2026-09-19
+**触发**: apply D-066 的 v1_14 之前照例先查生产视图现状，发现 `v_flywheel_lesson_cards` 没有 COR-024 的 `LEAST` 夹取、`fill_era_tag()` 没有清空分支、Supabase 迁移表里也没有 v1_10。
+
+### 事实
+
+- `scripts/README.md` Step 0 清单从 6 月起就列着 `notes_v1_10_era_clear_and_decay_clamp.sql`，CI 的 python job 也一直在对它做源码断言，但 **CI 的 sql job 从没真的套过它，生产也从没 apply 过**。三个月里没人发现，因为它修的两件事（未来日期衰减越界、`publish_time` 清空后 `era_tag` 残留）在生产都没触发过：书架上没有未来日期的卡，最大 `recency_weight` 0.9993。
+- 教训同 D-051 / D-061 那条：**「在清单里」不等于「在库里」**。部署清单只能靠人照着跑；CI 的 sql job 是唯一能证明「这条迁移在当前链上能套」的地方，v1_10 恰好漏在两边之间。v1_14（PR #135）把它补进了 sql job，以后每个 PR 都会按 v1_10 → v1_14 → v1_15 的顺序真的跑一遍。
+
+### 今天 apply 到生产的（owner 授权，`apply_migration`，均与 main 上的文件一字不差）
+
+| 迁移 | Supabase 记录 | apply 后验证 |
+|---|---|---|
+| `notes_v1_10_era_clear_and_decay_clamp` | `20260919101106` | `fill_era_tag()` 含 `NEW.era_tag := NULL`；视图含 `LEAST`；最大 `recency_weight` 0.9986；没有一张卡因夹取改变排序 |
+| `notes_v1_14_shelf_ticket_gate` | `20260919101217` | 书架 353 → **312**（已策展 343 → 311）；铺评工单爆贴在书架上 41 → **0**；起量后干预的 25 张照旧；`v_dash_overview.borrowable_cards` = 312；TUGE 53 → 13，其他项目不变 |
+| `notes_v1_15_l2_labels` | `20260919103425` | `v_l2_labels_v1` 正例 305 / 负例 4,652；`v_l2_labels` 正例 **304** / 负例 4,652；只差 SPX 那一条 synthetic 大爆，与 `data-analysis/l2-labels-v1-vs-v2-2026-09-19.md` 一致 |
+
+apply 顺序 v1_10 → v1_14 → v1_15。前两条整体重建同一个视图，后跑的赢，所以 v1_10 必须在 v1_14 之前；v1_15 只建两个新视图，顺序无关。
+
+### 没做的
+
+- 没回头查 v1_7 / v1_8 在生产的状态：Supabase 迁移表里有 `notes_v1_7_surface_three_tier_decay`，v1_8 没有记录但 `v_autowriter_positive_pool_saturation` 的列集要另查。留给下次动那个视图的时候。
+- 馆员缓存没手清：`library_version()` 含候选 ID 集合摘要（TV-03），41 张卡退出候选后版本串必变，旧缓存自然 miss。
