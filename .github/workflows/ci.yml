@@ -6256,6 +6256,43 @@ jobs:
           WANT5="over=over_marked soft=over_marked_soft under=under_marked under2=under_marked"
           [ "$GOT5" = "$WANT5" ] || { echo "❌ v_tier_discrepancy 没按评论数口径判。期望 [$WANT5] 实得 [$GOT5]"; exit 1; }
           echo "✓ v1.12: comments_count 在 / 评估中 可写 / 瞎写仍被拒 / 回填三条路径 + 首次判据 + 幂等 / 阈值清空 / 视图评论数口径"
+      - name: Apply v1.10 era/decay (+ idempotency) then v1.14 shelf ticket gate (+ idempotency)
+        # v1_10 此前只被 python job 做源码断言, 从没在 sql job 里真的套过。v1_14 整体重建
+        # 同一个视图 (v_flywheel_lesson_cards), 生产上它必须跑在 v1_10 之后 (后跑的赢);
+        # 这里按同样顺序套, 证明 CREATE OR REPLACE 在 v1_10 的列集上成立、且两遍幂等。
+        run: |
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_10_era_clear_and_decay_clamp.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_10_era_clear_and_decay_clamp.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_14_shelf_ticket_gate.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_14_shelf_ticket_gate.sql
+      - name: Sanity-check v1.14 (铺评工单 的 爆/大爆 不上书架; 起量后干预 / 无键 / 空 routes / 参考 照常; D-060 route → 书架)
+        # 断行为不断源码 (D-051): 六条边界行, 只看视图吐出哪几条。
+        #   ticket_bao   铺评工单 + 爆       → 不上 (本迁移要挡的)
+        #   both_bao     两路都有 + 大爆     → 不上 (含铺评工单就挡, 起量后干预不豁免它)
+        #   boost_bao    只有起量后干预 + 大爆 → 上   (signal-definitions §八: 只剔铺评工单一路)
+        #   nokey_bao    data_quality_flags 为 NULL → 上 (D-060 之前入库、没被引擎重判过的行不能被误伤)
+        #   emptyroutes  有 flags 但没有 routes 键 → 上 (COALESCE 到 '[]')
+        #   ticket_ref   铺评工单 + 参考     → 上   (只挡指标型 tier, 同 synthetic 的处理)
+        # 反证 (改坏之后必须变红): 把 v1_14 里 '铺评工单' 那两行去掉 → ticket_bao/both_bao 冒出来。
+        run: |
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          INSERT INTO truth_vault.projects (project_id, brand, product, category)
+            VALUES ('CI_V14', 'b', 'p', '其他') ON CONFLICT DO NOTHING;
+          INSERT INTO truth_vault.notes (note_id, project_id, raw_content, tier, tier_source, publish_time, data_quality_flags) VALUES
+            ('CI_V14_ticket_bao',  'CI_V14', 'c', '爆',   '状态字段', '2026-09-01', '{"comment_maintained": true, "comment_maintained_routes": ["铺评工单"]}'),
+            ('CI_V14_both_bao',    'CI_V14', 'c', '大爆', '状态字段', '2026-09-01', '{"comment_maintained": true, "comment_maintained_routes": ["起量后干预", "铺评工单"]}'),
+            ('CI_V14_boost_bao',   'CI_V14', 'c', '大爆', '状态字段', '2026-09-01', '{"comment_maintained": true, "comment_maintained_routes": ["起量后干预"]}'),
+            ('CI_V14_nokey_bao',   'CI_V14', 'c', '爆',   '状态字段', '2026-09-01', NULL),
+            ('CI_V14_emptyroutes', 'CI_V14', 'c', '爆',   '状态字段', '2026-09-01', '{"comment_maintained": false}'),
+            ('CI_V14_ticket_ref',  'CI_V14', 'c', '参考', '状态字段', '2026-09-01', '{"comment_maintained": true, "comment_maintained_routes": ["铺评工单"]}');
+          SQL
+          GOT=$(psql -v ON_ERROR_STOP=1 -tA -c "SELECT string_agg(replace(source_note_id,'CI_V14_',''), ' ' ORDER BY source_note_id)
+              FROM truth_vault.v_flywheel_lesson_cards WHERE project_id='CI_V14'")
+          WANT="boost_bao emptyroutes nokey_bao ticket_ref"
+          if [ "$GOT" != "$WANT" ]; then
+            echo "❌ v1.14 书架准入没按 D-060 route 挡铺评工单 (或误伤了不该挡的)。期望 [$WANT] 实得 [$GOT]"; exit 1
+          fi
+          echo "✓ v1.14: 铺评工单 爆/大爆 不上书架; 起量后干预 / 无键 / 空 routes / 参考 照常"
       - name: Apply v1.15 L2 label views (+ idempotency)
         run: |
           psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_15_l2_labels.sql
