@@ -3715,3 +3715,46 @@ R-031（06-05）让 TV 能从飞书表的六个 `_source_autowriter_*` 列提升
 - 没改 `v_model_comparison`：没有自动流程消费它，deskcore 档的口径写进文档即可。
 - 没动 `_LINEAGE_FK_COLS`：飞书表哪天真带六列，TV 自己的值覆盖写作台回填的，方向正确。
 - 文档只补三处（docs/10 R-031、本条、CURRENT_STATE），按 owner 09-18 的口径。
+
+---
+
+## D-067 · L2 正负例口径落成视图 `v_l2_labels`，修四处 NULL / 漏闸问题；`v_l2_labels_v1` 逐字照搬留作对照
+
+**日期**: 2026-09-19
+**触发**: 写 D-065 草案（docs/28 §11 第 5 条）时顺手查出。与内容特征层无关，单独修。
+**编号说明**: D-065 留给内容特征层草案（PR #134，待拍板）；D-066 是书架挡铺评工单（PR #135）。
+
+### 背景
+
+L2 的正例口径一直只活在文档里：signal-definitions §八 写了五条判据，l2-feasibility §8.6 的复现 SQL 又抄了一份 `d` 子查询，两份已经不一样（§8.6 少了 synthetic 闸）。每个分析各抄各的，口径必然分叉。docs/28 要让特征对比、闸二、闸三都读同一个口径，所以先把它落成视图。
+
+落的时候对着 §8.6 的 `d` 用边界行核，四处问题：
+
+- (a) `NOT (raw_extra ? … OR raw_extra ? …)` 在 `raw_extra` 为 NULL 时整体为 NULL，干净爆款被静默排除；
+- (b) `tier_source <> '数值推断'` 对 NULL 同理；
+- (c) 比 signal-definitions §八 少了 ②（synthetic 闸），「伪500评」「笔记状态含关注」这类 synthetic 行不含「伪爆」二字，被当正例；
+- (d) 铺评工单只看 `raw_extra` 顶层键；D-060 引擎写的 `comment_maintained_routes` 同时认顶层列和 `_undeclared`。
+
+生产影响面（09-19，389 条 爆/大爆）：(a) 0、(b) 0、(c) **1**、(d) 0。今天两版只差 SPX 一条 synthetic 大爆；修的是口径对齐和 NULL 健壮性。差异报告：`data-analysis/l2-labels-v1-vs-v2-2026-09-19.md`。
+
+### 决定
+
+1. **新增迁移 `schemas/notes_v1_15_l2_labels.sql`**，两个视图：
+   - `v_l2_labels_v1`：逐字照搬 §8.6 的 `d`（只去掉「有 essence、正文 ≥ 50 字」两条实验取数条件），**故意保留四处问题**，用来复现 9/16 的数字、确认管道对得上。对完账就可以退役。
+   - `v_l2_labels`：signal-definitions §八 的五条，`IS DISTINCT FROM` / `COALESCE` 做 NULL 安全，synthetic 闸补上，铺评工单读引擎 routes。
+2. **口径只住一处。** 以后 l2 的 SQL、docs/28 的 `v_feature_contrast`、闸三都只读 `v_l2_labels`；docs/28 附录 A 里的 `v_l2_labels` 定义由本迁移取代。
+3. **不在视图里过滤 essence 或正文长度**，那是各实验自己的取数条件。评估中 / 参考 / 风控 / 删除 / 未知 / 预备 既不是正例也不是负例，不在视图里。
+4. **顺手重算了分档表**（docs/28 §6.3 要求的闸三基线）：v2 口径下最低 20% 爆率 2.23% vs 其余 6.93%，约 0.32 倍；砍最低 20% 少发 19.9% 只丢 7.4% 爆款。docs/28 §6.3 的「≤ 0.6 倍」按这个基线可以收紧，留给 D-065 讨论。
+
+### 复现
+
+tag-only 留一项目加权 AUC：v1 0.630（286 正例）/ v2 0.631（285）。9/16 文档的 0.635 是 269 个正例时的数，signal-definitions §八 记的清洗后 0.630 与本次对上；差在数据动了，不是管道。
+
+### 守卫（CI sql job，D-051 断行为不断源码）
+
+十二条边界行，两个视图各断言吐出哪几条。`v_l2_labels` 必须收 (a)(b)、剔 (c)(d)、留「起量后干预」、剔 数值推断 / 含「伪爆」/ 互动 ≤ 趴中位；`v_l2_labels_v1` 必须原样保留四处（谁顺手把 v1 也修了，对照就没了，会红）。**反证已跑**：IS DISTINCT FROM 改回 `<>` → 红；去掉 synthetic 行 → 红；④ 改回顶层键 → 红；v1 被修 → 红。恢复后绿。
+
+### 没做的
+
+- 没改 l2-feasibility.md 和 signal-definitions.md 里的 SQL 原文：那是 9/16 的实验记录，改了就不是记录了。本条和报告 §五 说明以后怎么用视图复现。
+- 没决定 `v_l2_labels_v1` 什么时候退役：等 docs/28 闸二第一轮跑完、用它对过账再删。

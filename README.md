@@ -279,6 +279,7 @@ truth-vault/
 | [data-analysis/10-project-audit.md](data-analysis/10-project-audit.md) | 10 项目数据审计（schema 的由来） |
 | [data-analysis/l2-feasibility.md](data-analysis/l2-feasibility.md) | L2 可行性实测（9/16，含复现 SQL） |
 | [data-analysis/signal-definitions.md](data-analysis/signal-definitions.md) | **信号定义与标签污染实测**（9/16，读 L2 之前先读这个） |
+| [data-analysis/l2-labels-v1-vs-v2-2026-09-19.md](data-analysis/l2-labels-v1-vs-v2-2026-09-19.md) | L2 正负例口径落成视图 `v_l2_labels` 的新旧差异 + 分档表重算（9/19，D-067） |
 | [data-analysis/ops-request-2026-09-16.md](data-analysis/ops-request-2026-09-16.md) | 给运营的补数清单（6 个问题 + 8 列，可直接转发） |
 
 ## 现在在哪 / 下一步
