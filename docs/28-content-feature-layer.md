@@ -209,6 +209,8 @@ truth_vault.note_feature_answers（Layer 1 事实）
 
 **证据片段硬闸**：答「是」（choice 题选了实质选项）必须附上原文里的原样片段，不超过 30 字。代码去掉空白后做子串校验，对不上就重问一次，仍对不上记 NULL、`invalid_reason = 'evidence_not_found'`。这一步不靠模型自觉，**专门防「凭印象答是」**，人工抽查时也一眼能核。
 
+**「否」不能来自被截断的片段**（codex review on #134）：`body` / `full` 截到 1,500 字后，题目问的仍是「全文有没有」，模型只看了前缀。特征出现在后面的，会被记成「否」而不是「不知道」，证据校验对假阴性无能为力。所以片段被截断时，scope 为 `body` / `full` 的题答「否」一律记 NULL、`invalid_reason = 'span_truncated'`；答「是」照常（证据在前缀里就成立）。今天这条是防御：生产 6,163 篇正文最长 1,013 字，没有一篇会被截，但写作台草稿和以后的表不保证。
+
 ### 5.4 模型看到的是什么（骨架）
 
 ```
@@ -322,7 +324,7 @@ Jev 是 TypeSafe AI 2026-09-15 发布的判断型模型：输入一段文本和�
 - 项目内置换标签跑 20 次，加权 AUC 平均落在 0.47–0.53，且没有一次超过真实那一跑（附录 B.4）；
 - 附录 B.1 的 SQL 与 statsmodels 对数一致。
 
-**预注册**：跑之前把问题库改成 `frozen`、记下 sha256，本节的判据数字写进 DECISIONS。产出：`data-analysis/feature-gate2-<日期>.md`，加上 `feature_validation` 各行。
+**预注册**：跑之前把问题库改成 `frozen`、记下 sha256 和当轮的抽取器集合（附录 B.3 的 `:sha` / `:extractors`，就是这一跑的快照），本节的判据数字写进 DECISIONS。产出：`data-analysis/feature-gate2-<日期>.md`，加上 `feature_validation` 各行。
 
 ### 6.3 闸三 · 对新笔记也成立
 
@@ -372,7 +374,7 @@ AND NOT (COALESCE(n.data_quality_flags -> 'comment_maintained_routes', '[]'::jso
   - 最低档 `pred_tier_class = '趴'`，其余 NULL。
 - 三个实现上的坑：
   - `model` 类型每个 item 可以有多行，不受 `idx_tv_evals_aw_item_evaluator_uniq` 限制（`notes_v1_11` 只把唯一性扩到 human / rule_based / unverified）。
-  - `actual_tier` 现在没有任何脚本回填。D-064 之后可以按 `notes.source_autowriter_item_id` 回填，但对照语义是「对应版本」，不是「生成来源」。
+  - `actual_tier` 现在没有任何脚本回填。D-064 之后可以回填，但**必须对到版本**：用 `notes.source_autowriter_version_id = score_json->>'version_id'` 匹配，只给被发布的那个版本的 `model` 行写 `actual_tier`；同一个 item 的其他版本（没发出去的草稿）留 NULL。只按 `source_autowriter_item_id` 回填会把发布结果记到该 item 的每一个版本上，版本级校准整体被污染（codex review on #134）。对照语义仍是「对应版本」，不是「生成来源」。
   - 现有 `v_evaluator_calibration` 只统计 `was_correct` 非空的行，`pass` 行（`pred_tier_class` 为 NULL）会被滤掉。**不改旧视图**，校准统一用附录 C 那种「分位 × 实际标签」的查询。
 - **TV 不拦发布。** 放不放、改不改，由第 3 层（写作台选稿、人）决定。
 
@@ -648,22 +650,43 @@ ORDER BY question_id, value;
 
 ```sql
 -- 正例 ≥ 20 的项目算「大项目」（动态算, 不写死名单）; 每个大项目的优势比加 0.5 平滑, 只看方向
+-- 两条纪律 (codex review on #134):
+--   · 只数【这个取值真的出现过】的项目 (a + b > 0)。否则一个只在 3 个项目里出现的取值,
+--     在另外 2 个项目里 a = b = 0, 平滑后的方向只由该项目 趴 多还是 爆 多决定 —— 几乎总是
+--     「OR > 1」, 会假装 5 个项目同向。big_projects_n 因此是「有支持的大项目数」, 不足 3 个
+--     → 状态 insufficient (§6.2)。
+--   · 按快照五键分组 (question_version / bank_version / extractor 都在 GROUP BY 里)。只按
+--     question_id + value 分组, 两个抽取器就会把 5 个项目数成 10 个。
 WITH big AS (
     SELECT project_id FROM truth_vault.v_l2_labels GROUP BY 1 HAVING sum(y) >= 20
 )
-SELECT c.question_id, c.value,
-       count(*)                                                                      AS big_projects_n,
+SELECT c.question_id, c.question_version, c.bank_version, c.extractor, c.value,
+       count(*)                                                                      AS big_projects_n,   -- 只数有支持的
        count(*) FILTER (WHERE (c.a + 0.5) * (c.d + 0.5) > (c.b + 0.5) * (c.c + 0.5)) AS n_or_above_1,
        count(*) FILTER (WHERE (c.a + 0.5) * (c.d + 0.5) < (c.b + 0.5) * (c.c + 0.5)) AS n_or_below_1
 FROM truth_vault.v_feature_contrast c
 JOIN big USING (project_id)
-GROUP BY 1, 2
-ORDER BY 1, 2;
+WHERE c.a + c.b > 0                          -- 这个取值在该项目里至少出现过一次
+GROUP BY 1, 2, 3, 4, 5
+ORDER BY 1, 2, 3, 4, 5;
 ```
 
 ### B.3 组合对比：只 essence / 只原子题 / 合并（留一项目 + 中位秩 AUC）
 
-与 l2-feasibility §8.6 同一个打分器，只把 `text` 那一类换成 `q`。用法：`psql -v bank="'fq-v0.1'" -f …`
+与 l2-feasibility §8.6 同一个打分器，只把 `text` 那一类换成 `q`。
+
+**先钉死快照，再算**（codex review on #134）：同一题可能被另一个模型重抽、或升过版本，新旧行都是 `run_tag = 'primary'`、同一个 `bank_version`。只按 bank 过滤会把它们混成一个特征集：重复答案被加倍计权，冲突答案让一篇笔记同时带两个互斥特征，AUC 就不可信。所以闸二的每一跑绑定一个快照：`bank_sha256`（文件校验和，任一题升版本它就变，等于钉住了全部 `question_version`）+ 抽取器集合（代码特征 `code:v1` 加当轮那一个 LLM 抽取器）。跑之前先查唯一性，不为空就不许跑：
+
+```sql
+-- 快照内 (笔记, 题) 必须唯一; :sha / :extractors 同下面那一跑
+SELECT subject_id, question_id, count(*)
+FROM truth_vault.note_feature_answers
+WHERE subject_type = 'note' AND run_tag = 'primary'
+  AND bank_sha256 = :sha AND extractor = ANY (:extractors)
+GROUP BY 1, 2 HAVING count(*) > 1;
+```
+
+用法：`psql -v sha="'<bank_sha256>'" -v extractors="ARRAY['code:v1','llm:<模型>']" -f …`。附录 B.1 / B.2 读的 `v_feature_contrast` 已按 `question_version / bank_version / extractor` 分组，取当轮快照那几行即可。
 
 ```sql
 WITH d AS (
@@ -683,7 +706,9 @@ WITH d AS (
     FROM truth_vault.note_feature_answers a
     JOIN d ON d.note_id = a.subject_id
     WHERE a.subject_type = 'note' AND a.run_tag = 'primary'
-      AND a.bank_version = :bank AND a.answer IS NOT NULL
+      AND a.bank_sha256 = :sha                       -- 钉住问题库快照 (= 全部 question_version)
+      AND a.extractor = ANY (:extractors)            -- 钉住抽取器集合 (code:v1 + 当轮那一个 LLM)
+      AND a.answer IS NOT NULL
       AND a.question_id NOT LIKE 'placebo%'          -- 占位题只进反证那一跑, 不进正式对比
 ), va(v) AS (VALUES ('tag'), ('q'), ('both')),
 fv AS (SELECT va.v, f.note_id, f.feat FROM va JOIN f ON (va.v = 'both' OR va.v = f.kind)),

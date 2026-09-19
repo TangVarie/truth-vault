@@ -45,6 +45,9 @@
 #   · answer 不在闭集里 → 重问一次 → 仍不在记 NULL, invalid_reason='out_of_vocab'。
 #   · scope 那段切不出来（比如这个项目拿不到标题）→ 不问，直接记 NULL,
 #     invalid_reason='no_title' / 'text_too_short'。
+#   · body / full 被截断（超过 1,500 字）时，scope 为 body / full 的题答「否」记 NULL,
+#     invalid_reason='span_truncated'；答「是」照常（证据在前缀里就成立）。「否」不能来自
+#     没看全的片段（docs/28 §5.3）。今天生产没有一篇正文超过 1,500 字（最长 1,013），这是防御。
 #   · 不同 group 绝不合并进一次调用；同组最多 4 题。闸一会比「分组问」和「单题问」
 #     的一致率，低于 0.90 的题改为单独问（docs/28 §6.1）。
 #
@@ -71,9 +74,10 @@ spans:
     正文最后一段。去掉末尾的话题标签（#…#、#…[话题]#）和 @ 之后，最后一个非空段落；
     不足 10 个字就往上再并一段。
   body: >-
-    正文全文，去掉标题，截断到 1,500 字（与 essence 标注同一截断）。
+    正文全文，去掉标题，截断到 1,500 字（与 essence 标注同一截断）。被截断时代码要记下来：
+    该篇 scope 为 body / full 的题，「否」记 NULL + span_truncated（见上面答题契约）。
   full: >-
-    标题 + 正文全文（截断规则同 body）。
+    标题 + 正文全文（截断规则同 body，截断标记同 body）。
 
 families:
   - name: 开头
