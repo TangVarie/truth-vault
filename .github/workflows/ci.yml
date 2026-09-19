@@ -6273,6 +6273,8 @@ jobs:
         #   infer         数值推断                                        两版都剔 (①)
         #   lowint        互动 4 ≤ 趴中位 5                                两版都剔 (⑤)
         #   pinggu        评估中                                          两版都不在视图里
+        # ORDER BY 用 COLLATE "C": CI 镜像的 locale 排序忽略下划线, clean 会排到 c_synth 前面, 本地 C 排序则相反;
+        #   钉死字节序, 期望串才能两边一致 (第一版就栽在这)。
         # 反证 (改坏之后必须变红): 把 v_l2_labels 里 IS DISTINCT FROM 改回 <> → b_tsnull 消失;
         #   去掉 synthetic 那行 → c_synth 冒出来; 把 ④ 改回 raw_extra ? … → a_rawnull 消失、d_route 冒出来。
         #   v1 那半边同样是断言: 谁顺手把 v1 也修了, 对照就没了, 这里会红。
@@ -6294,8 +6296,8 @@ jobs:
             ('CI_V15_lowint',    'CI_V15', 'c', '爆',     '状态字段', '{}',  NULL, 4),
             ('CI_V15_pinggu',    'CI_V15', 'c', '评估中', '状态字段', '{}',  NULL, 500);
           SQL
-          Q1="SELECT string_agg(replace(note_id,'CI_V15_','')||'='||y, ' ' ORDER BY note_id) FROM truth_vault.v_l2_labels_v1 WHERE project_id='CI_V15'"
-          Q2="SELECT string_agg(replace(note_id,'CI_V15_','')||'='||y, ' ' ORDER BY note_id) FROM truth_vault.v_l2_labels    WHERE project_id='CI_V15'"
+          Q1="SELECT string_agg(replace(note_id,'CI_V15_','')||'='||y, ' ' ORDER BY note_id COLLATE \"C\") FROM truth_vault.v_l2_labels_v1 WHERE project_id='CI_V15'"
+          Q2="SELECT string_agg(replace(note_id,'CI_V15_','')||'='||y, ' ' ORDER BY note_id COLLATE \"C\") FROM truth_vault.v_l2_labels    WHERE project_id='CI_V15'"
           GOT1=$(psql -v ON_ERROR_STOP=1 -tA -c "$Q1")
           GOT2=$(psql -v ON_ERROR_STOP=1 -tA -c "$Q2")
           WANT1="boost=1 c_synth=1 clean=1 d_route=1 pa=0 pa2=0"
