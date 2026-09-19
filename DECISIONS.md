@@ -3818,3 +3818,40 @@ R-031（06-05）让 TV 能从飞书表的六个 `_source_autowriter_*` 列提升
 | ⑤ P2 | 问题库 spans 截断 | `body` / `full` 截到 1,500 字后，题目问「全文有没有」，模型只看了前缀；后面才出现的特征被记成「否」而不是「不知道」，证据校验对假阴性无能为力 | 截断时 scope 为 `body` / `full` 的题「否」记 NULL + `span_truncated`，「是」照常。生产实查：6,163 篇最长 1,013 字，今天没有一篇会被截，这条是防御 |
 
 没改的：附录 A 的表结构不用动（`bank_sha256` / `extractor` 本来就在主键里，钉快照只是查询侧的事）；附录 B.1 读的 `v_feature_contrast` 本来就按五键分组。
+
+---
+
+## D-066 · 书架准入挡「铺评工单」爆贴：D-060 的 route 接到 `v_flywheel_lesson_cards`
+
+**日期**: 2026-09-19
+**触发**: 写 D-065 草案（docs/28 §7.2）时顺手查出。与内容特征层无关，单独修。
+**编号说明**: D-065 留给内容特征层草案（PR #134，待拍板），本条不占它。
+
+### 背景
+
+- D-060 把评论区人工干预分成两路写进 `data_quality_flags.comment_maintained_routes`：「铺评工单」（评论数可能是铺出来的，剔出 L2 正例）和「起量后干预」（真赢家起量后运营回去改评，果不是因，留正例但不当特征）。signal-definitions §八 的口径只剔前一路。
+- 书架准入（`v1_4` 建、`v1_10` 重建的 `v_flywheel_lesson_cards`）挡了 `数值推断` 和 synthetic 的 爆/大爆，**没挡铺评工单**。它们的「爆」是评论数刚跨过 50 的线，内容本身没爆，却在书架上当经验卡教写作台。
+- 生产实查（09-19）：书架 353 张卡里 **41 张是铺评工单爆贴**（TUGE 40 / RIO 1），其中 **31 张已策展**；TUGE 那 40 条互动中位数 6、评论中位数 51。全库 `comment_maintained_routes` 只有这两个取值。
+
+### 决定
+
+1. **新增迁移 `schemas/notes_v1_14_shelf_ticket_gate.sql`**，整体重建 `v_flywheel_lesson_cards`（列集与 v1_10 一致），`eligible` 加一条：
+   `AND NOT (COALESCE(n.data_quality_flags -> 'comment_maintained_routes', '[]'::jsonb) ? '铺评工单' AND n.tier = ANY (ARRAY['爆', '大爆']))`
+2. **读引擎写好的 routes，不在视图里重写列名判据。** 判据只能有一份、住在引擎里（D-062 续 的教训：两处各写一遍随即分叉）。引擎同时认顶层列和 `raw_extra._undeclared`（D-055 / D-060），视图跟着它走。
+3. **只挡指标型 tier（爆/大爆）**，「参考」放行，同 synthetic 的处理（Session #15 运营拍板）；`COALESCE` 到 `'[]'` 让没有该键的旧行照常进。
+4. **必须在 v1_10 之后应用**：两者都整体重建同一个视图，后跑的赢。CI 的 sql job 此前从没真的套过 v1_10（只有 python 源码断言），这次按生产顺序 v1_10 → v1_14 各套两遍。
+
+### 影响
+
+- 书架 353 → 312 张（-41）；写作台从此借不到这 41 张。`library_version()` 含候选 ID 集合摘要（TV-03），馆员缓存自然失效，不用手清。
+- 通道 1（ssll）不受影响：`fetch_pending_baokuan` 是另一套判据，本条不动它（signal-definitions §八 的口径是 L2 训练集，ssll 推的是「参考 + 爆」证据包，要不要同步挡待 owner）。
+- 看板 `v_dash_overview.borrowable_cards` 会少 41。
+
+### 守卫（CI sql job，D-051 断行为不断源码）
+
+六条边界行只看视图吐出哪几条：铺评工单+爆 不上、两路都有+大爆 不上、只有起量后干预+大爆 上、`data_quality_flags` 为 NULL 上、有 flags 没 routes 键 上、铺评工单+参考 上。**反证已跑**：去掉迁移里那两行 → `ticket_bao both_bao` 冒出来，守卫红；恢复后绿。
+
+### 没做的
+
+- 没回头改 `notes_v1_10`：已部署环境不重跑历史迁移，增量迁移才是升级路径（同 v1_10 自己的理由）。
+- 没动 `rank_score` 的账号项（docs/28 §11 第 7 条，属于 D-065 讨论范围）。
