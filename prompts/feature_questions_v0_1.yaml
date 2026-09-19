@@ -26,7 +26,8 @@
 #   group            一次模型调用问哪一组（见 call_groups）
 #   layer            surface / essence —— 三层原则（README 原则 2）每题只属于一层
 #   halflife_months  时间衰减半衰期（月），检索和训练加权用；30 = 时代语言范式档，60 = essence 档
-#                    ⚠️ 结构类题放哪一档是待拍板项（docs/28 §11 第 3 条）
+#                    已定（D-065 续）: 18 道结构类题 surface/30; judged_by_others、negative_outcome_happened
+#                    对应 essence 词表的恐惧/羞耻撬动, essence/60。闸二跑完再议要不要单开「结构」档。
 #   type             bool / choice
 #   scope            看哪一段输入（见 spans），题目只看这一段
 #   ask              问题本身，要像问一个认真的实习生那样问
@@ -64,9 +65,10 @@ label_view: truth_vault.v_l2_labels
 # ── 输入片段: 代码先切好，模型只看题目 scope 指定的那段 ──
 spans:
   title: >-
-    标题。库里 notes.title 基本是空的（l2-feasibility §8.2: 13 行），标题要从各表自己的结构里取:
-    TGV 有独立的「笔记标题」列；SPX 的笔记内容是【标题】+【正文】结构；其余表是一整段文案，
-    第一行是不是标题要逐表核实（docs/28 §3 第 4 条）。切不出来的项目，标题类题目一律记 NULL。
+    标题。按 mapping 的 title_extraction 切（docs/28 §3 第 4 条, 09-19 实查 17 张表）:
+    column = TGV 的独立「笔记标题」列; markers = 其余 16 张, 文案里带标记, 两种写法
+    「【标题】…【正文】…」和「标题：…\n正文：…」（冒号全角半角都有, 一个解析器同时认）;
+    none = 都没有。markers 切不出来的单条和 none 的项目, 标题类题目记 NULL, 不猜。
   first_sentence: >-
     正文第一句。去掉标题和开头的话题标签、表情后，从正文开头到第一个 。！？!?… 或换行为止；
     不足 6 个字就并入下一句。

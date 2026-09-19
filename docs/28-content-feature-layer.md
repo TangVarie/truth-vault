@@ -20,7 +20,7 @@
   ④ 写作台需要能照做、能检查的话。
 - **能指望什么**：排雷更准（最差那一档判得更准）；经验卡上的规律有「爆 vs 趴」的对照证据；写作台拿到能照做、能核对的指令；结案报告有数据版的爆款公式。**不能指望选爆**——决定爆没爆的一大块不在文字里（R-001），投流历史上也没记。
 - **三道闸**：闸一·测得准（重测、人工核、证据片段硬闸）→ 闸二·有区分度（判据先写死，项目内比较，有反证）→ 闸三·对冻结日之后的新笔记也成立。**没过闸的特征只留在事实层，不进 L2、不进写作台。**
-- **前置**：写作台要真的在借书（D-063 复核时 30 天 82 个 batch、713 个版本，馆员只收到 8 个 brief）；标题要拿得到（下面第 4 件）。
+- **前置**：写作台要真的在借书（D-063 复核时 30 天 82 个 batch、713 个版本，馆员只收到 8 个 brief）；标题要拿得到（已核实能拿到，见 §3 第 4 件）。
 - **成本**：全库一遍约 4,300 万输入 token、300 万输出 token；便宜档模型几百元量级，Sonnet 档一两千元量级（以网关实价为准）。夜跑只跑增量。
 - **写的过程中查出来的五件事**（前三件和特征层无关，现在就能动）：
   1. 书架准入没挡「铺评工单」爆贴。途鸽 45 条爆贴里 33 条靠铺评过线，互动中位 7，可能正在书架上当经验卡教写作台。修法一行（§7.2）。
@@ -127,7 +127,7 @@ essence 回答「这篇打动了人的什么」（情绪杠杆、人性原型）
 1. **写作台要真的在借书。** D-063 复核时，30 天里写作台 82 个 batch、713 个版本，馆员只收到 8 个 brief。管子不通，书架上的卡再好，对写作台也是零。验收看夜跑里 `check_librarian_traffic.py` 那盏灯（[docs/27](27-autowriter-librarian-relink-2026-09-17.md)）。特征层管的是「借到的东西好不好」，管子通不通是另一件事，两件事都要做。
 2. **标签口径不另起炉灶。** 正负例沿用 l2-feasibility §8.6 的 `d`，落成视图 `truth_vault.v_l2_labels`，作为口径的唯一住处（附录 A）。l2 的 SQL、特征对比、闸三都只读它。这个口径有四处已知问题，处理顺序见 §11 第 5 条。
 3. **投流不挡路，但要开始记。** l2-feasibility §8.5 说投流缺失比正文特征更卡脖子，这话对：它卡的是天花板，没有曝光机会的数据，解释不了好内容为什么没爆。但它不挡闸一、闸二。两件事并行：运营从现在开始记三列（维护情况 / 维护时间 / 维护效果），用在 §8；特征层按闸推进。投流是起量后的干预，和控评一样，**永远不当特征**。
-4. **标题要拿得到。** `notes.title` 基本是空的（§8.2：13 行），正文都在 `raw_content`。各表结构不一样：TGV 有独立的「笔记标题」列；SPX 是【标题】+【正文】结构；其余表是一整段文案，第一行是不是标题要逐表抽 20 条看。切不出标题的项目，标题类题目（`title_is_question`、`title_len_bucket`、`title_has_digit`、`brand_in_title`）一律记 NULL，不猜。切法建议登记进 mapping（§11 第 2 条）。
+4. **标题拿得到（09-19 实查，D-065 续）。** `notes.title` 只有 TGV 填了（130/144 行），其余正文都在 `raw_content`，但 16 张表都带标记，只有两种写法：`【标题】…【正文】…`（RIO 801/802、WTG 635/724、SPX、LNKT、OKMAN、XIWU、ANSHEN、HATHERINE、BJS、TUGE、TXQ）和 `标题：…\n正文：…`（NRT_2、NRT_3、NUC、HXZ_QD、HXZ_FB，冒号全角半角都有，HXZ_FB 前面还带「【粉饼贴】」）。原来担心的「一整段文案、第一行是不是标题要逐表看」不存在。mapping 加可选键 `title_extraction`，取值 `column`（TGV）/ `markers`（其余 16 张，一个解析器同时认两种写法）/ `none`；`markers` 切不出来的单条、以及 `none` 的项目，标题类题目（`title_is_question`、`title_len_bucket`、`title_has_digit`、`brand_in_title`）记 NULL，不猜。
 5. **写作台版本对照只作辅助。** D-064 之后 404 条笔记对上了写作台版本，但语义是「写作台里对应的版本」，不是「生成来源」（约 208 条 `lag_days < 0`，发布后才补进写作台）。所以写作台侧的效果主要靠闸三的「入库即打分」来验（§7.3）。
 
 ---
@@ -167,7 +167,7 @@ essence 回答「这篇打动了人的什么」（情绪杠杆、人性原型）
 
 - 每题有 `version`，改题干或边界就 +1；旧版本答案保留、不覆盖，**分析时不混用版本**。
 - 整个文件有 `bank_version`（`fq-v0.1`）。闸二预注册那天把 `status` 改成 `frozen`、记下文件 sha256；之后改任何一题都要升 `version` 并记 DECISIONS。写作台要用就原样 vendor 本文件并记校验和，不手抄（D-041 对词表的纪律）。
-- 三层原则（README 原则 2）：每题声明 `layer`。18 题暂标 `surface`、半衰期 30 个月（同「时代语言范式」档）；`judged_by_others`、`negative_outcome_happened` 标 `essence`、60 个月。**结构类题该放哪一档要 owner 定**（§11 第 3 条）。
+- 三层原则（README 原则 2）：每题声明 `layer`。**已定（D-065 续）**：18 道结构类题 `surface`、半衰期 30 个月（同「时代语言范式」档），不另设「结构」档、不改 README 原则 2；`judged_by_others`、`negative_outcome_happened` 直接对应 essence 词表的恐惧 / 羞耻撬动，标 `essence`、60 个月。闸二跑完看结构类题跨项目稳不稳定，再议要不要单开一档。
 
 ### 4.4 和 `note_features` 的分工（建议）
 
@@ -239,7 +239,7 @@ truth_vault.note_feature_answers（Layer 1 事实）
 | `note_feature_answers` | Layer 1 | 每篇 × 每题 × 版本 × 抽取器 × 轮次一行。`subject_type` 区分笔记和写作台版本；`run_tag = 'primary'` 才进分析，`retest-*` / `gate1-*` 只给闸一 |
 | `feature_validation` | 闸二产物 | 每个特征值一行：状态、合并优势比、置信区间、BH 校正后的 q 值、大项目同向个数、一句人话 summary |
 | `content_scores` | Layer 2 | 冻结打分器给笔记 / 草稿的分数和项目内分位；`shadow` 标记影子期 |
-| `v_l2_labels` | 口径 | 正负例的唯一住处 |
+| `v_l2_labels` | 口径 | 正负例的唯一住处（由 `notes_v1_15` 提供，D-067；v1_13 只读） |
 | `v_feature_contrast` | 闸二输入 | 每个项目 × 每个特征值的 2×2 计数 |
 
 不建跨 schema 外键（同 D-064，`subject_id` 可能指写作台版本），悬空检查加进 `scripts/verify_supabase_state.sql`。
@@ -336,9 +336,9 @@ Jev 是 TypeSafe AI 2026-09-15 发布的判断型模型：输入一段文本和�
 
 | 通过线（提议） | 需要的样本 |
 |---|---|
-| 最低 20% 的爆率 ≤ 其余 80% 的 0.6 倍，且单侧两比例检验 p < 0.05 | 约 1,540 篇新笔记（最低档约 310 篇），按现在的入库速度一到两个月 |
+| 最低 20% 的爆率 ≤ 其余 80% 的 **0.5 倍**，且单侧两比例检验 p < 0.05 | 约 **1,060** 篇新笔记（最低档约 212 篇、其余约 847 篇），按现在的入库速度一到两个月 |
 
-l2-feasibility §3 的历史数是最低档 3.38%、其余四档平均 7.58%，约 0.45 倍——但那是 9/15 在清洗前的标签上算的。**P2 要先用 `v_l2_labels` 重算这张分档表作为闸三的基线**，0.6 倍这条线届时按重算结果复核。
+l2-feasibility §3 的历史数是最低档 3.38%、其余四档平均 7.58%，约 0.45 倍，那是 9/15 在清洗前的标签上算的。**已用 `v_l2_labels` 重算**（D-067，`data-analysis/l2-labels-v1-vs-v2-2026-09-19.md` §四）：最低档 2.23%、其余 6.93%，约 0.32 倍。所以线定在 0.5（D-065 续）：0.6 是按 0.45 留余量定的，基线到了 0.32，0.6 等于不设线。样本量按 2.23% / 6.93% 重算见附录 D。
 
 **闸三不依赖特征层**：现有的 essence 打分器今天就可以冻结、开始入库打分。等特征层过了闸二，再用「essence + 特征」的版本开第二条。这样「排雷值不值得做」这件事本身，不用等特征层。
 
@@ -353,9 +353,9 @@ l2-feasibility §3 的历史数是最低档 3.38%、其余四档平均 7.58%，�
    ⚠️ `library_version()` 现在由候选数、最新策展时间、月份桶、候选 ID 摘要四项组成，规律更新时这四项可能一项都不变。**必须把 `gate2_run` 并进去**，否则规律换了、馆员缓存不会失效。
 3. **`rank_score` 的账号项**（§11 第 7 条）：把 `COALESCE(personal_bao_rate, 0.3) × 0.3` 换成 `0.3 × (1 − 收缩后的账号先验)`。账号先验只用这条笔记**之前**的清洗后标签，按 m = 10 向项目基线收缩：`(之前的爆款数 + 10 × 项目基线) / (之前的笔记数 + 10)`。意思是：弱账号爆出来的那条，更能说明内容本身的功劳，排前面。
 
-### 7.2 顺手发现：书架准入没挡「铺评工单」（建议先单独修）
+### 7.2 顺手发现：书架准入没挡「铺评工单」（**已修：D-066，`notes_v1_14`，生产 09-19 apply；通道 1 同口径 D-068**）
 
-书架准入（`notes_v1_10` 的 `eligible`）挡了 `数值推断` 和 synthetic 的爆 / 大爆，**但没挡 D-060 的「铺评工单」这一路**。signal-definitions 的口径是这一路要剔出 L2 正例：途鸽 45 条爆贴里 33 条是靠铺评跨过 50 条评论线的，互动中位 7。书架上却可能正拿它们当经验卡教写作台。修法是 `eligible` 加一条（本地已验证能编译）：
+写草案时发现：书架准入（`notes_v1_10` 的 `eligible`）挡了 `数值推断` 和 synthetic 的爆 / 大爆，**但没挡 D-060 的「铺评工单」这一路**。signal-definitions 的口径是这一路要剔出 L2 正例。生产实查 41 张铺评工单爆贴在书架上（TUGE 40 / RIO 1，31 张已策展，互动中位数 6），正在教写作台。修法是 `eligible` 加一条，已作为 `notes_v1_14_shelf_ticket_gate.sql` 落地，书架 353 → 312 张；通道 1（ssll）同口径的挡与回收见 D-068。下面保留当时的一行判据作记录：
 
 ```sql
 AND NOT (COALESCE(n.data_quality_flags -> 'comment_maintained_routes', '[]'::jsonb) ? '铺评工单'
@@ -369,7 +369,7 @@ AND NOT (COALESCE(n.data_quality_flags -> 'comment_maintained_routes', '[]'::jso
 - **影子期**（闸三进行中）：写作台每个新版本跑同一套题（`subject_type = 'aw_version'`，正文从哪列取以 aw 仓为准），冻结打分器给出项目内分位，写 `content_scores`（`shadow = true`），**只记不用**。每周看一个数：各项目写作台草稿落在历史最低 20% 的比例——这本身就是写作台出稿质量的一个诊断。
 - **放闸后**（闸三通过）：给写作台 item 写 `prepublish_evaluations`：
   - `evaluator_type = 'model'`，`evaluator_id = 'tv-scorer:<版本>'`；
-  - 最低 20% 的 `decision` 用 `revise`（还是 `reject`，待拍板），其余 `pass`；
+  - 最低 20% 的 `decision` 用 `revise`（**已定**，D-065 续：TV 不拦发布，R-007；标记怎么呈现给选稿的人，和 aw 维护者定），其余 `pass`；
   - `reasoning` 写特征对比（R-007 允许的形式）；`score_json` 放 `version_id`、分数、分位、打分器版本、缺了哪些已验证特征；
   - 最低档 `pred_tier_class = '趴'`，其余 NULL。
 - 三个实现上的坑：
@@ -380,7 +380,7 @@ AND NOT (COALESCE(n.data_quality_flags -> 'comment_maintained_routes', '[]'::jso
 
 ### 7.4 探索比例
 
-建议写作台 10%–20% 的 batch **随机**不注入已验证规律，并在 batch 元数据里记下来。三个理由：飞轮只喂自己验证过的东西，就只会反复学已经在做的事；规律什么时候失效，只有留着没照做的那部分才看得出来；它也正好是 §8 那个 A/B 的对照组。随机必须在 batch 级做，要和写作台一起定（§11 第 8 条）。
+写作台 **15%** 的 batch（已定，D-065 续）**随机**不注入已验证规律，并在 batch 元数据里记下来。三个理由：飞轮只喂自己验证过的东西，就只会反复学已经在做的事；规律什么时候失效，只有留着没照做的那部分才看得出来；它也正好是 §8 那个 A/B 的对照组。随机必须在 batch 级做，要和写作台一起定（§11 第 8 条）。
 
 ### 7.5 结案报告与看板
 
@@ -395,7 +395,7 @@ AND NOT (COALESCE(n.data_quality_flags -> 'comment_maintained_routes', '[]'::jso
 |---|---|---|
 | 闸一：题问得准 | 约 300 篇，其中 100 篇人工、50 篇双人 | 一周内 |
 | 闸二：特征有区分度 | 现有历史：约 4,800 条有标签、正文 ≥ 50 字；清洗后正例 294（§8.2 的加权 AUC 用到 269） | 回填后一两天 |
-| 闸三：排雷对新笔记也成立 | 约 1,540 篇新笔记（最低档约 310 篇） | 按入库速度一到两个月 |
+| 闸三：排雷对新笔记也成立 | 约 1,060 篇新笔记（最低档约 212 篇；按清洗后基线 2.23% / 6.93% 算，附录 D） | 按入库速度一到两个月 |
 | 写作台照规律写，爆率从 7% 提到 9% | 每组约 2,900 篇，随机分组，每篇能追溯到写作台 batch | 一个季度以上 |
 | 投流后的增长能不能被分数预测 | 等运营三列攒起来 | 待定 |
 
@@ -422,7 +422,7 @@ AND NOT (COALESCE(n.data_quality_flags -> 'comment_maintained_routes', '[]'::jso
 
 | 阶段 | 做什么 | 过了什么才进下一步 | 估时 |
 |---|---|---|---|
-| P0（现在就能做，和特征层无关） | 写作台恢复借书（aw 仓，docs/27）；书架挡铺评工单（§7.2）；冻结现有 essence 打分器、开闸三 | — | 各自独立 |
+| P0（现在就能做，和特征层无关） | 写作台恢复借书（aw 仓，docs/27，**09-19 仍暗着**）；~~书架挡铺评工单（§7.2）~~ **已做**（D-066 / D-068）；冻结现有 essence 打分器、开闸三 | — | 各自独立 |
 | P1 | 按本次讨论改完问题库；迁移 `notes_v1_13`、`annotate_feature_pass.py`、worker 端点、CI 守卫；闸一 | 闸一 | 约一周 |
 | P2 | 全库回填；重算 §3 分档表作闸三基线；冻结问题库、写死判据；闸二；出报告；决定进不进 L2 | 闸二 | 约一周 |
 | P3 | 冻结「essence + 特征」打分器开闸三第二条；写作台草稿影子打分 | 闸三 | 一到两个月（等数据） |
@@ -434,10 +434,10 @@ AND NOT (COALESCE(n.data_quality_flags -> 'comment_maintained_routes', '[]'::jso
 ## 11. 要讨论、要拍板的
 
 1. **问题库 20 题怎么增删改。** 重点看评论诱导那 5 题和产品露出族。`efficacy_promise` 永不下发这条是否认可。
-2. **标题怎么拿。** 建议 mapping 加可选键 `title_extraction`（`column` / `bracket_markers` / `first_line` / `none`），每表抽 20 条核实后登记；`none` 的项目，标题类题一律记 NULL。
+2. **标题怎么拿。** ✅ 已定（§3 第 4 件）：mapping 加可选键 `title_extraction`（`column` / `markers` / `none`），17 张表实查后登记，不用问运营。
 3. **结构类题归哪层、半衰期多少。** 建议先放 `surface`、30 个月（同「时代语言范式」档）。另设一个「结构」档等于改 README 原则 2，由 owner 定。
 4. **`note_features` 的分工。** 建议数值原值进 `note_features`，分档值和模型答案进长表；六个 LLM 列加 COMMENT 标注不用、不删。
-5. **`v_l2_labels` 的口径。** 建议 v1 **逐字照搬** l2-feasibility §8.6 的 `d`，先复现 0.635、确认管道对得上；再单独一个 PR 修下面四处，并出一份新旧口径的差异报告：
+5. **`v_l2_labels` 的口径。** ✅ 已做（D-067，`notes_v1_15`，生产已 apply）。当时的建议：v1 **逐字照搬** l2-feasibility §8.6 的 `d`，先复现 0.635、确认管道对得上；再单独一个 PR 修下面四处，并出一份新旧口径的差异报告：
    - (a) `NOT (raw_extra ? … OR raw_extra ? …)` 在 `raw_extra` 为 NULL 时整体求值为 NULL，这条干净爆款会被**静默排除**（本地已复现）；
    - (b) `tier_source <> '数值推断'` 对 `tier_source` 为 NULL 的行同理（本地已复现）；
    - (c) §8.6 的 SQL 比 signal-definitions §八 少了 ②（synthetic 闸）：形如「伪500评」的 synthetic 行不含「伪爆」二字，会被当成正例（本地已复现）；
@@ -458,9 +458,9 @@ AND NOT (COALESCE(n.data_quality_flags -> 'comment_maintained_routes', '[]'::jso
    ```
 6. **闸二的数认不认。** 单个特征：合并优势比 95% 置信区间不跨 1 + BH q ≤ 0.10 + 大项目最多一个反向 + 加控制后不变。组合进 L2：+0.02 且配对自助置信区间下界 > 0。
 7. **`rank_score` 的账号项换不换**（§7.1 第 3 条）。换了会改变书架前排是哪些卡。
-8. **写作台侧三件事**，要和 aw 维护者一起定：影子期看什么；放闸后最低档用 `revise` 还是 `reject`；探索比例 10%–20%、batch 级随机、记在哪。
+8. **写作台侧三件事。** ✅ 已定（§7.3 / §7.4）：影子期看各项目草稿落在历史最低 20% 的比例；最低档 `revise`；探索比例 15%、batch 级随机、记在 batch 元数据。剩「标记怎么呈现给选稿的人」和 aw 维护者定。
 9. **闸一比哪几个模型。** 建议只比网关便宜档和 Sonnet 档；Jev 等问题库冻结后再比（理由见 §5.7）。
-10. **书架挡铺评工单**（§7.2）：和特征层无关，建议先单独修。
+10. **书架挡铺评工单**（§7.2）：✅ 已做（D-066 书架 + D-068 通道 1）。
 
 ### 11.1 拍板记录（2026-09-19，D-065 续）
 
@@ -468,10 +468,10 @@ AND NOT (COALESCE(n.data_quality_flags -> 'comment_maintained_routes', '[]'::jso
 |---|---|---|
 | 1 | 题目**先不动**，闸一是改题的机制；`efficacy_promise` 永不下发**认可**。写作台指令里「客户不允许 / 已在做」的，问运营（ops-request-2026-09-19 Q4） | owner 授权 Claude 判；业务部分问运营 |
 | 2 | **由数据定，不问运营**。17 张表实查：TGV 用独立 `title` 列（130/144）；其余 16 张文案里带标记，两种写法：`【标题】…【正文】…`（RIO / WTG / SPX / LNKT / OKMAN / XIWU / ANSHEN / HATHERINE / BJS / TUGE / TXQ）和 `标题：…\n正文：…`（NRT_2 / NRT_3 / NUC / HXZ_QD / HXZ_FB，冒号有全角半角）。mapping 加 `title_extraction: column \| markers \| none`，`markers` 一个解析器认两种写法，都切不出来才记 NULL | Claude |
-| 3 | 先 `surface`、30 个月；不改 README 原则 2。闸二跑完看结构类题跨项目稳不稳定再议 | Claude |
+| 3 | 18 道结构类题 `surface`、30 个月，不另设「结构」档、不改 README 原则 2；`judged_by_others` / `negative_outcome_happened` 对应 essence 词表，仍 `essence`、60 个月（问题库不变）。闸二跑完看结构类题跨项目稳不稳定再议 | Claude |
 | 4 | 数值原值进 `note_features` 现有列，分档值和模型答案进 `note_feature_answers`；六个 LLM 列加 COMMENT 不删 | Claude |
 | 5 | **已做**：`v_l2_labels`（D-067，#136，生产已 apply）。附录 A 里的定义由它取代 | 完成 |
-| 6 | 单特征四条判据**认**；组合进 L2 的 +0.02 和自助下界 > 0 **认**。**闸三线从 0.6 改 0.5**：清洗后口径重算的基线是最低档 2.23% vs 其余 6.93%（0.32 倍，见 l2-labels-v1-vs-v2 §四），0.6 太松 | Claude |
+| 6 | 单特征四条判据**认**；组合进 L2 的 +0.02 和自助下界 > 0 **认**。**闸三线从 0.6 改 0.5**（§6.3 已改）：清洗后口径重算的基线是最低档 2.23% vs 其余 6.93%（0.32 倍），0.6 太松；样本量按新基线重算约 1,060 篇（附录 D） | Claude |
 | 7 | **换**成「超出账号基线」（§7.1 第 3 条），放 P4；换完把书架前 20 张前后对照贴进 DECISIONS | Claude |
 | 8 | 影子期每周看「各项目草稿落在历史最低 20% 的比例」；最低档用 `revise`，TV 不拦发布（R-007）；探索比例 **15%**、batch 级随机、记在 batch 元数据。前提是借书管子先通（docs/27） | Claude；标记怎么呈现给选稿的人，问 aw 维护者 |
 | 9 | 只比网关便宜档和 Sonnet 档，过线的最便宜者胜出；Jev 不进这一期 | Claude |
@@ -502,11 +502,11 @@ AND NOT (COALESCE(n.data_quality_flags -> 'comment_maintained_routes', '[]'::jso
 -- ════════════════════════════════════════════════════════════════════
 -- truth_vault v1.13（草稿）· 内容特征层（docs/28 · D-065 草案）
 -- ════════════════════════════════════════════════════════════════════
--- 三张表 + 两个视图, 全部幂等（IF NOT EXISTS / OR REPLACE）, CI 连跑两遍。
+-- 三张表 + 一个视图, 全部幂等（IF NOT EXISTS / OR REPLACE）, CI 连跑两遍。
 --   note_feature_answers  Layer 1 · 原子问题的答案（事实, 不是判断; D-004 extract_features）
 --   feature_validation    闸二结论 · 每个特征值一行（validated / no_signal / reversed / ...）
 --   content_scores        Layer 2 · 打分器输出（D-004: 管家没有 score, 所以不在 Layer 1）
---   v_l2_labels           L2 正例/负例口径的【唯一住处】（逐字沿用 l2-feasibility §8.6 的 d）
+--   (v_l2_labels          由 notes_v1_15 提供, 本迁移只读, 见第 4 节)
 --   v_feature_contrast    每个项目 × 每个特征值的 2×2 计数, 闸二的输入
 -- 不建跨 schema 外键: subject_id 可能指 autowriter.versions（同 D-064 的做法, 悬空靠
 -- verify_supabase_state.sql 查）。
@@ -575,33 +575,10 @@ CREATE TABLE IF NOT EXISTS truth_vault.content_scores (
 );
 ALTER TABLE truth_vault.content_scores ENABLE ROW LEVEL SECURITY;
 
--- 4. 标签口径的唯一住处 ─────────────────────────────────────────────
--- ⚠️ 逐字沿用 l2-feasibility §8.6 的 d（只去掉「有 essence、正文 ≥50 字」这两条行过滤,
---    那是实验的取数条件, 不是口径）, 目的是先复现 0.635、确认管道对得上。
---    四处已知问题【故意没顺手改】, 放到 v2 单独一个 PR 修并出差异报告（docs/28 §11 第 5 条）:
---    (a) raw_extra 为 NULL 时, NOT (raw_extra ? … OR raw_extra ? …) 整体为 NULL → 干净爆款被静默排除;
---    (b) tier_source <> '数值推断' 对 tier_source 为 NULL 的行同理;
---    (c) §8.6 的 SQL 比 signal-definitions §八 少了 ②（synthetic 闸）: 形如「伪500评」的
---        synthetic 行不含「伪爆」二字, 会被当成正例;
---    (d) 铺评工单只看 raw_extra 顶层键; D-060 引擎写的 comment_maintained_routes 也认 _undeclared。
-CREATE OR REPLACE VIEW truth_vault.v_l2_labels AS
-WITH pa AS (
-    SELECT project_id, percentile_disc(0.5) WITHIN GROUP (ORDER BY interactions) AS pm
-    FROM truth_vault.notes
-    WHERE tier = '趴' AND interactions IS NOT NULL
-    GROUP BY 1
-)
-SELECT n.note_id, n.project_id, n.account_id, n.publish_time, n.platform,
-       CASE WHEN n.tier IN ('爆', '大爆') THEN 1 ELSE 0 END AS y
-FROM truth_vault.notes n
-LEFT JOIN pa USING (project_id)
-WHERE n.tier = '趴'
-   OR ( n.tier IN ('爆', '大爆')
-        AND COALESCE(n.raw_extra->>'_tier_source_raw', '') NOT LIKE '%伪爆%'
-        AND NOT (n.raw_extra ? '维护评论50条' OR n.raw_extra ? '评论铺设情况')
-        AND n.tier_source <> '数值推断'
-        AND NOT (n.interactions IS NOT NULL AND pa.pm IS NOT NULL
-                 AND n.interactions <= pa.pm) );
+-- 4. 标签口径 ─────────────────────────────────────────────────────
+-- ⚠️ v_l2_labels 不在本迁移里定义。它由 notes_v1_15_l2_labels.sql 提供 (D-067, 生产 09-19 已 apply),
+--    本迁移只读它。草案第一版曾在这里逐字照搬 l2-feasibility §8.6 的 d (带 a/b/c/d 四处问题),
+--    已删: v1_13 若再 CREATE OR REPLACE 它, 会把生产上修好的口径盖回去 (codex review on #139)。
 
 -- 5. 闸二输入: 每个项目 × 每个特征值的 2×2 ─────────────────────────
 -- a = 有这个特征值且爆  b = 有且趴  c = 没有且爆  d = 没有且趴
@@ -817,12 +794,13 @@ n₁ = [ z₀.₉₇₅ · √( p̄q̄ (1 + 1/k) ) + z₀.₈ · √( p₁q₁ +
 
 | 用在哪 | 假设 | 结果 |
 |---|---|---|
-| 闸三 | 两组 1 : 4；p₁ = 3.38%（最低档）、p₂ = 7.58%（其余四档平均），取自 l2-feasibility §3 | 最低档约 310、其余约 1,230，合计约 1,540 |
+| 闸三（清洗后基线，现行） | 两组 1 : 4；p₁ = 2.23%（最低档）、p₂ = 6.93%（其余四档平均），取自 l2-labels-v1-vs-v2 §四 | 最低档约 212、其余约 847，合计约 1,060 |
+| 闸三（9/16 清洗前，作废） | p₁ = 3.38%、p₂ = 7.58%，取自 l2-feasibility §3 | 最低档约 310、其余约 1,230，合计约 1,540 |
 | 写作台 A/B | 两组等量；7% vs 9% | 每组约 2,890 |
 
 闸三的判定用单侧检验，样本量按双侧算，偏保守。
 
-闸三的数要在 P2 用清洗后的口径重算 §3 分档表之后复核。
+闸三的数已按清洗后口径重算（D-067）。
 
 ---
 
