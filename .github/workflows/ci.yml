@@ -6293,6 +6293,59 @@ jobs:
             echo "❌ v1.14 书架准入没按 D-060 route 挡铺评工单 (或误伤了不该挡的)。期望 [$WANT] 实得 [$GOT]"; exit 1
           fi
           echo "✓ v1.14: 铺评工单 爆/大爆 不上书架; 起量后干预 / 无键 / 空 routes / 参考 照常"
+      - name: Apply v1.15 L2 label views (+ idempotency)
+        run: |
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_15_l2_labels.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_15_l2_labels.sql
+      - name: Sanity-check v1.15 (v_l2_labels 修四处 / v_l2_labels_v1 逐字照搬且保留四处; D-067)
+        # 断行为不断源码 (D-051)。十二条边界行, 两个视图各吐出哪几条:
+        #   pa / pa2      趴 (互动 5 / 9 → 本项目趴中位 = 5)          两版都是负例 (y=0)
+        #   clean         干净爆                                       两版都是正例
+        #   a_rawnull     干净爆, raw_extra 为 NULL                    v1 丢 (a), v2 收
+        #   b_tsnull      干净爆, tier_source 为 NULL                  v1 丢 (b), v2 收
+        #   c_synth       synthetic=true 但 _tier_source_raw 不含「伪爆」 v1 误收 (c), v2 剔
+        #   d_route       引擎 routes 含 铺评工单, raw_extra 没有顶层键   v1 误收 (d), v2 剔
+        #   boost         routes 只有 起量后干预                          两版都收 (signal-definitions §八: 不剔这一路)
+        #   fake          含「伪爆」的 synthetic                           两版都剔 (③ 兜底)
+        #   infer         数值推断                                        两版都剔 (①)
+        #   lowint        互动 4 ≤ 趴中位 5                                两版都剔 (⑤)
+        #   pinggu        评估中                                          两版都不在视图里
+        # ORDER BY 用 COLLATE "C": CI 镜像的 locale 排序忽略下划线, clean 会排到 c_synth 前面, 本地 C 排序则相反;
+        #   钉死字节序, 期望串才能两边一致 (第一版就栽在这)。
+        # 反证 (改坏之后必须变红): 把 v_l2_labels 里 IS DISTINCT FROM 改回 <> → b_tsnull 消失;
+        #   去掉 synthetic 那行 → c_synth 冒出来; 把 ④ 改回 raw_extra ? … → a_rawnull 消失、d_route 冒出来。
+        #   v1 那半边同样是断言: 谁顺手把 v1 也修了, 对照就没了, 这里会红。
+        run: |
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          INSERT INTO truth_vault.projects (project_id, brand, product, category)
+            VALUES ('CI_V15', 'b', 'p', '其他') ON CONFLICT DO NOTHING;
+          INSERT INTO truth_vault.notes (note_id, project_id, raw_content, tier, tier_source, raw_extra, data_quality_flags, interactions) VALUES
+            ('CI_V15_pa',        'CI_V15', 'c', '趴',     '状态字段', '{}',  NULL, 5),
+            ('CI_V15_pa2',       'CI_V15', 'c', '趴',     '状态字段', '{}',  NULL, 9),
+            ('CI_V15_clean',     'CI_V15', 'c', '爆',     '状态字段', '{}',  NULL, 500),
+            ('CI_V15_a_rawnull', 'CI_V15', 'c', '爆',     '状态字段', NULL,  NULL, 500),
+            ('CI_V15_b_tsnull',  'CI_V15', 'c', '爆',     NULL,       '{}',  NULL, 500),
+            ('CI_V15_c_synth',   'CI_V15', 'c', '大爆',   '状态字段', '{"_tier_source_raw": "伪500评"}', '{"synthetic": true}', 500),
+            ('CI_V15_d_route',   'CI_V15', 'c', '爆',     '状态字段', '{}',  '{"comment_maintained": true, "comment_maintained_routes": ["铺评工单"]}', 500),
+            ('CI_V15_boost',     'CI_V15', 'c', '爆',     '状态字段', '{}',  '{"comment_maintained": true, "comment_maintained_routes": ["起量后干预"]}', 500),
+            ('CI_V15_fake',      'CI_V15', 'c', '爆',     '状态字段', '{"_tier_source_raw": "伪爆贴500"}', '{"synthetic": true}', 500),
+            ('CI_V15_infer',     'CI_V15', 'c', '爆',     '数值推断', '{}',  NULL, 500),
+            ('CI_V15_lowint',    'CI_V15', 'c', '爆',     '状态字段', '{}',  NULL, 4),
+            ('CI_V15_pinggu',    'CI_V15', 'c', '评估中', '状态字段', '{}',  NULL, 500);
+          SQL
+          Q1="SELECT string_agg(replace(note_id,'CI_V15_','')||'='||y, ' ' ORDER BY note_id COLLATE \"C\") FROM truth_vault.v_l2_labels_v1 WHERE project_id='CI_V15'"
+          Q2="SELECT string_agg(replace(note_id,'CI_V15_','')||'='||y, ' ' ORDER BY note_id COLLATE \"C\") FROM truth_vault.v_l2_labels    WHERE project_id='CI_V15'"
+          GOT1=$(psql -v ON_ERROR_STOP=1 -tA -c "$Q1")
+          GOT2=$(psql -v ON_ERROR_STOP=1 -tA -c "$Q2")
+          WANT1="boost=1 c_synth=1 clean=1 d_route=1 pa=0 pa2=0"
+          WANT2="a_rawnull=1 b_tsnull=1 boost=1 clean=1 pa=0 pa2=0"
+          if [ "$GOT1" != "$WANT1" ]; then
+            echo "❌ v_l2_labels_v1 不再是 l2-feasibility §8.6 的逐字照搬 (它应该保留 a/b/c/d 四处问题作对照)。期望 [$WANT1] 实得 [$GOT1]"; exit 1
+          fi
+          if [ "$GOT2" != "$WANT2" ]; then
+            echo "❌ v_l2_labels 四处修法有一处没生效 (a raw_extra NULL / b tier_source NULL / c synthetic / d routes)。期望 [$WANT2] 实得 [$GOT2]"; exit 1
+          fi
+          echo "✓ v1.15: v_l2_labels 收 a/b、剔 c/d、留 起量后干预; v_l2_labels_v1 原样保留四处作对照"
       - name: Apply security revoke (anon/authenticated write on public.* ) (+ idempotency)
         # 撤 anon/authenticated 对 5 张 public 表的写权限(读保留,不开 RLS)。
         # guarded:表/角色不存在则跳过 → 裸 PG / CI 为 no-op。REVOKE 幂等,两遍验。

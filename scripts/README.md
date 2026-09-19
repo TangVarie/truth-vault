@@ -102,6 +102,7 @@ CI 和 daily-sync workflow 都优先读 `.lock`; `.txt` 仅作为 "high-level in
 #   - schemas/notes_v1_12_comment_tier.sql            → notes 加 comments_count(判爆依据, preflight 必查) + tier CHECK 加「评估中」
 #         + 首次升级时把旧的互动量推断退回未推断 + 清空 projects.tier_thresholds + v_tier_discrepancy 改评论数口径 (D-062)
 #   - schemas/notes_v1_14_shelf_ticket_gate.sql       → 书架 v_flywheel_lesson_cards 挡「铺评工单」爆/大爆 (D-060 route → 书架; 视图, 必须在 v1_10 之后)
+#   - schemas/notes_v1_15_l2_labels.sql               → L2 正负例口径的唯一住处 v_l2_labels (+ v_l2_labels_v1 对照; 视图, D-067)
 #   - autowriter-migrations/001_create_autowriter_schema.sql → 把 autowriter 表从 public 迁到 autowriter schema
 #   - autowriter-migrations/002_add_external_source.sql     → items 加 (external_source, external_source_id) 列
 #         + per-user partial UNIQUE (user_id, external_source, external_source_id) WHERE external_source IS NOT NULL.
