@@ -267,6 +267,8 @@ truth-vault/
 | [docs/06-essence-annotation.md](docs/06-essence-annotation.md) | LLM 标注双模式协议 |
 | [docs/07-audience-data.md](docs/07-audience-data.md) | 蒲公英真实 audience 接入 |
 | [docs/23-L3-audience-layer-plan.md](docs/23-L3-audience-layer-plan.md) | L3 受众层计划 |
+| [docs/28-content-feature-layer.md](docs/28-content-feature-layer.md) | **内容特征层草案**（D-065 草案，待拍板）：原子问题进事实层，过三道闸才进 L2 / 经验卡 / 写作台 |
+| [prompts/feature_questions_v0_1.yaml](prompts/feature_questions_v0_1.yaml) | 问题库 fq-v0.1（草案，未冻结）：20 题 + 8 代码特征 + 3 占位题 |
 | [prompts/](prompts/) | prompt 文本 |
 
 ### 历史 / 演化
@@ -292,6 +294,7 @@ truth-vault/
 - **L2 预测层从没启动** —— 数据量早就过了 1k 门槛，9/16 做过一次实测（[l2-feasibility.md](data-analysis/l2-feasibility.md)）：
   留一项目验证 AUC ≈ 0.61，能稳定挑出最差的 20%（爆率 3.4% vs 基线 6.8%），但挑不准最好的 20%。
   **别急着搭服务** —— 实测里「负面情绪撬动 vs 正面共鸣」项目内差 3–6 倍，这条规律本身不用模型就能交付。
+  9/19 起有了下一步的设计草案：[docs/28](docs/28-content-feature-layer.md)（D-065 草案，待拍板）—— 让 LLM 抽发布前可得的结构化特征进事实层，过三道闸才进 L2。
 - **标签有 21% 是污染的** —— 373 个爆款里 79 个来自刷评 / 数值推断 / 运营手标的伪爆贴，
   见 [signal-definitions.md](data-analysis/signal-definitions.md)。清洗后 AUC 0.612 → 0.624。
 - **投流数据全库不存在** —— 区分不了「内容差」和「没获得曝光机会」，这是运营侧要加的列。
