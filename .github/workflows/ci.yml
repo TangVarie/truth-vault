@@ -3318,6 +3318,45 @@ jobs:
           print("  ✓ blank + '手动精修' feedback correctly filtered out")
           print("\nfeedback isinstance guard: passed")
           PY
+      - name: 通道 1 挡「铺评工单」爆贴, push 与回收共用一份判据 (D-068, 与书架 D-066 对称)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # 断行为不断源码 (D-051): 假 PostgREST 链 + 打桩 fetch_all_pages, 真的走 fetch_pending_baokuan
+          # 和 retract_stale_synthetic_from_ssll(dry_run) 两个函数。
+          #   push 侧必须放行: clean / 只有起量后干预 / 铺评工单+参考 / synthetic+参考 / flags 没 routes 键
+          #   push 侧必须挡:   铺评工单+爆 / 两路都有+大爆 / synthetic+爆
+          #   回收侧候选 = push 侧挡的那三条 (对称: 已推错的撤回)
+          # 反证 (改坏之后必须变红): 去掉 metric_tier_untrustworthy_reason 里 routes 那两行 →
+          #   ticket_bao / both_dabao 从 push 里冒出来, 回收候选从 3 变 1。
+          import sync_truth_vault_baokuan_to_sanshengliubu as s
+          import sync_feishu_notes_to_truth_vault as engine
+          assert s._CM_ROUTE_TICKET == engine._CM_ROUTE_TICKET, "通道 1 与引擎的 route 字面量分叉了"
+
+          class Q:  # 假 PostgREST 查询链: 任何方法都返回自己
+              def __getattr__(self, name):
+                  return lambda *a, **k: self
+
+          rows = [
+              dict(note_id="clean",      tier="爆",   data_quality_flags=None),
+              dict(note_id="emptyflags", tier="爆",   data_quality_flags={"comment_maintained": False}),
+              dict(note_id="boost_bao",  tier="爆",   data_quality_flags={"comment_maintained_routes": ["起量后干预"]}),
+              dict(note_id="ticket_bao", tier="爆",   data_quality_flags={"comment_maintained": True, "comment_maintained_routes": ["铺评工单"]}),
+              dict(note_id="both_dabao", tier="大爆", data_quality_flags={"comment_maintained_routes": ["起量后干预", "铺评工单"]}),
+              dict(note_id="synth_bao",  tier="爆",   data_quality_flags={"synthetic": True}),
+              dict(note_id="ticket_ref", tier="参考", data_quality_flags={"comment_maintained_routes": ["铺评工单"]}),
+              dict(note_id="synth_ref",  tier="参考", data_quality_flags={"synthetic": True}),
+          ]
+          s.fetch_all_pages = lambda q, order_by=None: [dict(r) for r in rows]
+          got = sorted(r["note_id"] for r in s.fetch_pending_baokuan(Q()))
+          want = sorted(["clean", "emptyflags", "boost_bao", "ticket_ref", "synth_ref"])
+          assert got == want, f"push 侧判据不对: 期望 {want} 实得 {got}"
+
+          s.existing_ssll_sample_id = lambda sb, note_id: f"sid-{note_id}"
+          n = s.retract_stale_synthetic_from_ssll(Q(), dry_run=True)
+          assert n == 3, f"回收候选应为 ticket_bao / both_dabao / synth_bao 三条, 实得 {n}"
+          print("✓ D-068: 通道 1 push 挡 铺评工单/synthetic 的 爆/大爆, 参考与起量后干预放行; 回收对称 (3 条)")
+          PY
       - name: sanshengliubu sync shape self-check (build_reference_sample ↔ preflight ↔ ssll v2 schema)
         working-directory: scripts
         run: |

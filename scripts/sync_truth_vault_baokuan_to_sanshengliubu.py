@@ -150,23 +150,11 @@ def fetch_pending_baokuan(
     if project_filter:
         q = q.eq("project_id", project_filter)
     rows = fetch_all_pages(q, order_by="note_id")
-    # 伪爆贴 (synthetic = 人工刷的假指标, 如 WTG「笔记状态」含"关注") 分级处理
-    # (2026-06-01 运营决定):
-    #   - 指标型 tier (爆/大爆): 排除. 它们的"爆"是假数据撑的, 不可信.
-    #   - 参考: 放行. "参考"是运营纯人工判断("这条内容值得参考"), 与指标真假无关;
-    #     synthetic_reason 本身就写"指标不可信但有潜力信号", 标参考正是认领这潜力.
-    #     参考本就低权重 (quality_score=0), 且 reference_samples 喂的是内容不是指标,
-    #     假数据不外泄. 通道 2 只取爆/大爆, 不受此影响.
+    # 指标不可信的 爆/大爆 不进 ssll —— 判据在 metric_tier_untrustworthy_reason(), push 和
+    # retract 共用一份 (两路: synthetic 伪爆贴 / 铺评工单, 见该函数 docstring)。
     # 仍在 Python 过滤而非 PostgREST: JSONB ->>'synthetic' 为 NULL (绝大多数正常行)
     # 时 neq.true 会把 NULL 也滤掉 (NULL<>'true'=NULL=不通过), Python 端显式判最稳.
-    def _is_synthetic(r: dict[str, Any]) -> bool:
-        f = r.get("data_quality_flags")
-        return isinstance(f, dict) and f.get("synthetic") is True
-
-    return [
-        r for r in rows
-        if not (_is_synthetic(r) and r.get("tier") in ("爆", "大爆"))
-    ]
+    return [r for r in rows if metric_tier_untrustworthy_reason(r) is None]
 
 
 def drop_on_demand_projects(
@@ -242,12 +230,48 @@ def drop_on_demand_projects(
     return kept, skipped
 
 
+# D-060 引擎写进 data_quality_flags.comment_maintained_routes 的那一路: 评论数可能是铺出来的。
+# 与 sync_feishu_notes_to_truth_vault._CM_ROUTE_TICKET 同一个字面量 (CI 钉着)。
+_CM_ROUTE_TICKET = "铺评工单"
+
+
+def metric_tier_untrustworthy_reason(row: dict[str, Any]) -> str | None:
+    """指标型 tier (爆/大爆) 的指标不可信 → 不进通道 1、已进的撤回。返回原因, 可信返回 None。
+
+    通道 1 push (fetch_pending_baokuan) 和回收 (retract_stale_synthetic_from_ssll) 共用这一份
+    判据 —— 两边各写一遍随即分叉的教训 (D-062 续), 判据只能有一份。两路:
+
+      "synthetic"  伪爆贴 (运营手标 / 状态含「关注」, 2026-06-01 运营分级决定)。
+      "铺评工单"   D-060 route: 评论数是铺出来的, 帖子本身没爆 (signal-definitions §八;
+                   途鸽那批互动中位数 6、评论中位数 51)。书架已挡 (D-066), 通道 1 对称 (D-068)。
+
+    只挡【指标型 tier】(爆/大爆): 「参考」是运营纯人工内容判断, 与指标真假无关, 放行
+    (同 synthetic 的分级, 通道 2 书架同口径)。「起量后干预」那一路【不挡】: 真赢家起量后
+    运营回去改评, 果不是因 (signal-definitions §八 ⑥), 剔了会删掉最真的正例。
+    flags 为 NULL / 没有 routes 键的旧行 → 可信 (D-060 之前入库、没被引擎重判过的不能误伤)。
+    """
+    if row.get("tier") not in ("爆", "大爆"):
+        return None
+    f = row.get("data_quality_flags")
+    if not isinstance(f, dict):
+        return None
+    if f.get("synthetic") is True:
+        return "synthetic"
+    routes = f.get("comment_maintained_routes")
+    if isinstance(routes, list) and _CM_ROUTE_TICKET in routes:
+        return _CM_ROUTE_TICKET
+    return None
+
+
 def retract_stale_synthetic_from_ssll(
     sb,
     project_filter: str | None = None,
     dry_run: bool = False,
 ) -> int:
-    """自愈回收:把【现在是 synthetic 爆/大爆】却仍有 ssll 样本/同步标记的, 从 ssll 撤回。
+    """自愈回收:把【现在指标不可信的 爆/大爆】(synthetic 或 铺评工单) 却仍有 ssll 样本/同步标记的, 从 ssll 撤回。
+
+    函数名保留 "synthetic" 字样: CI 守卫和 main() 的调用顺序断言都钉着这个名字; 语义自 D-068
+    起扩到 metric_tier_untrustworthy_reason() 的两路。
 
     为什么需要:synthetic 标记可能在【同步之后】才打上 —— 运营事后在飞书把「笔记状态」标
     「关注」(WTG 式), 或在【流量状态】写「伪爆贴」(RIO 式), 而该帖此前已作为"真爆款"同步进 ssll。
@@ -269,23 +293,23 @@ def retract_stale_synthetic_from_ssll(
     )
     if project_filter:
         q = q.eq("project_id", project_filter)
-    # synthetic 判定在 Python 端(JSONB ->>'synthetic' 的 PostgREST 过滤对 NULL 行不稳, 同
-    # fetch_pending_baokuan)。不再用 synced_to_ssll_at 预筛 —— orphan 行该标记为 NULL 也要回收。
+    # 判定在 Python 端(JSONB 的 PostgREST 过滤对 NULL 行不稳, 同 fetch_pending_baokuan), 与 push
+    # 共用 metric_tier_untrustworthy_reason()。不再用 synced_to_ssll_at 预筛 —— orphan 行该标记为
+    # NULL 也要回收。
     candidates = [
-        r for r in fetch_all_pages(q, order_by="note_id")
-        if isinstance(r.get("data_quality_flags"), dict)
-        and r["data_quality_flags"].get("synthetic") is True
+        (r, reason) for r in fetch_all_pages(q, order_by="note_id")
+        if (reason := metric_tier_untrustworthy_reason(r)) is not None
     ]
     retracted = 0
-    for r in candidates:
+    for r, reason in candidates:
         note_id = r["note_id"]
         # 双键查 ssll 样本(顶层 source_truth_vault_note_id + 旧行的 ai_analysis->>_truth_vault_note_id)。
         sample_id = existing_ssll_sample_id(sb, note_id)
         if sample_id is None and not r.get("synced_to_ssll_at"):
             continue  # ssll 无样本、TV 也没标 synced → 本就不在飞轮, 无需动作
         if dry_run:
-            logger.info("[dry-run] would retract stale-synthetic baokuan from ssll: %s (sample=%s)",
-                        note_id, sample_id)
+            logger.info("[dry-run] would retract untrustworthy baokuan from ssll: %s (%s, sample=%s)",
+                        note_id, reason, sample_id)
             retracted += 1
             continue
         if sample_id is not None:
@@ -294,8 +318,8 @@ def retract_stale_synthetic_from_ssll(
         sb.schema("truth_vault").table("notes").update(
             {"synced_to_ssll_at": None, "synced_ssll_reference_sample_id": None}
         ).eq("note_id", note_id).execute()
-        logger.warning("Retracted stale-synthetic baokuan from ssll (伪爆贴不污染飞轮): %s (sample=%s)",
-                       note_id, sample_id)
+        logger.warning("Retracted untrustworthy baokuan from ssll (%s 不污染飞轮): %s (sample=%s)",
+                       reason, note_id, sample_id)
         retracted += 1
     return retracted
 
