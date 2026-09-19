@@ -462,6 +462,23 @@ AND NOT (COALESCE(n.data_quality_flags -> 'comment_maintained_routes', '[]'::jso
 9. **闸一比哪几个模型。** 建议只比网关便宜档和 Sonnet 档；Jev 等问题库冻结后再比（理由见 §5.7）。
 10. **书架挡铺评工单**（§7.2）：和特征层无关，建议先单独修。
 
+### 11.1 拍板记录（2026-09-19，D-065 续）
+
+| # | 结论 | 谁定的 |
+|---|---|---|
+| 1 | 题目**先不动**，闸一是改题的机制；`efficacy_promise` 永不下发**认可**。写作台指令里「客户不允许 / 已在做」的，问运营（ops-request-2026-09-19 Q4） | owner 授权 Claude 判；业务部分问运营 |
+| 2 | **由数据定，不问运营**。17 张表实查：TGV 用独立 `title` 列（130/144）；其余 16 张文案里带标记，两种写法：`【标题】…【正文】…`（RIO / WTG / SPX / LNKT / OKMAN / XIWU / ANSHEN / HATHERINE / BJS / TUGE / TXQ）和 `标题：…\n正文：…`（NRT_2 / NRT_3 / NUC / HXZ_QD / HXZ_FB，冒号有全角半角）。mapping 加 `title_extraction: column \| markers \| none`，`markers` 一个解析器认两种写法，都切不出来才记 NULL | Claude |
+| 3 | 先 `surface`、30 个月；不改 README 原则 2。闸二跑完看结构类题跨项目稳不稳定再议 | Claude |
+| 4 | 数值原值进 `note_features` 现有列，分档值和模型答案进 `note_feature_answers`；六个 LLM 列加 COMMENT 不删 | Claude |
+| 5 | **已做**：`v_l2_labels`（D-067，#136，生产已 apply）。附录 A 里的定义由它取代 | 完成 |
+| 6 | 单特征四条判据**认**；组合进 L2 的 +0.02 和自助下界 > 0 **认**。**闸三线从 0.6 改 0.5**：清洗后口径重算的基线是最低档 2.23% vs 其余 6.93%（0.32 倍，见 l2-labels-v1-vs-v2 §四），0.6 太松 | Claude |
+| 7 | **换**成「超出账号基线」（§7.1 第 3 条），放 P4；换完把书架前 20 张前后对照贴进 DECISIONS | Claude |
+| 8 | 影子期每周看「各项目草稿落在历史最低 20% 的比例」；最低档用 `revise`，TV 不拦发布（R-007）；探索比例 **15%**、batch 级随机、记在 batch 元数据。前提是借书管子先通（docs/27） | Claude；标记怎么呈现给选稿的人，问 aw 维护者 |
+| 9 | 只比网关便宜档和 Sonnet 档，过线的最便宜者胜出；Jev 不进这一期 | Claude |
+| 10 | **已做**：书架（D-066，#135）+ 通道 1（D-068，#138），生产已 apply / 合并后夜跑自愈 | 完成 |
+
+问运营的六件（品牌词写法、客户禁止的写法、禁词清单、铺评完成勾选框、维护情况列的用法、人工标注人手）见 `data-analysis/ops-request-2026-09-19.md`。
+
 ---
 
 ## 12. 本期不做
