@@ -71,3 +71,17 @@ curl -sS -X POST "$LIBRARIAN_URL/librarian" \
 - 夜跑守卫 `scripts/check_librarian_traffic.py`（D-063）。
 - 书架、馆员、缓存、prompt caching 都不用动；契约不变。
 - 如果你们决定改用别的注入位置或改 brief 字段，先看 docs/15 §0 的契约，改了告诉 TV 一声。
+
+## 6. 查完了（2026-09-19，D-069）：管子通、龙头没人拧
+
+§2 三件事的答案，都在 autowriter 仓查的（HEAD 74ad881）+ TV 生产库复核：
+
+1. **生成主路径还调不调馆员。** 三条路径都接着：Streamlit 的 `generation_service._queue_worker_impl` / `_quick_gen_worker` 都调 `fetch_flywheel_lessons(build_brief(...))` 并把 `flywheel_status` 记进 `batch_metrics.injection`；deskcore 有 `borrow_lessons` 工具。但**真正在跑的只有 deskcore**：30 天里写作台 90 个 batch 全是 `ai_engines=["deskcore"]`（71 批 `params.source=deskcore` 的成稿 + 19 批 `source=ingest` 的 tv-sync 补录），Streamlit 路径最后一次跑是 08-19（那天 `flywheel_lessons: 5`，管子是通的），`autowriter.jobs` 表是空的（worker 队列没人用）。
+   而 deskcore 那条路的问题是**协议**：`open_project` / `draw_angles` 必做，`borrow_lessons` 是「想要真实爆款参照时调」。09-01 ~ 09-16 写作台 commit 了 71 批稿子，馆员缓存里 consumer=deskcore 只有 3 行（09-03 ×2、09-08 ×1，各借到 4-5 张卡）。通道 2 在每场对话里取决于模型愿不愿意多调一个可选工具，它 95% 的时候不愿意。
+2. **部署 env 在不在。** 在。deskcore `/health` 报 `librarian.configured: true`，那 3 次借阅都成功。Streamlit / worker 服务的 env 从这里看不到，但那两条路径本来也没在跑，不是当前的问题。
+3. **fail-open 有没有留痕。** `librarian_client` 五种结局各发一条 telemetry 事件（stdout JSON），deskcore 端没有 WARN。
+
+**修法**（autowriter [PR #85](https://github.com/TangVarie/autowriter/pull/85)）：把借阅并进必做的 `open_project`——简报多出 `lessons` / `lessons_status`，`borrow_lessons` 改成换题时「再借」；`not_configured` / `timeout` / `error` 各记一条 WARN；协议正文和 skill 同步改口（运营要重新导入一次 skill）。brief 的 `consumer` 仍是 `deskcore`，D-063 的夜跑检查口径不变。
+
+**验收**照 §4：合并部署后运营开一场写作台对话，`flywheel_librarian_cache` 里应多一行 consumer=deskcore；D-063 的 `::warning` 应从此安静。
+
