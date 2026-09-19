@@ -3898,3 +3898,36 @@ tag-only 留一项目加权 AUC：v1 0.630（286 正例）/ v2 0.631（285）。
 
 - 没改 l2-feasibility.md 和 signal-definitions.md 里的 SQL 原文：那是 9/16 的实验记录，改了就不是记录了。本条和报告 §五 说明以后怎么用视图复现。
 - 没决定 `v_l2_labels_v1` 什么时候退役：等 docs/28 闸二第一轮跑完、用它对过账再删。
+
+---
+
+## D-068 · 通道 1（TV → 三生六部）也挡「铺评工单」爆贴：push 与回收共用一份判据，与书架 D-066 对称
+
+**日期**: 2026-09-19
+**触发**: D-066 只挡了书架（通道 2）。owner 问通道 1 要不要同步挡，先查生产再判。
+**编号说明**: D-066 续（生产部署记录）在 PR #137。
+
+### 生产实查（09-19）
+
+- 41 条铺评工单爆贴（TUGE 40 / RIO 1）**全部已推进 ssll `public.reference_samples`**，`quality_score` 100 / 200（爆 / 大爆的最高权重档），占 TV 推过去的 638 条的 6.4%。`fetch_pending_baokuan` 只挡 synthetic，从没认过 D-060 的 route。
+- 也就是说：三生六部的 vibe 仿写正拿「互动中位数 6、靠铺评跨过 50 条评论线」的贴当高权重范本，和书架上那 41 张卡是同一批。
+
+### 决定
+
+1. **判据只有一份，push 和回收共用。** 新函数 `metric_tier_untrustworthy_reason(row)`：爆/大爆 且（`synthetic = true` 或 `comment_maintained_routes` 含「铺评工单」）→ 返回原因，否则 None。`fetch_pending_baokuan` 用它过滤，`retract_stale_synthetic_from_ssll` 用它选候选。之前 push 侧的 `_is_synthetic` 和回收侧各写一遍的判据合并进来（D-062 续 的教训：两处各写一遍随即分叉）。
+2. **只挡指标型 tier（爆/大爆），「参考」放行**，同 2026-06-01 运营对 synthetic 的分级；「起量后干预」不挡（signal-definitions §八 ⑥：真赢家）。flags 为 NULL 或没有 routes 键的旧行照常推。
+3. **回收自愈**：`retract_stale_synthetic_from_ssll` 每次 sync 先跑，候选扩到两路。合并部署后第一次夜跑会把那 41 条从 `reference_samples` 按 id 删掉、清 `synced_to_ssll_at`。函数名保留 "synthetic" 字样，CI 的调用顺序断言钉着它。
+4. `_CM_ROUTE_TICKET` 字面量与引擎 `sync_feishu_notes_to_truth_vault._CM_ROUTE_TICKET` 相同，CI 断言两边一致。
+
+### 守卫（D-051 断行为不断源码）
+
+假 PostgREST 链 + 打桩 `fetch_all_pages`，真的走 `fetch_pending_baokuan` 和 `retract_stale_synthetic_from_ssll(dry_run)`：八条边界行，push 侧放行 clean / 只有起量后干预 / 铺评工单+参考 / synthetic+参考 / flags 没 routes 键，挡 铺评工单+爆 / 两路都有+大爆 / synthetic+爆；回收候选恰好是挡的那三条。**反证已跑**：去掉 routes 那两行 → push 侧多出 `ticket_bao both_dabao`，红；恢复后绿。相邻三条引用本模块的老守卫（D-047 / D-052 / ssll shape）重跑仍绿。
+
+### 顺手：v1_8 也从没 apply 到生产
+
+查通道 1 的同时核了 owner 问的 v1_8：生产 `v_autowriter_positive_pool_saturation` 仍是 6 列基线版（v1_8 应为 10 列），Supabase 迁移表里没它，`pg_depend` 无依赖对象。09-19 已按仓库文件 apply（记录 `notes_v1_8_positive_pool_saturation_fix`），apply 后 10 列、8 个 per-user 池、15 条 native 正例可见（之前这个监控从上线起一直是空的，D-041 记过原因），0 个池 `dominant_lever_ratio ≥ 0.6`。**至此生产与 `scripts/README.md` Step 0 清单对齐到 v1_15。** 三个月里 v1_8 / v1_10 两条都是「在清单里、不在库里」，根因同 D-066 续：清单靠人跑，没有任何东西对账。要不要给 `verify_supabase_state.sql` 加一段「清单 vs 迁移表」对账，留给 owner。
+
+### 没做的
+
+- 没手动删那 41 条 ssll 样本：回收路径是现成的，合并部署后夜跑自愈，人手删反而绕过了守卫。
+- 没动 ssll 侧：`reference_samples` 的检索逻辑在三生六部仓，本条只管 TV 推什么、收什么。
