@@ -4147,15 +4147,31 @@ autowriter `tests/test_deskcore_open_project_borrows.py` 11 条：主路径 / br
 - **权限**：三张新表只有 `service_role` 有读写，`anon` / `authenticated` 一个权限都没有，和 `note_features` / `v_l2_labels` 现状一致，不用补 REVOKE。
 - **advisor**：apply 后跑了一遍 security advisor。三张新表只是加进了既有的 INFO 级 `rls_enabled_no_policy` 那一堆（truth_vault 每张表都在里面，走 service_role），**没有新增任何 ERROR**；现存的两条 ERROR（18 个 `public.v_dash_*` 的 SECURITY DEFINER、5 张 `public.*` 没开 RLS）都是既有项，与本次无关。
 
-### 还没核实的部分（记下来免得误以为已经在跑，也免得误以为一定没跑）
+### worker 已经自动上线（实测，09-20 05:56–05:59 UTC）
 
-1. **Railway worker 现在跑的是哪版代码，没核实过。** worker service 是「连本 repo」建的（`worker/README.md` 部署段），Railway 这类 service 默认推到被监听分支就自动重新部署，所以 05:38 合并进 main 之后 `/annotate-features` **大概率已经自动上线**。但 `WORKER_URL` / `WORKER_API_KEY` 是 GitHub secrets，不在仓库里，本次会话没有 Railway 凭据，`curl /health` 做不到，所以只是大概率、不是事实。
-   - 自动部署不生效的可能情形：service 监听的不是 main、开了 "Wait for CI"、service 被 paused。仓库里没有任何记录能排除或坐实其中哪一种。
-   - 万一没上线：夜跑的 `features_sync` 会 curl 到 404 → 按 systemic 计 → 按本轮刚修好的聚合把 daily-sync 判红。**这是设计要的行为**（Codex 那条 P1 就是不许它静默变绿），不是需要绕开的坑；看到红先去 Railway 看部署状态。
-   - 想提前验：手动触发一次 daily-sync，填 `project` + 勾 `dry_run`，特征那步会 curl 一次 `/annotate-features`，200 = 已上线、404 = 没有，且 dry-run 不烧 LLM。
-   - 写进这一条的教训同 D-051 / 上面 #109 那次：**「代码进了 main」不等于「运行时跟上了」**；这次本来想记的就是这件事，结果第一版把「没核实」写成了「还没部署」，同一个坑的另一面。
-2. `FEATURE_MODEL` 没设，worker 会跟 `ESSENCE_MODEL`。闸一要比便宜档时再在 Railway 上加。
-3. 全库回填（`backfill-features.yml`）**故意没跑**：按 docs/28 §10，等闸一改完题、问题库冻结之后再回填，否则要按新题面重跑一遍。
+worker service 是「连本 repo」建的（`worker/README.md` 部署段），Railway 这类 service 推到被监听分支就自动重新构建部署。05:38 合并进 main 之后没人动手，端点就在了。
+
+**验法**：手动触发一次 daily-sync（`project=WTG_phase1` + `dry_run`，[run #176](https://github.com/TangVarie/truth-vault/actions/runs/35492918651)），特征那步会 curl 一次 `/annotate-features`。整 run 绿，那一步的两行是：
+
+```
+─── features annotate (worker) · project=WTG_phase1 · 每日上限=12 · 每请求≤6 ───
+  HTTP 200 · ok=true · Done: {"ok": 6, ..., "title_how": {"bracket": 6}, "truncated": 0}
+  HTTP 200 · ok=true · Done: {"ok": 6, ..., "title_how": {"bracket": 6}, "truncated": 0}
+```
+
+顺带白捡的三条：
+
+- **新的 `markers` 标题解析器在 12 篇真实 WTG 笔记上 12/12 走 `bracket` 分支**（`【标题】…【正文】…`），`truncated: 0`（没有正文超 1,500 字，与 09-19 实查的「最长 1,013 字」一致）。
+- **dry-run 确实什么都没写**：跑完 `note_feature_answers` 仍 0 行，`note_features` 里也没有 `extractor_version LIKE 'fq-v0.1%'` 的行。
+- 预算逻辑对：`FEATURE_LIMIT=12`，两批 × 6 跑满即停。
+
+⚠️ **这一条前后写错过一次，教训记下来**：第一版写的是「Railway worker 还没重新部署」——那是**没核实就当成事实**。真相是我拿不到 `WORKER_URL` / `WORKER_API_KEY`（GitHub secrets），所以当时能说的只有「大概率已自动上线、但没核实」。owner 直接问「这东西不是 github 更新之后自动拉取的吗」，才逼出上面这次实测。同 D-051 / 上面 #109 那条的另一面：**「代码进了 main」不等于「运行时跟上了」，但「我没查」也不等于「它没跑」**；两边都只能靠真的去够一次。
+
+### 剩下没生效的
+
+1. `FEATURE_MODEL` 没设，worker 会跟 `ESSENCE_MODEL`。闸一要比便宜档时再在 Railway 上加。
+2. 全库回填（`backfill-features.yml`）**故意没跑**：按 docs/28 §10，等闸一改完题、问题库冻结之后再回填，否则要按新题面重跑一遍。
+3. 真实增量从今晚的 cron 开始（本次是 dry-run，没落行）。
 
 ### 没做的
 
