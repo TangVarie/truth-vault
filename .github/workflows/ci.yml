@@ -45,6 +45,7 @@ jobs:
             scripts/check_flywheel_health.py \
             scripts/curate_flywheel_lessons.py \
             scripts/count_unannotated_essence.py \
+            scripts/check_angle_ledger_leak.py \
             scripts/prune_librarian_cache.py \
             scripts/preflight_mapping.py \
             librarian/__init__.py \
@@ -4386,6 +4387,119 @@ jobs:
           assert "LIBRARIAN_TRAFFIC_CHECK_DONE rc=" in wf, "daily-sync 的哨兵 grep 和脚本不一致"
           assert "--window-hours" not in wf, "夜跑不该自己传窗口 —— 默认值由脚本钉着(> 24h 重叠)"
           print("check_librarian_traffic: 10/10 cases passed")
+          PY
+      - name: "角度台账漏账灯自检 (D-071): 两条判据各带下限 / tv-sync 导入副本必须排除 / 哨兵行"
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # 守卫 · 角度台账漏账灯 (D-071): 断 verdicts/report/gather 的行为, 反证靠改坏输入。
+          import sys, types, io, contextlib
+          import check_angle_ledger_leak as chk
+
+          P = lambda drawn, consumed, drafts, with_key: {
+              "drawn": drawn, "consumed": consumed, "drafts": drafts, "with_key": with_key}
+
+          # 判据 A: 发牌够多但一篇真稿都没有 → 命中; 差一个就不喊(下限真的在起作用)
+          assert [h["kind"] for h in chk.verdicts({"甲": P(10, 0, 0, 0)})] == ["drawn_unwritten"]
+          assert chk.verdicts({"甲": P(9, 0, 0, 0)}) == [], "低于 MIN_DRAWN 不该喊"
+          # 判据 B: 真稿够多但一条坐标都没有 → 命中; 只要有一条带坐标就不喊
+          assert [h["kind"] for h in chk.verdicts({"乙": P(6, 0, 5, 0)})] == ["unattributed"]
+          assert chk.verdicts({"乙": P(6, 0, 5, 1)}) == [], "有稿子带了坐标就不该喊未归因"
+          assert chk.verdicts({"乙": P(6, 0, 4, 0)}) == [], "低于 MIN_DRAFTS 不该喊"
+          # 正常项目(发了牌、写了稿、带了坐标)一条都不喊
+          assert chk.verdicts({"途鸽": P(12, 8, 12, 12)}) == []
+
+          def run(stats, days=7):
+              buf = io.StringIO()
+              with contextlib.redirect_stdout(buf):
+                  rc = chk.report(stats, days)
+              return rc, buf.getvalue()
+
+          rc, out = run({"by_project": {}, "ingested_skipped": 0})
+          assert rc == 0 and "无从判定" in out, out          # 没发牌 = 不评价, 不是健康
+          rc, out = run({"by_project": {"途鸽": P(12, 8, 12, 12)}, "ingested_skipped": 99})
+          assert rc == 0 and "99 条" in out, out            # 排除掉的副本数要说出来
+          rc, out = run({"by_project": {"sportsix": P(60, 0, 0, 0)}, "ingested_skipped": 0})
+          assert rc == 1 and "抽完没写" in out and "sportsix" in out, out
+          rc, out = run({"by_project": {"D2": P(20, 0, 10, 0)}, "ingested_skipped": 0})
+          assert rc == 1 and "写了不带坐标" in out, out
+
+          # ── gather: tv-sync 导入的副本必须被排除 ──────────────────────────────
+          class _Chain:
+              """够用的假 PostgREST 链: 只认本脚本真的用到的那几个方法。"""
+              def __init__(self, rows, sink=None): self.rows, self.sink = rows, sink
+              def select(self, *a, **k): return self
+              def gte(self, *a, **k): return self
+              def eq(self, k, v):
+                  if self.sink is not None: self.sink.append((k, v))
+                  return self
+              def in_(self, k, vals): self.vals = vals; return self
+              def execute(self):
+                  rows = self.rows(self) if callable(self.rows) else self.rows
+                  return types.SimpleNamespace(data=rows)
+
+          # 甲: 抽了 12 个角度, 窗口内只有 8 条 tv-sync 导入的副本, 一篇自己写的都没有
+          # 乙: 抽了 6 个, 真写了 6 篇, 但一篇都没带坐标(外加 1 条导入副本混在里面)
+          ANGLES = ([{"project_id": "p1", "consumed_version_id": None, "drawn_at": "t"} for _ in range(12)]
+                    + [{"project_id": "p2", "consumed_version_id": None, "drawn_at": "t"} for _ in range(6)])
+          FPS = ([{"project_id": "p1", "angle_key": None, "version_id": f"v{i}", "created_at": "t"}
+                  for i in range(8)]
+                 + [{"project_id": "p2", "angle_key": None, "version_id": "vp2", "created_at": "t"}]
+                 + [{"project_id": "p2", "angle_key": None, "version_id": f"r{i}", "created_at": "t"}
+                    for i in range(6)])
+          INGESTED = {f"v{i}" for i in range(8)} | {"vp2"}
+
+          def make_sb(exclude=True):
+              eq_seen = []
+              class SB:
+                  def schema(self, s): self.s = s; return self
+                  def table(self, t):
+                      if t == "angle_ledger": return _Chain(ANGLES)
+                      if t == "draft_fingerprints": return _Chain(FPS)
+                      if t == "tv_note_links":
+                          return _Chain(lambda c: [{"version_id": v} for v in c.vals
+                                                   if exclude and v in INGESTED], eq_seen)
+                      if t == "projects":
+                          return _Chain([{"id": "p1", "name": "甲项目"}, {"id": "p2", "name": "乙项目"}])
+                      raise AssertionError(f"没预料到的表 {t}")
+              return SB(), eq_seen
+
+          fake_common = types.ModuleType("_common")
+          fake_common.fetch_all_pages = lambda q, order_by=None: q.execute().data
+          sys.modules["_common"] = fake_common
+
+          sb, eq_seen = make_sb(exclude=True)
+          st = chk.gather(sb, "2026-09-13T00:00:00")
+          assert ("match_kind", "ingested") in eq_seen, "没有按 match_kind=ingested 过滤"
+          assert st["ingested_skipped"] == 9, st
+          assert st["by_project"]["甲项目"] == P(12, 0, 0, 0), st["by_project"]
+          assert st["by_project"]["乙项目"] == P(6, 0, 6, 0), st["by_project"]
+          kinds = {h["project"]: h["kind"] for h in chk.verdicts(st["by_project"])}
+          assert kinds == {"甲项目": "drawn_unwritten", "乙项目": "unattributed"}, kinds
+
+          # 反证: 不排除导入副本 → 甲被诊断成"写了 8 篇都不带坐标", 而它其实一篇没写。
+          # 判错病因比不报警更坏: 去催人"提交时带上 angle_key", 而真正的问题是会话停在发牌之后。
+          sb2, _ = make_sb(exclude=False)
+          st2 = chk.gather(sb2, "2026-09-13T00:00:00")
+          assert st2["by_project"]["甲项目"] == P(12, 0, 8, 0), st2["by_project"]
+          kinds2 = {h["project"]: h["kind"] for h in chk.verdicts(st2["by_project"])}
+          assert kinds2["甲项目"] == "unattributed", "反证前提不成立: 不排除导入副本本该把病因判反"
+          assert kinds2["乙项目"] == "unattributed", "真未归因的那个两种口径下都该喊"
+
+          # ── main: 哨兵行必须打出来(daily-sync 靠它判崩溃, 不靠退出码) ──────────
+          fake_common.get_supabase_client = lambda: object()
+          chk.gather = lambda sb, since: {"by_project": {"x": P(20, 0, 0, 0)}, "ingested_skipped": 0}
+          buf = io.StringIO()
+          with contextlib.redirect_stdout(buf):
+              rc = chk.main.__wrapped__() if hasattr(chk.main, "__wrapped__") else chk.main()
+          out = buf.getvalue()
+          assert rc == 1 and "ANGLE_LEDGER_CHECK_DONE rc=1" in out, out
+          # ── 夜跑真的在调它, 且哨兵前缀两边一致(同馆员流量那盏灯的做法) ──────────
+          wf = open("../.github/workflows/daily-sync.yml", encoding="utf-8").read()
+          assert "python check_angle_ledger_leak.py" in wf, "夜跑没接这道检查"
+          assert "ANGLE_LEDGER_CHECK_DONE rc=" in wf, "daily-sync 的哨兵 grep 和脚本不一致"
+          assert "--window-days" not in wf, "夜跑不该自己传窗口 —— 默认值由脚本钉着"
+          print("  ✓ 角度台账灯: 两条判据各带下限, 导入副本被排除(反证会冒假警报), 哨兵行在")
           PY
       - name: Autowriter dup-error detection self-check
         working-directory: scripts

@@ -531,6 +531,24 @@ jobs:
           上面的 traceback 是真问题 —— advisory 不拖红, 但通道 2 的监控现在是瞎的, 去修。"
           fi
 
+      - name: 角度台账漏账检查 · 发了牌没走到成稿就告警 (advisory, 不 fail)
+        if: steps.check.outputs.skip != 'true' && always()
+        working-directory: scripts
+        run: |
+          # D-071 (2026-09-20): deskcore /health 的 pipeline 指标报 91% 泄漏, 但那一个百分比把两种
+          # 完全不同的形状糊在一起, 而且没排除 tv-sync 导入的副本(同窗口 1507 条指纹里 1468 条是导入的,
+          # 本来就没有 angle_key)。本脚本把两种形状分开报: 「抽完没写」(会话停在发牌之后) 与
+          # 「写了不带坐标」(稿子进了指纹库、台账销不了账 → 同一个故事下一批会被再抽一次)。
+          # advisory 不拖红: 修在 aw 仓(协议 / 使用习惯), TV 红了也改不好(同通道 2 那盏灯)。
+          # 崩了要看得见: 靠哨兵行判定, 不靠退出码。只读, dry_run 也照跑。
+          set +e
+          python check_angle_ledger_leak.py 2>&1 | tee /tmp/angle_leak.log
+          set -e
+          if ! grep -q '^ANGLE_LEDGER_CHECK_DONE rc=' /tmp/angle_leak.log; then
+            echo "::warning title=角度台账检查崩了::脚本没跑到底(没有哨兵行), \
+          上面的 traceback 是真问题 —— advisory 不拖红, 但这盏灯现在是瞎的, 去修。"
+          fi
+
       - name: Show flywheel status (truth_vault.v_flywheel_sync_status)
         if: steps.check.outputs.skip != 'true' && always()
         working-directory: scripts

@@ -69,6 +69,7 @@ curl -sS -X POST "$LIBRARIAN_URL/librarian" \
 ## 5. TV 侧已做 / 不用你们做
 
 - 夜跑守卫 `scripts/check_librarian_traffic.py`（D-063）。
+- 夜跑守卫 `scripts/check_angle_ledger_leak.py`（D-071）：发了角度没走到成稿就 `::warning`，两种形状分开报（「抽完没写」vs「写了不带 `angle_key`」），**先排除 `tv_note_links.match_kind='ingested'` 的导入副本**再算——不排除的话未归因率永远 97%+，而且病因会判反。同样是 advisory，不拖红。
 - 书架、馆员、缓存、prompt caching 都不用动；契约不变。
 - 如果你们决定改用别的注入位置或改 brief 字段，先看 docs/15 §0 的契约，改了告诉 TV 一声。
 
