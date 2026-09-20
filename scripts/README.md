@@ -10,6 +10,9 @@ scripts/
 ├── sync_feishu_notes_to_truth_vault.py                 飞书 → TV (periodic)
 ├── sync_comments_from_raw_extra.py                     comment 文本块 → truth_vault.comments (post-sync)
 ├── annotate_essence_pass.py                            Mode A essence/audience LLM 标注 (independent pass)
+├── feature_bank.py                                     内容特征层纯逻辑 (问题库/切片/代码特征/提示词/校验; 不连库, docs/28)
+├── annotate_feature_pass.py                            内容特征层抽取 pass (20 道模型题按组 + 8 代码特征 + 3 占位题 → note_feature_answers; D-070)
+├── count_unannotated_features.py                       backfill-features / daily-sync 用: 项目还剩几篇没抽
 ├── sync_truth_vault_baokuan_to_sanshengliubu.py        TV 爆款 → ssll (periodic)
 ├── sync_truth_vault_baokuan_to_autowriter_items.py     TV 爆款 → autowriter (periodic)
 ├── extract_negative_examples_from_autowriter.py        autowriter 历史挖 negative (one-shot)
@@ -103,6 +106,7 @@ CI 和 daily-sync workflow 都优先读 `.lock`; `.txt` 仅作为 "high-level in
 #         + 首次升级时把旧的互动量推断退回未推断 + 清空 projects.tier_thresholds + v_tier_discrepancy 改评论数口径 (D-062)
 #   - schemas/notes_v1_14_shelf_ticket_gate.sql       → 书架 v_flywheel_lesson_cards 挡「铺评工单」爆/大爆 (D-060 route → 书架; 视图, 必须在 v1_10 之后)
 #   - schemas/notes_v1_15_l2_labels.sql               → L2 正负例口径的唯一住处 v_l2_labels (+ v_l2_labels_v1 对照; 视图, D-067)
+#   - schemas/notes_v1_13_content_features.sql       → 内容特征层三表 (note_feature_answers / feature_validation / content_scores) + v_feature_contrast (读 v_l2_labels, 必须在 v1_15 之后; D-065 / D-070)
 #   - autowriter-migrations/001_create_autowriter_schema.sql → 把 autowriter 表从 public 迁到 autowriter schema
 #   - autowriter-migrations/002_add_external_source.sql     → items 加 (external_source, external_source_id) 列
 #         + per-user partial UNIQUE (user_id, external_source, external_source_id) WHERE external_source IS NOT NULL.
@@ -162,6 +166,10 @@ done
 # Step 3: essence/audience LLM 标注（独立 D-028 pass，按预算调 --limit）
 for project in NUC_phase1 NRT_phase2 NRT_phase3; do
     python annotate_essence_pass.py "$project" --limit 50
+
+# Step 3b: 内容特征层抽取（docs/28 §5, D-070; 生产走 Railway worker /annotate-features, 夜跑增量 + backfill-features.yml 回填）
+#   --dry-run 只渲染提示词; --code-only 不调模型; --run-tag gate1-x --single 给闸一「每题单问」对比用
+    python annotate_feature_pass.py "$project" --limit 30
 done
 
 # Step 4: TV → 双通道

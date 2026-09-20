@@ -37,6 +37,10 @@ end_date: auto_from_publish_time_max
 # 注: 起草稿这里写的是"16 列全覆盖", 但它自己列的是 7+8=15 —— 那个 16 对不上, 别照抄。
 # 真实列数以 preflight 拉全表为准(D-021: 未声明列会 quarantine 整行, 所以宁可先按 15
 # 声明、preflight 报出缺的再补, 也不要凑一个数字)。
+# ── 标题怎么拿 (docs/28 §3 第 4 条, D-065 续; 09-19 实查 17 张表) ──
+# column = notes.title 列 / markers = 从 raw_content 的标记切 / none = 没有标题
+title_extraction: markers          # 文案里带标记, 解析器同时认「【标题】…【正文】…」和「标题：…(换行)正文：…」; 切不出来的单条标题类题目记 NULL
+
 field_mapping:
   实时数据.评论数: comments_count   # D-062: 判爆的唯一依据(实时总评论数, 含铺评), 巡查机器人抓的
   素人编号: account_id

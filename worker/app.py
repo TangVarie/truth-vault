@@ -5,6 +5,7 @@
 搬到 Railway 后由 GitHub daily-sync 调本服务端点触发(保留 GitHub 的失败→邮件告警)。
 
   POST /annotate-essence  body={project, limit?, dry_run?, reannotate?}
+  POST /annotate-features body={project, limit?, dry_run?, reannotate?, run_tag?, single?, code_only?, model?}
   POST /curate            body={project?, limit?, dry_run?}
   GET  /health            → {ok, service, auth{ok,required,mode}, config{...}, running[]}
 
@@ -35,6 +36,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -250,6 +252,9 @@ def health() -> dict:
             # 只回显 scheme://host[:port] —— 见 _safe_origin()。
             "anthropic_base_url_origin": _safe_origin(os.environ.get("ANTHROPIC_BASE_URL")),
             "essence_model": os.environ.get("ESSENCE_MODEL") or "claude-sonnet-4-6 (default)",
+            # 特征层 (docs/28, D-070): 没设就跟 essence 同一个模型。
+            "feature_model": (os.environ.get("FEATURE_MODEL") or os.environ.get("ESSENCE_MODEL")
+                              or "claude-sonnet-4-6 (default)"),
         },
         "running": _running_scripts(),
     }
@@ -273,6 +278,47 @@ async def annotate_essence(
     # 线程池跑阻塞 subprocess,别堵事件循环(见 _run docstring)。
     res = await run_in_threadpool(_run, "annotate_essence_pass.py", args)
     res["action"] = "annotate-essence"
+    res["project"] = project
+    return res
+
+
+_RUN_TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$")
+_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,79}$")
+
+
+@app.post("/annotate-features")
+async def annotate_features(
+    request: Request,
+    x_worker_key: str | None = Header(default=None),
+) -> dict:
+    """内容特征层抽取 pass (docs/28 §5, D-070)。与 /annotate-essence 同一套鉴权、同一个
+    每脚本互斥锁 (锁按脚本名分, 所以 essence 和 features 可以同时跑, 各自不重入)。
+
+    run_tag / single / model 是闸一用的旋钮 (每题单问 vs 分组、换模型对比); 默认
+    primary + 分组 + FEATURE_MODEL。三个值都只在闭集/正则内放行 —— 它们会拼进
+    subprocess 参数。
+    """
+    _check_auth(x_worker_key)
+    body = await _json_body(request)
+    project = body.get("project")
+    if not project:
+        raise HTTPException(status_code=400, detail="missing required field: project")
+    args = [str(project), "--limit", _limit_arg(body)]
+    for flag in ("dry_run", "reannotate", "single", "code_only"):
+        if body.get(flag):
+            args.append("--" + flag.replace("_", "-"))
+    run_tag = body.get("run_tag")
+    if run_tag is not None:
+        if not isinstance(run_tag, str) or not _RUN_TAG_RE.match(run_tag):
+            raise HTTPException(status_code=400, detail="run_tag must match [A-Za-z0-9][A-Za-z0-9_.-]{0,39}")
+        args += ["--run-tag", run_tag]
+    model = body.get("model")
+    if model is not None:
+        if not isinstance(model, str) or not _MODEL_RE.match(model):
+            raise HTTPException(status_code=400, detail="model must match [A-Za-z0-9][A-Za-z0-9_.:/-]{0,79}")
+        args += ["--model", model]
+    res = await run_in_threadpool(_run, "annotate_feature_pass.py", args)
+    res["action"] = "annotate-features"
     res["project"] = project
     return res
 

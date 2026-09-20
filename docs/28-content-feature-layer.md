@@ -423,7 +423,7 @@ AND NOT (COALESCE(n.data_quality_flags -> 'comment_maintained_routes', '[]'::jso
 | 阶段 | 做什么 | 过了什么才进下一步 | 估时 |
 |---|---|---|---|
 | P0（现在就能做，和特征层无关） | 写作台恢复借书（aw 仓，docs/27，**09-19 仍暗着**）；~~书架挡铺评工单（§7.2）~~ **已做**（D-066 / D-068）；冻结现有 essence 打分器、开闸三 | — | 各自独立 |
-| P1 | 按本次讨论改完问题库；迁移 `notes_v1_13`、`annotate_feature_pass.py`、worker 端点、CI 守卫；闸一 | 闸一 | 约一周 |
+| P1 | 按本次讨论改完问题库；~~迁移 `notes_v1_13`、`annotate_feature_pass.py`、worker 端点、CI 守卫~~ **已做（D-070，2026-09-20）**：`schemas/notes_v1_13_content_features.sql`、`scripts/feature_bank.py` + `annotate_feature_pass.py`、worker `/annotate-features`、daily-sync 增量步 + `backfill-features.yml`、mapping `title_extraction`、附录 E 七组守卫；剩闸一（等运营 Q6 定人） | 闸一 | 约一周 |
 | P2 | 全库回填；重算 §3 分档表作闸三基线；冻结问题库、写死判据；闸二；出报告；决定进不进 L2 | 闸二 | 约一周 |
 | P3 | 冻结「essence + 特征」打分器开闸三第二条；写作台草稿影子打分 | 闸三 | 一到两个月（等数据） |
 | P4 | 经验卡的已验证规律、馆员缓存块、`rank_score` 改法；写作台 `prepublish_evaluations` 的 model 行；探索比例 | 持续监控 | — |
@@ -492,7 +492,9 @@ AND NOT (COALESCE(n.data_quality_flags -> 'comment_maintained_routes', '[]'::jso
 
 ---
 
-## 附录 A · 迁移草稿 `schemas/notes_v1_13_content_features.sql`
+## 附录 A · 迁移 `schemas/notes_v1_13_content_features.sql`
+
+**已落仓（D-070，2026-09-20）**：正式文件在 `schemas/`，下面这份是草案时的抄本，以仓库文件为准；CI 的 sql job 连套两遍并用 v1.15 的夹具核 `v_feature_contrast` 的 2×2。
 
 本地验证做过的事：Postgres 16（与 CI 同版本）按 CI 顺序套完 v1_2 → v1_12 后，本文件连跑两遍无报错；`feature_validation.status` 的 CHECK 会拒绝非法值；`v_l2_labels` 用合成数据逐类核过——伪爆、铺评工单、数值推断、互动低于趴中位都被剔除；`raw_extra` 为 NULL、`tier_source` 为 NULL 的干净爆款被误剔，synthetic「伪500评」被误收（即 §11 第 5 条的 a、b、c），`v_feature_contrast` 的分母正确排除了无效答案。
 

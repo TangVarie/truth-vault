@@ -18,6 +18,10 @@ start_date: null
 end_date: null
 
 # ── 字段映射 ──
+# ── 标题怎么拿 (docs/28 §3 第 4 条, D-065 续; 09-19 实查 17 张表) ──
+# column = notes.title 列 / markers = 从 raw_content 的标记切 / none = 没有标题
+title_extraction: markers          # 文案里带标记, 解析器同时认「【标题】…【正文】…」和「标题：…(换行)正文：…」; 切不出来的单条标题类题目记 NULL
+
 field_mapping:
   # account_id → truth_vault.accounts FK; note_id 由 sync 脚本按 {project_id}_{feishu_record_id} 生成
   素人编号: account_id

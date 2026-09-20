@@ -281,6 +281,7 @@ _MAPPINGS_DIR = Path(__file__).resolve().parent.parent / "mappings"
 
 
 _ALLOWED_TIER_SOURCES = {"状态字段", "备注字段"}
+_ALLOWED_TITLE_EXTRACTION = {"column", "markers", "none"}   # docs/28 §3 第 4 条
 
 
 def load_mapping(project_id: str) -> dict:
@@ -316,6 +317,17 @@ def load_mapping(project_id: str) -> dict:
                 f"{sorted(_ALLOWED_TIER_SOURCES)}. Check for typos."
             )
     _reject_shadowed_tier_rules(path, tier_extraction.get("rules") or [])
+    # 内容特征层 (docs/28 §3 第 4 条): 标题从哪拿。缺省 none —— 宁可标题类题目全记 NULL,
+    # 也不让一个拼错的值 (marker / colum) 静默退成"没有标题"而没人知道。
+    te = m.get("title_extraction", "none")
+    if te not in _ALLOWED_TITLE_EXTRACTION:
+        raise ValueError(
+            f"{path}: title_extraction={te!r} not in {sorted(_ALLOWED_TITLE_EXTRACTION)}. Check for typos."
+        )
+    aliases = m.get("brand_aliases")
+    if aliases is not None and (not isinstance(aliases, list)
+                                or not all(isinstance(a, str) and a.strip() for a in aliases)):
+        raise ValueError(f"{path}: brand_aliases 必须是非空字符串的列表")
     return m
 
 

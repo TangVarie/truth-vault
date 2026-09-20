@@ -22,6 +22,7 @@ GitHub daily-sync(cron)
 | GET | `/health` | — | Railway healthcheck → `{"ok":true,"service":"tv-worker"}` |
 | POST | `/annotate-essence` | `{project, limit?=50, dry_run?, reannotate?}` | 跑 essence Mode A 标注(per project) |
 | POST | `/curate` | `{project?, limit?=50, dry_run?}` | 把合格爆款策展成经验卡(喂馆员书架) |
+| POST | `/annotate-features` | `{project, limit?=50, dry_run?, reannotate?, run_tag?, single?, code_only?, model?}` | 内容特征层抽取 pass(docs/28 §5, D-070): 20 道模型题按组问 + 8 个代码特征 + 3 道占位题, 落 `note_feature_answers`。`run_tag`/`single`/`model` 给闸一用 |
 
 返回 `200 + {ok, returncode, stdout_tail, stderr_tail, action, project}`。`returncode!=0` → `ok=false`,
 由 daily-sync 判该步失败。
@@ -46,6 +47,7 @@ staging)**没有任何症状** —— 服务照常 200、日志照常干净。�
    - `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY`(service_role,绕 RLS 读写 truth_vault)
    - `ANTHROPIC_API_KEY` + `ANTHROPIC_BASE_URL` ← **能跑通的那条通道**(同 librarian/onboarder,别用挂掉的组)
    - `ESSENCE_MODEL`(可选,默认 `claude-sonnet-4-6`)
+   - `FEATURE_MODEL`(可选, 特征层用的模型, 默认跟 `ESSENCE_MODEL`)
    - `WORKER_API_KEY`(自定口令,建议设 = GitHub `WORKER_API_KEY` secret)
    - `WORKER_RUN_TIMEOUT_S`(可选,单次 subprocess 硬超时,默认 900)
 3. GitHub repo secrets 加:`WORKER_URL`(Railway 域名)、`WORKER_API_KEY`(= Railway 那个)。

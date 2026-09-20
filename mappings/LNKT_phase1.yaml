@@ -74,6 +74,10 @@ end_date: auto_from_publish_time_max
 #    只能留 raw_extra。—— 2026-08-30 定稿: 维持这个处理, 判据(18 个方向里 16 个人群唯一)
 #    见 direction_decomposition 抬头那段。
 
+# ── 标题怎么拿 (docs/28 §3 第 4 条, D-065 续; 09-19 实查 17 张表) ──
+# column = notes.title 列 / markers = 从 raw_content 的标记切 / none = 没有标题
+title_extraction: markers          # 文案里带标记, 解析器同时认「【标题】…【正文】…」和「标题：…(换行)正文：…」; 切不出来的单条标题类题目记 NULL
+
 field_mapping:
   # ── 标识 ──
   素人编号: account_id              # → notes.account_id (FK to accounts)
