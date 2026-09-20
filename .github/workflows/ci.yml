@@ -5913,10 +5913,15 @@ jobs:
                   def __exit__(self, *a): return False
                   def read(self): return json.dumps(self.payload).encode()
               def fake_urlopen(req, timeout=None):
-                  if error:
-                      raise RuntimeError(error)
                   url = req.full_url if hasattr(req, "full_url") else str(req)
                   name = url.split("/workflows/")[1].split("/runs")[0]
+                  # error 可以是 str(所有都报错) 或 {workflow: 消息}(只打指定的那个)。
+                  # 上一版只支持"所有都报错", 于是【一个验成了 + 另一个 403】这种最要紧的
+                  # 组合从没被测到 —— 而那正是 verified==0 兜底【盖不住】403 分支的场合。
+                  if isinstance(error, dict) and name in error:
+                      raise RuntimeError(error[name])
+                  if isinstance(error, str) and error:
+                      raise RuntimeError(error)
                   if name not in responses:
                       raise RuntimeError("HTTP Error 404: Not Found")
                   return FakeResp({"workflow_runs": responses[name]})
@@ -5994,8 +5999,37 @@ jobs:
           assert code == 1, f"⑦ 一个都没验成该判红, 实际 {code}: {out}"
           assert "一个 workflow 都没真查成" in out, out
 
+          # ⑧ 窗口里【同时有"还在跑"和"失败"】: 上一版先判 running 就 continue, 于是那趟失败
+          #    被整个吞掉、还打勾(代班 review on #145)。失败必须照报。
+          code, out = run_with({"daily-sync.yml": [mkrun(5, "success")],
+                                "features-sync.yml": [mkrun(1, None, status="in_progress"),
+                                                      mkrun(4, "failure")]})
+          assert code == 1, f"⑧ 窗口里有失败就该报, 不该被'还在跑'吞掉, 实际 {code}: {out}"
+          assert "没有一趟成功" in out, out
+
+          # ⑨ status 是 pending(不在任何白名单里)也得当"还没跑完", 不许报成失败。
+          #    判据钉 conclusion is None 才对这个枚举封闭。
+          code, out = run_with({"daily-sync.yml": [mkrun(5, "success")],
+                                "features-sync.yml": [mkrun(1, None, status="pending")]})
+          assert code == 0, f"⑨ pending 也是没跑完, 不该判红, 实际 {code}: {out}"
+          assert "还在跑" in out, out
+
+          # ⑩ "一个验成了 + 另一个 403": verified==0 那条兜底【盖不住】这种, 403 分支必须自己判红。
+          code, out = run_with({"daily-sync.yml": [mkrun(5, "success")]},
+                               error={"features-sync.yml": "HTTP Error 403: Forbidden"})
+          assert code == 1, f"⑩ 有一个验成了也不能放过另一个 403, 实际 {code}: {out}"
+          assert "看门狗这一趟对它是瞎的" in out, out
+          assert "一个 workflow 都没真查成" not in out, f"⑩ 这次该是 403 分支判的红, 不是兜底: {out}"
+
+          # ⑪ 只有"还在跑"的那些不算验过 —— 否则兜底会被它们撑起来而失效
+          code, out = run_with({"daily-sync.yml": [],            # 404 跳过
+                                "features-sync.yml": [mkrun(1, None, status="in_progress")]})
+          assert code == 1, f"⑪ 全是跳过+还在跑 = 一个都没真查成, 该判红, 实际 {code}: {out}"
+          assert "一个 workflow 都没真查成" in out, out
+
           print("  ✓ 看门狗自检: 都成功→绿 / 全失败或取消→红 / cron 没触发→红 / 新上线→放行 /"
-                " API 查不动→红 / 还在跑→放行 / 一个都没验成→红")
+                " API 查不动→红 / 还在跑→放行 / 一个都没验成→红 / 在跑+失败→照报失败 /"
+                " pending→当没跑完 / 单个 403 不被别人验成掩盖 / 在跑的不算验过")
           PY
 
       - name: 用时灯的分母要和 timeout 一致 + 看门狗要盯全每个定时 workflow (D-073)
@@ -6026,6 +6060,18 @@ jobs:
           )
           # 灯必须是 advisory: 用时长不是故障, 天天红等于没有灯(D-053)
           assert "exit 1" not in lamp[0]["run"], "用时灯不许判红 —— 它是预告不是故障"
+          # 分母对了还不够, 分子也得对(代班 review on #145: 上一版只钉了分母, 这个修法能
+          # 悄悄退回去)。记时刻必须是【第一步】, 灯必须【紧挨着失败聚合步】——
+          # 中间或后面多塞几步, 报出来的用时就系统性地偏小, 灯就晚喊甚至不喊。
+          ds_steps = wfs[".github/workflows/daily-sync.yml"]["jobs"]["sync"]["steps"]
+          assert "TV_JOB_STARTED_AT" in (ds_steps[0].get("run") or ""), (
+              "记开跑时刻必须是第一步 —— 排在 checkout/pip 之后, 分子就少算了装环境那一段")
+          names = [st.get("name", "") for st in ds_steps]
+          li = next(i for i, st in enumerate(ds_steps) if "BUDGET_MIN=" in (st.get("run") or ""))
+          ai = next(i for i, n in enumerate(names) if n.startswith("Fail job on any sync failure"))
+          assert li == ai - 1, (
+              f"用时灯要紧挨在失败聚合步前面(现在灯在第 {li+1} 步, 聚合在第 {ai+1} 步) —— "
+              "中间再插步骤, 它们的用时就不算进分子了")
           print(f"  ✓ 用时灯分母 {budget}min == daily-sync 的 timeout-minutes")
 
           # ② 看门狗盯全每个带 schedule 的 workflow
@@ -7523,9 +7569,13 @@ jobs:
                    "failure", "cancelled", "contains", "startsWith", "endsWith", "format",
                    "join", "toJSON", "fromJSON", "true", "false", "null"}
           # 合法表达式里能出现的字符。% & 反引号之类都不在 —— 它们只会从 python/shell 串漏进来。
-          # 花括号要放行: format('{0}', github.sha) 是合法表达式, 漏了它会把好写法判红。
-          # 但 % 仍然不许 —— 它正是 run #832 那个从 python 格式化串漏进来的字符。
-          LEGAL = re.compile(r"^[A-Za-z0-9_.\[\]{}'\"(),:!=<>&|*\-+/ \t\n]*$")
+          # ⚠️ 花括号【不放行】。上一版为了让 format('{0}', …) 过, 把 {} 加进了白名单 ——
+          #    结果「美元+两花括号 steps.{0}.outcome」也跟着合法了(这句不敢原样写出来, 见下),
+          #    那正是 run #832 那个形态换个占位
+          #    写法而已, 守卫等于自废(代班 review on #145)。而全仓 grep 下来【没有一处】真的
+          #    用 format('{0}', …), 那次放宽是拿真防护换一个假想的便利。
+          #    哪天真要写 format('{0}', …): 在这里【专门】放行它, 别整类放开花括号。
+          LEGAL = re.compile(r"^[A-Za-z0-9_.\[\]'\"(),:!=<>&|*\-+/ \t\n]*$")
           # ⚠️ 走【解析后的结构】, 不扫原始文本: YAML 注释(行首 #)GitHub 根本看不到, 扫文本会
           #    把它们当成真表达式误报(第一版就在 onboard-table / preflight 的注释上各冒一条)。
           #    而 run: 块【内部】的 # 是字符串的一部分, GitHub 照样求值 —— 解析后它还在, 正好被查到。

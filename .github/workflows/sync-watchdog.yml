@@ -95,23 +95,32 @@ jobs:
                       f"cron 没触发? 上一趟是 {last['run_started_at']} ({last['conclusion']})\n"
                       f"    {last['html_url']}")
                   continue
-              verified += 1
               if any(r["conclusion"] == "success" for r in recent):
                   ok = next(r for r in recent if r["conclusion"] == "success")
                   notes.append(f"· {human} ({wf}): OK ({ok['run_started_at']})")
+                  verified += 1
                   continue
-              # ⚠️ 还在跑的 conclusion 是 null —— 不是失败。本仓实测 cron 起跑会漂 5.5-6.3h,
-              #    features-sync 排 12:47 + 漂移 + 最多 180min, 完全可能在 23:41 还没跑完。
-              #    把它判成"没有一趟成功"就是每隔几天误发一封告警邮件, 然后没人再看这些邮件。
-              running = [r for r in recent if r["status"] in ("in_progress", "queued", "requested", "waiting")]
-              if running:
-                  notes.append(f"· {human} ({wf}): 还在跑({running[0]['status']}), 这轮判不了, 下一轮再看")
+              # 没有成功的。先分清【跑完了但没成】和【还没跑完】——次序很要紧:
+              # 先看"还在跑"就 continue 的话, 窗口里同时有 [还在跑, 失败] 时会把那趟失败吞掉
+              # 并打勾(代班 review on #145)。所以先判有没有【已经跑完】的。
+              #
+              # ⚠️ 判据用 `conclusion is None`, 不是 status 的白名单: status 的取值不止
+              #    in_progress/queued, 还有 pending 之类, 白名单漏一个就又变成误报
+              #    "没有一趟成功 (最近一趟: None)" —— 正是上一轮要修掉的那个形态。
+              #    conclusion 只有跑完了才非空, 对这个枚举是封闭的。
+              done = [r for r in recent if r["conclusion"] is not None]
+              if done:
+                  worst = done[0]
+                  problems.append(
+                      f"· {human} ({wf}): 最近 {WINDOW_H}h 跑完了 {len(done)} 趟, "
+                      f"**没有一趟成功** (最近一趟: {worst['conclusion']})\n"
+                      f"    {worst['html_url']}")
+                  verified += 1
                   continue
-              worst = recent[0]
-              problems.append(
-                  f"· {human} ({wf}): 最近 {WINDOW_H}h 跑了 {len(recent)} 趟, "
-                  f"**没有一趟成功** (最近一趟: {worst['conclusion']})\n"
-                  f"    {worst['html_url']}")
+              # 全都还没跑完: 本仓实测 cron 起跑会漂 5.5-6.3h, features-sync 排 12:47 + 漂移
+              # + 最多 180min, 完全可能在 23:41 还没跑完。判成失败就是隔几天误发一封, 然后
+              # 没人再看这些邮件。⚠️ 这一支【不计入 verified】—— 还没结论不等于验过了。
+              notes.append(f"· {human} ({wf}): 还在跑({recent[0]['status']}), 这轮判不了, 下一轮再看")
 
           for n in notes:
               print(n)
