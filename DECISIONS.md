@@ -4240,3 +4240,44 @@ worker service 是「连本 repo」建的（`worker/README.md` 部署段），Ra
 - **138 个「抽完没写」不是代码能修的**：断点在 `commit_drafts`（见④），是流程不是代码。简报里那笔账是提醒，不是拦截；真要拦得改成「上一场没结清就不给发新牌」，那会挡住正常的换题，没做，等看几周简报提醒的效果。
 - 两个写手各占一半的分布说明这不是个别人的习惯，值得当面问一次是流程哪一步断的。
 - deskcore `/health` 的 `pipeline` 指标本身没改（那是 aw 仓的运维视角）；本条只是不再拿它当唯一的灯。
+
+---
+
+## D-072 · `prepublish_evaluations` 标成 legacy-only：它没有消费者，攒人工判断的性价比现在不对
+
+**日期**: 2026-09-20
+**触发**: 顺着 D-071 查写作台还欠什么时发现「人工审稿」这条链路零流量。owner 问*"人工审稿？什么情况下会存在这个"*，查完下游之后拍板 legacy-only。
+
+### 这个动作本来是什么
+
+写作台里 `commit_drafts` 入库的稿子状态是 `pending`——**入库不等于审核**。只有用户真的看完稿子表了态，模型才调 `review_drafts` 落库：`status` 改成 `approved` / `needs_revision`，并记 `decision_source='human'` / `reviewer_id`（就是点这一下的人）/ `decided_at`。门槛写死在工具里：审稿人恒为调用者、只认 approved/needs_revision、打回和通过同等公民。
+
+### 实查（2026-09-20，生产库）
+
+| 查的 | 结果 |
+|---|---|
+| `autowriter.items` 的 `decision_source` | **6,688 行全是 NULL** —— `review_drafts`（09-16 上线）一次都没被调用过 |
+| `prepublish_evaluations` | 598 行，全是 Streamlit 时代反推的，TV 已按新口径归成 `evaluator_type='unverified'`，最后一条 **08-20**（Streamlit 末次出稿 08-19） |
+| 那 598 行的校准字段 | `pred_tier_class` / `actual_tier` **一条都没填**，`was_correct` 全 NULL |
+
+第三行才是要害：**这张表从上线到现在是只写不读的**。`docs/00` 自己写着「L2 · Predictor 未启用」。所以「这条管子断了」这个说法（我在 D-071 那轮的措辞）不准确——更准确的是**它没有消费者**。
+
+### 决定
+
+**标 legacy-only。** 不再要求写作台那边攒人工判断，也不把这条链路的沉默当故障。
+
+- **不拆管子**：`sync_autowriter_decisions_to_prepublish.py` 继续在夜跑里，哪天上游真有行了会自动流进来。改的是**对沉默的解释**：脚本 docstring 里写明「每晚捞不到新行是预期的，别再排查一遍」。
+- **每晚自查保留**：存量 598 行必须继续顶着诚实的身份（`unverified`）。legacy-only 不等于可以让它们漂回 `human`——TV-01 那次事故（598 条机器判定顶着人工身份躺了几个月）的守卫不松。
+- **aw 侧解锁**：`deskcore-runbook` §3 的 A/B/C 三选一（挡着「停 Streamlit」那条前置）选 **C**。A 的代码两侧其实都建好了，但建好的管子没有消费者不构成保留理由。
+
+### 重新点亮的条件（三条都到了再说）
+
+1. 特征层过闸三，打分器开始往本表写 `evaluator_type='model'` 的行（docs/28 §放闸后）；
+2. 那时候有人真的要算「模型预测 vs 人怎么判 vs 实际爆没爆」的对比；
+3. 有人负责填 `actual_tier` —— 现在 `notes.source_autowriter_version_id` 已有 404 行（D-064），lineage 不再是空的，反推有了地基。
+
+⚠️ **光让模型多调 `review_drafts` 不算点亮。** 协议里「用户没表态就别调」守的正是「别替用户点通过」；松掉就是往校准数据里灌伪造的正例，比没有更糟。这条写进了 aw 的 runbook 和本条，免得下次有人顺手「优化」掉。
+
+### 为什么不是「先攒着总没坏处」
+
+写手每场对话多做一个动作，换一张暂时没人读的表。而且攒的东西还不完整：`pred_tier_class` 没人填，光有 pass/revise 算不出准确率。等 P3 影子打分真跑起来、模型行开始进表的时候，两边并排比才有意义，那时候再接人工那一路，代价一样、价值高得多。
