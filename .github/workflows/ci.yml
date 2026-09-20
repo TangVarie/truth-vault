@@ -4388,7 +4388,7 @@ jobs:
           assert "--window-hours" not in wf, "夜跑不该自己传窗口 —— 默认值由脚本钉着(> 24h 重叠)"
           print("check_librarian_traffic: 10/10 cases passed")
           PY
-      - name: "角度台账漏账灯自检 (D-071): 两条判据各带下限 / tv-sync 导入副本必须排除 / 哨兵行"
+      - name: "角度台账漏账灯自检 (D-071): 判据下限 / 排除 tv-sync 导入副本 / 翻页键唯一 / 重名项目不并格 / 哨兵行"
         working-directory: scripts
         run: |
           python - <<'PY'
@@ -4396,18 +4396,20 @@ jobs:
           import sys, types, io, contextlib
           import check_angle_ledger_leak as chk
 
-          P = lambda drawn, consumed, drafts, with_key: {
-              "drawn": drawn, "consumed": consumed, "drafts": drafts, "with_key": with_key}
+          P = lambda drawn, consumed, drafts, with_key, name="x": {
+              "name": name, "drawn": drawn, "consumed": consumed, "drafts": drafts, "with_key": with_key}
 
           # 判据 A: 发牌够多但一篇真稿都没有 → 命中; 差一个就不喊(下限真的在起作用)
           assert [h["kind"] for h in chk.verdicts({"甲": P(10, 0, 0, 0)})] == ["drawn_unwritten"]
           assert chk.verdicts({"甲": P(9, 0, 0, 0)}) == [], "低于 MIN_DRAWN 不该喊"
           # 判据 B: 真稿够多但一条坐标都没有 → 命中; 只要有一条带坐标就不喊
           assert [h["kind"] for h in chk.verdicts({"乙": P(6, 0, 5, 0)})] == ["unattributed"]
+          # 压根没走 draw_angles 的项目: 稿子本来就没坐标, 台账里也没有行可销 —— 报它漏账是判错病因
+          assert chk.verdicts({"丙": P(0, 0, 50, 0)}) == [], "没发过牌的项目不该被报成台账漏账"
           assert chk.verdicts({"乙": P(6, 0, 5, 1)}) == [], "有稿子带了坐标就不该喊未归因"
           assert chk.verdicts({"乙": P(6, 0, 4, 0)}) == [], "低于 MIN_DRAFTS 不该喊"
           # 正常项目(发了牌、写了稿、带了坐标)一条都不喊
-          assert chk.verdicts({"途鸽": P(12, 8, 12, 12)}) == []
+          assert chk.verdicts({"p9": P(12, 8, 12, 12, name="途鸽")}) == []
 
           def run(stats, days=7):
               buf = io.StringIO()
@@ -4417,11 +4419,11 @@ jobs:
 
           rc, out = run({"by_project": {}, "ingested_skipped": 0})
           assert rc == 0 and "无从判定" in out, out          # 没发牌 = 不评价, 不是健康
-          rc, out = run({"by_project": {"途鸽": P(12, 8, 12, 12)}, "ingested_skipped": 99})
+          rc, out = run({"by_project": {"p9": P(12, 8, 12, 12, name="途鸽")}, "ingested_skipped": 99})
           assert rc == 0 and "99 条" in out, out            # 排除掉的副本数要说出来
-          rc, out = run({"by_project": {"sportsix": P(60, 0, 0, 0)}, "ingested_skipped": 0})
+          rc, out = run({"by_project": {"p8": P(60, 0, 0, 0, name="sportsix")}, "ingested_skipped": 0})
           assert rc == 1 and "抽完没写" in out and "sportsix" in out, out
-          rc, out = run({"by_project": {"D2": P(20, 0, 10, 0)}, "ingested_skipped": 0})
+          rc, out = run({"by_project": {"p7": P(20, 0, 10, 0, name="D2")}, "ingested_skipped": 0})
           assert rc == 1 and "写了不带坐标" in out, out
 
           # ── gather: tv-sync 导入的副本必须被排除 ──────────────────────────────
@@ -4440,13 +4442,16 @@ jobs:
 
           # 甲: 抽了 12 个角度, 窗口内只有 8 条 tv-sync 导入的副本, 一篇自己写的都没有
           # 乙: 抽了 6 个, 真写了 6 篇, 但一篇都没带坐标(外加 1 条导入副本混在里面)
-          ANGLES = ([{"project_id": "p1", "consumed_version_id": None, "drawn_at": "t"} for _ in range(12)]
-                    + [{"project_id": "p2", "consumed_version_id": None, "drawn_at": "t"} for _ in range(6)])
-          FPS = ([{"project_id": "p1", "angle_key": None, "version_id": f"v{i}", "created_at": "t"}
-                  for i in range(8)]
-                 + [{"project_id": "p2", "angle_key": None, "version_id": "vp2", "created_at": "t"}]
-                 + [{"project_id": "p2", "angle_key": None, "version_id": f"r{i}", "created_at": "t"}
-                    for i in range(6)])
+          ANGLES = ([{"id": f"a{i}", "project_id": "p1", "consumed_version_id": None, "drawn_at": "同一刻"}
+                     for i in range(12)]
+                    + [{"id": f"b{i}", "project_id": "p2", "consumed_version_id": None, "drawn_at": "同一刻"}
+                       for i in range(6)])
+          FPS = ([{"id": f"f{i}", "project_id": "p1", "angle_key": None, "version_id": f"v{i}",
+                   "created_at": "同一刻"} for i in range(8)]
+                 + [{"id": "fp2", "project_id": "p2", "angle_key": None, "version_id": "vp2",
+                     "created_at": "同一刻"}]
+                 + [{"id": f"g{i}", "project_id": "p2", "angle_key": None, "version_id": f"r{i}",
+                     "created_at": "同一刻"} for i in range(6)])
           INGESTED = {f"v{i}" for i in range(8)} | {"vp2"}
 
           def make_sb(exclude=True):
@@ -4465,15 +4470,31 @@ jobs:
               return SB(), eq_seen
 
           fake_common = types.ModuleType("_common")
-          fake_common.fetch_all_pages = lambda q, order_by=None: q.execute().data
+
+          def _fake_pages(q, order_by=None):
+              """照抄真 fetch_all_pages 的去重语义: 按 order_by 的值去重。
+
+              真函数里 `fresh = [r for r in page if r.get(order_by) not in seen]` —— 拿一个
+              不唯一的列(created_at / drawn_at)当键, 同值的行会被当成"已经见过"丢掉。
+              这里只翻一页, 但去重照做, 所以键选错就会少行。
+              """
+              rows, seen = [], set()
+              for r in q.execute().data:
+                  assert order_by in r, f"order_by={order_by!r} 不在 select 里"
+                  if r[order_by] in seen:
+                      continue
+                  seen.add(r[order_by]); rows.append(r)
+              return rows
+
+          fake_common.fetch_all_pages = _fake_pages
           sys.modules["_common"] = fake_common
 
           sb, eq_seen = make_sb(exclude=True)
           st = chk.gather(sb, "2026-09-13T00:00:00")
           assert ("match_kind", "ingested") in eq_seen, "没有按 match_kind=ingested 过滤"
           assert st["ingested_skipped"] == 9, st
-          assert st["by_project"]["甲项目"] == P(12, 0, 0, 0), st["by_project"]
-          assert st["by_project"]["乙项目"] == P(6, 0, 6, 0), st["by_project"]
+          assert st["by_project"]["p1"] == P(12, 0, 0, 0, name="甲项目"), st["by_project"]
+          assert st["by_project"]["p2"] == P(6, 0, 6, 0, name="乙项目"), st["by_project"]
           kinds = {h["project"]: h["kind"] for h in chk.verdicts(st["by_project"])}
           assert kinds == {"甲项目": "drawn_unwritten", "乙项目": "unattributed"}, kinds
 
@@ -4481,14 +4502,23 @@ jobs:
           # 判错病因比不报警更坏: 去催人"提交时带上 angle_key", 而真正的问题是会话停在发牌之后。
           sb2, _ = make_sb(exclude=False)
           st2 = chk.gather(sb2, "2026-09-13T00:00:00")
-          assert st2["by_project"]["甲项目"] == P(12, 0, 8, 0), st2["by_project"]
+          assert st2["by_project"]["p1"] == P(12, 0, 8, 0, name="甲项目"), st2["by_project"]
           kinds2 = {h["project"]: h["kind"] for h in chk.verdicts(st2["by_project"])}
           assert kinds2["甲项目"] == "unattributed", "反证前提不成立: 不排除导入副本本该把病因判反"
           assert kinds2["乙项目"] == "unattributed", "真未归因的那个两种口径下都该喊"
 
+          # ── 重名项目不许并格 (codex review on #143) ────────────────────────────
+          # service_role 读的是全租户的行, 项目名不唯一。两个不相干的 UUID 各写了 3 篇
+          # 不带坐标的稿(都低于 MIN_DRAFTS=5), 并成一格就变成 6 篇 → 越过门槛、冒出假警报。
+          same_name = {"idA": P(12, 0, 3, 0, name="重名项目"), "idB": P(12, 0, 3, 0, name="重名项目")}
+          assert chk.verdicts(same_name) == [], "两个同名项目各 3 篇, 谁都不该被喊"
+          merged = {"重名项目": P(24, 0, 6, 0, name="重名项目")}          # 按名字并格之后的样子
+          assert [h["kind"] for h in chk.verdicts(merged)] == ["unattributed"], \
+              "反证前提不成立: 并成一格本该越过门槛冒出假警报"
+
           # ── main: 哨兵行必须打出来(daily-sync 靠它判崩溃, 不靠退出码) ──────────
           fake_common.get_supabase_client = lambda: object()
-          chk.gather = lambda sb, since: {"by_project": {"x": P(20, 0, 0, 0)}, "ingested_skipped": 0}
+          chk.gather = lambda sb, since: {"by_project": {"p1": P(20, 0, 0, 0, name="甲")}, "ingested_skipped": 0}
           buf = io.StringIO()
           with contextlib.redirect_stdout(buf):
               rc = chk.main.__wrapped__() if hasattr(chk.main, "__wrapped__") else chk.main()

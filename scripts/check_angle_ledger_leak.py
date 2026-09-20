@@ -21,7 +21,7 @@ D-064), 它们本来就没有 angle_key —— 不是发牌产出的, 没有坐�
 
 判据(两条, 都故意设了下限, 免得天天红 —— D-053):
     A. 某项目窗口内发牌 >= MIN_DRAWN 个角度, 而真稿 == 0     → 抽完没写
-    B. 某项目窗口内真稿 >= MIN_DRAFTS, 而带坐标的 == 0       → 写了不带坐标
+    B. 某项目窗口内【发过牌】且真稿 >= MIN_DRAFTS, 而带坐标的 == 0 → 写了不带坐标
 两条都不成立才算通。一次发两三张牌、当场没写完是常态, 所以下限不能是 1。
 
 数据来源(都在共享 Supabase 的 autowriter schema 里, TV 用 service_role 只读):
@@ -61,16 +61,26 @@ INGESTED_KIND = "ingested"
 
 
 def verdicts(by_project: dict) -> list[dict]:
-    """哪些项目命中了判据。纯函数 —— CI 直接喂假 stats 测它。"""
+    """哪些项目命中了判据。纯函数 —— CI 直接喂假 stats 测它。
+
+    ``by_project`` 按 project_id 索引, 每格带一个 ``name`` 作显示。
+    """
     out = []
-    for name, s in sorted(by_project.items()):
+    for pid, s in sorted(by_project.items()):
+        name = s.get("name") or pid
         drawn, drafts, with_key = s["drawn"], s["drafts"], s["with_key"]
         if drawn >= MIN_DRAWN and drafts == 0:
-            out.append({"project": name, "kind": "drawn_unwritten", "drawn": drawn,
+            out.append({"project": name, "project_id": pid, "kind": "drawn_unwritten",
+                        "drawn": drawn,
                         "detail": f"发了 {drawn} 个角度, 窗口内一篇真稿都没入库"})
-        elif drafts >= MIN_DRAFTS and with_key == 0:
-            out.append({"project": name, "kind": "unattributed", "drafts": drafts,
-                        "detail": f"{drafts} 篇真稿入库, 没有一篇带 angle_key, 台账无法销账"})
+        elif drawn > 0 and drafts >= MIN_DRAFTS and with_key == 0:
+            # ⚠️ `drawn > 0` 这一条不能省(codex review on #143): 压根没走 draw_angles
+            # 的项目, 它的稿子本来就没有坐标, 台账里也没有行可销 —— 报它"漏账"是
+            # 判错病因, 而且只要别的项目发过一次牌, 全局那道 drawn == 0 的闸就拦不住。
+            out.append({"project": name, "project_id": pid, "kind": "unattributed",
+                        "drafts": drafts,
+                        "detail": f"发了 {drawn} 个角度、{drafts} 篇真稿入库, "
+                                  "没有一篇带 angle_key, 台账无法销账"})
     return out
 
 
@@ -92,8 +102,8 @@ def report(stats: dict, window_days: int) -> int:
           "它们不是发牌产出的, 本来就没有坐标")
     if by_project:
         print(f"  {'项目':<24}{'发牌':>6}{'销账':>6}{'真稿':>6}{'带坐标':>8}")
-        for name, s in sorted(by_project.items(), key=lambda kv: -kv[1]["drawn"]):
-            print(f"  {name[:23]:<24}{s['drawn']:>6}{s['consumed']:>6}"
+        for pid, s in sorted(by_project.items(), key=lambda kv: -kv[1]["drawn"]):
+            print(f"  {(s.get('name') or pid)[:23]:<24}{s['drawn']:>6}{s['consumed']:>6}"
                   f"{s['drafts']:>6}{s['with_key']:>8}")
 
     if drawn == 0:
@@ -127,16 +137,21 @@ def gather(sb, since_iso: str) -> dict:
     """读两边的行。只取判据要的几列。"""
     from _common import fetch_all_pages  # 局部 import, 理由见文件头
 
+    # ⚠️ order_by 必须是【唯一 + 稳定】的列, 且出现在 select 里 —— 这是
+    # fetch_all_pages 自己 docstring 里的正确性前提, 不是洁癖: 它按 order_by 的值
+    # 去重(fresh = 没见过的那些), 用 created_at / drawn_at 这种**不唯一**的列做键,
+    # 同一毫秒的几行跨页时会被当成重复**静默丢掉**, 计数就少了、判据可能翻面。
+    # 本窗口 7 天就有 1,507 条指纹, 早就跨过 1000 行的页边界(codex review on #143)。
     angles = fetch_all_pages(
         sb.schema("autowriter").table("angle_ledger")
-        .select("project_id, consumed_version_id, drawn_at")
+        .select("id, project_id, consumed_version_id, drawn_at")
         .gte("drawn_at", since_iso),
-        order_by="drawn_at")
+        order_by="id")
     fps = fetch_all_pages(
         sb.schema("autowriter").table("draft_fingerprints")
-        .select("project_id, angle_key, version_id, created_at")
+        .select("id, project_id, angle_key, version_id, created_at")
         .gte("created_at", since_iso),
-        order_by="created_at")
+        order_by="id")
 
     # 排除 tv-sync 导入的副本。按实际见到的 version_id 精确查 —— 不按时间窗猜,
     # 猜错的方向是把导入副本当成"真稿没带坐标", 那正是要避免的假警报。
@@ -155,8 +170,14 @@ def gather(sb, since_iso: str) -> dict:
     by_project: dict[str, dict] = {}
 
     def slot(pid):
-        name = names.get(pid) or (pid or "?")
-        return by_project.setdefault(name, {"drawn": 0, "consumed": 0, "drafts": 0, "with_key": 0})
+        # ⚠️ 按 **project_id** 聚合, 名字只作显示(codex review on #143): service_role
+        # 读的是全租户的行, 而项目名不唯一(生产里就有「百健士-藻油」与「百健士藻油」
+        # 这种)。拿名字当键会把两个不相干的 UUID 并成一格 —— 合起来的计数可能越过
+        # 判据门槛(假警报), 也可能让一个项目的漏账被另一个的正常量盖住(漏报)。
+        key = pid or "?"
+        return by_project.setdefault(
+            key, {"name": names.get(pid) or key, "drawn": 0, "consumed": 0,
+                  "drafts": 0, "with_key": 0})
 
     for a in angles:
         s = slot(a["project_id"])
