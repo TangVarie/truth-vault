@@ -1,0 +1,112 @@
+# 「昨天那几趟定时任务到底跑成了没有」—— 站在 job 外面看的一盏灯 (D-073)。
+#
+# 为什么需要一个【单独的 workflow】: 夜跑末尾那道失败聚合是站在 job 【里面】的,
+# 它有两件事结构上就做不到 ——
+#   ① job 撞了 timeout-minutes 被 cancel 时, job 结论就是 cancelled, 聚合步即使
+#      exit 1 也盖不过去 → GitHub 不发失败邮件。2026-09-20 run #177 就是这样:
+#      丢了策展/通道1/人工审稿同步三步, 一封邮件都没有。
+#   ② cron 【压根没触发】时, 没有 job, 也就没有任何一步会跑。GitHub 对长期没有
+#      提交活动的仓会自动停掉 schedule; 那种"安静"和"一切正常"长得一模一样。
+# 站在外面查"最近 24h 有没有一趟成功的 schedule 跑", 这两件都能抓到。
+# 而本 workflow 自己失败 → 它是个普通失败的 job → GitHub 照常发邮件, 不用接任何外部服务。
+#
+# ⚠️ 本文件自己也会被 GitHub 的 60 天不活跃规则停掉 —— 它不是万无一失的兜底,
+#    是把"没人天天看 Actions"这件事的代价从"静默丢数据"降到"某天没收到邮件"。
+name: Sync watchdog (昨天的定时任务成了没有 · D-073)
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 23:41 UTC。要等最慢的一趟跑完: daily-sync 排 02:17 但实际起跑会漂到 07-08 点,
+    # 再跑最多 240min → 最晚约 12:00; features-sync 排 12:47 + 180min → 最晚约 16:00,
+    # 加上同样的漂移留足余量。非整点同 D-064。
+    - cron: '41 23 * * *'
+
+permissions:
+  actions: read      # 读 workflow run 列表; 只读, 不需要 contents:write
+  contents: read
+
+concurrency:
+  group: sync-watchdog
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 查最近 24h 每个定时 workflow 有没有一趟成功的 schedule 跑
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python - <<'PY'
+          import datetime as dt, json, os, sys, urllib.request
+
+          # 要盯的几趟 —— 每条是 (workflow 文件名, 人话名字)。
+          # 加新的定时 workflow 时【也要加到这儿】, ci.yml 有守卫钉这件事:
+          # 它会把 .github/workflows 里所有带 schedule 的文件和本名单对拍, 漏了就判红。
+          WATCHED = [
+              ("daily-sync.yml",   "夜跑(飞书入库 / 评论 / essence / 策展 / 通道1)"),
+              ("features-sync.yml", "内容特征层增量抽取"),
+          ]
+          WINDOW_H = 26   # 24h 的窗口 + 2h 余量: cron 起跑时刻本来就会漂(D-064)
+
+          repo, token = os.environ["REPO"], os.environ["GH_TOKEN"]
+          since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=WINDOW_H)
+
+          def api(path):
+              req = urllib.request.Request(
+                  f"https://api.github.com/repos/{repo}/{path}",
+                  headers={"Authorization": f"Bearer {token}",
+                           "Accept": "application/vnd.github+json"})
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  return json.load(r)
+
+          problems, notes = [], []
+          for wf, human in WATCHED:
+              try:
+                  runs = api(f"actions/workflows/{wf}/runs?event=schedule&per_page=20")["workflow_runs"]
+              except Exception as e:      # 404 = 这个 workflow 还没进默认分支
+                  notes.append(f"· {human} ({wf}): 查不到 —— {e}")
+                  continue
+              recent = [r for r in runs
+                        if dt.datetime.fromisoformat(r["run_started_at"].replace("Z", "+00:00")) >= since]
+              if not runs:
+                  # 从来没跑过: 刚合并进来的新 workflow 就是这样, 还不能当故障
+                  notes.append(f"· {human} ({wf}): 还没有过任何 schedule 跑(刚上线?), 本轮跳过")
+                  continue
+              if not recent:
+                  last = runs[0]
+                  problems.append(
+                      f"· {human} ({wf}): 最近 {WINDOW_H}h 一趟 schedule 都没有 —— "
+                      f"cron 没触发? 上一趟是 {last['run_started_at']} ({last['conclusion']})\n"
+                      f"    {last['html_url']}")
+                  continue
+              ok = [r for r in recent if r["conclusion"] == "success"]
+              if not ok:
+                  worst = recent[0]
+                  problems.append(
+                      f"· {human} ({wf}): 最近 {WINDOW_H}h 跑了 {len(recent)} 趟, "
+                      f"**没有一趟成功** (最近一趟: {worst['conclusion']})\n"
+                      f"    {worst['html_url']}")
+                  continue
+              notes.append(f"· {human} ({wf}): OK ({ok[0]['run_started_at']})")
+
+          for n in notes:
+              print(n)
+          if problems:
+              print()
+              for p in problems:
+                  print(p)
+              # ::error 让它出现在 run 摘要里; exit 1 让 GitHub 按默认设置发邮件。
+              print(f"::error title=定时任务昨天没跑成::{len(problems)} 趟有问题, 见本 run 的日志")
+              print(f"Investigate: {os.environ['RUN_URL']}")
+              sys.exit(1)
+          print("\n✅ 盯的每一趟最近都有成功的 schedule 跑。")
+          PY

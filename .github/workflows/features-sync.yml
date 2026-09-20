@@ -1,0 +1,172 @@
+# 内容特征层的每日增量抽取 (docs/28 §5, D-070)。
+#
+# 2026-09-20 (D-073) 从 daily-sync.yml 里拆出来: 原来它是夜跑的第 4 步, 跟飞书入库 /
+# 评论解析 / essence / 策展 抢同一个 120min 预算。9-20 那趟 (run #177) 就是这么烂掉的 ——
+# feishu 5.3 + comments 41.7 + essence 37.5 + features 35.4 = 119.9min → 撞 timeout 被
+# cancel, 后面的【策展 / 通道1 / 人工审稿同步】一步没跑; 而 job 结论是 cancelled,
+# 失败聚合那道闸根本不看 cancelled, 于是这一整晚静默丢了三步没人知道。
+#
+# 拆出来的理由不是"省时间", 是【依赖关系不同】: 特征层是攒数据等闸一/闸二 (docs/28 §6),
+# 飞轮主干不读它一个字段; 而按现在的速度 (90 篇 / 35min) 把全库 ~6,170 篇抽完要 60+ 个
+# 夜跑 —— 它注定长期占用时间, 不该长期压在主干的预算里。
+#
+# 幂等与续作口径不变: 「跑过」= 该 (extractor, run_tag) 下已有标记题那一行
+# (annotate_feature_pass.DONE_MARKER_QUESTION), 跑不完下轮续。
+# 全库回填 (闸二前一次性灌满) 仍走 backfill-features.yml (手动触发)。
+#
+# ⚠️ GitHub 定时任务只从【默认分支】的 workflow 文件触发 —— 本文件合并进 main 后 cron 才开始跑。
+name: Features sync (content feature layer · docs/28 D-070)
+
+on:
+  workflow_dispatch:
+    inputs:
+      project:
+        description: "只跑某个项目 (如 WTG_phase1). 留空 = 跑 mappings/ 下全部项目"
+        type: string
+        default: ""
+      dry_run:
+        description: "Dry run (no writes to Supabase)"
+        type: boolean
+        default: false
+      limit:
+        description: "覆盖每项目每轮上限 (默认取 repo variable FEATURE_LIMIT, 再默认 12). 留空 = 用默认"
+        type: string
+        default: ""
+  schedule:
+    # 12:47 UTC = 20:47 北京时间 —— 故意挑在【一天的另一头】, 不是把它挪到夜跑后面几十分钟。
+    # 理由: GitHub 的 cron 实际起跑时间会漂 (9-20 那趟 02:17 的排程 07:43 才起跑), 所以"排在
+    # 夜跑之后"这种相对关系根本保证不了; 隔半天才是真的不撞。非整点分钟同 D-064 (整点是
+    # GitHub 高负载时段, 会排队几小时)。
+    - cron: '47 12 * * *'
+
+# 同一时刻只允许一个 features-sync 在跑: 两个 run 会各自快照同一批未抽取笔记 → 重复烧 LLM。
+# cancel-in-progress: false = 后来者排队 (抽取幂等), 不打断在飞的批次。
+# ⚠️ 与 backfill-features 的跨 workflow 相撞由 worker 侧每脚本互斥锁兜底 (worker/app.py
+#    _script_lock → 409 busy), 下面的 worker_fail_kind() 把 409 判成瞬时、不拖红。
+concurrency:
+  group: features-sync
+  cancel-in-progress: false
+
+jobs:
+  features:
+    runs-on: ubuntu-latest
+    # 观测: 90 篇 / 35min (FEATURE_LIMIT=12 × 在跑项目)。180min ≈ 5x 观测上限 —— 留出把
+    # FEATURE_LIMIT 调大的余地, 同时兜住 worker 挂死 (GitHub 默认 360min 会白烧 6h runner)。
+    timeout-minutes: 180
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      # LLM 调用在 Railway worker 上 (GitHub 海外 runner 连不上中转站; D-038 / docs/17 §7-D),
+      # 这里只【触发】。未配 WORKER_URL → 优雅跳过, 不因连不上网关而红。
+      WORKER_URL: ${{ secrets.WORKER_URL }}
+      WORKER_API_KEY: ${{ secrets.WORKER_API_KEY }}
+      # 特征层每轮上限/项目。一篇 = 6 次分组调用, 12 篇 ≈ 每项目 72-96 次调用。
+      # 优先级: workflow_dispatch 的 limit > repo variable FEATURE_LIMIT > 12。
+      FEATURE_LIMIT: ${{ github.event.inputs.limit || vars.FEATURE_LIMIT || '12' }}
+      # 只跑某项目 (workflow_dispatch 的 project 输入); 空 = 全部. cron 触发时为空.
+      PROJECT_FILTER: ${{ github.event.inputs.project }}
+      # schedule 触发时为 'true' → 跳过 sync_interval=on_demand 的【未启用】项目 (D-047,
+      # 与入库 / essence / 策展 同一道闸)。显式 Run workflow → 'false' → 照常跑。
+      TV_SCHEDULED_RUN: ${{ github.event_name == 'schedule' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps (from lockfile for reproducibility)
+        run: |
+          if [ -f scripts/requirements.lock ]; then
+            pip install -r scripts/requirements.lock
+          else
+            pip install -r scripts/requirements.txt
+          fi
+
+      - name: Check secrets are configured (gracefully skip if not)
+        id: check
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
+            echo "::warning::SUPABASE_URL/KEY not configured; skipping feature extraction."
+            echo "See .github/workflows/daily-sync.yml header for setup steps."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+          if [ -z "$WORKER_URL" ]; then
+            echo "::warning::WORKER_URL not configured; skipping feature extraction."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 内容特征层增量抽取 (docs/28 §5, D-070) via Railway worker
+        id: features_sync
+        if: steps.check.outputs.skip != 'true'
+        working-directory: scripts
+        run: |
+          # 每个项目每轮最多 FEATURE_LIMIT 篇, 每请求 ≤ 6 篇 (docs/28 §5.1)。
+          # 一篇 = 6 次分组 LLM 调用 (+ 校验不过时重问), 6 篇 ≈ 36-48 次调用 < Railway 边缘 5min。
+          # 幂等: 「跑过」= 该 (extractor, run_tag) 下已有标记题那一行, 跑不完下轮续。
+          # 容忍口径与 daily-sync 的 essence 段同构 (瞬时只告警 / 首批系统性失败判红)。
+          FEAT_REQ_MAX=6
+          FEATURE_LIMIT="${FEATURE_LIMIT:-12}"
+          case "$FEATURE_LIMIT" in ''|*[!0-9]*)
+            echo "::error::FEATURE_LIMIT 必须是正整数, 收到 '$FEATURE_LIMIT'"; exit 1;; esac
+          [ "$FEATURE_LIMIT" -ge 1 ] || { echo "::error::FEATURE_LIMIT 必须 ≥1"; exit 1; }
+          DRY=false
+          [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY=true
+          worker_fail_kind() {  # $1=curl_rc $2=http_code → echo transient|systemic (同 daily-sync 的 essence 段)
+            case "$1" in
+              28|52|56|18) echo transient; return ;;
+              0) : ;;
+              *) echo systemic; return ;;
+            esac
+            case "$2" in 409|502|503|504) echo transient ;; *) echo systemic ;; esac
+          }
+          fail_count=0
+          for f in ../mappings/*.yaml; do
+            p=$(basename "$f" .yaml)
+            [ "$p" = "_template" ] && continue
+            [ -n "$PROJECT_FILTER" ] && [ "$p" != "$PROJECT_FILTER" ] && continue
+            # on_demand 闸 (D-047): 与入库 / essence / curate 同一道。
+            # ⚠️ 不能写成 `python skip_on_cron.py "$p"; rc=$?` —— 步骤默认 `bash -e`, 退出码 1
+            #    (=照跑) 会先把整步掐死 (D-051)。必须 `|| rc=$?` 接住。
+            rc=0; python skip_on_cron.py "$p" || rc=$?
+            if [ "$rc" = "0" ]; then
+              echo "  ⏭  $p sync_interval=on_demand → 定时跑跳过特征抽取(与入库同一道闸, D-047)"
+              continue
+            fi
+            echo "─── features annotate (worker) · project=$p · 每轮上限=$FEATURE_LIMIT · 每请求≤$FEAT_REQ_MAX ───"
+            budget=$FEATURE_LIMIT
+            ok_batches=0
+            while [ "$budget" -gt 0 ]; do
+              rem=$(python count_unannotated_features.py "$p" 2>/dev/null || echo "?")
+              [ "$rem" = "0" ] && { echo "  ✅ $p 特征已全部抽完"; break; }
+              batch=$FEAT_REQ_MAX; [ "$batch" -gt "$budget" ] && batch=$budget
+              if code=$(curl -sS -w '%{http_code}' -o /tmp/feat.json --max-time 900 \
+                -X POST "${WORKER_URL%/}/annotate-features" \
+                -H "X-Worker-Key: $WORKER_API_KEY" -H 'content-type: application/json' \
+                -d "{\"project\":\"$p\",\"limit\":${batch},\"dry_run\":$DRY}"); then
+                curl_rc=0
+              else
+                curl_rc=$?; code=000
+              fi
+              ok=$(jq -r '.ok // false' /tmp/feat.json 2>/dev/null || echo false)
+              echo "  HTTP $code · ok=$ok · $(jq -r '.stdout_tail // ""' /tmp/feat.json 2>/dev/null | grep -o 'Done:.*' | tail -1)"
+              if [ "$code" != "200" ] || [ "$ok" != "true" ]; then
+                jq -r '.stderr_tail // ""' /tmp/feat.json 2>/dev/null | tail -8
+                kind=$(worker_fail_kind "$curl_rc" "$code")
+                if [ "$kind" = "transient" ]; then
+                  echo "::warning::features $p 瞬时失败(curl_rc=$curl_rc HTTP $code ok=$ok), 幂等下轮续, 不拖红。"
+                elif [ "$ok_batches" -gt 0 ]; then
+                  echo "::warning::features $p 子批失败(curl_rc=$curl_rc HTTP $code ok=$ok), 本轮已跑 $ok_batches 批; 余量下轮续, 不拖红。"
+                else
+                  echo "::error::features $p 首批即系统性失败(curl_rc=$curl_rc HTTP $code ok=$ok) —— 配置/连通/鉴权 或 全军覆没, 需排查。"
+                  fail_count=$((fail_count + 1))
+                fi
+                break
+              fi
+              ok_batches=$((ok_batches + 1))
+              budget=$((budget - batch))
+            done
+          done
+          if [ $fail_count -gt 0 ]; then
+            echo "::error::feature annotation failed for $fail_count project(s)"
+            echo "Investigate: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            exit 1
+          fi

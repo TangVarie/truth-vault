@@ -60,9 +60,19 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    # 实测 15-38min(近 30 次 run)。GitHub 默认 360min: 某次 curl/worker 挂死会白烧 6h
-    # runner、并把下一天的 cron 顶到排队。120min ≈ 3x 观测上限, 够宽又能兜住挂死。
-    timeout-minutes: 120
+    # 2026-09-20 (D-073) 240min。原来是 120min, 注释写着"实测 15-38min(近 30 次 run), 120 ≈ 3x
+    # 观测上限" —— 那句在 9 月已经彻底过时了, 而没人回头量过。真实测(近 20 次 schedule 跑):
+    #   41 / 47 / 53 / 53 / 63 / 67 / 69 / 73 / 73 / 76 / 79 / 79 / 85 / 92 / 99 / 100 / 112 / 119.4 min
+    # 09-08 那趟(run #161, 特征层还不存在)job 实跑 119.4min —— 离 120 的天花板只剩 35 秒。
+    # 也就是说超时不是特征层"压垮"的, 它只是让一件早就注定的事当晚发生: 09-20 run #177
+    # (feishu 5.3 + comments 41.7 + essence 37.5 + features 35.4 ≈ 120)被 cancel, 策展 / 通道1 /
+    # 人工审稿同步一步没跑; 而 job 结论是 cancelled, 末尾那道失败聚合闸只看 outcome=failure,
+    # 于是这一整晚静默丢三步、没有任何告警。
+    # 所以这次两件事一起做: 特征层拆去 features-sync.yml, 且把上限提到 240 ≈ 2x 真实观测上限。
+    # 仍远小于 GitHub 默认 360 —— 某次 curl/worker 挂死不至于白烧 6h runner。
+    # ⚠️ 大头是 comments(44min) 和 essence(67min), 两者都随语料增长; 240 也不是永久答案,
+    #    哪天再逼近就该拆 comments/essence 而不是继续往上加数字。
+    timeout-minutes: 240
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -78,8 +88,6 @@ jobs:
       # 想每天标更多就在 repo Variables 调大 WORKER_LIMIT(如 50 = 每天每项目最多 50,内部
       # 自动拆成 ≤15 的多轮)。curate 待办是爆款数量级、远少,每请求封顶 15 不随之放大。
       WORKER_LIMIT: ${{ vars.WORKER_LIMIT || '15' }}
-      # 特征层每日上限/项目 (docs/28 §5, D-070)。一篇 = 6 次分组调用, 12 篇 ≈ 每晚每项目 72-96 次调用。
-      FEATURE_LIMIT: ${{ vars.FEATURE_LIMIT || '12' }}
       # 只跑某项目 (workflow_dispatch 的 project 输入); 空 = 全部. cron 触发时为空.
       PROJECT_FILTER: ${{ github.event.inputs.project }}
       # schedule(夜间 cron)触发时为 'true' → feishu sync 跳过 sync_interval=on_demand 的【未启用】
@@ -98,6 +106,9 @@ jobs:
           else
             pip install -r scripts/requirements.txt
           fi
+
+      - name: 记下开跑时刻 (给下面那盏"离超时还有多远"的灯用, D-073)
+        run: echo "TV_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
 
       - name: Check secrets are configured (gracefully skip if not)
         id: check
@@ -247,79 +258,6 @@ jobs:
           done
           if [ $fail_count -gt 0 ]; then
             echo "::error::essence annotation failed for $fail_count project(s)"
-            exit 1
-          fi
-
-      - name: 内容特征层增量抽取 (docs/28 §5, D-070) via Railway worker
-        id: features_sync
-        continue-on-error: true
-        if: steps.check.outputs.skip != 'true' && env.WORKER_URL != '' && github.event.inputs.skip_essence != 'true'
-        working-directory: scripts
-        run: |
-          # essence 那步之后加一步增量 (docs/28 §5.1): 每个项目每晚最多 FEATURE_LIMIT 篇, 每请求 ≤ 6 篇。
-          # 一篇 = 6 次分组 LLM 调用 (+ 校验不过时重问), 6 篇 ≈ 36-48 次调用 < Railway 边缘 5min。
-          # 幂等: 「跑过」= 该 (extractor, run_tag) 下已有标记题那一行 (annotate_feature_pass.DONE_MARKER_QUESTION),
-          # 跑不完下轮续。全库回填走 backfill-features.yml (手动)。
-          # 容忍口径与 essence 段同构 (瞬时只告警 / 首批系统性失败判红), 复用 skip_essence 开关 (同属 LLM 花费)。
-          FEAT_REQ_MAX=6
-          FEATURE_LIMIT="${FEATURE_LIMIT:-12}"
-          DRY=false
-          [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY=true
-          worker_fail_kind() {  # $1=curl_rc $2=http_code → echo transient|systemic (同 essence 段)
-            case "$1" in
-              28|52|56|18) echo transient; return ;;
-              0) : ;;
-              *) echo systemic; return ;;
-            esac
-            case "$2" in 409|502|503|504) echo transient ;; *) echo systemic ;; esac
-          }
-          fail_count=0
-          for f in ../mappings/*.yaml; do
-            p=$(basename "$f" .yaml)
-            [ "$p" = "_template" ] && continue
-            [ -n "$PROJECT_FILTER" ] && [ "$p" != "$PROJECT_FILTER" ] && continue
-            # on_demand 闸 (D-047): 与入库 / essence / curate 同一道。
-            rc=0; python skip_on_cron.py "$p" || rc=$?
-            if [ "$rc" = "0" ]; then
-              echo "  ⏭  $p sync_interval=on_demand → 夜间 cron 跳过特征抽取(与入库同一道闸, D-047)"
-              continue
-            fi
-            echo "─── features annotate (worker) · project=$p · 每日上限=$FEATURE_LIMIT · 每请求≤$FEAT_REQ_MAX ───"
-            budget=$FEATURE_LIMIT
-            ok_batches=0
-            while [ "$budget" -gt 0 ]; do
-              rem=$(python count_unannotated_features.py "$p" 2>/dev/null || echo "?")
-              [ "$rem" = "0" ] && { echo "  ✅ $p 特征已全部抽完"; break; }
-              batch=$FEAT_REQ_MAX; [ "$batch" -gt "$budget" ] && batch=$budget
-              if code=$(curl -sS -w '%{http_code}' -o /tmp/feat.json --max-time 900 \
-                -X POST "${WORKER_URL%/}/annotate-features" \
-                -H "X-Worker-Key: $WORKER_API_KEY" -H 'content-type: application/json' \
-                -d "{\"project\":\"$p\",\"limit\":${batch},\"dry_run\":$DRY}"); then
-                curl_rc=0
-              else
-                curl_rc=$?; code=000
-              fi
-              ok=$(jq -r '.ok // false' /tmp/feat.json 2>/dev/null || echo false)
-              echo "  HTTP $code · ok=$ok · $(jq -r '.stdout_tail // ""' /tmp/feat.json 2>/dev/null | grep -o 'Done:.*' | tail -1)"
-              if [ "$code" != "200" ] || [ "$ok" != "true" ]; then
-                jq -r '.stderr_tail // ""' /tmp/feat.json 2>/dev/null | tail -8
-                kind=$(worker_fail_kind "$curl_rc" "$code")
-                if [ "$kind" = "transient" ]; then
-                  echo "::warning::features $p 瞬时失败(curl_rc=$curl_rc HTTP $code ok=$ok), 幂等下轮 cron 续, 不拖红。"
-                elif [ "$ok_batches" -gt 0 ]; then
-                  echo "::warning::features $p 子批失败(curl_rc=$curl_rc HTTP $code ok=$ok), 本轮已跑 $ok_batches 批; 余量下轮续, 不拖红。"
-                else
-                  echo "::error::features $p 首批即系统性失败(curl_rc=$curl_rc HTTP $code ok=$ok) —— 配置/连通/鉴权 或 全军覆没, 需排查。"
-                  fail_count=$((fail_count + 1))
-                fi
-                break
-              fi
-              ok_batches=$((ok_batches + 1))
-              budget=$((budget - batch))
-            done
-          done
-          if [ $fail_count -gt 0 ]; then
-            echo "::error::feature annotation failed for $fail_count project(s)"
             exit 1
           fi
 
@@ -485,6 +423,31 @@ jobs:
           # 本步在下方「Fail job on any sync failure」的聚合闸里, 真挂了会红+发邮件。
           python sync_autowriter_decisions_to_prepublish.py $DRYRUN
 
+      - name: "夜跑用时离超时还有多远 (advisory, 不 fail · D-073)"
+        if: always()
+        # 2026-09-20 的教训: timeout-minutes 旁边那句"实测 15-38min"过期了好几个月, 没人回头量,
+        # 直到 run #177 真的撞上去、静默丢了三步才发现 09-08 就已经只剩 35 秒余量了。
+        # 「等它再逼近时我们就去拆」不是个能执行的触发条件 —— 没有人天天看 job 用了多久。
+        # 所以把"回头量一次"这件事从人身上挪到这儿: 每晚自己报用时占比, 过 70% 就喊。
+        # 不 fail: 用时长本身不是故障, 是"该动手拆 comments/essence 了"的预告(D-053 不许天天红)。
+        # ⚠️ BUDGET_MIN 必须和上面 job 的 timeout-minutes 一致 —— ci.yml 有守卫钉这件事,
+        #    改了一个不改另一个会被判红(否则这盏灯会按错的分母报一个让人安心的假比例)。
+        run: |
+          BUDGET_MIN=240
+          if [ -z "${TV_JOB_STARTED_AT:-}" ]; then
+            echo "::warning title=用时灯没数据::拿不到开跑时刻, 这轮不报用时(灯瞎了, 不是夜跑坏了)"
+            exit 0
+          fi
+          used_min=$(( ( $(date +%s) - TV_JOB_STARTED_AT ) / 60 ))
+          pct=$(( used_min * 100 / BUDGET_MIN ))
+          echo "夜跑用时 ${used_min}min / 上限 ${BUDGET_MIN}min = ${pct}%"
+          if [ "$pct" -ge 70 ]; then
+            msg="用了 ${used_min}min / ${BUDGET_MIN}min。大头是 comments 和 essence, 两者都随语料增长。"
+            msg="$msg 到这个水位就该动手【拆 comments/essence】, 而不是再把 timeout 往上加"
+            msg="$msg —— 上一次把数字往上加之前, 那句过期的注释让它裸奔了几个月(D-073)。"
+            echo "::warning title=夜跑用时已达上限的 ${pct}%::$msg"
+          fi
+
       - name: positive pool 饱和度检查 (advisory, 不 fail)
         if: steps.check.outputs.skip != 'true' && always()
         working-directory: scripts
@@ -575,30 +538,26 @@ jobs:
       - name: Fail job on any sync failure (so GitHub notifies)
         if: steps.check.outputs.skip != 'true' && always()
         run: |
+          # outcome 既认 failure 也认 cancelled。
+          # 2026-09-20 (D-073) run #177 的实况: job 撞了 timeout-minutes, 特征那步 outcome=cancelled,
+          # 它后面的【策展 / 通道1 / 人工审稿同步】三步 conclusion=skipped 一步没跑 —— 而本步只查
+          # "= failure", 于是照样打印了 "✅ All sync steps succeeded"。丢了三步, 日志里却写着全绿。
+          # ⚠️ 老实说清楚这条补丁能做到什么: 它让本步打出 ::error 并点名, 不再假报绿。
+          #    它【不能】让邮件发出来 —— job 被 cancel 时结论就是 cancelled, 本步 exit 1 也盖不过去。
+          #    真正防这件事的是上面那个 timeout-minutes: 240 和把特征层拆去 features-sync.yml。
           failed_steps=""
-          if [ "${{ steps.feishu_sync.outcome }}" = "failure" ]; then
-            failed_steps="$failed_steps feishu_sync"
-          fi
-          if [ "${{ steps.comments_sync.outcome }}" = "failure" ]; then
-            failed_steps="$failed_steps comments_sync"
-          fi
-          if [ "${{ steps.essence_sync.outcome }}" = "failure" ]; then
-            failed_steps="$failed_steps essence_sync"
-          fi
-          if [ "${{ steps.curate_sync.outcome }}" = "failure" ]; then
-            failed_steps="$failed_steps curate_sync"
-          fi
-          # features_sync 也是 continue-on-error, 不列在这儿的话它那句 exit 1(首批即配置/鉴权/
-          # 全军覆没)会被整轮的绿盖掉, 特征抽取静默瘫痪没人知道 (codex review on #141)。
-          if [ "${{ steps.features_sync.outcome }}" = "failure" ]; then
-            failed_steps="$failed_steps features_sync"
-          fi
-          if [ "${{ steps.ssll_sync.outcome }}" = "failure" ]; then
-            failed_steps="$failed_steps ssll_sync"
-          fi
-          if [ "${{ steps.prepublish_sync.outcome }}" = "failure" ]; then
-            failed_steps="$failed_steps prepublish_sync"
-          fi
+          for kv in "feishu_sync:${{ steps.feishu_sync.outcome }}" \
+                    "comments_sync:${{ steps.comments_sync.outcome }}" \
+                    "essence_sync:${{ steps.essence_sync.outcome }}" \
+                    "curate_sync:${{ steps.curate_sync.outcome }}" \
+                    "ssll_sync:${{ steps.ssll_sync.outcome }}" \
+                    "prepublish_sync:${{ steps.prepublish_sync.outcome }}"; do
+            name="${kv%%:*}"; outcome="${kv#*:}"
+            case "$outcome" in
+              failure)   failed_steps="$failed_steps $name" ;;
+              cancelled) failed_steps="$failed_steps $name(cancelled)" ;;
+            esac
+          done
           if [ -n "$failed_steps" ]; then
             echo "::error::Daily TV sync failed steps:$failed_steps"
             echo "Repo owner will get an email via GitHub default notifications."
