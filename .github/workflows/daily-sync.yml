@@ -95,6 +95,10 @@ jobs:
       # 显式 Run workflow(workflow_dispatch)→ 'false' → 照常跑(包括 on_demand)。
       TV_SCHEDULED_RUN: ${{ github.event_name == 'schedule' }}
     steps:
+      # ⚠️ 必须是【第一步】: 原来它排在 checkout + setup-python + pip install 之后,
+      #    用时灯的分子就系统性地少算了装环境那一段(codex-代班 review on #144)。
+      - name: 记下开跑时刻 (给下面那盏"离超时还有多远"的灯用, D-073)
+        run: echo "TV_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
@@ -106,9 +110,6 @@ jobs:
           else
             pip install -r scripts/requirements.txt
           fi
-
-      - name: 记下开跑时刻 (给下面那盏"离超时还有多远"的灯用, D-073)
-        run: echo "TV_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
 
       - name: Check secrets are configured (gracefully skip if not)
         id: check
@@ -423,30 +424,6 @@ jobs:
           # 本步在下方「Fail job on any sync failure」的聚合闸里, 真挂了会红+发邮件。
           python sync_autowriter_decisions_to_prepublish.py $DRYRUN
 
-      - name: "夜跑用时离超时还有多远 (advisory, 不 fail · D-073)"
-        if: always()
-        # 2026-09-20 的教训: timeout-minutes 旁边那句"实测 15-38min"过期了好几个月, 没人回头量,
-        # 直到 run #177 真的撞上去、静默丢了三步才发现 09-08 就已经只剩 35 秒余量了。
-        # 「等它再逼近时我们就去拆」不是个能执行的触发条件 —— 没有人天天看 job 用了多久。
-        # 所以把"回头量一次"这件事从人身上挪到这儿: 每晚自己报用时占比, 过 70% 就喊。
-        # 不 fail: 用时长本身不是故障, 是"该动手拆 comments/essence 了"的预告(D-053 不许天天红)。
-        # ⚠️ BUDGET_MIN 必须和上面 job 的 timeout-minutes 一致 —— ci.yml 有守卫钉这件事,
-        #    改了一个不改另一个会被判红(否则这盏灯会按错的分母报一个让人安心的假比例)。
-        run: |
-          BUDGET_MIN=240
-          if [ -z "${TV_JOB_STARTED_AT:-}" ]; then
-            echo "::warning title=用时灯没数据::拿不到开跑时刻, 这轮不报用时(灯瞎了, 不是夜跑坏了)"
-            exit 0
-          fi
-          used_min=$(( ( $(date +%s) - TV_JOB_STARTED_AT ) / 60 ))
-          pct=$(( used_min * 100 / BUDGET_MIN ))
-          echo "夜跑用时 ${used_min}min / 上限 ${BUDGET_MIN}min = ${pct}%"
-          if [ "$pct" -ge 70 ]; then
-            msg="用了 ${used_min}min / ${BUDGET_MIN}min。大头是 comments 和 essence, 两者都随语料增长。"
-            msg="$msg 到这个水位就该动手【拆 comments/essence】, 而不是再把 timeout 往上加"
-            msg="$msg —— 上一次把数字往上加之前, 那句过期的注释让它裸奔了几个月(D-073)。"
-            echo "::warning title=夜跑用时已达上限的 ${pct}%::$msg"
-          fi
 
       - name: positive pool 饱和度检查 (advisory, 不 fail)
         if: steps.check.outputs.skip != 'true' && always()
@@ -529,6 +506,31 @@ jobs:
                 f"last_ssll={r['last_baokuan_sync_to_ssll_at']}"
               )
           PY
+
+      - name: "夜跑用时离超时还有多远 (advisory, 不 fail · D-073)"
+        if: always()
+        # 2026-09-20 的教训: timeout-minutes 旁边那句"实测 15-38min"过期了好几个月, 没人回头量,
+        # 直到 run #177 真的撞上去、静默丢了三步才发现 09-08 就已经只剩 35 秒余量了。
+        # 「等它再逼近时我们就去拆」不是个能执行的触发条件 —— 没有人天天看 job 用了多久。
+        # 所以把"回头量一次"这件事从人身上挪到这儿: 每晚自己报用时占比, 过 70% 就喊。
+        # 不 fail: 用时长本身不是故障, 是"该动手拆 comments/essence 了"的预告(D-053 不许天天红)。
+        # ⚠️ BUDGET_MIN 必须和上面 job 的 timeout-minutes 一致 —— ci.yml 有守卫钉这件事,
+        #    改了一个不改另一个会被判红(否则这盏灯会按错的分母报一个让人安心的假比例)。
+        run: |
+          BUDGET_MIN=240
+          if [ -z "${TV_JOB_STARTED_AT:-}" ]; then
+            echo "::warning title=用时灯没数据::拿不到开跑时刻, 这轮不报用时(灯瞎了, 不是夜跑坏了)"
+            exit 0
+          fi
+          used_min=$(( ( $(date +%s) - TV_JOB_STARTED_AT ) / 60 ))
+          pct=$(( used_min * 100 / BUDGET_MIN ))
+          echo "夜跑用时 ${used_min}min / 上限 ${BUDGET_MIN}min = ${pct}%"
+          if [ "$pct" -ge 70 ]; then
+            msg="用了 ${used_min}min / ${BUDGET_MIN}min。大头是 comments 和 essence, 两者都随语料增长。"
+            msg="$msg 到这个水位就该动手【拆 comments/essence】, 而不是再把 timeout 往上加"
+            msg="$msg —— 上一次把数字往上加之前, 那句过期的注释让它裸奔了几个月(D-073)。"
+            echo "::warning title=夜跑用时已达上限的 ${pct}%::$msg"
+          fi
 
       # ── 失败聚合: 任一 sync step 失败 → 整 workflow 失败 → GitHub 默认发邮件 ──
       # 2026-05-22 audit 改进: 老版本每个 sync 步骤用 "|| echo warning" 吞错误,

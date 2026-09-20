@@ -178,16 +178,23 @@ Schema 起点决定上限。在 v1 第一版就要包含 essence 层和 audience
 > 这三条不是形式主义。9 月里有两次是反证才发现守卫是空跑的：一次是 truthy 断言在值退化时照样过，
 > 一次是 fixture 根本没走到新写的分支。
 
-## 六个 workflow
+## 九个 workflow
 
 | 文件 | 触发 | 干什么 |
 |---|---|---|
-| `daily-sync.yml` | 每日 cron（**实际 06:56~07:30 UTC 触发**，非 cron 里写的 02:00） | 飞书→TV / 评论 / essence / 策展 / 通道1 / 回流 |
-| `ci.yml` | push + PR | 52 守卫 + SQL apply + yaml lint |
+| `daily-sync.yml` | cron `17 2 * * *`（**实际起跑会漂到 06:30~08:00 UTC**，GitHub 排队） | 飞书→TV / 评论 / essence / 策展 / 通道1 / 回流 |
+| `features-sync.yml` | cron `47 12 * * *` | 内容特征层增量抽取（D-073 从 daily-sync 拆出来） |
+| `sync-watchdog.yml` | cron `41 23 * * *` | 站在 job 外面查「昨天那几趟定时任务成了没有」（D-073） |
+| `ci.yml` | push + PR | python 72 步 + SQL 43 步 + yaml 5 步 |
 | `preflight.yml` | 手动 | 接新表前的只读体检 |
 | `onboard-table.yml` | 手动 | 批量接表 |
 | `backfill-essence.yml` | 手动 | essence 补标 |
-| `gateway-probe.yml` | 定时 | LLM 网关连通性 |
+| `backfill-features.yml` | 手动 | 特征层全库回填（闸二前一次性灌满） |
+| `gateway-probe.yml` | 手动 | LLM 网关连通性 |
+
+> ⚠️ 这张表 2026-09-20 之前写的是「六个 workflow」，漏了 `backfill-features`，还把
+> `gateway-probe` 记成「定时」（它只有 `workflow_dispatch`）。**没有守卫钉它**，所以它
+> 会一直过期——改 workflow 时顺手看一眼这里。
 
 ## 目录结构
 
