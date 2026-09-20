@@ -4125,3 +4125,56 @@ autowriter `tests/test_deskcore_open_project_borrows.py` 11 条：主路径 / br
 - 闸二 SQL 仍在 docs/28 附录 B（P2 落成脚本）。
 - 经验卡 `validated_hits`、馆员「已验证规律」缓存块、`rank_score` 账号项：P4。
 - 写作台版本（`subject_type='aw_version'`）的抽取入口：表和视图都留了位置，P3 影子打分时接。
+
+---
+
+## D-070 续 · 生产部署记录（09-20）：`notes_v1_13` 已 apply；worker 重新部署前夜跑那一步是空转
+
+**日期**: 2026-09-20
+**触发**: PR #141 合并（含 Codex 13 条的修复）。按 D-070「部署（合并后）」第 1 条执行。
+
+### apply 前的实查
+
+- Supabase 迁移表里最新三条是 `notes_v1_15_l2_labels`（09-19）、`notes_v1_8_positive_pool_saturation_fix`（09-19）、再往前 `notes_v1_14_shelf_ticket_gate`；**没有** v1_13。
+- `to_regclass`：`truth_vault.v_l2_labels` 在（v1_15 的，v1_13 只读它）；三张特征表和 `v_feature_contrast` 都不在。
+
+### apply 到生产（`apply_migration`，与 main 上的文件一字不差）
+
+| 迁移 | Supabase 记录 | apply 后验证 |
+|---|---|---|
+| `notes_v1_13_content_features` | `20260920054230` | 三张表就位（`note_feature_answers` 13 列 / `feature_validation` 15 列 / `content_scores` 9 列），三张都 `relrowsecurity = true`；`v_feature_contrast` 可查、0 行（还没抽过）、列里**有 `bank_sha256`**（`project_id, question_id, question_version, bank_version, bank_sha256, extractor, value, a, b, c, d`）；`note_features` 六列的弃用 COMMENT 都在（6/6）；`v_l2_labels` 未被动过——正例 **304** / 负例 **4,652**，与 D-066 续 apply v1_15 那天一致 |
+
+- **权限**：三张新表只有 `service_role` 有读写，`anon` / `authenticated` 一个权限都没有，和 `note_features` / `v_l2_labels` 现状一致，不用补 REVOKE。
+- **advisor**：apply 后跑了一遍 security advisor。三张新表只是加进了既有的 INFO 级 `rls_enabled_no_policy` 那一堆（truth_vault 每张表都在里面，走 service_role），**没有新增任何 ERROR**；现存的两条 ERROR（18 个 `public.v_dash_*` 的 SECURITY DEFINER、5 张 `public.*` 没开 RLS）都是既有项，与本次无关。
+
+### worker 已经自动上线（实测，09-20 05:56–05:59 UTC）
+
+worker service 是「连本 repo」建的（`worker/README.md` 部署段），Railway 这类 service 推到被监听分支就自动重新构建部署。05:38 合并进 main 之后没人动手，端点就在了。
+
+**验法**：手动触发一次 daily-sync（`project=WTG_phase1` + `dry_run`，[run #176](https://github.com/TangVarie/truth-vault/actions/runs/35492918651)），特征那步会 curl 一次 `/annotate-features`。整 run 绿，那一步的两行是：
+
+```
+─── features annotate (worker) · project=WTG_phase1 · 每日上限=12 · 每请求≤6 ───
+  HTTP 200 · ok=true · Done: {"ok": 6, ..., "title_how": {"bracket": 6}, "truncated": 0}
+  HTTP 200 · ok=true · Done: {"ok": 6, ..., "title_how": {"bracket": 6}, "truncated": 0}
+```
+
+顺带白捡的三条：
+
+- **新的 `markers` 标题解析器在 12 篇真实 WTG 笔记上 12/12 走 `bracket` 分支**（`【标题】…【正文】…`），`truncated: 0`（没有正文超 1,500 字，与 09-19 实查的「最长 1,013 字」一致）。
+- **dry-run 确实什么都没写**：跑完 `note_feature_answers` 仍 0 行，`note_features` 里也没有 `extractor_version LIKE 'fq-v0.1%'` 的行。
+- 预算逻辑对：`FEATURE_LIMIT=12`，两批 × 6 跑满即停。
+
+⚠️ **这一条前后写错过一次，教训记下来**：第一版写的是「Railway worker 还没重新部署」——那是**没核实就当成事实**。真相是我拿不到 `WORKER_URL` / `WORKER_API_KEY`（GitHub secrets），所以当时能说的只有「大概率已自动上线、但没核实」。owner 直接问「这东西不是 github 更新之后自动拉取的吗」，才逼出上面这次实测。同 D-051 / 上面 #109 那条的另一面：**「代码进了 main」不等于「运行时跟上了」，但「我没查」也不等于「它没跑」**；两边都只能靠真的去够一次。
+
+### 剩下没生效的
+
+1. `FEATURE_MODEL` 没设，worker 会跟 `ESSENCE_MODEL`。闸一要比便宜档时再在 Railway 上加。
+2. 全库回填（`backfill-features.yml`）**故意没跑**：按 docs/28 §10，等闸一改完题、问题库冻结之后再回填，否则要按新题面重跑一遍。
+3. 真实增量从今晚的 cron 开始（本次是 dry-run，没落行）。
+
+### 没做的
+
+- 没手工往三张表里写任何行：第一批数据由夜跑增量产生，这样落库路径本身也被验了一遍。
+- 没动 `flywheel_librarian_cache`：`library_version()` 只在有闸二结论时才把 `gate2_run` 拼进版本串，现在 `feature_validation` 是空表，版本串与之前完全一样，旧缓存照常命中（这是 D-065 续 §7.1 第 2 条要的效果）。
+
