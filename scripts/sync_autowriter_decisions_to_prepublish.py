@@ -18,6 +18,29 @@ sync_autowriter_decisions_to_prepublish.py
     发现"机器判定/来源不明顶着人工身份"或"evaluator_id 是作者"就返回非 0,
     夜跑的聚合失败闸会把整个 workflow 打红并给 owner 发邮件。
 
+⚠️ 2026-09-20 起: 这张表是 **legacy-only**(D-072)。
+
+    实查生产库: `autowriter.items` 6,688 行的 decision_source **全是 NULL** ——
+    写作台的 `review_drafts`(2026-09-16 上线)一次都没被调用过; 存量 598 行是
+    Streamlit 时代反推的, 而 Streamlit 末次出稿是 08-19。也就是说这个脚本**每晚
+    捞不到新行是预期的, 不是故障**, 别再去排查一遍。
+
+    更根本的是: 那 598 行里 pred_tier_class / actual_tier **一条都没填**,
+    was_correct 全 NULL —— 这张表从上线到现在只写不读。它的真实消费者(L2
+    Predictor)要等特征层过闸三才谈得上(docs/28 §放闸后)。在那之前让写手每场
+    对话多做一个动作、换一张没人读的表, 性价比不对。
+
+    **重新点亮的条件**(三条都到了再说, 别提前):
+      1. 特征层过闸三, 打分器开始往本表写 evaluator_type='model' 的行;
+      2. 那时候有人真的要算"模型预测 vs 人怎么判 vs 实际爆没爆"的对比;
+      3. 有人负责填 actual_tier —— 现在 notes.source_autowriter_version_id
+         已经有 404 行(D-064), lineage 不再是空的, 反推有了地基。
+    ⚠️ 光让模型多调 review_drafts **不算**点亮: 协议里"用户没表态就别调"守的
+    是别替用户点通过, 松掉就是往校准数据里灌伪造的正例, 比没有更糟。
+
+    **下面那套每晚自查仍然保留**: 存量 598 行必须继续顶着诚实的身份
+    (unverified), legacy-only 不等于可以让它们漂回 'human'。
+
 为什么需要这个:
     prepublish_evaluations 表 schema 已经存在（D-025），但目前没有任何
     sync 写入它，所以 v_evaluator_calibration view 永远空。把 autowriter

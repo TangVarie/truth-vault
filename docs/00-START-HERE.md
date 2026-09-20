@@ -52,7 +52,7 @@ audience_weight = 0.5 ** (age_months / 30)   # 半衰期 2.5 年
 ### 2.3 四层系统(D-019,把"数据"和"用数据"分清)
 
 - **L1 · Core**:标注 + 存储(三层数据进库)。← **当前主力**
-- **L2 · Predictor**:发布前预测(会不会爆)。← 未启用(`prepublish_evaluations` 空)
+- **L2 · Predictor**:发布前预测(会不会爆)。← 未启用(`prepublish_evaluations` 有 598 行**但从没被读过**:`pred_tier_class` / `actual_tier` 一条都没填, `was_correct` 全 NULL)。**2026-09-20 起这张表明确是 legacy-only**(D-072):不再要求写作台那边攒人工判断,等特征层过闸三、打分器开始往这张表写 `evaluator_type='model'` 的行时再一起点亮。
 - **L3 · Persona-Critic-Human**:受众推断 + 校准。← **从没运行**(`audience_inferred = 0`)
 - **L4 · Optimization**:优化回路。← 未来
 
