@@ -379,6 +379,26 @@ SELECT '82', 'H · 跨 schema 孤儿',
     )::TEXT, 'N/A'),
     '0',
     '> 0 表示 ssll output 被删. 同 #80 处理.'
+UNION ALL
+SELECT '83', 'H · 跨 schema 孤儿',
+    'truth_vault.note_feature_answers (subject_type=note) 指向不存在的 notes 数量 (D-065: 不建 FK, 靠这里查)',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(*) FROM truth_vault.note_feature_answers a
+        LEFT JOIN truth_vault.notes n ON n.note_id = a.subject_id
+        WHERE a.subject_type = 'note' AND n.note_id IS NULL$q$
+    )::TEXT, 'N/A'),
+    '0',
+    '> 0 表示笔记被删而答案还在. 修法: DELETE FROM note_feature_answers WHERE subject_type=''note'' AND subject_id NOT IN (SELECT note_id FROM notes).'
+UNION ALL
+SELECT '84', 'H · 跨 schema 孤儿',
+    'truth_vault.note_feature_answers (subject_type=aw_version) 指向不存在的 autowriter.versions 数量',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(*) FROM truth_vault.note_feature_answers a
+        LEFT JOIN autowriter.versions v ON v.id::TEXT = a.subject_id
+        WHERE a.subject_type = 'aw_version' AND v.id IS NULL$q$
+    )::TEXT, 'N/A'),
+    '0',
+    '> 0 表示写作台版本被删. 同 #83 处理.'
 
 -- ── I · 数据一致性副作用 ──────────────────────────────────────────────
 UNION ALL

@@ -99,8 +99,14 @@ def fetch_candidates(sb, limit: int = CANDIDATE_CAP) -> list[dict]:
     ).data or []
 
 
-def library_version(cards: list[dict]) -> str:
-    """f(候选数, max(curated_at), 月份桶, 候选 ID 集合摘要) —— 见模块 docstring。
+def library_version(cards: list[dict], gate2_run: Optional[str] = None) -> str:
+    """f(候选数, max(curated_at), 月份桶, 候选 ID 集合摘要[, gate2_run]) —— 见模块 docstring。
+
+    ── 2026-09-20 D-070 (docs/28 §7.1 第 2 条) ──────────────────────────────
+    特征层过了闸二之后, 馆员会多一个「已验证规律」缓存块 (P4)。规律换了一轮
+    (feature_validation 多了一个 gate2_run), 前四项可能一项都不变 → 缓存不会失效,
+    馆员继续按旧规律选卡。所以 gate2_run 必须并进版本串: 传了就拼在末尾, 没传
+    (今天还没有闸二结论) 版本串与之前完全一样 —— 不改现有缓存键。
 
     去掉发布时间硬切 + essence 慢衰减后(PR#58), rank_score 会随时间连续重排, 即便没有
     新策展(recency 项缓慢缩、tier/account 固定): 旧高 tier 卡可能慢慢反超新低 tier 卡。
@@ -128,7 +134,30 @@ def library_version(cards: list[dict]) -> str:
     max_curated = max((c.get("curated_at") or "" for c in cards), default="")
     ids = sorted(str(c.get("source_note_id") or "") for c in cards)
     id_digest = hashlib.sha256("\n".join(ids).encode("utf-8")).hexdigest()[:16]
-    return f"{len(cards)}:{max_curated or 'none'}:{month_bucket}:{id_digest}"
+    base = f"{len(cards)}:{max_curated or 'none'}:{month_bucket}:{id_digest}"
+    return f"{base}:{gate2_run}" if gate2_run else base
+
+
+def latest_gate2_run(sb) -> Optional[str]:
+    """最新一轮闸二的 gate2_run; 没有闸二结论 / 表还不存在 → None。
+
+    ⚠️ 按 `decided_at` 取最新, 且**不筛 status** (codex review on #141):
+      · 只看 validated 行的话, 新一轮把所有规律都判成 no_signal / reversed(= 规律被撤回)时,
+        缓存版本会停在上一轮 —— 而那正是必须让缓存失效的时刻;
+      · gate2_run 是自由文本标签('gate2-2026-10-xx'), 按它排序不等于按时间排序。
+
+    fail-open: 这里失败只会让缓存键少一段, 绝不阻塞选卡。"""
+    try:
+        res = (
+            sb.schema("truth_vault").table("feature_validation")
+            .select("gate2_run, decided_at")
+            .order("decided_at", desc=True).limit(1).execute()
+        )
+        rows = res.data or []
+        return (rows[0].get("gate2_run") or None) if rows else None
+    except Exception:  # noqa: BLE001 — 表未建 / 权限 / 网络: 当作没有闸二结论
+        logger.warning("latest_gate2_run 查询失败, 缓存版本不带 gate2_run", exc_info=True)
+        return None
 
 
 # ── 缓存键 ───────────────────────────────────────────────────────────────
@@ -339,7 +368,7 @@ def librarian_select(brief: dict, *, model: Optional[str] = None,
     if not cards:
         return {"_dry_run": True, "candidate_count": 0, "note": "空库 → 返回 []"} if dry_run else []
 
-    lib_v = library_version(cards)
+    lib_v = library_version(cards, gate2_run=latest_gate2_run(sb))
     key = cache_key(brief, lib_v)
 
     if dry_run:

@@ -78,6 +78,8 @@ jobs:
       # 想每天标更多就在 repo Variables 调大 WORKER_LIMIT(如 50 = 每天每项目最多 50,内部
       # 自动拆成 ≤15 的多轮)。curate 待办是爆款数量级、远少,每请求封顶 15 不随之放大。
       WORKER_LIMIT: ${{ vars.WORKER_LIMIT || '15' }}
+      # 特征层每日上限/项目 (docs/28 §5, D-070)。一篇 = 6 次分组调用, 12 篇 ≈ 每晚每项目 72-96 次调用。
+      FEATURE_LIMIT: ${{ vars.FEATURE_LIMIT || '12' }}
       # 只跑某项目 (workflow_dispatch 的 project 输入); 空 = 全部. cron 触发时为空.
       PROJECT_FILTER: ${{ github.event.inputs.project }}
       # schedule(夜间 cron)触发时为 'true' → feishu sync 跳过 sync_interval=on_demand 的【未启用】
@@ -245,6 +247,79 @@ jobs:
           done
           if [ $fail_count -gt 0 ]; then
             echo "::error::essence annotation failed for $fail_count project(s)"
+            exit 1
+          fi
+
+      - name: 内容特征层增量抽取 (docs/28 §5, D-070) via Railway worker
+        id: features_sync
+        continue-on-error: true
+        if: steps.check.outputs.skip != 'true' && env.WORKER_URL != '' && github.event.inputs.skip_essence != 'true'
+        working-directory: scripts
+        run: |
+          # essence 那步之后加一步增量 (docs/28 §5.1): 每个项目每晚最多 FEATURE_LIMIT 篇, 每请求 ≤ 6 篇。
+          # 一篇 = 6 次分组 LLM 调用 (+ 校验不过时重问), 6 篇 ≈ 36-48 次调用 < Railway 边缘 5min。
+          # 幂等: 「跑过」= 该 (extractor, run_tag) 下已有标记题那一行 (annotate_feature_pass.DONE_MARKER_QUESTION),
+          # 跑不完下轮续。全库回填走 backfill-features.yml (手动)。
+          # 容忍口径与 essence 段同构 (瞬时只告警 / 首批系统性失败判红), 复用 skip_essence 开关 (同属 LLM 花费)。
+          FEAT_REQ_MAX=6
+          FEATURE_LIMIT="${FEATURE_LIMIT:-12}"
+          DRY=false
+          [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY=true
+          worker_fail_kind() {  # $1=curl_rc $2=http_code → echo transient|systemic (同 essence 段)
+            case "$1" in
+              28|52|56|18) echo transient; return ;;
+              0) : ;;
+              *) echo systemic; return ;;
+            esac
+            case "$2" in 409|502|503|504) echo transient ;; *) echo systemic ;; esac
+          }
+          fail_count=0
+          for f in ../mappings/*.yaml; do
+            p=$(basename "$f" .yaml)
+            [ "$p" = "_template" ] && continue
+            [ -n "$PROJECT_FILTER" ] && [ "$p" != "$PROJECT_FILTER" ] && continue
+            # on_demand 闸 (D-047): 与入库 / essence / curate 同一道。
+            rc=0; python skip_on_cron.py "$p" || rc=$?
+            if [ "$rc" = "0" ]; then
+              echo "  ⏭  $p sync_interval=on_demand → 夜间 cron 跳过特征抽取(与入库同一道闸, D-047)"
+              continue
+            fi
+            echo "─── features annotate (worker) · project=$p · 每日上限=$FEATURE_LIMIT · 每请求≤$FEAT_REQ_MAX ───"
+            budget=$FEATURE_LIMIT
+            ok_batches=0
+            while [ "$budget" -gt 0 ]; do
+              rem=$(python count_unannotated_features.py "$p" 2>/dev/null || echo "?")
+              [ "$rem" = "0" ] && { echo "  ✅ $p 特征已全部抽完"; break; }
+              batch=$FEAT_REQ_MAX; [ "$batch" -gt "$budget" ] && batch=$budget
+              if code=$(curl -sS -w '%{http_code}' -o /tmp/feat.json --max-time 900 \
+                -X POST "${WORKER_URL%/}/annotate-features" \
+                -H "X-Worker-Key: $WORKER_API_KEY" -H 'content-type: application/json' \
+                -d "{\"project\":\"$p\",\"limit\":${batch},\"dry_run\":$DRY}"); then
+                curl_rc=0
+              else
+                curl_rc=$?; code=000
+              fi
+              ok=$(jq -r '.ok // false' /tmp/feat.json 2>/dev/null || echo false)
+              echo "  HTTP $code · ok=$ok · $(jq -r '.stdout_tail // ""' /tmp/feat.json 2>/dev/null | grep -o 'Done:.*' | tail -1)"
+              if [ "$code" != "200" ] || [ "$ok" != "true" ]; then
+                jq -r '.stderr_tail // ""' /tmp/feat.json 2>/dev/null | tail -8
+                kind=$(worker_fail_kind "$curl_rc" "$code")
+                if [ "$kind" = "transient" ]; then
+                  echo "::warning::features $p 瞬时失败(curl_rc=$curl_rc HTTP $code ok=$ok), 幂等下轮 cron 续, 不拖红。"
+                elif [ "$ok_batches" -gt 0 ]; then
+                  echo "::warning::features $p 子批失败(curl_rc=$curl_rc HTTP $code ok=$ok), 本轮已跑 $ok_batches 批; 余量下轮续, 不拖红。"
+                else
+                  echo "::error::features $p 首批即系统性失败(curl_rc=$curl_rc HTTP $code ok=$ok) —— 配置/连通/鉴权 或 全军覆没, 需排查。"
+                  fail_count=$((fail_count + 1))
+                fi
+                break
+              fi
+              ok_batches=$((ok_batches + 1))
+              budget=$((budget - batch))
+            done
+          done
+          if [ $fail_count -gt 0 ]; then
+            echo "::error::feature annotation failed for $fail_count project(s)"
             exit 1
           fi
 
@@ -494,6 +569,11 @@ jobs:
           fi
           if [ "${{ steps.curate_sync.outcome }}" = "failure" ]; then
             failed_steps="$failed_steps curate_sync"
+          fi
+          # features_sync 也是 continue-on-error, 不列在这儿的话它那句 exit 1(首批即配置/鉴权/
+          # 全军覆没)会被整轮的绿盖掉, 特征抽取静默瘫痪没人知道 (codex review on #141)。
+          if [ "${{ steps.features_sync.outcome }}" = "failure" ]; then
+            failed_steps="$failed_steps features_sync"
           fi
           if [ "${{ steps.ssll_sync.outcome }}" = "failure" ]; then
             failed_steps="$failed_steps ssll_sync"

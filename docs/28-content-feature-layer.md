@@ -166,7 +166,7 @@ essence 回答「这篇打动了人的什么」（情绪杠杆、人性原型）
 ### 4.3 版本、冻结、分层
 
 - 每题有 `version`，改题干或边界就 +1；旧版本答案保留、不覆盖，**分析时不混用版本**。
-- 整个文件有 `bank_version`（`fq-v0.1`）。闸二预注册那天把 `status` 改成 `frozen`、记下文件 sha256；之后改任何一题都要升 `version` 并记 DECISIONS。写作台要用就原样 vendor 本文件并记校验和，不手抄（D-041 对词表的纪律）。
+- 整个文件有 `bank_version`（`fq-v0.1`）。闸二预注册那天把 `status` 改成 `frozen`、记下 `frozen_sha256`——那是**剔掉 `frozen_sha256:` 和 `status:` 两行之后**再算的规范化 sha256（`feature_bank.bank_digest`）。直接 hash 整个文件是自指的：把算出来的值写回去，文件字节就变了，冻结这一步根本算不出来（codex review on #141 的 P1）。剔掉的这两行都是冻结动作自己写的、不是题目内容，所以冻结前后 digest 不变，落进 `note_feature_answers.bank_sha256` 的值也不会因为「冻结」把答案劈成两批。之后改任何一题都要升 `version` 并记 DECISIONS。写作台要用就原样 vendor 本文件并记校验和，不手抄（D-041 对词表的纪律）。
 - 三层原则（README 原则 2）：每题声明 `layer`。**已定（D-065 续）**：18 道结构类题 `surface`、半衰期 30 个月（同「时代语言范式」档），不另设「结构」档、不改 README 原则 2；`judged_by_others`、`negative_outcome_happened` 直接对应 essence 词表的恐惧 / 羞耻撬动，标 `essence`、60 个月。闸二跑完看结构类题跨项目稳不稳定，再议要不要单开一档。
 
 ### 4.4 和 `note_features` 的分工（建议）
@@ -423,7 +423,7 @@ AND NOT (COALESCE(n.data_quality_flags -> 'comment_maintained_routes', '[]'::jso
 | 阶段 | 做什么 | 过了什么才进下一步 | 估时 |
 |---|---|---|---|
 | P0（现在就能做，和特征层无关） | 写作台恢复借书（aw 仓，docs/27，**09-19 仍暗着**）；~~书架挡铺评工单（§7.2）~~ **已做**（D-066 / D-068）；冻结现有 essence 打分器、开闸三 | — | 各自独立 |
-| P1 | 按本次讨论改完问题库；迁移 `notes_v1_13`、`annotate_feature_pass.py`、worker 端点、CI 守卫；闸一 | 闸一 | 约一周 |
+| P1 | 按本次讨论改完问题库；~~迁移 `notes_v1_13`、`annotate_feature_pass.py`、worker 端点、CI 守卫~~ **已做（D-070，2026-09-20）**：`schemas/notes_v1_13_content_features.sql`、`scripts/feature_bank.py` + `annotate_feature_pass.py`、worker `/annotate-features`、daily-sync 增量步 + `backfill-features.yml`、mapping `title_extraction`、附录 E 七组守卫；剩闸一（等运营 Q6 定人） | 闸一 | 约一周 |
 | P2 | 全库回填；重算 §3 分档表作闸三基线；冻结问题库、写死判据；闸二；出报告；决定进不进 L2 | 闸二 | 约一周 |
 | P3 | 冻结「essence + 特征」打分器开闸三第二条；写作台草稿影子打分 | 闸三 | 一到两个月（等数据） |
 | P4 | 经验卡的已验证规律、馆员缓存块、`rank_score` 改法；写作台 `prepublish_evaluations` 的 model 行；探索比例 | 持续监控 | — |
@@ -492,7 +492,11 @@ AND NOT (COALESCE(n.data_quality_flags -> 'comment_maintained_routes', '[]'::jso
 
 ---
 
-## 附录 A · 迁移草稿 `schemas/notes_v1_13_content_features.sql`
+## 附录 A · 迁移 `schemas/notes_v1_13_content_features.sql`
+
+**已落仓（D-070，2026-09-20）**：正式文件在 `schemas/`，下面这份是草案时的抄本，以仓库文件为准；CI 的 sql job 连套两遍并用 v1.15 的夹具核 `v_feature_contrast` 的 2×2。
+
+与下面这份草案抄本的差别有一处要知道（codex review on #141）：正式版的 `v_feature_contrast` 把 `bank_sha256` 放进了 vals / JOIN 键 / 输出 / `GROUP BY`。草案漏了它，换题面期间两批答案会被悄悄合进同一个 2×2，而闸二 B.1 / B.2 也就拿不回「某一份冻结问题库」的快照。
 
 本地验证做过的事：Postgres 16（与 CI 同版本）按 CI 顺序套完 v1_2 → v1_12 后，本文件连跑两遍无报错；`feature_validation.status` 的 CHECK 会拒绝非法值；`v_l2_labels` 用合成数据逐类核过——伪爆、铺评工单、数值推断、互动低于趴中位都被剔除；`raw_extra` 为 NULL、`tier_source` 为 NULL 的干净爆款被误剔，synthetic「伪500评」被误收（即 §11 第 5 条的 a、b、c），`v_feature_contrast` 的分母正确排除了无效答案。
 

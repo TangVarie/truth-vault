@@ -23,6 +23,10 @@ start_date: 2025-XX-XX           # 待填(发布日期 ~2025)
 end_date: 2026-XX-XX             # 待填
 
 # ── 字段映射 ── [据实际导出列;待 preflight 拉活表校正]
+# ── 标题怎么拿 (docs/28 §3 第 4 条, D-065 续; 09-19 实查 17 张表) ──
+# column = notes.title 列 / markers = 从 raw_content 的标记切 / none = 没有标题
+title_extraction: column          # 独立「笔记标题」列 (130/144 行有值)
+
 field_mapping:
   评论数: comments_count           # D-062: 判爆依据(本表评论数是累计值, 不是巡查实时值)
   笔记标题: title

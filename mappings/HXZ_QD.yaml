@@ -20,6 +20,10 @@ end_date: 2026-XX-XX           # 待填
 
 # ── 字段映射 ── [已用 preflight(run 27071343680, 读 644 行)校正到真实列名]
 # 删去的列(爆帖置顶评论 / 帐号昵称 / 粉丝数)preflight 报"声明了但表里没有" —— 本表无此列, 留着是空映射, 故移除。
+# ── 标题怎么拿 (docs/28 §3 第 4 条, D-065 续; 09-19 实查 17 张表) ──
+# column = notes.title 列 / markers = 从 raw_content 的标记切 / none = 没有标题
+title_extraction: markers          # 文案里带标记, 解析器同时认「【标题】…【正文】…」和「标题：…(换行)正文：…」; 切不出来的单条标题类题目记 NULL
+
 field_mapping:
   素人编号: account_id
   文案: raw_content

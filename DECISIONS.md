@@ -4045,3 +4045,83 @@ autowriter `tests/test_deskcore_open_project_borrows.py` 11 条：主路径 / br
 - 没动 Streamlit / worker 路径：它们接线是对的，只是没人在跑；Railway 上那两个服务的 env 从这里看不到。
 - 验收照 docs/27 §4：合并部署后开一场写作台对话，`flywheel_librarian_cache` 多一行 consumer=deskcore。
 
+---
+
+## D-070 · 内容特征层 P1 落地：抽取 pass、迁移 v1_13、worker 端点、七组守卫；闸一等运营定人
+
+**日期**: 2026-09-20
+**触发**: owner —— *"D-065 的 P1 实施是什么，没问题的话直接做呗"*。范围按 docs/28 §10 P1 + D-065 续「接下来」：迁移 `notes_v1_13`、`annotate_feature_pass.py`、worker 端点、附录 E 七组 CI 守卫、`title_extraction` 解析器。闸一的人工那一半（100 篇 × 20 题 + 50 篇双人）等运营 Q6 定人，不在本条。
+**没有需要 owner 拍板的点**：策略都在 D-065 续里定过了，这里只是把它们做出来。
+
+### 落了什么
+
+| 件 | 文件 | 说明 |
+|---|---|---|
+| 迁移 | `schemas/notes_v1_13_content_features.sql` | 附录 A 的正式版：三表（`note_feature_answers` / `feature_validation` / `content_scores`）+ `v_feature_contrast`（读 v1_15 的 `v_l2_labels`，只读不定义）+ `note_features` 六列 COMMENT 弃用（§11.4）。必须套在 v1_15 之后；编号 13 是草案编号，落仓晚于 14 / 15，不改 |
+| 纯逻辑 | `scripts/feature_bank.py` | 只用标准库 + pyyaml，不连库：问题库加载 / sha256 / 结构校验；`title_extraction` 解析器；四段 spans；8 个代码特征 + 3 道占位题；分组提示词 + Mode A 卫生断言；答案校验（闭集 / 证据子串 / 截断的否）；`instructions_for_desk` |
+| 抽取 pass | `scripts/annotate_feature_pass.py` | 库 I/O + LLM（复用 `annotate_essence_pass.call_claude`：中转站、prompt caching、退避）+ 编排。每篇 31 行（20 模型题 + 8 代码 + 3 占位），不问的题也落 NULL + 原因；校验不过的题**只重问那几题**一次；**任何一组** api 挂就整篇不落行、计 systemic；退出码口径同 essence（全军覆没才红）。`--run-tag` / `--single` / `--model` 给闸一 |
+| 计数 | `scripts/count_unannotated_features.py` | 直接复用 pass 的 `fetch_done_ids`，算**集合差**（真实 note_id 减去已跑过的），不是两个计数相减 |
+| worker | `worker/app.py` `/annotate-features` | 同鉴权、同每脚本互斥锁（锁按脚本名分，和 essence 可并行）；`run_tag` / `model` 只按正则放行（拼进 subprocess 参数） |
+| 调度 | `daily-sync.yml` 增量步（essence 之后，每晚每项目 ≤ `FEATURE_LIMIT`=12 篇、每请求 ≤ 6 篇）；`backfill-features.yml`（仿 backfill-essence，batch 上限 8） | 一篇 = 6 次分组调用，Railway 边缘 5 min 定的上限 |
+| mapping | 17 张 `mappings/*.yaml` + `_template.yaml` 加 `title_extraction`（TGV `column`，其余 `markers`）；`_common.load_mapping` 校验闭集，缺省 `none`；可选 `brand_aliases`（运营 Q3 回来填） | 09-19 实查：一张表里两种写法会混用（HXZ_QD 7/195、NUC 13/644、WTG 575/86），所以解析器不按 mapping 分写法，两种都认 |
+| 馆员 | `librarian/core.py` `library_version(cards, gate2_run)` + `latest_gate2_run(sb)` | §7.1 第 2 条：没有闸二结论时版本串与之前**完全一样**（不动现有缓存键）；有了就拼在末尾；查询失败 fail-open |
+| 守卫 | ci.yml 八个 heredoc + sql job 两遍 apply + sanity | 附录 E 七组各配反证，外加一条编排端到端自检（假模型 + 假库）；sql 夹具用 v1.15 的 CI_V15 行核 `v_feature_contrast` 的 2×2（只数 primary、有效、在 `v_l2_labels` 里的行） |
+
+### 实现里定的几件小事（不是策略，记下来免得下次再想）
+
+- **标题切法**：`markers` 一个解析器认「【标题】…【正文】…」和「标题：…\n正文：…」（冒号全角半角，前面可带「【粉饼贴】」）；`【标题】` 后为空（OKMAN 有）→ NULL；没有标题标记只有 `【正文】`（SPX 一条）→ NULL，正文去掉标记。`column` 时正文若以标题开头就去掉。
+- **话题标签**三种都认：`#…#`、`#…[话题]#`、裸 `#词`（NRT 两张表全是裸的，问题库只写了前两种）。
+- **证据超 30 字**单独记 `evidence_too_long`（问题库只写了 `evidence_not_found`），重问一次仍超才 NULL。
+- **choice 题的免证据规则**从题目文本读：`evidence` 以「不需要」开头（opening_type）或「选「X」以外」（product_role 的未出现）。
+- **短正文**：body / full 不足 20 字不问，记 `text_too_short`。
+- **品牌词典**：brand + product + 蓝词 + `brand_aliases`，去掉「(未填)」「待确认」这类占位；词典空时 `brand_in_title` / `brand_first_position` 记 `no_brand_dict`（TGV 会这样，等 Q3）。
+- **模型**：`FEATURE_MODEL`，没设跟 `ESSENCE_MODEL`。闸一比便宜档时在 Railway 换这个变量或 body 传 `model`。
+
+### 守卫与反证（都跑过）
+
+1. 问题库结构：删组归属 / 改选项名 / 组超 4 / 冻结 sha 不符 / 占位题假设非 0，五条都红。
+2. 防泄漏：题目里塞「互动数」→ 渲染 AssertionError；模板出现 `{tier}` → 红。六组提示词只带本组用到的段。
+3. 证据硬闸：把子串校验换成常量 → 假证据被放行（反证前提成立），恢复后拦住；超长 / 闭集外 / 缺题 / 免证据选项 / 截断的否各一条。
+4. 分组：两组合并成一次调用 → ValueError；同组第 5 题 → ValueError。
+5. 占位题：同一 note_id 两次一致、三道盐不同、约半数「是」；docs/28 附录 B.3 仍含 `NOT LIKE 'placebo%'`。
+6. `library_version`：无 gate2_run 时串不变；两个 gate2_run 串不同；`latest_gate2_run` 查询炸 → None。
+7. `efficacy_promise` 标成 validated 也不下发；把 never 改掉它就会出现（反证前提）。
+8. 编排：31 行/篇、8 次调用（6 组 + 2 次重问）、**任一组挂整篇不落行**（反证：换回「全挂才不落」会写进 31 行）、**写序 raw→answers**（反证：对调顺序立刻红）、resume 判据分 code / llm 两套（反证：code-only 用模型标记题就永远 resume 不上）、`--code-only` 不调模型、非法 run_tag 退出 2。
+
+本地把 ci.yml 的 python / yaml / sql 三个 job 全部重放一遍（sql 在空库上从 v1_2 套到 v1_13）。
+
+### Codex review（09-20，PR #141）
+
+13 条全部**先复现再改**，每条都补了守卫或夹具（D-051：断行为不断源码）。
+
+| # | 级别 | 文件 | 它说什么 | 复现 / 判断 | 怎么改的 |
+|---|---|---|---|---|---|
+| 1 | P1 | `daily-sync.yml` | `features_sync` 用了 `continue-on-error`，但末尾「Fail job on any sync failure」没把它算进去 | 成立：读那段聚合，确实只列了 feishu/comments/essence/curate | 加进聚合；头一批认证 / 配置 / 库错的 `exit 1` 现在会把夜跑判红 |
+| 2 | P1 | `annotate_feature_pass.py` | 一组 api 挂、别组成功时仍落行；标记题那行一落，下轮 resume 就永远跳过这篇 | 成立：旧判据是 `systemic and not groups_ok` | 改成「任何一组 systemic → 整篇不落行」，下轮幂等重跑整篇 |
+| 3 | P1 | 同上 | `--code-only` 的 resume 仍找 `has_specific_time`（模型题，代码路径从不写），done 集永远空 | 成立：`code_rows()` 只写 8 代码题 + 3 占位题 | 代码路径换标记题 `body_len_bucket`；守卫直接断查询里塞进去的 question_id / extractor |
+| 4 | P2 | 同上 | 答案与数值原值是两个独立事务，带标记题的答案先落 → 原值那写失败就永远补不回 | 成立 | 调成 `write_raw_counts` 在前、`write_answers` 在后；守卫断写序 |
+| 5 | P2 | `feature_bank.py` | 正文超 1,500 字时 `last_para` 是从截断后的前缀里取的，而它不在 `TRUNCATABLE_SPANS` 里 → 结尾类特征拿中段当结尾 | 成立：手造 1,600 字正文，`last_para` 确实不是真结尾 | `last_para` 改从**未截断**正文算 |
+| 6 | P1 | 同上 | `frozen_sha256` 是自指的：把算出来的值写回文件，文件字节就变了，冻结这一步根本算不出来 | 成立：`sha256(文件) == 文件里记的值` 无解 | `bank_digest` 改算**规范化**摘要：剔掉 `frozen_sha256:` 与 `status:` 两行（都是冻结动作自己写的，不是题目内容）。守卫真跑一遍「算 → 写回 → 再校验」，并反证「整文件 hash」那种写法必红 |
+| 7 | P2 | `count_unannotated_features.py` | 计数脚本在 GitHub 上按本地 `FEATURE_MODEL` 拼 extractor，而模型变量只在 Railway worker 上 | 成立：两边配不一样就永远对不上 | 默认按 `llm:%` 前缀匹配；要精确对某个模型另给 `--extractor` |
+| 8 | P2 | `feature_bank.py` | 表情符计数把变体选择符 U+FE0F 当独立字符，`❤️` 算 2 个；ZWJ 连起来的一家人按部件计 | 成立：实测 `❤️`→2、`👨‍👩‍👧`→3、`👍🏽`→2 | 先剥掉变体选择符，再按「基字 + 肤色 + ZWJ 序列」整体匹配；`[R]` 那种方括号表情另算 |
+| 9 | P2 | `librarian/core.py` | `latest_gate2_run` 只在 `validated` 行里挑最新，新一轮全判 `no_signal` 时缓存版本串反而钉在旧轮 | 成立——而这正是最该失效缓存的时刻 | 去掉 status 过滤，按 `decided_at` 取最新一轮；查询失败仍 fail-open |
+| 10 | P2 | `feature_bank.py` | choice 题只有一句 `aw_instruction`，却对每个 validated 取值都发一遍（`opening_type=提问` 会收到「用具体事件开头」） | 成立 | 问题库加 `aw_instruction_values` 声明这句话对哪些取值成立，没声明就不自动下发；bool 题只认「是」，且不许有这个字段 |
+| 11 | P1 | `notes_v1_13_content_features.sql` | `v_feature_contrast` 把 `bank_sha256` 丢了，分组只按 version/bank_version/extractor → 换题面期间两批答案被悄悄合池 | 成立 | `bank_sha256` 进 vals / JOIN 键 / 输出 / GROUP BY。CI 夹具加了 q2 的 sha/sha2 两档，反证：从分组键里去掉它，`q2:是` 会从 1001+1000 并成 2001 |
+| 12 | P1 | `count_unannotated_features.py` | 剩余量是两个计数相减，而答案表对 notes 没外键：删一篇旧的、来一篇新的正好抵消 → remaining=0，两个工作流从此不再调 worker | 成立 | 改成集合差：真实 note_id 减去 `fetch_done_ids` 的结果 |
+| 13 | P2 | `feature_bank.py` | `instructions_for_desk` 只按 question_id 找结论行，改过题之后旧版本的结论会套到新题干上 | 成立 | 加两道闸：`question_version` / `bank_version` 都要等于当前问题库的值，缺字段一律不下发 |
+
+顺手自己抓到的一条（不是 Codex 报的）：步骤名里带 `": "` 时，`- name: 甲: 乙` 会被 YAML 解析成 key=`name: 甲`，文件仍是合法 YAML，但这个 step 没有 `name` 这个 key —— GitHub 会**整份 workflow 判非法、一个 job 都不跑**，本地 `yaml.safe_load` 却是绿的。把五个这样的步骤名整个加了双引号，并在 yaml job 加了一条守卫扫所有 workflow 的 step key。
+
+### 部署（合并后）
+
+1. 生产 apply `notes_v1_13`（在 v1_15 之后；同 D-066 续的方式记进迁移表）。
+2. Railway worker 重新部署（新端点）；可选 `FEATURE_MODEL`。
+3. daily-sync 会自动开始每晚增量；全库回填在闸一改完题、P2 之前跑 `backfill-features.yml`。
+4. `verify_supabase_state.sql` 多了 #83 / #84 悬空检查。
+
+### 没做的
+
+- 闸一本身（300 篇抽样、人工标注、一致率表）：等运营 Q6；抽样脚本和一致率计算随闸一那条 PR。
+- 闸二 SQL 仍在 docs/28 附录 B（P2 落成脚本）。
+- 经验卡 `validated_hits`、馆员「已验证规律」缓存块、`rank_score` 账号项：P4。
+- 写作台版本（`subject_type='aw_version'`）的抽取入口：表和视图都留了位置，P3 影子打分时接。

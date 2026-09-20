@@ -35,6 +35,20 @@ end_date: 2026-XX-XX            # 可填预估或留空
 #   `truth_vault.undeclared_fields_quarantine` 等待人工 review。
 #   这样飞书表新加字段时不会被默默吞掉。
 
+# ════════════════════════════════════════════════════════════════════
+# 标题怎么拿 [内容特征层 docs/28 §3 第 4 条, D-065 续]
+# ════════════════════════════════════════════════════════════════════
+# column  = 飞书有独立标题列, field_mapping 把它映到 title (TGV)
+# markers = 标题写在文案里, 带标记。一个解析器同时认两种写法:
+#           「【标题】…【正文】…」 和 「标题：…(换行)正文：…」(冒号全角半角都行, 前面可带【xx】)
+#           切不出来的单条, 标题类题目 (title_is_question / title_len_bucket / …) 记 NULL, 不猜
+# none    = 没有标题, 标题类题目一律 NULL
+title_extraction: markers
+
+# 品牌词 / 产品词补充 (可选, 运营 Q3 回来后填): brand_in_title / brand_first_position 的词典 =
+# projects.brand + product + 笔记 target_blue_keywords + 这里的别名。正式名文案里不用时在这补口语写法。
+# brand_aliases: [锐澳, RIO轻享]
+
 field_mapping:
   # ── 标识 ──
   # account_id → truth_vault.accounts(account_id) FK

@@ -1,0 +1,133 @@
+# 一键把【某个项目】的内容特征抽取灌满 (docs/28 §5, D-070) —— 仿 backfill-essence.yml:
+# 内部循环调 Railway worker 的 /annotate-features, 直到该项目没有未抽取的笔记为止。
+# daily-sync 每晚只跑一小批增量 (FEATURE_LIMIT); 全库回填 (P2 闸二前) 用本工作流手动触发。
+# 「跑过」的判据在 annotate_feature_pass.py (DONE_MARKER_QUESTION 那一行), 幂等续作。
+name: Backfill features (drain a project · docs/28 D-070)
+
+on:
+  workflow_dispatch:
+    inputs:
+      project:
+        description: "项目 (如 WTG_phase1)"
+        required: true
+      batch:
+        description: "每轮多少条。⚠️ 受 Railway 边缘【单请求 ~5min 超时】约束:一批必须 ~4min 内跑完否则 502。一篇 = 6 次分组 LLM 调用(+重问), ~6 篇≈3-4min 稳;别超 8。"
+        required: false
+        default: "6"
+      max_batches:
+        description: "最多循环几轮。一轮上限≈batch×max_batches 条,且受 GitHub 6h job 上限(batch=6 时一轮约能灌 ~700 篇)。更大的表灌不完会在末尾警告→再触发一次接着灌(幂等)。"
+        required: false
+        default: "120"
+
+# 同一项目同时只允许一个 backfill 在跑 —— 否则两个 run 会各自快照同一批未抽取笔记、
+# 重复烧 LLM 且非确定性地互相覆盖 essence(codex PR#43 review r3355530533)。
+# cancel-in-progress: false = 第二次触发排队等第一次跑完(幂等续作),不打断在飞的批次。
+concurrency:
+  group: backfill-features-${{ github.event.inputs.project }}
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      WORKER_URL: ${{ secrets.WORKER_URL }}
+      WORKER_API_KEY: ${{ secrets.WORKER_API_KEY }}
+      PROJECT: ${{ github.event.inputs.project }}
+      BATCH: ${{ github.event.inputs.batch }}
+      MAXB: ${{ github.event.inputs.max_batches }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps (lockfile)
+        run: |
+          if [ -f scripts/requirements.lock ]; then
+            pip install -r scripts/requirements.lock
+          else
+            pip install -r scripts/requirements.txt
+          fi
+
+      - name: Guard secrets
+        run: |
+          [ -n "$WORKER_URL" ] || { echo "::error::缺 secret WORKER_URL(Railway worker 地址)"; exit 1; }
+          [ -n "$WORKER_API_KEY" ] || { echo "::error::缺 secret WORKER_API_KEY"; exit 1; }
+          [ -n "$SUPABASE_URL" ] || { echo "::error::缺 secret SUPABASE_URL"; exit 1; }
+          [ -n "$SUPABASE_SERVICE_ROLE_KEY" ] || { echo "::error::缺 secret SUPABASE_SERVICE_ROLE_KEY"; exit 1; }
+
+      - name: Validate inputs (项目已知 + batch/max_batches 为正整数)
+        working-directory: scripts
+        run: |
+          # batch / max_batches 必须是正整数:workflow_dispatch 输入是自由字符串,非数字会让
+          # `seq 1 "$MAXB"` 产 0 次迭代 → 循环体一次都不执行、却绿着退出(codex review r3355530527)。
+          case "$BATCH" in ''|*[!0-9]*) echo "::error::batch 必须是正整数,收到 '$BATCH'"; exit 1;; esac
+          case "$MAXB"  in ''|*[!0-9]*) echo "::error::max_batches 必须是正整数,收到 '$MAXB'"; exit 1;; esac
+          [ "$BATCH" -ge 1 ] || { echo "::error::batch 必须 ≥1"; exit 1; }
+          # batch 硬上限 8: 一篇 6 次分组调用, Railway 边缘【单请求 ~5min 超时】, >8 篇/批会跑超时 → 502。
+          # 别只写在描述里靠自觉,这里强制(codex review r3356930643)。
+          [ "$BATCH" -le 8 ] || { echo "::error::batch=$BATCH 太大 —— 上限 8(一篇 6 次调用, >8 篇会撞 Railway 边缘 ~5min 超时 → 502)。请用 ≤8。"; exit 1; }
+          [ "$MAXB"  -ge 1 ] || { echo "::error::max_batches 必须 ≥1"; exit 1; }
+          # project 必须是已知项目(有 mapping)。否则拼错的名字会查到 remaining=0 → 被当成
+          # "已灌完"绿着退出、一条没处理(codex review r3355530520)。
+          if [ ! -f "../mappings/${PROJECT}.yaml" ]; then
+            echo "::error::未知项目 '${PROJECT}':mappings/${PROJECT}.yaml 不存在(拼错了?)"
+            echo "可选项目:"
+            for f in ../mappings/*.yaml; do b=$(basename "$f" .yaml); [ "$b" = "_template" ] || echo "  - $b"; done
+            exit 1
+          fi
+          echo "✅ inputs OK: project=$PROJECT batch=$BATCH max_batches=$MAXB"
+
+      - name: Loop worker until project essence is fully annotated
+        working-directory: scripts
+        run: |
+          # 关掉 errexit:本步靠下面【显式检查 $code/$ok】决定 retry/exit。若保留 bash -e,
+          # worker 重启吐空/坏响应时 `ok=$(jq …)` 解析失败会触发 errexit 直接杀掉整步、
+          # 绕过重试循环(实测:整步 exit 5、连 [try 1] 都没打印 → 重试从没机会跑)。
+          set +e
+          prev=-1
+          for i in $(seq 1 "$MAXB"); do
+            rem=$(python count_unannotated_features.py "$PROJECT") || { echo "::error::查 remaining 失败"; exit 1; }
+            echo "── batch $i/$MAXB · project=$PROJECT · remaining(before)=$rem ──"
+            if [ "$rem" = "0" ]; then
+              echo "✅ $PROJECT 特征已全部抽完。"
+              break
+            fi
+            # 两轮 remaining 没下降 = 这批全失败(余额耗尽 / 限流 / vocab 校验全挂)→ 停,别空转。
+            if [ "$rem" = "$prev" ]; then
+              echo "::error::remaining 连续两轮停在 $rem(没下降)→ 这批特征抽取全失败。"
+              echo "常见原因:中转站余额耗尽 / 限流 / 词表校验。查 Railway worker 日志或 failed_essence_queue。"
+              exit 1
+            fi
+            prev=$rem
+            # 单批最多试 3 次:worker 偶发重启 / 瞬断时,等一下重试 —— 标注幂等
+            # (按 essence_annotated_at IS NULL 续作),重试只会接着标、不会重复烧已标的。
+            # 实测:连续多批后 Railway worker 会重启一次(注解已落库但 HTTP 响应没回)→ 重试可续。
+            # 重试是【安全网】:把 batch 调到 ~12(每批 ~3min)< Railway 边缘单请求 ~5min 超时后,
+            # 正常每批就稳 200、不该再 502。但偶发边缘 502 / 网关瞬断仍可能 —— 等一下重试。
+            # ⚠️ 实测:502 时 worker【不崩】、后台仍把这批标完、注解照常落库(标注幂等);重试只接着标没标的。
+            ok=false; code=000
+            for attempt in 1 2 3 4 5 6; do
+              code=$(curl -sS -w '%{http_code}' -o /tmp/b.json --max-time 900 \
+                -X POST "${WORKER_URL%/}/annotate-features" \
+                -H "X-Worker-Key: $WORKER_API_KEY" -H 'content-type: application/json' \
+                -d "{\"project\":\"$PROJECT\",\"limit\":${BATCH}}") || code=000
+              ok=$(jq -r '.ok // false' /tmp/b.json 2>/dev/null)
+              echo "   [try $attempt] HTTP $code · ok=$ok · returncode=$(jq -r '.returncode // "?"' /tmp/b.json 2>/dev/null)"
+              jq -r '.stdout_tail // ""' /tmp/b.json 2>/dev/null | tail -4
+              { [ "$code" = "200" ] && [ "$ok" = "true" ]; } && break
+              echo "::warning::batch $i try $attempt 失败 (HTTP $code, ok=$ok);等 60s 重试(边缘 502 / 网关瞬断;worker 不崩、注解仍会落库)"
+              jq -r '.stderr_tail // ""' /tmp/b.json 2>/dev/null | tail -6
+              sleep 60
+            done
+            if [ "$code" != "200" ] || [ "$ok" != "true" ]; then
+              echo "::error::worker 调用连续 3 次失败 (HTTP $code, ok=$ok) —— 停止 backfill。已标的不丢,修好后重跑接着灌。"
+              exit 1
+            fi
+          done
+          rem=$(python count_unannotated_features.py "$PROJECT" 2>/dev/null || echo "?")
+          echo "── 结束 · project=$PROJECT · remaining(final)=$rem ──"
+          if [ "$rem" != "0" ] && [ "$rem" != "?" ]; then
+            echo "::warning::还剩 $rem 条未标注(到达 max_batches=$MAXB)。再触发一次本工作流接着灌,或调大 max_batches。"
+          fi

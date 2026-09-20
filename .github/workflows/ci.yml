@@ -36,6 +36,9 @@ jobs:
             scripts/sync_feishu_notes_to_truth_vault.py \
             scripts/sync_comments_from_raw_extra.py \
             scripts/annotate_essence_pass.py \
+            scripts/feature_bank.py \
+            scripts/annotate_feature_pass.py \
+            scripts/count_unannotated_features.py \
             scripts/sync_truth_vault_baokuan_to_sanshengliubu.py \
             scripts/sync_truth_vault_baokuan_to_autowriter_items.py \
             scripts/extract_negative_examples_from_autowriter.py \
@@ -813,6 +816,437 @@ jobs:
           print("COR-013 自检通过")
           PY
 
+      - name: "特征层守卫 1 · 问题库结构: id 唯一 / 每题只在一个组 / 组 ≤ 4 / 正反例 / choice 假设键 / 冻结算得出来 (docs/28 附录 E, D-070)"
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # 守卫 1 · 问题库结构 (docs/28 附录 E #1)。断的是 validate_bank 的行为, 反证靠改坏一份副本。
+          import copy, sys
+          import feature_bank as fb
+          bank = fb.load_bank()
+          errs = fb.validate_bank(bank)
+          assert not errs, f"问题库不合法: {errs}"
+          assert len(fb.llm_questions(bank)) == 20 and len(bank["code_features"]) == 8 and len(bank["placebo"]) == 3
+          assert all(len(m) <= fb.MAX_GROUP_SIZE for m in bank["call_groups"].values())
+          # 反证 ①: 删掉一题的组归属 → 必须红
+          b = copy.deepcopy(bank); b["call_groups"]["G2_specificity"].remove("has_specific_time")
+          assert any("has_specific_time" in e and "只在一个 call_group" in e for e in fb.validate_bank(b)), "删掉组归属没被抓住"
+          # 反证 ②: 改一个选项名 → choice 题 hypothesis 键对不上 → 红
+          b = copy.deepcopy(bank); q = next(x for x in b["questions"] if x["id"] == "product_role"); q["options"][0]["value"] = "主角儿"
+          assert any("product_role" in e and "hypothesis" in e for e in fb.validate_bank(b)), "改选项名没被抓住"
+          # 反证 ③: 组超 4 题 → 红
+          b = copy.deepcopy(bank); b["call_groups"]["G2_specificity"].append("turning_point")
+          assert any("超过" in e for e in fb.validate_bank(b))
+          # 反证 ④: 冻结后 sha 不符 → 红; 冻结没记 sha → 红
+          b = copy.deepcopy(bank); b["status"] = "frozen"; b["frozen_sha256"] = "0" * 64
+          assert any("frozen_sha256 不符" in e for e in fb.validate_bank(b))
+          b = copy.deepcopy(bank); b["status"] = "frozen"
+          assert any("没记 frozen_sha256" in e for e in fb.validate_bank(b))
+          # ④b 冻结这一步必须【算得出来】(codex review on #141 P1): digest 剔掉 frozen_sha256 那一行再算,
+          # 所以把算出来的值写回文件之后, 校验仍然通过。直接 hash 整个文件是自指的, 这段会红。
+          import pathlib, tempfile
+          raw = pathlib.Path(fb.BANK_PATH).read_bytes()
+          digest = fb.bank_digest(raw)
+          frozen = raw.replace(b"status: draft", b"status: frozen", 1) + f"frozen_sha256: {digest}\n".encode()
+          with tempfile.NamedTemporaryFile("wb", suffix=".yaml", delete=False) as f:
+              f.write(frozen); tmp = f.name
+          fb2 = fb.load_bank(tmp)
+          assert fb2["status"] == "frozen" and fb2["_sha256"] == digest, (fb2["status"], fb2["_sha256"][:8], digest[:8])
+          assert not fb.validate_bank(fb2), f"冻结之后问题库应当仍然合法, 实得 {fb.validate_bank(fb2)}"
+          # 反证: 用整文件 hash 当 frozen_sha256 → 必须红 (那正是算不出来的那种写法)
+          import hashlib
+          bad = dict(fb2, frozen_sha256=hashlib.sha256(frozen).hexdigest())
+          assert any("frozen_sha256 不符" in e for e in fb.validate_bank(bad))
+          # ④c 冻结前后落库的 bank_sha256 不变 —— 否则「冻结」这个动作本身会把答案分成两批
+          assert fb.load_bank()["_sha256"] == fb2["_sha256"]
+          # 反证 ⑥: choice 题的 aw_instruction_values 必须在选项里; bool 题不许有
+          b = copy.deepcopy(bank); next(x for x in b["questions"] if x["id"] == "opening_type")["aw_instruction_values"] = ["不存在的选项"]
+          assert any("不在选项里" in e for e in fb.validate_bank(b))
+          b = copy.deepcopy(bank); next(x for x in b["questions"] if x["id"] == "has_specific_time")["aw_instruction_values"] = ["是"]
+          assert any("只用于 choice 题" in e for e in fb.validate_bank(b))
+          # 反证 ⑤: 占位题 hypothesis 不是 0 → 红
+          b = copy.deepcopy(bank); b["placebo"][0]["hypothesis"] = "+"
+          assert any("占位题" in e for e in fb.validate_bank(b))
+          print("  ✓ 守卫 1: 问题库 20/8/3, 组 ≤ 4; 冻结算得出来; 每条反证都变红")
+          PY
+      - name: "特征层守卫 2 · Mode A 防泄漏: 渲染出的提示词没有表现类关键词与占位符, 只带本组用到的段 (D-028)"
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # 守卫 2 · Mode A 防泄漏 (docs/28 §5.2, D-028): 渲染出的提示词没有表现类占位符 / 关键词。
+          import copy
+          import feature_bank as fb
+          bank = fb.load_bank()
+          spans = fb.build_spans("【标题】戒烟第几天最难熬？\n【正文】上周三凌晨两点在公司茶水间饿醒。我妈：你身上什么味儿？\n你们戒烟第几天了？", mode="markers")
+          for qids in fb.plan_calls(bank):
+              call = fb.render_call(bank, qids, spans)     # 内部 hygiene_check
+              assert call["question_ids"], qids
+              for kw in fb.PERFORMANCE_KEYWORDS:
+                  assert kw not in call["system"], (qids, kw)
+              for ph in fb.TEMPLATE_LEAK_PLACEHOLDERS:
+                  assert ph not in call["system"] and ph not in call["user"], (qids, ph)
+              # 只放本组用得到的段 (docs/28 §5.4): 没用到的段不该出现在 user 里
+              for s, label in fb.SPAN_LABELS.items():
+                  assert (f"【{label}】" in call["user"]) == (s in call["spans_used"]), (qids, s)
+          # 反证: 往题目文本里塞「互动数」→ 渲染必须 AssertionError
+          b = copy.deepcopy(bank); q = next(x for x in b["questions"] if x["id"] == "has_specific_time"); q["ask"] += "（互动数高的那种）"
+          try:
+              fb.render_call(b, ["has_specific_time", "has_specific_place"], spans); raise SystemExit("塞了 互动数 没被抓住")
+          except AssertionError as e:
+              assert "互动数" in str(e)
+          # 反证: 模板出现 {tier} 占位符 → 红
+          orig = fb.SYSTEM_TEMPLATE
+          try:
+              fb.SYSTEM_TEMPLATE = orig + "\n{tier}"
+              try:
+                  fb.render_call(bank, ["has_specific_time"], spans); raise SystemExit("{tier} 占位符没被抓住")
+              except (AssertionError, KeyError):
+                  pass
+          finally:
+              fb.SYSTEM_TEMPLATE = orig
+          print("  ✓ 守卫 2: 六组提示词无表现类关键词/占位符, 只带本组用到的段; 两条反证都红")
+          PY
+      - name: "特征层守卫 3 · 证据硬闸: 证据不是原文子串 → NULL+evidence_not_found; 闭集外 → out_of_vocab; 截断片段的「否」→ span_truncated"
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # 守卫 3 · 证据硬闸 + 闭集 + 截断 (docs/28 §5.3): 断 validate_answers 的行为。
+          import feature_bank as fb
+          bank = fb.load_bank()
+          sp = fb.build_spans("【标题】戒烟第几天最难熬？\n【正文】上周三凌晨两点在公司茶水间饿醒。我妈：你身上什么味儿？", mode="markers")
+          qids = ["has_specific_time", "has_specific_place", "has_direct_quote", "has_body_sensation"]
+          def ans(**kv):
+              return {"answers": [{"id": k, "answer": v[0], "evidence": v[1]} for k, v in kv.items()]}
+          r = fb.validate_answers(bank, qids, ans(
+              has_specific_time=("是", "凌晨 两点"),            # 去空白后是原文子串 → 合法
+              has_specific_place=("是", "在楼下便利店"),        # 不是原文 → evidence_not_found
+              has_direct_quote=("也许", ""),                     # 闭集外 → out_of_vocab
+              has_body_sensation=("是", ""),                     # 答是没证据 → evidence_not_found
+          ), sp)
+          assert r["has_specific_time"]["answer"] == "是" and r["has_specific_time"]["invalid_reason"] is None
+          assert r["has_specific_place"]["answer"] is None and r["has_specific_place"]["invalid_reason"] == fb.INVALID_EVIDENCE_NOT_FOUND
+          assert r["has_direct_quote"]["answer"] is None and r["has_direct_quote"]["invalid_reason"] == fb.INVALID_OUT_OF_VOCAB
+          assert r["has_body_sensation"]["invalid_reason"] == fb.INVALID_EVIDENCE_NOT_FOUND
+          # 缺题 → missing; 「否」不用证据
+          r = fb.validate_answers(bank, qids, ans(has_specific_time=("否", "")), sp)
+          assert r["has_specific_time"]["answer"] == "否" and r["has_specific_place"]["invalid_reason"] == fb.INVALID_MISSING
+          # 证据超 30 字 → evidence_too_long
+          long_ev = "上周三凌晨两点在公司茶水间饿醒。我妈：你身上什么味儿？"
+          assert len(long_ev.replace("。", "").replace("：", "").replace("？", "")) > 20
+          sp2 = fb.build_spans("【标题】t\n【正文】" + long_ev + "还有很长的一段话补足三十个字以上再补足再补足再补足。", mode="markers")
+          r = fb.validate_answers(bank, ["has_specific_time"], ans(has_specific_time=("是", long_ev + "还有很长的一段话补足三十个字")), sp2)
+          assert r["has_specific_time"]["invalid_reason"] == fb.INVALID_EVIDENCE_TOO_LONG, r
+          # choice 题: product_role 选 未出现 免证据; 选 主角 要证据
+          r = fb.validate_answers(bank, ["product_role"], ans(product_role=("未出现", "")), sp)
+          assert r["product_role"]["answer"] == "未出现"
+          r = fb.validate_answers(bank, ["product_role"], ans(product_role=("主角", "")), sp)
+          assert r["product_role"]["invalid_reason"] == fb.INVALID_EVIDENCE_NOT_FOUND
+          # opening_type 不需要证据
+          r = fb.validate_answers(bank, ["opening_type"], ans(opening_type=("具体事件", "")), sp)
+          assert r["opening_type"]["answer"] == "具体事件"
+          # 截断: body/full 的「否」记 span_truncated, 「是」照常; last_para 的否不受影响
+          sp3 = fb.build_spans("【标题】t\n【正文】" + "凌晨两点。" * 400, mode="markers")
+          assert sp3["_truncated"]
+          r = fb.validate_answers(bank, ["has_specific_place", "has_specific_time", "ending_asks_reader"], ans(
+              has_specific_place=("否", ""), has_specific_time=("是", "凌晨两点"), ending_asks_reader=("否", "")), sp3)
+          assert r["has_specific_place"]["invalid_reason"] == fb.INVALID_SPAN_TRUNCATED and r["has_specific_place"]["answer"] is None
+          assert r["has_specific_time"]["answer"] == "是" and r["ending_asks_reader"]["answer"] == "否"
+          # 反证: 去掉子串校验 (把 _norm 变成永远匹配) → 假证据被放行 → 这条断言必须能抓住
+          orig = fb._norm
+          fb._norm = lambda s: "x"     # 常量: 任何证据都"是"任何原文的子串 = 没有子串校验
+          try:
+              r = fb.validate_answers(bank, ["has_specific_place"], ans(has_specific_place=("是", "在楼下便利店")), sp)
+              assert r["has_specific_place"]["answer"] == "是", "反证前提: 去掉子串校验后假证据会被放行"
+          finally:
+              fb._norm = orig
+          r = fb.validate_answers(bank, ["has_specific_place"], ans(has_specific_place=("是", "在楼下便利店")), sp)
+          assert r["has_specific_place"]["answer"] is None, "恢复后必须重新拦住"
+          # 结尾那一段必须来自【没截断】的正文 (codex review on #141): 否则模型对着中段答 ending_asks_reader,
+          # 而 last_para 不在 TRUNCATABLE_SPANS 里, 这种答案还会被判成有效。
+          tail = "结尾问一句：你们呢？"
+          sp4 = fb.build_spans("【标题】t\n【正文】开头。\n\n" + "中段很长。" * 400 + "\n\n" + tail, mode="markers")
+          assert sp4["_truncated"] and tail in sp4["last_para"], sp4["last_para"][:40]
+          r = fb.validate_answers(bank, ["ending_asks_reader"], ans(ending_asks_reader=("是", "你们呢？")), sp4)
+          assert r["ending_asks_reader"]["answer"] == "是", r
+          # 反证: 从截断后的正文取 → 真结尾不在里面, 证据校验会把它判成 evidence_not_found
+          sp_bad = dict(sp4, last_para=fb.last_paragraph(sp4["body"]))
+          assert tail not in sp_bad["last_para"]
+          r = fb.validate_answers(bank, ["ending_asks_reader"], ans(ending_asks_reader=("是", "你们呢？")), sp_bad)
+          assert r["ending_asks_reader"]["invalid_reason"] == fb.INVALID_EVIDENCE_NOT_FOUND
+          print("  ✓ 守卫 3: 证据子串 / 超长 / 闭集 / 缺题 / 免证据选项 / 截断的否; 反证(去掉子串校验)会放行假证据")
+          PY
+      - name: "特征层守卫 4 · 分组: 一次调用只出现一个组的题, 混组 / 超 4 题都被拒 (防晕轮)"
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # 守卫 4 · 分组: 一次调用只出现一个组的题, 且 ≤ 4 (docs/28 §5.3 防晕轮)。
+          import feature_bank as fb
+          bank = fb.load_bank()
+          sp = fb.build_spans("【标题】戒烟第几天最难熬？\n【正文】上周三凌晨两点在公司茶水间饿醒。我妈：你身上什么味儿？", mode="markers")
+          groups = fb.plan_calls(bank)
+          assert len(groups) == 6 and sum(len(g) for g in groups) == 20
+          for g in groups:
+              call = fb.render_call(bank, g, sp)
+              assert set(call["question_ids"]) <= set(g)
+          # 反证: 把两个组合并成一次调用 → ValueError
+          try:
+              fb.render_call(bank, bank["call_groups"]["G1_opening"] + bank["call_groups"]["G3_engagement"], sp)
+              raise SystemExit("两组合并成一次调用没被拒")
+          except ValueError as e:
+              assert "只能问一个组" in str(e)
+          # 反证: 同组塞第 5 题 (先改组归属让它同组, 再超 4) → ValueError
+          import copy
+          b = copy.deepcopy(bank); b["call_groups"]["G2_specificity"].append("turning_point")
+          next(q for q in b["questions"] if q["id"] == "turning_point")["group"] = "G2_specificity"
+          try:
+              fb.render_call(b, b["call_groups"]["G2_specificity"], sp); raise SystemExit("5 题一组没被拒")
+          except ValueError as e:
+              assert "最多" in str(e)
+          # 单问模式: 20 次调用, 每次 1 题
+          assert [len(g) for g in fb.plan_calls(bank, single=True)] == [1] * 20
+          # 真实编排也不许混组: annotate_note 走 plan_calls, 每次 render_call 都会断言
+          print("  ✓ 守卫 4: 6 组 / 20 题, 混组与超 4 题都被拒; 单问模式 20 次")
+          PY
+      - name: 特征层守卫 5 · 占位题按 note_id 确定生成 + 闸二正式对比 SQL 仍过滤 placebo
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # 守卫 5 · 占位题: 答案由 note_id 确定地生成; 闸二正式对比的 SQL 里 placebo 过滤还在。
+          import feature_bank as fb, re, pathlib
+          bank = fb.load_bank()
+          a = fb.placebo_answers(bank, "NUC_phase1_rec123")
+          b = fb.placebo_answers(bank, "NUC_phase1_rec123")
+          assert a == b and set(a) == {"placebo_rand_1", "placebo_rand_2", "placebo_rand_3"} and set(a.values()) <= {"是", "否"}
+          # 三道题用不同的盐: 1000 个 id 上不该完全一致
+          ids = [f"P_{i}" for i in range(1000)]
+          cols = [[fb.placebo_answer(i, k) for i in ids] for k in (1, 2, 3)]
+          assert cols[0] != cols[1] != cols[2], "三道占位题用了同一个盐"
+          share = sum(c == "是" for c in cols[0]) / 1000
+          assert 0.4 < share < 0.6, f"占位题「是」的比例应约 50%, 实得 {share}"
+          # 反证: 换成随机数 → 同一 id 两次不同 → 这条断言会红
+          import random
+          def bad(note_id, k): return "是" if random.random() < 0.5 else "否"
+          assert any(bad("x", 1) != bad("x", 1) for _ in range(50)), "反证前提不成立"
+          # 闸二正式对比 SQL (docs/28 附录 B.3) 必须过滤 placebo
+          doc = pathlib.Path("../docs/28-content-feature-layer.md").read_text(encoding="utf-8")
+          b3 = doc[doc.index("### B.3"):doc.index("### B.4")]
+          assert re.search(r"question_id NOT LIKE 'placebo%'", b3), "附录 B.3 的正式对比 SQL 丢了 placebo 过滤"
+          # 表情按【可见的一个】算 (codex review on #141): 变体选择符不单独计, ZWJ 串 / 肤色修饰算一个。
+          # 两颗心原来记 4 个 → emoji_bucket 从 1-3 跳到 >=4, 直接污染闸二的分档。
+          assert fb.count_emoji("❤️") == 1 and fb.count_emoji("☀️") == 1
+          assert fb.count_emoji("👨\u200d👩\u200d👧") == 1 and fb.count_emoji("👍🏽") == 1
+          assert fb.count_emoji("❤️❤️") == 2 and fb.count_emoji("[哭惹R]") == 1
+          sp_e = fb.build_spans("【标题】t\n【正文】今天好开心❤️❤️ 一家人👨\u200d👩\u200d👧 出门。", mode="markers")
+          assert fb.code_features(sp_e, [])["emoji_bucket"][0] == "1-3", fb.code_features(sp_e, [])["emoji_bucket"]
+          # 反证: 把变体选择符也当成独立表情 → 同一段落会被分到 >=4
+          import re as _re
+          naive = _re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F]")
+          assert len(naive.findall("今天好开心❤️❤️ 一家人👨\u200d👩\u200d👧 出门。")) >= 4
+          print("  ✓ 守卫 5: 占位题按 note_id 确定生成、三道盐不同、约半数「是」; B.3 仍过滤 placebo")
+          PY
+      - name: 特征层守卫 6 · library_version() 随 gate2_run 变化, 无闸二结论时版本串不变 (docs/28 §7.1)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # 守卫 6 · library_version() 随 gate2_run 变化 (docs/28 §7.1 第 2 条)。
+          import sys, logging; sys.path.insert(0, ".."); logging.disable(logging.WARNING)
+          from librarian.core import library_version, latest_gate2_run
+          cards = [{"source_note_id": "a", "curated_at": "2026-09-01"}, {"source_note_id": "b", "curated_at": "2026-09-02"}]
+          v0 = library_version(cards)
+          assert library_version(cards, gate2_run=None) == v0, "没有闸二结论时版本串必须和以前完全一样 (不动现有缓存键)"
+          v1 = library_version(cards, gate2_run="gate2-2026-10-01")
+          v2 = library_version(cards, gate2_run="gate2-2026-11-01")
+          assert v0 != v1 != v2 and v1.endswith(":gate2-2026-10-01"), (v0, v1, v2)
+          # latest_gate2_run: 按 decided_at 取最新一轮、**不筛 status**; 表不存在 / 查询炸 → None (fail-open)。
+          # 只看 validated 的话, 新一轮把规律全判成 no_signal(= 撤回)时版本会停在旧的 —— 那正是必须失效的时刻。
+          # gate2_run 是自由文本标签, 按它排序也不等于按时间排序 (codex review on #141)。
+          class _Q:
+              def __init__(self, rows, boom=False):
+                  self.rows, self.boom, self.calls = rows, boom, []
+              def select(self, *a, **k): self.calls.append(("select",) + a); return self
+              def eq(self, *a, **k): self.calls.append(("eq",) + a); return self
+              def order(self, *a, **k): self.calls.append(("order",) + a + tuple(sorted(k.items()))); return self
+              def limit(self, *a, **k): return self
+              def execute(self):
+                  if self.boom: raise RuntimeError("relation does not exist")
+                  class R: data = self.rows
+                  return R()
+          class _SB:
+              def __init__(self, q): self.q = q
+              def schema(self, *_): return self
+              def table(self, *_): return self.q
+          q = _Q([{"gate2_run": "gate2-2026-11-01", "decided_at": "2026-11-01T00:00:00Z"}])
+          assert latest_gate2_run(_SB(q)) == "gate2-2026-11-01"
+          assert any(c[0] == "order" and c[1] == "decided_at" for c in q.calls), q.calls
+          assert not any(c[0] == "eq" and c[1] == "status" for c in q.calls), "不该只筛 validated"
+          # 规律全被撤回的那一轮 (没有 validated 行) 也要换版本
+          q2 = _Q([{"gate2_run": "gate2-2026-12-01", "decided_at": "2026-12-01T00:00:00Z"}])
+          assert library_version(cards, gate2_run=latest_gate2_run(_SB(q2))) != library_version(cards, gate2_run="gate2-2026-11-01")
+          assert latest_gate2_run(_SB(_Q([]))) is None
+          assert latest_gate2_run(_SB(_Q([], boom=True))) is None
+          # 反证: 版本串里去掉 gate2_run → v1 == v0 → 上面第三条断言会红 (源码上 librarian_select 必须真的把它传进去)
+          import inspect
+          from librarian import core
+          assert "gate2_run=latest_gate2_run(sb)" in inspect.getsource(core.librarian_select), "librarian_select 没把 gate2_run 并进缓存版本"
+          print("  ✓ 守卫 6: gate2_run 并进 library_version, 无结论时版本串不变, 查询失败 fail-open")
+          PY
+      - name: 特征层守卫 7 · efficacy_promise 永不出现在下发给写作台的规律列表里 (D-065 续 第 1 条)
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # 守卫 7 · efficacy_promise 永不出现在下发给写作台的规律列表里 (docs/28 §4.2, D-065 续 第 1 条)。
+          import feature_bank as fb
+          bank = fb.load_bank()
+          q = fb.question_index(bank)["efficacy_promise"]
+          assert str(q.get("aw_instruction")).strip().lower() == "never", "问题库里 efficacy_promise 的 aw_instruction 必须是 never"
+          BV = bank["bank_version"]
+          def row(qid, answer, status="validated", hyp="+", ver=None, bank_version=BV, summary="s"):
+              q = fb.question_index(bank).get(qid)
+              return {"question_id": qid, "answer": answer, "status": status, "hypothesis": hyp,
+                      "question_version": ver if ver is not None else (q["version"] if q else 1),
+                      "bank_version": bank_version, "summary": summary}
+          rows = [
+              row("efficacy_promise", "是", hyp="?"),          # 反证输入: 标成 validated 也不许下发
+              row("has_specific_time", "是", summary="5 个项目 4 个同向"),
+              row("ending_asks_reader", "是", status="no_signal"),
+              row("calls_out_reader_group", "是", hyp="?", summary="新发现"),
+              row("placebo_rand_1", "是", hyp="0"),            # 不是模型题, 也不该下发
+          ]
+          out = fb.instructions_for_desk(bank, rows)
+          ids = [o["question_id"] for o in out]
+          assert "efficacy_promise" not in ids, ids
+          assert ids == ["has_specific_time", "calls_out_reader_group"], ids
+          assert out[0]["instruction"] == "写清一个具体的时间点或时长。" and out[0]["needs_owner_review"] is False
+          assert out[1]["needs_owner_review"] is True, "方向为 ? 的新发现要标 owner 看过再下发"
+
+          # 版本对得上才下发 (codex review on #141): 旧版本的结论不许套到改过的题上; 缺字段 fail-closed
+          assert not fb.instructions_for_desk(bank, [row("has_specific_time", "是", ver=99)]), "旧 question_version 不该下发"
+          assert not fb.instructions_for_desk(bank, [row("has_specific_time", "是", bank_version="fq-v0.0")]), "别的 bank_version 不该下发"
+          stale = {"question_id": "has_specific_time", "answer": "是", "status": "validated", "hypothesis": "+"}
+          assert not fb.instructions_for_desk(bank, [stale]), "缺版本字段时应当 fail-closed"
+
+          # choice 题按【取值】下发 (codex review on #141): opening_type 那句只对「具体事件」成立
+          got = fb.instructions_for_desk(bank, [row("opening_type", "具体事件")])
+          assert [o["answer"] for o in got] == ["具体事件"] and "具体事" in got[0]["instruction"], got
+          for v in ("提问", "数据事实", "感叹情绪"):
+              assert not fb.instructions_for_desk(bank, [row("opening_type", v)]), f"{v} 过闸也不该发「写具体事件」那句"
+          # product_role 没声明 aw_instruction_values → 任何取值过闸都不自动下发
+          for v in ("只暗示", "主角", "未出现"):
+              assert not fb.instructions_for_desk(bank, [row("product_role", v)]), v
+          # bool 题只认「是」
+          assert not fb.instructions_for_desk(bank, [row("has_specific_time", "否")]), "验证「否」不该发「是」那句指令"
+          # 反证: 去掉取值过滤 → 提问 也会拿到「写具体事件」那句
+          import copy as _c
+          b2 = _c.deepcopy(bank); next(x for x in b2["questions"] if x["id"] == "opening_type")["aw_instruction_values"] = ["具体事件", "提问"]
+          assert fb.instructions_for_desk(b2, [row("opening_type", "提问")]), "反证前提不成立"
+          # 反证: 把 efficacy_promise 的 never 改掉 → 它就会出现 → 断言 1 会红
+          import copy
+          b = copy.deepcopy(bank); next(x for x in b["questions"] if x["id"] == "efficacy_promise")["aw_instruction"] = "多写效果承诺"
+          assert "efficacy_promise" in [o["question_id"] for o in fb.instructions_for_desk(b, rows)], "反证前提不成立"
+          print("  ✓ 守卫 7: validated 的 efficacy_promise 不下发; no_signal 不下发; 方向 ? 标 owner review")
+          PY
+      - name: "特征层编排自检 · 假模型 + 假库端到端: 31 行/篇、6 组 + 重问、任一组挂整篇不落行、写序 raw→answers、resume 判据、code-only"
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # 编排自检: annotate_feature_pass 端到端走假 LLM + 假库 (不连网), 断行为不断源码。
+          import json, feature_bank as fb, annotate_feature_pass as afp
+          bank = fb.load_bank()
+          raw = "【标题】戒烟第几天最难熬？\n【正文】上周三凌晨两点在公司茶水间饿醒。我妈：你身上什么味儿？嗓子像被砂纸磨过。\n你们戒烟第几天了？#戒烟#"
+          note = {"note_id": "T_1", "project_id": "T", "title": None, "raw_content": raw, "target_blue_keywords": ["戒烟"], "projects": {"brand": "某牌", "product": "尼古丁贴"}}
+          mapping = {"project_id": "T", "field_mapping": {}, "title_extraction": "markers"}
+          calls = []
+          def fake_llm(system, user, model):
+              calls.append(system)
+              ids = [ln.split(" · ")[0].split(". ", 1)[1] for ln in system.splitlines() if " · 看【" in ln]
+              idx = fb.question_index(bank); out = []
+              for q in ids:
+                  qq = idx[q]
+                  if q == "has_specific_time": out.append({"id": q, "answer": "是", "evidence": "凌晨两点"})
+                  elif q == "has_direct_quote": out.append({"id": q, "answer": "是", "evidence": "这句不在原文里"})
+                  elif q == "opening_type": out.append({"id": q, "answer": "外星选项", "evidence": ""})
+                  elif qq["type"] == "bool": out.append({"id": q, "answer": "否", "evidence": ""})
+                  else: out.append({"id": q, "answer": "未出现" if q == "product_role" else fb.closed_set(qq)[0], "evidence": ""})
+              return json.dumps({"answers": out}, ensure_ascii=False)
+          res = afp.annotate_note(bank, note, mapping, model="m", extractor="llm:m", run_tag="primary", single=False, code_only=False, dry_run=False, llm=fake_llm)
+          rows = res["rows"]; by = {r["question_id"]: r for r in rows}
+          assert len(rows) == 31 and len(calls) == 8, (len(rows), len(calls))        # 6 组 + 2 次重问
+          assert by["has_specific_time"]["answer"] == "是" and by["has_direct_quote"]["invalid_reason"] == "evidence_not_found"
+          assert by["opening_type"]["invalid_reason"] == "out_of_vocab" and by["product_role"]["answer"] == "未出现"
+          assert by["body_len_bucket"]["extractor"] == "code:v1" and by["placebo_rand_2"]["extractor"] == "code:v1"
+          assert all(r["bank_sha256"] == bank["_sha256"] and r["bank_version"] == "fq-v0.1" for r in rows)
+          assert {r["subject_type"] for r in rows} == {"note"} and {r["run_tag"] for r in rows} == {"primary"}
+          assert res["raw_counts"] == {"title_len": 9, "body_len": 45, "hashtag_count": 1, "mention_count": 0}, res["raw_counts"]
+          # api 全挂 → 整篇 systemic, 编排层不落行
+          def boom(*a, **k): raise RuntimeError("503 gateway")
+          res2 = afp.annotate_note(bank, note, mapping, model="m", extractor="llm:m", run_tag="primary", single=False, code_only=False, dry_run=False, llm=boom)
+          assert res2["stats"]["systemic"] == 6 and res2["stats"]["groups_ok"] == 0
+          # 退出码口径同 essence: 全军覆没才红, 单篇抽风不红
+          assert afp._exit_code_for_stats({"ok": 0, "systemic_failed": 3}) == 1
+          assert afp._exit_code_for_stats({"ok": 5, "systemic_failed": 3}) == 0
+          assert afp._exit_code_for_stats({"ok": 5, "hygiene_failed": 1}) == 1
+          # ── codex review on #141 · 只要有一组 api 挂, 整篇不落行 (哪怕别的组都成功) ──
+          def half_boom(system, user, model):
+              if "turning_point" in system:
+                  raise RuntimeError("503 gateway")
+              return fake_llm(system, user, model)
+          res3 = afp.annotate_note(bank, note, mapping, model="m", extractor="llm:m", run_tag="primary", single=False, code_only=False, dry_run=False, llm=half_boom)
+          assert res3["stats"]["systemic"] == 1 and res3["stats"]["groups_ok"] >= 4, res3["stats"]   # 半挂: 有组成功也有组挂
+
+          # main 走假库: fetch / done / write 全打桩, 断言写进去的行数、写序与 resume 过滤
+          import os
+          os.environ["ANTHROPIC_API_KEY"] = "x"
+          written, order = [], []
+          _real_done = afp.fetch_done_ids          # 下面要打桩, 先把真货留一份
+          afp.get_supabase_client = lambda: object()
+          afp.load_mapping = lambda pid: mapping
+          afp.fetch_notes = lambda sb, pid: [note, dict(note, note_id="T_2"), dict(note, note_id="T_3")]
+          afp.fetch_done_ids = lambda sb, pid, **kw: {"T_2"}
+          afp.write_answers = lambda sb, rows, dry_run: (order.append("answers"), written.extend(rows))
+          afp.write_raw_counts = lambda *a, **k: order.append("raw")
+          afp._llm = fake_llm
+          calls.clear()
+          rc = afp.main(["T", "--limit", "5"])
+          assert rc == 0 and len(written) == 62 and {r["subject_id"] for r in written} == {"T_1", "T_3"}, (rc, len(written))
+          # 写序: 数值原值在前、带标记题的答案在后 (反过来 → 写答案成功而原值失败时, 下轮 resume 跳过这篇, 原值永远缺)
+          assert order == ["raw", "answers", "raw", "answers"], order
+          # 反证: 半挂那篇一行都不许落 (旧口径 systemic and not groups_ok 会在这里写 31 行)
+          afp.fetch_notes = lambda sb, pid: [note]
+          afp.fetch_done_ids = lambda sb, pid, **kw: set()
+          afp._llm = half_boom
+          written.clear(); order.clear()
+          rc = afp.main(["T"])
+          assert rc == 1 and written == [] and order == [], (rc, len(written), order)
+          afp._llm = fake_llm
+          afp.fetch_notes = lambda sb, pid: [note, dict(note, note_id="T_2"), dict(note, note_id="T_3")]
+          afp.fetch_done_ids = lambda sb, pid, **kw: {"T_2"}
+          # run_tag 非法 → 2; --code-only 不需要 key、不调模型
+          assert afp.main(["T", "--run-tag", "bad tag"]) == 2
+          calls.clear(); written.clear(); order.clear()
+          assert afp.main(["T", "--code-only"]) == 0 and not calls and len(written) == 22 and {r["extractor"] for r in written} == {"code:v1"}
+
+          # ── codex review on #141 · resume 的判据: code-only 用代码那边的标记题, 模型跑按 llm:% 前缀 ──
+          class _Q:
+              """记下 fetch_done_ids 真的往查询里塞了什么 (不连库)。"""
+              def __init__(self, log): self.log = log
+              def schema(self, s): return self
+              def table(self, t): self.log["table"] = t; return self
+              def select(self, *a, **k): return self
+              def eq(self, k, v): self.log[k] = v; return self
+              def like(self, k, v): self.log["like_" + k] = v; return self
+          _real_pages = afp.fetch_all_pages
+          afp.fetch_all_pages = lambda q, order_by=None: []
+          log = {}; _real_done(_Q(log), "T", run_tag="primary", code_only=True)
+          # 反证: 这里若仍是模型那边的标记题 has_specific_time, --code-only 永远 resume 不上 (代码题从不写那一行)
+          assert log["table"] == "note_feature_answers" and log["question_id"] == "body_len_bucket" and log["extractor"] == "code:v1", log
+          log = {}; _real_done(_Q(log), "T", run_tag="primary", code_only=False)
+          # 反证: 两边 FEATURE_MODEL 配得不一样时, 精确匹配 extractor 会把所有笔记当没跑过 → 必须是 llm:% 前缀
+          assert log["question_id"] == "has_specific_time" and log["like_extractor"] == "llm:%" and "extractor" not in log, log
+          log = {}; _real_done(_Q(log), "T", run_tag="gate1_b", code_only=False, extractor="llm:x")
+          assert log["extractor"] == "llm:x" and log["run_tag"] == "gate1_b" and log["like_subject_id"] == "T_%" and "like_extractor" not in log, log
+          afp.fetch_all_pages = _real_pages
+          print("  ✓ 编排: 31 行/篇, 8 次调用 (6 组 + 2 次重问), 任一组挂整篇不落行, 写序 raw→answers, resume 判据分 code/llm 两套, code-only 不调模型")
+          PY
       - name: Essence vocab validator self-check
         working-directory: scripts
         run: |
@@ -6385,6 +6819,62 @@ jobs:
             echo "❌ v_l2_labels 四处修法有一处没生效 (a raw_extra NULL / b tier_source NULL / c synthetic / d routes)。期望 [$WANT2] 实得 [$GOT2]"; exit 1
           fi
           echo "✓ v1.15: v_l2_labels 收 a/b、剔 c/d、留 起量后干预; v_l2_labels_v1 原样保留四处作对照"
+      - name: Apply v1.13 content feature layer (+ idempotency)
+        # 三张表 + v_feature_contrast (读 v1_15 的 v_l2_labels, 所以必须套在 v1_15 之后) + note_features 六列 COMMENT。
+        # CREATE TABLE/INDEX IF NOT EXISTS + CREATE OR REPLACE VIEW + COMMENT → 第二遍必须是干净 no-op。
+        run: |
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_13_content_features.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_13_content_features.sql
+      - name: Sanity-check v1.13 (三表在 / status CHECK 拒非法值 / v_feature_contrast 的 2×2 只数 primary 且有效的答案, 只数 v_l2_labels 里的行)
+        # 复用 v1.15 步骤留下的 CI_V15 夹具 (clean / a_rawnull / boost 是正例, pa / pa2 负例; infer / fake 不在 v_l2_labels 里)。
+        # 对 q1 写九行: clean=是 pa=是 boost=否 pa2=否 a_rawnull=否 | b_tsnull 无效答案 | b_tsnull retest-1=是 | infer=是 fake=是
+        #   值「是」: a=clean(1) b=pa(1) c=boost,a_rawnull(2) d=pa2(1) → 1121;  值「否」: 2111
+        # 反证 (改坏之后必须变红): 视图去掉 run_tag='primary' → b_tsnull 的 retest 行进来, 是:2121;
+        #   去掉 answer IS NOT NULL → 无效行进 vals 但 =/<> 都不成立, a/b/c/d 计数不变, 但会多出一行 value=NULL 的 GROUP;
+        #   改成 JOIN notes 而不是 v_l2_labels → infer / fake 进来, q1 是:3121。
+        # q2 那三行专门断 bank_sha256 (codex review on #141): 它既在 vals/JOIN 的键里也在输出里, 所以
+        #   sha 与 sha2 各成一档 (q2:是:sha:1001 与 q2:是:sha2:1000)。从分组键里漏掉它 → 两份题面的答案
+        #   会被并成 q2:是:2001 两行, 上面的字符串立刻变红。
+        run: |
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          SELECT 'truth_vault.note_feature_answers'::regclass, 'truth_vault.feature_validation'::regclass, 'truth_vault.content_scores'::regclass;
+          INSERT INTO truth_vault.note_feature_answers
+            (subject_type, subject_id, question_id, question_version, bank_version, bank_sha256, extractor, run_tag, answer, invalid_reason) VALUES
+            ('note','CI_V15_clean',    'q1',1,'fq-v0.1','sha','llm:m','primary','是',NULL),
+            ('note','CI_V15_pa',       'q1',1,'fq-v0.1','sha','llm:m','primary','是',NULL),
+            ('note','CI_V15_boost',    'q1',1,'fq-v0.1','sha','llm:m','primary','否',NULL),
+            ('note','CI_V15_pa2',      'q1',1,'fq-v0.1','sha','llm:m','primary','否',NULL),
+            ('note','CI_V15_a_rawnull','q1',1,'fq-v0.1','sha','llm:m','primary','否',NULL),
+            ('note','CI_V15_b_tsnull', 'q1',1,'fq-v0.1','sha','llm:m','primary',NULL,'evidence_not_found'),
+            ('note','CI_V15_b_tsnull', 'q1',1,'fq-v0.1','sha','llm:m','retest-1','是',NULL),
+            ('note','CI_V15_infer',    'q1',1,'fq-v0.1','sha','llm:m','primary','是',NULL),
+            ('note','CI_V15_fake',     'q1',1,'fq-v0.1','sha','llm:m','primary','是',NULL),
+            -- q2 换一把问题库校验和: 同一题、同一 bank_version, sha 不同就是两份题面, 不许混在一个 2×2 里
+            ('note','CI_V15_clean',    'q2',1,'fq-v0.1','sha', 'llm:m','primary','是',NULL),
+            ('note','CI_V15_pa',       'q2',1,'fq-v0.1','sha', 'llm:m','primary','否',NULL),
+            ('note','CI_V15_boost',    'q2',1,'fq-v0.1','sha2','llm:m','primary','是',NULL);
+          DO $$
+          BEGIN
+              BEGIN
+                  INSERT INTO truth_vault.feature_validation (question_id,question_version,answer,bank_version,gate2_run,status)
+                  VALUES ('q1',1,'是','fq-v0.1','gate2-ci','maybe');
+                  RAISE EXCEPTION 'feature_validation.status CHECK did not reject bad value';
+              EXCEPTION WHEN check_violation THEN
+                  RAISE NOTICE 'feature_validation.status CHECK OK';
+              END;
+          END $$;
+          INSERT INTO truth_vault.feature_validation (question_id,question_version,answer,bank_version,gate2_run,status,hypothesis)
+          VALUES ('q1',1,'是','fq-v0.1','gate2-ci','validated','+');
+          SQL
+          GOT=$(psql -v ON_ERROR_STOP=1 -tA -c "SELECT string_agg(question_id||':'||value||':'||bank_sha256||':'||a||b||c||d, ' ' ORDER BY question_id COLLATE \"C\", value COLLATE \"C\", bank_sha256 COLLATE \"C\") FROM truth_vault.v_feature_contrast WHERE project_id='CI_V15'")
+          WANT="q1:否:sha:2111 q1:是:sha:1121 q2:否:sha:0110 q2:是:sha:1001 q2:是:sha2:1000"
+          if [ "$GOT" != "$WANT" ]; then
+            echo "❌ v_feature_contrast 的 2×2 不对 (run_tag / 无效答案 / v_l2_labels / bank_sha256 四道过滤有一道漏了)。期望 [$WANT] 实得 [$GOT]"; exit 1
+          fi
+          N=$(psql -tA -c "SELECT count(*) FROM truth_vault.v_feature_contrast WHERE project_id='CI_V15' AND question_id='q1'")
+          [ "$N" = "2" ] || { echo "❌ v_feature_contrast 该只有 是/否 两行, 实得 $N (无效答案漏进了 vals?)"; exit 1; }
+          psql -v ON_ERROR_STOP=1 -c "DELETE FROM truth_vault.feature_validation WHERE gate2_run='gate2-ci'; DELETE FROM truth_vault.note_feature_answers WHERE subject_id LIKE 'CI_V15_%';"
+          echo "✓ v1.13: 三表在, status CHECK 拒非法值, v_feature_contrast 只数 primary·有效·在 v_l2_labels 里的行"
       - name: Apply security revoke (anon/authenticated write on public.* ) (+ idempotency)
         # 撤 anon/authenticated 对 5 张 public 表的写权限(读保留,不开 RLS)。
         # guarded:表/角色不存在则跳过 → 裸 PG / CI 为 no-op。REVOKE 幂等,两遍验。
@@ -6552,4 +7042,34 @@ jobs:
                        "schemas/controlled_vocab_v0_2.json + docs/05 §对应节):\n  - " + "\n  - ".join(bad))
           assert "评估中" in ov.TIERS, "onboarder TIERS 缺 评估中 —— 它是库 CHECK 里的正式档位(notes_v1_12)"
           print(f"  ✓ {len(files)} 张 mapping 全部通过 onboarder 词表硬校验")
+          PY
+      - name: "每个 workflow 的每个 step 都得有合法的 key（防「name 被冒号吃掉」）"
+        # 为什么要这条 (codex review on #141 那一轮自己踩的):
+        #   步骤名里带 ": " 时, `- name: 守卫 1: id 唯一` 这行在 YAML 里会被解析成
+        #   key=`name: 守卫 1`、value=`id 唯一` —— 文件照样是合法 YAML, pyyaml 不报错,
+        #   但这个 step 根本没有 name 这个 key, GitHub 会整份 workflow 判成非法、一个 job 都不跑。
+        #   本地跑 yaml.safe_load 绿着, 线上全红, 而且看不到是哪一步。
+        #   解法是把名字整个用双引号裹起来; 这条守卫盯的就是「有没有人又忘了引号」。
+        # 反证: 把任何一步改回 `- name —— 甲: 乙` 这种写法, 下面就会打印出那个怪 key 并退 1。
+        run: |
+          python - <<'PY'
+          import glob, sys, yaml
+          OK = {"name", "run", "uses", "with", "env", "id", "if", "shell",
+                "working-directory", "continue-on-error", "timeout-minutes"}
+          bad = []
+          for f in sorted(glob.glob(".github/workflows/*.yml") + glob.glob(".github/workflows/*.yaml")):
+              wf = yaml.safe_load(open(f, encoding="utf-8"))
+              for jname, job in (wf.get("jobs") or {}).items():
+                  for i, st in enumerate(job.get("steps") or []):
+                      if not isinstance(st, dict):
+                          bad.append(f"{f} · {jname} · 第 {i+1} 步不是 mapping: {st!r:.60}"); continue
+                      for k in st:
+                          if k not in OK:
+                              bad.append(f"{f} · {jname} · 第 {i+1} 步有非法 key {k!r} —— 名字里的冒号没加引号?")
+                      if ("run" in st or "uses" in st) and "name" not in st and "uses" not in st:
+                          bad.append(f"{f} · {jname} · 第 {i+1} 步没有 name")
+          if bad:
+              sys.exit("workflow step 的 key 不合法(GitHub 会拒掉整份 workflow, 一个 job 都不跑):\n  - "
+                       + "\n  - ".join(bad))
+          print("  ✓ 所有 workflow 的 step key 合法, 带冒号的步骤名都加了引号")
           PY
