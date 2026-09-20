@@ -4007,3 +4007,41 @@ P1 开工不等运营回卷：迁移 `notes_v1_13`（按 §11.4 分工）、`ann
 
 教训：拍板记录放在 §11.1 一张表里，正文不改，下一个照正文实现的人就按旧的走。以后拍板同 PR 改正文。
 
+---
+
+## D-069 · 通道 2 黑的根因是协议不是接线：写作台 `open_project` 随简报自动借经验卡（修在 autowriter）
+
+**日期**: 2026-09-19
+**触发**: docs/27 §2 让 autowriter 维护者查三件事。owner 说「加 autowriter 仓，你直接动手」。
+**落点**: autowriter [PR #85](https://github.com/TangVarie/autowriter/pull/85)；TV 侧只记录，docs/27 §6 写了三件事的答案。
+
+### 实查（09-19，autowriter HEAD 74ad881 + TV 生产库）
+
+| 事实 | 数字 |
+|---|---|
+| 30 天写作台 batch | 90，**全部** `ai_engines=["deskcore"]`（71 批成稿 + 19 批 tv-sync 补录，D-064） |
+| Streamlit 生成路径最后一次跑 | 08-19，那天 `batch_metrics.injection.flywheel_lessons = 5`（接线是通的，之后没人用） |
+| `autowriter.jobs`（worker 队列） | 空 |
+| 09-01 ~ 09-16 写作台 `commit_drafts` 批次 | 71 |
+| 同期馆员缓存 consumer=deskcore | 3 行（各借到 4-5 张卡） |
+| deskcore `/health` `librarian.configured` | true |
+
+三条生成路径代码里都接着馆员，env 也在。黑的原因是 deskcore 协议：`open_project` / `draw_angles` 必做，`borrow_lessons` 是「想要真实爆款参照时调」——通道 2 取决于模型每场对话愿不愿意多调一个可选工具，71 场里它调了 3 次。docs/27 §1 当时把 09-02 / 09-07 / 09-10 的 batch 当成「生成量」，其中大头其实是 deskcore 成稿 + 补录，结论不变，口径要更正：应比的是「写作台成稿批次 vs deskcore 借阅」。
+
+### 决定
+
+1. **借阅并进必做的那一步**：`build_writing_brief`（`open_project` 的核心）末尾调馆员，简报多出 `lessons`（≤ 5，与常规路径 `FLYWHEEL_CARD_CAP` 同口径）/ `lessons_status` / `counts.lessons`。`borrow_lessons` 保留，改成换题 / 换战术时「再借」，两者走同一个借阅体。
+2. **fail-open 但留痕**：借阅那段任何失败都不影响简报（P0 拿不到照旧报错，那是另一回事），`not_configured` / `timeout` / `error` 各记一条 WARN，`empty` 不记。意外异常兜住仍回 `status=error`。
+3. **协议与 skill 同步改口**（`protocol_version 494eaf4d2df7`）：第 1 条说明简报自带 `lessons`，第 3 条改成只在换题时再借。运营要重新导入一次 skill，旧版会在 `get_protocol` 时被提醒。
+4. brief 的 `consumer` 不动（仍 `deskcore`），D-063 夜跑检查口径不变。
+
+### 守卫
+
+autowriter `tests/test_deskcore_open_project_borrows.py` 11 条：主路径 / brief 带 consumer 与本次 delta / 不传 delta 也借 / 封顶 / 三种失败留痕 / `empty` 不告警 / 借阅路径异常不拖垮简报 / `borrow_lessons` 共用借阅体 / 协议正文与 skill 同步。**反证已跑**：`core.py` 退回旧版 9 failed / 2 passed。全仓 620 passed；CI 的 deskcore selftest 与 round-5~8 heredoc 本地全过（`_safe` 的 SAFE_OK 集合没动）。
+
+### 代价与没做的
+
+- `open_project` 多一次 HTTP，上限 `LIBRARIAN_TIMEOUT_SEC`（默认 8s）。
+- 没动 Streamlit / worker 路径：它们接线是对的，只是没人在跑；Railway 上那两个服务的 env 从这里看不到。
+- 验收照 docs/27 §4：合并部署后开一场写作台对话，`flywheel_librarian_cache` 多一行 consumer=deskcore。
+
