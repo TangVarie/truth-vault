@@ -4169,7 +4169,8 @@ worker service 是「连本 repo」建的（`worker/README.md` 部署段），Ra
 
 ### 剩下没生效的
 
-1. `FEATURE_MODEL` 没设，worker 会跟 `ESSENCE_MODEL`。闸一要比便宜档时再在 Railway 上加。
+1. `FEATURE_MODEL` 设没设，**从我这边查不出来**（Railway 的环境变量我够不到）。首批答案的 `extractor` 是 `llm:claude-opus-4-6`，而 `ESSENCE_MODEL` 也是 `claude-opus-4-6`（`notes.essence_annotated_by` 近三天 329 行全是它）——**两种情况产出的值一模一样，分不开**。能确定的只有「实际在用 opus-4-6」。闸一要比便宜档时，去 Railway 上把 `FEATURE_MODEL` 设成目标模型（或请求 body 传 `model`）即可，不必先弄清它原来设没设。
+   （2026-09-20 补记：这一条我一度改成「Railway 上是设了的」——**那是拿 extractor 值当证据，而那个值在两种情况下相同，根本不构成证据**。同一天第三次犯同一个毛病，而且这次差点写进永久记录。）
 2. 全库回填（`backfill-features.yml`）**故意没跑**：按 docs/28 §10，等闸一改完题、问题库冻结之后再回填，否则要按新题面重跑一遍。
 3. 真实增量从今晚的 cron 开始（本次是 dry-run，没落行）。
 
@@ -4281,3 +4282,99 @@ worker service 是「连本 repo」建的（`worker/README.md` 部署段），Ra
 ### 为什么不是「先攒着总没坏处」
 
 写手每场对话多做一个动作，换一张暂时没人读的表。而且攒的东西还不完整：`pred_tier_class` 没人填，光有 pass/revise 算不出准确率。等 P3 影子打分真跑起来、模型行开始进表的时候，两边并排比才有意义，那时候再接人工那一路，代价一样、价值高得多。
+
+---
+
+## D-073 · 夜跑撞超时丢了三步还报绿：特征层拆独立 workflow，超时提到 240，聚合认 cancelled
+
+**日期**: 2026-09-20
+**触发**: D-070 合并后第一趟真跑（schedule [run #177](https://github.com/TangVarie/truth-vault/actions/runs/35497654133)）撞了 `timeout-minutes: 120` 被 cancel。owner：*"拆独立 workflow，直接做"*。
+
+### run #177 到底发生了什么（逐步计时，不是推测）
+
+| # | 步骤 | 起止（UTC） | 用时 | 结论 |
+|---|---|---|---|---|
+| 6 | feishu → TV | 07:44:11 → 07:49:29 | 5.3 min | success |
+| 7 | comments | 07:49:29 → 08:31:13 | **41.7 min** | success |
+| 8 | essence | 08:31:13 → 09:08:43 | **37.5 min** | success |
+| 9 | 内容特征层增量 | 09:08:43 → 09:44:08 | 35.4 min | **cancelled** |
+| 10 | 策展 | — | — | **skipped** |
+| 11 | 通道 1（→ 三生六部） | — | — | **skipped** |
+| 12 | 人工审稿同步 | — | — | **skipped** |
+| 17 | Fail job on any sync failure | 09:44:17 | — | success，打印 **"✅ All sync steps succeeded."** |
+
+job 实跑 07:43:55 → 09:44:19 = **120.4 min**。
+
+### 三件事，按重要性倒过来排
+
+**③ 最表层的：特征层多吃了 35 分钟。** 这是 owner 让拆的那件。
+
+**② 中间那层：超时早就不够了，跟特征层无关。** 我本来打算把"特征层压垮了夜跑"写进来，去量了一遍近 20 次 schedule 跑才发现不是：
+
+```
+41 / 47 / 53 / 53 / 63 / 67 / 69 / 73 / 73 / 76 / 79 / 79 / 85 / 92 / 99 / 100 / 112 / 119.4 min
+```
+
+09-08 那趟（[run #161](https://github.com/TangVarie/truth-vault/actions/runs/34196534534)，特征层还不存在）job 实跑 **119.4 min**，离 120 的天花板只剩 **35 秒**——comments 44.4 min + essence 67.4 min。而 workflow 里那句注释写的是「实测 15-38min（近 30 次 run），120 ≈ 3x 观测上限」，那是几个月前的数，之后没人回头量过。**特征层没有压垮它，只是让一件早就注定的事当晚发生。**只拆不提超时，下一次 essence 慢一点照样撞。
+
+**① 最深的那层：撞了超时，聚合闸看不见。** 第 17 步真的跑了，也真的返回了 success——因为它只查 `outcome = "failure"`，而 cancelled 不是 failure、skipped 也不是。**一晚上丢了策展 / 通道 1 / 人工审稿同步三步，日志最后一行写着全绿。** 这是 D-053「天天红的 CI 等于没有 CI」的反面：**报绿的 CI 同样等于没有 CI**。
+
+### 改法
+
+| 改哪 | 怎么改 |
+|---|---|
+| `features-sync.yml`（新） | 特征层增量独立成 workflow：自己的 cron `47 12 * * *`、自己的 `timeout-minutes: 180`、自己的 `concurrency: features-sync`。on_demand 闸（D-047）、`worker_fail_kind()` 容忍口径、幂等续作，原样搬过来 |
+| `daily-sync.yml` | 删掉特征那步 + 它在聚合里那一支 + 已无人用的 `FEATURE_LIMIT` env；`timeout-minutes` 120 → **240**（≈ 2x 真实观测上限，仍远小于 GitHub 默认 360） |
+| `daily-sync.yml` 聚合步 | 逐个 `if` 改成一个 `for` 循环，**cancelled 与 failure 同罪**、skipped 照旧放行 |
+| `ci.yml` | 四条守卫（下表） |
+| `docs/28` §5 / §P1 行 | 调度改成 `features-sync.yml` |
+
+时间挑 **12:47 UTC（20:47 北京）**，不是「排在夜跑后面半小时」：GitHub 的 cron 实际起跑会漂（#177 那趟 02:17 的排程 07:43 才起跑），**相对关系根本保证不了，隔半天才是真的不撞**。非整点同 D-064。
+
+拆的理由不是省时间，是**依赖关系不同**：特征层是攒数据等闸一/闸二，飞轮主干不读它一个字段；而按实测速度（90 篇 / 35 min）把全库 ~6,170 篇抽完要 **60 多个夜跑**——它注定长期占时间，不该长期压在主干的预算里。
+
+### 守卫（全部带反证，本地实跑过）
+
+| 守卫 | 钉什么 | 反证 |
+|---|---|---|
+| 失败聚合要认全每一步 | 名单**从 workflow 自己推**（所有 `continue-on-error` 的 id），不是手抄；cancelled 判红、skipped 放行 | 删掉 `ssll_sync` → 点名报缺；去掉 cancelled 分支 → 报「run #177 就是这么丢三步还报绿」；让 skipped 也判红 → 报误伤 |
+| on_demand 闸覆盖 +⑦ | 特征层在**新文件里**仍接闸、闸在发请求之前、按项目循环，且**没在 daily-sync 留副本**（两边都有会重复烧 LLM） | 删闸行 / 挪到 curl 之后 / 把 `annotate-features` 塞回 daily-sync，三条各红一条 |
+| `worker_fail_kind` 409 | 改成**扫所有 workflow**：原来路径钉死在 daily-sync 上，拆走那一份会悄悄脱离守卫（daily-sync 剩 2 份仍满足 `>= 2`，绿着） | 把 features-sync 那份的 409 挪出 transient → 指名道姓报第 3/3 份 |
+| D-051 闸行 bash -e | 同上扫所有 workflow，且**每一行都真跑**（原来只跑 `gate_lines[0]`，后面几行写坏了照样绿） | features-sync 的闸行写成裸调 `; rc=$?` → 红 |
+
+### 顺手抓到的第二个「只查字符串在不在」
+
+⑦ 写完跑反证，**删掉 features-sync 的闸行，守卫是绿的**——因为那一步的注释里就写着 D-051 那句反例 `python skip_on_cron.py "$p"; rc=$?`，`"skip_on_cron.py" in body` 被注释喂饱了。
+
+这不是新教训：D-047 那条守卫⑤自己的注释就写着「判据钉在**真正发请求那一行**上，不是任何出现 `/curate` 的地方」——**当时对 POST 那一行做到了，对闸那一行没做到**，而④（essence）同样没做到。三处一起改成「取非注释行再比位置」，essence / curate 的两条也补了反证（各自删掉闸行，都红）。
+
+**教训**：`X in body` 这种判据，只要 `body` 里可能有人写注释提到 X，它就等于没判。
+
+### 没做的 / 留给下一次
+
+- `timeout-minutes: 240` 不是永久答案。大头是 comments（44 min）和 essence（67 min），两者都随语料增长；哪天再逼近，该拆的是它们，不是继续往上加数字。这句写进 workflow 注释了。
+- **cancelled 判红发不出邮件**。job 被 cancel 时结论就是 cancelled，聚合步 `exit 1` 也盖不过去。这条补丁能做的只是「日志里不再假报绿、并点名」。真正防这件事的是超时余量本身。没有为此去接外部告警——先看 240 够不够。
+- `FEATURE_LIMIT` 仍是 12。拆出来之后它有 180 min 可用，调大是随时的事（repo variable），但闸一还没定人、问题库还可能改题，现在多抽只是多攒一批可能要按新题面重跑的答案（docs/28 §10）。等闸一。
+
+### 首批数据（run #177 被 cancel 之前真的落库了）
+
+90 篇、`note_feature_answers` 共 **2,790 行**，拆开是：
+
+| extractor | 行 | 篇 | 无效率 |
+|---|---|---|---|
+| `llm:claude-opus-4-6`（20 道闭集题 + 3 道安慰剂） | 1,800 | 90 | 2.67% |
+| `code:v1`（8 道代码特征 + 标记题） | 990 | 90 | 0.30% |
+
+**断在半路没丢数据，幂等续作的设计扛住了**——这趟事故只赔了三步的调度，没赔数据。
+
+另：最后一行 `extracted_at` 是 **09:45:17**，而 GitHub 那步 09:44:08 就被 cancel 了。**worker 没跟着停，把在飞的那批标完才收工**——和 `backfill-features.yml` 注释里记的 502 行为一致（边缘断了 worker 不崩）。所以「GitHub 上那步红/黄」和「这批数据有没有落库」是两件事，查账要查库不要只看 Actions。
+
+### 差点写进永久记录的一个错
+
+写本条时我顺手去"更正" D-070 续「剩下没生效的」第 1 条（原文：`FEATURE_MODEL` 没设，会跟 `ESSENCE_MODEL`），理由是"首批 extractor 是 `llm:claude-opus-4-6`，可见设了"。
+
+**这个理由不成立。** 去查了一下 `notes.essence_annotated_by`，近三天 329 行全是 `claude-opus-4-6`——**`ESSENCE_MODEL` 本身就是 opus-4-6**，所以"设了 FEATURE_MODEL=opus-4-6"和"没设、回落到 ESSENCE_MODEL"产出的 extractor 值**一模一样，这个值不构成任何证据**。原文很可能是对的，我拿不到 Railway 的环境变量，**从这边根本判不了**。
+
+已把那一条改成照实写「查不出来，但实际在用 opus-4-6，要换模型直接去 Railway 设即可」。
+
+这是同一天第三次同一个毛病（前两次：「Railway 没重新部署」、「会话停在发牌之后就散了」），而且这次是**用一个看起来像证据的东西去推翻一句本来正确的话**——比前两次更坏。判据是不是证据，得先问「反过来那种情况会不会产出同样的值」。

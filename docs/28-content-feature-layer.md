@@ -195,7 +195,7 @@ truth_vault.note_feature_answers（Layer 1 事实）
    └─→ 打分器（Layer 2，独立模块）→ content_scores → 闸三 / 写作台影子打分
 ```
 
-运行环境同 essence：GitHub 海外 runner 连不上网关，所以 LLM 调用放 Railway worker，加一个端点 `/annotate-features`（和 `/annotate-essence` 同一套鉴权、同一个每脚本互斥锁）。daily-sync 在 essence 那步之后加一步增量；全库回填走手动 workflow（仿 `backfill-essence.yml`）。
+运行环境同 essence：GitHub 海外 runner 连不上网关，所以 LLM 调用放 Railway worker，加一个端点 `/annotate-features`（和 `/annotate-essence` 同一套鉴权、同一个每脚本互斥锁）。增量抽取有自己的定时 workflow `features-sync.yml`（12:47 UTC，D-073 从 daily-sync 拆出来——特征层跟飞轮主干没有依赖关系，不该跟它抢同一个 120 min 预算）；全库回填走手动 workflow `backfill-features.yml`（仿 `backfill-essence.yml`）。
 
 ### 5.2 防泄漏
 
@@ -423,7 +423,7 @@ AND NOT (COALESCE(n.data_quality_flags -> 'comment_maintained_routes', '[]'::jso
 | 阶段 | 做什么 | 过了什么才进下一步 | 估时 |
 |---|---|---|---|
 | P0（现在就能做，和特征层无关） | 写作台恢复借书（aw 仓，docs/27，**09-19 仍暗着**）；~~书架挡铺评工单（§7.2）~~ **已做**（D-066 / D-068）；冻结现有 essence 打分器、开闸三 | — | 各自独立 |
-| P1 | 按本次讨论改完问题库；~~迁移 `notes_v1_13`、`annotate_feature_pass.py`、worker 端点、CI 守卫~~ **已做（D-070，2026-09-20）**：`schemas/notes_v1_13_content_features.sql`、`scripts/feature_bank.py` + `annotate_feature_pass.py`、worker `/annotate-features`、daily-sync 增量步 + `backfill-features.yml`、mapping `title_extraction`、附录 E 七组守卫；剩闸一（等运营 Q6 定人） | 闸一 | 约一周 |
+| P1 | 按本次讨论改完问题库；~~迁移 `notes_v1_13`、`annotate_feature_pass.py`、worker 端点、CI 守卫~~ **已做（D-070，2026-09-20）**：`schemas/notes_v1_13_content_features.sql`、`scripts/feature_bank.py` + `annotate_feature_pass.py`、worker `/annotate-features`、`features-sync.yml` 增量（D-073 起独立，原在 daily-sync 里）+ `backfill-features.yml`、mapping `title_extraction`、附录 E 七组守卫；剩闸一（等运营 Q6 定人） | 闸一 | 约一周 |
 | P2 | 全库回填；重算 §3 分档表作闸三基线；冻结问题库、写死判据；闸二；出报告；决定进不进 L2 | 闸二 | 约一周 |
 | P3 | 冻结「essence + 特征」打分器开闸三第二条；写作台草稿影子打分 | 闸三 | 一到两个月（等数据） |
 | P4 | 经验卡的已验证规律、馆员缓存块、`rank_score` 改法；写作台 `prepublish_evaluations` 的 model 行；探索比例 | 持续监控 | — |

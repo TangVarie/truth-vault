@@ -2404,8 +2404,12 @@ jobs:
           ess = [s for s in steps if "annotate-essence" in s["run"]]
           assert ess, "找不到 essence 那一步"
           body = ess[0]["run"]
-          assert "skip_on_cron.py" in body, "essence 步骤没接 on_demand 闸(D-047 回归)"
-          assert body.index("skip_on_cron.py") < body.index("annotate-essence"), \
+          # 同 ⑦ 的教训: 这一步的注释里也写着 skip_on_cron.py(D-051 那句反例), 用 `in body` /
+          # `body.index(...)` 判会被注释喂饱 —— 闸行整行删掉或挪到 curl 之后, 守卫都照样绿。
+          gate = [l for l in body.splitlines()
+                  if "skip_on_cron.py" in l and not l.strip().startswith("#")]
+          assert gate, "essence 步骤没接 on_demand 闸(D-047 回归) —— 只有注释提到它不算接上"
+          assert body.index(gate[0]) < body.index("annotate-essence"), \
               "闸必须在真正发起标注请求之前"
           print("  ✓ daily-sync 的 essence 步骤已接闸, 且在发请求之前")
 
@@ -2415,12 +2419,14 @@ jobs:
           cur = [s for s in steps if "/curate" in s["run"]]
           assert cur, "找不到 curate 那一步"
           cbody = cur[0]["run"]
-          assert "skip_on_cron.py" in cbody, "curate 步骤没接 on_demand 闸(D-047 回归)"
+          cgate = [l for l in cbody.splitlines()
+                   if "skip_on_cron.py" in l and not l.strip().startswith("#")]
+          assert cgate, "curate 步骤没接 on_demand 闸(D-047 回归) —— 只有注释提到它不算接上"
           # 判据钉在【真正发请求那一行】上, 不是任何出现 "/curate" 的地方 ——
           # 注释里也会提到 /curate, 拿它比位置会把守卫变成在考注释怎么写。
           POST = '-X POST "${WORKER_URL%/}/curate"'
           assert POST in cbody, "找不到 curate 的 curl 请求行(改了写法就同步改这条守卫)"
-          assert cbody.index("skip_on_cron.py") < cbody.index(POST), \
+          assert cbody.index(cgate[0]) < cbody.index(POST), \
               "闸必须在真正发起 curate 请求之前"
           # 必须是【按项目循环】: 全局单次调用没法排除某些项目(/curate 只收单个 project)
           assert 'for f in ../mappings/*.yaml' in cbody, "curate 必须按项目循环, 否则闸无处可插"
@@ -2477,6 +2483,32 @@ jobs:
               "--project 不许自带豁免: 一个开关一个意思, 免得'定向跑一下'变成'同意推进写作引擎'"
           print("  ✓ 通道1(跨库)步骤: 认 PROJECT_FILTER / 闸在写入前 / 回收不受闸管 /"
                 " 任何一次跑都拦 on_demand 且点名 / 判不了照推 / 豁免不被 --project 带出")
+
+          # ⑦ 特征层是【第四张嘴】, 而且 D-073 把它从 daily-sync 拆去了 features-sync.yml ——
+          #    这类"搬家"最容易掉的就是搬走之后闸没跟着搬: 上面④⑤只看 daily-sync, 搬完照样全绿,
+          #    而 on_demand 的未启用项目会被新 workflow 每天灌一遍 LLM。这条钉在新文件上。
+          fwf = yaml.safe_load(pathlib.Path("../.github/workflows/features-sync.yml").read_text())
+          fsteps = [s for s in fwf["jobs"]["features"]["steps"] if s.get("run")]
+          feat = [s for s in fsteps if "annotate-features" in s["run"]]
+          assert feat, "features-sync.yml 里找不到抽取那一步"
+          fbody = feat[0]["run"]
+          # 判据钉在【真正调闸那一行】上, 不是任何出现 "skip_on_cron.py" 的地方 —— 这一步的注释里
+          # 就写着 D-051 那句反例(`python skip_on_cron.py "$p"; rc=$?`), 拿 `in fbody` 判会被注释喂饱:
+          # 实测把闸行整行删掉, 守卫照样绿。同 curate 那条(⑤)的教训, 这里犯第二遍了。
+          fgate = [l for l in fbody.splitlines()
+                   if "skip_on_cron.py" in l and not l.strip().startswith("#")]
+          assert fgate, "features-sync 没接 on_demand 闸(D-047 回归) —— 只有注释提到它不算接上"
+          FPOST = '-X POST "${WORKER_URL%/}/annotate-features"'
+          assert FPOST in fbody, "找不到 /annotate-features 的 curl 请求行(改了写法就同步改这条守卫)"
+          assert fbody.index(fgate[0]) < fbody.index(FPOST), \
+              "闸必须在真正发起特征抽取请求之前"
+          assert 'for f in ../mappings/*.yaml' in fbody, "特征抽取必须按项目循环, 否则闸无处可插"
+          # 搬走了就不许还留在原地: 两份同时跑 = 同一批笔记重复烧 LLM(两个 workflow 各自的
+          # concurrency group 互相不挡, 只剩 worker 那把互斥锁在硬扛)。
+          dsync = pathlib.Path("../.github/workflows/daily-sync.yml").read_text(encoding="utf-8")
+          assert "annotate-features" not in dsync, \
+              "特征抽取又回到 daily-sync 了 —— D-073 是把它拆出去的, 两边都有会重复烧 LLM"
+          print("  ✓ 特征层(features-sync.yml): 已接闸 / 闸在发请求之前 / 按项目循环 / 没在 daily-sync 留副本")
           print("\non_demand 闸覆盖: all checks passed")
           PY
       - name: 指标藏在键值文本里的表 —— 解析口径 + 别顺手激活占位阈值 (D-048)
@@ -2674,11 +2706,19 @@ jobs:
         working-directory: scripts
         run: |
           python - <<'PY'
-          import os, pathlib, re, subprocess, sys, yaml
-          wf = pathlib.Path("../.github/workflows/daily-sync.yml").read_text(encoding="utf-8")
-          gate_lines = [l.strip() for l in wf.splitlines()
-                        if "skip_on_cron.py" in l and not l.strip().startswith("#")]
-          assert len(gate_lines) >= 2, f"essence/curate 两步都该接闸, 只找到 {gate_lines}"
+          import glob, os, pathlib, re, subprocess, sys, yaml
+          # 扫【所有】workflow, 不只 daily-sync: D-073 把特征层拆去 features-sync.yml 之后,
+          # 只盯 daily-sync 会让新文件那一行的写法完全不受这条纪律约束(daily-sync 剩 2 行仍够下限)。
+          gate_lines = []
+          for f in sorted(glob.glob("../.github/workflows/*.yml") + glob.glob("../.github/workflows/*.yaml")):
+              # ci.yml 自己也提到 skip_on_cron.py(就在本守卫的 python 里), 那些不是 shell 闸行 ——
+              # 不排掉的话这条守卫会去考自己的源码, 第一次跑就红在一行 `return subprocess.run(...)` 上。
+              if pathlib.Path(f).name == "ci.yml":
+                  continue
+              for l in pathlib.Path(f).read_text(encoding="utf-8").splitlines():
+                  if "skip_on_cron.py" in l and not l.strip().startswith("#"):
+                      gate_lines.append(l.strip())
+          assert len(gate_lines) >= 3, f"essence/curate/features 三步都该接闸, 只找到 {gate_lines}"
           # ① 形态: 裸调 `cmd; rc=$?` 在 bash -e 下, 退出码 1(=照跑)会先把整步掐死。
           #    D-047 的守卫只查了 "skip_on_cron.py" 这个字符串在不在, 没查退出码怎么被消费 —— 空跑了。
           for l in gate_lines:
@@ -2692,18 +2732,20 @@ jobs:
                   if not p.stem.startswith("_")}
           daily = next(k for k, m in maps.items() if sub(m) == "daily")
           on_demand = next(k for k, m in maps.items() if sub(m) == "on_demand")
-          line = gate_lines[0]
-          def run(project, scheduled):
+          def run(line, project, scheduled):
               env = dict(os.environ, TV_SCHEDULED_RUN="true" if scheduled else "", p=project)
               r = subprocess.run(["bash", "-e", "-c", line + '; echo "SENTINEL rc=$rc"'],
                                  capture_output=True, text=True, env=env)
               m = re.search(r"SENTINEL rc=(\d)", r.stdout)
               return (int(m.group(1)) if m else None), r.returncode
-          assert run(daily, True)     == (1, 0), f"daily+cron 该走到哨兵且 rc=1, 实际 {run(daily, True)}"
-          assert run(on_demand, True) == (0, 0), f"on_demand+cron 该 rc=0, 实际 {run(on_demand, True)}"
-          assert run("NO_SUCH_PROJECT_xyz", True) == (2, 0), "读不出 mapping 该 rc=2 且不掐步"
-          assert run(daily, False)    == (1, 0), "显式 dispatch 也是照跑(1), 同样不能掐步"
-          print(f"  ✓ 闸行原样在 bash -e 下跑通: daily/cron→1, on_demand/cron→0, 读不出→2 ({daily}/{on_demand})")
+          # 每一行都真跑一遍 —— 上一版只跑 gate_lines[0], 后面几行写坏了也照样绿。
+          for line in dict.fromkeys(gate_lines):
+              assert run(line, daily, True)     == (1, 0), f"daily+cron 该走到哨兵且 rc=1: {line}"
+              assert run(line, on_demand, True) == (0, 0), f"on_demand+cron 该 rc=0: {line}"
+              assert run(line, "NO_SUCH_PROJECT_xyz", True) == (2, 0), f"读不出 mapping 该 rc=2 且不掐步: {line}"
+              assert run(line, daily, False)    == (1, 0), f"显式 dispatch 也是照跑(1), 同样不能掐步: {line}"
+          print(f"  ✓ {len(set(gate_lines))} 种闸行原样在 bash -e 下跑通: "
+                f"daily/cron→1, on_demand/cron→0, 读不出→2 ({daily}/{on_demand})")
           print("\non_demand 闸 bash -e: all checks passed")
           PY
       - name: 名册行不算丢正文的笔记 + 抖音行沿用上一行文案只在同素人时继承 (D-052)
@@ -5786,25 +5828,84 @@ jobs:
           print("  ✓ 接表 workflow 的 dispatch 输入 / secrets 都走 env, 没插进 shell")
           PY
 
-      - name: daily-sync 把 409 当瞬时失败 (不拖红 · 配合 worker 互斥锁)
+      - name: 夜跑的失败聚合要认全每一步, 且 cancelled 不算成功 (D-073, run #177 丢三步还报绿)
         run: |
           python - <<'PY'
-          # worker 忙时回 409。daily-sync 的 worker_fail_kind() 若把它判成 systemic,
-          # 第一批就 409 会让整个夜间同步报红 —— 加锁反而制造了告警噪音。
+          # 2026-09-20 run #177: job 撞 timeout-minutes, 特征那步 outcome=cancelled, 它后面的
+          # 策展 / 通道1 / 人工审稿同步 三步 conclusion=skipped 一步没跑 —— 而聚合步只查
+          # "= failure", 照样打印 "✅ All sync steps succeeded"。丢了三步, 日志里写着全绿。
           #
-          # ⚠️ daily-sync.yml 里有【多份】worker_fail_kind() 定义(essence 一份、
-          #    curate 一份, 各自内联在自己那步的 shell 里)。本测试最初用
+          # 这条守卫钉两件事:
+          #   ① 覆盖面: 每一个 continue-on-error 的步骤(靠它自己 exit 1 报错的那种)都必须出现在
+          #      聚合里。漏一个 = 那一步静默瘫痪没人知道(codex review on #141 就漏过 features_sync)。
+          #      判据从 workflow 自己推, 不是我手抄一份名单 —— 手抄的名单下次加步骤又会忘。
+          #   ② 语义: 把聚合那段 shell 真的跑一遍, cancelled 必须让它 exit 1。
+          # 反证: 从聚合的 for 列表里删掉任一 id → ①红; 把 cancelled 那个 case 去掉 → ②红。
+          import pathlib, re, subprocess, yaml
+          path = pathlib.Path(".github/workflows/daily-sync.yml")
+          wf = yaml.safe_load(path.read_text(encoding="utf-8"))
+          steps = wf["jobs"]["sync"]["steps"]
+          agg = [st for st in steps if st.get("name", "").startswith("Fail job on any sync failure")]
+          assert len(agg) == 1, f"找不到(或找到多个)失败聚合步: {[s.get('name') for s in steps]}"
+          body = agg[0]["run"]
+          ids = [st["id"] for st in steps if st.get("id") and st.get("continue-on-error") is True]
+          assert ids, "一个 continue-on-error 的步骤都没有 —— 那这条守卫的前提变了, 去看 workflow"
+          missing = [i for i in ids if i not in body]
+          assert not missing, (
+              f"这些 continue-on-error 的步骤没进失败聚合: {missing} —— "
+              "它们自己那句 exit 1 会被整轮的绿盖掉, 静默瘫痪没人知道。"
+          )
+          # ② 真跑: 把聚合那段 shell 里的 ${{ }} 换成假 outcome, 看它判不判红。
+          def run(outcomes):
+              sh = body
+              for i in ids:
+                  sh = sh.replace("${{ steps.%s.outcome }}" % i, outcomes.get(i, "success"))
+              sh = re.sub(r"\$\{\{[^}]*\}\}", "x", sh)   # github.repository / run_id 之类
+              r = subprocess.run(["bash", "-c", sh], capture_output=True, text=True)
+              return r.returncode, r.stdout + r.stderr
+          rc, out = run({})
+          assert rc == 0 and "All sync steps succeeded" in out, f"全 success 该绿: rc={rc} {out}"
+          for i in ids:
+              rc, out = run({i: "failure"})
+              assert rc == 1 and i in out, f"{i}=failure 该判红并点名: rc={rc} {out}"
+              rc, out = run({i: "cancelled"})
+              assert rc == 1 and i in out, (
+                  f"{i}=cancelled 该判红并点名(run #177 就是这么丢了三步还报绿): rc={rc} {out}"
+              )
+              rc, out = run({i: "skipped"})
+              assert rc == 0, f"{i}=skipped 是合法跳过(没配 WORKER_URL / skip_essence), 不该判红: {out}"
+          print(f"  ✓ 失败聚合覆盖 {len(ids)} 个 continue-on-error 步骤: {' '.join(ids)}")
+          print("  ✓ failure / cancelled 都判红且点名, skipped 不误伤")
+          PY
+
+      - name: 夜跑把 409 当瞬时失败 (不拖红 · 配合 worker 互斥锁)
+        run: |
+          python - <<'PY'
+          # worker 忙时回 409。worker_fail_kind() 若把它判成 systemic,
+          # 第一批就 409 会让整趟同步报红 —— 加锁反而制造了告警噪音。
+          #
+          # ⚠️ 有【多份】worker_fail_kind() 定义, 各自内联在自己那步的 shell 里:
+          #    daily-sync 的 essence 一份、curate 一份, features-sync 一份。本测试最初用
           #    re.search 只取第一份 —— 于是 essence 那份补了 409、curate 那份没补,
           #    测试照样全绿。codex PR#104 review 抓到了漏的那份。
-          #    现在用 finditer 遍历【每一份】, 并断言份数下限, 少了也当失败。
-          import re, subprocess, textwrap, pathlib
-          yml = pathlib.Path(".github/workflows/daily-sync.yml").read_text(encoding="utf-8")
-          defs = [textwrap.dedent(m.group(0))
-                  for m in re.finditer(r"( *)worker_fail_kind\(\) \{.*?\n\1\}", yml, re.S)]
-          assert len(defs) >= 2, (
-              f"只找到 {len(defs)} 份 worker_fail_kind() —— 期望 essence + curate 各一份。"
-              "少了就是有一步不再做失败分类了, 或正则失配, 两种都不能放过。"
+          #    现在【扫所有 workflow 文件】并遍历每一份 —— 上一版把路径钉死在
+          #    daily-sync.yml 上, D-073 把特征层拆去 features-sync.yml 之后那一份就悄悄
+          #    脱离了本守卫(daily-sync 剩 2 份仍满足下限, 绿着)。
+          # 反证: 把任一份里的 409 从 transient 那行删掉, 本步会指名道姓报出是哪个文件第几份。
+          import glob, re, subprocess, textwrap, pathlib
+          defs = []   # [(file, body)]
+          for f in sorted(glob.glob(".github/workflows/*.yml") + glob.glob(".github/workflows/*.yaml")):
+              yml = pathlib.Path(f).read_text(encoding="utf-8")
+              for m in re.finditer(r"( *)worker_fail_kind\(\) \{.*?\n\1\}", yml, re.S):
+                  defs.append((f, textwrap.dedent(m.group(0))))
+          files = {f for f, _ in defs}
+          assert len(defs) >= 3, (
+              f"只找到 {len(defs)} 份 worker_fail_kind() —— 期望 daily-sync 的 essence + curate "
+              f"和 features-sync 各一份。少了就是有一步不再做失败分类了, 或正则失配, 两种都不能放过。"
+              f"(找到的文件: {sorted(files)})"
           )
+          for want in (".github/workflows/daily-sync.yml", ".github/workflows/features-sync.yml"):
+              assert want in files, f"{want} 里一份 worker_fail_kind() 都没有 —— 那一趟不再做失败分类了?"
           cases = {
               ("0", "409"): "transient",   # worker 忙 → 幂等下轮续
               ("0", "502"): "transient",
@@ -5813,15 +5914,15 @@ jobs:
               ("0", "404"): "systemic",
               ("6", "000"): "systemic",    # DNS 挂 = URL 配坏
           }
-          for i, fn in enumerate(defs, 1):
+          for i, (src, fn) in enumerate(defs, 1):
               for (rc, code), want in cases.items():
                   got = subprocess.run(["bash", "-c", f"{fn}\nworker_fail_kind {rc} {code}"],
                                        capture_output=True, text=True).stdout.strip()
                   assert got == want, (
-                      f"第 {i}/{len(defs)} 份分类器: curl_rc={rc} HTTP={code} → {got!r}, 期望 {want!r}"
+                      f"第 {i}/{len(defs)} 份分类器({src}): curl_rc={rc} HTTP={code} → {got!r}, 期望 {want!r}"
                   )
-              print(f"  ✓ 第 {i}/{len(defs)} 份 worker_fail_kind: {len(cases)}/{len(cases)} 用例通过")
-          print(f"\ndaily-sync 失败分类: {len(defs)} 份 × {len(cases)} 用例全通过")
+              print(f"  ✓ 第 {i}/{len(defs)} 份 worker_fail_kind ({src}): {len(cases)}/{len(cases)} 用例通过")
+          print(f"\n夜跑失败分类: {len(defs)} 份 × {len(cases)} 用例全通过")
           PY
 
   sql:
