@@ -5855,12 +5855,20 @@ jobs:
               f"这些 continue-on-error 的步骤没进失败聚合: {missing} —— "
               "它们自己那句 exit 1 会被整轮的绿盖掉, 静默瘫痪没人知道。"
           )
-          # ② 真跑: 把聚合那段 shell 里的 ${{ }} 换成假 outcome, 看它判不判红。
+          # ② 真跑: 把聚合那段 shell 里的表达式换成假 outcome, 看它判不判红。
+          # ⚠️ 下面这两个模板【不能】把美元加两个花括号那三个字符原样写进本文件 —— 连注释里也不行。
+          #    GitHub 在【加载 workflow 时】就会解析 run: 里每一处表达式(shell 注释对它不存在),
+          #    而 "steps.%s.outcome" 里的 % 不是合法表达式 → 整份 ci.yml 被拒、一个 job 都不跑
+          #    (实测 run #832: 0 个 job、0 秒, run 名字显示成文件路径而不是 "CI")。
+          #    本地 yaml.safe_load 对它完全无感。所以拼出来, 别写出来。
+          OPEN = "$" + "{{"
+          MARK = OPEN + " steps.%s.outcome }}"
           def run(outcomes):
               sh = body
               for i in ids:
-                  sh = sh.replace("${{ steps.%s.outcome }}" % i, outcomes.get(i, "success"))
-              sh = re.sub(r"\$\{\{[^}]*\}\}", "x", sh)   # github.repository / run_id 之类
+                  sh = sh.replace(MARK % i, outcomes.get(i, "success"))
+              # 剩下的 github.repository / run_id 之类一并抹掉
+              sh = re.sub(re.escape(OPEN) + r"[^}]*\}\}", "x", sh)
               r = subprocess.run(["bash", "-c", sh], capture_output=True, text=True)
               return r.returncode, r.stdout + r.stderr
           rc, out = run({})
@@ -7317,4 +7325,62 @@ jobs:
               sys.exit("workflow step 的 key 不合法(GitHub 会拒掉整份 workflow, 一个 job 都不跑):\n  - "
                        + "\n  - ".join(bad))
           print("  ✓ 所有 workflow 的 step key 合法, 带冒号的步骤名都加了引号")
+          PY
+      - name: "workflow 里每一处表达式都得是合法的 (GitHub 加载时解析, 本地 yaml 看不见)"
+        # 2026-09-20 (D-073) run #832 的实况: ci.yml 里一条守卫的 python 写了
+        #   sh.replace("<美元><两个花括号> steps.%s.outcome }}" % i, ...)
+        # 那三个字符一旦原样出现在 run: 里, GitHub 在【加载 workflow 时】就去解析它 ——
+        # shell 注释对它不存在, python 字符串对它也不存在 —— "steps.%s.outcome" 里的 %
+        # 不是合法表达式, 于是【整份 ci.yml 被拒, 0 个 job、0 秒】, run 名字显示成文件路径。
+        # 本地 yaml.safe_load 完全无感(它就是合法 YAML), 上一条 step-key 守卫也看不见(key 都对)。
+        # 这是本仓第二次栽在"本地绿、线上拒整份"上(第一次是步骤名里的冒号, 见上一条)。
+        # 判据: 扫所有 workflow 的每一处表达式, 上下文根名必须已知, 且里面不许出现
+        # GitHub 表达式语法里没有的字符(% 是最容易从 python 格式化串漏进来的那个)。
+        # 反证: 在任一 run: 里写一处 <美元><两个花括号> steps.%s.outcome }}, 本步会点名报出来。
+        run: |
+          python - <<'PY'
+          import glob, pathlib, re, sys, yaml
+          # 不把那三个字符原样写进本文件 —— 否则本守卫自己就会把 ci.yml 弄成被拒的那种
+          # (第一版就栽在这儿: 把它写进了自己的步骤名里, 步骤名同样是会被求值的)。
+          OPEN = "$" + "{{"
+          EXPR = re.compile(re.escape(OPEN) + r"(.*?)\}\}", re.S)
+          # GitHub 的上下文根名(表达式必须从其中之一起头, 或是字面量 / 函数调用)
+          ROOTS = {"github", "env", "vars", "job", "jobs", "steps", "runner", "secrets",
+                   "strategy", "matrix", "needs", "inputs", "hashFiles", "always", "success",
+                   "failure", "cancelled", "contains", "startsWith", "endsWith", "format",
+                   "join", "toJSON", "fromJSON", "true", "false", "null"}
+          # 合法表达式里能出现的字符。% & 反引号之类都不在 —— 它们只会从 python/shell 串漏进来。
+          LEGAL = re.compile(r"^[A-Za-z0-9_.\[\]'\"(),:!=<>&|*\-+/ \t\n]*$")
+          # ⚠️ 走【解析后的结构】, 不扫原始文本: YAML 注释(行首 #)GitHub 根本看不到, 扫文本会
+          #    把它们当成真表达式误报(第一版就在 onboard-table / preflight 的注释上各冒一条)。
+          #    而 run: 块【内部】的 # 是字符串的一部分, GitHub 照样求值 —— 解析后它还在, 正好被查到。
+          def walk(node, path):
+              if isinstance(node, str):
+                  yield path, node
+              elif isinstance(node, dict):
+                  for k, v in node.items():
+                      yield from walk(k, path); yield from walk(v, f"{path}.{k}")
+              elif isinstance(node, list):
+                  for i, v in enumerate(node):
+                      yield from walk(v, f"{path}[{i}]")
+          bad = []
+          for f in sorted(glob.glob(".github/workflows/*.yml") + glob.glob(".github/workflows/*.yaml")):
+              doc = yaml.safe_load(pathlib.Path(f).read_text(encoding="utf-8"))
+              for where, text in walk(doc, ""):
+                  for m in EXPR.finditer(text):
+                      raw = m.group(1)
+                      expr = raw.strip()
+                      if not expr:
+                          bad.append(f"{f} {where}: 空表达式"); continue
+                      if not LEGAL.match(raw):
+                          illegal = sorted({c for c in raw if not LEGAL.match(c)})
+                          bad.append(f"{f} {where}: 表达式里有非法字符 {illegal}: {expr[:60]!r}")
+                          continue
+                      root = re.match(r"[A-Za-z_][A-Za-z0-9_]*", expr.lstrip("!( "))
+                      if root and root.group(0) not in ROOTS:
+                          bad.append(f"{f} {where}: 上下文根名 {root.group(0)!r} 不认识: {expr[:60]!r}")
+          if bad:
+              sys.exit("workflow 表达式不合法(GitHub 会拒掉整份 workflow, 一个 job 都不跑):\n  - "
+                       + "\n  - ".join(bad))
+          print("  ✓ 所有 workflow 的表达式: 非空 / 无非法字符 / 上下文根名都认识")
           PY
