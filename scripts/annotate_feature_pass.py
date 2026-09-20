@@ -28,8 +28,15 @@ Environment:
     FEATURE_MODEL（默认取 ESSENCE_MODEL, 再默认 claude-sonnet-4-6）
 
 Resumability:
-    「答过」= 该 (extractor, run_tag) 下已有 has_specific_time 这一题的行（每道题都会落行,
-    不问的也记 NULL + 原因, 所以任一题都能当标记）。--reannotate 忽略这个标记全部重跑。
+    「答过」= 该 run_tag 下已有【标记题】那一行: 模型跑看 has_specific_time, --code-only 看
+    body_len_bucket（code_rows 不产模型题, 拿模型题当标记会让 code-only 永远重跑, codex review on #141）。
+    extractor 默认按前缀匹配 `llm:%` —— 计数脚本在 GitHub 上跑、真正写库的是 Railway worker,
+    两边的 FEATURE_MODEL 可能不同; 换模型也不该让已经答过的笔记重答一遍。显式 --model 时按精确值匹配。
+    --reannotate 忽略这个标记全部重跑。
+
+    ⚠️ 一篇里**任何一组** LLM 调用系统性失败（api_error）→ 整篇一行不落, 下轮重跑。
+    落一半会让标记题那一行先落库, 于是下轮 resume 跳过这篇, 失败的那几组【永远】补不回来
+    (codex review on #141)。代价是重跑那几组已经成功的调用, 上限 6 次, 换的是不留永久空洞。
 """
 
 from __future__ import annotations
@@ -48,7 +55,8 @@ import feature_bank as fb
 
 logger = setup_logger("annotate_features")
 
-DONE_MARKER_QUESTION = "has_specific_time"   # 每篇必落的一行, 当「这篇跑过了」的标记
+DONE_MARKER_QUESTION = "has_specific_time"        # 模型跑的标记题（G2 组, 每篇必落一行）
+CODE_DONE_MARKER_QUESTION = "body_len_bucket"    # --code-only 的标记题（code_rows 必落, 与模型题无关）
 _RUN_TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$")
 
 
@@ -66,16 +74,28 @@ def fetch_notes(sb, project_id: str) -> list[dict]:
     return fetch_all_pages(q, order_by="note_id")
 
 
-def fetch_done_ids(sb, project_id: str, extractor: str, run_tag: str) -> set[str]:
+def fetch_done_ids(sb, project_id: str, *, run_tag: str = "primary",
+                   code_only: bool = False, extractor: Optional[str] = None) -> set[str]:
+    """这个项目里【已经跑过】的 note_id（判据见模块 docstring 的 Resumability）。
+
+    extractor 给了就精确匹配（闸一按模型各自续跑）；没给就按跑法匹配：code-only → `code:v1`，
+    模型跑 → 前缀 `llm:%`（GitHub 侧的计数脚本与 Railway 侧的 worker 可能配了不同的
+    FEATURE_MODEL，按前缀两边才对得上，codex review on #141）。
+    """
     q = (
         sb.schema("truth_vault").table("note_feature_answers")
         .select("subject_id")
         .eq("subject_type", "note")
-        .eq("question_id", DONE_MARKER_QUESTION)
-        .eq("extractor", extractor)
+        .eq("question_id", CODE_DONE_MARKER_QUESTION if code_only else DONE_MARKER_QUESTION)
         .eq("run_tag", run_tag)
         .like("subject_id", f"{project_id}_%")
     )
+    if extractor:
+        q = q.eq("extractor", extractor)
+    elif code_only:
+        q = q.eq("extractor", fb.CODE_EXTRACTOR)
+    else:
+        q = q.like("extractor", "llm:%")
     return {r["subject_id"] for r in fetch_all_pages(q, order_by="subject_id")}
 
 
@@ -290,7 +310,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         keep = _read_note_ids(args.note_ids)
         notes = [n for n in notes if n["note_id"] in keep]
     if not args.reannotate:
-        done = fetch_done_ids(sb, args.project_id, fb.CODE_EXTRACTOR if args.code_only else extractor, args.run_tag)
+        done = fetch_done_ids(sb, args.project_id, run_tag=args.run_tag, code_only=args.code_only,
+                              extractor=extractor if args.model else None)
         notes = [n for n in notes if n["note_id"] not in done]
     if args.limit:
         notes = notes[: args.limit]
@@ -320,14 +341,18 @@ def main(argv: Optional[list[str]] = None) -> int:
                         (res["spans"]["title"] or "")[:30], call_n, len(res["rows"]))
             stats["ok"] += 1
             continue
-        if st.get("systemic") and not st.get("groups_ok"):
+        if st.get("systemic"):
+            # 任何一组 api 失败就整篇不落行（哪怕别的组成功了）。落一半 = 标记题那行先落库,
+            # 下轮 resume 跳过这篇, 失败的那几组永远补不回来 (codex review on #141)。
             stats["failed"] += 1
             stats["systemic_failed"] += 1
             _append_failed(fq, note, args.project_id, st.get("errors") or ["systemic"])
-            continue   # 一组都没成功: 不落行, 下轮幂等续
+            continue   # 下轮幂等重跑整篇
         try:
-            write_answers(sb, res["rows"], dry_run=False)
+            # ⚠️ 写序: 数值原值在前, 带标记题的答案在后。反过来的话 note_features 那一写
+            # 失败时标记题已经落库 → 下轮 resume 跳过这篇, 原值永远缺 (codex review on #141)。
             write_raw_counts(sb, note["note_id"], res["raw_counts"], bank["bank_version"], dry_run=False)
+            write_answers(sb, res["rows"], dry_run=False)
         except Exception as exc:  # noqa: BLE001
             logger.warning("write rejected %s: %s", note["note_id"], exc)
             stats["failed"] += 1

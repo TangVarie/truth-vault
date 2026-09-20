@@ -82,11 +82,30 @@ SPAN_LABELS = {
 # 问题库
 # ═══════════════════════════════════════════════════════════════════════
 
+# 规范化时剔掉的两行: 二者都是「冻结」这个动作自己写的, 不是题目内容。
+# 都是顶格 key（^ 锚在行首、不吃缩进）, 所以选项里的 status:/frozen_sha256: 不会误伤。
+_META_LINES = re.compile(rb"(?m)^(?:frozen_sha256|status):.*(?:\r?\n|$)")
+
+
+def bank_digest(raw: bytes) -> str:
+    """问题库的**规范化**校验和: 把 `frozen_sha256:` 和 `status:` 两行剔掉之后再 hash。
+
+    ⚠️ 为什么不直接 hash 整个文件 (codex review on #141, P1): 冻结那天要把算出来的
+    digest 写回同一个文件的 `frozen_sha256:` 字段、并把 `status: draft` 改成
+    `status: frozen`, 写回去文件字节就变了 —— 要求「文件 sha256 == 文件里记的那个
+    sha256」是自指的, 算不出来。于是冻结这一步会让 validate_bank 永远报错、每次抽取
+    直接退出 2。剔掉这两行之后, 冻结前后的 digest 完全一样: 冻结这个动作算得出来,
+    落进 note_feature_answers.bank_sha256 的值也不会因为「冻结」把答案劈成两批。
+    digest 管的是**题目内容**, 生命周期状态不在里头。
+    """
+    return hashlib.sha256(_META_LINES.sub(b"", raw)).hexdigest()
+
+
 def load_bank(path: Path | str = BANK_PATH) -> dict:
-    """读问题库, 附上 sha256（跑的时候记进每一行, D-041 的纪律）。"""
+    """读问题库, 附上规范化 sha256（跑的时候记进每一行, D-041 的纪律）。"""
     raw = Path(path).read_bytes()
     bank = yaml.safe_load(raw)
-    bank["_sha256"] = hashlib.sha256(raw).hexdigest()
+    bank["_sha256"] = bank_digest(raw)
     bank["_path"] = str(path)
     return bank
 
@@ -157,8 +176,18 @@ def validate_bank(bank: dict) -> list[str]:
                 errs.append(f"{qid}: choice 题 hypothesis 的键必须与选项一致")
             elif any(v not in HYPOTHESES for v in hyp.values()):
                 errs.append(f"{qid}: choice 题 hypothesis 取值不在 {HYPOTHESES}")
+            # 选项级指令 (codex review on #141): choice 题的 aw_instruction 只对某些取值成立
+            # (opening_type 的那句只对「具体事件」)。没声明 = 过了闸也不自动下发。
+            vals = q.get("aw_instruction_values")
+            if vals is not None:
+                if not isinstance(vals, list) or not vals:
+                    errs.append(f"{qid}: aw_instruction_values 必须是非空列表")
+                elif any(v not in values for v in vals):
+                    errs.append(f"{qid}: aw_instruction_values {vals} 里有不在选项里的值")
         else:
             errs.append(f"{qid}: type={q.get('type')!r} 不是 bool / choice")
+        if q.get("type") == "bool" and q.get("aw_instruction_values") is not None:
+            errs.append(f"{qid}: aw_instruction_values 只用于 choice 题 (bool 题的指令对应「是」)")
     for m in membership:
         if m not in ids:
             errs.append(f"call_groups 里的 {m} 不是问题库里的题")
@@ -176,7 +205,8 @@ def validate_bank(bank: dict) -> list[str]:
         if not want:
             errs.append("status=frozen 但没记 frozen_sha256")
         elif bank.get("_sha256") and want != bank["_sha256"]:
-            errs.append("status=frozen 但文件 sha256 与 frozen_sha256 不符 —— 冻结后改题要升 version 并记 DECISIONS")
+            errs.append("status=frozen 但问题库规范化 sha256 与 frozen_sha256 不符 —— 冻结后改题要升 version 并记 DECISIONS "
+                        f"(现在是 {bank['_sha256']})")
     return errs
 
 
@@ -263,9 +293,15 @@ def _strip_markers(text: str) -> str:
 _HASHTAG_CLOSED = re.compile(r"#([^#\s\[\]]{1,40}?)(?:\[话题\])?#")
 _HASHTAG_BARE = re.compile(r"#([^\s#\[\]]{1,40})")
 _MENTION = re.compile(r"@[^\s@]{1,30}")
-_EMOJI = re.compile(
-    "[\U0001F000-\U0001FAFF☀-➿⬀-⯿️]|\\[[^\\[\\]\n]{1,10}R\\]"
-)
+# 表情: 剥掉变体选择符后, 把「基字 + 肤色修饰 + ZWJ 连接的后续基字」整串算【一个】。
+# ⚠️ 原来的写法把 U+FE0F 当成独立字符匹配, 于是「❤️」「☀️」各记 2 个、一家三口的 ZWJ
+# 串记 3 个 —— 分档直接从 1-3 跳到 >=4, 污染闸二 (codex review on #141)。
+_EMOJI_BASE = "[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\u2190-\u21FF\u2300-\u23FF]"
+_SKIN = "[\U0001F3FB-\U0001F3FF]"
+_VARIATION = re.compile("[\uFE0E\uFE0F]")
+_EMOJI_SEQ = re.compile(f"{_EMOJI_BASE}(?:{_SKIN})?(?:\u200d{_EMOJI_BASE}(?:{_SKIN})?)*")
+_BRACKET_EMOJI = re.compile(r"\[[^\[\]\n]{1,10}R\]")   # 小红书方括号表情 [哭惹R]
+_EMOJI = re.compile(f"{_EMOJI_SEQ.pattern}|{_BRACKET_EMOJI.pattern}")   # 只用于剥除, 不用于计数
 _SENTENCE_END = re.compile(r"[。！？!?…\n]")
 _WS = re.compile(r"\s+")
 
@@ -287,7 +323,9 @@ def count_mentions(text: str) -> int:
 
 
 def count_emoji(text: str) -> int:
-    return len(_EMOJI.findall(text or ""))
+    """可见表情个数: 变体选择符不单独算, ZWJ 串 / 肤色修饰算一个, 方括号表情算一个。"""
+    t = _VARIATION.sub("", text or "")
+    return len(_EMOJI_SEQ.findall(t)) + len(_BRACKET_EMOJI.findall(t))
 
 
 def visible_len(text: str) -> int:
@@ -338,7 +376,10 @@ def build_spans(raw_content: str, *, mode: str, title_col: Optional[str] = None)
     return {
         "title": title,                     # None = 拿不到
         "first_sentence": first_sentence(body_capped),
-        "last_para": last_paragraph(body_capped),
+        # ⚠️ 结尾那段必须从【没截断】的正文取 (codex review on #141): 从 body_capped 取
+        # 等于把中间某一段当成结尾, 而 last_para 不在 TRUNCATABLE_SPANS 里 —— 模型对着
+        # 中段答 ending_asks_reader 还会被判成有效答案。这一段本来就短, 不受 1,500 字约束。
+        "last_para": last_paragraph(body),
         "body": body_capped,
         "full": full,
         "_body_untruncated": body,
@@ -662,8 +703,17 @@ def instructions_for_desk(bank: dict, validation_rows: list[dict]) -> list[dict]
     ⚠️ aw_instruction=never 的题（efficacy_promise, 合规观察项）**永不出现**在返回里,
     不管闸二把它判成什么（docs/28 §4.2, D-065 续 第 1 条）。方向为「?」的新发现也要 owner 看过
     才下发, 这里只标 needs_owner_review, 不擅自过滤。
+
+    另外两道闸（codex review on #141）:
+      · **版本要对得上**: 结论行的 question_version / bank_version 必须等于当前问题库里的值。
+        改过题的旧结论不许套到新题干上 —— 旧答案是按旧边界答的, 新指令是按新题干写的。
+        缺字段一律不下发（fail-closed）。
+      · **choice 题按取值下发**: 一道 choice 题只有一句 aw_instruction, 但闸二是【按取值】
+        下结论的。`aw_instruction_values` 声明这句话对哪些取值成立（opening_type 只对
+        「具体事件」）; 没声明就不自动下发。bool 题只认「是」。
     """
     idx = question_index(bank)
+    bank_version = bank.get("bank_version")
     out: list[dict] = []
     for row in validation_rows:
         if row.get("status") != "validated":
@@ -671,8 +721,18 @@ def instructions_for_desk(bank: dict, validation_rows: list[dict]) -> list[dict]
         q = idx.get(row.get("question_id"))
         if q is None:
             continue
+        if row.get("question_version") is None or int(row["question_version"]) != int(q["version"]):
+            continue
+        if row.get("bank_version") != bank_version:
+            continue
         instr = q.get("aw_instruction")
         if not instr or str(instr).strip().lower() == "never":
+            continue
+        answer = row.get("answer")
+        if q["type"] == "bool":
+            if answer != "是":
+                continue
+        elif answer not in (q.get("aw_instruction_values") or []):
             continue
         out.append({
             "question_id": q["id"],

@@ -139,14 +139,19 @@ def library_version(cards: list[dict], gate2_run: Optional[str] = None) -> str:
 
 
 def latest_gate2_run(sb) -> Optional[str]:
-    """最新一轮闸二的 gate2_run (只看 validated 行); 没有闸二结论 / 表还不存在 → None。
+    """最新一轮闸二的 gate2_run; 没有闸二结论 / 表还不存在 → None。
+
+    ⚠️ 按 `decided_at` 取最新, 且**不筛 status** (codex review on #141):
+      · 只看 validated 行的话, 新一轮把所有规律都判成 no_signal / reversed(= 规律被撤回)时,
+        缓存版本会停在上一轮 —— 而那正是必须让缓存失效的时刻;
+      · gate2_run 是自由文本标签('gate2-2026-10-xx'), 按它排序不等于按时间排序。
 
     fail-open: 这里失败只会让缓存键少一段, 绝不阻塞选卡。"""
     try:
         res = (
             sb.schema("truth_vault").table("feature_validation")
-            .select("gate2_run").eq("status", "validated")
-            .order("gate2_run", desc=True).limit(1).execute()
+            .select("gate2_run, decided_at")
+            .order("decided_at", desc=True).limit(1).execute()
         )
         rows = res.data or []
         return (rows[0].get("gate2_run") or None) if rows else None

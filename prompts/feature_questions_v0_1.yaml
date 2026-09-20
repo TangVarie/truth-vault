@@ -36,6 +36,8 @@
 #   hypothesis       预注册方向 + / - / ?（choice 题按选项写）
 #   why              为什么觉得有关系（一句话，给讨论用）
 #   aw_instruction   如果过了闸，写作台拿到的是哪句可执行的话；never = 过了闸也绝不下发
+#   aw_instruction_values  仅 choice 题: 这句话对哪几个取值成立（闸二按取值下结论, 一句话不该套到
+#                    所有取值上）。不声明 = 过了闸也不自动下发, 由 owner 判
 #   cross_check      可以拿来和 essence 标注互相核对的地方（只报告，不当闸）
 #
 # 答题契约（抽取 pass 必须遵守，docs/28 §5）:
@@ -52,7 +54,11 @@
 #   · 不同 group 绝不合并进一次调用；同组最多 4 题。闸一会比「分组问」和「单题问」
 #     的一致率，低于 0.90 的题改为单独问（docs/28 §6.1）。
 #
-# 冻结: 闸二预注册那天把 status 改成 frozen、记下文件 sha256；之后改任何一题都要升
+# 冻结: 闸二预注册那天把 status 改成 frozen、记下 frozen_sha256 ——【剔掉 frozen_sha256 和
+#       status 这两行之后】再算的规范化 sha256(feature_bank.bank_digest)。直接 hash 整个文件
+#       是自指的: 写回去文件就变了。这两行都是「冻结」这个动作自己写的, 不算题目内容, 所以
+#       冻结前后 digest 不变, 落库的 bank_sha256 也不会因为冻结劈成两批。
+#       之后改任何一题都要升
 #       question_version 并在 DECISIONS 记一笔。下游（写作台）要用就原样 vendor 本文件
 #       并记校验和，不手抄（同 D-041 对词表的纪律）。
 # ════════════════════════════════════════════════════════════════════
@@ -192,7 +198,8 @@ questions:
       感叹情绪: "?"
       其他: "?"
     why: 具体事件开头让人想看下去、也更像真人；数据开头偏信息型，信息差利用这一档爆率低（l2-feasibility §2）。
-    aw_instruction: 第一句写一件已经发生的具体事，带上人、时间或地点之一。（仅当「具体事件」过闸）
+    aw_instruction: 第一句写一件已经发生的具体事，带上人、时间或地点之一。
+    aw_instruction_values: [具体事件]   # choice 题: 这句话只对这个取值成立; 其余取值过闸也不下发
     cross_check: null
 
   # ═══ 具体性 ═════════════════════════════════════════════════════
@@ -458,6 +465,7 @@ questions:
       把「直接推荐 / 流量型」这根轴补到每一条笔记上（intent 只覆盖 2,303 / 5,949）；
       看板深挖里直给推荐、横评对比两种形态本来就不出爆款（dashboard_views_v4_mining §9）。
     aw_instruction: 按过闸结果决定是否下发；不单独下发「别提产品」这类指令，必须和客户的露出要求一起看。
+    # 没有 aw_instruction_values = 任何取值过闸都【不自动下发】, 由 owner 结合客户的露出要求单独判。
     cross_check: 应与 essence 的 intent 对得上（conversion ↔ 主角 / 解决方案；traffic ↔ 只暗示 / 未出现 / 顺带一提）。
 
   - id: efficacy_promise

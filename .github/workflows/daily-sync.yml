@@ -570,6 +570,11 @@ jobs:
           if [ "${{ steps.curate_sync.outcome }}" = "failure" ]; then
             failed_steps="$failed_steps curate_sync"
           fi
+          # features_sync 也是 continue-on-error, 不列在这儿的话它那句 exit 1(首批即配置/鉴权/
+          # 全军覆没)会被整轮的绿盖掉, 特征抽取静默瘫痪没人知道 (codex review on #141)。
+          if [ "${{ steps.features_sync.outcome }}" = "failure" ]; then
+            failed_steps="$failed_steps features_sync"
+          fi
           if [ "${{ steps.ssll_sync.outcome }}" = "failure" ]; then
             failed_steps="$failed_steps ssll_sync"
           fi

@@ -86,29 +86,33 @@ ALTER TABLE truth_vault.content_scores ENABLE ROW LEVEL SECURITY;
 -- 5. 闸二输入: 每个项目 × 每个特征值的 2×2 ─────────────────────────
 -- a = 有这个特征值且爆  b = 有且趴  c = 没有且爆  d = 没有且趴
 -- 「没有」= 同一道题答了别的值; 答案无效（NULL）的行不进分母。
+-- ⚠️ bank_sha256 必须在分组键和输出里 (codex review on #141): 问题库文件改过之后、
+--    重标只跑了一半时, 同一个 (question_version, bank_version, extractor) 下会同时存在
+--    两份校验和的答案; 不分组就被静默汇到一起, 而闸二预注册承诺的是「这一跑的快照」
+--    (docs/28 §6.2), 附录 B 的查询得能按校验和挑出恰好一份冻结的库。
 CREATE OR REPLACE VIEW truth_vault.v_feature_contrast AS
 WITH ans AS (
     SELECT a.subject_id AS note_id, a.question_id, a.question_version,
-           a.bank_version, a.extractor, a.answer
+           a.bank_version, a.bank_sha256, a.extractor, a.answer
     FROM truth_vault.note_feature_answers a
     WHERE a.subject_type = 'note' AND a.run_tag = 'primary' AND a.answer IS NOT NULL
 ), lab AS (
     SELECT l.note_id, l.project_id, l.y, ans.question_id, ans.question_version,
-           ans.bank_version, ans.extractor, ans.answer
+           ans.bank_version, ans.bank_sha256, ans.extractor, ans.answer
     FROM truth_vault.v_l2_labels l
     JOIN ans USING (note_id)
 ), vals AS (
-    SELECT DISTINCT question_id, question_version, bank_version, extractor, answer AS value
+    SELECT DISTINCT question_id, question_version, bank_version, bank_sha256, extractor, answer AS value
     FROM lab
 )
-SELECT l.project_id, v.question_id, v.question_version, v.bank_version, v.extractor, v.value,
+SELECT l.project_id, v.question_id, v.question_version, v.bank_version, v.bank_sha256, v.extractor, v.value,
        count(*) FILTER (WHERE l.answer =  v.value AND l.y = 1) AS a,
        count(*) FILTER (WHERE l.answer =  v.value AND l.y = 0) AS b,
        count(*) FILTER (WHERE l.answer <> v.value AND l.y = 1) AS c,
        count(*) FILTER (WHERE l.answer <> v.value AND l.y = 0) AS d
 FROM vals v
-JOIN lab l USING (question_id, question_version, bank_version, extractor)
-GROUP BY 1, 2, 3, 4, 5, 6;
+JOIN lab l USING (question_id, question_version, bank_version, bank_sha256, extractor)
+GROUP BY 1, 2, 3, 4, 5, 6, 7;
 
 -- 6. note_features 的分工（docs/28 §4.4, D-065 续 第 4 条）─────────────
 -- 数值原值仍写 note_features 现有四列 (title_len / body_len / hashtag_count / mention_count);

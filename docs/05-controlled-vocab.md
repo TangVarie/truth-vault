@@ -28,7 +28,7 @@ Essence 层和 Audience 层的标注必须基于**闭集词表**。LLM 自由表
 
 ## 0. 问题库不是词表，但守同一套版本纪律（D-065 / D-070）
 
-内容特征层的问题库 `prompts/feature_questions_v0_1.yaml`（docs/28 §4）**不属于本词表**：它问的是「原文里有没有 X」这类事实，答案是 是/否 或题目自带的选项，不是 essence 的语义闭集。但它守和词表一样的规矩：文件有 `bank_version`，每题有 `version`，改题干或边界就 +1、旧答案保留不混用；闸二预注册那天改成 `frozen` 并记 sha256，之后再改要记 DECISIONS；下游要用就原样 vendor 文件并记校验和，不手抄。每一行答案都带 `bank_version` + `bank_sha256`（`truth_vault.note_feature_answers`），同 `essence_vocab_version` 的作用。两题（`judged_by_others` / `negative_outcome_happened`）直接对应本词表「恐惧 vs 焦虑」的边界，标 `essence`，只作互相核对，不改词表。
+内容特征层的问题库 `prompts/feature_questions_v0_1.yaml`（docs/28 §4）**不属于本词表**：它问的是「原文里有没有 X」这类事实，答案是 是/否 或题目自带的选项，不是 essence 的语义闭集。但它守和词表一样的规矩：文件有 `bank_version`，每题有 `version`，改题干或边界就 +1、旧答案保留不混用；闸二预注册那天改成 `frozen` 并记 `frozen_sha256`（剔掉 `frozen_sha256:` 与 `status:` 两行之后再算的规范化摘要——直接 hash 整个文件是自指的，见 docs/28 §4.3），之后再改要记 DECISIONS；下游要用就原样 vendor 文件并记校验和，不手抄。每一行答案都带 `bank_version` + `bank_sha256`（`truth_vault.note_feature_answers`），同 `essence_vocab_version` 的作用。两题（`judged_by_others` / `negative_outcome_happened`）直接对应本词表「恐惧 vs 焦虑」的边界，标 `essence`，只作互相核对，不改词表。
 
 ---
 
