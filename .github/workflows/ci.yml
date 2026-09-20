@@ -5886,7 +5886,7 @@ jobs:
           print("  ✓ failure / cancelled 都判红且点名, skipped 不误伤")
           PY
 
-      - name: 看门狗自检 —— 四种情形都得判对 (D-073)
+      - name: "看门狗自检 —— 每一种情形都得判对 (D-073; 加用例时别再往标题里写个数)"
         run: |
           python - <<'PY'
           # 看门狗是"没人天天看 Actions"的最后一道; 它自己判错了比没有更坏 ——
@@ -6021,11 +6021,19 @@ jobs:
           assert "看门狗这一趟对它是瞎的" in out, out
           assert "一个 workflow 都没真查成" not in out, f"⑩ 这次该是 403 分支判的红, 不是兜底: {out}"
 
-          # ⑪ 只有"还在跑"的那些不算验过 —— 否则兜底会被它们撑起来而失效
-          code, out = run_with({"daily-sync.yml": [],            # 404 跳过
+          # ⑪ 只有"还在跑"的那些不算验过 —— 否则兜底会被它们撑起来而失效。
+          #    两种"跳过"各测一次: 【从来没跑过】(responses 里是空 list)和【404 还没进默认
+          #    分支】(responses 里根本没这个 key)。上一版只写了前者, 注释却标着"404 跳过" ——
+          #    于是 404 那一支要是哪天开始计入 verified, 这条根本发现不了(代班 review on #146)。
+          code, out = run_with({"daily-sync.yml": [],            # 从来没跑过
                                 "features-sync.yml": [mkrun(1, None, status="in_progress")]})
-          assert code == 1, f"⑪ 全是跳过+还在跑 = 一个都没真查成, 该判红, 实际 {code}: {out}"
+          assert code == 1, f"⑪a 没跑过+还在跑 = 一个都没真查成, 该判红, 实际 {code}: {out}"
           assert "一个 workflow 都没真查成" in out, out
+          code, out = run_with({                                  # daily-sync 不在 responses → 404
+                                "features-sync.yml": [mkrun(1, None, status="in_progress")]})
+          assert code == 1, f"⑪b 404跳过+还在跑 也该判红, 实际 {code}: {out}"
+          assert "一个 workflow 都没真查成" in out, out
+          assert "还没进默认分支" in out, f"⑪b 该走 404 那一支: {out}"
 
           print("  ✓ 看门狗自检: 都成功→绿 / 全失败或取消→红 / cron 没触发→红 / 新上线→放行 /"
                 " API 查不动→红 / 还在跑→放行 / 一个都没验成→红 / 在跑+失败→照报失败 /"
