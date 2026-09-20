@@ -5886,6 +5886,136 @@ jobs:
           print("  ✓ failure / cancelled 都判红且点名, skipped 不误伤")
           PY
 
+      - name: 看门狗自检 —— 四种情形都得判对 (D-073)
+        run: |
+          python - <<'PY'
+          # 看门狗是"没人天天看 Actions"的最后一道; 它自己判错了比没有更坏 ——
+          # 报绿会让人以为夜跑好着, 而那正是 run #177 丢三步时日志给人的印象。
+          # 这里把它那段 python 原样抠出来, 喂四种假 API 响应, 看判得对不对。
+          # 反证: 把 conclusion=="success" 那个判据删掉 → 情形②(全失败)会变成绿, 本步红。
+          import io, contextlib, json, pathlib, re, textwrap, datetime as dt, yaml
+
+          wf = yaml.safe_load(pathlib.Path(".github/workflows/sync-watchdog.yml").read_text(encoding="utf-8"))
+          steps = [s for s in wf["jobs"]["watch"]["steps"] if s.get("run")]
+          body = next(s["run"] for s in steps if "WATCHED" in s["run"])
+          m = re.search(r"python - <<'PY'\n(.*?)\n\s*PY\s*$", body, re.S)
+          assert m, "抠不出看门狗那段 python —— 改了写法就同步改这条守卫"
+          src = textwrap.dedent(m.group(1))
+
+          def now(h=0):
+              return (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:%SZ")
+          def run_with(responses):
+              """responses: {workflow 文件名: [run dict, ...]}; 返回 (exit_code, 输出)"""
+              class FakeResp:
+                  def __init__(self, payload): self.payload = payload
+                  def __enter__(self): return self
+                  def __exit__(self, *a): return False
+                  def read(self): return json.dumps(self.payload).encode()
+              def fake_urlopen(req, timeout=None):
+                  url = req.full_url if hasattr(req, "full_url") else str(req)
+                  name = url.split("/workflows/")[1].split("/runs")[0]
+                  if name not in responses:
+                      raise RuntimeError("HTTP Error 404: Not Found")
+                  return FakeResp({"workflow_runs": responses[name]})
+              import urllib.request as ur
+              ns = {"__name__": "__main__"}
+              buf = io.StringIO(); code = 0
+              real = ur.urlopen; ur.urlopen = fake_urlopen
+              import os
+              old = dict(os.environ)
+              os.environ.update(REPO="o/r", GH_TOKEN="x", RUN_URL="http://run")
+              try:
+                  with contextlib.redirect_stdout(buf):
+                      exec(compile(src, "watchdog", "exec"), ns)
+              except SystemExit as e:
+                  code = e.code or 0
+              finally:
+                  ur.urlopen = real
+                  os.environ.clear(); os.environ.update(old)
+              return code, buf.getvalue()
+
+          def mkrun(hours_ago, conclusion):
+              return {"run_started_at": now(hours_ago), "conclusion": conclusion,
+                      "html_url": "http://x"}
+          BOTH = ["daily-sync.yml", "features-sync.yml"]
+
+          # ① 两趟都有近期成功 → 绿
+          code, out = run_with({w: [mkrun(5, "success")] for w in BOTH})
+          assert code == 0, f"① 都成功该绿, 实际 {code}: {out}"
+          assert "✅" in out, out
+
+          # ② 近期跑了但【一趟都没成功】(run #177 那种 cancelled 也在内) → 红
+          code, out = run_with({"daily-sync.yml": [mkrun(5, "cancelled"), mkrun(29, "success")],
+                                "features-sync.yml": [mkrun(5, "success")]})
+          assert code == 1, f"② 全失败/取消该红, 实际 {code}: {out}"
+          assert "没有一趟成功" in out, out
+
+          # ③ 窗口内【一趟都没有】(cron 没触发 / 被 GitHub 停了) → 红
+          code, out = run_with({"daily-sync.yml": [mkrun(72, "success")],
+                                "features-sync.yml": [mkrun(5, "success")]})
+          assert code == 1, f"③ cron 没触发该红, 实际 {code}: {out}"
+          assert "一趟 schedule 都没有" in out, out
+
+          # ④ 【从来没跑过】(刚合并的新 workflow) → 不该红, 但要说一声
+          code, out = run_with({"daily-sync.yml": [mkrun(5, "success")],
+                                "features-sync.yml": []})
+          assert code == 0, f"④ 新 workflow 还没跑过不该红, 实际 {code}: {out}"
+          assert "还没有过任何 schedule 跑" in out, out
+
+          print("  ✓ 看门狗自检: 都成功→绿 / 全失败或取消→红 / cron 没触发→红 / 新上线→放行并说明")
+          PY
+
+      - name: 用时灯的分母要和 timeout 一致 + 看门狗要盯全每个定时 workflow (D-073)
+        run: |
+          python - <<'PY'
+          # 两件事, 共一个毛病: 【同一个事实写在两个地方】, 改一个忘一个就悄悄失效。
+          #   ① 用时灯里的 BUDGET_MIN 和 job 的 timeout-minutes —— 分母错了, 灯会按错的
+          #      比例报一个让人安心的假数字(把 240 改成 360 而灯还按 240 算, 它会提前喊;
+          #      反过来 timeout 降了而灯没降, 它到死都不喊)。
+          #   ② 看门狗的 WATCHED 名单和"仓里所有带 schedule 的 workflow" —— 漏一个, 那一趟
+          #      cron 停了没人知道, 而看门狗本身照样报绿。这正是它要防的那种安静。
+          # 反证: 改掉任一处 timeout-minutes 或 BUDGET_MIN → ①红; 给任一 workflow 加 schedule
+          #      但不进 WATCHED → ②红。
+          import glob, pathlib, re, sys, yaml
+          wfs = {f: yaml.safe_load(pathlib.Path(f).read_text(encoding="utf-8"))
+                 for f in sorted(glob.glob(".github/workflows/*.yml")
+                                 + glob.glob(".github/workflows/*.yaml"))}
+
+          # ① 分母 == timeout-minutes
+          ds = pathlib.Path(".github/workflows/daily-sync.yml").read_text(encoding="utf-8")
+          lamp = [st for st in wfs[".github/workflows/daily-sync.yml"]["jobs"]["sync"]["steps"]
+                  if "BUDGET_MIN=" in (st.get("run") or "")]
+          assert len(lamp) == 1, f"用时灯应当只有一处 BUDGET_MIN, 找到 {len(lamp)}"
+          budget = int(re.search(r"BUDGET_MIN=(\d+)", lamp[0]["run"]).group(1))
+          timeout = wfs[".github/workflows/daily-sync.yml"]["jobs"]["sync"]["timeout-minutes"]
+          assert budget == timeout, (
+              f"用时灯的分母 BUDGET_MIN={budget} 和 job 的 timeout-minutes={timeout} 不一致 —— "
+              "灯会按错的分母报一个假比例。改 timeout 时把灯里那个数一起改。"
+          )
+          # 灯必须是 advisory: 用时长不是故障, 天天红等于没有灯(D-053)
+          assert "exit 1" not in lamp[0]["run"], "用时灯不许判红 —— 它是预告不是故障"
+          print(f"  ✓ 用时灯分母 {budget}min == daily-sync 的 timeout-minutes")
+
+          # ② 看门狗盯全每个带 schedule 的 workflow
+          wd_path = ".github/workflows/sync-watchdog.yml"
+          assert wd_path in wfs, "看门狗 workflow 不见了 —— cancelled / cron 没触发就又没人知道了"
+          wd_src = pathlib.Path(wd_path).read_text(encoding="utf-8")
+          scheduled = set()
+          for f, doc in wfs.items():
+              # PyYAML 会把裸 on: 解析成 True(YAML 1.1 的 y/n/on/off), 两种键都认
+              trig = (doc or {}).get("on", (doc or {}).get(True)) or {}
+              if isinstance(trig, dict) and "schedule" in trig:
+                  scheduled.add(pathlib.Path(f).name)
+          scheduled.discard(pathlib.Path(wd_path).name)   # 看门狗不盯自己
+          assert scheduled, "一个带 schedule 的 workflow 都没找到 —— 解析姿势变了?"
+          missing = sorted(n for n in scheduled if n not in wd_src)
+          assert not missing, (
+              f"这些带 schedule 的 workflow 不在看门狗的 WATCHED 名单里: {missing} —— "
+              "它们的 cron 哪天停了不会有人知道, 而看门狗照样报绿。"
+          )
+          print(f"  ✓ 看门狗盯全了 {len(scheduled)} 个定时 workflow: {' '.join(sorted(scheduled))}")
+          PY
+
       - name: 夜跑把 409 当瞬时失败 (不拖红 · 配合 worker 互斥锁)
         run: |
           python - <<'PY'
