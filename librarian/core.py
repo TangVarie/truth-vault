@@ -22,6 +22,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 from typing import Any, Optional
 
 from .clients import call_anthropic, get_supabase, iso_now, parse_json
@@ -195,8 +196,14 @@ def get_cache(sb, key: str) -> Optional[list]:
     return res[0].get("selected")
 
 
-def put_cache(sb, key: str, brief: dict, lib_version: str, selected: list) -> None:
-    sb.schema("truth_vault").table("flywheel_librarian_cache").upsert({
+def put_cache(sb, key: str, brief: dict, lib_version: str, selected: list,
+              select_ms: int | None = None) -> None:
+    """写缓存行。``select_ms`` = 这次 LLM 选卡跑了多久(毫秒)。
+
+    ⚠️ 只有【冷路径】才传它 —— 命中缓存那次压根没调 LLM, 记个 0 会把分布污染成
+       一堆 0, 而这一列存在的唯一理由就是拿它定超时值(v1.16 / D-074)。
+    """
+    row = {
         "cache_key": key,
         "consumer": brief.get("consumer"),
         "project_id": brief.get("project_id"),
@@ -205,7 +212,11 @@ def put_cache(sb, key: str, brief: dict, lib_version: str, selected: list) -> No
         "selected": selected,
         "created_at": iso_now(),
         "last_hit_at": iso_now(),
-    }, on_conflict="cache_key").execute()
+    }
+    if select_ms is not None:
+        row["select_ms"] = int(select_ms)
+    sb.schema("truth_vault").table("flywheel_librarian_cache").upsert(
+        row, on_conflict="cache_key").execute()
 
 
 # ── prompt 渲染 + 选取 ──────────────────────────────────────────────────
@@ -387,6 +398,7 @@ def librarian_select(brief: dict, *, model: Optional[str] = None,
                 _status_out["status"] = STATUS_OK if cached else STATUS_NO_MATCH
             return cached
 
+    t0 = time.monotonic()
     try:
         selected = _select_via_llm(brief, cards, model)
     except Exception:
@@ -402,9 +414,12 @@ def librarian_select(brief: dict, *, model: Optional[str] = None,
 
     if _status_out is not None:
         _status_out["status"] = STATUS_OK if selected else STATUS_NO_MATCH
+    select_ms = int((time.monotonic() - t0) * 1000)
+    if _status_out is not None:
+        _status_out["select_ms"] = select_ms
     if use_cache:
         try:
-            put_cache(sb, key, brief, lib_v, selected)
+            put_cache(sb, key, brief, lib_v, selected, select_ms=select_ms)
         except Exception:
             # 缓存写失败不影响本次返回,但记一条 warning 便于发现持续写不进的问题。
             logger.warning("librarian 结果缓存写入失败 (key=%s); 不影响本次返回", key, exc_info=True)

@@ -2246,7 +2246,11 @@ jobs:
           core.get_supabase = lambda *a, **k: object()
           core.get_cache = lambda sb, key: None
           cached_writes = []
-          core.put_cache = lambda sb, key, brief, lib_v, sel: cached_writes.append(key)
+          # 假件要跟着真签名走: put_cache 加了 select_ms(v1.16/D-074) 之后, 旧的
+          # 5 参数 lambda 会 TypeError, 而它被 try 吞掉 → 断言"no_match 仍应进缓存"失败。
+          # 本仓踩过同一类事(round-5 那条守卫的假件), 所以这里【收 **kw】而不是补一个位置参数:
+          # 下次真签名再加字段, 假件不必跟着改, 也就不会再假红一次。
+          core.put_cache = lambda sb, key, brief, lib_v, sel, **kw: cached_writes.append(key)
 
           core.call_anthropic = lambda *a, **k: '{"selected": [{"source_note_id": "made-up-1"}]}'
           st = {}
@@ -7246,6 +7250,45 @@ jobs:
             echo "❌ v1.14 书架准入没按 D-060 route 挡铺评工单 (或误伤了不该挡的)。期望 [$WANT] 实得 [$GOT]"; exit 1
           fi
           echo "✓ v1.14: 铺评工单 爆/大爆 不上书架; 起量后干预 / 无键 / 空 routes / 参考 照常"
+      - name: Apply v1.16 librarian select_ms (+ idempotency)
+        run: |
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_16_librarian_select_ms.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_16_librarian_select_ms.sql
+      - name: "Sanity-check v1.16 (select_ms 可空 · 命中缓存不写它 · 冷路径才写; D-074)"
+        run: |
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          BEGIN
+            -- ① 列在, 且【可空】: NULL 的语义是"这行不是本次算出来的"(历史行 / 缓存命中)。
+            --    设成 NOT NULL DEFAULT 0 会把分布污染成一堆 0, 而这列存在的唯一理由
+            --    就是拿它定超时值 —— 掺了 0 就又只能拍脑袋了。
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                           WHERE table_schema='truth_vault'
+                             AND table_name='flywheel_librarian_cache'
+                             AND column_name='select_ms') THEN
+              RAISE EXCEPTION 'select_ms 列不见了';
+            END IF;
+            IF EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_schema='truth_vault'
+                         AND table_name='flywheel_librarian_cache'
+                         AND column_name='select_ms' AND is_nullable='NO') THEN
+              RAISE EXCEPTION 'select_ms 不该是 NOT NULL —— NULL 是"非本次计算"的语义';
+            END IF;
+            -- ② 写得进去, 也读得出来(定超时值那个分位数查询真的能跑)
+            INSERT INTO truth_vault.flywheel_librarian_cache
+              (cache_key, consumer, project_id, brief_digest, library_version, selected, select_ms)
+            VALUES ('k-cold', 'deskcore', 'p', 'd', 'v', '[]'::jsonb, 22000),
+                   ('k-warm', 'deskcore', 'p', 'd', 'v', '[]'::jsonb, NULL);
+            IF (SELECT count(*) FROM truth_vault.flywheel_librarian_cache
+                WHERE select_ms IS NOT NULL) <> 1 THEN
+              RAISE EXCEPTION '冷/热两行没分开 —— 命中缓存那行不该有 select_ms';
+            END IF;
+            PERFORM percentile_cont(0.95) WITHIN GROUP (ORDER BY select_ms)
+              FROM truth_vault.flywheel_librarian_cache WHERE select_ms IS NOT NULL;
+            DELETE FROM truth_vault.flywheel_librarian_cache WHERE cache_key IN ('k-cold','k-warm');
+            RAISE NOTICE '  ✓ v1.16: select_ms 可空 / 冷热分得开 / 分位数查询能跑';
+          END $$;
+          SQL
       - name: Apply v1.15 L2 label views (+ idempotency)
         run: |
           psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_15_l2_labels.sql
