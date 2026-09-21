@@ -70,23 +70,113 @@ TV 把合格爆款回流到两个现存系统:
 
 ---
 
-## 3. 技术栈(数据怎么流)
+## 3. 数据流向图（**这张图有守卫盯着**）
 
+> 下面两张图里所有 `tv:` 表名、`script:` 脚本名、`wf:` workflow 名，CI 会逐个核对它们
+> 在盘上是否存在（`scripts/check_system_map.py` · G1）。改名删文件而没改图 → CI 红。
+>
+> ⚠️ **守卫挡不住语义漂移。** 图说「A 喂 B」而代码改成了「A 喂 C」，名字都还在，守卫
+> 看不出来。它只保证图里没有**已经不存在的东西**，不保证图是对的。
+> `aw:` 开头的是 autowriter schema 的表，**本仓核不了**，只能靠人。
+
+### 3.1 采集侧：一条笔记怎么变成一张经验卡
+
+<!-- map-guard -->
+```mermaid
+flowchart TD
+    FS[飞书投放表<br/>数据源]
+    FS -->|wf:daily-sync.yml 每日 02:17 UTC| SY[script:sync_feishu_notes_to_truth_vault.py]
+    SY --> N[(tv:notes<br/>笔记正文 + 指标)]
+    SY --> A[(tv:accounts)]
+    SY --> MS[(tv:metric_snapshots)]
+    SY -.raw_extra 里认不出的字段.-> Q[(tv:undeclared_fields_quarantine)]
+
+    N --> CM[script:sync_comments_from_raw_extra.py] --> C[(tv:comments)]
+
+    N -->|Railway worker /annotate| ES[script:annotate_essence_pass.py]
+    ES -->|essence + sub_direction 回填| N
+
+    N -->|wf:features-sync.yml 每日 12:47 UTC<br/>Railway worker /annotate-features| FP[script:annotate_feature_pass.py]
+    FP --> NFA[(tv:note_feature_answers<br/>闭集问答 · 每篇 31 行)]
+    FP --> NF[(tv:note_features<br/>码化特征)]
+    NFA --> VFC[/tv:v_feature_contrast/]
+
+    N -->|Railway worker /curate| CU[script:curate_flywheel_lessons.py]
+    CU --> FLA[(tv:flywheel_lesson_annotations<br/>书架)]
+    FLA --> CARDS[/tv:v_flywheel_lesson_cards<br/>经验卡/]
+
+    N -->|通道 1 · push| SSLL[script:sync_truth_vault_baokuan_to_sanshengliubu.py]
+    SSLL --> RS[(public.reference_samples<br/>三生六部)]
 ```
-飞书投放表(数据源)
-   │  onboard-table.yml(手动)──▶ Railway·onboarder ──▶ mappings/<proj>.yaml 草稿 PR(人审)
-   │  daily-sync.yml(每日 02:17 UTC cron)
-   ▼
-Truth Vault(Supabase prod `kduysqedrclrfevrxiie` · schema truth_vault)
-   notes ──(essence 标注/curate)──▶ flywheel_lesson_annotations(书架)──▶ v_flywheel_lesson_cards
-   │                                                                              ▲
-   ├─【通道1·push】爆/参考 ──▶ ssll reference_samples                              │【通道2·pull D-038】
-   └─                                                       autowriter ◀── LLM 馆员(librarian/, Railway)
+
+**入口只有一个**：飞书表。TV 不产内容，只把别处产出的东西**结构化**。
+经验卡（`v_flywheel_lesson_cards`）是采集侧的**唯一出口**，通道 2 从这里取。
+
+### 3.2 写稿侧：写一篇稿碰哪些表、哪一步销哪笔账
+
+<!-- map-guard -->
+```mermaid
+flowchart TD
+    subgraph desk["写作台 deskcore（autowriter 仓 · Railway）"]
+        OP["open_project<br/>（必经）"]
+        DA["draw_angles"]
+        CD["check_drafts"]
+        CM2["commit_drafts"]
+    end
+
+    subgraph tv["Truth Vault（librarian/ · Railway）"]
+        LIB["LLM 馆员 librarian_select"]
+        CACHE[("tv:flywheel_librarian_cache<br/>select_ms 只在冷路径写")]
+        CARDS2[/"tv:v_flywheel_lesson_cards"/]
+    end
+
+    OP -->|brief| LIB
+    CARDS2 --> LIB
+    LIB -->|命中则不调 LLM| CACHE
+    LIB -->|经验卡注入 prompt| OP
+
+    OP -->|回显欠账| LEDGER[("aw:angle_ledger<br/>drawn_by / consumed_version_id")]
+    DA -->|发牌：写入未消耗行| LEDGER
+
+    CD -->|只读历史基线| FPR[("aw:draft_fingerprints")]
+
+    CM2 -->|建身份| BIV[("aw:batches / items / versions")]
+    CM2 -->|写指纹，带 angle_key| FPR
+    CM2 -->|consume_angle 销账| LEDGER
+
+    TVS["script:sync_truth_vault_baokuan_to_autowriter_items.py<br/>（通道 2 push · D-038 已退役）"]
+    TVS -.未接进任何 workflow.-> BIV
+
+    SYNC["tv-sync：把 TV 笔记按内容对到写作台版本"]
+    SYNC -->|match_kind='ingested'<br/>**没有 angle_key**| FPR
+    SYNC --> TNL[("aw:tv_note_links")]
+
+    AL["script:check_angle_ledger_leak.py<br/>漏账灯 · 夜跑 advisory"]
+    LEDGER --> AL
+    FPR --> AL
+    TNL -->|排除导入副本，否则读出来是假的| AL
 ```
-- **Supabase**(共享 prod,schema `truth_vault`/`autowriter`/`public`,PG17)· **Railway** 3 服务
-  (librarian / onboarder / worker)· **GitHub Actions**(cron + 手动)· **中转站/NewAPI**(LLM 网关,
-  `ANTHROPIC_BASE_URL`)· **飞书 OpenAPI**(数据源)。
+
+### 3.3 这张图要回答的三个问题（今天各踩了一次）
+
+| 问题 | 答案 | 踩过的坑 |
+|---|---|---|
+| 查重比的是什么？ | `aw:draft_fingerprints` **同项目**的历史行 | 项目没回填时这张表是空的，`check_drafts` 照样报 pass —— 那不是"没查出重复"，是"没有东西可查" |
+| 坐标在哪一步销账？ | `commit_drafts` 里的 `consume_angle` | **不带 `angle_key` 就什么都不发生**。抽牌的会话和写稿的会话不是同一场时，手里根本没坐标可带 |
+| 借卡为什么每次都重算？ | `cache_key` 含 `brief_digest`，而它含 per-call 的 `draft_topic` | 换个选题**必然** miss，这是设计如此，不是缓存坏了 |
+
+⚠️ **`tv-sync` 导入的副本和真稿在同一张 `draft_fingerprints` 里**，靠
+`aw:tv_note_links.match_kind='ingested'` 区分。算漏账率时不排除它们，读出来的数是假的
+（sportsix 有 438 行是导入副本、真稿 0 篇）。
+
+## 3.4 技术栈
+
+- **Supabase**(共享 prod, schema `truth_vault`/`autowriter`/`public`, PG17) · **Railway** 3 服务
+  (librarian / onboarder / worker) · **GitHub Actions**(cron + 手动) · **中转站/NewAPI**(LLM 网关,
+  `ANTHROPIC_BASE_URL`) · **飞书 OpenAPI**(数据源)。
 - ⚠️ **LLM 调用必须在 Railway** —— GitHub Actions 海外 runner 连不上中转站(网络层)。GitHub 只触发。
+- ⚠️ **cron 漂移实测：daily-sync 4.8–5.4h / features-sync 3.7h / watchdog 1.9h**，每个 workflow
+  漂得不一样。**「到点了没跑」在这个仓里不构成故障证据**，要等够一个漂移周期再判。
 
 ---
 
@@ -129,7 +219,18 @@ Truth Vault(Supabase prod `kduysqedrclrfevrxiie` · schema truth_vault)
 
 ---
 
-## 5. 当前状态(快照 2026-06-09 实测;最新数字 + 变更明细以 `docs/26` 为准)
+## 5. 当前状态
+
+> ⚠️ **下面这份是 2026-06-09 的快照,已经过期三个多月。** 留着是为了"当时长什么样",
+> 不是"现在长什么样"。
+>
+> **今天的状态去这三处看,它们是活的:**
+> · 系统怎么串 → 本文 §3 的数据流向图(有守卫)
+> · 每个决定为什么这么做 → `DECISIONS.md`(append-only,84 条)
+> · 每盏灯谁在看 → `docs/29-lights-registry.md`
+>
+> 2026-06 之后发生的大事(不在下面那份快照里):内容特征层 D-070 / 角度台账 D-071 /
+> 夜跑拆分 + 看门狗 D-073 / 馆员耗时仪表 D-074。
 
 - **8 个项目**:WTG(个护)· NRT_2/NRT_3(OTC药)· NUC(保健品)· HXZ_QD/HXZ_FB(美妆)· TGV(保健品)· RIO(酒类)。**3,407 篇笔记**。
 - **验证级爆款 200**(全量 224,剔除数值推断 + 伪爆贴 24;全部 →ssll)。
@@ -206,16 +307,12 @@ Truth Vault(Supabase prod `kduysqedrclrfevrxiie` · schema truth_vault)
 | `13-flywheel-activation-runbook` / `13-integration-status` | 飞轮激活手册 / 集成状态 |
 | `14-channel2-pull-librarian` | 通道2 pull + 馆员设计(D-038) |
 | `15-autowriter-librarian-integration` | autowriter 接馆员的详细说明 |
-| `16-onboarding-agent` / `17-onboarder-status-handoff` | 接表 agent 设计 / 状态交接 |
-| `18-codebase-audit-2026-06-04` | 一次全库审计报告 |
+| `16-onboarding-agent` | 接表 agent 设计 |
+| **`29-lights-registry`** | ⭐ 每盏灯谁看、多久看、红了谁负责(加灯前必读) |
 | `19-autowriter-librarian-quickstart` | autowriter 接馆员快速接入 + 自测 |
 | `27-autowriter-librarian-relink-2026-09-17` | ⚠️ 通道 2 在生产没在调(复核证据)+ 写作台重新接线说明 + 验收(D-063); §6 查完(D-069): 根因是协议把借阅设成可选, 修在 autowriter PR #85 |
 | **`28-content-feature-layer`** | 内容特征层(D-065 拍板 D-065 续, **P1 已实现 D-070**): 20 道闭集原子题进事实层, 过三道闸(测得准/有区分度/对新笔记成立)才进 L2/经验卡/写作台; 问题库 `prompts/feature_questions_v0_1.yaml`; 迁移 `notes_v1_13`, 抽取 `annotate_feature_pass.py`, worker `/annotate-features`; 下一步闸一 |
-| `20-handover-2026-06-04` | 上线**前**的交接快照(历史) |
-| `21-handover-2026-06-05` | NRT_2 上线 + 审计后的快照(历史;已被 22 取代) |
-| `22-handover-2026-06-05-onboarding-hardened` | 4 项目 / preflight + cron 闸 / 通道2 拉通 / D-040 负面(历史;已被 25/26 取代) |
-| `25-handover-2026-06-07` | 5 项目 / 基础设施纠错(看板读错库)/ 战线代号数据驱动(历史) |
-| **`26-handover-2026-06-09`** | ⭐ **当前状态最新权威**(8 项目 / TGV·RIO·HXZ_FB / 伪爆贴 DQ / dashboard 上线 + 内外分离 + 对外展示口径) |
+| `archive/17` `archive/18` `archive/20` `archive/21` `archive/22` `archive/25` `archive/26` | **已归档**:带日期的交接快照与一次全库审计。**只作历史,不要照着做决定** —— 见 `docs/archive/README.md` |
 | `99-rejected-ideas` | 否决过的想法(别重复提) |
 
 ---

@@ -284,7 +284,7 @@ truth-vault/
 |---|---|
 | [docs/08-evolution-roadmap.md](docs/08-evolution-roadmap.md) | 4 阶段路径 |
 | [docs/99-rejected-ideas.md](docs/99-rejected-ideas.md) | 走过的弯路 |
-| [docs/26-handover-2026-06-09.md](docs/26-handover-2026-06-09.md) | 最近一次完整交接（6 月） |
+| [docs/archive/](docs/archive/) | **已归档**：7 份带日期的交接快照与一次全库审计。只作历史，**不要照着做决定**（判据与理由见 `docs/archive/README.md`） |
 | [data-analysis/10-project-audit.md](data-analysis/10-project-audit.md) | 10 项目数据审计（schema 的由来） |
 | [data-analysis/l2-feasibility.md](data-analysis/l2-feasibility.md) | L2 可行性实测（9/16，含复现 SQL） |
 | [data-analysis/signal-definitions.md](data-analysis/signal-definitions.md) | **信号定义与标签污染实测**（9/16，读 L2 之前先读这个） |

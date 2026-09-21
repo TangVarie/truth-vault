@@ -1,7 +1,7 @@
 # Truth Vault · 当前状态
 
 **最后更新**: 2026-06-09 (新增 TGV/RIO/HXZ_FB 接入 + 伪爆贴 DQ + dashboard 上线/内外分离 + 对外展示口径定稿)
-**当前阶段**: 飞轮已转起来 —— **8 项目入库 (3,407 篇 / 验证级爆款 200 / 书架 118 卡 / 累计曝光 37.3M)**, 通道1(ssll)+ 通道2(pull/馆员)都 live, 对外看板已上线 Vercel。**当前状态/待办权威 = [docs/26-handover-2026-06-09.md](docs/26-handover-2026-06-09.md);从零到现在的完整对齐 = [docs/00-START-HERE.md](docs/00-START-HERE.md)**。
+**当前阶段**: 飞轮已转起来 —— **8 项目入库 (3,407 篇 / 验证级爆款 200 / 书架 118 卡 / 累计曝光 37.3M)**, 通道1(ssll)+ 通道2(pull/馆员)都 live, 对外看板已上线 Vercel。**当前状态/待办权威 = [docs/archive/26-handover-2026-06-09.md](docs/archive/26-handover-2026-06-09.md);从零到现在的完整对齐 = [docs/00-START-HERE.md](docs/00-START-HERE.md)**。
 > ⚠️ 下方 Session #9~#17 记录是历史时间线快照(数字停在当时);**最新真实数字 + 06-07→09 变更见 docs/26**。
 > ⚠️ **2026-09-17 更正**: 上一行「通道2(pull/馆员)都 live」不成立 —— 复核发现写作台在生产**基本没在调馆员**(30 天 82 batch 只 8 brief, 最重三天 0 次; 06-05 的拉通是一单实测)。TV 侧书架/馆员正常, 修在 autowriter 仓; 见 [docs/27](docs/27-autowriter-librarian-relink-2026-09-17.md) + D-063。夜跑自 D-063 起有「通道 2 借阅流量检查」, 暗着会 `::warning`。 **09-19 查完(D-069)**: 接线和 env 都在, 根因是 deskcore 协议把 `borrow_lessons` 设成可选(71 批成稿 / 3 次借阅); 修法是 `open_project` 随简报自动借, autowriter PR #85, 合并部署后按 docs/27 §4 验收。
 > ✅ **2026-09-18**: 写作台 ↔ TV 稿子对照落地 (aw 侧 `tv-sync --write-tv`, 每日 04:00 UTC): `notes.source_autowriter_*` 从全 NULL → **404 行** (body_exact 268 / title_exact 124 / fuzzy 12; 1466 条 `ingested` 副本不回填)。两列语义改为「写作台里对应的版本」(不是生成来源, 方向查 `autowriter.tv_note_links.lag_days`)。TV 不改代码。见 D-064 + docs/10 R-031。夜跑 cron 原声明 02:00 UTC 但实际起跑 ~07:00 UTC (GitHub 整点排队), 落在 aw 04:00 之后; owner 拍板 TV 改 → cron 挪到 `17 2 * * *` (非整点), 验收看接下来几天的起跑时间。
@@ -21,7 +21,7 @@
 - Session #14 (2026-05-29): 三仓集成审计 (5 路并行 agent) + 连生产库 (kduysqedrclrfevrxiie) 只读核对地面真相 + 仓内修复 (部署/CI 缺口 + 文档对齐 + 轻量健壮性)
 - Session #15 (2026-06-01): **通道1 首次端到端打通** —— WTG 运营标的第一条「参考」(MF65) 实跑进 ssll `reference_samples`; 落地 **synthetic 分级** (伪爆贴只挡爆/大爆、放行参考); 修正 `tier_source='人工补录'` DB 改法不持久 (飞书回灌覆盖); 连库确认 autowriter 侧零影响 (`efaf9c4`/`bd45656`, main PR #26)
 - Session #16 (2026-06-02): **通道2 改 pull + LLM 馆员服务建成并上线** —— D-038 把通道2 从 push 重构为 pull / 图书馆 + LLM 馆员; 建 v1.4 策展库 + v1.5 缓存 + `librarian/` 服务 + 策展 pass; v1.4/v1.5 已 apply 到 prod + advisor 核验无回归; **馆员服务部署上线 Railway** (`truth-vault-production.up.railway.app`, `/health` OK) + 接中转站 (`ANTHROPIC_BASE_URL`) + Anthropic prompt caching; **daily-sync cron 已开** (`0 2 * * *`) + 修未 onboard 项目优雅跳过; 起草 aw 接入说明 [docs/15](docs/15-autowriter-librarian-integration.md); 处理 PR #27..#32 review (分页 / synthetic / source_note_id / updated_at / feishu 半配置) (PR #27..#32 全合 main)
-- Session #17 (2026-06-04~05): **NRT_2 第二项目上线 + 飞轮首批真燃料 (27 真爆款) + 9 根因修复 + 穿越周期衰减回归 D-001 + 全库审计 + 收尾** —— 详见 [docs/21](docs/21-handover-2026-06-05.md);从零完整对齐 [docs/00](docs/00-START-HERE.md)
+- Session #17 (2026-06-04~05): **NRT_2 第二项目上线 + 飞轮首批真燃料 (27 真爆款) + 9 根因修复 + 穿越周期衰减回归 D-001 + 全库审计 + 收尾** —— 详见 [docs/21](docs/archive/21-handover-2026-06-05.md);从零完整对齐 [docs/00](docs/00-START-HERE.md)
 
 ---
 
