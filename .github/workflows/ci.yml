@@ -252,6 +252,57 @@ jobs:
               raise SystemExit("\n词表漂移:\n  - " + "\n  - ".join(bad))
           print("\ncontrolled vocab JSON in sync with docs/05 + notes_v1_7")
           PY
+      - name: "put_cache 真写的列必须都在 _REQUIRED_COLUMNS 里 (codex review on #149)"
+        working-directory: scripts
+        run: |
+          python - <<'PY'
+          # _REQUIRED_COLUMNS 上方那条注释写着「新增写入列时【必须】同步加到这里」——
+          # 但这条规矩此前【只写在注释里, 没有任何东西执行它】。D-074 加 select_ms 时我就漏了,
+          # 是 codex 在 #149 上指出来的。
+          #
+          # 漏掉的后果不是"少一道检查", 是【静默】: 服务先于迁移上线时, upsert 带上库里
+          # 没有的列 → PostgREST 拒掉【整条】写入(42703) → put_cache 外面那层 except 吞成
+          # 一条 warning → 缓存永远写不进去 → 每次借阅都重跑一次 22-60 秒的 LLM 选卡。
+          # 而 preflight(assert_db_schema_ready)本该在开跑前就拦住它 —— 前提是这列在清单里。
+          #
+          # 判据从【代码真的写了什么】推, 不是照着清单抄: 用 ast 取 put_cache 里所有写进
+          # 那个 dict / row[...] 的字面量键名, 逐个要求在 _REQUIRED_COLUMNS 里。
+          # 反证: 在 put_cache 里加一列而不登记, 本步点名报它。
+          import ast, pathlib, sys
+          import _common as c
+
+          src = pathlib.Path("../librarian/core.py").read_text(encoding="utf-8")
+          fn = next(n for n in ast.walk(ast.parse(src))
+                    if isinstance(n, ast.FunctionDef) and n.name == "put_cache")
+          written = set()
+          for node in ast.walk(fn):
+              # row = {...} / upsert({...}) 里的字面量键
+              if isinstance(node, ast.Dict):
+                  written |= {k.value for k in node.keys
+                              if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+              # row["x"] = ... 这种后补的
+              elif isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant) \
+                      and isinstance(node.slice.value, str):
+                  written.add(node.slice.value)
+          assert written, "从 put_cache 里一个写入列都没解析出来 —— 写法变了, 同步改这条守卫"
+
+          declared = set(c._REQUIRED_COLUMNS["flywheel_librarian_cache"])
+          missing = sorted(written - declared)
+          if missing:
+              sys.exit(
+                  f"put_cache 写了这些列但没登记进 _REQUIRED_COLUMNS: {missing}\n"
+                  "  后果是【静默】: 服务先于迁移上线 → PostgREST 拒整条写入 → except 吞掉\n"
+                  "  → 缓存永远写不进 → 每次借阅重跑一次 22-60s 的 LLM 选卡, 没人看得出来。")
+          # 每一列还要能说出"缺了该跑哪份迁移"(否则 preflight 的报错只能说缺, 不能说怎么补)
+          unmapped = sorted(col for col in written - {
+              "cache_key", "consumer", "project_id", "brief_digest",
+              "library_version", "selected", "created_at", "last_hit_at",
+          } if col not in c._COLUMN_MIGRATION)
+          assert not unmapped, (
+              f"这些列没进 _COLUMN_MIGRATION: {unmapped} —— preflight 报错时说不出该跑哪份迁移")
+          print(f"  ✓ put_cache 写的 {len(written)} 列全部已登记, 且新列都能指到迁移文件")
+          PY
+
       - name: scripts/README Step 0 必须列全 schemas/notes_v1_*.sql (codex review on #130)
         run: |
           python - <<'PY'

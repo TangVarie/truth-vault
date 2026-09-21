@@ -205,6 +205,7 @@ _REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
     "flywheel_librarian_cache": (
         "cache_key", "consumer", "project_id", "brief_digest",
         "library_version", "selected", "created_at", "last_hit_at",
+        "select_ms",        # D-074: 冷路径耗时, notes_v1_16 加的
     ),
 }
 
@@ -229,6 +230,7 @@ _COLUMN_MIGRATION: dict[str, str] = {
     "last_seen_at":     "schemas/notes_v1_9_last_seen_reconcile.sql",
     "last_seen_run_id": "schemas/notes_v1_9_last_seen_reconcile.sql",
     "comments_count":   "schemas/notes_v1_12_comment_tier.sql",   # D-062
+    "select_ms":        "schemas/notes_v1_16_librarian_select_ms.sql",  # D-074
 }
 
 
