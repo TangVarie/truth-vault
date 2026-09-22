@@ -4485,6 +4485,12 @@ jobs:
           assert "--window-hours" not in wf, "夜跑不该自己传窗口 —— 默认值由脚本钉着(> 24h 重叠)"
           print("check_librarian_traffic: 10/10 cases passed")
           PY
+      # ⚠️ 这一步【刻意不内联】—— 它守的规矩之一(G2)就是"新守卫写成 scripts/ 里的
+      #    脚本, ci.yml 只留调用"。写成 heredoc 的话它会把自己判红, 那才叫讽刺。
+      #    三条守卫各自挡得住什么、挡【不】住什么, 写在 check_system_map.py 里。
+      - name: "系统地图三闸 (D-075): 图里点名的东西还在不在 / ci.yml 内联棘轮 / 灯必须在册"
+        working-directory: scripts
+        run: python check_system_map.py
       - name: "角度台账漏账灯自检 (D-071): 判据下限 / 排除 tv-sync 导入副本 / 翻页键唯一 / 重名项目不并格 / 哨兵行"
         working-directory: scripts
         run: |

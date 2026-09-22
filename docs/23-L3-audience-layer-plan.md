@@ -4,7 +4,7 @@
 > 本文 = **现状实查 + 与 [docs/07](07-audience-data.md) 设计的差距 + 分阶段落地方案(按"现在能不能跑"排序)**。
 >
 > 配套:受众设计 [docs/07](07-audience-data.md) · 决策 [D-008](../DECISIONS.md#d-008)(必须有 audience 层)/
-> [D-013](../DECISIONS.md#d-013)(target vs inferred 不符打 flag) · 当前状态 [docs/22](22-handover-2026-06-05-onboarding-hardened.md)。
+> [D-013](../DECISIONS.md#d-013)(target vs inferred 不符打 flag) · 当前状态 [docs/22](archive/22-handover-2026-06-05-onboarding-hardened.md)。
 
 ---
 
