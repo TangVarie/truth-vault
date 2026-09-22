@@ -7,6 +7,7 @@ check_system_map.py
   G1  数据流向图里点名的东西必须还在盘上(docs/00-START-HERE.md §3)
   G2  ci.yml 里的内联 heredoc 块数只许降不许升(棘轮)
   G3  每盏打哨兵行的夜跑灯必须在登记册里(docs/29-lights-registry.md)
+  G4  features-sync 的每请求篇数与它注释里那句实测记录必须对得上
 
 ⚠️ **这三条各自挡得住什么、挡不住什么，写在下面每一节里。一个说不清自己边界的
 守卫，用的人会高估它。**
@@ -33,6 +34,7 @@ ROOT = Path(__file__).resolve().parent.parent
 MAP_DOC = ROOT / "docs" / "00-START-HERE.md"
 LIGHTS_DOC = ROOT / "docs" / "29-lights-registry.md"
 CI = ROOT / ".github" / "workflows" / "ci.yml"
+FEATURES_WF = ROOT / ".github" / "workflows" / "features-sync.yml"
 
 # G2 的棘轮基线。2026-09-21 实测 ci.yml 里 79 个内联 heredoc 块。
 # ⚠️ 这个数【只许往下调】。要加新守卫就写成 scripts/ 里的脚本, ci.yml 里只留调用
@@ -213,9 +215,56 @@ def check_lights(verbose: bool = True) -> list[str]:
 
 # ══════════════════════════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════════════════════════
+# G4 · features-sync 的批大小必须和它注释里那句实测记录一致
+# ══════════════════════════════════════════════════════════════════════
+#
+# 2026-09-21 run #2 的教训: 那一步的注释写着"6 篇 ≈ 36-48 次调用 < Railway 边缘
+# 5min"。这句话曾经是对的, 后来语料变长、每批涨到 4m43s-5m02s, 第四批撞破 5 分钟
+# 回 502; 而 502 只切断边缘连接, worker 还在后台握着 ingest 锁 —— 后面 8 个项目
+# 全部 409。那一轮跑了 20 分钟只成 24 篇, job 却报 success(409/502 都算 transient)。
+#
+# 也就是说: **一句过期的安全假设, 让这一步假绿了整整一轮**。D-073 那次 timeout
+# 裸奔几个月, 起因是同一种东西 —— 注释里的数字和代码里的数字漂开了。
+#
+# 这条钉的就是那个漂开: 注释里的"N 篇 ≈ ..."必须等于 FEAT_REQ_MAX=N。
+#
+# 挡【不】住: 注释里那句话本身对不对。3 篇哪天也变慢到破 5 分钟, 这条照样绿 ——
+#   它保证的是"代码和注释说的是同一个数", 不是"这个数是安全的"。真安全边界只有
+#   实测能给, 所以注释里要求写的是【实测记录】而不是估算。
+
+REQ_MAX = re.compile(r'^\s*FEAT_REQ_MAX=(\d+)', re.M)
+REQ_DOC = re.compile(r'【每请求篇数 = (\d+)】')
+
+
+def check_features_batch(verbose: bool = True) -> list[str]:
+    if not FEATURES_WF.exists():
+        return ["features-sync.yml 不在了"]
+    t = FEATURES_WF.read_text(encoding="utf-8")
+    code = REQ_MAX.findall(t)
+    doc = REQ_DOC.findall(t)
+    if len(code) != 1:
+        return [f"features-sync.yml 里 FEAT_REQ_MAX 出现 {len(code)} 次(应为 1) "
+                "—— 这条守卫认不出该钉哪个"]
+    if len(doc) != 1:
+        return ["features-sync.yml 的注释里找不到「【每请求篇数 = N】」那句实测记录 "
+                "(或出现了多次)。那句话是这条守卫的另一半, 删了它这条就空转了 —— "
+                "而上一次假绿的起因正是注释与代码漂开。"]
+    if verbose:
+        print(f"  G4 features-sync 每请求 {code[0]} 篇 (注释记的 {doc[0]} 篇)")
+    if code[0] != doc[0]:
+        return [f"features-sync.yml: FEAT_REQ_MAX={code[0]}, 但注释里那句实测记录写的是 "
+                f"{doc[0]} 篇。改了批大小就要把实测记录一起改 —— "
+                "一句过期的安全假设让这一步假绿过整整一轮(2026-09-21 run #2)。"]
+    return []
+
+
+# ══════════════════════════════════════════════════════════════════════
+
 CHECKS = {"g1": ("数据流向图", check_map),
           "g2": ("ci.yml 内联棘轮", check_ci_ratchet),
-          "g3": ("灯登记册", check_lights)}
+          "g3": ("灯登记册", check_lights),
+          "g4": ("features 批大小与实测记录", check_features_batch)}
 
 
 def main() -> int:
