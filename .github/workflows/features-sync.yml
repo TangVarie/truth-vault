@@ -100,10 +100,25 @@ jobs:
         working-directory: scripts
         run: |
           # 每个项目每轮最多 FEATURE_LIMIT 篇, 每请求 ≤ 6 篇 (docs/28 §5.1)。
-          # 一篇 = 6 次分组 LLM 调用 (+ 校验不过时重问), 6 篇 ≈ 36-48 次调用 < Railway 边缘 5min。
+          # 一篇 = 6 次分组 LLM 调用 (+ 校验不过时重问)。
+          #
+          # ⚠️ 【每请求篇数 = 3】这个数是量出来的, 不是估的。9-21 run #2 实测:
+          #      ANSHEN 批1 4m43s · 批2 4m48s · BJS 批1 4m58s · BJS 批2 5m02s → 502
+          #    每批 6 篇 ≈ 4m43s-5m02s, 一直贴着 Railway 边缘的 5 分钟走, 第四批破线。
+          #    破线之后更坏的不是那一批: 502 只切断边缘连接, worker 进程还在后台跑、
+          #    还握着 ingest 锁 —— 于是【后面 8 个项目全部 409】, 各 2-3 秒就被拒。
+          #    那一轮跑了 20 分钟, 只成了 2 个项目 24 篇, 而 job 报 success
+          #    (409/502 都在 worker_fail_kind 的 transient 名单里, 只打 warning)。
+          #
+          #    6 篇 ≈ 48s/篇 → 3 篇 ≈ 2.4min, 对 5 分钟留一倍余量。
+          #    吞吐反而涨: 现在是"跑 2 个项目然后全灭", 改完是 10 个项目各跑满。
+          #
+          # ⚠️ 这条注释里的数字被 CI 钉着(check_system_map.py · G4)。改 FEAT_REQ_MAX
+          #    就必须改这里 —— 上一次正是"注释里的安全假设过期了而没人发现"把这一步
+          #    拖成了假绿(同 D-073 那句"过期注释让 timeout 裸奔了几个月")。
           # 幂等: 「跑过」= 该 (extractor, run_tag) 下已有标记题那一行, 跑不完下轮续。
           # 容忍口径与 daily-sync 的 essence 段同构 (瞬时只告警 / 首批系统性失败判红)。
-          FEAT_REQ_MAX=6
+          FEAT_REQ_MAX=3   # ⚠️ 改这个数就要改上面那段注释里的实测记录(CI G4 钉着)
           FEATURE_LIMIT="${FEATURE_LIMIT:-12}"
           case "$FEATURE_LIMIT" in ''|*[!0-9]*)
             echo "::error::FEATURE_LIMIT 必须是正整数, 收到 '$FEATURE_LIMIT'"; exit 1;; esac
