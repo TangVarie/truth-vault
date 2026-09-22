@@ -41,7 +41,7 @@ FEATURES_WF = ROOT / ".github" / "workflows" / "features-sync.yml"
 # G2 的棘轮基线。2026-09-21 实测 ci.yml 里 79 个内联 heredoc 块。
 # ⚠️ 这个数【只许往下调】。要加新守卫就写成 scripts/ 里的脚本, ci.yml 里只留调用
 #    —— 那样不增加 heredoc 块数, 这条闸不会挡你。
-CI_HEREDOC_CAP = 79
+CI_HEREDOC_CAP = 78
 HEREDOC = "<<'PY'"
 
 
@@ -302,11 +302,49 @@ def check_promo_not_metric(verbose: bool = True) -> list[str]:
     return problems
 
 
+# ══════════════════════════════════════════════════════════════════════
+# G6 · ci.yml 的【体积】棘轮
+# ══════════════════════════════════════════════════════════════════════
+#
+# 2026-09-22 撞出来的硬闸, 不是风格问题:
+#   511,110 字节 → CI 正常跑
+#   516,314 字节 → GitHub **startup_failure**: 0 个 job、瞬间红、日志里什么都没有,
+#                  运行列表里连 workflow 名都显示不出来(退成文件路径 .github/workflows/ci.yml)。
+# 也就是说超限之后【整个 CI 不跑】, 而表面看只是"红了一下"。这是最难查的一类红。
+# G2 数的是 heredoc 块【数】, 挡不住"块数不变但每块越写越长"—— 这次就是这么超的
+# (只加了一个步骤里的 14 条断言 + 注释)。所以要再加一把尺子量字节。
+#
+# 挡【不】住:
+#   · 挡不住别的 workflow 文件超限(只量 ci.yml)。
+#   · 上限是【经验值】不是 GitHub 文档值 —— 我只知道 511,110 能跑、516,314 不能。
+#     所以卡在 505,000: 比已知能跑的还低 6KB, 留一点余量, 且逼着新守卫往 scripts/ 走。
+#   · 挡不住"把内容挪进 scripts/ 但那个脚本本身是空跑"。那是各自反证的事。
+CI_BYTES_CAP = 505_000
+
+
+def check_ci_size(verbose: bool = True) -> list[str]:
+    if not CI.exists():
+        return [".github/workflows/ci.yml 不在了"]
+    n = len(CI.read_bytes())
+    if verbose:
+        print(f"  G6 ci.yml {n:,} 字节 (上限 {CI_BYTES_CAP:,}; 实测 516,314 会 startup_failure)")
+    if n > CI_BYTES_CAP:
+        return [
+            f"ci.yml 涨到 {n:,} 字节, 超过 {CI_BYTES_CAP:,}。"
+            "实测 516,314 字节时 GitHub 直接 startup_failure —— 0 个 job, 整个 CI 不跑, "
+            "而且日志里看不出原因。把新加的内联块抽成 scripts/ 里的脚本, "
+            "ci.yml 只留一行调用(D-075)。"]
+    return []
+
+
 CHECKS = {"g1": ("数据流向图", check_map),
           "g2": ("ci.yml 内联棘轮", check_ci_ratchet),
           "g3": ("灯登记册", check_lights),
           "g4": ("features 批大小与实测记录", check_features_batch),
-          "g5": ("投流三列不得映指标列", check_promo_not_metric)}
+          "g5": ("投流三列不得映指标列", check_promo_not_metric),
+          "g6": ("ci.yml 体积棘轮", check_ci_size)}
+
+
 
 
 
