@@ -285,6 +285,20 @@ _MAPPINGS_DIR = Path(__file__).resolve().parent.parent / "mappings"
 _ALLOWED_TIER_SOURCES = {"状态字段", "备注字段"}
 _ALLOWED_TITLE_EXTRACTION = {"column", "markers", "none"}   # docs/28 §3 第 4 条
 
+# mapping yaml 允许出现的顶层键 (A11)。新增键要【同步】加进来, 否则 load_mapping 直接红。
+# 这份清单是 2026-09-22 从 18 份 mapping 的并集取的, 外加 brand_aliases(Q3 要写进 14 份,
+# 而它此前一份都没有 —— 正是"键名拼错没人知道"风险最大的那种新键)。
+_ALLOWED_MAPPING_KEYS = {
+    "project_id", "platform", "version", "brand", "product", "category",
+    "start_date", "end_date", "schema_family", "onboarding_meta", "sync_config",
+    "field_mapping", "project_specific_fields_to_raw_extra", "computed_fields",
+    "intent_mapping", "tier_extraction", "title_extraction", "brand_aliases",
+    "capabilities_absent", "compliance", "metrics_from_kv_text",
+    "content_inherit_from_previous_row", "data_supplement_needed",
+    "direction_decomposition", "direction_from_content", "excluded_directions",
+    "reference_sub_direction_prompt",
+}
+
 
 def load_mapping(project_id: str) -> dict:
     """Load `mappings/<project_id>.yaml`. Validates required keys exist
@@ -330,6 +344,20 @@ def load_mapping(project_id: str) -> dict:
     if aliases is not None and (not isinstance(aliases, list)
                                 or not all(isinstance(a, str) and a.strip() for a in aliases)):
         raise ValueError(f"{path}: brand_aliases 必须是非空字符串的列表")
+    # ── 顶层键白名单 (A11, 2026-09-22)────────────────────────────────────────
+    # 拼错一个顶层键, 今天的失效方式是【静默】: 上面每一处都是 m.get(...), 取不到就退成
+    # 默认值, 整段校验跳过。brand_aliases 就是典型 —— 写成 brand_alias 的话 :329 拿到
+    # None, 形状校验整段不跑, 特征层的品牌词典少了一半, 没有任何地方会红。
+    # capabilities_absent 拼错同理(D-056 那套硬规矩全部绕过)。
+    # ⚠️ 挡不住什么(D-051): 只挡【拼错/没登记】的键名, 挡不住键名对但内容错;
+    # 也挡不住漏写一个【本该有】的键 —— 那是 preflight 和各自的形状校验的事。
+    unknown = set(m.keys()) - _ALLOWED_MAPPING_KEYS
+    if unknown:
+        raise ValueError(
+            f"{path}: 未登记的顶层键 {sorted(unknown)}。"
+            f"拼错的话会静默失效(所有读取点都是 .get, 取不到就退默认值); "
+            f"确实要新增就同步加进 _common._ALLOWED_MAPPING_KEYS。"
+        )
     return m
 
 

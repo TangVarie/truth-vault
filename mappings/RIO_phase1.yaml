@@ -16,6 +16,16 @@ version: 1.0
 project_id: RIO_phase1
 brand: RIO                     # 锐澳 RIO(预调鸡尾酒)
 product: 轻享                  # RIO 轻享(低度/微醺线)
+
+# 文案里【实际】会出现的写法(运营 2026-09-22 回填, Q3)。喂内容特征层的品牌词典:
+# feature_bank.py 把 projects.brand + product + 笔记 target_blue_keywords + 这一项合并,
+# 用来答 brand_in_title / brand_first_position / withholds_product_name 几道题。
+# ⚠️ 守卫 no_brand_dict 只在词典【为空】时触发, 挡不住「词典非空但一个词都匹配不上」。
+brand_aliases:
+  - RIO轻享
+  - 白桃樱花味
+  - 金桂梅酒味
+  - 冰酒茉莉味
 category: 酒类                 # ✓ 在受控闭集内(vocab.py)
 platform: xiaohongshu
 schema_family: A               # 最新格式(DECISIONS D-006: RIO/WTG/TXQ = A 家族)。preflight 看是否有 巡查/检查/主页链接 列确认

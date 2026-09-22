@@ -1936,7 +1936,63 @@ jobs:
           n10b, _, _ = s.transform_row(MP10, "r10b", {"文案": "c", "状态": "爆贴", "互动量": 300, "爆帖置顶评论": ""})
           assert "comment_maintained" not in f(n10b), f"置顶列为空不该算干预: {f(n10b)}"
 
-          print("comment_maintained 分来路 × synthetic 正交: all checks passed")
+          # ⑪ 「维护情况」按【取值】分路 (A2, 2026-09-22 运营逐值语义)。
+          #    反证: 若判据退回"列非空即算", 下面 ⑪c 的「✅」会命中 —— 而它是待办不是已铺。
+          M11 = dict(BASE, project_specific_fields_to_raw_extra=[
+              *BASE["project_specific_fields_to_raw_extra"], "维护情况"])
+          for v, want, n_seed in (("关注", TICKET, 20), ("重点关注⭐️", TICKET, 50),
+                                  ("控评&置顶✅", POSTHOC, 0), ("已评待置顶", POSTHOC, 0)):
+              n, _, _ = s.transform_row(M11, "r11", {"文案": "c", "状态": "爆贴", "维护情况": [v]})
+              assert rt(n) == [want], f"维护情况「{v}」该走 {want}: {rt(n)}"
+              assert f(n).get("comment_maintained_seeded", 0) == n_seed, \
+                  f"维护情况「{v}」该记 {n_seed} 条已铺: {f(n)}"
+          # ⑪c 「✅」= 此帖【需要】做50条 = 待办, 一条都不算 —— 列非空即算会在这里红。
+          n11c, _, _ = s.transform_row(M11, "r11c", {"文案": "c", "状态": "爆贴", "维护情况": ["✅"]})
+          assert "comment_maintained" not in f(n11c), f"「✅」是待办, 不该命中任何来路: {f(n11c)}"
+          # ⑪d 同一行两条 route 都在场 —— BJS 6 行「控评&置顶✅」100% 同时带「关注+✅」
+          n11d, _, _ = s.transform_row(M11, "r11d",
+              {"文案": "c", "状态": "爆贴", "维护情况": ["关注", "✅", "控评&置顶✅"]})
+          assert set(rt(n11d)) == {TICKET, POSTHOC}, f"同行两路都要记: {rt(n11d)}"
+          assert f(n11d).get("comment_maintained_seeded") == 20, f(n11d)
+          # ⑪e 多档共存取 max 不求和(20 和 50 描述的是同一批评论, 不是 70 条)
+          n11e, _, _ = s.transform_row(M11, "r11e",
+              {"文案": "c", "状态": "爆贴", "维护情况": ["关注", "重点关注⭐️"]})
+          assert f(n11e).get("comment_maintained_seeded") == 50, f"该取 max 不求和: {f(n11e)}"
+          # ⑪f 「关注情况」不参与铺评判据 —— 运营没给过它的逐值语义, 不猜
+          M11f = dict(BASE, project_specific_fields_to_raw_extra=[
+              *BASE["project_specific_fields_to_raw_extra"], "关注情况"])
+          n11f, _, _ = s.transform_row(M11f, "r11f", {"文案": "c", "状态": "爆贴", "关注情况": ["关注"]})
+          assert "comment_maintained" not in f(n11f), \
+              f"「关注情况」里的「关注」运营没定义过语义, 不许当铺评: {f(n11f)}"
+
+          # ⑫ 投流三态 (A4)。false 只在【声明了「维护情况」】的表里给, 否则缺键。
+          for v in ("9/15🍟", "08/27🍟", "已投流，等回收数据"):
+              n, _, _ = s.transform_row(M11, "r12", {"文案": "c", "状态": "爆贴", "维护情况": [v]})
+              assert f(n).get("paid_promoted") is True, f"投流取值「{v}」漏判: {f(n)}"
+          # ⑫b 🍟 也可能记在「关注情况」里(ANSHEN 2 行 + SPX 1 行, 占三列合计的 15%)
+          n12b, _, _ = s.transform_row(M11f, "r12b", {"文案": "c", "状态": "爆贴", "关注情况": ["9/16🍟"]})
+          assert f(n12b).get("paid_promoted") is True, f"关注情况里的 🍟 漏判: {f(n12b)}"
+          # ⑫c 途鸽把投流记在 tier 源里(「关注后续流量」9 行, 7 行已进书架)
+          n12c, _, _ = s.transform_row(BASE, "r12c", {"文案": "c", "状态": "关注后续流量 爆贴"})
+          assert f(n12c).get("paid_promoted") is True, f"tier 源里的投流标记漏判: {f(n12c)}"
+          # ⑫d 有这一列但没投流取值 → false(运营 2026-09-22:「维护情况」留空=没做维护)
+          n12d, _, _ = s.transform_row(M11, "r12d", {"文案": "c", "状态": "爆贴", "维护情况": ["关注"]})
+          assert f(n12d).get("paid_promoted") is False, f"有列无投流值该判 false: {f(n12d)}"
+          # ⑫e 【没有】这一列 → 缺键, 不是 false。写 false = 拿"这张表没这列"冒充"没投流"。
+          n12e, _, _ = s.transform_row(BASE, "r12e", {"文案": "c", "状态": "爆贴"})
+          assert "paid_promoted" not in f(n12e), f"没有这一列时必须缺键: {f(n12e)}"
+          # ⑫f 只看 _PAID_COLS 这两列, 不许扫整个 raw_extra —— 生产里别的列也带 🍟:
+          #    RIO 有个账号昵称叫「🍟的快乐小记」, ANSHEN 有两条评论区快照带 🍟。
+          #    夹具用一个【已声明进 raw_extra 且不在 _PAID_COLS 里】的列, 才够得着这个场景
+          #    (账号名走 _account_name 中间量, 判据跑完之后才倒进 raw_extra, 测不到)。
+          M12f = dict(BASE, project_specific_fields_to_raw_extra=[
+              *BASE["project_specific_fields_to_raw_extra"], "评论区快照"])
+          n12f, _, _ = s.transform_row(M12f, "r12f",
+              {"文案": "c", "状态": "爆贴", "评论区快照": "楼主是🍟的快乐小记 求链接"})
+          assert "paid_promoted" not in f(n12f), \
+              f"别的列里的 🍟 不是投流标记, 判据不许扫整个 raw_extra: {f(n12f)}"
+
+          print("comment_maintained 分来路 × synthetic 正交 × 维护情况取值 × 投流三态: all checks passed")
           PY
       - name: 评价来源不得伪造成人工 (TV-01)
         working-directory: scripts

@@ -12,6 +12,19 @@ version: 1.0
 project_id: OKMAN_phase1
 brand: OKMAN                    # 策略 lead 定(2026-07-20)
 product: 西地那非口溶膜          # 策略 lead 定(2026-07-20)
+
+# 文案里【实际】会出现的写法(运营 2026-09-22 回填, Q3)。喂内容特征层的品牌词典:
+# feature_bank.py 把 projects.brand + product + 笔记 target_blue_keywords + 这一项合并,
+# 用来答 brand_in_title / brand_first_position / withholds_product_name 几道题。
+# ⚠️ 守卫 no_brand_dict 只在词典【为空】时触发, 挡不住「词典非空但一个词都匹配不上」。
+# ⚠️ 运营这一格与语料对不上, 已列入待问: 文案实写「小超人【快充】口溶膜」
+#   (「小超人口溶膜」只有 4 行); 另有「艾时达」52 行(比 OKMAN 自己的 20 行还多)运营没提。
+#   确认前【不】把艾时达写进来 —— 它也可能是竞品对比里提到的名字, 猜错直接污染 brand_in_title。
+brand_aliases:
+  - okman口溶膜
+  - 科伦口溶膜
+  - 小超人口溶膜
+  - 快充小片
 category: 处方药                # 策略 lead 定(2026-07-20): 西地那非=Rx, 走处方药级合规
 platform: xiaohongshu
 schema_family: A               # A 家族工作流列(巡查状态/最近检查时间/数据回收情况/是否巡查)在 field schema 存在但本期均空(preflight 报"声明了但表里无数据", 正常, 保留作前向 allowlist)

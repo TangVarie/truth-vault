@@ -15,6 +15,14 @@ version: 1.0
 project_id: HXZ_FB
 brand: 花西子
 product: 粉饼
+
+# 文案里【实际】会出现的写法(运营 2026-09-22 回填, Q3)。喂内容特征层的品牌词典:
+# feature_bank.py 把 projects.brand + product + 笔记 target_blue_keywords + 这一项合并,
+# 用来答 brand_in_title / brand_first_position / withholds_product_name 几道题。
+# ⚠️ 守卫 no_brand_dict 只在词典【为空】时触发, 挡不住「词典非空但一个词都匹配不上」。
+# ⚠️ 同 HXZ_QD: 正文 0 行写过「花西子」。
+brand_aliases:
+  - 好气色粉饼
 category: 美妆                  # ✓ 在 projects_category_check 闭集内(同 HXZ_QD)
 platform: xiaohongshu
 schema_family: B               # 沿用 HXZ_QD(同 app, 大概率同 B 家族)—— preflight 看真实字段确认
