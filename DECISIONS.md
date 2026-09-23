@@ -5182,7 +5182,7 @@ owner 判"读者知道这是什么人就算"），TV 原来只认年龄 / 职业
 
 五题题面按 owner 的理由改写，`version: 1 → 2`（`prompts/feature_questions_v0_1.yaml`，改的是
 yes_if / no_if / means / example，即模型看得到的那几行；`bank_version` 仍是 `fq-v0.1`，
-`bank_sha256` 随文件变，`3d299a1e… → 7ceca80e…`）：
+`bank_sha256` 随文件变，`3d299a1e… → 3519081c…`（首版 D-082 误写成 7ceca80e，那是改「状态爆好」措辞之前算的））：
 
 1. **前后转折**：「之后」必须是**已经发生的**状态变化。求助 / 想改 / 纠结 / 渐变（第一个月还好、
    第二个月依赖）/ 一句背景（"戒过一周又抽了"）/ 事和现状在同一天 / 看法变了但没有一件事 /
@@ -5208,7 +5208,8 @@ yes_if / no_if / means / example，即模型看得到的那几行；`bank_versio
   重抽一遍；已跑过的笔记这五题停在 v1。闸二跑之前要么全库重抽这五题（`backfill-features.yml`，
   约 6,170 篇），要么闸二只用 v2 已覆盖的笔记——到时候按 bank_sha256 快照钉住，D-070 附录 B.3 的
   唯一性查询会挡混池。
-- 这 100 篇要**两边重跑**（TV 走 `backfill-features.yml` 的 `note_ids`；Jev 在外面）才能验证题面
+- 这 100 篇要**两边重跑**（TV 走 `backfill-features.yml` 的 `note_ids` **加 `run_tag`**，见下面「续」——不带
+  run_tag 直接触发会被「跑过」标记整篇跳掉、0 次调用；Jev 在外面）才能验证题面
   改了之后一致率有没有上去；owner 裁决那 95 格是 v1 题面下的金标，题面改了它们仍然是同一批原文
   的正确答案（改的是把 owner 的口径写清楚，不是换口径），重跑后直接拿来对。
 
@@ -5225,3 +5226,63 @@ yes_if / no_if / means / example，即模型看得到的那几行；`bank_versio
 - 一致的格子没人看：两边一起错的（尤其被人评价 / 已发生的坏结果 这两题 TV 有 20 格 invalid）这次没查。
 - 题面写进了具体例子（老公 / 能量胶 / 半马），五个闸一项目的用语会往题面里渗，换项目（美妆、母婴）
   时例子可能带偏；闸二跑之前若加项目，先看这五题的例子。
+
+### 续（同日）：按 v2 重跑这 100 篇 —— `backfill-features.yml` 加 `run_tag` / `bank_sha`
+
+owner：「合并 #154，TV 按 v2 重跑这 100 篇」。直接触发会**一篇都不跑**：pass 的"跑过"判据是
+`(extractor, run_tag)` 下标记题那一行，这 100 篇在 `primary` 下已经答过，note_ids 路径原来只发
+`{project, limit, note_ids}`，pass 会把 100 篇全当"已跑过"跳掉、0 次调用、绿着退出。两个改法里选了
+**换 run_tag** 而不是 `reannotate`：`reannotate` 会把 15 道没改的题在 `primary` 下的 v1 行原地覆盖
+（同 PK），报告的基线就变了；换 `run_tag = gate1-v2`，旧答案一字不动，新旧两份可以并排比。
+
+- `backfill-features.yml` 新输入 `run_tag`（默认 primary，只在 note_ids 模式生效，正则同 worker）、
+  `bank_sha`（可空；期望 worker 用的问题库 sha256 前缀）。探针把 worker 日志里的
+  `bank=… sha=… model=… run_tag=…` 那一行捞出来打进 run 日志：sha 前缀对不上就停（Railway 还没部署到
+  带 v2 题面的 main，拿旧题面烧 100 篇是白烧）；`run_tag` 没出现在那一行也停（旧 worker 会吞掉 run_tag
+  落到 primary）。
+- `scripts/gate1_agreement.py`：`--tv-run-tag`（拼进 SQL 前过同一条正则），pivot 多一列 `owner`
+  （human:owner 的裁决），报告多一列"owner 裁过的格：TV 对 · Jev 对 · n"；同一 run_tag 下混着
+  两个 question_version 时取高的那一行并在报告顶部注明。
+- 反证（本地假 worker 回放 note_ids 步）：新 worker + sha 对上 → 4 篇 4 个请求全带 run_tag；sha 给错
+  → 探针即停、1 个请求（dry_run）；旧 worker（无 note_ids_count）→ 停；认识 note_ids 但吞 run_tag 的
+  worker → 停；`run_tag` 含 `;` → 校验步红；非 note_ids 模式给 run_tag ≠ primary 或给 bank_sha → 校验步红。
+- 挡不住什么：探针只看第一篇所在项目的 worker 响应，跑到一半 Railway 重新部署换了题库它看不见
+  （落库的 `bank_sha256` 会不一样，事后能查出来）。
+
+### 续 2（同日）：codex review on #154 的 7 条，逐条查了
+
+| # | 说了什么 | 查证 | 改了什么 |
+|---|---|---|---|
+| ① P1 | pivot 只按 (篇, 题) join，升版重跑后旧 v1 行还在同一 run_tag 下，`max()` 会把两版并成一份、TV 侧两个抽取器会重复计样 | 成立（本次 run_tag 分开所以没踩到，但 primary 下 features-sync 以后写 v2 就会混） | `gate1_agreement.py` **先钉快照再算**：pivot 带 `tv_snapshots`（extractor@sha8#v）/ `tv_n` / `jev_versions` / `jev_shas`；混了两个 (extractor, bank_sha256)、同题两个版本、一格多行、Jev 侧混版本 → `SystemExit` 列出看到的快照，用 `--tv-extractor` / `--tv-bank-sha` 钉住。反证：夹具里 N2/q1 两版 + N3/q1 两抽取器 → 拒；钉住 `llm:m` + `3d299a1e` → 过 |
+| ② P2 | 一边恒定时 κ 返回 0.00 而不是「不可算」，效果承诺 / 故意不说名字被当成普通的不过 | 成立（v1 报告 7 不过里那 2 题就是这样进的，当时只在手写节里说明） | `kappa()` 任一边取值 < 2 种 → None；报告重生成：**13 过 / 5 不过 / 2 κ 不可算** |
+| ③ P2 | 拿别人对照 v2 的正例「别的妈妈都给孩子用这个」只有别人那一半，和 yes_if 打架 | 成立 | 改成「别的妈妈都给孩子用这个，就我家还在用老办法」，`comparison_group` **version 3**（改例子 = 改边界 = +1；题库 digest 随之 `3519081c… → ba0f570c…`，gate1-v2 那一跑落的是 3519081c）。v3 没重跑——只比 v2 更严不会更松，闸二前若重抽这题按 v3 |
+| ④ P2 | `gate1_agreement` 从 `build_gate1_human_sheets` 拿 SHORT，顶层就 import openpyxl，而 openpyxl 不在 requirements 里 → `--print-sql` 都跑不了 | 成立 | 标签挪到零依赖的 `scripts/gate1_labels.py`，三个脚本都从那儿拿；进 CI 编译清单 |
+| ⑤ P2 | 默认路径调 `exec_sql` RPC，库里没有这个函数 | 成立（当时只用了 `--from-json`） | 读库改走表 API：按 (extractor, question_id) 一请求、subject 列表 `in_()` ≤100 一批（D-080）、单请求拿满 1000 行即拒（PostgREST max-rows 钳位不能当取全）；SQL 与 Python 两条路出同一形状，夹具上四组参数逐行相等 |
+| ⑥ P1 | 文档写的重跑不带 `reannotate`，会被 done marker 整篇跳掉 | 成立 | 就是上面「续」：加的是 `run_tag`（不是 `reannotate`，理由见上），探针核 run_tag 生效 |
+| ⑦ P2 | 记的 sha `7ceca80e…` 不是提交文件的 digest | 成立 | 已改 `3519081c…`（d99787f） |
+
+改完自己再审了一遍（三个视角各找、逐条反驳），又抓出四条，一并改了：owner 那列把「TV 没答 / Jev 争议」
+的格子算进 n、等于把"没答"记成"都不对"→ 这类格子单独记「没答 k」不进 n；SQL 的 `j` CTE 数版本时没按
+extractor 过滤，9/28 人标（`human:<姓名>`）一落同一 run_tag 就会让 SQL 路拒算而 Python 路照算（两条路
+不再同形）→ 两条路都只认三张表的 extractor，owner 单独按 `--owner-run-tag` 取，Jev 重跑用 `--jev-run-tag`
+/ `--jev-bank-sha` 钉；报告表头的 run_tag 原来印的是命令行参数，`--from-json` 时和 pivot 对不上也不报 →
+run_tag 写进 pivot 每一行，表头从 pivot 读，参数与之不一致就退出；替换进 SQL 的 like 片段写成了 `%%`（PG
+里是两个通配符，结果碰巧对）→ 单个 `%`。反证：夹具加 `human:zhang` 同 tag 行、Jev v2 行落 gate1-v2、
+owner 格 TV invalid、Jev 争议——六组 pins 下 SQL 与 Python 逐行相等，混快照仍拒，参数与 pivot 不一致拒。
+
+### 续 3（同日）：按 v2 题面重跑的结果
+
+run 35854395092，11:25–13:14 UTC，100 篇全落（`gate1-v2`，五题 v2、其余 v1，sha `3519081c…`）。报告
+`data-analysis/gate1-jev-vs-tv-v2-2026-09-23.md`（脚本加了 `--retest-json`：同一 TV 两次跑逐题一致率）。
+
+- **五题对 owner 的命中 66/95 → 84/91**（交代身份 4→15、第一句类型 10→14、产品角色 16→19；前后转折 /
+  拿别人对照本来就对）。改题面的目的达到。
+- **和 Jev 的一致率在这五题上略降**——Jev 仍是 v1 题面且 owner 已裁它错，TV 越贴 owner 越不贴 Jev；这张表
+  的过 / 不过不评 v2 题面。Jev 重跑在外面，落新 run_tag 再用 `--jev-run-tag` 算。
+- **模型自身抖动**：15 道没改的题两次跑一致率 0.94–1.00、κ 0.66–1.00；三道低正例题因此在 Jev 那边从过掉成
+  不过（请读者讲经历 κ 0.50、会有人反对的判断 0.58、已发生的坏结果 0.84/0.68）。§6.1 的线对低正例题在
+  100 篇上站不稳——加样本，或对这类题只看一致率；以后每次改题先量抖动。
+- **校验没过 49 → 75，大头 `missing`（59 格 / 14 篇）**，集中在 G6 组（被人评价 / 已发生的坏结果 / 前后转折
+  同一次调用，答到后面就漏；44 格两次都漏）。这是 `annotate_feature_pass` 的缺题处理，不是题面——G6 拆单题
+  问或只重问缺的题。**下一件事先修它**。
+- 挡不住什么：owner 只裁过 v1 的分歧格；v2 新出现的分歧（TV v2 vs Jev v1 不一致而 owner 没看过的）没有金标。
