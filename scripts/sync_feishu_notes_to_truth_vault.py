@@ -294,7 +294,33 @@ _COMMENT_MAINTAINED_TIER_RE = re.compile(r"控评")
 # 但它【不是】假爆款: 标了它的帖子互动量比没有任何干预信号的爆款还高。
 _COMMENT_MAINTAINED_STATUS = ("改评发布", "二次评论", "改评显示")
 # ① 铺评工单列: 列存在且非空即算 —— 这类列本身就是"给这条铺了多少评论"的工单。
-_CM_TICKET_COLS = ("维护评论50条", "评论铺设情况")
+#   2026-09-22 摘掉「评论铺设情况」(A1): 它是 RIO 的列, 22 行的取值是
+#   「回收数据通过✅」17 /「已回收」3 /「已完成」2 —— 是【数据回收状态】不是评论文案
+#   (对比途鸽同类列值长度中位 1253 字符 = 50 条评论正文)。运营 2026-09-17 也确认
+#   "只有途鸽的表单涉及维护评论50条, 其他不会如此大量做评论"。
+#   误判代价实测: 它把 RIO_phase1_recvgbrQYP7KEh(tier=爆、互动量 408、已有经验卡标注)
+#   同时踢出了 L2 正例和书架。
+#   ⚠️ 挡不住什么(D-051): 如果以后真有别的项目开一列叫「评论铺设情况」并往里填评论
+#   文案, 这条判据认不出来 —— 新列要进 _CM_TICKET_COLS 得先看值。
+_CM_TICKET_COLS = ("维护评论50条",)
+_CM_TICKET_SEEDED = {"维护评论50条": 50}   # 该列代表已铺的条数(运营 2026-09-22 确认计入评论数)
+
+# ③ 「维护情况」多选列 —— 按【取值】判, 不是"非空即算"(运营 2026-09-22 逐值语义)。
+#   运营原文: 关注=做了20条维护评论 · 重点关注⭐️=做了50条 · ✅=此帖【需要】做50条 ·
+#            控评&置顶✅=已完成控评和置顶2个动作 · 已评待置顶=已控评未置顶成功。
+#   2026-09-22 运营二次确认: 这些铺的评论【都算进】表里看到的评论数。
+#   于是可以直接做减法, 不用再靠"互动量远低于评论数"去推:
+#     带「关注」且 tier∈爆/大爆 的 14 行, 扣掉 20 条之后 12 行掉到 29~36(全部 <50 的爆贴线),
+#     只有 2 行还在线上 —— 而那 2 行正是互动量 178 / 282 的真赢家。
+#     算术分组与按互动量形态分的组【逐行一致】。
+#   ⚠️ 这里【只记条数、不改 tier】。要不要按减法重判 tier 是 owner 的决定(见 PR #152),
+#   因为同一行可能同时带「控评&置顶✅」(route ②, 按 D-060 应保留为正例)。
+#   ⚠️ 只对「维护情况」生效。「关注情况」里也有「关注」「重点关注」, 但运营没给过它的
+#   逐值语义(mappings 里记的是"运营手记"), 不猜 —— 它只参与下面的投流判据(🍟 是明确的)。
+_CM_MULTISELECT_COL = "维护情况"
+_CM_MV_TICKET = {"关注": 20, "重点关注⭐️": 50}   # 取值 → 已铺的条数
+_CM_MV_POSTHOC = ("控评&置顶✅", "已评待置顶")
+_CM_MV_TODO = ("✅",)        # "需要做50条" = 待办, 【不算已铺】, 一条都不减
 # ② 起量后干预列: 列名里就写着【爆帖】+ 控评/置顶, 是对已起量帖子的二次运营。
 #   2026-09-16 codex PR#128 P2 补: 这两列此前完全在检测视野之外 ——
 #   爆帖控评置顶(HXZ_QD 3 行)全部漏网, 爆帖置顶评论(HXZ_FB 9 行)漏 5 行。
@@ -302,6 +328,21 @@ _CM_TICKET_COLS = ("维护评论50条", "评论铺设情况")
 #   但"记下置顶的是哪条评论"和"做了置顶这个动作"是两回事, 无法从数据分辨。
 #   已列入给运营的待确认清单(ops-request 第一部分), 确认前不猜。
 _CM_POSTHOC_COLS = ("爆帖控评置顶", "爆帖置顶评论")
+
+# ── 投流标记(2026-09-22 运营回填件确认「关注后续流量」是投流标记)─────────────
+# 运营 2026-09-22: 🍟 = 做了小红书的薯条投流, 前面的日期是投流日期;
+#                  「维护情况」留空 = 没有做维护 → 有这一列的表, 无值可判 false。
+# 实测投流标记散在【三处】且互不重叠(共 20 行): 维护情况 8 · 关注情况 3 · 途鸽的
+# tier 源含「关注后续流量」9。只读「维护情况」漏 12/20 = 60%。
+# ⚠️ 判据按【数组元素】匹配, 不扫整个 raw_extra —— 全 blob 扫 🍟 会误收 RIO 的账号昵称
+# 「🍟的快乐小记」和 ANSHEN 的两条评论区快照。
+# 【为什么是三态不是布尔】: 无值只在【声明了这一列】的表里等于"没投流"; 没有这一列的
+# 表(今天 13 张)无值只是"不知道"。写 false 会是假阴性冒充已核实 —— 同 comment_maintained。
+# ⚠️ 挡不住什么(D-051): 挡不住运营投了流但一个标记都没打; 也挡不住把投流后的曝光数
+# 填回「曝光量」列 —— 后者靠 metric_snapshots 的历史快照对账(投流日期就写在 🍟 里)。
+_PAID_COLS = ("维护情况", "关注情况")
+_PAID_VALUE_EXACT = ("已投流，等回收数据",)
+_PAID_TIER_SRC_RE = re.compile(r"关注后续流量")
 
 
 # 判据本体已移到 _common.skip_on_demand_on_cron —— daily-sync 里【每一步】自动处理都要用
@@ -898,7 +939,18 @@ def transform_row(
         note["data_quality_flags"] = flags
 
     # ── 评论区人工干预标记(见文件头 _COMMENT_MAINTAINED_* 三个常量的判据)──────────
-    # 三路信号任一成立即为 true。三路都【不在场】时不写这个键 —— 与 synthetic 的处理不同:
+    # 【六处判据点 / 两条 route】任一成立即为 true(2026-09-22 更正: 此前写"三路信号",
+    # 与代码对不上, 照它数来路会漏掉 pinned_comment 和 _CM_POSTHOC_COLS)。判据点是:
+    #   ① tier 源含「控评」          → route ②
+    #   ② _CM_TICKET_COLS 列非空      → route ①
+    #   ③ _CM_POSTHOC_COLS 列非空     → route ②
+    #   ④ typed 列 pinned_comment 非空 → route ②
+    #   ⑤ 「评论状态」含后验干预取值   → route ②
+    #   ⑥ 「维护情况」按取值分路       → route ① 或 ②(2026-09-22 新增)
+    # ⚠️ 挡不住什么(D-051): 挡不住只在别的列里记铺评的表。判据点 ⑥ 上线前,
+    # BJS/ANSHEN 有 14 行 爆/大爆 运营自己标了「关注」(=已铺20条)而 TV 一行都没标,
+    # 14 行已推 ssll、14 行在书架、11 行在 L2 正例。
+    # 全部判据都【不在场】时不写这个键 —— 与 synthetic 的处理不同:
     #   synthetic 只要"能判定"就显式写 true/false(否则运营改了状态旧值会残留);
     #   这里没有"能判定"的对称概念 —— 一张表压根没有控评列, 不等于它的帖子没被控评,
     #   写 false 会是【假阴性冒充已核实】。宁可缺键, 让下游区分"没被控评"和"不知道"。
@@ -921,9 +973,29 @@ def transform_row(
         v = _re_all.get(col)
         return v if v not in (None, "", []) else _re_und.get(col)
 
+    cm_seeded = 0          # 运营自己铺进去、且【计入评论数】的条数(2026-09-22 确认)
     for _col in _CM_TICKET_COLS:
         if _cm_cell(_col) not in (None, "", []):
             _cm_hit(_CM_ROUTE_TICKET, f"挂了铺评工单列「{_col}」")
+            cm_seeded = max(cm_seeded, _CM_TICKET_SEEDED.get(_col, 0))
+    # ⑥ 「维护情况」多选 —— 按取值分路(A2)。同一行可以同时命中两条 route:
+    #   实测 BJS 6 行「控评&置顶✅」100% 同时带「关注+✅」, 按行拆不开;
+    #   SPX 23 行「控评&置顶✅」里只有 1 行与铺评类共现。所以不做二选一。
+    _mv = _cm_cell(_CM_MULTISELECT_COL)
+    if _mv not in (None, "", []):
+        _mv_items = _mv if isinstance(_mv, list) else [_mv]
+        _mv_items = [str(v).strip() for v in _mv_items if str(v).strip()]
+        for _v in _mv_items:
+            if _v in _CM_MV_TICKET:
+                _n = _CM_MV_TICKET[_v]
+                _cm_hit(_CM_ROUTE_TICKET,
+                        f"「{_CM_MULTISELECT_COL}」取值「{_v}」= 已铺 {_n} 条评论")
+                cm_seeded = max(cm_seeded, _n)
+            elif _v in _CM_MV_POSTHOC:
+                _cm_hit(_CM_ROUTE_POSTHOC,
+                        f"「{_CM_MULTISELECT_COL}」取值「{_v}」= 对已起量帖做的二次运营")
+            # _CM_MV_TODO(「✅」= 需要做50条)是【待办】, 既不算已铺也不算干预, 故意不判。
+            # 投流取值(🍟 / 已投流)由 paid_promoted 那一路处理, 这里不碰。
     for _col in _CM_POSTHOC_COLS:
         if _cm_cell(_col) not in (None, "", []):
             _cm_hit(_CM_ROUTE_POSTHOC, f"挂了爆帖控评/置顶列「{_col}」")
@@ -948,6 +1020,38 @@ def transform_row(
         # JSON, 看上去像数据在变。
         flags["comment_maintained_routes"] = sorted(cm_routes)
         flags["comment_maintained_reason"] = "; ".join(cm_reasons)
+        # 运营 2026-09-22 确认铺的评论【计入】表里看到的评论数 → 下游可以直接减。
+        # 【只记不减】: 是否按减法重判 tier 要 owner 拍板(PR #152 B1), 这里不动 tier。
+        # 取 max 而不是求和: 同一行的多个标记描述的是同一批评论(「关注」+「重点关注⭐️」
+        # 是 20 和 50 两档, 不是 70 条), 求和会重复计数。
+        if cm_seeded:
+            flags["comment_maintained_seeded"] = cm_seeded
+        note["data_quality_flags"] = flags
+
+    # ── 投流三态(A4)。写 data_quality_flags.paid_promoted: True/False/缺键 ────────
+    _paid_hits: list[str] = []
+    for _col in _PAID_COLS:
+        _pv = _cm_cell(_col)
+        if _pv in (None, "", []):
+            continue
+        for _v in ([str(x).strip() for x in _pv] if isinstance(_pv, list) else [str(_pv).strip()]):
+            if not _v:
+                continue
+            if "🍟" in _v or "投流" in _v or _v in _PAID_VALUE_EXACT:
+                _paid_hits.append(f"「{_col}」取值「{_v}」")
+    if tier_src_seen and _PAID_TIER_SRC_RE.search(tier_src_str):
+        _paid_hits.append("tier 源含「关注后续流量」(运营 2026-09-22: 投流会给的标记)")
+    if _paid_hits:
+        flags = dict(note.get("data_quality_flags") or {})
+        flags["paid_promoted"] = True
+        flags["paid_promoted_reason"] = "; ".join(_paid_hits)
+        note["data_quality_flags"] = flags
+    elif _CM_MULTISELECT_COL in fields_to_raw_extra:
+        # 这张表有「维护情况」这一列, 而运营 2026-09-22 明确"留空 = 没有做维护" →
+        # 可以判 false。没有这一列的表走 else: 不写键 = 不知道。
+        flags = dict(note.get("data_quality_flags") or {})
+        flags["paid_promoted"] = False
+        flags.pop("paid_promoted_reason", None)
         note["data_quality_flags"] = flags
 
     # Any intermediate that wasn't consumed above (e.g. _account_name,

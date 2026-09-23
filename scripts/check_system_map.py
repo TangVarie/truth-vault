@@ -30,6 +30,8 @@ import re
 import sys
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parent.parent
 MAP_DOC = ROOT / "docs" / "00-START-HERE.md"
 LIGHTS_DOC = ROOT / "docs" / "29-lights-registry.md"
@@ -39,7 +41,7 @@ FEATURES_WF = ROOT / ".github" / "workflows" / "features-sync.yml"
 # G2 的棘轮基线。2026-09-21 实测 ci.yml 里 79 个内联 heredoc 块。
 # ⚠️ 这个数【只许往下调】。要加新守卫就写成 scripts/ 里的脚本, ci.yml 里只留调用
 #    —— 那样不增加 heredoc 块数, 这条闸不会挡你。
-CI_HEREDOC_CAP = 79
+CI_HEREDOC_CAP = 78
 HEREDOC = "<<'PY'"
 
 
@@ -261,10 +263,89 @@ def check_features_batch(verbose: bool = True) -> list[str]:
 
 # ══════════════════════════════════════════════════════════════════════
 
+# ── G5: 投流/维护三列永不映指标列 (A13, 2026-09-22)────────────────────────────
+# 运营 2026-09-22 确认:「维护效果」填的是【投流前后的曝光量差额】, 投流之后「曝光量」
+# 那一列也会被改成投流后的新数字。两件事合起来, 最容易犯的错是把「维护效果」或
+# 「维护时间」映到 impressions / reads / interactions / comments_count ——
+# 一旦映了, 投流的人工干预量会直接变成这条帖的自然指标, 而且【从数据上看不出来】
+# (两个数字长得一模一样)。
+# 今天没有任何一份 mapping 这么映, 这条是【前向】守卫: 新表按 _template 抄过去的时候
+# 很容易顺手把三列升成 typed。
+# ⚠️ 挡不住什么(D-051):
+#   · 挡不住运营在飞书那一端把投流后的数字填回「曝光量」—— 那是 metric_snapshots
+#     的历史快照去对账的事(投流日期写在「维护情况」的 9/15🍟 值里)。
+#   · 挡不住把三列映到【别的】typed 列(比如 raw 文本列), 只钉住这四个指标列。
+#   · 只看 field_mapping 的 value, 不看 computed_fields。
+_PROMO_COLS = ("维护情况", "维护时间", "维护效果")
+_METRIC_COLS = ("impressions", "reads", "interactions", "comments_count",
+                "likes", "saves", "shares")
+
+
+def check_promo_not_metric(verbose: bool = True) -> list[str]:
+    problems: list[str] = []
+    n_declared = 0
+    for f in sorted(ROOT.glob("mappings/*.yaml")):
+        m = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
+        fm = m.get("field_mapping") or {}
+        allow = set(m.get("project_specific_fields_to_raw_extra") or [])
+        for col in _PROMO_COLS:
+            if col in allow:
+                n_declared += 1
+            tgt = fm.get(col)
+            if tgt in _METRIC_COLS:
+                problems.append(
+                    f"{f.name}: field_mapping 把「{col}」映到了 {tgt} —— "
+                    f"这一列装的是投流的人工干预量, 映进指标列之后就再也分不出来了。"
+                    f"它只能进 project_specific_fields_to_raw_extra。")
+    if verbose:
+        print(f"  G5 投流三列零指标映射 (三列共在 {n_declared} 处声明进 raw_extra)")
+    return problems
+
+
+# ══════════════════════════════════════════════════════════════════════
+# G6 · ci.yml 的【体积】棘轮
+# ══════════════════════════════════════════════════════════════════════
+#
+# 2026-09-22 撞出来的硬闸, 不是风格问题:
+#   511,110 字节 → CI 正常跑
+#   516,314 字节 → GitHub **startup_failure**: 0 个 job、瞬间红、日志里什么都没有,
+#                  运行列表里连 workflow 名都显示不出来(退成文件路径 .github/workflows/ci.yml)。
+# 也就是说超限之后【整个 CI 不跑】, 而表面看只是"红了一下"。这是最难查的一类红。
+# G2 数的是 heredoc 块【数】, 挡不住"块数不变但每块越写越长"—— 这次就是这么超的
+# (只加了一个步骤里的 14 条断言 + 注释)。所以要再加一把尺子量字节。
+#
+# 挡【不】住:
+#   · 挡不住别的 workflow 文件超限(只量 ci.yml)。
+#   · 上限是【经验值】不是 GitHub 文档值 —— 我只知道 511,110 能跑、516,314 不能。
+#     所以卡在 505,000: 比已知能跑的还低 6KB, 留一点余量, 且逼着新守卫往 scripts/ 走。
+#   · 挡不住"把内容挪进 scripts/ 但那个脚本本身是空跑"。那是各自反证的事。
+CI_BYTES_CAP = 505_000
+
+
+def check_ci_size(verbose: bool = True) -> list[str]:
+    if not CI.exists():
+        return [".github/workflows/ci.yml 不在了"]
+    n = len(CI.read_bytes())
+    if verbose:
+        print(f"  G6 ci.yml {n:,} 字节 (上限 {CI_BYTES_CAP:,}; 实测 516,314 会 startup_failure)")
+    if n > CI_BYTES_CAP:
+        return [
+            f"ci.yml 涨到 {n:,} 字节, 超过 {CI_BYTES_CAP:,}。"
+            "实测 516,314 字节时 GitHub 直接 startup_failure —— 0 个 job, 整个 CI 不跑, "
+            "而且日志里看不出原因。把新加的内联块抽成 scripts/ 里的脚本, "
+            "ci.yml 只留一行调用(D-075)。"]
+    return []
+
+
 CHECKS = {"g1": ("数据流向图", check_map),
           "g2": ("ci.yml 内联棘轮", check_ci_ratchet),
           "g3": ("灯登记册", check_lights),
-          "g4": ("features 批大小与实测记录", check_features_batch)}
+          "g4": ("features 批大小与实测记录", check_features_batch),
+          "g5": ("投流三列不得映指标列", check_promo_not_metric),
+          "g6": ("ci.yml 体积棘轮", check_ci_size)}
+
+
+
 
 
 def main() -> int:

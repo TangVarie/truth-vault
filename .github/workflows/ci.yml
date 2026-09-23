@@ -1816,128 +1816,9 @@ jobs:
           print("  ✓ transform_row 走 _SYNTHETIC_TIER_SRC_RE, 无写死字符串残留")
           print("\nsynthetic 伪爆帖/伪爆贴: all checks passed")
           PY
-      - name: comment_maintained 分来路记录, 与 synthetic 正交 (D-060)
+      - name: comment_maintained 分来路 × synthetic 正交 × 维护情况取值 × 投流三态 (D-060 / A2 / A4)
         working-directory: scripts
-        run: |
-          python - <<'PY'
-          # owner 2026-09-16: "评论数过了50, 但这有可能是我们刷的, 所以其真实的流量一般般"
-          #
-          # 第一版只写一个布尔, 被 codex PR#128 P1 指出内部矛盾。查实测(爆款内按来路分):
-          #     ① 铺评工单   n=28  中位互动 13
-          #     ② 起量后干预 n=39  中位互动 856~1225
-          #     ④ 无干预信号 n=306 中位互动 303
-          # ② 比【完全没有干预信号】的爆款还高 3~4 倍 —— 是真赢家(对已爆的帖做二次运营)。
-          # 所以 codex 建议的"把 comment_maintained=true 整体剔出训练集"是【错的】,
-          # 那会删掉 39 条最真的爆款。真正的问题是一个布尔拆不开两种相反语义 → 改记 routes。
-          #
-          # 本守卫钉住四件事, 全部断行为不断源码字符串(D-051):
-          #   (1) 两条来路必须【分开】记, 不许合并;
-          #   (2) 爆帖控评置顶 / 爆帖置顶评论 两列必须认(codex P2: 此前完全漏网);
-          #   (3) routes 顺序必须【跨进程】确定, 否则 upsert 每晚写出不同 JSON;
-          #   (4) 不许并进 synthetic —— 真爆贴也会控评。
-          import os, sys, json, subprocess
-          import sync_feishu_notes_to_truth_vault as s
-          TICKET, POSTHOC = s._CM_ROUTE_TICKET, s._CM_ROUTE_POSTHOC
-
-          BASE = {
-              "project_id": "TEST_CM", "platform": "xiaohongshu",
-              "field_mapping": {"文案": "raw_content", "互动量": "interactions", "状态": "_status_raw"},
-              "tier_extraction": {"source": "状态字段", "rules": [
-                  {"match_contains": ["伪爆贴"], "tier": "爆"},
-                  {"match_contains": ["爆贴"], "tier": "爆"},
-                  {"match_contains": ["无水花"], "tier": "趴"}]},
-              "project_specific_fields_to_raw_extra": [
-                  "维护评论50条", "评论铺设情况", "爆帖控评置顶", "爆帖置顶评论", "评论状态"],
-          }
-          def f(n): return n.get("data_quality_flags") or {}
-          def rt(n): return f(n).get("comment_maintained_routes")
-
-          # ① tier 源含「控评」→ 起量后干预; synthetic 仍 false; tier 不变
-          n1, _, _ = s.transform_row(BASE, "r1", {"文案": "c", "状态": "爆贴 控评✅", "互动量": 500})
-          assert rt(n1) == [POSTHOC], rt(n1)
-          assert f(n1).get("synthetic") is False, f"控评被误判成假爆款, 真赢家会被删出飞轮: {f(n1)}"
-          assert n1["tier"] == "爆", f"这个标记不该动 tier: {n1.get('tier')!r}"
-
-          # ② 铺评工单列 → 铺评工单(必须与 ① 分开)
-          for col in s._CM_TICKET_COLS:
-              n, _, _ = s.transform_row(BASE, "r2", {"文案": "c", "状态": "爆贴", col: "评论1 评论2"})
-              assert rt(n) == [TICKET], f"{col} 该走铺评工单而非起量后干预: {rt(n)}"
-              n0, _, _ = s.transform_row(BASE, "r2b", {"文案": "c", "状态": "爆贴", col: ""})
-              assert "comment_maintained" not in f(n0), f"{col} 为空不该命中: {f(n0)}"
-
-          # ③ 爆帖控评/置顶列 → 起量后干预 (codex P2: HXZ_QD 3 行全漏, HXZ_FB 9 行漏 5)
-          for col in s._CM_POSTHOC_COLS:
-              n, _, _ = s.transform_row(BASE, "r3", {"文案": "c", "状态": "爆贴", col: "x"})
-              assert rt(n) == [POSTHOC], f"{col} 该走起量后干预: {rt(n)}"
-
-          # ④ 评论状态: 只认后验干预值, 常规值放行
-          for v in s._COMMENT_MAINTAINED_STATUS:
-              n, _, _ = s.transform_row(BASE, "r4", {"文案": "c", "状态": "爆贴", "评论状态": v})
-              assert rt(n) == [POSTHOC], f"{v}: {rt(n)}"
-          for v in ("没有显示", "显示评论", "正常发布", "待评论", "无需控评"):
-              n, _, _ = s.transform_row(BASE, "r4b", {"文案": "c", "状态": "爆贴", "评论状态": v})
-              assert "comment_maintained" not in f(n), f"{v} 是常规状态, 不该命中: {f(n)}"
-
-          # ⑤ 两条来路同时在场 → 都记, 且顺序【跨进程】确定。
-          #    set 的迭代序随 PYTHONHASHSEED 变, 单进程内测不出来 —— 第一版这条断言写成
-          #    `rt == sorted(rt)`, 反证(把 sorted 换成 list)时【没有变红】, 因为单次运行里
-          #    set 序恰好等于排序序。必须起子进程换种子才测得到。
-          n5, _, _ = s.transform_row(BASE, "r5", {"文案": "c", "状态": "爆贴 控评✅", "维护评论50条": "x"})
-          assert set(rt(n5)) == {TICKET, POSTHOC}, rt(n5)
-          probe = (
-              "import sys;sys.path.insert(0,%r);import sync_feishu_notes_to_truth_vault as s,json;"
-              "n,_,_=s.transform_row(%r,'p',{'文案':'c','状态':'爆贴 控评✅','维护评论50条':'x'});"
-              "print(json.dumps(n['data_quality_flags']['comment_maintained_routes'],ensure_ascii=False))"
-          ) % (os.getcwd(), BASE)
-          outs = set()
-          for seed in ("0", "1", "42", "12345"):
-              env = {**os.environ, "PYTHONHASHSEED": seed}
-              outs.add(subprocess.run([sys.executable, "-c", probe], capture_output=True,
-                                      text=True, env=env, check=True).stdout.strip())
-          assert len(outs) == 1, f"routes 顺序随 PYTHONHASHSEED 变, upsert 每晚会写出不同 JSON: {outs}"
-          assert json.loads(outs.pop()) == sorted([TICKET, POSTHOC]), "routes 必须排序后写"
-
-          # ⑥ 飞书多选回的是 list —— 库里「评论状态」实际存成 '["二次评论"]'
-          n6, _, _ = s.transform_row(BASE, "r6", {"文案": "c", "状态": "爆贴", "评论状态": ["二次评论"]})
-          assert rt(n6) == [POSTHOC], f"list 形态漏判(库里就是这个形态): {rt(n6)}"
-
-          # ⑦ 未声明列路径(D-055 _undeclared) —— BJS/SPX 的「评论状态」就是未声明的
-          M7 = dict(BASE); M7["project_specific_fields_to_raw_extra"] = []
-          n7, _, und7 = s.transform_row(M7, "r7", {"文案": "c", "状态": "爆贴", "爆帖置顶评论": "x"})
-          assert "爆帖置顶评论" in und7, f"前提不成立(该列应落入 undeclared): {und7}"
-          assert rt(n7) == [POSTHOC], f"_undeclared 路径漏判: {rt(n7)}"
-
-          # ⑧ 三路都不在场 → 缺键, 不是 false。
-          #    写 false = 用"这张表没有控评列"冒充"这条没被控评", 是假阴性。
-          n8, _, _ = s.transform_row(BASE, "r8", {"文案": "c", "状态": "无水花", "互动量": 2})
-          assert "comment_maintained" not in f(n8) and "comment_maintained_routes" not in f(n8), \
-              f"缺信号时必须缺键, 不许写 false: {f(n8)}"
-          assert f(n8).get("synthetic") is False, f"synthetic 的显式 false 不受影响: {f(n8)}"
-
-          # ⑨ 两个 flag 同时在场时互不干扰
-          n9, _, _ = s.transform_row(BASE, "r9", {"文案": "c", "状态": "伪爆贴500 控评✅", "互动量": 500})
-          assert f(n9).get("synthetic") is True and f(n9).get("comment_maintained") is True, f(n9)
-          assert rt(n9) == [POSTHOC], rt(n9)
-          assert "伪爆贴" in f(n9).get("synthetic_reason", ""), f(n9)
-
-          # ⑩ typed 列 pinned_comment 非空 → 起量后干预 (D-062, owner 拍板并入 route ②)。
-          #    模板把「爆帖置顶评论」映成 typed 列, raw_extra 里查不到那一列 —— 上面按列名找的
-          #    循环会漏掉它(生产 127 行, 126 行是爆款)。运营确认这列记的是"第一屏有没有置顶显示",
-          #    置顶只有作者能做 → 属起量后动作。
-          #    ⚠️ 夹具要把这列【从 allowlist 里拿掉】: BASE 为了测 HXZ 那种未映射的表把它列在
-          #    raw_extra allowlist 里, 留着的话值会同时落进 raw_extra, 上面按列名找的循环就把它
-          #    兜住了 —— 反证时去掉 typed 分支 flag 照样 True, 断言变成空跑(第一版就是这样)。
-          MP10 = dict(BASE, field_mapping={**BASE["field_mapping"], "爆帖置顶评论": "pinned_comment"},
-                      project_specific_fields_to_raw_extra=[c for c in BASE.get("project_specific_fields_to_raw_extra", [])
-                                                            if c != "爆帖置顶评论"])
-          n10, _, _ = s.transform_row(MP10, "r10", {"文案": "c", "状态": "爆贴", "互动量": 300, "爆帖置顶评论": "第一条置顶"})
-          assert f(n10).get("comment_maintained") is True and rt(n10) == [POSTHOC], f(n10)
-          assert "pinned_comment" in f(n10).get("comment_maintained_reason", ""), f(n10)
-          n10b, _, _ = s.transform_row(MP10, "r10b", {"文案": "c", "状态": "爆贴", "互动量": 300, "爆帖置顶评论": ""})
-          assert "comment_maintained" not in f(n10b), f"置顶列为空不该算干预: {f(n10b)}"
-
-          print("comment_maintained 分来路 × synthetic 正交: all checks passed")
-          PY
+        run: python check_comment_maintained.py
       - name: 评价来源不得伪造成人工 (TV-01)
         working-directory: scripts
         run: |
@@ -2224,6 +2105,27 @@ jobs:
                _mock.patch.object(m, "fetch_pending_decisions", lambda sb, since: []), \
                _mock.patch.object(_sys, "argv", ["x", "--dry-run"]):
               assert m.main() == 0, "干净库不许红"
+
+          # ⑨ in_() 列表走 URL, 边缘按整个请求头 ≈26 KB 回 400 (daily-sync #179: 623 条撞线)。
+          #    假 builder 照那条线撞: 700 条 item 一次塞进 in_() 就炸, 分批必须一条不少地拿回。
+          class PQCap(PQ):
+              def in_(self, col, vals):
+                  vals = list(vals)
+                  if col == "autowriter_item_id" and sum(len(v) + 3 for v in vals) > 24_000:
+                      raise Exception("{'message': 'JSON could not be generated', 'code': 400, "
+                                      "'details': \"b'Bad Request'\"}")
+                  return super().in_(col, vals)
+          BIG = [{"id": f"{i:08x}-0000-4000-8000-{i:012x}", "status": "approved", "user_id": "u",
+                  "created_at": "2026-09-01", "decision_source": "human", "reviewer_id": "rev-1"}
+                 for i in range(700)]
+          BIG_EVALS = [{"evaluation_id": f"e{i}", "autowriter_item_id": BIG[i]["id"],
+                        "evaluator_type": "human", "evaluator_id": "rev-1"} for i in range(0, 700, 2)]
+          class SB9:
+              def schema(self, name): self._s = name; return self
+              def table(self, _): return PQCap(BIG if self._s == "autowriter" else BIG_EVALS)
+          got9 = m.fetch_pending_decisions(SB9(), None)
+          assert len(got9) == 350, f"700 条里 350 条已归档, 该剩 350 条待同步, 实得 {len(got9)}"
+          assert m.audit_archived_provenance(SB9(), None) == (0, 0), "复核那条查询也要分批"
 
           print("TV-01 评价来源: all checks passed")
           PY

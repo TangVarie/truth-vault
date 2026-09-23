@@ -18,6 +18,13 @@ project_id: XIWU_phase1
 # (项目本来就是 phase1 分期的, 换代时开 phase2)。
 brand: 西屋
 product: 按摩椅GT33
+
+# 文案里【实际】会出现的写法(运营 2026-09-22 回填, Q3)。喂内容特征层的品牌词典:
+# feature_bank.py 把 projects.brand + product + 笔记 target_blue_keywords + 这一项合并,
+# 用来答 brand_in_title / brand_first_position / withholds_product_name 几道题。
+# ⚠️ 守卫 no_brand_dict 只在词典【为空】时触发, 挡不住「词典非空但一个词都匹配不上」。
+brand_aliases:
+  - 西屋gt33
 # 策略 lead 定(2026-08-28): 按摩椅【算家居家电】, 不按医疗器械。
 # 即红线按家居家电这档走(禁宣称治疗腰椎间盘突出/颈椎病、禁绝对化),
 # 不需要升级到医疗器械模板。

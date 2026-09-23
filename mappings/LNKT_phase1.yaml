@@ -20,6 +20,16 @@ project_id: LNKT_phase1
 # 「求助! 驾校教练以为我哭, 布地奈德喷完多久起效?」。
 brand: 雷诺考特
 product: 布地奈德鼻喷
+
+# 文案里【实际】会出现的写法(运营 2026-09-22 回填, Q3)。喂内容特征层的品牌词典:
+# feature_bank.py 把 projects.brand + product + 笔记 target_blue_keywords + 这一项合并,
+# 用来答 brand_in_title / brand_first_position / withholds_product_name 几道题。
+# ⚠️ 守卫 no_brand_dict 只在词典【为空】时触发, 挡不住「词典非空但一个词都匹配不上」。
+# ⚠️ 加了也基本不变: _find_brand 是子串匹配,「雷诺考特鼻喷」是现有 brand「雷诺考特」的超串。
+#    本项目真正的问题在别处 —— 已标注的 24 行 100% 记「未出现」, 而 raw_content 里
+#    367/374 行有「雷诺考特」: 品牌词只写在结尾话题标签里, 而 code_features 匹配前先剥标签。
+brand_aliases:
+  - 雷诺考特鼻喷
 # 策略 lead 定(2026-08-28): 雷诺考特【只是 OTC】, 不是处方药。
 # 起草稿按"布地奈德鼻用制剂国内属 Rx"推成了处方药 —— 那是按通用成分推的, 而实际按什么
 # 销售由这个品牌的注册证决定, 只有业务侧知道。这正是 R-009 当年在力克雷 NRT 上定过的

@@ -34,6 +34,9 @@ venv/
 *.xls
 *.csv
 *.tsv
+# 闸一人工标注名单 (D-079): 只有 note_id / y / tier / 分组 / 切法 / md5, 没有正文, 没有 PII。
+# 原文 JSON 留在 scratchpad, 不进仓; 名单进仓是 docs/28 §6.1「名单存档」的要求。
+!data-analysis/gate1-human-sample-2026-09-28.csv
 *.parquet
 data-exports/
 client-data/
