@@ -1236,6 +1236,12 @@ def fetch_all_pages(query_builder, page_size: int = _DEFAULT_PAGE_SIZE,
     那些列可以作为**主排序**保留在 builder 里(``.order(...)`` 先调), 本函数
     再追加 ``order_by`` 作次级键把顺序钉死。
 
+    ⚠️ builder 里的 ``.in_(col, 列表)`` 走 **URL**, 不走 body。生产实测
+    (2026-09-23, D-080): 边缘按整个请求头(URL + headers)约 26 KB 就回裸的
+    400 'Bad Request'; 一个 UUID 占 39 字节, 600 出头就撞线。列表来自库里
+    的行数(会长)就必须分批(≤200 一批)调本函数, 见
+    sync_autowriter_decisions_to_prepublish._fetch_existing_evaluations。
+
     另外两点实现约束(都验证过, 别改回去):
 
     1. ``.order()`` 是**追加**语义(postgrest-py 把新列拼到已有 order 串后面),

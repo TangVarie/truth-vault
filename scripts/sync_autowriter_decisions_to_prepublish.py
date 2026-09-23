@@ -100,6 +100,10 @@ sync_autowriter_decisions_to_prepublish.py
     定", cron 若停摆超过 N 天, 停摆期间改的决定就再也捞不回来. 窗口宽
     一点是纯赚. 全扫仍然是 --since-days 0.
 
+    ⚠️ 窗口宽的代价 (2026-09-23 才交): 窗口内的 item id 会【全部】进一个
+    in_() 查已归档行, 而 in_() 走 URL —— 623 条时被边缘 400 打掉 (daily-sync
+    #179). 现在按 _IN_LIST_CHUNK 分批, 见 _fetch_existing_evaluations.
+
     ⚠️ 前置依赖与降级: updated_at 这一列【只有跑过 autowriter 仓的
     migrations/001_deskcore.sql 的库才有】—— 本仓自己那份建库脚本
     autowriter-migrations/007_fresh_install_autowriter_schema.sql 里的
@@ -162,6 +166,17 @@ _EVAL_TYPE_UNVERIFIED = "unverified"
 #   · persona / critic / model 是别的链路写的, 与本同步正交, 看见它们【不能】
 #     当成"已归档"而跳过 —— 那会把真正的审稿决策静默吞掉(codex review P1)。
 _SYNC_EVALUATOR_TYPES = frozenset({"human", "rule_based", _EVAL_TYPE_UNVERIFIED})
+
+# ── in_() 列表走 URL, 一次别塞太多 (2026-09-23, daily-sync #179 的红; D-080) ──────
+# 生产实测(anon key 走同一条 builder 链的探针): Supabase 边缘按【整个请求头】
+# (URL + headers)计, 约 26 KB 就回裸的 400 'Bad Request' —— 不是 PostgREST 的
+# JSON 错, supabase-py 包成 'JSON could not be generated'。一个 UUID 在 URL 里占
+# 39 字节(36 + 逗号编码成 %2C)。旧写法把窗口内【全部】item id 塞进一个 in_():
+# 9/21 613 条(24.2 KB)过了, 9/22 623 条(24.6 KB + ~1.3 KB 头)撞线。这个数每天
+# +10, 不分批就是一颗按日走的定时炸弹, 而且 365 天窗口里它只增不减。
+# 200 条 ≈ 7.8 KB: 离线三倍余量, 也在 nginx / Cloudflare 常见的 8 / 16 KB 口径
+# 之内 —— 边缘哪天收紧到那两个数也不会再撞。
+_IN_LIST_CHUNK = 200
 
 
 def _provenance(item: dict) -> tuple[str, str | None]:
@@ -286,6 +301,31 @@ def _fetch_items(sb, since_iso: str | None, *, prov: bool) -> list[dict]:
             order_by="id")
 
 
+def _fetch_existing_evaluations(sb, item_ids: list[str]) -> list[dict]:
+    """这些 item 上【本同步写的】评价行, 按 _IN_LIST_CHUNK 个 id 一批查。
+
+    同步主流程与归档复核共用。两处原先各自把全部 id 塞进一个 in_(), 2026-09-22
+    夜跑在 623 条时被边缘 400 打掉(daily-sync #179), 见 _IN_LIST_CHUNK 处的实测。
+    """
+    out: list[dict] = []
+    for i in range(0, len(item_ids), _IN_LIST_CHUNK):
+        out.extend(fetch_all_pages(
+            sb.schema("truth_vault")
+            .table("prepublish_evaluations")
+            # evaluation_id 只为分页排序用(同一 item 可能有多条不同类型的评价)。
+            .select("evaluation_id, autowriter_item_id, evaluator_type, evaluator_id")
+            # ⚠️ 必须按类型过滤(codex review P1)。改成"取全部类型"那一版有个回归:
+            #   一条 item 若已有 persona/critic/model 评价(别的链路写的, 与本同步正交),
+            #   主流程的 `elif have: continue` 会把它当成"已归档"而永久跳过, 真正的
+            #   审稿决策再也进不了校准表。改之前的旧查询 .eq(evaluator_type,'human')
+            #   恰好不受影响 —— 是这次放宽类型时引入的, 不是历史问题。
+            .in_("evaluator_type", sorted(_SYNC_EVALUATOR_TYPES))
+            .in_("autowriter_item_id", item_ids[i:i + _IN_LIST_CHUNK]),
+            order_by="evaluation_id",
+        ))
+    return out
+
+
 def fetch_pending_decisions(sb, since_iso: str | None) -> list[dict]:
     """Find autowriter items with a status that maps to a decision whose
     prepublish_evaluations row is missing, or no longer equals _provenance()
@@ -332,20 +372,7 @@ def fetch_pending_decisions(sb, since_iso: str | None) -> list[dict]:
     # 去重按 (item_id, 我们这次会写的 evaluator_type) —— 不能再按写死的 'human' 筛:
     # 那样一条已存在的 rule_based 行会被当成"还没同步", 每晚重插一次。
     item_ids = [r["id"] for r in rows]
-    existing = fetch_all_pages(
-        sb.schema("truth_vault")
-        .table("prepublish_evaluations")
-        # evaluation_id 只为分页排序用(同一 item 可能有多条不同类型的评价)。
-        .select("evaluation_id, autowriter_item_id, evaluator_type, evaluator_id")
-        # ⚠️ 必须按类型过滤(codex review P1)。改成"取全部类型"那一版有个回归:
-        #   一条 item 若已有 persona/critic/model 评价(别的链路写的, 与本同步正交),
-        #   下面的 `elif have: continue` 会把它当成"已归档"而永久跳过, 真正的
-        #   审稿决策再也进不了校准表。改之前的旧查询 .eq(evaluator_type,'human')
-        #   恰好不受影响 —— 是这次放宽类型时引入的, 不是历史问题。
-        .in_("evaluator_type", sorted(_SYNC_EVALUATOR_TYPES))
-        .in_("autowriter_item_id", item_ids),
-        order_by="evaluation_id",
-    )
+    existing = _fetch_existing_evaluations(sb, item_ids)
     by_item: dict[str, dict[str, dict]] = {}
     for r in existing:
         by_item.setdefault(r["autowriter_item_id"], {})[r["evaluator_type"]] = r
@@ -436,14 +463,7 @@ def audit_archived_provenance(sb, since_iso: str | None) -> tuple[int, int]:
         return 0, 0
 
     by_id = {r["id"]: r for r in rows}
-    existing = fetch_all_pages(
-        sb.schema("truth_vault")
-        .table("prepublish_evaluations")
-        .select("evaluation_id, autowriter_item_id, evaluator_type, evaluator_id")
-        .in_("evaluator_type", sorted(_SYNC_EVALUATOR_TYPES))
-        .in_("autowriter_item_id", list(by_id)),
-        order_by="evaluation_id",
-    )
+    existing = _fetch_existing_evaluations(sb, list(by_id))
 
     fails: list[str] = []
     warns: list[str] = []

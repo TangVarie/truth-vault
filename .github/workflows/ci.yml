@@ -2106,6 +2106,27 @@ jobs:
                _mock.patch.object(_sys, "argv", ["x", "--dry-run"]):
               assert m.main() == 0, "干净库不许红"
 
+          # ⑨ in_() 列表走 URL, 边缘按整个请求头 ≈26 KB 回 400 (daily-sync #179: 623 条撞线)。
+          #    假 builder 照那条线撞: 700 条 item 一次塞进 in_() 就炸, 分批必须一条不少地拿回。
+          class PQCap(PQ):
+              def in_(self, col, vals):
+                  vals = list(vals)
+                  if col == "autowriter_item_id" and sum(len(v) + 3 for v in vals) > 24_000:
+                      raise Exception("{'message': 'JSON could not be generated', 'code': 400, "
+                                      "'details': \"b'Bad Request'\"}")
+                  return super().in_(col, vals)
+          BIG = [{"id": f"{i:08x}-0000-4000-8000-{i:012x}", "status": "approved", "user_id": "u",
+                  "created_at": "2026-09-01", "decision_source": "human", "reviewer_id": "rev-1"}
+                 for i in range(700)]
+          BIG_EVALS = [{"evaluation_id": f"e{i}", "autowriter_item_id": BIG[i]["id"],
+                        "evaluator_type": "human", "evaluator_id": "rev-1"} for i in range(0, 700, 2)]
+          class SB9:
+              def schema(self, name): self._s = name; return self
+              def table(self, _): return PQCap(BIG if self._s == "autowriter" else BIG_EVALS)
+          got9 = m.fetch_pending_decisions(SB9(), None)
+          assert len(got9) == 350, f"700 条里 350 条已归档, 该剩 350 条待同步, 实得 {len(got9)}"
+          assert m.audit_archived_provenance(SB9(), None) == (0, 0), "复核那条查询也要分批"
+
           print("TV-01 评价来源: all checks passed")
           PY
       - name: 换候选必须换缓存版本 + 策展要看得见 synthetic (TV-03 / TV-05)
