@@ -52,7 +52,11 @@ jobs:
     runs-on: ubuntu-latest
     # 观测: 90 篇 / 35min (FEATURE_LIMIT=12 × 在跑项目)。180min ≈ 5x 观测上限 —— 留出把
     # FEATURE_LIMIT 调大的余地, 同时兜住 worker 挂死 (GitHub 默认 360min 会白烧 6h runner)。
-    timeout-minutes: 180
+    # 180 → 240 (D-077): 批大小降到 2 且不再"一次 502 就连坐全场"之后, 这一步会真的把
+    # 10 个项目 × 12 篇跑满。模拟实测(按 9-22 的 53-81s/篇): 70s/篇 ≈ 145 分钟,
+    # 81s/篇 ≈ 167 分钟 —— 离 180 只剩 13 分钟, 再碰几次 409 等锁就会被掐。
+    # 之前 180 从没碰到过, 只是因为前两晚都在第 5 分钟就连坐全灭了。
+    timeout-minutes: 240
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -102,7 +106,7 @@ jobs:
           # 每个项目每轮最多 FEATURE_LIMIT 篇, 每请求 ≤ 6 篇 (docs/28 §5.1)。
           # 一篇 = 6 次分组 LLM 调用 (+ 校验不过时重问)。
           #
-          # ⚠️ 【每请求篇数 = 3】这个数是量出来的, 不是估的。9-21 run #2 实测:
+          # ⚠️ 【每请求篇数 = 2】这个数是量出来的, 不是估的。9-21 run #2 实测:
           #      ANSHEN 批1 4m43s · 批2 4m48s · BJS 批1 4m58s · BJS 批2 5m02s → 502
           #    每批 6 篇 ≈ 4m43s-5m02s, 一直贴着 Railway 边缘的 5 分钟走, 第四批破线。
           #    破线之后更坏的不是那一批: 502 只切断边缘连接, worker 进程还在后台跑、
@@ -113,12 +117,30 @@ jobs:
           #    6 篇 ≈ 48s/篇 → 3 篇 ≈ 2.4min, 对 5 分钟留一倍余量。
           #    吞吐反而涨: 现在是"跑 2 个项目然后全灭", 改完是 10 个项目各跑满。
           #
+          # ⚠️ 上面那段"留一倍余量"是【错的】, 9-22 run #3 实测推翻(D-077):
+          #      WTG  批1-4: 2m48s · 2m40s · 3m35s · 3m04s
+          #      XIWU 批1-4: 3m15s · 3m53s · 2m45s · 4m03s
+          #      ANSHEN 批1(当晚第一个请求): >5m05s → 502
+          #    3 篇一批是 53-81s/篇, 最慢一批 4m03s 离 5 分钟只差 57 秒; 当晚第一个请求
+          #    (疑似冷启动)直接破线。然后【一模一样的连锁又发生了一遍】: 后面 7 个项目
+          #    全部 409, 当晚只成 3 个项目 27 篇, job 报 success。
+          #    → 所以 #151 只修了"破线的概率", 没修"一次破线就连坐全场"。这次两件一起改:
+          #      · 批大小 3 → 2 (≈ 1m46s-2m42s, 冷启动再加一分钟也在线内);
+          #      · 409 不再直接跳走 —— 见下面 WAIT_409 那段, 这才是真正断掉连锁的地方;
+          #      · 大多数项目本轮一篇没成 → 判红, 不再报绿 —— 见结尾 starved 那段。
+          #
           # ⚠️ 这条注释里的数字被 CI 钉着(check_system_map.py · G4)。改 FEAT_REQ_MAX
           #    就必须改这里 —— 上一次正是"注释里的安全假设过期了而没人发现"把这一步
           #    拖成了假绿(同 D-073 那句"过期注释让 timeout 裸奔了几个月")。
           # 幂等: 「跑过」= 该 (extractor, run_tag) 下已有标记题那一行, 跑不完下轮续。
           # 容忍口径与 daily-sync 的 essence 段同构 (瞬时只告警 / 首批系统性失败判红)。
-          FEAT_REQ_MAX=3   # ⚠️ 改这个数就要改上面那段注释里的实测记录(CI G4 钉着)
+          FEAT_REQ_MAX=2   # ⚠️ 改这个数就要改上面那段注释里的实测记录(CI G4 钉着)
+          # 409 = worker 的脚本锁还被上一个请求攥着(典型: 上一个请求在边缘 502 了, 但 worker
+          # 进程还在后台把那几篇跑完)。锁一两分钟就会放, 所以【等它】, 不要立刻换下一个
+          # 项目去撞同一把锁 —— 立刻换项目就是 9-21 / 9-22 两晚连坐 8 个项目的直接原因。
+          # 上限 WAIT_409_MAX 次 × WAIT_409_SEC 秒, 等不到才按瞬时处理, 不会卡死。
+          WAIT_409_SEC=60
+          WAIT_409_MAX=5
           FEATURE_LIMIT="${FEATURE_LIMIT:-12}"
           case "$FEATURE_LIMIT" in ''|*[!0-9]*)
             echo "::error::FEATURE_LIMIT 必须是正整数, 收到 '$FEATURE_LIMIT'"; exit 1;; esac
@@ -134,6 +156,8 @@ jobs:
             case "$2" in 409|502|503|504) echo transient ;; *) echo systemic ;; esac
           }
           fail_count=0
+          attempted=0          # 本轮真的发出过请求的项目数(on_demand 跳过的、一开始就抽完的不算)
+          starved_list=""      # 发过请求、但一批都没成的项目
           for f in ../mappings/*.yaml; do
             p=$(basename "$f" .yaml)
             [ "$p" = "_template" ] && continue
@@ -149,10 +173,13 @@ jobs:
             echo "─── features annotate (worker) · project=$p · 每轮上限=$FEATURE_LIMIT · 每请求≤$FEAT_REQ_MAX ───"
             budget=$FEATURE_LIMIT
             ok_batches=0
+            sent=0
+            waits=0
             while [ "$budget" -gt 0 ]; do
               rem=$(python count_unannotated_features.py "$p" 2>/dev/null || echo "?")
               [ "$rem" = "0" ] && { echo "  ✅ $p 特征已全部抽完"; break; }
               batch=$FEAT_REQ_MAX; [ "$batch" -gt "$budget" ] && batch=$budget
+              sent=1
               if code=$(curl -sS -w '%{http_code}' -o /tmp/feat.json --max-time 900 \
                 -X POST "${WORKER_URL%/}/annotate-features" \
                 -H "X-Worker-Key: $WORKER_API_KEY" -H 'content-type: application/json' \
@@ -163,6 +190,19 @@ jobs:
               fi
               ok=$(jq -r '.ok // false' /tmp/feat.json 2>/dev/null || echo false)
               echo "  HTTP $code · ok=$ok · $(jq -r '.stdout_tail // ""' /tmp/feat.json 2>/dev/null | grep -o 'Done:.*' | tail -1)"
+              if [ "$code" = "409" ] && [ "$waits" -lt "$WAIT_409_MAX" ]; then
+                waits=$((waits + 1))
+                echo "  ⏳ $p 409: worker 锁被上一个请求占着, 等 ${WAIT_409_SEC}s 再试 ($waits/$WAIT_409_MAX)"
+                sleep "$WAIT_409_SEC"
+                continue
+              fi
+              if [ "$code" = "502" ] && [ "$curl_rc" = "0" ]; then
+                # 边缘超时: worker 多半还在后台把这一批跑完(9-22 岸深那 3 篇就是这么落库的)。
+                # 预算照扣(不重复要这几篇), 继续本项目; 下一个请求撞到锁会走上面的 409 等待。
+                echo "::warning::features $p 批次在边缘 502 (worker 可能仍在后台完成), 继续本项目。"
+                budget=$((budget - batch))
+                continue
+              fi
               if [ "$code" != "200" ] || [ "$ok" != "true" ]; then
                 jq -r '.stderr_tail // ""' /tmp/feat.json 2>/dev/null | tail -8
                 kind=$(worker_fail_kind "$curl_rc" "$code")
@@ -179,7 +219,23 @@ jobs:
               ok_batches=$((ok_batches + 1))
               budget=$((budget - batch))
             done
+            if [ "$sent" = "1" ]; then
+              attempted=$((attempted + 1))
+              [ "$ok_batches" = "0" ] && starved_list="$starved_list $p"
+            fi
           done
+          # ── 大多数项目一篇没成 = 系统性问题, 不是"瞬时" (D-077) ───────────────────
+          # 9-21 / 9-22 两晚: 10 个项目里 8 个一批都没成, 每个都被单独判成"瞬时失败"只打
+          # warning, 整趟 success。单看每一个都说得通, 合起来就是这一步形同没跑。
+          # 所以在【整趟】层面再判一次: 发过请求的项目里, 过半一批都没成 → 红。
+          # ⚠️ 挡不住什么(D-051): 挡不住"每个项目都只成了 1 批"这种慢性欠产(那是吞吐问题,
+          #    看 note_feature_answers 的日增量); 也挡不住 attempted=1 且恰好成了的手动单项目跑。
+          n_starved=$(echo $starved_list | wc -w)
+          echo "  本轮: 发过请求的项目 $attempted 个, 一批都没成 $n_starved 个${starved_list:+ (}${starved_list# }${starved_list:+)}"
+          if [ "$attempted" -gt 0 ] && [ $((n_starved * 2)) -gt "$attempted" ]; then
+            echo "::error::features 本轮 $attempted 个项目里 $n_starved 个一批都没成 ——${starved_list} —— 这不是瞬时, 是这一步整体没跑起来。"
+            fail_count=$((fail_count + 1))
+          fi
           if [ $fail_count -gt 0 ]; then
             echo "::error::feature annotation failed for $fail_count project(s)"
             echo "Investigate: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"

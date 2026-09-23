@@ -364,7 +364,7 @@ A 家族根本没有目标列，B 家族 NRT_phase2 498 行有 target、0 行有
 | B3 | `notes.has_negative` + `negative_keywords_hit` | TV 第一个观众负面信号；41 行真负面已在库 |
 | B4 | **tier 判据版本标记**（写进 raw_extra 一个固定键或一个 typed 列） | **必须在接第一张新表之前做**，事后无法回填（飞书端旧值已被机器覆盖） |
 | B5 | `took_off_at` + `hours_to_takeoff` | TV 第一个事件时刻；⚠️ 等跨仓口径确认后再做 |
-| B6 | **audit_log 保留策略**（90 天，或按 `changed_cols` 只留非 `last_seen_*` 的行） | 152 MB、61% 超 30 天、schema 自己写了 30 天从没实现。**这条和新表无关，现在就该做** |
+| B6 | **audit_log 保留策略** —— 🔴 **2026-09-22 更正：不能按天数删，必须先抽后删（D-078）** | 原文写「90 天……现在就该做」。查实 audit_log 是**全库唯一精确的指标与 tier 历史**（`metric_snapshots` 按时间窗 upsert、同窗每晚覆盖，窗内变化会丢）：指标变化 10,100 行、tier 变化 8,264 行，只记真变了的。按 90 天删会丢 **4,442** 行、按 schema 写的 30 天删会丢 **6,219** 行 —— 其中就包括本评估自己引用的「历史真降档 330 个 / 368 次」的证据源。正确顺序：先把 `changed_cols` 含指标 / tier / tier_source 的行抽进窄表永久保存，再删那 95% 只动了 `updated_at / last_seen_at` 的噪音；更好的是修掉 `set_updated_at()` 无条件 `NOW()` 这个根因（风险 9） |
 
 ### C. 改协议文档（改的是别人照着做的起点）
 
