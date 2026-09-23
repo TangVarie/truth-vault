@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from pathlib import Path
 from typing import Any, Optional
@@ -67,7 +68,8 @@ SYSTEM_TEMPLATE = """你在给一条小红书笔记做事实标注。只回答�
 规则：
 - bool 题只答「是」或「否」；choice 题只从给出的选项里选一个，原样抄选项名。
 - 需要证据时，evidence 必须从题目指定的那一段【原样抄】，不超过 {evidence_max} 字；不需要证据时 evidence 留空字符串。
-- 拿不准就按题目里「算否」的标准答「否」，不要为了凑证据而硬答「是」。"""
+- 拿不准就按题目里「算否」的标准答「否」，不要为了凑证据而硬答「是」。
+- JSON 字符串里的英文双引号写成 \\"，字符串里不要换行（原文换行处直接接着抄）；整个回复只有这一个 JSON 对象。"""
 
 SPAN_LABELS = {
     "title": "标题",
@@ -524,6 +526,51 @@ def _render_question(n: int, q: dict) -> str:
     if ev:
         lines.append(f"   证据：{ev}")
     return "\n".join(lines)
+
+
+_FENCE_RE = re.compile(r"^```[a-zA-Z]*\s*\n(.*?)\n```\s*$", re.S)
+_ANSWER_RE = re.compile(
+    r'"id"\s*:\s*"(?P<id>[A-Za-z0-9_]+)"\s*,\s*'
+    r'"answer"\s*:\s*"(?P<answer>[^"]*)"\s*,\s*'
+    r'"evidence"\s*:\s*"(?P<evidence>.*?)"\s*(?=[,}])', re.S)
+
+
+def parse_answers(raw: str) -> Optional[dict]:
+    """把模型回复解析成 {"answers": [...]}; 解析不出来返回 None。
+
+    比 annotate_essence_pass.parse_claude_json 多三层容错, 只针对本 pass 这个【固定、扁平】的
+    形状 (answers 是 {id, answer, evidence} 的列表), 不通用:
+      1. 去掉 markdown 围栏 (```json … ```) 与围栏外的闲话, 取最外层的 { … }。
+      2. json.loads(strict=False): 允许字符串里出现原样换行 / 控制符。evidence 是从正文原样抄的,
+         抄到换行处模型常常直接把换行写进字符串 —— 严格 JSON 会整段解析失败, 于是整组题
+         全记 missing (2026-09-23 闸一 100 篇里 59 格 missing 都是整组一起没的, D-083)。
+      3. 还不行就按正则逐条捞 "id" / "answer" / "evidence" 三元组: evidence 里没转义的英文双引号
+         (原文含 " 时模型照抄) 会让 JSON 断在中间, 但三元组本身还在。evidence 用最短匹配到
+         『" 后面紧跟 , 或 }』为止, 所以内嵌的 " 只要后面不是 , / } 就不会截错。
+    捞出来的东西照旧过 validate_answers: 证据必须是原文子串, 所以捞错了只会变 NULL, 不会变成
+    错答案 (守卫 3 仍在)。这个函数不碰网络, check_feature_parse.py 有正反例。
+    """
+    if not raw:
+        return None
+    t = raw.strip()
+    m = _FENCE_RE.match(t)
+    if m:
+        t = m.group(1).strip()
+    lo, hi = t.find("{"), t.rfind("}")
+    if lo == -1 or hi == -1 or hi < lo:
+        return None
+    t = t[lo:hi + 1]
+    for strict in (True, False):
+        try:
+            obj = json.loads(t, strict=strict)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(obj, dict) and isinstance(obj.get("answers"), list):
+            return obj
+        return None if strict is False else None
+    found = [{"id": g["id"], "answer": g["answer"], "evidence": g["evidence"].replace('\\"', '"')}
+             for g in (mm.groupdict() for mm in _ANSWER_RE.finditer(t))]
+    return {"answers": found} if found else None
 
 
 def hygiene_check(system_prompt: str, user_template_parts: list[str]) -> None:

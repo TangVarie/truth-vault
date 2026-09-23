@@ -52,6 +52,7 @@ jobs:
             scripts/ingest_gate1_answers.py \
             scripts/gate1_agreement.py \
             scripts/gate1_labels.py \
+            scripts/check_feature_parse.py \
             librarian/__init__.py \
             librarian/clients.py \
             librarian/core.py \
@@ -1201,6 +1202,9 @@ jobs:
           assert "efficacy_promise" in [o["question_id"] for o in fb.instructions_for_desk(b, rows)], "反证前提不成立"
           print("  ✓ 守卫 7: validated 的 efficacy_promise 不下发; no_signal 不下发; 方向 ? 标 owner review")
           PY
+      - name: "特征层守卫 8 · 回复容错解析 + 没答的单题兜底 (D-083)"
+        working-directory: scripts
+        run: python check_feature_parse.py
       - name: "特征层编排自检 · 假模型 + 假库端到端: 31 行/篇、6 组 + 重问、任一组挂整篇不落行、写序 raw→answers、resume 判据、code-only"
         working-directory: scripts
         run: |
