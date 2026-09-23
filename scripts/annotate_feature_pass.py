@@ -166,7 +166,8 @@ def ask_group(bank: dict, call: dict, spans: dict, model: str, *, llm=_llm
     ——原文里的英文双引号 / 换行被原样抄进 evidence 把 JSON 弄断, 重问一次照样断。所以:
       · 解析失败单独记 json_parse_failed, 不再冒充 missing (两种原因在库里分得开);
       · 重问的说明里点名格式问题 (双引号转义、不换行);
-      · 重问后仍「没答」的题按【单题】再问一次 (回复短、更不容易断); 单问失败保留原来的原因。
+      · 重问后仍「没答」的题按【单题】再问一次 (回复短、更不容易断); 单问的结果替换原来的
+        (答出来 / 仍 missing / 仍 json_parse_failed 都如实记); 单问 api 挂 → api_error → 整篇 systemic 不落行。
     单问只在失败时发生, 一组最多 4 次, 正常一篇不多花一次调用。
     """
     qids = call["question_ids"]
@@ -209,11 +210,17 @@ def ask_group(bank: dict, call: dict, spans: dict, model: str, *, llm=_llm
         try:
             raw3 = llm(single_call["system"], single_call["user"], model)
         except Exception as exc:  # noqa: BLE001
+            # 单问也挂在 api 上: 记 api_error (不是"没答"), 让调用方按 systemic 处理 —— 这篇不落行,
+            # 下轮幂等重跑。悄悄保留 json_parse_failed 会把一个 api 故障写成"模型没答", 且标记题
+            # 一落库这篇就永远不会再来 (自审 on #156; 同 codex review on #141 的洞)。
+            logger.warning("single_api_error q=%s: %r", q, exc)
             errs.append(f"single_api_error {q}: {exc!r}")
+            results[q] = {"answer": None, "evidence": None, "invalid_reason": fb.INVALID_API}
             continue
         r3 = _validate_or_parse_failed(bank, [q], fb.parse_answers(raw3), spans, raw3, f"single:{q}")[q]
-        if r3.get("invalid_reason") not in _UNANSWERED or results[q].get("invalid_reason") == fb.INVALID_JSON:
-            results[q] = r3          # 单问答出来了 (或至少把原因从 parse_failed 换成更具体的)
+        # 单问的结果替换原来的: 答出来最好; 没答出来也换成单问看到的原因 (json_parse_failed → missing
+        # 说明单问解析出了 JSON 但没这题 —— 两种"没答"在库里分得开, 都不冒充对方)。
+        results[q] = r3
     return results, True, errs, singles
 
 
@@ -273,7 +280,10 @@ def annotate_note(bank: dict, note: dict, mapping: dict, *, model: str, extracto
             continue
         results, retried, errs, singles = ask_group(bank, call, spans, model, llm=llm)
         errors += errs
-        if errs and all(r.get("invalid_reason") == fb.INVALID_API for r in results.values()):
+        # 组里【任一】题最后停在 api_error 就算 systemic: 整篇不落行, 下轮重跑。以前是"全组都 api"才算,
+        # 重问 / 单问阶段的 api 故障会漏成"组成功、格子 api_error"落库, 标记题一落这篇就永远补不回来
+        # (codex review on #141 说的洞, 自审 on #156 又找到一条路)。
+        if any(r.get("invalid_reason") == fb.INVALID_API for r in results.values()):
             stats["systemic"] += 1
         else:
             stats["groups_ok"] += 1
@@ -405,6 +415,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             _append_failed(fq, note, args.project_id, [f"write_rejected: {exc}"])
             continue
         stats["ok"] += 1
+        if st.get("errors"):
+            # 落了行但过程里有非致命错误 (比如单问阶段的 api 抖动被后面的成功盖过): 也记一笔, 只做线索
+            _append_failed(fq, note, args.project_id, ["partial: " + e for e in st["errors"]])
         for k in ("groups_ok", "groups_retry", "singles", "answered", "invalid"):
             stats[k] += st[k]
         if i % 10 == 0:

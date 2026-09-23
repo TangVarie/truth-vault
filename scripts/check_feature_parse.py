@@ -8,7 +8,8 @@ check_feature_parse.py —— 特征层守卫 8 (D-083): 模型回复的容错�
     (或从 2026-09-23 闸一 59 格整组 missing 反推出来) 的坏回复都能解析出 answers; 纯散文 / 空 → None。
   · 捞出来的 evidence 仍要过 validate_answers 的原文子串校验 (守卫 3 不被绕开)。
   · ask_group: 整组解析失败记 json_parse_failed (不冒充 missing); 重问后仍「没答」的题逐题单问;
-    单问只在失败时发生 (正常一篇 0 次); 单问 api 挂了不把整组算成 systemic。
+    单问只在失败时发生 (正常一篇 0 次); 单问 api 挂 → 那题 api_error、整组 systemic (整篇不落行);
+    单问解析出 JSON 但没这题 → missing (如实)。
   · 反证: 把容错层拿掉 (严格 json.loads) 换行那份就解析不出; 把单题兜底关掉 garbage 那组三题就全 NULL。
 挡不住什么:
   · 模型把答案本身答错; evidence 捞错但恰好也是原文子串 (守卫 3 只查子串, 不查是不是那一处)。
@@ -79,7 +80,31 @@ def check_parse(bank, spans) -> None:
     # 5. 散文 / 空 / 只有别的键 → None
     for bad in ("抱歉，我无法完成这个标注。", "", "```json\n```", '{"result": "ok"}', '[1,2,3]'):
         assert fb.parse_answers(bad) is None, bad
-    print("  ✓ parse_answers: 围栏 / 换行 / 未转义引号 都能捞; 散文空串 None; 捞出来的证据仍过守卫 3")
+    # 6. (自审 on #156) 正则路里的 JSON 转义要还原: 一题未转义引号把 JSON 弄断, 另一题证据里是合法的 \n
+    mixed = ('{"answers":[{"id":"turning_point","answer":"否","evidence":""},'
+             '{"id":"judged_by_others","answer":"是","evidence":"我妈："你身上什么味儿？""},'
+             '{"id":"negative_outcome_happened","answer":"是","evidence":"砂纸磨过。\\n你们戒烟"}]}')
+    v = fb.validate_answers(bank, ["turning_point", "judged_by_others", "negative_outcome_happened"], fb.parse_answers(mixed), spans)
+    assert v["judged_by_others"]["answer"] == "是" and v["negative_outcome_happened"]["answer"] == "是", v
+    # 7. 内嵌 `",`: 证据锚在 } 上, 捞到完整 45 字 → 超 30 字 / 不是子串 → NULL, 不是截断前缀被当成好证据
+    long_dq = ('{"answers":[{"id":"has_direct_quote","answer":"是","evidence":"上周三凌晨两点在公司茶水间饿醒,我妈说:"你身上什么味儿?",我说没事就是嗓子像被砂纸磨过"}]}')
+    got = fb.parse_answers(long_dq)
+    assert len(got["answers"][0]["evidence"]) == 45, got
+    assert fb.validate_answers(bank, ["has_direct_quote"], got, spans)["has_direct_quote"]["answer"] is None
+    # 8. 合法 JSON 后面跟闲话 (闲话里还有大括号) → 第一个完整对象照常解析
+    chatter = json.dumps({"answers": [{"id": "judged_by_others", "answer": "是", "evidence": "砂纸磨过。\n你们戒烟"}]}, ensure_ascii=False) + "\n注：格式为 {id, answer, evidence}。"
+    assert fb.validate_answers(bank, ["judged_by_others"], fb.parse_answers(chatter), spans)["judged_by_others"]["answer"] == "是"
+    # 9. 形状不对但三元组在: 裸对象 (单问时常见) / 键名打错 / answers 是对象 / 裸列表 → 扶正
+    for shape in ('{"id":"turning_point","answer":"否","evidence":""}',
+                  '{"answer":[{"id":"turning_point","answer":"否","evidence":""}]}',
+                  '{"answers":{"id":"turning_point","answer":"否","evidence":""}}',
+                  '[{"id":"turning_point","answer":"否","evidence":""}]'):
+        got = fb.parse_answers(shape)
+        assert got and got["answers"][0]["id"] == "turning_point", shape
+    # 10. \uXXXX / \\ 也还原
+    got = fb.parse_answers('{"answers":[{"id":"x","answer":"\\u662f","evidence":"a\\\\b"}]}')
+    assert got["answers"][0]["answer"] == "是" and got["answers"][0]["evidence"] == "a\\b", got
+    print("  ✓ parse_answers: 围栏 / 换行 / 未转义引号 / 转义还原 / 内嵌 \", / 闲话 / 形状扶正; 散文 None; 捞出来的证据仍过守卫 3")
 
 
 def check_fallback(bank, note, mapping) -> None:
@@ -115,7 +140,7 @@ def check_fallback(bank, note, mapping) -> None:
     single_sys = calls[7][0]
     assert len(_ids(single_sys)) == 1, _ids(single_sys)                   # 兜底确实是单题
 
-    # C. 单问也挂 (api) → 保留 json_parse_failed, 不算 systemic, 不抛
+    # C. 单问也挂 (api) → 那几题记 api_error, 整组 systemic (整篇不落行, 下轮重跑), 不抛
     calls.clear()
     def garbage_then_boom(system, user, model):
         calls.append((system, user))
@@ -128,8 +153,22 @@ def check_fallback(bank, note, mapping) -> None:
     res = afp.annotate_note(bank, note, mapping, model="m", extractor="llm:m", run_tag="primary",
                             single=False, code_only=False, dry_run=False, llm=garbage_then_boom)
     by = {r["question_id"]: r for r in res["rows"]}
-    assert by["turning_point"]["invalid_reason"] == fb.INVALID_JSON and res["stats"]["systemic"] == 0, (by["turning_point"], res["stats"])
+    assert by["turning_point"]["invalid_reason"] == fb.INVALID_API and res["stats"]["systemic"] == 1, (by["turning_point"], res["stats"])
     assert len(res["stats"]["errors"]) == 3 and all("single_api_error" in e for e in res["stats"]["errors"])
+    # C2. 单问解析出 JSON 但没这题 → 如实记 missing (不再是 json_parse_failed), 不算 systemic
+    calls.clear()
+    def garbage_then_wrong_id(system, user, model):
+        calls.append((system, user))
+        ids = _ids(system)
+        if "turning_point" in ids and len(ids) > 1:
+            return "抱歉。"
+        if len(ids) == 1 and ids[0] in ("turning_point", "judged_by_others", "negative_outcome_happened"):
+            return json.dumps({"answers": [{"id": "has_specific_time", "answer": "否", "evidence": ""}]}, ensure_ascii=False)
+        return json.dumps({"answers": _good(bank, ids)}, ensure_ascii=False)
+    res = afp.annotate_note(bank, note, mapping, model="m", extractor="llm:m", run_tag="primary",
+                            single=False, code_only=False, dry_run=False, llm=garbage_then_wrong_id)
+    by = {r["question_id"]: r for r in res["rows"]}
+    assert by["turning_point"]["invalid_reason"] == fb.INVALID_MISSING and res["stats"]["systemic"] == 0 and res["stats"]["singles"] == 3, (by["turning_point"], res["stats"])
 
     # D. 模型漏一题 (其余正常) → 只那一题 missing → 重问 → 仍漏 → 单问答出
     calls.clear()
@@ -155,7 +194,7 @@ def check_fallback(bank, note, mapping) -> None:
         assert len(calls) == 7 and all(by[q]["answer"] is None for q in ("turning_point", "judged_by_others", "negative_outcome_happened"))
     finally:
         afp._UNANSWERED = saved
-    print("  ✓ ask_group: 解析失败记 json_parse_failed; 重问后仍没答 → 单题兜底 (正常 0 次, 坏组 3 次, 漏一题 1 次); 单问挂了不 systemic; 反证关掉兜底三题全 NULL")
+    print("  ✓ ask_group: 解析失败记 json_parse_failed; 重问后仍没答 → 单题兜底 (正常 0 次, 坏组 3 次, 漏一题 1 次); 单问 api 挂 → api_error + systemic; 单问没这题 → missing; 反证关掉兜底三题全 NULL")
 
 
 def main() -> int:
