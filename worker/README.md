@@ -22,7 +22,7 @@ GitHub daily-sync(cron)
 | GET | `/health` | — | Railway healthcheck → `{"ok":true,"service":"tv-worker"}` |
 | POST | `/annotate-essence` | `{project, limit?=50, dry_run?, reannotate?}` | 跑 essence Mode A 标注(per project) |
 | POST | `/curate` | `{project?, limit?=50, dry_run?}` | 把合格爆款策展成经验卡(喂馆员书架) |
-| POST | `/annotate-features` | `{project, limit?=50, dry_run?, reannotate?, run_tag?, single?, code_only?, model?}` | 内容特征层抽取 pass(docs/28 §5, D-070): 20 道模型题按组问 + 8 个代码特征 + 3 道占位题, 落 `note_feature_answers`。`run_tag`/`single`/`model` 给闸一用 |
+| POST | `/annotate-features` | `{project, limit?=50, dry_run?, reannotate?, run_tag?, single?, code_only?, model?, note_ids?}` | 内容特征层抽取 pass(docs/28 §5, D-070): 20 道模型题按组问 + 8 个代码特征 + 3 道占位题, 落 `note_feature_answers`。`run_tag`/`single`/`model` 给闸一用; `note_ids`(≤200 个, 必须属于 `project`)只跑这几篇, 响应多一个 `note_ids_count` —— 调用方靠它确认 worker 已认识这个字段(旧版本会吞掉它按 project+limit 跑别的笔记) |
 
 返回 `200 + {ok, returncode, stdout_tail, stderr_tail, action, project}`。`returncode!=0` → `ok=false`,
 由 daily-sync 判该步失败。

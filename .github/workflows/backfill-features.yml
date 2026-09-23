@@ -18,6 +18,10 @@ on:
         description: "最多循环几轮。一轮上限≈batch×max_batches 条,且受 GitHub 6h job 上限(batch=6 时一轮约能灌 ~700 篇)。更大的表灌不完会在末尾警告→再触发一次接着灌(幂等)。"
         required: false
         default: "120"
+      note_ids:
+        description: "只跑这些 note_id(逗号分隔, ≤200, 形如 NUC_phase1_recXXXX)。给了就按 id 前缀自动分项目、每 batch 篇一请求, 忽略 max_batches; project 只作并发组名(填 gate1 之类)。闸一 D-081 用。batch 建议 2(D-077: 一篇 53–81s)。"
+        required: false
+        default: ""
 
 # 同一项目同时只允许一个 backfill 在跑 —— 否则两个 run 会各自快照同一批未抽取笔记、
 # 重复烧 LLM 且非确定性地互相覆盖 essence(codex PR#43 review r3355530533)。
@@ -37,6 +41,7 @@ jobs:
       PROJECT: ${{ github.event.inputs.project }}
       BATCH: ${{ github.event.inputs.batch }}
       MAXB: ${{ github.event.inputs.max_batches }}
+      NOTE_IDS: ${{ github.event.inputs.note_ids }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -69,6 +74,22 @@ jobs:
           # 别只写在描述里靠自觉,这里强制(codex review r3356930643)。
           [ "$BATCH" -le 8 ] || { echo "::error::batch=$BATCH 太大 —— 上限 8(一篇 6 次调用, >8 篇会撞 Railway 边缘 ~5min 超时 → 502)。请用 ≤8。"; exit 1; }
           [ "$MAXB"  -ge 1 ] || { echo "::error::max_batches 必须 ≥1"; exit 1; }
+          if [ -n "$NOTE_IDS" ]; then
+            # 指定 note_id 模式: 每个 id 形如 <project>_rec<record>, 项目从前缀推, 必须有 mapping;
+            # project 输入只当并发组名, 不查 mapping (填 gate1 就行)。
+            case "$PROJECT" in ''|*[!A-Za-z0-9_-]*) echo "::error::project 只能是 [A-Za-z0-9_-]"; exit 1;; esac
+            n=0
+            for id in $(echo "$NOTE_IDS" | tr ',' ' '); do
+              n=$((n+1))
+              case "$id" in *_rec*) ;; *) echo "::error::note_id '$id' 不像 <project>_rec<record>"; exit 1;; esac
+              case "$id" in *[!A-Za-z0-9_-]*) echo "::error::note_id '$id' 含非法字符"; exit 1;; esac
+              proj="${id%_rec*}"
+              [ -f "../mappings/${proj}.yaml" ] || { echo "::error::note_id '$id' 的项目 '$proj' 没有 mapping"; exit 1; }
+            done
+            [ "$n" -ge 1 ] && [ "$n" -le 200 ] || { echo "::error::note_ids 要 1–200 个, 收到 $n"; exit 1; }
+            echo "✅ inputs OK (note_ids 模式): $n 篇 · batch=$BATCH · 并发组=$PROJECT"
+            exit 0
+          fi
           # project 必须是已知项目(有 mapping)。否则拼错的名字会查到 remaining=0 → 被当成
           # "已灌完"绿着退出、一条没处理(codex review r3355530520)。
           if [ ! -f "../mappings/${PROJECT}.yaml" ]; then
@@ -79,7 +100,60 @@ jobs:
           fi
           echo "✅ inputs OK: project=$PROJECT batch=$BATCH max_batches=$MAXB"
 
+      - name: Run only the given note_ids (闸一 · D-081)
+        if: ${{ github.event.inputs.note_ids != '' }}
+        working-directory: scripts
+        run: |
+          set +e
+          # 先用 dry_run 探一下 worker 认不认识 note_ids: 旧版本会把这个键吞掉、按 project+limit
+          # 去跑【别的】笔记 —— 真跑之前必须确认响应里有 note_ids_count。dry_run 不调模型不写库。
+          probe_id=$(echo "$NOTE_IDS" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -v '^$' | head -1)
+          probe_proj="${probe_id%_rec*}"
+          body=$(jq -nc --arg p "$probe_proj" --arg id "$probe_id" '{project:$p, limit:1, dry_run:true, note_ids:[$id]}')
+          code=$(curl -sS -w '%{http_code}' -o /tmp/probe.json --max-time 300 \
+            -X POST "${WORKER_URL%/}/annotate-features" \
+            -H "X-Worker-Key: $WORKER_API_KEY" -H 'content-type: application/json' -d "$body") || code=000
+          nc=$(jq -r '.note_ids_count // empty' /tmp/probe.json 2>/dev/null)
+          if [ "$code" != "200" ] || [ -z "$nc" ]; then
+            echo "::error::worker 探针失败或不认识 note_ids (HTTP $code, note_ids_count='$nc') —— 旧版本会按 project+limit 跑别的笔记, 停。等 Railway 部署带 note_ids 的版本再触发。"
+            jq -r '.stderr_tail // .detail // ""' /tmp/probe.json 2>/dev/null | tail -4
+            exit 1
+          fi
+          echo "✅ worker 认识 note_ids (探针 note_ids_count=$nc)"
+
+          mapfile -t ids < <(echo "$NOTE_IDS" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -v '^$' | sort -u)
+          total=${#ids[@]}; sent=0; ok_chunks=0; bad_chunks=0
+          for proj in $(printf '%s\n' "${ids[@]}" | sed 's/_rec.*$//' | sort -u); do
+            mapfile -t plist < <(printf '%s\n' "${ids[@]}" | grep "^${proj}_rec")
+            for ((i=0; i<${#plist[@]}; i+=BATCH)); do
+              chunk=("${plist[@]:i:BATCH}")
+              body=$(printf '%s\n' "${chunk[@]}" | jq -R . | jq -sc --arg p "$proj" --argjson n "$BATCH" '{project:$p, limit:$n, note_ids:.}')
+              echo "── $proj · 第 $((i/BATCH+1)) 批 (${#chunk[@]} 篇) · 已发 $sent/$total ──"
+              ok=false; code=000
+              for attempt in 1 2 3 4 5 6; do
+                code=$(curl -sS -w '%{http_code}' -o /tmp/b.json --max-time 900 \
+                  -X POST "${WORKER_URL%/}/annotate-features" \
+                  -H "X-Worker-Key: $WORKER_API_KEY" -H 'content-type: application/json' -d "$body") || code=000
+                ok=$(jq -r '.ok // false' /tmp/b.json 2>/dev/null)
+                nc=$(jq -r '.note_ids_count // empty' /tmp/b.json 2>/dev/null)
+                echo "   [try $attempt] HTTP $code · ok=$ok · note_ids_count=${nc:-?} · returncode=$(jq -r '.returncode // "?"' /tmp/b.json 2>/dev/null)"
+                jq -r '.stdout_tail // ""' /tmp/b.json 2>/dev/null | grep -E "Found|Done|ok=|failed" | tail -3
+                { [ "$code" = "200" ] && [ "$ok" = "true" ] && [ -n "$nc" ]; } && break
+                # 409 = worker 正被别的调用占着(features-sync / 另一个 backfill): 等锁, 不算失败 (D-077)
+                echo "::warning::$proj 第 $((i/BATCH+1)) 批 try $attempt 失败 (HTTP $code, ok=$ok);等 60s 重试"
+                jq -r '.stderr_tail // ""' /tmp/b.json 2>/dev/null | tail -4
+                sleep 60
+              done
+              sent=$((sent+${#chunk[@]}))
+              if [ "$code" = "200" ] && [ "$ok" = "true" ] && [ -n "$nc" ]; then ok_chunks=$((ok_chunks+1)); else bad_chunks=$((bad_chunks+1)); fi
+            done
+          done
+          echo "── 结束 · $total 篇 · 成功 $ok_chunks 批 · 失败 $bad_chunks 批 ──"
+          echo "已答过的篇 pass 自己会跳过 (按 run_tag 幂等), 失败的批再触发一次接着跑。"
+          [ "$bad_chunks" = "0" ] || { echo "::error::$bad_chunks 批连续 6 次都没成 —— 查 Railway worker 日志。"; exit 1; }
+
       - name: Loop worker until project essence is fully annotated
+        if: ${{ github.event.inputs.note_ids == '' }}
         working-directory: scripts
         run: |
           # 关掉 errexit:本步靠下面【显式检查 $code/$ok】决定 retry/exit。若保留 bash -e,
