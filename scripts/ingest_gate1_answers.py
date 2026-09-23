@@ -38,7 +38,7 @@ import openpyxl
 
 import feature_bank as fb
 from _common import _iso_now, get_supabase_client, setup_logger
-from build_gate1_human_sheets import SHORT
+from gate1_labels import SHORT
 
 logger = setup_logger("ingest_gate1")
 

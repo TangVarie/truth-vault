@@ -45,28 +45,7 @@ PER_PROJECT_Y = 10                         # 每个项目每个 y 抽 10 篇
 BLOCK_OF = {"A": (1, 2), "B": (2, 3), "C": (4, 1)}
 SEED_TAG = "gate1-human-20260928"          # 与抽样 SQL 里的种子同一个字串
 
-SHORT = {
-    "title_is_question": "标题是问句",
-    "opening_type": "第一句类型",
-    "has_specific_time": "具体时间",
-    "has_specific_place": "具体地点或场合",
-    "has_direct_quote": "别人说的原话",
-    "has_body_sensation": "具体身体感受",
-    "ending_asks_reader": "结尾问读者",
-    "invites_sharing": "请读者讲经历",
-    "asks_for_help": "整篇在求助",
-    "withholds_product_name": "故意不说名字",
-    "divisive_claim": "会有人反对的判断",
-    "product_role": "产品角色",
-    "efficacy_promise": "效果承诺",
-    "narrator_identity": "交代身份",
-    "own_experience": "亲身经历",
-    "comparison_group": "拿别人对照",
-    "calls_out_reader_group": "点名某类读者",
-    "turning_point": "前后转折",
-    "judged_by_others": "被人评价",
-    "negative_outcome_happened": "已发生的坏结果",
-}
+from gate1_labels import SHORT  # 短标签的唯一来源 (零依赖模块; ingest / agreement 也从那儿拿)
 SCOPE_ZH = {
     "title": "只看标题",
     "first_sentence": "只看正文第一句（跳过开头的话题标签和表情）",
