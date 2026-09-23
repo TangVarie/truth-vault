@@ -15,7 +15,9 @@ version: 1.0
 
 project_id: TGV_phase1
 brand: TGV                       # [待确认] 实际品牌名未知(TGV 为内部代号)
-product: 维他命
+product: TGV不哭糖                 # owner 拍板 2026-09-23 (D-084 A12): 语料写的是「TGV不哭糖」(23 行), 登记的「维他命」0 行命中; 生产 projects 表同日已改
+brand_aliases:
+  - 维他命                       # 原登记名, 留作别名 (D-084 A12)
 category: 保健品                 # ✓ 维他命=保健品(产品本位;内容虽育儿场景, 品类按产品定)
 platform: xiaohongshu
 schema_family: C                 # 最老格式(文档记 TGV 属 C 家族)

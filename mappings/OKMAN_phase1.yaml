@@ -25,6 +25,7 @@ brand_aliases:
   - 科伦口溶膜
   - 小超人口溶膜
   - 快充小片
+  - 艾时达                      # owner 拍板 2026-09-23 (D-084 Q14): 自家产品/系列名, 语料 52 行, 比「OKMAN」本身还多
 category: 处方药                # 策略 lead 定(2026-07-20): 西地那非=Rx, 走处方药级合规
 platform: xiaohongshu
 schema_family: A               # A 家族工作流列(巡查状态/最近检查时间/数据回收情况/是否巡查)在 field schema 存在但本期均空(preflight 报"声明了但表里无数据", 正常, 保留作前向 allowlist)
