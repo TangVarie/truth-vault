@@ -33,6 +33,8 @@ Resumability:
     extractor 默认按前缀匹配 `llm:%` —— 计数脚本在 GitHub 上跑、真正写库的是 Railway worker,
     两边的 FEATURE_MODEL 可能不同; 换模型也不该让已经答过的笔记重答一遍。显式 --model 时按精确值匹配。
     --reannotate 忽略这个标记全部重跑。
+    解析失败 / 缺题的处理 (D-083): 整个回复解析不出 → 该组记 json_parse_failed → 重问一次 →
+    仍「没答」的题逐题单问一次; 单问只在失败时发生 (stats.singles)。
 
     ⚠️ 一篇里**任何一组** LLM 调用系统性失败（api_error）→ 整篇一行不落, 下轮重跑。
     落一半会让标记题那一行先落库, 于是下轮 resume 跳过这篇, 失败的那几组【永远】补不回来
@@ -152,25 +154,38 @@ def _llm(system: str, user: str, model: str) -> str:
 
 
 def ask_group(bank: dict, call: dict, spans: dict, model: str, *, llm=_llm
-              ) -> tuple[dict[str, dict], bool, list[str]]:
-    """问一组题: 一次 + 校验不过的题重问一次。返回 (每题结果, 是否重问过, 系统性错误列表)。
+              ) -> tuple[dict[str, dict], bool, list[str], int]:
+    """问一组题: 一次 + 校验不过的题重问一次 + 仍是「没答」的题逐题单问兜底。
+    返回 (每题结果, 是否重问过, 系统性错误列表, 单问兜底次数)。
 
     重问只针对没过的题（其余答案保留）; 仍不过 → NULL + 原因。
     api_error 是基础设施问题, 整组记 api_error, 调用方计 systemic。
+
+    「没答」= missing (回复里没这题) 或 json_parse_failed (整个回复解析不出来)。2026-09-23 闸一
+    100 篇里 59 格 missing 全是【整组一起】没的 (D-083): 不是模型漏一题, 是整段回复没解析出来
+    ——原文里的英文双引号 / 换行被原样抄进 evidence 把 JSON 弄断, 重问一次照样断。所以:
+      · 解析失败单独记 json_parse_failed, 不再冒充 missing (两种原因在库里分得开);
+      · 重问的说明里点名格式问题 (双引号转义、不换行);
+      · 重问后仍「没答」的题按【单题】再问一次 (回复短、更不容易断); 单问的结果替换原来的
+        (答出来 / 仍 missing / 仍 json_parse_failed 都如实记); 单问 api 挂 → api_error → 整篇 systemic 不落行。
+    单问只在失败时发生, 一组最多 4 次, 正常一篇不多花一次调用。
     """
-    from annotate_essence_pass import parse_claude_json
     qids = call["question_ids"]
     try:
         raw = llm(call["system"], call["user"], model)
     except Exception as exc:  # noqa: BLE001
         return ({q: {"answer": None, "evidence": None, "invalid_reason": fb.INVALID_API} for q in qids},
-                False, [f"api_error: {exc!r}"])
-    parsed = fb_parse(parse_claude_json, raw)
-    results = fb.validate_answers(bank, qids, parsed, spans)
+                False, [f"api_error: {exc!r}"], 0)
+    parsed = fb.parse_answers(raw)
+    results = _validate_or_parse_failed(bank, qids, parsed, spans, raw, "first")
     bad = fb.retryable(results)
     if not bad:
-        return results, False, []
-    note = fb.correction_note(results) if parsed is not None else "- 上一次回复不是合法 JSON / 含 markdown 包装"
+        return results, False, [], 0
+    if parsed is None:
+        note = ("- 上一次回复解析不出 JSON（可能是 markdown 包装、闲话、evidence 里没转义的英文双引号、"
+                "或字符串里换行）。只输出一个 JSON 对象；英文双引号写成 \\\"，字符串里不要换行。")
+    else:
+        note = fb.correction_note(results)
     retry_user = (call["user"] + "\n\n═══ 你上一次的回复 ═══\n" + (raw or "")[:4000]
                   + "\n\n═══ 校验没过, 只重答下面这些题（其余可以照抄）═══\n" + note
                   + "\n\n严格按原格式重新输出全部题目的 JSON。")
@@ -179,15 +194,51 @@ def ask_group(bank: dict, call: dict, spans: dict, model: str, *, llm=_llm
     except Exception as exc:  # noqa: BLE001
         for q in bad:
             results[q] = {"answer": None, "evidence": None, "invalid_reason": fb.INVALID_API}
-        return results, True, [f"retry_api_error: {exc!r}"]
-    parsed2 = fb_parse(parse_claude_json, raw2)
-    results2 = fb.validate_answers(bank, qids, parsed2, spans)
+        return results, True, [f"retry_api_error: {exc!r}"], 0
+    parsed2 = fb.parse_answers(raw2)
+    results2 = _validate_or_parse_failed(bank, qids, parsed2, spans, raw2, "retry")
     for q in bad:
         results[q] = results2[q]
-    return results, True, []
+    # 单题兜底: 重问之后仍然「没答」的题
+    singles = 0
+    errs: list[str] = []
+    for q in [q for q in bad if results[q].get("invalid_reason") in _UNANSWERED]:
+        single_call = fb.render_call(bank, [q], spans)
+        if not single_call["question_ids"]:
+            continue
+        singles += 1
+        try:
+            raw3 = llm(single_call["system"], single_call["user"], model)
+        except Exception as exc:  # noqa: BLE001
+            # 单问也挂在 api 上: 记 api_error (不是"没答"), 让调用方按 systemic 处理 —— 这篇不落行,
+            # 下轮幂等重跑。悄悄保留 json_parse_failed 会把一个 api 故障写成"模型没答", 且标记题
+            # 一落库这篇就永远不会再来 (自审 on #156; 同 codex review on #141 的洞)。
+            logger.warning("single_api_error q=%s: %r", q, exc)
+            errs.append(f"single_api_error {q}: {exc!r}")
+            results[q] = {"answer": None, "evidence": None, "invalid_reason": fb.INVALID_API}
+            continue
+        r3 = _validate_or_parse_failed(bank, [q], fb.parse_answers(raw3), spans, raw3, f"single:{q}")[q]
+        # 单问的结果替换原来的: 答出来最好; 没答出来也换成单问看到的原因 (json_parse_failed → missing
+        # 说明单问解析出了 JSON 但没这题 —— 两种"没答"在库里分得开, 都不冒充对方)。
+        results[q] = r3
+    return results, True, errs, singles
+
+
+_UNANSWERED = (fb.INVALID_MISSING, fb.INVALID_JSON)
+
+
+def _validate_or_parse_failed(bank: dict, qids: list[str], parsed, spans: dict, raw: str, stage: str
+                              ) -> dict[str, dict]:
+    """parsed 为 None → 整组记 json_parse_failed 并把回复开头记进日志 (Railway 日志里能看到是什么样的回复);
+    否则照常 validate_answers (缺题记 missing)。"""
+    if parsed is None:
+        logger.warning("parse_failed(%s) qids=%s raw_head=%r", stage, qids, (raw or "")[:200])
+        return {q: {"answer": None, "evidence": None, "invalid_reason": fb.INVALID_JSON} for q in qids}
+    return fb.validate_answers(bank, qids, parsed, spans)
 
 
 def fb_parse(parse_fn, raw: str) -> Optional[dict]:
+    """保留给旧调用方; 本 pass 已改用 feature_bank.parse_answers。"""
     try:
         return parse_fn(raw)
     except Exception:  # noqa: BLE001
@@ -210,7 +261,7 @@ def annotate_note(bank: dict, note: dict, mapping: dict, *, model: str, extracto
     spans = fb.build_spans(note.get("raw_content") or "", mode=mode, title_col=note.get("title"))
     brand_words = fb.brand_dictionary(project, note, mapping)
     rows = code_rows(bank, note, spans, brand_words, run_tag)
-    stats = {"groups_ok": 0, "groups_retry": 0, "systemic": 0, "invalid": 0, "answered": 0,
+    stats = {"groups_ok": 0, "groups_retry": 0, "singles": 0, "systemic": 0, "invalid": 0, "answered": 0,
              "title_how": spans["_title_how"], "truncated": bool(spans["_truncated"])}
     if code_only:
         return {"rows": rows, "raw_counts": fb.raw_counts(spans), "stats": stats, "spans": spans}
@@ -227,14 +278,18 @@ def annotate_note(bank: dict, note: dict, mapping: dict, *, model: str, extracto
             for q in call["question_ids"]:
                 rows.append(_row(bank, note["note_id"], q, idx[q]["version"], extractor, run_tag, None, None, "dry_run"))
             continue
-        results, retried, errs = ask_group(bank, call, spans, model, llm=llm)
+        results, retried, errs, singles = ask_group(bank, call, spans, model, llm=llm)
         errors += errs
-        if errs and all(r.get("invalid_reason") == fb.INVALID_API for r in results.values()):
+        # 组里【任一】题最后停在 api_error 就算 systemic: 整篇不落行, 下轮重跑。以前是"全组都 api"才算,
+        # 重问 / 单问阶段的 api 故障会漏成"组成功、格子 api_error"落库, 标记题一落这篇就永远补不回来
+        # (codex review on #141 说的洞, 自审 on #156 又找到一条路)。
+        if any(r.get("invalid_reason") == fb.INVALID_API for r in results.values()):
             stats["systemic"] += 1
         else:
             stats["groups_ok"] += 1
         if retried:
             stats["groups_retry"] += 1
+        stats["singles"] += singles
         for q, r in results.items():
             rows.append(_row(bank, note["note_id"], q, idx[q]["version"], extractor, run_tag,
                              r["answer"], r["evidence"], r["invalid_reason"]))
@@ -318,7 +373,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     logger.info("Found %d notes to annotate for project %s", len(notes), args.project_id)
 
     stats = {"ok": 0, "failed": 0, "systemic_failed": 0, "hygiene_failed": 0,
-             "groups_ok": 0, "groups_retry": 0, "answered": 0, "invalid": 0,
+             "groups_ok": 0, "groups_retry": 0, "singles": 0, "answered": 0, "invalid": 0,
              "title_how": {}, "truncated": 0}
     sleep_s = 1.0 / args.qps if args.qps > 0 else 0
     fq = Path(args.failed_queue).resolve()
@@ -360,7 +415,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             _append_failed(fq, note, args.project_id, [f"write_rejected: {exc}"])
             continue
         stats["ok"] += 1
-        for k in ("groups_ok", "groups_retry", "answered", "invalid"):
+        if st.get("errors"):
+            # 落了行但过程里有非致命错误 (比如单问阶段的 api 抖动被后面的成功盖过): 也记一笔, 只做线索
+            _append_failed(fq, note, args.project_id, ["partial: " + e for e in st["errors"]])
+        for k in ("groups_ok", "groups_retry", "singles", "answered", "invalid"):
             stats[k] += st[k]
         if i % 10 == 0:
             logger.info("[%d/%d] %s ok=%d failed=%d answered=%d invalid=%d",
