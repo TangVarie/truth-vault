@@ -50,6 +50,7 @@ jobs:
             scripts/preflight_mapping.py \
             scripts/build_gate1_human_sheets.py \
             scripts/ingest_gate1_answers.py \
+            scripts/gate1_agreement.py \
             librarian/__init__.py \
             librarian/clients.py \
             librarian/core.py \
