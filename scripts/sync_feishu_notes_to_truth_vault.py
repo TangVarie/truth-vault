@@ -286,6 +286,7 @@ _SYNTHETIC_TIER_SRC_RE = re.compile(r"伪爆[贴帖]|伪\d+评")
 # (comment_maintained 这个布尔保留, 语义 = "任一来路命中", 向后兼容。)
 _CM_ROUTE_TICKET = "铺评工单"      # 指标可能是刷出来的 → L2 训练应剔除
 _CM_ROUTE_POSTHOC = "起量后干预"   # 指标是真的, 但含人工成分 → 保留为正例, 别当特征
+_CM_ROUTE_SEEDED_OK = "铺评未跨线"  # 铺了评论、但扣掉之后仍过爆线 → 真赢家, 下游一律放行 (D-084 B1)
 
 _COMMENT_MAINTAINED_TIER_RE = re.compile(r"控评")
 # 「评论状态」里的后验干预取值 —— 只有帖子已经起量了运营才会去改评/二次铺评。
@@ -1012,6 +1013,18 @@ def transform_row(
             if _hit in _cstat_s:
                 _cm_hit(_CM_ROUTE_POSTHOC, f"评论状态「{_hit}」= 起量后的二次干预")
                 break
+    # ⑦ 减法重判 (owner 2026-09-23, D-084 B1): 运营确认铺进去的评论【计入】评论数, 那就直接减 ——
+    #    评论数 − 已铺条数 仍 ≥ 爆线(_COMMENT_TIER_BAO) 的, 是扣掉铺评也过线的真赢家, 不按铺评工单剔,
+    #    改记 route「铺评未跨线」(信息性: 书架 / L2 / 通道 1 只认「铺评工单」, 所以一律放行; seeded
+    #    照记, 别当特征)。不够线的照旧 铺评工单。评论数缺失时【不减】(证明不了过线, 照旧剔)。
+    #    tier 本身不改: 减法只决定挡不挡, 不重判档位。反证见 check_comment_maintained.py ⑬。
+    if _CM_ROUTE_TICKET in cm_routes and cm_seeded:
+        _cc = note.get("comments_count")
+        if isinstance(_cc, (int, float)) and not isinstance(_cc, bool) and _cc - cm_seeded >= _COMMENT_TIER_BAO:
+            cm_routes.discard(_CM_ROUTE_TICKET)
+            cm_routes.add(_CM_ROUTE_SEEDED_OK)
+            cm_reasons.append(f"[{_CM_ROUTE_SEEDED_OK}] 评论数 {int(_cc)} − 已铺 {cm_seeded} = {int(_cc) - cm_seeded}"
+                              f" ≥ {_COMMENT_TIER_BAO}, 扣掉铺评仍过线, 不按铺评工单剔")
     if cm_reasons:
         flags = dict(note.get("data_quality_flags") or {})
         flags["comment_maintained"] = True
@@ -1020,8 +1033,8 @@ def transform_row(
         # JSON, 看上去像数据在变。
         flags["comment_maintained_routes"] = sorted(cm_routes)
         flags["comment_maintained_reason"] = "; ".join(cm_reasons)
-        # 运营 2026-09-22 确认铺的评论【计入】表里看到的评论数 → 下游可以直接减。
-        # 【只记不减】: 是否按减法重判 tier 要 owner 拍板(PR #152 B1), 这里不动 tier。
+        # 运营 2026-09-22 确认铺的评论【计入】表里看到的评论数 → 上面 ⑦ 已按减法决定挡不挡
+        # (owner 2026-09-23 拍板, D-084 B1); tier 本身仍不动。
         # 取 max 而不是求和: 同一行的多个标记描述的是同一批评论(「关注」+「重点关注⭐️」
         # 是 20 和 50 两档, 不是 70 条), 求和会重复计数。
         if cm_seeded:

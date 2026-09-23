@@ -184,4 +184,35 @@ n12f, _, _ = s.transform_row(M12f, "r12f",
 assert "paid_promoted" not in f(n12f), \
     f"别的列里的 🍟 不是投流标记, 判据不许扫整个 raw_extra: {f(n12f)}"
 
-print("comment_maintained 分来路 × synthetic 正交 × 维护情况取值 × 投流三态: all checks passed")
+# ⑬ 减法重判 (D-084 B1, owner 2026-09-23): 评论数 − 已铺 ≥ 50 → 「铺评未跨线」(放行), 否则仍 铺评工单。
+#    夹具要把「评论数」映成 typed 列 comments_count, 否则减法没数可减。
+SEEDED_OK = s._CM_ROUTE_SEEDED_OK
+M13 = dict(M11, field_mapping={**BASE["field_mapping"], "评论数": "comments_count"})
+def _cm(rid, row):
+    n, _, _ = s.transform_row(M13, rid, {"文案": "c", "状态": "爆贴", **row})
+    return n
+n13a = _cm("r13a", {"维护情况": ["关注"], "评论数": 49})
+assert rt(n13a) == [TICKET] and f(n13a)["comment_maintained_seeded"] == 20, f"49−20=29 < 50 该剔: {f(n13a)}"
+n13b = _cm("r13b", {"维护情况": ["关注"], "评论数": 73})
+assert rt(n13b) == [SEEDED_OK] and f(n13b)["comment_maintained_seeded"] == 20, f"73−20=53 ≥ 50 是真赢家: {f(n13b)}"
+assert "53" in f(n13b)["comment_maintained_reason"], f(n13b)
+assert n13b["tier"] == "爆", "减法只决定挡不挡, 不动 tier"
+n13c = _cm("r13c", {"维护情况": ["关注"], "评论数": 70});  assert rt(n13c) == [SEEDED_OK], f"边界 70−20=50 含等号: {rt(n13c)}"
+n13d = _cm("r13d", {"维护情况": ["关注"], "评论数": 69});  assert rt(n13d) == [TICKET], f"69−20=49 不够: {rt(n13d)}"
+n13e = _cm("r13e", {"维护情况": ["关注"]});                 assert rt(n13e) == [TICKET], f"没评论数不减、照旧剔: {rt(n13e)}"
+n13f = _cm("r13f", {"维护评论50条": "x", "评论数": 100});   assert rt(n13f) == [SEEDED_OK], f"工单列 50 条: 100−50=50 过线: {rt(n13f)}"
+n13g = _cm("r13g", {"维护评论50条": "x", "评论数": 99});    assert rt(n13g) == [TICKET], f"99−50=49 不够: {rt(n13g)}"
+n13h = _cm("r13h", {"维护情况": ["关注", "控评&置顶✅"], "评论数": 205})
+assert set(rt(n13h)) == {SEEDED_OK, POSTHOC}, f"真赢家 + 起量后干预 两路都在: {rt(n13h)}"
+# 下游只认「铺评工单」: 通道 1 的共用判据对 铺评未跨线 放行、对 铺评工单 仍挡 (书架 v1.14 / L2 v1.15 的 SQL 同样只 ? '铺评工单')
+import sync_truth_vault_baokuan_to_sanshengliubu as ssll
+assert ssll.metric_tier_untrustworthy_reason({"tier": "爆", "data_quality_flags": f(n13b)}) is None, "铺评未跨线 该进通道 1"
+assert ssll.metric_tier_untrustworthy_reason({"tier": "爆", "data_quality_flags": f(n13a)}) == TICKET, "铺评工单 仍该挡"
+# 反证: 把爆线抬到天上 → 73 那条退回 铺评工单 (规则真的在减法上)
+_saved = s._COMMENT_TIER_BAO; s._COMMENT_TIER_BAO = 10**9
+try:
+    assert rt(_cm("r13x", {"维护情况": ["关注"], "评论数": 73})) == [TICKET], "反证失败: 减法规则没生效"
+finally:
+    s._COMMENT_TIER_BAO = _saved
+
+print("comment_maintained 分来路 × synthetic 正交 × 维护情况取值 × 投流三态 × 减法重判: all checks passed")
