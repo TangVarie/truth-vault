@@ -182,6 +182,64 @@ def build_rows(notes: list[dict], bank: dict, extractor: str, run_tag: str) -> t
     return rows, blanks
 
 
+_SQL_UPSERT_TAIL = (
+    "on conflict (subject_type, subject_id, question_id, question_version, extractor, run_tag) "
+    "do update set answer = excluded.answer, evidence = excluded.evidence, prob = excluded.prob, "
+    "invalid_reason = excluded.invalid_reason, bank_version = excluded.bank_version, "
+    "bank_sha256 = excluded.bank_sha256, extracted_at = excluded.extracted_at;")
+
+
+def _sql_lit(v) -> str:
+    if v is None:
+        return "NULL"
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return repr(v)
+    return "'" + str(v).replace("'", "''") + "'"
+
+
+def rows_to_sql(rows: list[dict]) -> str:
+    """与 --write 的 upsert 等价的 SQL: 主键冲突就覆盖 (同一张表重跑 = 覆盖, 不是再插)。
+
+    形态是【一篇一行, 20 题两个数组】再 unnest 展开, 不是一格一行: 一张表 1,000 格摊平要
+    230 KB, 这样 ~10 KB —— 拿到 MCP / SQL 编辑器里才贴得动。共同的列 (extractor / run_tag /
+    题库版本 / 时间) 只写一次, 与 --write 的每行完全等价。
+    """
+    if not rows:
+        return "-- ingest_gate1_answers.py · nothing to write\n"
+    # 共同列必须真的共同 —— 一份 SQL 对应一次调用 (一张表, 一个 extractor)
+    common = {k: {r[k] for r in rows} for k in ("extractor", "run_tag", "bank_version", "bank_sha256",
+                                                "extracted_at", "subject_type")}
+    bad = {k: v for k, v in common.items() if len(v) != 1}
+    if bad:
+        raise SystemExit(f"rows_to_sql: 这些列在一份 SQL 里不该有多个值: {bad}")
+    c = {k: next(iter(v)) for k, v in common.items()}
+    qids = list(dict.fromkeys(r["question_id"] for r in rows))          # 保持题序
+    qver = {r["question_id"]: r["question_version"] for r in rows}
+    per_subject: dict[str, dict[str, dict]] = {}
+    for r in rows:
+        per_subject.setdefault(r["subject_id"], {})[r["question_id"]] = r
+    values = []
+    for sid, byq in per_subject.items():
+        ans = ", ".join(_sql_lit(byq[q]["answer"]) if q in byq else "NULL" for q in qids)
+        prob = ", ".join(_sql_lit(byq[q]["prob"]) if q in byq else "NULL" for q in qids)
+        values.append(f"  ({_sql_lit(sid)}, array[{ans}], array[{prob}]::real[])")
+    q_ids = ", ".join(_sql_lit(q) for q in qids)
+    q_ver = ", ".join(str(int(qver[q])) for q in qids)
+    return (
+        f"-- ingest_gate1_answers.py · note_feature_answers upsert · {len(rows)} 格 · "
+        f"{len(per_subject)} 篇 · extractor={c['extractor']} run_tag={c['run_tag']} · generated {_iso_now()}\n"
+        f"with q as (\n  select * from unnest(array[{q_ids}], array[{q_ver}]) with ordinality "
+        "as t(question_id, question_version, ord)\n),\nd(subject_id, answers, probs) as (values\n"
+        + ",\n".join(values) + "\n)\n"
+        "insert into truth_vault.note_feature_answers (subject_type, subject_id, question_id, question_version, "
+        "bank_version, bank_sha256, extractor, run_tag, answer, evidence, prob, invalid_reason, extracted_at)\n"
+        f"select {_sql_lit(c['subject_type'])}, d.subject_id, q.question_id, q.question_version, "
+        f"{_sql_lit(c['bank_version'])}, {_sql_lit(c['bank_sha256'])}, {_sql_lit(c['extractor'])}, "
+        f"{_sql_lit(c['run_tag'])}, d.answers[q.ord], NULL, d.probs[q.ord], NULL, {_sql_lit(c['extracted_at'])}\n"
+        "from d cross join q\nwhere d.answers[q.ord] is not null   -- 灰格 (题库说这题不问) 没有行\n"
+        + _SQL_UPSERT_TAIL + "\n")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     ap.add_argument("--file", action="append", required=True, type=Path, help="填完的 xlsx, 可重复")
@@ -189,6 +247,9 @@ def main() -> int:
     ap.add_argument("--run-tag", default=DEFAULT_RUN_TAG)
     ap.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     ap.add_argument("--write", action="store_true", help="真的写库; 不给就只校验")
+    ap.add_argument("--sql-out", type=Path, default=None,
+                    help="不直接写库, 把同一批行写成 INSERT … ON CONFLICT DO UPDATE 的 .sql "
+                         "(没有 service key 的机器上拿去 Supabase SQL 编辑器 / MCP 执行)")
     args = ap.parse_args()
 
     if not _EXTRACTOR_RE.match(args.extractor):
@@ -228,6 +289,10 @@ def main() -> int:
 
     logger.info("合计 %d 行 → note_feature_answers (extractor=%s, run_tag=%s)%s",
                 len(all_rows), args.extractor, args.run_tag, "" if args.write else " [dry-run, 没写]")
+    if args.sql_out:
+        sql = rows_to_sql(all_rows)
+        args.sql_out.write_text(sql, encoding="utf-8")
+        logger.info("SQL 写到 %s (%d 格, %d 字节)", args.sql_out, len(all_rows), len(sql.encode("utf-8")))
     if not args.write:
         return 0
     sb = get_supabase_client()

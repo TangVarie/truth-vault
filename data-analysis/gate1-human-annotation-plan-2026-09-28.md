@@ -103,7 +103,12 @@ Jev 自己前后一致，**不能当作 §5.2 的"人 vs 人 κ"**——两次�
 
 落库方式：`scripts/ingest_gate1_answers.py --extractor jev:1.13.0-A --file A_Jev.xlsx`，一张一跑
 （extractor 带表的字母，否则重叠的 50 篇会互相覆盖）；`run_tag` 仍是 `gate1-20260928`。
-人的表同一个脚本，`--extractor human:<姓名>`。**是否真的写库等 owner 拍板**——它是生产表。
+人的表同一个脚本，`--extractor human:<姓名>`。
+
+**owner 当天拍板（D-081）：Jev 落库，直接顶替"人工那一半"；TV 自己的模型只跑这 100 篇**
+（`backfill-features.yml` 的 `note_ids` 输入，见 D-081）。§5.2 的"人 vs 人 κ"于是变成
+Jev vs TV 模型——是模型 vs 模型，两个模型在题面歧义处会一起错，这个数看不出来；
+9/28–30 若三位同事仍标，同一脚本照收，届时三方对照。
 
 ## 8. 挡不住什么
 

@@ -5,7 +5,7 @@
 搬到 Railway 后由 GitHub daily-sync 调本服务端点触发(保留 GitHub 的失败→邮件告警)。
 
   POST /annotate-essence  body={project, limit?, dry_run?, reannotate?}
-  POST /annotate-features body={project, limit?, dry_run?, reannotate?, run_tag?, single?, code_only?, model?}
+  POST /annotate-features body={project, limit?, dry_run?, reannotate?, run_tag?, single?, code_only?, model?, note_ids?}
   POST /curate            body={project?, limit?, dry_run?}
   GET  /health            → {ok, service, auth{ok,required,mode}, config{...}, running[]}
 
@@ -284,6 +284,8 @@ async def annotate_essence(
 
 _RUN_TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$")
 _MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,79}$")
+_NOTE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")       # 形如 NUC_phase1_recXXXX; 它会拼进 argv
+_NOTE_IDS_MAX = 200                                       # Railway 边缘 ~5min: 一次其实只跑得完 2–4 篇
 
 
 @app.post("/annotate-features")
@@ -317,9 +319,25 @@ async def annotate_features(
         if not isinstance(model, str) or not _MODEL_RE.match(model):
             raise HTTPException(status_code=400, detail="model must match [A-Za-z0-9][A-Za-z0-9_.:/-]{0,79}")
         args += ["--model", model]
+    # 闸一 (D-079/D-081): 指定 note_id 只跑这几篇 —— 100 篇样本散在 5 个项目里, 其中 3 个是
+    # on_demand, 灌整个项目要烧 2,600 篇。列表原样交给 pass 的 --note-ids (逗号分隔),
+    # pass 再按项目取交集, 别的项目的 id 会被静默丢掉, 所以调用方要按项目分组。
+    note_ids = body.get("note_ids")
+    if note_ids is not None:
+        if (not isinstance(note_ids, list) or not note_ids or len(note_ids) > _NOTE_IDS_MAX
+                or not all(isinstance(x, str) and _NOTE_ID_RE.match(x) for x in note_ids)):
+            raise HTTPException(
+                status_code=400,
+                detail=f"note_ids must be a non-empty list (≤{_NOTE_IDS_MAX}) of ids matching "
+                       "[A-Za-z0-9_-]{1,80}")
+        args += ["--note-ids", ",".join(note_ids)]
     res = await run_in_threadpool(_run, "annotate_feature_pass.py", args)
     res["action"] = "annotate-features"
     res["project"] = project
+    if note_ids is not None:
+        # 调用方靠这个字段确认 worker 已经是认识 note_ids 的版本 —— 旧版本会把这个字段
+        # 当没见过的键吞掉、按 project+limit 去跑别的笔记, 悄悄烧钱。
+        res["note_ids_count"] = len(note_ids)
     return res
 
 
