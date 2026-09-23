@@ -22,6 +22,14 @@ on:
         description: "只跑这些 note_id(逗号分隔, ≤200, 形如 NUC_phase1_recXXXX)。给了就按 id 前缀自动分项目、每 batch 篇一请求, 忽略 max_batches; project 只作并发组名(填 gate1 之类)。闸一 D-081 用。batch 建议 2(D-077: 一篇 53–81s)。"
         required: false
         default: ""
+      run_tag:
+        description: "只在 note_ids 模式生效。答案落哪个 run_tag(默认 primary)。⚠️ pass 的「跑过」判据按 (extractor, run_tag) 看标记题: 这几篇在 primary 下已经答过就会被整篇跳过、0 次调用 —— 重跑已答过的篇必须换一个 run_tag(如 gate1-v2), 旧答案原样保留。[A-Za-z0-9][A-Za-z0-9_.-]{0,39}"
+        required: false
+        default: "primary"
+      bank_sha:
+        description: "只在 note_ids 模式生效, 可空。期望 worker 用的问题库 sha256 前缀(≥8 位; feature_bank.load_bank()['_sha256'])。探针会打出 worker 日志里的 bank=… sha=…, 对不上就停 —— 题库刚升版时 Railway 可能还没部署完, 别拿旧题面烧钱。"
+        required: false
+        default: ""
 
 # 同一项目同时只允许一个 backfill 在跑 —— 否则两个 run 会各自快照同一批未抽取笔记、
 # 重复烧 LLM 且非确定性地互相覆盖 essence(codex PR#43 review r3355530533)。
@@ -42,6 +50,8 @@ jobs:
       BATCH: ${{ github.event.inputs.batch }}
       MAXB: ${{ github.event.inputs.max_batches }}
       NOTE_IDS: ${{ github.event.inputs.note_ids }}
+      RUN_TAG: ${{ github.event.inputs.run_tag }}
+      BANK_SHA: ${{ github.event.inputs.bank_sha }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -87,9 +97,17 @@ jobs:
               [ -f "../mappings/${proj}.yaml" ] || { echo "::error::note_id '$id' 的项目 '$proj' 没有 mapping"; exit 1; }
             done
             [ "$n" -ge 1 ] && [ "$n" -le 200 ] || { echo "::error::note_ids 要 1–200 个, 收到 $n"; exit 1; }
-            echo "✅ inputs OK (note_ids 模式): $n 篇 · batch=$BATCH · 并发组=$PROJECT"
+            # run_tag 会拼进 worker 的 subprocess 参数, 这里和 worker 用同一条正则; 空 = primary。
+            [ -n "$RUN_TAG" ] || RUN_TAG=primary
+            echo "$RUN_TAG" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$' || { echo "::error::run_tag '$RUN_TAG' 不合 [A-Za-z0-9][A-Za-z0-9_.-]{0,39}"; exit 1; }
+            if [ -n "$BANK_SHA" ]; then
+              echo "$BANK_SHA" | grep -Eq '^[0-9a-f]{8,64}$' || { echo "::error::bank_sha '$BANK_SHA' 要是 8–64 位小写十六进制"; exit 1; }
+            fi
+            echo "✅ inputs OK (note_ids 模式): $n 篇 · batch=$BATCH · run_tag=$RUN_TAG · bank_sha=${BANK_SHA:-(不查)} · 并发组=$PROJECT"
             exit 0
           fi
+          [ -z "$RUN_TAG" ] || [ "$RUN_TAG" = "primary" ] || { echo "::error::run_tag 只在 note_ids 模式生效(整项目回填永远落 primary, count_unannotated_features 也只数 primary), 收到 '$RUN_TAG'"; exit 1; }
+          [ -z "$BANK_SHA" ] || { echo "::error::bank_sha 只在 note_ids 模式生效, 收到 '$BANK_SHA'"; exit 1; }
           # project 必须是已知项目(有 mapping)。否则拼错的名字会查到 remaining=0 → 被当成
           # "已灌完"绿着退出、一条没处理(codex review r3355530520)。
           if [ ! -f "../mappings/${PROJECT}.yaml" ]; then
@@ -109,7 +127,8 @@ jobs:
           # 去跑【别的】笔记 —— 真跑之前必须确认响应里有 note_ids_count。dry_run 不调模型不写库。
           probe_id=$(echo "$NOTE_IDS" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -v '^$' | head -1)
           probe_proj="${probe_id%_rec*}"
-          body=$(jq -nc --arg p "$probe_proj" --arg id "$probe_id" '{project:$p, limit:1, dry_run:true, note_ids:[$id]}')
+          [ -n "$RUN_TAG" ] || RUN_TAG=primary
+          body=$(jq -nc --arg p "$probe_proj" --arg id "$probe_id" --arg t "$RUN_TAG" '{project:$p, limit:1, dry_run:true, note_ids:[$id], run_tag:$t}')
           code=$(curl -sS -w '%{http_code}' -o /tmp/probe.json --max-time 300 \
             -X POST "${WORKER_URL%/}/annotate-features" \
             -H "X-Worker-Key: $WORKER_API_KEY" -H 'content-type: application/json' -d "$body") || code=000
@@ -120,6 +139,18 @@ jobs:
             exit 1
           fi
           echo "✅ worker 认识 note_ids (探针 note_ids_count=$nc)"
+          # worker 跑的是它自己部署里的问题库 (Railway 从 main 自动部署)。pass 一开始就打
+          # "bank=<版本> sha=<前 12 位>… model=… run_tag=…", 这里把它捞出来放进日志; 给了 bank_sha 就对前缀,
+          # 对不上 = 部署还没跟上或跑错分支, 停 —— 拿旧题面烧一遍 100 篇是白烧 (D-082 升版之后尤其)。
+          bank_line=$(jq -r '(.stderr_tail // "") + "\n" + (.stdout_tail // "")' /tmp/probe.json 2>/dev/null | grep -o 'bank=[^ ]* sha=[0-9a-f]*[^ ]* model=[^ ]* run_tag=[^ ]*' | tail -1)
+          echo "worker: ${bank_line:-(日志里没找到 bank=… 行)}"
+          if [ -n "$BANK_SHA" ]; then
+            want="sha=${BANK_SHA:0:12}"
+            case "$bank_line" in *"$want"*) echo "✅ 问题库 sha 前缀对上 ($want)";;
+              *) echo "::error::worker 的问题库不是期望的 ($want): 探针打的是 '${bank_line:-空}'。Railway 还没部署到带这版题库的 main? 等部署完再触发。"; exit 1;;
+            esac
+          fi
+          echo "$bank_line" | grep -q "run_tag=$RUN_TAG" || { echo "::error::worker 没按 run_tag=$RUN_TAG 跑 (探针打的是 '${bank_line:-空}') —— 旧版 worker 会吞掉 run_tag 落到 primary。停。"; exit 1; }
 
           mapfile -t ids < <(echo "$NOTE_IDS" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -v '^$' | sort -u)
           total=${#ids[@]}; sent=0; ok_chunks=0; bad_chunks=0
@@ -127,7 +158,7 @@ jobs:
             mapfile -t plist < <(printf '%s\n' "${ids[@]}" | grep "^${proj}_rec")
             for ((i=0; i<${#plist[@]}; i+=BATCH)); do
               chunk=("${plist[@]:i:BATCH}")
-              body=$(printf '%s\n' "${chunk[@]}" | jq -R . | jq -sc --arg p "$proj" --argjson n "$BATCH" '{project:$p, limit:$n, note_ids:.}')
+              body=$(printf '%s\n' "${chunk[@]}" | jq -R . | jq -sc --arg p "$proj" --argjson n "$BATCH" --arg t "$RUN_TAG" '{project:$p, limit:$n, note_ids:., run_tag:$t}')
               echo "── $proj · 第 $((i/BATCH+1)) 批 (${#chunk[@]} 篇) · 已发 $sent/$total ──"
               ok=false; code=000
               for attempt in 1 2 3 4 5 6; do
@@ -149,7 +180,7 @@ jobs:
             done
           done
           echo "── 结束 · $total 篇 · 成功 $ok_chunks 批 · 失败 $bad_chunks 批 ──"
-          echo "已答过的篇 pass 自己会跳过 (按 run_tag 幂等), 失败的批再触发一次接着跑。"
+          echo "已答过的篇 pass 自己会跳过 (按 (extractor, run_tag) 幂等; 本次 run_tag=$RUN_TAG), 失败的批再触发一次接着跑。"
           [ "$bad_chunks" = "0" ] || { echo "::error::$bad_chunks 批连续 6 次都没成 —— 查 Railway worker 日志。"; exit 1; }
 
       - name: Loop worker until project essence is fully annotated

@@ -5225,3 +5225,25 @@ yes_if / no_if / means / example，即模型看得到的那几行；`bank_versio
 - 一致的格子没人看：两边一起错的（尤其被人评价 / 已发生的坏结果 这两题 TV 有 20 格 invalid）这次没查。
 - 题面写进了具体例子（老公 / 能量胶 / 半马），五个闸一项目的用语会往题面里渗，换项目（美妆、母婴）
   时例子可能带偏；闸二跑之前若加项目，先看这五题的例子。
+
+### 续（同日）：按 v2 重跑这 100 篇 —— `backfill-features.yml` 加 `run_tag` / `bank_sha`
+
+owner：「合并 #154，TV 按 v2 重跑这 100 篇」。直接触发会**一篇都不跑**：pass 的"跑过"判据是
+`(extractor, run_tag)` 下标记题那一行，这 100 篇在 `primary` 下已经答过，note_ids 路径原来只发
+`{project, limit, note_ids}`，pass 会把 100 篇全当"已跑过"跳掉、0 次调用、绿着退出。两个改法里选了
+**换 run_tag** 而不是 `reannotate`：`reannotate` 会把 15 道没改的题在 `primary` 下的 v1 行原地覆盖
+（同 PK），报告的基线就变了；换 `run_tag = gate1-v2`，旧答案一字不动，新旧两份可以并排比。
+
+- `backfill-features.yml` 新输入 `run_tag`（默认 primary，只在 note_ids 模式生效，正则同 worker）、
+  `bank_sha`（可空；期望 worker 用的问题库 sha256 前缀）。探针把 worker 日志里的
+  `bank=… sha=… model=… run_tag=…` 那一行捞出来打进 run 日志：sha 前缀对不上就停（Railway 还没部署到
+  带 v2 题面的 main，拿旧题面烧 100 篇是白烧）；`run_tag` 没出现在那一行也停（旧 worker 会吞掉 run_tag
+  落到 primary）。
+- `scripts/gate1_agreement.py`：`--tv-run-tag`（拼进 SQL 前过同一条正则），pivot 多一列 `owner`
+  （human:owner 的裁决），报告多一列"owner 裁过的格：TV 对 · Jev 对 · n"；同一 run_tag 下混着
+  两个 question_version 时取高的那一行并在报告顶部注明。
+- 反证（本地假 worker 回放 note_ids 步）：新 worker + sha 对上 → 4 篇 4 个请求全带 run_tag；sha 给错
+  → 探针即停、1 个请求（dry_run）；旧 worker（无 note_ids_count）→ 停；认识 note_ids 但吞 run_tag 的
+  worker → 停；`run_tag` 含 `;` → 校验步红；非 note_ids 模式给 run_tag ≠ primary 或给 bank_sha → 校验步红。
+- 挡不住什么：探针只看第一篇所在项目的 worker 响应，跑到一半 Railway 重新部署换了题库它看不见
+  （落库的 `bank_sha256` 会不一样，事后能查出来）。
