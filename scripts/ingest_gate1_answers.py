@@ -23,7 +23,14 @@ run_tag 默认 gate1-20260928, 与 D-079 一致; 主键 (subject, question, vers
     · 表头的中文短题名必须能一一映射回题库 question_id（题库改了题名这里会红）
     · 答案必须在闭集里（bool → 是/否; choice → options）；「—」是预先灰掉的格子, 跳过
       且必须与名单 `skipped_questions` 一致；空格子按【没答】计, 不写行, 但会点名
+      名单那一格用 gate1_labels.split_skipped 拆 ("|" 与旧的 "," 都认), 拆出题库里没有的题号直接红
+      (D-085: 以前按 "," 拆 "|" 拼的名单, 11 个灰格拆成一个认不出的长串, 两个方向的校验都失效)
     · 「拿不准的地方」那一列不进库; 只有 Jev 那种按题写了概率的, 解析出来写进 prob
+
+prob 的口径 (D-085, 对齐 notes_v1_17): **所选答案的概率**。Jev 在是非题上写的是「判「是」的概率 p」,
+答「是」存 p、答「否」存 1 − p; 选择题写的是「第一名只有 p」, Jev 的答案就是第一名, 存 p。
+D-081 那三张表 (run_tag gate1-20260928) 是按旧口径落的 (是非题存 P(是)), 不回改; D-084 已定 Jev 不重跑,
+真要重收请落新的 run_tag, 别把两种口径混进同一个 run_tag。
 """
 
 from __future__ import annotations
@@ -34,11 +41,9 @@ import re
 import sys
 from pathlib import Path
 
-import openpyxl
-
 import feature_bank as fb
 from _common import _iso_now, get_supabase_client, setup_logger
-from gate1_labels import SHORT
+from gate1_labels import SHORT, split_skipped
 
 logger = setup_logger("ingest_gate1")
 
@@ -52,7 +57,40 @@ UPSERT_CHUNK = 200                       # 走 body 不走 URL, 但一次别太�
 _EXTRACTOR_RE = re.compile(r"^(human|jev):[^\s:]+$")
 # Jev 在「拿不准的地方」里的写法: "4 具体地点或场合：判「是」的概率 0.39，落在 0.35–0.65"
 #                                "12 产品角色：第一名只有 0.45；「主角」0.45 与「只暗示」0.33 太接近"
-_PROB_RE = re.compile(r"(?m)^(\d+) [^：]+：(?:判「是」的概率|第一名只有) ([0-9.]+)")
+# 两种写法的数不是一个东西: 前者是 P(是), 后者是第一名 (= Jev 选的那个) 的概率。分开记, build_rows 换算。
+_PROB_RE = re.compile(r"(?m)^(\d+) [^：]+：(判「是」的概率|第一名只有) ([0-9.]+)")
+PROB_YES, PROB_TOP = "p_yes", "p_top"
+
+
+def parse_probs(text: str, num_to_qid: dict[int, str]) -> dict[str, tuple[str, float]]:
+    """「拿不准的地方」那一格 → {qid: (PROB_YES | PROB_TOP, 数)}; 题号对不上的行、不在 [0,1] 的数忽略。"""
+    out: dict[str, tuple[str, float]] = {}
+    for n, kind, p in _PROB_RE.findall(str(text or "")):
+        try:
+            v = float(p)
+        except ValueError:
+            continue
+        if int(n) in num_to_qid and 0.0 <= v <= 1.0:
+            out[num_to_qid[int(n)]] = (PROB_YES if kind.startswith("判") else PROB_TOP, v)
+    return out
+
+
+def prob_of_answer(answer: str, prob) -> float | None:
+    """(PROB_YES | PROB_TOP, p) + 表里的答案 → 所选答案的概率 (v1.17 口径)。
+
+    PROB_YES 只对是非题有意义: 答「是」→ p, 答「否」→ 1 − p (四舍五入到 4 位, 免得 0.61000000001)。
+    PROB_TOP 是 Jev 第一名的概率, Jev 的答案就是第一名 → p。
+    PROB_YES 却配了非是非答案 (对不上) → None, 宁可不写也不写错。"""
+    if prob is None:
+        return None
+    kind, p = prob
+    if kind == PROB_TOP:
+        return p
+    if answer == "是":
+        return p
+    if answer == "否":
+        return round(1.0 - p, 4)
+    return None
 
 
 def load_manifest(path: Path) -> dict[str, dict]:
@@ -64,7 +102,8 @@ def load_manifest(path: Path) -> dict[str, dict]:
 
 
 def read_sheet(path: Path, bank: dict) -> tuple[str, list[dict]]:
-    """返回 (标注员字母, [{note_id, answers: {qid: 值}, probs: {qid: float}}])。"""
+    """返回 (标注员字母, [{note_id, answers: {qid: 值}, probs: {qid: (PROB_YES|PROB_TOP, float)}}])。"""
+    import openpyxl   # 只有读 xlsx 要它; 放这里, 校验 / 拼行这些纯函数不装它也能 import (CI 就不装)
     wb = openpyxl.load_workbook(path, data_only=True)
     if SHEET not in wb.sheetnames:
         raise SystemExit(f"{path.name}: 没有「{SHEET}」页, 页有 {wb.sheetnames}")
@@ -119,12 +158,10 @@ def read_sheet(path: Path, bank: dict) -> tuple[str, list[dict]]:
         if not nid:
             continue
         answers = {qid: (None if row[i] is None else str(row[i]).strip()) for i, qid in col_q.items()}
-        probs: dict[str, float] = {}
+        probs: dict[str, tuple[str, float]] = {}
         if unc_col is not None and row[unc_col]:
             num_to_qid = {int(h.split("\n")[0]): col_q[i] for i, h in enumerate(header) if i in col_q}
-            for n, p in _PROB_RE.findall(str(row[unc_col])):
-                if int(n) in num_to_qid:
-                    probs[num_to_qid[int(n)]] = float(p)
+            probs = parse_probs(str(row[unc_col]), num_to_qid)
         out.append({"note_id": str(nid), "answers": answers, "probs": probs})
     return who, out
 
@@ -144,7 +181,13 @@ def validate(path: Path, who: str, notes: list[dict], manifest: dict, bank: dict
         man = manifest.get(n["note_id"])
         if not man:
             continue
-        skipped = set(filter(None, (man.get("skipped_questions") or "").split(",")))
+        skipped = set(split_skipped(man.get("skipped_questions")))
+        # 拆出题库里没有的题号 = 名单坏了或分隔符又对不上了 (D-085 那 11 格就是这么漏进库的)。
+        # 这时灰格校验在两个方向上都是空转, 必须直接红, 不能当「这篇没有灰格」。
+        unknown = sorted(skipped - set(qidx))
+        if unknown:
+            errs.append(f"{n['note_id']}: 名单 skipped_questions 里有题库没有的题号 {unknown} —— 名单坏了或分隔符不对")
+            continue
         for qid, v in n["answers"].items():
             if v == SKIP_MARK:
                 if qid not in skipped:
@@ -176,7 +219,7 @@ def build_rows(notes: list[dict], bank: dict, extractor: str, run_tag: str) -> t
                 "question_id": qid, "question_version": int(qidx[qid].get("version") or 1),
                 "bank_version": bank["bank_version"], "bank_sha256": bank["_sha256"],
                 "extractor": extractor, "run_tag": run_tag,
-                "answer": v, "evidence": None, "prob": n["probs"].get(qid),
+                "answer": v, "evidence": None, "prob": prob_of_answer(v, n["probs"].get(qid)),
                 "invalid_reason": None, "extracted_at": now,
             })
     return rows, blanks

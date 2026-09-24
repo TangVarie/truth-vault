@@ -53,6 +53,9 @@ jobs:
             scripts/gate1_agreement.py \
             scripts/gate1_labels.py \
             scripts/check_feature_parse.py \
+            scripts/check_feature_orchestration.py \
+            scripts/check_comment_parser.py \
+            scripts/check_gate1_ingest.py \
             librarian/__init__.py \
             librarian/clients.py \
             librarian/core.py \
@@ -337,36 +340,7 @@ jobs:
           PY
       - name: Comment parser unit tests
         working-directory: scripts
-        run: |
-          python - <<'PY'
-          from sync_comments_from_raw_extra import parse_comment_text
-
-          cases = [
-              ("1. 用户A: 第一条\n2. 用户B: 第二条",
-               [("素人", "第一条"), ("素人", "第二条")]),
-              ("贴主: 谢谢姐妹\n素人小红: 好用吗",
-               [("贴主", "谢谢姐妹"), ("素人", "好用吗")]),
-              ("用户A | 第一条\n用户B | 第二条",
-               [("素人", "第一条"), ("素人", "第二条")]),
-              ("好用\n不好用",
-               [("素人", "好用"), ("素人", "不好用")]),
-              ("\n1.\n用户: 内容\n\n",
-               [("素人", "内容")]),
-              ("贴主:感谢",
-               [("贴主", "感谢")]),
-          ]
-          failed = []
-          for i, (text, expected) in enumerate(cases, 1):
-              actual = list(parse_comment_text(text))
-              if actual != expected:
-                  failed.append((i, expected, actual))
-                  print(f"  case {i}: FAIL\n    expected: {expected}\n    got:      {actual}")
-              else:
-                  print(f"  case {i}: ok")
-          if failed:
-              raise SystemExit(f"\n{len(failed)} parser test(s) failed")
-          print(f"\n{len(cases)}/{len(cases)} passed")
-          PY
+        run: python check_comment_parser.py   # 原 6 条 + D-085 同行切分 / 【…】标签 (D-075: 挪进 scripts/)
       - name: 对账只在完整同步时盖戳, 且只报不删 (跨库审计 COR-011)
         working-directory: scripts
         run: |
@@ -1207,106 +1181,10 @@ jobs:
         run: python check_feature_parse.py
       - name: "特征层编排自检 · 假模型 + 假库端到端: 31 行/篇、6 组 + 重问、任一组挂整篇不落行、写序 raw→answers、resume 判据、code-only"
         working-directory: scripts
-        run: |
-          python - <<'PY'
-          # 编排自检: annotate_feature_pass 端到端走假 LLM + 假库 (不连网), 断行为不断源码。
-          import json, feature_bank as fb, annotate_feature_pass as afp
-          bank = fb.load_bank()
-          raw = "【标题】戒烟第几天最难熬？\n【正文】上周三凌晨两点在公司茶水间饿醒。我妈：你身上什么味儿？嗓子像被砂纸磨过。\n你们戒烟第几天了？#戒烟#"
-          note = {"note_id": "T_1", "project_id": "T", "title": None, "raw_content": raw, "target_blue_keywords": ["戒烟"], "projects": {"brand": "某牌", "product": "尼古丁贴"}}
-          mapping = {"project_id": "T", "field_mapping": {}, "title_extraction": "markers"}
-          calls = []
-          def fake_llm(system, user, model):
-              calls.append(system)
-              ids = [ln.split(" · ")[0].split(". ", 1)[1] for ln in system.splitlines() if " · 看【" in ln]
-              idx = fb.question_index(bank); out = []
-              for q in ids:
-                  qq = idx[q]
-                  if q == "has_specific_time": out.append({"id": q, "answer": "是", "evidence": "凌晨两点"})
-                  elif q == "has_direct_quote": out.append({"id": q, "answer": "是", "evidence": "这句不在原文里"})
-                  elif q == "opening_type": out.append({"id": q, "answer": "外星选项", "evidence": ""})
-                  elif qq["type"] == "bool": out.append({"id": q, "answer": "否", "evidence": ""})
-                  else: out.append({"id": q, "answer": "未出现" if q == "product_role" else fb.closed_set(qq)[0], "evidence": ""})
-              return json.dumps({"answers": out}, ensure_ascii=False)
-          res = afp.annotate_note(bank, note, mapping, model="m", extractor="llm:m", run_tag="primary", single=False, code_only=False, dry_run=False, llm=fake_llm)
-          rows = res["rows"]; by = {r["question_id"]: r for r in rows}
-          assert len(rows) == 31 and len(calls) == 8, (len(rows), len(calls))        # 6 组 + 2 次重问
-          assert by["has_specific_time"]["answer"] == "是" and by["has_direct_quote"]["invalid_reason"] == "evidence_not_found"
-          assert by["opening_type"]["invalid_reason"] == "out_of_vocab" and by["product_role"]["answer"] == "未出现"
-          assert by["body_len_bucket"]["extractor"] == "code:v1" and by["placebo_rand_2"]["extractor"] == "code:v1"
-          assert all(r["bank_sha256"] == bank["_sha256"] and r["bank_version"] == "fq-v0.1" for r in rows)
-          assert {r["subject_type"] for r in rows} == {"note"} and {r["run_tag"] for r in rows} == {"primary"}
-          assert res["raw_counts"] == {"title_len": 9, "body_len": 45, "hashtag_count": 1, "mention_count": 0}, res["raw_counts"]
-          # api 全挂 → 整篇 systemic, 编排层不落行
-          def boom(*a, **k): raise RuntimeError("503 gateway")
-          res2 = afp.annotate_note(bank, note, mapping, model="m", extractor="llm:m", run_tag="primary", single=False, code_only=False, dry_run=False, llm=boom)
-          assert res2["stats"]["systemic"] == 6 and res2["stats"]["groups_ok"] == 0
-          # 退出码口径同 essence: 全军覆没才红, 单篇抽风不红
-          assert afp._exit_code_for_stats({"ok": 0, "systemic_failed": 3}) == 1
-          assert afp._exit_code_for_stats({"ok": 5, "systemic_failed": 3}) == 0
-          assert afp._exit_code_for_stats({"ok": 5, "hygiene_failed": 1}) == 1
-          # ── codex review on #141 · 只要有一组 api 挂, 整篇不落行 (哪怕别的组都成功) ──
-          def half_boom(system, user, model):
-              if "turning_point" in system:
-                  raise RuntimeError("503 gateway")
-              return fake_llm(system, user, model)
-          res3 = afp.annotate_note(bank, note, mapping, model="m", extractor="llm:m", run_tag="primary", single=False, code_only=False, dry_run=False, llm=half_boom)
-          assert res3["stats"]["systemic"] == 1 and res3["stats"]["groups_ok"] >= 4, res3["stats"]   # 半挂: 有组成功也有组挂
-
-          # main 走假库: fetch / done / write 全打桩, 断言写进去的行数、写序与 resume 过滤
-          import os
-          os.environ["ANTHROPIC_API_KEY"] = "x"
-          written, order = [], []
-          _real_done = afp.fetch_done_ids          # 下面要打桩, 先把真货留一份
-          afp.get_supabase_client = lambda: object()
-          afp.load_mapping = lambda pid: mapping
-          afp.fetch_notes = lambda sb, pid: [note, dict(note, note_id="T_2"), dict(note, note_id="T_3")]
-          afp.fetch_done_ids = lambda sb, pid, **kw: {"T_2"}
-          afp.write_answers = lambda sb, rows, dry_run: (order.append("answers"), written.extend(rows))
-          afp.write_raw_counts = lambda *a, **k: order.append("raw")
-          afp._llm = fake_llm
-          calls.clear()
-          rc = afp.main(["T", "--limit", "5"])
-          assert rc == 0 and len(written) == 62 and {r["subject_id"] for r in written} == {"T_1", "T_3"}, (rc, len(written))
-          # 写序: 数值原值在前、带标记题的答案在后 (反过来 → 写答案成功而原值失败时, 下轮 resume 跳过这篇, 原值永远缺)
-          assert order == ["raw", "answers", "raw", "answers"], order
-          # 反证: 半挂那篇一行都不许落 (旧口径 systemic and not groups_ok 会在这里写 31 行)
-          afp.fetch_notes = lambda sb, pid: [note]
-          afp.fetch_done_ids = lambda sb, pid, **kw: set()
-          afp._llm = half_boom
-          written.clear(); order.clear()
-          rc = afp.main(["T"])
-          assert rc == 1 and written == [] and order == [], (rc, len(written), order)
-          afp._llm = fake_llm
-          afp.fetch_notes = lambda sb, pid: [note, dict(note, note_id="T_2"), dict(note, note_id="T_3")]
-          afp.fetch_done_ids = lambda sb, pid, **kw: {"T_2"}
-          # run_tag 非法 → 2; --code-only 不需要 key、不调模型
-          assert afp.main(["T", "--run-tag", "bad tag"]) == 2
-          calls.clear(); written.clear(); order.clear()
-          assert afp.main(["T", "--code-only"]) == 0 and not calls and len(written) == 22 and {r["extractor"] for r in written} == {"code:v1"}
-
-          # ── codex review on #141 · resume 的判据: code-only 用代码那边的标记题, 模型跑按 llm:% 前缀 ──
-          class _Q:
-              """记下 fetch_done_ids 真的往查询里塞了什么 (不连库)。"""
-              def __init__(self, log): self.log = log
-              def schema(self, s): return self
-              def table(self, t): self.log["table"] = t; return self
-              def select(self, *a, **k): return self
-              def eq(self, k, v): self.log[k] = v; return self
-              def like(self, k, v): self.log["like_" + k] = v; return self
-          _real_pages = afp.fetch_all_pages
-          afp.fetch_all_pages = lambda q, order_by=None: []
-          log = {}; _real_done(_Q(log), "T", run_tag="primary", code_only=True)
-          # 反证: 这里若仍是模型那边的标记题 has_specific_time, --code-only 永远 resume 不上 (代码题从不写那一行)
-          assert log["table"] == "note_feature_answers" and log["question_id"] == "body_len_bucket" and log["extractor"] == "code:v1", log
-          log = {}; _real_done(_Q(log), "T", run_tag="primary", code_only=False)
-          # 反证: 两边 FEATURE_MODEL 配得不一样时, 精确匹配 extractor 会把所有笔记当没跑过 → 必须是 llm:% 前缀
-          assert log["question_id"] == "has_specific_time" and log["like_extractor"] == "llm:%" and "extractor" not in log, log
-          log = {}; _real_done(_Q(log), "T", run_tag="gate1_b", code_only=False, extractor="llm:x")
-          assert log["extractor"] == "llm:x" and log["run_tag"] == "gate1_b" and log["like_subject_id"] == "T_%" and "like_extractor" not in log, log
-          afp.fetch_all_pages = _real_pages
-          print("  ✓ 编排: 31 行/篇, 8 次调用 (6 组 + 2 次重问), 任一组挂整篇不落行, 写序 raw→answers, resume 判据分 code/llm 两套, code-only 不调模型")
-          PY
+        run: python check_feature_orchestration.py   # D-085 起含 --done-by 判据; 原内联块逐字搬进去 (D-075)
+      - name: "闸一名单灰格往返 (多灰格 | 分隔) + prob 存所选答案的概率 (D-085)"
+        working-directory: scripts
+        run: python check_gate1_ingest.py
       - name: Essence vocab validator self-check
         working-directory: scripts
         run: |
@@ -5076,6 +4954,8 @@ jobs:
           print("\nworker 互斥锁 + health: 全部通过")
           PY
 
+      - name: "worker /annotate-features: model 不许是 extractor 标签, done_by 原样透传 (D-085)"
+        run: python scripts/check_feature_orchestration.py --worker   # 要 fastapi, 上一步装的
       - name: 指标写失败必须计进 exit code (跨库审计 COR-008)
         working-directory: scripts
         run: |
@@ -7365,6 +7245,37 @@ jobs:
           [ "$N" = "2" ] || { echo "❌ v_feature_contrast 该只有 是/否 两行, 实得 $N (无效答案漏进了 vals?)"; exit 1; }
           psql -v ON_ERROR_STOP=1 -c "DELETE FROM truth_vault.feature_validation WHERE gate2_run='gate2-ci'; DELETE FROM truth_vault.note_feature_answers WHERE subject_id LIKE 'CI_V15_%';"
           echo "✓ v1.13: 三表在, status CHECK 拒非法值, v_feature_contrast 只数 primary·有效·在 v_l2_labels 里的行"
+      - name: Apply v1.17 judge subjects + v1.18 external notes (+ idempotency)
+        # v1_17 改的是 v1_13 建的 note_feature_answers (CHECK 先删后建), 所以必须套在 v1_13 之后 —— 不是 v1_16 之后;
+        # v1_18 的视图读同一张表, 写 external_note 账本行要先有 v1_17。两份各连跑两遍, 第二遍必须是干净 no-op (D-085)。
+        run: |
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_17_judge_subjects.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_17_judge_subjects.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_18_external_notes.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_18_external_notes.sql
+      - name: Sanity-check v1.17 / v1.18 (三类新主体写得进, 闭集外仍拒; v_external_reference 按品类互动前 1/4 分组)
+        # 品类 A 四篇互动 100/50/10/5 → 75 分位 62.5 → top 只有 X1; q1: X1=是, X2=是, X3/X4=否 → rest 是 1/3 否 2/3。
+        # 反证: 分位数不按品类、算成全库 → 品类 B 两篇 999 把切点抬到 774, X1 掉进 rest, 字符串变红。
+        run: |
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          INSERT INTO truth_vault.external_notes (note_id, category, keyword, body, liked, run_id) VALUES
+            ('CI_X1','A','k','x',100,'r'), ('CI_X2','A','k','x',50,'r'), ('CI_X3','A','k','x',10,'r'), ('CI_X4','A','k','x',5,'r'), ('CI_XB1','B','k','x',999,'r'), ('CI_XB2','B','k','x',999,'r');
+          INSERT INTO truth_vault.note_feature_answers (subject_type, subject_id, question_id, question_version, bank_version, bank_sha256, extractor, run_tag, answer) VALUES
+            ('external_note','CI_X1','q1',1,'v','s','jev:1.13.0','external','是'), ('external_note','CI_X2','q1',1,'v','s','jev:1.13.0','external','是'),
+            ('external_note','CI_X3','q1',1,'v','s','jev:1.13.0','external','否'), ('external_note','CI_X4','q1',1,'v','s','jev:1.13.0','external','否'),
+            ('comment','CI_C1','q1',1,'v','s','jev:1.13.0','primary','是'), ('ssll_sample','r:c:g:1','q1',1,'v','s','jev:1.13.0','primary','否');
+          DO $$ BEGIN
+              INSERT INTO truth_vault.note_feature_answers (subject_type, subject_id, question_id, question_version, bank_version, bank_sha256, extractor, run_tag)
+              VALUES ('bogus','x','q1',1,'v','s','e','primary');
+              RAISE EXCEPTION 'subject_type CHECK 没拒 bogus';
+          EXCEPTION WHEN check_violation THEN RAISE NOTICE 'subject_type CHECK OK';
+          END $$;
+          SQL
+          GOT=$(psql -v ON_ERROR_STOP=1 -tA -c "SELECT string_agg(grp||':'||answer||':'||n||':'||share, ' ' ORDER BY grp, answer COLLATE \"C\") FROM truth_vault.v_external_reference WHERE category='A'")
+          WANT="rest:否:2:0.667 rest:是:1:0.333 top:是:1:1.000"
+          [ "$GOT" = "$WANT" ] || { echo "❌ v_external_reference 分组不对。期望 [$WANT] 实得 [$GOT]"; exit 1; }
+          psql -v ON_ERROR_STOP=1 -c "DELETE FROM truth_vault.note_feature_answers WHERE subject_id IN ('CI_X1','CI_X2','CI_X3','CI_X4','CI_C1','r:c:g:1'); DELETE FROM truth_vault.external_notes WHERE note_id LIKE 'CI_X%';"
+          echo "✓ v1.17/v1.18: comment / ssll_sample / external_note 可写, 闭集外拒; 参考分布按品类分组"
       - name: Apply security revoke (anon/authenticated write on public.* ) (+ idempotency)
         # 撤 anon/authenticated 对 5 张 public 表的写权限(读保留,不开 RLS)。
         # guarded:表/角色不存在则跳过 → 裸 PG / CI 为 no-op。REVOKE 幂等,两遍验。

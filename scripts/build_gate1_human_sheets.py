@@ -45,7 +45,7 @@ PER_PROJECT_Y = 10                         # 每个项目每个 y 抽 10 篇
 BLOCK_OF = {"A": (1, 2), "B": (2, 3), "C": (4, 1)}
 SEED_TAG = "gate1-human-20260928"          # 与抽样 SQL 里的种子同一个字串
 
-from gate1_labels import SHORT  # 短标签的唯一来源 (零依赖模块; ingest / agreement 也从那儿拿)
+from gate1_labels import SHORT, join_skipped  # 短标签 / 灰格拼法的唯一来源 (零依赖模块; ingest / agreement 也从那儿拿)
 SCOPE_ZH = {
     "title": "只看标题",
     "first_sentence": "只看正文第一句（跳过开头的话题标签和表情）",
@@ -305,7 +305,7 @@ def write_manifest(rows: list[dict], path: Path) -> None:
         for r in sorted(rows, key=lambda r: (r["block"], r["project_id"], -r["y"], r["rk"])):
             w.writerow([r["note_id"], r["project_id"], r["y"], r["tier"], r["rk"], r["block"],
                         who[r["block"]], r["title_how"], int(r["truncated"]),
-                        "|".join(r["skipped"]), r["md5"]])
+                        join_skipped(r["skipped"]), r["md5"]])
 
 
 def main() -> int:

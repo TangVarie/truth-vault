@@ -399,6 +399,26 @@ SELECT '84', 'H · 跨 schema 孤儿',
     )::TEXT, 'N/A'),
     '0',
     '> 0 表示写作台版本被删. 同 #83 处理.'
+UNION ALL
+SELECT '85', 'H · 跨 schema 孤儿',
+    'truth_vault.note_feature_answers (subject_type=comment) 指向不存在的 comments 数量 (v1.17 / D-085)',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(*) FROM truth_vault.note_feature_answers a
+        LEFT JOIN truth_vault.comments c ON c.comment_id = a.subject_id
+        WHERE a.subject_type = 'comment' AND c.comment_id IS NULL$q$
+    )::TEXT, 'N/A'),
+    '0',
+    '> 0 多半是 D-085 清理删了旧的并行评论行而 judge 的判分还在. 同一批 comment_id 的账本行一起删 (见 sync_comments_from_raw_extra.py 模块头).'
+UNION ALL
+SELECT '86', 'H · 跨 schema 孤儿',
+    'truth_vault.note_feature_answers (subject_type=external_note) 指向不存在的 external_notes 数量 (v1.18)',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(*) FROM truth_vault.note_feature_answers a
+        LEFT JOIN truth_vault.external_notes e ON e.note_id = a.subject_id
+        WHERE a.subject_type = 'external_note' AND e.note_id IS NULL$q$
+    )::TEXT, 'N/A'),
+    '0',
+    '> 0 表示外部笔记行没写进来 (judge 仓 apply_rows 先写 external_notes 再写账本) 或被删. N/A = v1.18 还没 apply.'
 
 -- ── I · 数据一致性副作用 ──────────────────────────────────────────────
 UNION ALL
