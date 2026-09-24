@@ -181,8 +181,6 @@ field_mapping:
 
 按 category 预填，但项目级别可以追加：
 
-**先看全局禁词表**：`prompts/forbidden_words_v1.yaml`（fw-v1，owner 2026-09-24 拍的 7 个词：最、第一、100%、根治、治愈、空窗、绝对）对所有项目生效，不用在每个 mapping 里重抄；「最」「第一」只拦绝对化 / 排位用法，「最近」「第一次」放行，例外字表在 yaml 里。项目级 `custom_red_flags` 是它的补充，两者取并集。读法只有 `scripts/compliance_words.py`（`find_hits`），CI 守卫 9 钉着；今天 TV 仓里没有任何一步在成稿前跑它，硬拦要写作台那边接（D-084 续 B3）。
-
 ```yaml
 compliance:
   base_template: 处方药         # 预填的基础模板
