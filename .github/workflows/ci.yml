@@ -53,6 +53,8 @@ jobs:
             scripts/gate1_agreement.py \
             scripts/gate1_labels.py \
             scripts/check_feature_parse.py \
+            scripts/compliance_words.py \
+            scripts/check_compliance_words.py \
             librarian/__init__.py \
             librarian/clients.py \
             librarian/core.py \
@@ -1205,6 +1207,9 @@ jobs:
       - name: "特征层守卫 8 · 回复容错解析 + 没答的单题兜底 (D-083)"
         working-directory: scripts
         run: python check_feature_parse.py
+      - name: "合规守卫 9 · 全局禁词表 fw-v1: 7 个词、「最」「第一」例外、全角 100%、SQL 同语义 (D-084 B3)"
+        working-directory: scripts
+        run: python check_compliance_words.py
       - name: "特征层编排自检 · 假模型 + 假库端到端: 31 行/篇、6 组 + 重问、任一组挂整篇不落行、写序 raw→answers、resume 判据、code-only"
         working-directory: scripts
         run: |
