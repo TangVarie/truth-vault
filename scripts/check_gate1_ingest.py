@@ -176,6 +176,15 @@ def check_prob(bank: dict) -> None:
     assert ing.prob_of_answer("主角", probs["product_role"]) == 0.45
     assert ing.prob_of_answer("主角", (ing.PROB_YES, 0.7)) is None, "P(是) 配选择题答案 → 不写"
     assert ing.prob_of_answer("否", None) is None
+    # 旧口径的 run_tag 不许再收 Jev 的表 (否则 upsert 会把 P(是) 悄悄改成新口径); 人的表不拦, 新 run_tag 不拦
+    for ext, tag, ok in (("jev:1.13.0-A", ing.DEFAULT_RUN_TAG, False), ("jev:1.13.0-A", "gate1-20260928-v117", True),
+                         ("human:张三", ing.DEFAULT_RUN_TAG, True)):
+        try:
+            ing.check_run_tag(ext, tag)
+            got = True
+        except SystemExit:
+            got = False
+        assert got is ok, (ext, tag, got)
     notes = [{"note_id": "X_1", "answers": {"has_specific_place": "否", "product_role": "主角", "own_experience": "是"},
               "probs": probs}]
     rows, _ = ing.build_rows(notes, bank, "jev:t-A", "gate1-t")
@@ -183,7 +192,8 @@ def check_prob(bank: dict) -> None:
     # 反证: 旧口径这里存的是 0.39 (P(是)), 而答案是「否」
     assert by == {"has_specific_place": 0.61, "product_role": 0.45, "own_experience": None}, by
     assert "0.61" in ing.rows_to_sql(rows), "SQL 那条路也要是新口径"
-    print("  ✓ prob = 所选答案的概率: 答「否」存 1 − P(是) (0.39 → 0.61); 选择题第一名照存; 对不上 / 越界 → 不写")
+    print("  ✓ prob = 所选答案的概率: 答「否」存 1 − P(是) (0.39 → 0.61); 选择题第一名照存; 对不上 / 越界 → 不写;"
+          " Jev 的表落旧口径 run_tag → 拒绝, 人的表 / 新 run_tag 照常")
 
 
 def check_xlsx_roundtrip(bank: dict) -> None:

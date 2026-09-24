@@ -15,6 +15,8 @@ D-085 之前这 6 条内联在 ci.yml 的 heredoc 里; 要加用例, 而 ci.yml 
   · 反证: 同样的文本只按换行切 (改之前的做法) 就只有一条 —— 用例真的依赖二次切分。
   · 切法变了之后的迁移形状 (write_comments + 假库): 旧的并行行 / 带标签的旧行被记进 vanished_log、
     kind = parser_change, 不删; 新切出的行以新 id 插入; 运营真删的那条是 source_removed。
+  · 整条 note 源被清空 / 新切法下整条解析不出来 (collect_cleared_vanished): 它的每条已入库评论也进 vanished_log,
+    带 note_cleared; --vanished-out 在对账之后才写, 名单里有它们。
 挡不住什么:
   · 没有行首编号的一行里, 正文自带从 2 起的连号列举 (「有三点：1、便宜 2、好用 3、方便」) 仍会被切开。
   · 编号 ≥ 100 的行 (同行切分只认 1–2 位编号) 不切。
@@ -165,9 +167,47 @@ def check_migration_shape() -> None:
     print("  ✓ 迁移形状: 新切出的 5 条插入、旧的 4 条一条不删; 并行行 / 带标签的旧行记 parser_change, 运营删的记 source_removed; dry-run 同样收得到")
 
 
+class _FilterSB(_FakeSB):
+    """select 时按 eq 过滤 (对账要按 project 查、按 note 取已有行)。"""
+
+    def select(self, *a):
+        self._eq = None
+        return super().select(*a)
+
+    def execute(self):
+        if self._op == "select" and self._eq is not None:
+            k, v = self._eq
+            keep, self.rows = self.rows, [r for r in self.rows if r.get(k) == v]
+            try:
+                return super().execute()
+            finally:
+                self.rows = keep
+        return super().execute()
+
+
+def check_cleared_notes_in_vanished() -> None:
+    """整条 note 被清空 / 新切法下整条解析不出来: 它的每一条已入库评论都要进 vanished 名单 (codex review on #161)。"""
+    rows = [
+        {"comment_id": "p_a_c1", "note_id": "p_a", "project_id": "p", "content": "还在源里的一条", "comment_role": "素人", "comment_order": 1},
+        {"comment_id": "p_b_c1", "note_id": "p_b", "project_id": "p", "content": "运营清空了源", "comment_role": "素人", "comment_order": 1},
+        {"comment_id": "p_b_c2", "note_id": "p_b", "project_id": "p", "content": "【贴主回复】带标签的旧行", "comment_role": "素人", "comment_order": 2},
+        {"comment_id": "p_c_c1", "note_id": "p_c", "project_id": "p", "content": "源还在但解析不出来", "comment_role": "素人", "comment_order": 1},
+        {"comment_id": "q_x_c1", "note_id": "q_x", "project_id": "q", "content": "别的项目", "comment_role": "素人", "comment_order": 1},
+    ]
+    sb = _FilterSB(rows)
+    log: list[dict] = []
+    M.collect_cleared_vanished(sb, ["p_b", "p_c"], unparseable={"p_c"}, vanished_log=log)
+    got = {(v["comment_id"], v["kind"], v["note_cleared"]) for v in log}
+    assert got == {("p_b_c1", "source_removed", "source_empty"), ("p_b_c2", "parser_change", "source_empty"),
+                   ("p_c_c1", "source_removed", "unparseable")}, got
+    assert len(sb.rows) == 5, "只收集, 一行都不删"
+    print("  ✓ 整条清空 / 整条解析不出来的 note: 每条已入库评论都进 vanished 名单 (带 note_cleared), 别的 note 不混进来, 不删")
+
+
 def main() -> int:
     check_cases()
     check_migration_shape()
+    check_cleared_notes_in_vanished()
     print("✓ 评论解析器 (原 6 条 + D-085): 全过")
     return 0
 

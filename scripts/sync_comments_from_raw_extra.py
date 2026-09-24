@@ -459,6 +459,22 @@ def write_comments(
     return len(to_insert)
 
 
+def collect_cleared_vanished(sb, cleared: list, unparseable: set, vanished_log: list) -> None:
+    """库里有评论、但本次一条都没解析出来的 note → 它的每条已入库评论逐条追加进 vanished_log。
+
+    每行带 note_cleared = source_empty(两个源字段都空, fetch 时就被滤掉了)或 unparseable(字段非空、
+    按现在的切法一条都解析不出来); kind 的口径同 write_comments (parser_change / source_removed)。只收集, 不删。"""
+    for note_id in cleared:
+        why = "unparseable" if note_id in unparseable else "source_empty"
+        for r in existing_comments(sb, note_id):
+            vanished_log.append({
+                "note_id": note_id, "comment_id": r["comment_id"],
+                "comment_role": r.get("comment_role"), "content": r.get("content"),
+                "kind": "parser_change" if _changed_by_d085(r.get("content") or "") else "source_removed",
+                "note_cleared": why,
+            })
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("project_id")
@@ -478,6 +494,7 @@ def main() -> int:
     stats = {"notes_processed": 0, "comments_written": 0, "skipped_empty": 0,
              "notes_source_cleared": 0, "vanished_parser_change": 0, "vanished_other": 0}
     covered: set[str] = set()
+    unparseable: set[str] = set()         # 源字段非空、但一条都解析不出来的 note
     vanished_log: list[dict] = []
     for note in notes:
         raw = note.get("raw_extra") or {}
@@ -487,6 +504,7 @@ def main() -> int:
         parsed = list(parse_comment_text(combined))
         if not parsed:
             stats["skipped_empty"] += 1
+            unparseable.add(note["note_id"])
             continue
         covered.add(note["note_id"])
         written = write_comments(
@@ -495,6 +513,47 @@ def main() -> int:
         )
         stats["notes_processed"] += 1
         stats["comments_written"] += written
+
+    # ── 整块源文本被清空的 note ────────────────────────────────────────────
+    # write_comments 里的 vanished 报告只看得见**部分**消失: 它是拿本次解析结果
+    # 去比已有行的。运营把两个源字段整个清空时, 这条 note 会被
+    # fetch_notes_with_comments_text 直接滤掉(它要求至少有一个字段非空), 而
+    # write_comments 对空解析又是早返回 —— 于是**整条 note 的评论全部留在库里,
+    # 一句话都不会说**。恰恰是"全清"这种最该被看见的情况完全隐身。(codex review)
+    #
+    # 只报不删, 口径同 write_comments: comments 表没有软删列, 而"源里没了"要不要
+    # 等于"删除"是产品判断(粘贴时截断了 vs 真的删了)。这里只让它可见。
+    # D-085 起这些 note 的每一条已入库评论也进 vanished_log (带 note_cleared), 所以
+    # --vanished-out 的名单要等对账做完才写 —— 以前先写文件、后对账, 整条清空 / 新切法下
+    # 整条解析不出来的 note 在名单里一行都没有, 清理时拿不到这些 id (codex review on #161)。
+    #
+    # ⚠️ 带 --limit 时不做这个对账 —— 那时 covered 本来就是不完整的, 拿它比会把
+    #    没轮到处理的 note 全report成"源被清空了"。同 COR-011 的口径: 部分扫描
+    #    不产出对账结论。
+    if args.limit:
+        logger.info("带 --limit, 跳过「源被清空」对账(本次覆盖不完整, 比了会误报); "
+                    "--vanished-out 的名单里也就没有整条被清空的 note")
+    else:
+        try:
+            q = (
+                sb.schema("truth_vault")
+                .table("comments")
+                .select("note_id")
+                .eq("project_id", args.project_id)
+            )
+            with_rows = {r["note_id"] for r in fetch_all_pages(q, order_by="note_id")}
+            cleared = sorted(with_rows - covered)
+            collect_cleared_vanished(sb, cleared, unparseable, vanished_log)
+            stats["notes_source_cleared"] = len(cleared)
+            if cleared:
+                logger.warning(
+                    "%d 条 note 库里有评论、但本次源文本里一条都解析不出来"
+                    "(未删除, 仅报告): %s", len(cleared), cleared[:5])
+        except Exception:
+            # 对账失败不该把同步判失败 —— 它是**附加的**可见性, 不是这个脚本的
+            # 主职责。但也不能静默: 报出来, 并在 stats 里留 -1 标明"这次没算成"。
+            logger.exception("「源被清空」对账查询失败")
+            stats["notes_source_cleared"] = -1
 
     # D-085: 按来由分开数。parser_change 是改了切法 / 剥了【…】前缀之后配不上的旧行, 同步之后要 owner
     # 清一次 (见模块头); source_removed 是运营在源里删了的。都只报不删。
@@ -509,42 +568,6 @@ def main() -> int:
             for v in vanished_log:
                 f.write(json.dumps(v, ensure_ascii=False) + "\n")
         logger.info("vanished 名单 %d 行 → %s", len(vanished_log), args.vanished_out)
-
-    # ── 整块源文本被清空的 note ────────────────────────────────────────────
-    # write_comments 里的 vanished 报告只看得见**部分**消失: 它是拿本次解析结果
-    # 去比已有行的。运营把两个源字段整个清空时, 这条 note 会被
-    # fetch_notes_with_comments_text 直接滤掉(它要求至少有一个字段非空), 而
-    # write_comments 对空解析又是早返回 —— 于是**整条 note 的评论全部留在库里,
-    # 一句话都不会说**。恰恰是"全清"这种最该被看见的情况完全隐身。(codex review)
-    #
-    # 只报不删, 口径同 write_comments: comments 表没有软删列, 而"源里没了"要不要
-    # 等于"删除"是产品判断(粘贴时截断了 vs 真的删了)。这里只让它可见。
-    #
-    # ⚠️ 带 --limit 时不做这个对账 —— 那时 covered 本来就是不完整的, 拿它比会把
-    #    没轮到处理的 note 全report成"源被清空了"。同 COR-011 的口径: 部分扫描
-    #    不产出对账结论。
-    if args.limit:
-        logger.info("带 --limit, 跳过「源被清空」对账(本次覆盖不完整, 比了会误报)")
-    else:
-        try:
-            q = (
-                sb.schema("truth_vault")
-                .table("comments")
-                .select("note_id")
-                .eq("project_id", args.project_id)
-            )
-            with_rows = {r["note_id"] for r in fetch_all_pages(q, order_by="note_id")}
-            cleared = sorted(with_rows - covered)
-            stats["notes_source_cleared"] = len(cleared)
-            if cleared:
-                logger.warning(
-                    "%d 条 note 库里有评论、但本次源文本里一条都解析不出来"
-                    "(未删除, 仅报告): %s", len(cleared), cleared[:5])
-        except Exception:
-            # 对账失败不该把同步判失败 —— 它是**附加的**可见性, 不是这个脚本的
-            # 主职责。但也不能静默: 报出来, 并在 stats 里留 -1 标明"这次没算成"。
-            logger.exception("「源被清空」对账查询失败")
-            stats["notes_source_cleared"] = -1
 
     logger.info("Done: %s", json.dumps(stats, ensure_ascii=False))
     return 0

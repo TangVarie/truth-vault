@@ -5503,3 +5503,10 @@ judge 仓 `docs/00-decisions.md` 拍板 #3（账本扩三类主体、prob 统一
   `content_scores` 的 subject_type CHECK 不跟着扩（v1_17 头注释写明）。
 - 数据流向图（docs/00 §3）没加 `external_notes`：写它的是 judge 仓的 workflow，不是 TV 的路。
 
+
+### 续（codex review on #161，同日）
+
+- prob：`ingest_gate1_answers` 按默认参数重收一张 Jev 表，run_tag 就是旧口径的 gate1-20260928，upsert 会把这个 run_tag 下的是非题 prob 悄悄改成新口径。
+  现在 `jev:*` 配旧口径 run_tag（`LEGACY_PROB_YES_RUN_TAGS`）直接拒绝，要重收请给新 run_tag；人的表不写 prob，照旧落默认 run_tag。
+- 评论：`--vanished-out` 以前在「源被清空」对账之前就写了文件，整条清空 / 新切法下整条解析不出来的 note，它的评论在名单里一行都没有。
+  对账之后用 `collect_cleared_vanished` 把这些 note 的每条已入库评论也放进名单（带 `note_cleared` = source_empty / unparseable），文件在对账之后写。带 `--limit` 时不对账，名单里也就没有它们（日志写明）。

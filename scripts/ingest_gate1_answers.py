@@ -30,7 +30,10 @@ run_tag 默认 gate1-20260928, 与 D-079 一致; 主键 (subject, question, vers
 prob 的口径 (D-085, 对齐 notes_v1_17): **所选答案的概率**。Jev 在是非题上写的是「判「是」的概率 p」,
 答「是」存 p、答「否」存 1 − p; 选择题写的是「第一名只有 p」, Jev 的答案就是第一名, 存 p。
 D-081 那三张表 (run_tag gate1-20260928) 是按旧口径落的 (是非题存 P(是)), 不回改; D-084 已定 Jev 不重跑,
-真要重收请落新的 run_tag, 别把两种口径混进同一个 run_tag。
+真要重收请落新的 run_tag, 别把两种口径混进同一个 run_tag —— 这条是**强制的**: jev:* 的表配旧口径的 run_tag
+(LEGACY_PROB_YES_RUN_TAGS, 也就是默认值) 直接拒绝, 否则按默认参数重收一张 Jev 表, upsert 会把这个 run_tag 下
+的是非题 prob 悄悄改成新口径, 同一个 run_tag 里两种口径混着, 按 run_tag 再也读不对 (codex review on #161)。
+人的表 (human:*) 不写 prob, 不受影响, 照旧落默认的 gate1-20260928。
 """
 
 from __future__ import annotations
@@ -50,6 +53,8 @@ logger = setup_logger("ingest_gate1")
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MANIFEST = ROOT / "data-analysis" / "gate1-human-sample-2026-09-28.csv"
 DEFAULT_RUN_TAG = "gate1-20260928"
+# 这些 run_tag 里的 Jev 是非题 prob 是旧口径 P(是) (D-081 落库时的写法, v1_17 的列注释点名了它); 不许再往里写新口径
+LEGACY_PROB_YES_RUN_TAGS = frozenset({"gate1-20260928"})
 SHEET = "标注"
 SKIP_MARK = "—"
 UPSERT_CHUNK = 200                       # 走 body 不走 URL, 但一次别太大
@@ -91,6 +96,14 @@ def prob_of_answer(answer: str, prob) -> float | None:
     if answer == "否":
         return round(1.0 - p, 4)
     return None
+
+
+def check_run_tag(extractor: str, run_tag: str) -> None:
+    """jev:* 的表不许落进旧口径的 run_tag (见模块头 prob 那段)。人的表不写 prob, 不拦。"""
+    if extractor.startswith("jev:") and run_tag in LEGACY_PROB_YES_RUN_TAGS:
+        raise SystemExit(
+            f"run_tag={run_tag!r} 里的 Jev 是非题 prob 是旧口径 P(是) (D-081); 现在按所选答案的概率写, "
+            f"混进去这个 run_tag 就读不对了。重收 Jev 的表请给新的 --run-tag (如 gate1-20260928-v117)")
 
 
 def load_manifest(path: Path) -> dict[str, dict]:
@@ -297,6 +310,7 @@ def main() -> int:
 
     if not _EXTRACTOR_RE.match(args.extractor):
         raise SystemExit(f"extractor 要写成 human:<姓名> 或 jev:<版本>, 实得 {args.extractor!r}")
+    check_run_tag(args.extractor, args.run_tag)
     if args.extractor.startswith("human:") and len(args.file) > 1:
         raise SystemExit("human:<姓名> 一个人只有一张表; 多张表请分开跑, 各写各的名字")
 
