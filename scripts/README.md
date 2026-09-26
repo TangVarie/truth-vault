@@ -108,6 +108,9 @@ CI 和 daily-sync workflow 都优先读 `.lock`; `.txt` 仅作为 "high-level in
 #   - schemas/notes_v1_15_l2_labels.sql               → L2 正负例口径的唯一住处 v_l2_labels (+ v_l2_labels_v1 对照; 视图, D-067)
 #   - schemas/notes_v1_16_librarian_select_ms.sql     → 馆员缓存行记「这次选卡跑了多久」(定借阅超时用, 别再拍脑袋; D-074)
 #   - schemas/notes_v1_13_content_features.sql       → 内容特征层三表 (note_feature_answers / feature_validation / content_scores) + v_feature_contrast (读 v_l2_labels, 必须在 v1_15 之后; D-065 / D-070)
+#   - schemas/notes_v1_17_judge_subjects.sql         → 判定账本 subject_type 加 comment / ssll_sample / external_note + prob 统一为「所选答案的概率」
+#         (改的是 v1_13 建的表, 必须在 v1_13 之后 —— 不是 v1_16 之后; judge 仓提供; D-085)
+#   - schemas/notes_v1_18_external_notes.sql         → 外部笔记表 external_notes (TikHub) + 参考分布视图 v_external_reference (必须在 v1_17 之后; D-085)
 #   - autowriter-migrations/001_create_autowriter_schema.sql → 把 autowriter 表从 public 迁到 autowriter schema
 #   - autowriter-migrations/002_add_external_source.sql     → items 加 (external_source, external_source_id) 列
 #         + per-user partial UNIQUE (user_id, external_source, external_source_id) WHERE external_source IS NOT NULL.
@@ -170,6 +173,7 @@ for project in NUC_phase1 NRT_phase2 NRT_phase3; do
 
 # Step 3b: 内容特征层抽取（docs/28 §5, D-070; 生产走 Railway worker /annotate-features, 夜跑增量 + backfill-features.yml 回填）
 #   --dry-run 只渲染提示词; --code-only 不调模型; --run-tag gate1-x --single 给闸一「每题单问」对比用
+#   --done-by jev:1.13.0,llm:% = 续跑时 judge 答过的也算答过 (D-085; 不给是 llm:%, 计数脚本要给同一个值)
     python annotate_feature_pass.py "$project" --limit 30
 done
 

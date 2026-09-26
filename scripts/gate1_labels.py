@@ -4,13 +4,38 @@ gate1_labels.py
 
 闸一三个脚本共用的题目短标签 (question_id → 表头 / 报告里的中文短名)。
 
-单独放一个【零依赖】模块: build_gate1_human_sheets.py / ingest_gate1_answers.py 顶层 import
-openpyxl (不在 scripts/requirements.txt 里, 只在做表 / 收表的机器上装); gate1_agreement.py
+单独放一个【零依赖】模块: build_gate1_human_sheets.py 顶层 import openpyxl、ingest_gate1_answers.py
+读 xlsx 时 import 它 (不在 scripts/requirements.txt 里, 只在做表 / 收表的机器上装); gate1_agreement.py
 只算数, 装完 requirements 就该能跑 —— 它以前从 build_gate1_human_sheets 拿 SHORT, 于是连
 --print-sql 都要先装 openpyxl (codex review on #154)。标签的唯一来源在这里, 别的地方别抄。
+
+名单 CSV 的 skipped_questions (灰格题号) 怎么拼、怎么拆也放在这里 (D-085): 以前生成器用 "|" 拼、
+收表脚本用 "," 拆, 只有一个灰格的篇碰巧没事; NUC_phase1_recv46LaDAdFFc 有 11 个灰格, 拆出来是一整串
+"opening_type|has_specific_time|…" —— 两个方向的校验都失效, Jev 在这 11 格里填的答案原样入了库。
+写和读只许走 join_skipped / split_skipped 这一对。
 """
 
 from __future__ import annotations
+
+import re
+
+SKIPPED_SEP = "|"                       # 名单里写的分隔符 (与 2026-09-28 那份名单一致)
+_SKIPPED_SPLIT = re.compile(r"[|,]")    # 读的时候 "|" 与旧写法 "," 都认
+
+
+def join_skipped(qids) -> str:
+    """灰格题号 → 名单 CSV 里 skipped_questions 那一格。"""
+    qids = [str(q).strip() for q in qids]
+    bad = [q for q in qids if not q or _SKIPPED_SPLIT.search(q)]
+    if bad:
+        raise ValueError(f"题号里不能是空的或带分隔符: {bad}")
+    return SKIPPED_SEP.join(qids)
+
+
+def split_skipped(cell) -> list[str]:
+    """名单 CSV 的 skipped_questions 那一格 → 题号列表 (保序去重; 空格子 → [])。"""
+    out = [x.strip() for x in _SKIPPED_SPLIT.split(str(cell or ""))]
+    return list(dict.fromkeys(x for x in out if x))
 
 SHORT: dict[str, str] = {
     "title_is_question": "标题是问句",

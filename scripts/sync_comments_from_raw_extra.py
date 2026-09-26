@@ -15,6 +15,11 @@ we've actually seen in NUC_phase1 data:
     2. 用户B: 回复用户A的评论
     3. 用户C: 第三条
 
+  Pattern A 同一行写了好几条 (D-085): 运营把「 7. … 8. … 9. …」接在同一行里。
+    原来只按换行切, 这种会并成一条 (judge 仓抽的 33 条样本里有 4 条是这样)。现在每一行再按
+    (?<=\\S)\\s+(?=\\d{1,2}[.、](?!\\d)\\s*\\S) 二次切 —— 见 _split_inline_items: 编号必须
+    连号 (且接得上行首编号), 否则整行不切; (?!\\d) 挡「2.5 元」这种小数。
+
   Pattern B (separator-delimited block):
     用户A | 第一条
     用户B | 第二条
@@ -23,7 +28,24 @@ Hierarchy reconstruction (parent_comment_id) is NOT inferred from text
 patterns — it requires LLM analysis (D-022 / Q21). This script writes a
 FLAT comments table (all parent_comment_id NULL); LLM楼层重建 is a Sprint 2
 follow-up. comment_role defaults to '素人' unless the operator prefixed
-"贴主:" / "运营:".
+"贴主:" / "运营:", or (D-085) wrote an operator tag like 【贴主回复】/【素人评论】/
+【素人回复】 in front of the comment: the tag is stripped from content and decides
+comment_role (贴主… → '贴主', 素人… → '素人', 运营/客服… → '运营', 路人… → '路人').
+Unknown 【…】 tags are left in the text untouched.
+
+⚠️ D-085 一次性清理 (改了切法 / 剥了前缀之后, 【下一次同步】之后要 owner 做一次):
+  切法变了, 已入库的「并成一条」的旧行和带【…】前缀的旧行按 (role, content) 配不上新切出来的行 ——
+  新行以新 id 插入, 旧行按本脚本「只报不删」的口径留在库里 (日志里记成「找不到了」)。不清的话
+  同一篇的评论会有新旧两份, judge 回填评论时两份都判、按篇统计评论构成会重复。清法:
+    1. 同步跑过之后 (夜跑 daily-sync 或手动), 对每个有随贴评论的项目:
+         python sync_comments_from_raw_extra.py <项目> --dry-run --vanished-out vanished_<项目>.jsonl
+       dry-run 只读不写; jsonl 每行一条「库里有、源里找不到」的评论, kind = parser_change 的是本次
+       切法 / 前缀改动造成的旧行 (它的内容按新规则会被切开或剥掉前缀), source_removed 是运营真删了的。
+    2. 人看一遍 parser_change 那批, 按 comment_id 删掉 (DELETE FROM truth_vault.comments WHERE comment_id IN (…))。
+       comments.parent_comment_id 是 ON DELETE SET NULL: 挂在旧行下面的楼层会断, 要楼层就重跑楼层重建。
+    3. judge 若已经给这些旧行判过分 (note_feature_answers.subject_type = 'comment'), 同一批 comment_id
+       的账本行一起删; scripts/verify_supabase_state.sql #85 会把悬空的 comment 账本行数出来。
+       最好第 2 步做完再跑 judge 的评论回填。
 
 What it does
   - For each note where notes.raw_extra._comment_text is present
@@ -51,6 +73,7 @@ What it does
 Usage:
     python sync_comments_from_raw_extra.py NUC_phase1
     python sync_comments_from_raw_extra.py NUC_phase1 --dry-run --limit 5
+    python sync_comments_from_raw_extra.py NUC_phase1 --dry-run --vanished-out vanished.jsonl   # D-085 清理用
 """
 
 from __future__ import annotations
@@ -82,6 +105,42 @@ ROLE_PREFIXES = {
     "客服": "运营",
 }
 
+# 运营写在评论前面的【…】标签 (D-085): 【素人评论】【贴主回复】【素人回复】…
+# 标签是运营自己标的「这条是谁说的」, 比默认的 '素人' 准: 剥掉并拿它定 comment_role。
+# 只认这几种身份词 (+ 可选的 评论/回复); 别的【…】(【置顶】【图】之类) 不认、原样留在正文里。
+_BRACKET_ROLES = {"贴主": "贴主", "原帖作者": "贴主", "楼主": "贴主",
+                  "素人": "素人", "路人": "路人", "运营": "运营", "客服": "运营"}
+_BRACKET_ROLE_RE = re.compile(r"^【(贴主|原帖作者|楼主|素人|路人|运营|客服)(?:评论|回复)?】\s*")
+
+# Pattern A 同一行写了好几条 (D-085): 在「非空白 + 空白 + 编号 + [.、]」处二次切。
+# (?!\d) 挡小数 ("只要 2.5 元")。切点只是候选, 由 _split_inline_items 按连号再判一次。
+_INLINE_ITEM_RE = re.compile(r"(?<=\S)\s+(?=\d{1,2}[.、](?!\d)\s*\S)")
+_ITEM_NO_RE = re.compile(r"\(?(\d{1,2})\)?[.、](?!\d)")   # 行首编号同样不认小数 (「1.5 倍」不是第 1 条)
+
+
+def _split_inline_items(line: str) -> list[str]:
+    """一行 → 一条或多条评论文本。
+
+    只有候选切点上的编号【连号】(n, n+1, n+2…), 且行首也有编号时第一个候选正好接上它 (行首 6 →
+    候选从 7 起), 才整行按候选切开; 否则整行原样返回 (宁可不切, 也不把一条评论里的「1、便宜
+    2、好用」切成三条 —— 切错的代价是评论身份全换, 见模块头的 D-085 清理)。"""
+    cuts = [m.end() for m in _INLINE_ITEM_RE.finditer(line)]
+    if not cuts:
+        return [line]
+    nums = [int(_ITEM_NO_RE.match(line, c).group(1)) for c in cuts]
+    lead = _ITEM_NO_RE.match(line.lstrip())
+    start = int(lead.group(1)) + 1 if lead else nums[0]
+    if nums != list(range(start, start + len(nums))):
+        return [line]
+    bounds = [0] + cuts + [len(line)]
+    return [line[a:b].strip() for a, b in zip(bounds, bounds[1:]) if line[a:b].strip()]
+
+
+def _changed_by_d085(content: str) -> bool:
+    """这条已入库的评论, 按 D-085 的新规则会不会被切开或剥掉前缀 (清理时区分「切法变了」和「运营删了」)。"""
+    s = (content or "").strip()
+    return len(_split_inline_items(s)) > 1 or bool(_BRACKET_ROLE_RE.match(s))
+
 
 def _parse_comment_line(line: str) -> Optional[tuple[str, str]]:
     """Extract (role, content) from a single comment line.
@@ -92,6 +151,7 @@ def _parse_comment_line(line: str) -> Optional[tuple[str, str]]:
         "贴主: thanks"               → ('贴主', 'thanks')
         "用户A | hello"              → ('素人', 'hello')
         "hello"                      → ('素人', 'hello')
+        "1. 【贴主回复】谢谢"          → ('贴主', '谢谢')           [D-085: 标签定角色, 不再拆名字]
     """
     s = line.strip()
     if not s:
@@ -101,6 +161,13 @@ def _parse_comment_line(line: str) -> Optional[tuple[str, str]]:
 
     # Strip leading "1. " / "1、" / "(1)"
     s = re.sub(r"^\(?\d+\)?[.、]\s*", "", s)
+
+    # 运营标签【贴主回复】等 (D-085): 标签说了是谁, 后面整段就是正文 —— 不再走下面的
+    # 「名字: 内容」拆法 (正文里的冒号会被当成名字切掉)。
+    m = _BRACKET_ROLE_RE.match(s)
+    if m:
+        content = s[m.end():].strip()
+        return (_BRACKET_ROLES[m.group(1)], content) if content else None
 
     # Pipe separator (Pattern B)
     if "|" in s:
@@ -128,13 +195,16 @@ def _parse_comment_line(line: str) -> Optional[tuple[str, str]]:
 
 
 def parse_comment_text(text: str) -> Iterator[tuple[str, str]]:
-    """Yield (role, content) for each parseable line in a comment block."""
+    """Yield (role, content) for each parseable comment in a comment block.
+
+    先按换行切, 每行再按 _split_inline_items 二次切 (D-085: 「 7. … 8. …」写在同一行)。"""
     if not text:
         return
     for line in text.splitlines():
-        parsed = _parse_comment_line(line)
-        if parsed is not None:
-            yield parsed
+        for item in _split_inline_items(line):
+            parsed = _parse_comment_line(item)
+            if parsed is not None:
+                yield parsed
 
 
 def fetch_notes_with_comments_text(sb, project_id: str) -> list[dict]:
@@ -231,8 +301,12 @@ def write_comments(
     project_id: str,
     parsed: list[tuple[str, str]],
     dry_run: bool,
+    vanished_log: Optional[list[dict]] = None,
 ) -> int:
     """Insert flat (no parent) comment rows. Returns count actually written.
+
+    vanished_log (D-085): 给了就把本条 note「库里有、源里找不到」的行逐条追加进去 (含 kind:
+    parser_change = 按新切法会被切开 / 剥前缀的旧行, source_removed = 其余)。只收集, 不删。
 
     ── 为什么按内容配对而不是按位置(跨库审计 2026-08-24 COR-013)──────────
 
@@ -324,6 +398,13 @@ def write_comments(
             note_id, len(vanished),
             [r["comment_id"] for r in vanished[:5]],
         )
+        if vanished_log is not None:
+            for r in vanished:
+                vanished_log.append({
+                    "note_id": note_id, "comment_id": r["comment_id"],
+                    "comment_role": r.get("comment_role"), "content": r.get("content"),
+                    "kind": "parser_change" if _changed_by_d085(r.get("content") or "") else "source_removed",
+                })
 
     if dry_run:
         if to_insert:
@@ -378,11 +459,29 @@ def write_comments(
     return len(to_insert)
 
 
+def collect_cleared_vanished(sb, cleared: list, unparseable: set, vanished_log: list) -> None:
+    """库里有评论、但本次一条都没解析出来的 note → 它的每条已入库评论逐条追加进 vanished_log。
+
+    每行带 note_cleared = source_empty(两个源字段都空, fetch 时就被滤掉了)或 unparseable(字段非空、
+    按现在的切法一条都解析不出来); kind 的口径同 write_comments (parser_change / source_removed)。只收集, 不删。"""
+    for note_id in cleared:
+        why = "unparseable" if note_id in unparseable else "source_empty"
+        for r in existing_comments(sb, note_id):
+            vanished_log.append({
+                "note_id": note_id, "comment_id": r["comment_id"],
+                "comment_role": r.get("comment_role"), "content": r.get("content"),
+                "kind": "parser_change" if _changed_by_d085(r.get("content") or "") else "source_removed",
+                "note_cleared": why,
+            })
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("project_id")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--vanished-out", default="",
+                        help="把「库里有、源里找不到」的评论逐条写成 jsonl (D-085 一次性清理用; 只写文件, 不删库)")
     args = parser.parse_args()
 
     sb = get_supabase_client()
@@ -393,8 +492,10 @@ def main() -> int:
                 len(notes), args.project_id)
 
     stats = {"notes_processed": 0, "comments_written": 0, "skipped_empty": 0,
-             "notes_source_cleared": 0}
+             "notes_source_cleared": 0, "vanished_parser_change": 0, "vanished_other": 0}
     covered: set[str] = set()
+    unparseable: set[str] = set()         # 源字段非空、但一条都解析不出来的 note
+    vanished_log: list[dict] = []
     for note in notes:
         raw = note.get("raw_extra") or {}
         text_main = raw.get("_comment_text") or ""
@@ -403,10 +504,12 @@ def main() -> int:
         parsed = list(parse_comment_text(combined))
         if not parsed:
             stats["skipped_empty"] += 1
+            unparseable.add(note["note_id"])
             continue
         covered.add(note["note_id"])
         written = write_comments(
-            sb, note["note_id"], note["project_id"], parsed, args.dry_run
+            sb, note["note_id"], note["project_id"], parsed, args.dry_run,
+            vanished_log=vanished_log,
         )
         stats["notes_processed"] += 1
         stats["comments_written"] += written
@@ -420,12 +523,16 @@ def main() -> int:
     #
     # 只报不删, 口径同 write_comments: comments 表没有软删列, 而"源里没了"要不要
     # 等于"删除"是产品判断(粘贴时截断了 vs 真的删了)。这里只让它可见。
+    # D-085 起这些 note 的每一条已入库评论也进 vanished_log (带 note_cleared), 所以
+    # --vanished-out 的名单要等对账做完才写 —— 以前先写文件、后对账, 整条清空 / 新切法下
+    # 整条解析不出来的 note 在名单里一行都没有, 清理时拿不到这些 id (codex review on #161)。
     #
     # ⚠️ 带 --limit 时不做这个对账 —— 那时 covered 本来就是不完整的, 拿它比会把
     #    没轮到处理的 note 全report成"源被清空了"。同 COR-011 的口径: 部分扫描
     #    不产出对账结论。
     if args.limit:
-        logger.info("带 --limit, 跳过「源被清空」对账(本次覆盖不完整, 比了会误报)")
+        logger.info("带 --limit, 跳过「源被清空」对账(本次覆盖不完整, 比了会误报); "
+                    "--vanished-out 的名单里也就没有整条被清空的 note")
     else:
         try:
             q = (
@@ -436,6 +543,7 @@ def main() -> int:
             )
             with_rows = {r["note_id"] for r in fetch_all_pages(q, order_by="note_id")}
             cleared = sorted(with_rows - covered)
+            collect_cleared_vanished(sb, cleared, unparseable, vanished_log)
             stats["notes_source_cleared"] = len(cleared)
             if cleared:
                 logger.warning(
@@ -446,6 +554,20 @@ def main() -> int:
             # 主职责。但也不能静默: 报出来, 并在 stats 里留 -1 标明"这次没算成"。
             logger.exception("「源被清空」对账查询失败")
             stats["notes_source_cleared"] = -1
+
+    # D-085: 按来由分开数。parser_change 是改了切法 / 剥了【…】前缀之后配不上的旧行, 同步之后要 owner
+    # 清一次 (见模块头); source_removed 是运营在源里删了的。都只报不删。
+    stats["vanished_parser_change"] = sum(1 for v in vanished_log if v["kind"] == "parser_change")
+    stats["vanished_other"] = len(vanished_log) - stats["vanished_parser_change"]
+    if stats["vanished_parser_change"]:
+        logger.warning("%d 条旧评论是 D-085 改切法 / 剥前缀之后配不上的 (未删除); 清理见模块头 "
+                       "「D-085 一次性清理」, 用 --dry-run --vanished-out 拿全名单",
+                       stats["vanished_parser_change"])
+    if args.vanished_out:
+        with open(args.vanished_out, "w", encoding="utf-8") as f:
+            for v in vanished_log:
+                f.write(json.dumps(v, ensure_ascii=False) + "\n")
+        logger.info("vanished 名单 %d 行 → %s", len(vanished_log), args.vanished_out)
 
     logger.info("Done: %s", json.dumps(stats, ensure_ascii=False))
     return 0

@@ -33,6 +33,16 @@ Resumability:
     extractor 默认按前缀匹配 `llm:%` —— 计数脚本在 GitHub 上跑、真正写库的是 Railway worker,
     两边的 FEATURE_MODEL 可能不同; 换模型也不该让已经答过的笔记重答一遍。显式 --model 时按精确值匹配。
     --reannotate 忽略这个标记全部重跑。
+
+    --done-by (D-085): 显式指定「谁答过就算答过」, 逗号分隔, 每项是精确的 extractor (jev:1.13.0)
+    或以 % 结尾的前缀 (llm:% / jev:%)。给了就取代上面两条默认 (llm:% / --model 的精确值)。
+    为什么要它: judge 服务 (独立仓) 写的是 extractor = jev:1.13.0、run_tag = primary, 默认的 llm:%
+    认不出它 —— Jev 做 primary 之后, 不带 --done-by 的夜跑会把 judge 答过的笔记再用 Opus 抽一遍,
+    计数脚本也会把它们算成「还没抽」。切换时 worker 请求体 (done_by) 与 count_unannotated_features.py
+    要传同一个值, 两边一个口径。--code-only 不收它 (代码题的判据固定是 code:v1 的 body_len_bucket;
+    judge 不产代码题, 那半边照旧要 TV 跑 --code-only)。
+    ⚠️ 本 pass 只写 llm:<模型>。--model / FEATURE_MODEL 写成 jev:1.13.0 这种 extractor 标签会被拒 (退出 2):
+    否则会拼出 llm:jev:1.13.0, 与 judge 的 jev:1.13.0 永远对不上, 续跑判据和闸一对照都会悄悄错位。
     解析失败 / 缺题的处理 (D-083): 整个回复解析不出 → 该组记 json_parse_failed → 重问一次 →
     仍「没答」的题逐题单问一次; 单问只在失败时发生 (stats.singles)。
 
@@ -60,6 +70,24 @@ logger = setup_logger("annotate_features")
 DONE_MARKER_QUESTION = "has_specific_time"        # 模型跑的标记题（G2 组, 每篇必落一行）
 CODE_DONE_MARKER_QUESTION = "body_len_bucket"    # --code-only 的标记题（code_rows 必落, 与模型题无关）
 _RUN_TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$")
+# 模型跑的默认「答过」判据 (不带 --done-by / --model 时)。改它就是改夜跑的续跑口径, CI 编排自检钉着。
+DEFAULT_DONE_BY = ("llm:%",)
+# --done-by 的每一项: <命名空间>:<值>, 可选以 % 结尾表示前缀。worker/app.py 有一份逐字相同的
+# (它把 done_by 拼进子进程参数, 先在门口拦), CI 比对两份一致。前缀里不许有 _ —— LIKE 里 _ 是单字通配。
+_DONE_BY_RE = re.compile(r"^[a-z]+:(?:[A-Za-z0-9.:/-][A-Za-z0-9_.:/-]{0,78}|[A-Za-z0-9.:/-]{0,79}%)$")
+# 形如 jev:… / llm:… / code:… / human:… 的串是 extractor 标签, 不是模型名 (D-085)。
+_EXTRACTOR_TAG_RE = re.compile(r"^[A-Za-z]+:")
+
+
+def parse_done_by(spec: str) -> tuple[str, ...]:
+    """--done-by 的值 → 去重保序的元组; 任一项不合 _DONE_BY_RE → ValueError。"""
+    items = tuple(dict.fromkeys(x.strip() for x in (spec or "").split(",") if x.strip()))
+    if not items:
+        raise ValueError("--done-by 是空的")
+    bad = [x for x in items if not _DONE_BY_RE.match(x)]
+    if bad:
+        raise ValueError(f"--done-by 里这些项不合 <命名空间>:<值>[%] (前缀里不许有 _): {bad}")
+    return items
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -77,28 +105,40 @@ def fetch_notes(sb, project_id: str) -> list[dict]:
 
 
 def fetch_done_ids(sb, project_id: str, *, run_tag: str = "primary",
-                   code_only: bool = False, extractor: Optional[str] = None) -> set[str]:
+                   code_only: bool = False, extractor: Optional[str] = None,
+                   done_by: Optional[tuple[str, ...]] = None) -> set[str]:
     """这个项目里【已经跑过】的 note_id（判据见模块 docstring 的 Resumability）。
 
-    extractor 给了就精确匹配（闸一按模型各自续跑）；没给就按跑法匹配：code-only → `code:v1`，
-    模型跑 → 前缀 `llm:%`（GitHub 侧的计数脚本与 Railway 侧的 worker 可能配了不同的
-    FEATURE_MODEL，按前缀两边才对得上，codex review on #141）。
+    extractor 给了就精确匹配（闸一按模型各自续跑）；done_by 给了就按它（D-085: 每项精确值或
+    以 % 结尾的前缀, 各查一次取并集 —— 比如 judge 的 jev:1.13.0 加上现行的 llm:%）；都没给就按跑法:
+    code-only → `code:v1`，模型跑 → DEFAULT_DONE_BY 即前缀 `llm:%`（GitHub 侧的计数脚本与 Railway 侧
+    的 worker 可能配了不同的 FEATURE_MODEL，按前缀两边才对得上，codex review on #141）。
+    extractor 与 done_by 同时给 → ValueError（两个判据谁说了算说不清, 不猜）。
     """
-    q = (
-        sb.schema("truth_vault").table("note_feature_answers")
-        .select("subject_id")
-        .eq("subject_type", "note")
-        .eq("question_id", CODE_DONE_MARKER_QUESTION if code_only else DONE_MARKER_QUESTION)
-        .eq("run_tag", run_tag)
-        .like("subject_id", f"{project_id}_%")
-    )
-    if extractor:
-        q = q.eq("extractor", extractor)
-    elif code_only:
-        q = q.eq("extractor", fb.CODE_EXTRACTOR)
+    if extractor and done_by:
+        raise ValueError("extractor 与 done_by 只能给一个")
+    if code_only:
+        if done_by:
+            raise ValueError("--code-only 的判据固定是 code:v1, 不收 done_by")
+        patterns: tuple[str, ...] = (extractor or fb.CODE_EXTRACTOR,)
+    elif extractor:
+        patterns = (extractor,)
     else:
-        q = q.like("extractor", "llm:%")
-    return {r["subject_id"] for r in fetch_all_pages(q, order_by="subject_id")}
+        patterns = tuple(done_by) if done_by else DEFAULT_DONE_BY
+    done: set[str] = set()
+    for pat in patterns:
+        # 每个判据一条独立查询 (查询构造器是可变的, 不能复用上一条)
+        q = (
+            sb.schema("truth_vault").table("note_feature_answers")
+            .select("subject_id")
+            .eq("subject_type", "note")
+            .eq("question_id", CODE_DONE_MARKER_QUESTION if code_only else DONE_MARKER_QUESTION)
+            .eq("run_tag", run_tag)
+            .like("subject_id", f"{project_id}_%")
+        )
+        q = q.like("extractor", pat) if pat.endswith("%") else q.eq("extractor", pat)
+        done |= {r["subject_id"] for r in fetch_all_pages(q, order_by="subject_id")}
+    return done
 
 
 def write_answers(sb, rows: list[dict], dry_run: bool) -> None:
@@ -335,6 +375,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--single", action="store_true", help="每题单问（闸一「分组 vs 单问」对比用）")
     ap.add_argument("--note-ids", default="", help="只跑这些 note_id（逗号分隔或文件路径）")
     ap.add_argument("--model", default="", help="覆盖 FEATURE_MODEL")
+    ap.add_argument("--done-by", default="",
+                    help="「谁答过就算答过」(D-085): 逗号分隔的 extractor 精确值或以 %% 结尾的前缀, "
+                         "如 jev:1.13.0 或 llm:%%,jev:%%; 给了就取代默认的 llm:%% / --model 精确值")
     ap.add_argument("--qps", type=float, default=2.0)
     ap.add_argument("--failed-queue", default="failed_feature_queue.jsonl")
     args = ap.parse_args(argv)
@@ -343,6 +386,23 @@ def main(argv: Optional[list[str]] = None) -> int:
         logger.error("run_tag 只能是字母数字 _ . -, ≤40 字: %r", args.run_tag)
         return 2
     model = args.model or os.environ.get("FEATURE_MODEL") or os.environ.get("ESSENCE_MODEL", "claude-sonnet-4-6")
+    if _EXTRACTOR_TAG_RE.match(model):
+        # 本 pass 的 extractor 是 f"llm:{model}"。传 jev:1.13.0 会拼出 llm:jev:1.13.0 —— 与 judge 写的
+        # jev:1.13.0 永远对不上, 续跑判据和闸一对照都会悄悄错位 (D-085)。
+        logger.error("model %r 看起来是 extractor 标签 (jev:/llm:/code:/human:…), 不是模型名。本 pass 只写 "
+                     "llm:<模型>; judge 的答案由 judge 服务写, 要让续跑认它们用 --done-by jev:1.13.0", model)
+        return 2
+    done_by: Optional[tuple[str, ...]] = None
+    if args.done_by:
+        if args.code_only:
+            logger.error("--done-by 只管模型题的「答过」; --code-only 的判据固定是 code:v1 的 %s",
+                         CODE_DONE_MARKER_QUESTION)
+            return 2
+        try:
+            done_by = parse_done_by(args.done_by)
+        except ValueError as exc:
+            logger.error("%s", exc)
+            return 2
     need_llm = not (args.dry_run or args.code_only)
     if need_llm and not os.environ.get("ANTHROPIC_API_KEY"):
         logger.error("ANTHROPIC_API_KEY must be set (or use --dry-run / --code-only)")
@@ -365,8 +425,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         keep = _read_note_ids(args.note_ids)
         notes = [n for n in notes if n["note_id"] in keep]
     if not args.reannotate:
-        done = fetch_done_ids(sb, args.project_id, run_tag=args.run_tag, code_only=args.code_only,
-                              extractor=extractor if args.model else None)
+        if done_by:
+            logger.info("续跑判据 done_by=%s (D-085; 不带时是 %s)", ",".join(done_by), ",".join(DEFAULT_DONE_BY))
+            done = fetch_done_ids(sb, args.project_id, run_tag=args.run_tag, done_by=done_by)
+        else:
+            done = fetch_done_ids(sb, args.project_id, run_tag=args.run_tag, code_only=args.code_only,
+                                  extractor=extractor if args.model else None)
         notes = [n for n in notes if n["note_id"] not in done]
     if args.limit:
         notes = notes[: args.limit]

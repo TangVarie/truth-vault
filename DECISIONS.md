@@ -5441,9 +5441,89 @@ owner：「整件事不要了。」
 - 教训：owner 要的「最简」是一句话能交代的事；TV 把「硬拦」按代码工程的完整度落地，交出去的东西比问题本身重。
   下次先给一句话版本，owner 要更重的再加。
 
-
 ### 续（B1 生效实测，2026-09-26）：daily-sync #181 / #182 都绿
 
 B1 减法重判在 #181（9/24）生效：带「铺评未跨线」的是 **6 行**，不是预估的 4 行。多出的 2 行是 HATHERINE（105−20、100−20），
 按规则就该放行，是预估漏数，不是判错。BJS 205 / 73、SPX 148 三行真赢家都已改成「铺评未跨线」。仍记「铺评工单」的 143 行里，
 扣掉铺评仍过 50 的 0 行。特征层 9/24、9/25 两晚各 120 篇，missing 与 json_parse_failed 都是 0。
+
+## D-085 · judge 接入的 TV 这一半：v1_17 / v1_18 落仓、续跑认得出 jev、闸一灰格分隔符、评论同行切分、prob 口径（2026-09-24）
+
+来源：judge 仓（独立服务，Jev 判定）的设计审查 `docs/02-design-review-2026-09-23.md` §5「truth-vault」那几条、
+judge 仓 `docs/00-decisions.md` 拍板 #3（账本扩三类主体、prob 统一为「所选答案的概率」）和「顺手查到、要回三仓修的 · TV」。
+审查是对着 TV `d7615d5` 写的，之后 main 又走了十几个提交（D-082 ~ D-084、禁词撤回 #160），行号全部在今天的 main 上重新找过。
+
+### 做了什么
+
+| # | 事 | 改了什么 | 为什么 |
+|---|---|---|---|
+| 1 | 迁移落仓 | `schemas/notes_v1_17_judge_subjects.sql`（`subject_type` 加 comment / ssll_sample / external_note，prob 列注释改口径）、`notes_v1_18_external_notes.sql`（`external_notes` 表 + `v_external_reference` 视图，judge 仓已在 PG 16 验过的版本）；`scripts/README.md` Step 0 各加一行；CI sql job 各连跑两遍 + 一步语义自检 | judge 仓给的 v1_17 头注释写「SocialDataX」「v1_16 之后」：供应商是 **TikHub**；v1_17 改的是 v1_13 建的表，而 TV 的部署链里 v1_13 排在 v1_16 **之后**、是链上最后一环，照字面放会 `relation does not exist`。改成「v1_13 之后」，链是 … → v1_13 → v1_17 → v1_18。SQL 语句没动，只改注释（prob 列 COMMENT 里的出处一句除外，judge 仓的 docs/31 不在 TV 里） |
+| 2 | 续跑判据认得出 judge | `annotate_feature_pass.py` / `count_unannotated_features.py` 加 `--done-by`（逗号分隔，精确值或以 `%` 结尾的前缀，各查一次取并集），worker `/annotate-features` 收 `done_by` 列表、原样透传并在响应里回显；**默认不变**（`llm:%`）。`--model` / `FEATURE_MODEL` 写成 `jev:1.13.0` 这种 extractor 标签 → pass 退出 2，worker 400 | judge 写 `extractor = jev:1.13.0`、`run_tag = primary`，默认的 `llm:%` 认不出：Jev 做 primary 之后不带判据的夜跑会把 judge 答过的笔记再用 Opus 抽一遍，计数脚本也永远降不到 0。worker 的 `_MODEL_RE` 放行冒号，图省事传 `model=jev:1.13.0` 会拼出 `llm:jev:1.13.0`，与 judge 的 `jev:1.13.0` 永远对不上 —— 现在两处都拒 |
+| 3 | 闸一灰格分隔符 | `gate1_labels.join_skipped / split_skipped` 成唯一一对（写 `\|`，读 `\|` 和旧的 `,` 都认）；生成器与收表脚本都走它；收表时名单拆出题库里没有的题号直接红；`ingest_gate1_answers.py` 的 openpyxl 改成读 xlsx 时才 import（CI 不装它也能测校验）；已入库的 11 行用 `scripts/fix_gate1_grey_cells.sql` 标掉 | 生成器 `"\|".join`、收表 `.split(",")`：单灰格的篇碰巧没事，`NUC_phase1_recv46LaDAdFFc` 的 11 个灰格被拆成一个认不出的长串，灰格校验两个方向都失效，Jev 在 C 表这 11 格填的答案原样入库（C 表 1000 行，应为 989 —— D-081 那组 999 / 999 / 1000 就是这么来的） |
+| 4 | 评论同行切分 + 运营标签 | `sync_comments_from_raw_extra.py`：每行再按 `(?<=\S)\s+(?=\d{1,2}[.、](?!\d)\s*\S)` 二次切，候选编号必须连号、且接得上行首编号，否则整行不切（`(?!\d)` 是在审查给的正则上加的，挡「2.5 元」）；`【贴主回复】【素人评论】【素人回复】`等身份标签剥掉并据此定 `comment_role`（贴主… → 贴主），认不出的【…】不动；vanished 行按来由分 `parser_change` / `source_removed` 计数，`--vanished-out` 写全名单 | judge 仓 33 条运营评论样本里 4 条是「 7. … 8. …」写在同一行被并成一条、3 条带运营标签且贴主回复被记成素人；②（评论回填）之前要先修切法 |
+| 5 | prob 口径 | 查了全仓写 `note_feature_answers.prob` 的路径：只有两条。`annotate_feature_pass` 恒写 NULL（不用改）；`ingest_gate1_answers` 把 Jev 的「判「是」的概率 p」原样写进去 → 改成**所选答案的概率**：答「是」存 p、答「否」存 1 − p；「第一名只有 p」（选择题）照存 | v1_17 起账本的 prob = 所选答案的概率。**旧行不回改**（v1_17 注释原话）：`run_tag = gate1-20260928` 的 Jev 三张表是 P(是) 口径，列 COMMENT 里写明了。D-084 已定 Jev 不重跑；真要重收就落新 run_tag，别让两种口径进同一个 run_tag |
+| 6 | CI / 守卫 | 两个内联块按 D-075 挪进 scripts/：特征层编排自检 → `check_feature_orchestration.py`（原块逐字搬，加续跑判据一节）、评论解析单测 → `check_comment_parser.py`（原 6 条原样 + D-085 用例）；新增 `check_gate1_ingest.py`、worker 端点一步（`--worker`，排在装 fastapi 那步之后）；`check_system_map.py` 的 heredoc 棘轮 78 → 76；`verify_supabase_state.sql` 加 #85（comment 账本行悬空）/ #86（external_note 账本行悬空） | 改续跑判据必改那条「默认路径必须是 `llm:%`、不带 extractor」的守卫，它在内联块里；ci.yml 当时 503,998 字节，离 505,000 的体积棘轮（G6）只剩 1 KB。挪完 498,550 字节 |
+
+### owner 要做的（按顺序）
+
+1. **合并后 apply 两份迁移**（生产 09-20 已到 v1_13）：先 `notes_v1_17_judge_subjects.sql`，再 `notes_v1_18_external_notes.sql`。
+   Supabase MCP `apply_migration` 或 SQL 编辑器整份执行；两份都幂等，单事务跑两遍本地验过。judge 的写库（`write=true`、外部语料）要等这一步。
+2. **跑一次数据修复** `scripts/fix_gate1_grey_cells.sql`（SQL 编辑器 / MCP `execute_sql` / `psql -f`）。第一遍 NOTICE「标掉 11 行」并逐行打出原答案
+   （执行日志就是备份），第二遍「0 行（已修过 11 行）」；事后 `jev:1.13.0-C` × `gate1-20260928` 里 `answer IS NOT NULL` 应为 989。
+   要改的行超过 11 就整份回滚、什么都不改。TV 这边没有在任何库上执行过它，CI 也不跑它。
+3. **评论一次性清理**：合并后第一次夜跑 daily-sync 的 comments 那一步（对 mappings/ 下所有项目都跑，不走 on_demand 闸）会把并在一起的
+   评论切开、以新 id 插入，旧的并行行 / 带【…】标签的旧行按「只报不删」留在库里（样本 7/33，全库 9,035 行里可能上千行；以名单为准）。
+   那次夜跑之后，每个有随贴评论的项目跑
+   `python sync_comments_from_raw_extra.py <项目> --dry-run --vanished-out vanished_<项目>.jsonl`，
+   看一遍 `kind = parser_change` 的行，按 `comment_id` 删掉；`parent_comment_id` 是 ON DELETE SET NULL，挂在旧行下的楼层会断，要楼层就重跑楼层重建。
+   **这一步做完再跑 judge 的评论回填**；已经判过的，同一批 comment_id 的账本行（`subject_type = 'comment'`）一起删，`verify_supabase_state.sql` #85 会数出漏删的。
+4. **Jev 做特征层 primary 那天**：features-sync / backfill-features 给 worker 的请求体加 `done_by`（如 `["jev:1.13.0", "llm:%"]`），
+   `count_unannotated_features.py` 给同一个 `--done-by`；先带 `dry_run` 探一次，响应里没有 `done_by` 就是 worker 还没部署到这一版，别切。
+   judge 不产 8 个代码特征 + 3 道占位题，也不写 `note_features` 原值 —— 那半边照旧要 TV 跑 `--code-only`（判据看 code:v1，不受 `--done-by` 影响）。
+
+### 反证（本地全量重放 ci.yml：python 77 / sql 46 / yaml 4 = 127 步全绿；改之前 75 / 44 / 4 = 123 步全绿。装 psql、装 pyyaml 两步是环境步骤，没重放）
+
+- 18 个代码变异逐个咬住：worker `_MODEL_RE` 退回旧写法（端点与源码两处都红）、worker 丢 `--done-by`、两份 `_DONE_BY_RE` 漂开、pass 忽略 done_by、
+  默认判据改成 `llm:%,jev:%`、拿掉 model 标签检查、main / 计数脚本不传 done_by、收表退回按 `,` 拆、拿掉「题号认不出」那条、prob 退回 P(是)、
+  生成器改回 `",".join`、拿掉二次切分 / 连号判据 / 小数挡板 / 标签识别、vanished 来由判反。第一版「小数挡板」没被咬住（连号判据先挡了），补了一条
+  「没有行首编号、2.5 / 3.5 恰好连号」的用例才咬住。
+- SQL：v1_17 / v1_18 在 CI 形状的 PG 16 上连跑两遍、单事务（`psql -1`）连跑两遍；视图改成全库分位数 → 自检红；CHECK 漏 external_note → 自检红。
+  数据修复：造 C 表这篇 20 格 + A 表 / gate1-v2 / TV primary / 别的篇各一行，第一遍只动那 11 格、第二遍 0 行；多造一行 v2 → 12 行 → 整份回滚。
+- 真名单往返：仓里那份 `gate1-human-sample-2026-09-28.csv` 上，C 表灰格照填 → 989 行、灰格填答案 → 11 条错整份不写；A 表 999 行照旧。
+  有 openpyxl 的机器上 `check_gate1_ingest.py --xlsx` 再走一遍真 xlsx（生成 → 填 → 收），本地装了跑过。
+
+### 挡不住什么
+
+- 评论：没有行首编号的一行里正文自带从 2 起的连号列举（「有三点：1、便宜 2、好用 3、方便」）仍会被切开；编号 ≥ 100、标签写在编号前面（【素人评论】7. …）不认。
+  切法变了之后评论身份一次性换掉一批，靠第 3 步人工清，没有自动删除（「只报不删」不改）。
+- 续跑：今天没有任何 workflow 传 `done_by`，默认行为和以前一样；切 primary 时两边要一起改，一边忘了就会重抽或空转（第 4 步）。
+- prob：「第一名只有 p」按 Jev 的答案就是第一名来存；Jev 若在表里填了非第一名的选项，存的就不是它的概率。旧的 gate1-20260928 行仍是 P(是)。
+- 数据修复只认这一篇 × 这一张表；别的 extractor 若也这样入过库（人标已取消，D-084），它看不见。
+- `v_external_reference` 只在构造数据上验过分组，外部语料还没有真数据；它按账本行数算，同一篇多行的去重靠分组键（question_version / bank_sha256 / extractor）。
+
+### 没做（审查 §5 里 TV 的另外几条，不在这次范围）
+
+- worker `/annotate-features` 换成调 `/judge`：judge 只能替掉模型题那一半，`code_rows` / `raw_counts` 仍要 TV 跑，而 ci 编排自检钉着「8 次调用 / 31 行」，
+  到切换那天再改编排。
+- `fq_shadow --from-db` 按项目 mapping 切标题（在 judge 仓）；comments 三列（`comment_type` / `is_scripted` / `comment_intent`）回写与否（docs/31 §3 ② 的口径，在 judge 仓）；
+  `content_scores` 的 subject_type CHECK 不跟着扩（v1_17 头注释写明）。
+- 数据流向图（docs/00 §3）没加 `external_notes`：写它的是 judge 仓的 workflow，不是 TV 的路。
+
+
+### 续（codex review on #161，同日）
+
+- prob：`ingest_gate1_answers` 按默认参数重收一张 Jev 表，run_tag 就是旧口径的 gate1-20260928，upsert 会把这个 run_tag 下的是非题 prob 悄悄改成新口径。
+  现在 `jev:*` 配旧口径 run_tag（`LEGACY_PROB_YES_RUN_TAGS`）直接拒绝，要重收请给新 run_tag；人的表不写 prob，照旧落默认 run_tag。
+- 评论：`--vanished-out` 以前在「源被清空」对账之前就写了文件，整条清空 / 新切法下整条解析不出来的 note，它的评论在名单里一行都没有。
+  对账之后用 `collect_cleared_vanished` 把这些 note 的每条已入库评论也放进名单（带 `note_cleared` = source_empty / unparseable），文件在对账之后写。带 `--limit` 时不对账，名单里也就没有它们（日志写明）。
+
+### 续（生产执行，2026-09-26）：v1_17 / v1_18 已上，11 个灰格已标掉
+
+owner：「合并，生产那两步也你来执行」。经 Supabase MCP 执行，执行前核过生产形状与 PR 预期一致（subject_type 仍是两类、无 external_notes、C 表 1000 格有答案）。
+
+- v1_17、v1_18 按仓库文件 apply（迁移表记为 `notes_v1_17_judge_subjects` / `notes_v1_18_external_notes`）。事后：约束五类；`external_notes` 20 列、RLS 开；`v_external_reference` 能查（0 行）。
+- `fix_gate1_grey_cells.sql` 第一遍后：C 表有答案 1000 → **989**；NUC_phase1_recv46LaDAdFFc 的 11 格 NULL / text_too_short，同篇另 9 格与 A / B 两表（999 + 999）未动。第二遍 0 行。
+- MCP 不回显 NOTICE，改之前的 11 格原答记在这里作备份（question_version 均为 1）：
+  opening_type 具体事件、has_specific_time 是、has_specific_place 是（prob 0.61）、has_direct_quote 否（prob 0.35）、has_body_sensation 是、
+  ending_asks_reader 否、withholds_product_name 否、own_experience 是、turning_point 是、judged_by_others 否、negative_outcome_happened 是。
+- 还剩 owner 列表第 3 步（下次 daily-sync 后按项目 dry-run 出 vanished 名单、复核后删 parser_change 旧行）和第 4 步（切 Jev 为主抽取器时再做）。

@@ -5,7 +5,7 @@
 搬到 Railway 后由 GitHub daily-sync 调本服务端点触发(保留 GitHub 的失败→邮件告警)。
 
   POST /annotate-essence  body={project, limit?, dry_run?, reannotate?}
-  POST /annotate-features body={project, limit?, dry_run?, reannotate?, run_tag?, single?, code_only?, model?, note_ids?}
+  POST /annotate-features body={project, limit?, dry_run?, reannotate?, run_tag?, single?, code_only?, model?, note_ids?, done_by?}
   POST /curate            body={project?, limit?, dry_run?}
   GET  /health            → {ok, service, auth{ok,required,mode}, config{...}, running[]}
 
@@ -283,7 +283,13 @@ async def annotate_essence(
 
 
 _RUN_TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$")
-_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,79}$")
+# 冒号要放行 (有的模型名带 :0 之类的尾巴), 但开头是「字母:」的是 extractor 标签 (jev:1.13.0 / llm:x),
+# 不是模型名: pass 会把它拼成 llm:jev:1.13.0, 与 judge 写的 jev:1.13.0 永远对不上 (D-085)。
+# pass 自己也拒 (退出 2); 这里在门口先拦, 给调用方一个 400 而不是一次白跑的子进程。
+_MODEL_RE = re.compile(r"^(?![A-Za-z]+:)[A-Za-z0-9][A-Za-z0-9_.:/-]{0,79}$")
+# done_by 的每一项 —— 与 scripts/annotate_feature_pass.py 的 _DONE_BY_RE 逐字相同 (CI 比对)。
+_DONE_BY_RE = re.compile(r"^[a-z]+:(?:[A-Za-z0-9.:/-][A-Za-z0-9_.:/-]{0,78}|[A-Za-z0-9.:/-]{0,79}%)$")
+_DONE_BY_MAX = 8
 _NOTE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")       # 形如 NUC_phase1_recXXXX; 它会拼进 argv
 _NOTE_IDS_MAX = 200                                       # Railway 边缘 ~5min: 一次其实只跑得完 2–4 篇
 
@@ -297,8 +303,8 @@ async def annotate_features(
     每脚本互斥锁 (锁按脚本名分, 所以 essence 和 features 可以同时跑, 各自不重入)。
 
     run_tag / single / model 是闸一用的旋钮 (每题单问 vs 分组、换模型对比); 默认
-    primary + 分组 + FEATURE_MODEL。三个值都只在闭集/正则内放行 —— 它们会拼进
-    subprocess 参数。
+    primary + 分组 + FEATURE_MODEL。done_by 是续跑判据 (D-085, 默认 llm:%)。这些值都只在
+    闭集/正则内放行 —— 它们会拼进 subprocess 参数。
     """
     _check_auth(x_worker_key)
     body = await _json_body(request)
@@ -317,8 +323,25 @@ async def annotate_features(
     model = body.get("model")
     if model is not None:
         if not isinstance(model, str) or not _MODEL_RE.match(model):
-            raise HTTPException(status_code=400, detail="model must match [A-Za-z0-9][A-Za-z0-9_.:/-]{0,79}")
+            raise HTTPException(
+                status_code=400,
+                detail="model must match [A-Za-z0-9][A-Za-z0-9_.:/-]{0,79} and must not be an extractor tag "
+                       "like jev:1.13.0 / llm:x (the pass writes llm:<model>; to skip notes judge already "
+                       "answered, send done_by instead)")
         args += ["--model", model]
+    # D-085: 「谁答过就算答过」。judge 做 primary 之后夜跑要带 done_by (如 ["jev:1.13.0", "llm:%"]),
+    # 否则 judge 答过的笔记会被 Opus 再抽一遍; 与 count_unannotated_features.py --done-by 给同一个值。
+    done_by = body.get("done_by")
+    if done_by is not None:
+        if (not isinstance(done_by, list) or not done_by or len(done_by) > _DONE_BY_MAX
+                or not all(isinstance(x, str) and _DONE_BY_RE.match(x) for x in done_by)):
+            raise HTTPException(
+                status_code=400,
+                detail=f"done_by must be a non-empty list (≤{_DONE_BY_MAX}) of extractor values or "
+                       'prefixes ending in %, e.g. ["jev:1.13.0", "llm:%"]')
+        if body.get("code_only"):
+            raise HTTPException(status_code=400, detail="done_by only applies to model runs, not code_only")
+        args += ["--done-by", ",".join(done_by)]
     # 闸一 (D-079/D-081): 指定 note_id 只跑这几篇 —— 100 篇样本散在 5 个项目里, 其中 3 个是
     # on_demand, 灌整个项目要烧 2,600 篇。列表原样交给 pass 的 --note-ids (逗号分隔),
     # pass 再按项目取交集, 别的项目的 id 会被静默丢掉, 所以调用方要按项目分组。
@@ -338,6 +361,10 @@ async def annotate_features(
         # 调用方靠这个字段确认 worker 已经是认识 note_ids 的版本 —— 旧版本会把这个字段
         # 当没见过的键吞掉、按 project+limit 去跑别的笔记, 悄悄烧钱。
         res["note_ids_count"] = len(note_ids)
+    if done_by is not None:
+        # 同 note_ids_count: 旧版本 worker 会把 done_by 当没见过的键吞掉、按默认 llm:% 续跑 ——
+        # 调用方先带 dry_run 探一次, 响应里没有这个字段就别切。
+        res["done_by"] = list(done_by)
     return res
 
 
