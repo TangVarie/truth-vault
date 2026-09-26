@@ -5516,3 +5516,14 @@ judge 仓 `docs/00-decisions.md` 拍板 #3（账本扩三类主体、prob 统一
   现在 `jev:*` 配旧口径 run_tag（`LEGACY_PROB_YES_RUN_TAGS`）直接拒绝，要重收请给新 run_tag；人的表不写 prob，照旧落默认 run_tag。
 - 评论：`--vanished-out` 以前在「源被清空」对账之前就写了文件，整条清空 / 新切法下整条解析不出来的 note，它的评论在名单里一行都没有。
   对账之后用 `collect_cleared_vanished` 把这些 note 的每条已入库评论也放进名单（带 `note_cleared` = source_empty / unparseable），文件在对账之后写。带 `--limit` 时不对账，名单里也就没有它们（日志写明）。
+
+### 续（生产执行，2026-09-26）：v1_17 / v1_18 已上，11 个灰格已标掉
+
+owner：「合并，生产那两步也你来执行」。经 Supabase MCP 执行，执行前核过生产形状与 PR 预期一致（subject_type 仍是两类、无 external_notes、C 表 1000 格有答案）。
+
+- v1_17、v1_18 按仓库文件 apply（迁移表记为 `notes_v1_17_judge_subjects` / `notes_v1_18_external_notes`）。事后：约束五类；`external_notes` 20 列、RLS 开；`v_external_reference` 能查（0 行）。
+- `fix_gate1_grey_cells.sql` 第一遍后：C 表有答案 1000 → **989**；NUC_phase1_recv46LaDAdFFc 的 11 格 NULL / text_too_short，同篇另 9 格与 A / B 两表（999 + 999）未动。第二遍 0 行。
+- MCP 不回显 NOTICE，改之前的 11 格原答记在这里作备份（question_version 均为 1）：
+  opening_type 具体事件、has_specific_time 是、has_specific_place 是（prob 0.61）、has_direct_quote 否（prob 0.35）、has_body_sensation 是、
+  ending_asks_reader 否、withholds_product_name 否、own_experience 是、turning_point 是、judged_by_others 否、negative_outcome_happened 是。
+- 还剩 owner 列表第 3 步（下次 daily-sync 后按项目 dry-run 出 vanished 名单、复核后删 parser_change 旧行）和第 4 步（切 Jev 为主抽取器时再做）。
