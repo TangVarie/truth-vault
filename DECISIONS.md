@@ -5527,3 +5527,17 @@ owner：「合并，生产那两步也你来执行」。经 Supabase MCP 执行�
   opening_type 具体事件、has_specific_time 是、has_specific_place 是（prob 0.61）、has_direct_quote 否（prob 0.35）、has_body_sensation 是、
   ending_asks_reader 否、withholds_product_name 否、own_experience 是、turning_point 是、judged_by_others 否、negative_outcome_happened 是。
 - 还剩 owner 列表第 3 步（下次 daily-sync 后按项目 dry-run 出 vanished 名单、复核后删 parser_change 旧行）和第 4 步（切 Jev 为主抽取器时再做）。
+
+### 续（评论一次性清理，2026-09-27）：删了 1,210 条被新切法替掉的旧评论
+
+owner：「你来做，明天先给我看名单再删」→ 看过名单后回「删」。
+
+- 名单来源：在沙箱里跑 `sync_comments_from_raw_extra.py` 自己的 `--dry-run --vanished-out` 逻辑，客户端换成只读桩（数据经 MCP 只读导出，
+  任何写调用直接报错），不另写判定规则。9/26 同步前预演预测要插 1,701 条新行，9/26 的 daily-sync #183 实际插了 1,701 条。
+- 删的是 `parser_change` 且所在笔记源文本仍在的 1,210 条：去掉【…】前缀 1,076、同一行拆成多条 133、两者都有 1。
+  另有 27 条 `parser_change` 落在源文本已被清空 / 解析不出的笔记上，删了没有新行补位，**留着没删**。
+- 删前核对：没有评论挂在这些行下面（全表 parent_comment_id 非空 0 行）；账本里 subject_type = 'comment' 0 行；删完每篇笔记至少还剩一条评论。
+- 执行：先把这 1,210 行全列备份（沙箱文件，不入仓），再分 5 批按 comment_id 删，每批加 `created_at < '2026-09-26'` 护栏，确保新行一条碰不到。
+  250 / 250 / 250 / 250 / 210，合计 1,210。评论总数 10,779 → 9,569，9/26 新写的 1,701 条都在。
+- 删后复跑同一套 dry-run：待插入 0（明天同步不会把它们插回来）；源文本仍在的笔记上 `parser_change` 0。
+- 不在本次范围：源里已找不到的 1,051 条（`source_removed`，OKMAN 768 / LNKT 244 为主）照旧只报不删，要不要处理由 owner 另定。
