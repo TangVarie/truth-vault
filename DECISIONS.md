@@ -5742,3 +5742,26 @@ python job 里 import 馆员的 8 步（TV-03 / TV-05 / TV-06 / 守卫 6 / put_c
 ### 没做
 
 - 没触发任何 backfill；没动 on_demand 闸（D-047）的语义；没给闸二加新灯。
+
+## D-090 · 灯与可见性：定时跑缺 secret 要红；饱和灯退灯；worker `/health` 报 `curator_model`；backfill `note_ids` 路径加 `reannotate`；D-088 对照基线落盘（2026-10-08）
+
+来源：`data-analysis/architecture-audit-2026-10-08.md` §2 的 B-10 / B-01 / C-06 / A-03(b) / B-03；owner：「继续完成你能做的内容」。五件都是"让看不见的变成看得见"，不改任何数据口径。
+
+### 定了什么
+
+1. **`daily-sync.yml` / `features-sync.yml` 的 secret 检查：`schedule` 事件缺 secret 直接红。** 以前缺 `SUPABASE_URL/KEY`（features-sync 还有 `WORKER_URL`）是 `skip=true`：六个阻塞步全跳过，aggregate 把 `skipped` 当合法，看门狗只看 `conclusion=success`——一把 secret 被删或过期，夜跑会**永远静默绿**，没有任何灯会亮。手动 / push 触发保留优雅跳过（本地分支、fork 上没 secret 是正常的）。
+2. **`SATURATION_CHECK_DONE` 退灯。** `check_positive_saturation.py` 读的视图 `v_autowriter_positive_pool_saturation` 唯一的杠杆路径是 `notes.note_id = items.external_source_id`，而那列没有任何代码写（push 没跑过，deskcore 明说"不碰 items.external_source"）：10-08 实查 8 个池 `lever_measurable_count` 全 0，所以从上线起每晚 rc=2「无法评估」，一次也没能回答自己的问题；它模拟的"created_at DESC 取 5 条"也早被 deskcore 的相关度 + 开头形状多样性取代（视图头自己写着"对照指标…可以下线"）。按 docs/29 退灯规矩：步骤从 `daily-sync.yml` 摘掉、登记册行删掉、脚本删掉、CI 里那步 8 用例冒烟一起删（G2 棘轮只降不升）；v1_8 的视图留着不碍事。多样性现在由写作台 `fingerprint.cap_by_shape` 保。
+3. **worker `/health` 多报 `config.curator_model`。** `/curate` 的子进程读的是 `FLYWHEEL_CURATOR_MODEL`，与 `/health` 已报的 `essence_model` / `feature_model` 不是同一个变量；中转站不服务默认模型时 curate 整晚 systemic 红、看 `/health` 却一切正常。`worker/README.md` 补了这个变量。
+4. **`backfill-features.yml` 的 `note_ids` 路径加 `reannotate` 输入。** worker 早就接受 `reannotate`（`app.py` 的 flag 闭集），只是 workflow 没暴露。闸二要钉当前题库 sha `ba0f570c`，而 primary 下有 361 篇（含闸一全部 100 篇、50 篇爆款）停在旧 sha `3d299a1e`，DONE 标记挡着不让重抽——现在可以 `note_ids` + `reannotate=true` + `bank_sha` 定向拉到当前快照（≈361×6 次 Opus，batch 2 约 6 h）。要不要拉、还是闸二只用新 sha，是预注册时的决定，不在本条。
+5. **D-088 的"改前"基线 24 行抄进 `data-analysis/librarian-cold-baseline-2026-09.md`。** D-088 让 `library_version` 从 50 变 306，旧键不会再被命中；`prune_librarian_cache.py --ttl-days 30` 按 `last_hit_at` 删，这 24 行 10-21 起消失，正是"两周后对比"那天。Codex（#168）指出不能整体豁免 `select_ms` 行（v1_16 起每次冷借都带它，豁免等于关掉保留），所以抄下来、prune 不动。p50 49.5 s · p95 ≈79 s · 超 60 s 7/24 · 超 22 s 20/24。
+
+顺手：README「数据现状」表和目录树的计数按 10-08 实查改（6,300 篇 / 17 项目 10 daily / 411 爆款 / essence 100% / ssll 306；9 个 workflow / 28 个 SQL / CI 79+50+7 步）。
+
+### 验证
+
+- 三个 workflow yaml 能 parse；`check_system_map.py` 六条过（G2 heredoc 数降 1，G3 登记册与哨兵脚本一致，G6 字节降）；`worker/app.py` py_compile 过。
+- 反证：把 `docs/29` 的饱和行删掉而脚本留着 → G3 红（脚本打哨兵行却不在登记册里）；这正是为什么脚本必须一起删。
+
+### 没做
+
+- 没动六个阻塞步的 `continue-on-error` 语义；没给评论步 / 撤回摘要加灯（那是 A-07 / C-20，另一个 PR）；没跑 `reannotate`；没碰 `prune_librarian_cache.py`。

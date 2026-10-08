@@ -111,10 +111,17 @@ jobs:
             pip install -r scripts/requirements.txt
           fi
 
-      - name: Check secrets are configured (gracefully skip if not)
+      - name: Check secrets are configured (gracefully skip if not; scheduled runs go red)
         id: check
         run: |
           if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
+            # 定时跑缺 secret 必须红(D-090): 六个阻塞步全跳过时 aggregate 把 skipped 当合法、
+            # 看门狗只看 conclusion=success —— 一把 secret 被删 / 过期, 夜跑会【永远静默绿】,
+            # 没有任何灯会亮。手动 / push 触发保留优雅跳过(本地分支、fork 上没 secret 是正常的)。
+            if [ "${{ github.event_name }}" = "schedule" ]; then
+              echo "::error::SUPABASE_URL/KEY not configured on a scheduled run — nothing would sync and the watchdog would still see green. Fix repo secrets."
+              exit 1
+            fi
             echo "::warning::SUPABASE_URL/KEY not configured; skipping sync."
             echo "See .github/workflows/daily-sync.yml header for setup steps."
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -425,22 +432,9 @@ jobs:
           python sync_autowriter_decisions_to_prepublish.py $DRYRUN
 
 
-      - name: positive pool 饱和度检查 (advisory, 不 fail)
-        if: steps.check.outputs.skip != 'true' && always()
-        working-directory: scripts
-        run: |
-          # advisory: 饱和/没测全都不该拖红整轮同步。但【崩了】要看得见 ——
-          # 2026-08-22 渲染循环里的一个 NameError 就是被裸 `|| true` 整个吞掉的,
-          # 而它吞掉的恰好是 v1_8 专门修的那个监控盲点(脚本天天"跑过", 天天没测)。
-          # Python 崩溃的退出码也是 1, 跟本脚本"确实饱和"的 1 撞车, 所以靠脚本
-          # 末尾的哨兵行判定, 不靠退出码。
-          set +e
-          python check_positive_saturation.py 2>&1 | tee /tmp/saturation.log
-          set -e
-          if ! grep -q '^SATURATION_CHECK_DONE rc=' /tmp/saturation.log; then
-            echo "::warning title=positive pool 饱和度检查崩了::脚本没跑到底(没有哨兵行), \
-          上面的 traceback 是真问题 —— 这一步 advisory 不拖红, 但监控现在是瞎的, 去修。"
-          fi
+      # (2026-10-08 D-090 退灯: 「positive pool 饱和度检查」原来在这里。它量的是 items.external_source_id
+      #  那条路, 而那条路没人写(push 没跑过、deskcore 明说不碰), 所以从上线起每晚 rc=2 "无法评估"。
+      #  步骤、脚本、登记册行、CI 冒烟一起摘掉; v1_8 的视图留着不碍事。)
 
       - name: prune 馆员旧缓存 (advisory, 不 fail)
         if: steps.check.outputs.skip != 'true' && always()

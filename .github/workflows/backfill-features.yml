@@ -30,6 +30,10 @@ on:
         description: "只在 note_ids 模式生效, 可空。期望 worker 用的问题库 sha256 前缀(≥8 位; feature_bank.load_bank()['_sha256'])。探针会打出 worker 日志里的 bank=… sha=…, 对不上就停 —— 题库刚升版时 Railway 可能还没部署完, 别拿旧题面烧钱。"
         required: false
         default: ""
+      reannotate:
+        description: "只在 note_ids 模式生效。true = 忽略「跑过」标记, 这几篇在当前题库下整篇重抽、同 (question_id, question_version, extractor, run_tag) 的旧行被覆盖(bank_sha256 跟着换成当前), 旧版本号的行(如 opening_type v1)原样留着。闸二前把旧 sha 下的 361 篇拉到当前快照用(D-090; 配 bank_sha 一起用, 别拿旧题面重抽)。默认 false。"
+        required: false
+        default: "false"
 
 # 同一项目同时只允许一个 backfill 在跑 —— 否则两个 run 会各自快照同一批未抽取笔记、
 # 重复烧 LLM 且非确定性地互相覆盖 essence(codex PR#43 review r3355530533)。
@@ -52,6 +56,7 @@ jobs:
       NOTE_IDS: ${{ github.event.inputs.note_ids }}
       RUN_TAG: ${{ github.event.inputs.run_tag }}
       BANK_SHA: ${{ github.event.inputs.bank_sha }}
+      REANNOTATE: ${{ github.event.inputs.reannotate }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -103,7 +108,8 @@ jobs:
             if [ -n "$BANK_SHA" ]; then
               echo "$BANK_SHA" | grep -Eq '^[0-9a-f]{8,64}$' || { echo "::error::bank_sha '$BANK_SHA' 要是 8–64 位小写十六进制"; exit 1; }
             fi
-            echo "✅ inputs OK (note_ids 模式): $n 篇 · batch=$BATCH · run_tag=$RUN_TAG · bank_sha=${BANK_SHA:-(不查)} · 并发组=$PROJECT"
+            case "$REANNOTATE" in true|false) ;; *) echo "::error::reannotate 只能是 true / false, 收到 '$REANNOTATE'"; exit 1;; esac
+            echo "✅ inputs OK (note_ids 模式): $n 篇 · batch=$BATCH · run_tag=$RUN_TAG · bank_sha=${BANK_SHA:-(不查)} · reannotate=$REANNOTATE · 并发组=$PROJECT"
             exit 0
           fi
           [ -z "$RUN_TAG" ] || [ "$RUN_TAG" = "primary" ] || { echo "::error::run_tag 只在 note_ids 模式生效(整项目回填永远落 primary, count_unannotated_features 也只数 primary), 收到 '$RUN_TAG'"; exit 1; }
@@ -158,7 +164,8 @@ jobs:
             mapfile -t plist < <(printf '%s\n' "${ids[@]}" | grep "^${proj}_rec")
             for ((i=0; i<${#plist[@]}; i+=BATCH)); do
               chunk=("${plist[@]:i:BATCH}")
-              body=$(printf '%s\n' "${chunk[@]}" | jq -R . | jq -sc --arg p "$proj" --argjson n "$BATCH" --arg t "$RUN_TAG" '{project:$p, limit:$n, note_ids:., run_tag:$t}')
+              # reannotate 只在真跑时带(探针是 dry_run, 不需要); worker 把它翻成 --reannotate (app.py 的 flag 闭集)。
+              body=$(printf '%s\n' "${chunk[@]}" | jq -R . | jq -sc --arg p "$proj" --argjson n "$BATCH" --arg t "$RUN_TAG" --argjson r "$([ "$REANNOTATE" = "true" ] && echo true || echo false)" '{project:$p, limit:$n, note_ids:., run_tag:$t} + (if $r then {reannotate:true} else {} end)')
               echo "── $proj · 第 $((i/BATCH+1)) 批 (${#chunk[@]} 篇) · 已发 $sent/$total ──"
               ok=false; code=000
               for attempt in 1 2 3 4 5 6; do

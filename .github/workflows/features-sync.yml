@@ -88,16 +88,21 @@ jobs:
             pip install -r scripts/requirements.txt
           fi
 
-      - name: Check secrets are configured (gracefully skip if not)
+      - name: Check secrets are configured (gracefully skip if not; scheduled runs go red)
         id: check
         run: |
-          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
-            echo "::warning::SUPABASE_URL/KEY not configured; skipping feature extraction."
+          # 定时跑缺 secret 必须红(D-090): 跳过 = 零抽取 + conclusion=success, 看门狗照样绿。
+          # 手动 / push 触发保留优雅跳过。
+          missing=""
+          { [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; } && missing="$missing SUPABASE_URL/KEY"
+          [ -z "$WORKER_URL" ] && missing="$missing WORKER_URL"
+          if [ -n "$missing" ]; then
+            if [ "${{ github.event_name }}" = "schedule" ]; then
+              echo "::error::missing on a scheduled run:$missing — feature extraction would silently do nothing. Fix repo secrets."
+              exit 1
+            fi
+            echo "::warning::not configured:$missing; skipping feature extraction."
             echo "See .github/workflows/daily-sync.yml header for setup steps."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          fi
-          if [ -z "$WORKER_URL" ]; then
-            echo "::warning::WORKER_URL not configured; skipping feature extraction."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
 

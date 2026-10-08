@@ -230,10 +230,9 @@ Sprint 0 的目标是**主链路上线 + 飞轮通道接通**，不是完整三�
 - 支持 scalar (emotional_lever / content_format) 和 array (human_truth_archetype / trend_dependencies)
 - 真正升级 v0.3 时 operator 仍需手动: ① 更新 `notes_v1_2.sql` 的 CHECK 约束 ② 更新 `annotate_essence_pass.py` 的 vocab set; 本脚本只负责机械的数据迁移
 
-**Item 3 · 自反馈循环饱和度监控**
-- View `truth_vault.v_autowriter_positive_pool_saturation` (cross-schema): 每个 aw 项目当前 list_example_items 实际注入的 5 条样本的 emotional_lever 分布 + dominator ratio
-- Script `scripts/check_positive_saturation.py`: 人眼可读输出, ratio ≥ 0.6 标红
-- 接进 `daily-sync.yml` 作为 advisory step (不阻塞 sync)
+**Item 3 · 自反馈循环饱和度监控**（2026-10-08 退灯，D-090）
+- View `truth_vault.v_autowriter_positive_pool_saturation` (cross-schema) 还在，但它量的 `items.external_source_id` 那条路从来没人写，每晚 rc=2「无法评估」
+- `scripts/check_positive_saturation.py` 与 `daily-sync.yml` 里的 advisory step 已摘掉；多样性由写作台 `fingerprint.cap_by_shape` 保
 
 **Item 4 · autowriter 双池 (cross-repo patch 文档)** (`autowriter-migrations/004_dual_positive_pool_patch.md`)
 - 完整描述 autowriter 端要改的 db.py + app.py 改动 (≤30 行 Python), 含建议的 native:TV 比例

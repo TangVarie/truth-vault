@@ -36,7 +36,7 @@ LIBRARIAN_URL / LIBRARIAN_API_KEY 没配), TV 这边夜跑的飞轮状态只印 
 退出码:
     0 = 窗口内没生成(无从判)或 生成了且馆员有流量
     1 = 窗口内有生成、馆员零流量 —— 通道 2 暗着(修在 aw 仓, 见 docs/27)
-⚠️ 和 check_positive_saturation.py 同一个约定: 正常跑完末尾必打一行
+⚠️ 和登记册(docs/29)里其它哨兵灯同一个约定: 正常跑完末尾必打一行
 `LIBRARIAN_TRAFFIC_CHECK_DONE rc=<码>`; daily-sync.yml 靠有没有这一行判定崩溃,
 不靠退出码(Python 崩溃也是 1)。改这个约定要同步改那边的 grep。
 """
@@ -48,7 +48,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 # ⚠️ 故意【不】在模块顶层 import _common(会拖进 supabase / yaml)。report() 是纯函数,
-# CI 在裸环境里直接 import 本模块测它 —— 同 check_positive_saturation.py 的理由。
+# CI 在裸环境里直接 import 本模块测它 —— advisory 步骤崩了没人看见, 渲染路径必须真跑一次。
 
 # 写作台的两个 consumer 值: aw 主路径(librarian_client 填 "autowriter") / deskcore MCP 路径。
 # 只有它们的流量算"写作台来借了"。改 aw 那边的 consumer 值要同步改这里。

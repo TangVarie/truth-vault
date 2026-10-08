@@ -29,7 +29,6 @@ D-053 定过一条：**天天红的 CI 等于没有 CI**。它有一条推论，
 
 | 哨兵 | 脚本 | 在哪跑 | 它答什么问题 | 谁看 · 多久 | 红了谁负责 |
 |---|---|---|---|---|---|
-| `SATURATION_CHECK_DONE` | `scripts/check_positive_saturation.py` | `daily-sync.yml` advisory | 正例池饱和了没 / 有没有测全 | **owner · 每周一次**，随夜跑结果一起扫 | TV 侧自己修（是 TV 的数据口径问题） |
 | `LIBRARIAN_TRAFFIC_CHECK_DONE` | `scripts/check_librarian_traffic.py` | `daily-sync.yml` advisory | 写作台在出稿、馆员却零流量（通道 2 断了） | **owner · 每周一次** | **修在 autowriter 仓**（接线 / env）。TV 这边红了也改不好，所以它 advisory 不拖红 |
 | `ANGLE_LEDGER_CHECK_DONE` | `scripts/check_angle_ledger_leak.py` | `daily-sync.yml` advisory | 发出去的角度有没有走到成稿 | **owner · 每周一次** | **修在 autowriter 仓**（协议 / 使用习惯） |
 
@@ -40,7 +39,7 @@ D-053 定过一条：**天天红的 CI 等于没有 CI**。它有一条推论，
 | `sync-watchdog.yml` | 独立 workflow，每日 23:41 UTC | 昨天的定时任务到底成了没有（站在 job **外面**看） | **owner · 它红了会发邮件**，所以是推送不是轮询 | TV 侧。它是唯一"不靠 job 自己汇报"的灯 |
 | 夜跑用时灯 | `daily-sync.yml` 末尾 | 夜跑用了上限的百分之多少 | **owner · 过 70% 才 `::warning`**，平时不出声 | TV 侧：要么优化步骤，要么提上限（提之前先想清楚为什么） |
 | `/health` 的 `config.pipeline` | deskcore `/health` | 角度漏账比例 | **没人定期看 —— 这是已知缺口。** 现在靠 `ANGLE_LEDGER_CHECK_DONE` 那盏替它值班 | — |
-| `external-corpus.yml` | **JevforCoentent 仓**，独立 workflow，每周一 03:00 UTC | 外部语料这周有没有进 TV 账本（`v_external_reference` 有没有新周的行） | **owner · 每周一看一次**；它红了 GitHub 发邮件（Jev 仓的 Actions 通知） | **修在 Jev 仓**（TikHub 密钥 / UA / 详情解析）。9-28、10-05 两次定时跑连红没人收，10-08 才修——登进来就是为了这件事不再发生 |
+| `external-corpus.yml` | **JevforCoentent 仓**，独立 workflow，每周一 03:07 UTC（10-08 起错开整点） | 外部语料这周有没有进 TV 账本（`v_external_reference` 有没有新周的行） | **owner · 每周一看一次**；它红了 GitHub 发邮件（Jev 仓的 Actions 通知） | **修在 Jev 仓**（TikHub 密钥 / UA / 详情解析）。9-28、10-05 两次定时跑连红没人收，10-08 才修——登进来就是为了这件事不再发生 |
 
 ---
 
@@ -61,3 +60,7 @@ D-053 定过一条：**天天红的 CI 等于没有 CI**。它有一条推论，
 **没人看的灯就该退掉，退掉不丢人。** 把它从登记册删掉、把步骤从 workflow 摘掉，
 在 `DECISIONS.md` 记一句为什么。留着一盏没人看的灯，成本是每天的：它占夜跑时间、
 占日志、占读文档的人的注意力，还会让人误以为"这件事有人在盯"。
+
+已退的灯：正例池饱和度（2026-10-08，D-090；脚本、步骤、CI 冒烟一起删）——它量的那条路
+（`items.external_source_id`）从来没人写，所以从上线起每晚 rc=2「无法评估」，一次也没能回答自己的问题。
+（这里故意不写它的哨兵名和文件名：G3 是按登记册里有没有那个名字判的，写了就等于把一盏退掉的灯又登回去。）

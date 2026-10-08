@@ -462,7 +462,6 @@ SELECT id, name FROM autowriter.projects WHERE name LIKE '%NUC%';
 | 审 `example_label_proposal` 负例候选 | 每月一次 (或等触发) | 在 autowriter Memory Manager UI 里确认 (#8 实施完成后) |
 | 审 essence 标注质量 | 每月一次 | 抽 30 条人工核对, 调词表/prompt; 见 [`docs/06-essence-annotation.md`](docs/06-essence-annotation.md) § "质量保证流程" |
 | 看 `recommend_tier_thresholds.py` 报告 | 每季度一次 | drift > 50% 考虑改 yaml 的 tier_thresholds |
-| 看 `check_positive_saturation.py` 输出 | 每周一次 / cron 自动 | 哪个项目 dominant_lever_ratio ≥ 0.6 就要警惕 |
 
 ---
 
@@ -484,10 +483,9 @@ psql "$PGURI" -c "SELECT * FROM truth_vault.v_flywheel_sync_status;"
 
 # 数据健康度
 psql "$PGURI" -c "SELECT * FROM truth_vault.v_data_health;"
-
-# Positive pool 饱和度 (前提: 通道 2 已经在跑一段时间)
-python scripts/check_positive_saturation.py
 ```
+
+（正例池饱和度那盏灯 2026-10-08 退了，见 DECISIONS D-090；多样性现在由写作台的 `fingerprint.cap_by_shape` 保。）
 
 ### 5.3 每月看什么
 

@@ -255,6 +255,10 @@ def health() -> dict:
             # 特征层 (docs/28, D-070): 没设就跟 essence 同一个模型。
             "feature_model": (os.environ.get("FEATURE_MODEL") or os.environ.get("ESSENCE_MODEL")
                               or "claude-sonnet-4-6 (default)"),
+            # /curate 的子进程读 FLYWHEEL_CURATOR_MODEL (curate_flywheel_lessons.py), 与上面两个
+            # 不是同一个变量; 之前 /health 不报它, 中转站不服务默认模型时 curate 整晚 systemic 红、
+            # 看 /health 却一切正常 (D-090)。
+            "curator_model": os.environ.get("FLYWHEEL_CURATOR_MODEL") or "claude-sonnet-4-6 (default)",
         },
         "running": _running_scripts(),
     }
