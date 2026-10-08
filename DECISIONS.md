@@ -5649,3 +5649,11 @@ main() 调用顺序与 `fetch_pending_baokuan` 选 platform 两条老守卫重�
 
 - 没动 push 侧的 12 个月窗、on_demand 闸；没动书架（通道 2）的判据——它读 `v_flywheel_lesson_cards` 自己的闸（D-066），与本条无关。
 - 没给 `stale_in_ssll` 加 `::warning` 灯；要加先按 docs/29 回答谁看。
+
+### 补记（2026-10-08，#165 合并后 v1_19 已 apply 到生产）
+
+- owner：「合并了，v1_19 你直接 apply 到生产。」用 Supabase MCP `apply_migration` 整份执行，迁移名 `notes_v1_19_sync_status_stale_gated`，与 v1_17 / v1_18 在同一条迁移历史里。
+  apply 前后：列 14 → 16，前 14 列名与顺序不变；`postgres` / `service_role` 的 grant 原样保留（CREATE OR REPLACE 不动 ACL）。
+- 实查：`pending_ssll_sync` 69 → **0**；`stale_in_ssll` **0**；`gated_ssll_sync` **80**——**不是上面写的 69**。80 = 69 篇铺评工单 + 11 篇 synthetic（RIO_phase1 / SPX_phase1），两者不重叠。
+  69 是从老 `pending_ssll_sync` 推出来的，而老 pending 列本来就排 synthetic，那 11 篇从来没进过 pending；`gated_ssll_sync` 按定义把两种被挡的都数。预期值写错了，视图没错。
+  夜跑那行今天的真实预期是 **`(gated 80, stale 0)`**；`retract summary` 预期仍是 0 / 0。
