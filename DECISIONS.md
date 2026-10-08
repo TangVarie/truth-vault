@@ -5541,3 +5541,39 @@ owner：「你来做，明天先给我看名单再删」→ 看过名单后回�
   250 / 250 / 250 / 250 / 210，合计 1,210。评论总数 10,779 → 9,569，9/26 新写的 1,701 条都在。
 - 删后复跑同一套 dry-run：待插入 0（明天同步不会把它们插回来）；源文本仍在的笔记上 `parser_change` 0。
 - 不在本次范围：源里已找不到的 1,051 条（`source_removed`，OKMAN 768 / LNKT 244 为主）照旧只报不删，要不要处理由 owner 另定。
+
+## D-086 · 通道 1 的回收不认「tier 降档」：OKMAN 08-18 误标推进 ssll 的 284 条处方药参照躺了 7 周，一次性清掉 285 行（2026-10-08）
+
+来源：`data-analysis/three-repo-status-2026-10-08.md` §3 P0。owner：「P0 那条你来清，先备份再删。」
+
+### 查到什么
+
+- `public.reference_samples` 来自 TV 的 591 行里，**285 行**对应的笔记现在是 趴 230 / 风控 54 / 预备 1（OKMAN_phase1 284 · TUGE_phase1 1），`quality_score` 100 / 200、`category` 处方药。
+- `audit_log` 记得清楚（OKMAN、`synced_to_ssll_at` 非空的 321 篇）：**08-18** 飞书状态列整批翻成 爆/大爆（趴→爆 188、风控→爆 50、趴→大爆 36、数据异常→爆 7…），当晚 daily-sync 按「状态字段」全部推进 ssll；**08-19** 改回（爆→趴 197、爆→风控 48、大爆→趴 32…）。TV 的 tier 跟着飞书改对了，ssll 的样本没人撤。
+- 为什么 7 周没人看见：`retract_stale_synthetic_from_ssll` 的候选只取 `tier IN (爆, 大爆)` 再判 synthetic / 铺评工单（D-068 的对称口径），**降档出 爆/大爆 的笔记根本不在候选里**；`v_flywheel_sync_status` 只数「现在是 爆/大爆 且已同步」，OKMAN 一直显示 37/0。两道灯都照不到「推出去之后降档」。
+
+### 做了什么（生产，经 Supabase MCP，06:28–06:32 UTC）
+
+1. **先备份**，两张表都放 `truth_vault`（RLS 开、无 policy，与本 schema 其余表同姿态；不放 `public` 是因为 ssll 那边 RLS 关着、anon 能读）：
+   - `truth_vault.reference_samples_backup_tv_stale_20261008`：285 行 `select r.*`，列序与 `public.reference_samples` 逐列相同（核过），回滚 SQL 写在表注释里；
+   - `truth_vault.notes_ssll_marker_backup_20261008`：这 285 篇的 `synced_to_ssll_at` / `synced_ssll_reference_sample_id` 原值。
+   删前核过：备份 id 唯一 285、与 TV 标记逐条对上 285/285、`reference_samples` 无外键引用、无触发器、TV 侧没有孤儿标记（标记非空且 tier 不合格的恰好也是 285）。
+2. **删 + 清标记在同一条语句里按行耦合**：`delete … returning` 进 CTE，`update notes` 只清「刚被删的那一行」对应的标记（`synced_ssll_reference_sample_id = 被删的 id`），删不掉就不清。删除谓词里再核一次 tier 不合格。分三批 60 / 120 / 105 = 285。
+   ⚠️ 第一版是一个带行数守卫的 `DO $$ … $$` 块（三表 `DELETE … USING` 一次删 285），MCP 60 秒超时、整块没提交（事后核：行数未变、无残留会话）。改成分批 CTE 后每批几秒。**以后经 MCP 做生产写操作，别用一个大 DO 块，用可重跑的幂等批。**
+3. 删后核验：来自 TV 的样本 591 → **306**（爆 217 / 大爆 87 / 参考 2），总数 608 → 323（ssll 原生 17 行没动）；stale 0；TV 侧标记不合格 0、悬空 0、半清 0；`audit_log` 记了 285 条 `synced_to_ssll_at` 变更；`v_flywheel_sync_status` OKMAN 仍 37/37/0（它本来就看不见这批）；两张备份表 285 / 285 完好。
+
+### 反证 / 验证
+
+- 删除谓词里要求「备份里有 **且** 此刻笔记仍不合格」：若夜跑在中途把某篇改回 爆，那一行不会被删。实际 285 全删，说明中途没变。
+- 删与清标记按行耦合而不是两条独立 UPDATE：任何一批 `deleted ≠ marker_cleared` 都会在返回值里看见；三批都相等。
+
+### 挡不住什么
+
+- **这是一次性清理，不是修法。** 同样的事明天再发生一次（飞书整批误标 → 当晚推送 → 第二天改回），ssll 里照样留一批。修法是把回收判据扩成「已同步（标记非空或 ssll 有行）但现在不满足 push 判据的一律撤」，候选不再限 `tier IN (爆, 大爆)`——这改的是通道 1 的闸，按 D-046 ~ D-059 的规矩要带 CI 守卫 + 反证，另开 PR。
+- `v_flywheel_sync_status` 仍看不见「推出去后降档」；`pending_ssll_sync` 也仍把被闸挡掉的（TUGE 56 篇铺评工单）算成待推。两列都该拆，同上另开。
+- 备份表没有过期策略。回滚窗口过了（建议两周）就 drop，drop 之前先确认三省六部那边没人反映参照池变薄。
+- 三省六部仓不在本次范围：它那边有没有把这 284 条缓存进别的表（reference packs、prompt 快照），这里看不见。
+
+### 没做
+
+- 没改 `sync_truth_vault_baokuan_to_sanshengliubu.py`；没改视图；没碰 TUGE 的 56 篇铺评工单（它们是正确地没推）。
