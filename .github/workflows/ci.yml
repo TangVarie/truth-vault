@@ -59,6 +59,7 @@ jobs:
             scripts/check_ssll_retract.py \
             scripts/check_librarian_shortlist.py \
             scripts/check_ingest_guards.py \
+            scripts/check_comments_sync_cost.py \
             librarian/__init__.py \
             librarian/clients.py \
             librarian/core.py \
@@ -3650,6 +3651,9 @@ jobs:
       - name: 采集三道闸 —— 未来 publish_time 夹掉 / 状态格清空写回默认 + 没映上打旗 / 整批 tier 翻转 upsert 前挡住 (D-091)
         working-directory: scripts
         run: python check_ingest_guards.py   # §1 未来日期 · §2/§2b 清空与没映上 · §3 翻转计划 · §4 挡只剥翻转篇 · §5 读库分批 · §6/§7 接线
+      - name: 评论步 —— 每项目读一次已有评论 / 夜跑跳过 on_demand / 对账失败非零退出 (D-092)
+        working-directory: scripts
+        run: python check_comments_sync_cost.py   # §1 一次读零写 · §2 只写变化 · §3 on_demand 跳过 · §4 对账失败 rc=1 · §5 老调用形状不变
       - name: sanshengliubu sync shape self-check (build_reference_sample ↔ preflight ↔ ssll v2 schema)
         working-directory: scripts
         run: |

@@ -5790,3 +5790,24 @@ python job 里 import 馆员的 8 步（TV-03 / TV-05 / TV-06 / 守卫 6 / put_c
 - 翻转闸看的是"一晚翻多少"，不看"翻得对不对"：一晚 14 篇误标照样进去（D-087 隔晚回收兜底）。
 - 清空判据依赖 `seen_cols`：状态列整列为空的项目（一行都不返回这列）不会被写回默认——那种项目本来也没有 tier。
 - 没动评论步（A-07）和 `synthetic` 的清除路径；没给未来 `publish_time` 加视图侧的 `<= now()`（置空之后视图自然看不到它）。
+
+## D-092 · 评论步：已入库评论每项目读一次、夜跑跳过 on_demand、对账失败非零退出（2026-10-08）
+
+来源：`data-analysis/architecture-audit-2026-10-08.md` 的 A-07。评论步每晚对所有带评论的笔记全量重解析：每篇先 `existing_comments` 读一遍已有评论（`fetch_all_pages` 以空页终止，≥2 次 HTTP/篇），17 个 mapping 全在裸循环里、on_demand 项目不跳、「源被清空」对账失败仍 `return 0`。实测约 1 s/篇，整轮 44 分钟里它占 2.5–3k 篇的量，随库线性涨；最重的随贴评论块（NUC / NRT / HXZ 的素人评论）恰恰都在 on_demand 项目里，内容从不变。守卫在 `scripts/check_comments_sync_cost.py`（D-075）。
+
+### 定了什么
+
+1. **已入库评论每项目读一次。** 新函数 `fetch_project_comments(sb, project_id)` 一次翻页读完整个项目的评论、按 `note_id` 分组、每组按 `comment_order` 稳定排序（口径同 `existing_comments`）；`write_comments` 加可选参数 `existing`，主循环把分好的那一份传进去，逐篇在内存里按 `(role, content)` 配对。不传 `existing` 的老调用（ci COR-013 那步、`check_comment_parser`）行为不变。末尾「源被清空」对账直接用这份分组的键，不再查第二遍。写的部分一字不动：仍按内容配对、复用旧 id、只在位置变了时更新 `comment_order`、新行插入、消失只报不删。
+2. **夜跑跳过 on_demand 项目。** 判据与入库步同一份：`skip_on_demand_on_cron(mapping.sync_config.sync_interval, TV_SCHEDULED_RUN == "true")`，在连库之前判；手动 Run workflow / 本地跑不跳。D-047 的闸以前只在入库 / essence / curate 三步生效，评论步是漏网的第四步。
+3. **对账失败非零退出。** `notes_source_cleared = -1`（对账没算成）→ `return 1`。它是"源被清空的 note 全部隐身"这种最该被看见的情况唯一的出口；以前 `return 0`，daily-sync 那步绿、看门狗绿。daily-sync 的评论步本来就会在脚本非零时 `fail_count++` 并红（审计 §1.1 地图里那条）。
+
+### 验证
+
+- `check_comments_sync_cost.py` 五节全过（真的驱动 `main()`，假 PostgREST 记下每次 select / insert / update）：§1 三篇都已入库 → `comments` 表只读 1 次（按 `project_id`）、零写；§2 头部插一条 → 1 次读、插 1 条、重排 2 条；§3 定时跑 + on_demand 跳过且一次库都不碰，手动 / daily 照跑；§4 对账失败 rc=1、成功 rc=0；§5 老调用形状不变。
+- 反证 battery 四条全红：① 主循环不传 `existing` → §1 读了 4 次；② 去掉跳过 → §3；③ 对账失败仍 `return 0` → §4；④ 项目级读丢了 `comment_order` 排序 → §1 源没变却要写（配对顺序乱了）。
+- ci.yml 里 COR-013 那步（驱动 `write_comments` 的假件）本地重放绿；`check_comment_parser` / `check_comment_maintained` 照过；`check_system_map` 六条过。
+
+### 挡不住什么
+
+- 没变的笔记仍会被解析一遍（CPU，不是 HTTP）；真正的"按内容哈希跳过"要在 `notes` 上存一列哈希，这次没加列。
+- `collect_cleared_vanished` 对"源被清空"的那几篇仍按篇读（它们很少）。

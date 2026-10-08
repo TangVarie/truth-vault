@@ -81,6 +81,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
 from typing import Iterator, Optional
@@ -88,7 +89,9 @@ from typing import Iterator, Optional
 from _common import (
     fetch_all_pages,
     get_supabase_client,
+    load_mapping,
     setup_logger,
+    skip_on_demand_on_cron,
     _iso_now,
 )
 
@@ -256,6 +259,30 @@ def existing_comments(sb, note_id: str) -> list[dict]:
     return rows
 
 
+def fetch_project_comments(sb, project_id: str) -> dict[str, list[dict]]:
+    """整个项目已入库的评论, 按 note_id 分组, 每组按 comment_order 稳定排序(同 existing_comments 的口径)。
+
+    为什么要有它(2026-10-08 审计 A-07, D-092): 以前 write_comments 对**每一篇**调一次 existing_comments ——
+    fetch_all_pages 以空页终止, 一篇至少 2 次 HTTP, 再加重排 / 插入; 17 个 mapping 全在循环里, 每晚
+    2.5–3k 篇、约 1 s 一篇, 随库线性涨。改成每项目读一次(几页), 逐篇在内存里配对。
+    翻页同样靠 fetch_all_pages: 一个项目的评论轻松过千, 裸 execute 会被 db-max-rows 钳到 1000。
+    """
+    q = (
+        sb.schema("truth_vault")
+        .table("comments")
+        .select("comment_id, note_id, content, comment_role, comment_order")
+        .eq("project_id", project_id)
+    )
+    by_note: dict[str, list[dict]] = {}
+    for r in fetch_all_pages(q, order_by="comment_id"):
+        by_note.setdefault(r["note_id"], []).append(r)
+    for rows in by_note.values():
+        rows.sort(key=lambda r: (r.get("comment_order") is None,
+                                 r.get("comment_order") or 0,
+                                 r.get("comment_id") or ""))
+    return by_note
+
+
 def _content_key(role: str, content: str) -> tuple[str, str]:
     """配对用的键。两端空白归一 —— 运营重新粘贴时行尾空格经常会变。"""
     return ((role or "").strip(), (content or "").strip())
@@ -302,11 +329,15 @@ def write_comments(
     parsed: list[tuple[str, str]],
     dry_run: bool,
     vanished_log: Optional[list[dict]] = None,
+    existing: Optional[list[dict]] = None,
 ) -> int:
     """Insert flat (no parent) comment rows. Returns count actually written.
 
     vanished_log (D-085): 给了就把本条 note「库里有、源里找不到」的行逐条追加进去 (含 kind:
     parser_change = 按新切法会被切开 / 剥前缀的旧行, source_removed = 其余)。只收集, 不删。
+
+    existing (D-092): 这条 note 已入库的评论(fetch_project_comments 按项目读一次之后分给每篇的那一份)。
+    不传就按 note 读一次 —— 老调用形状(ci COR-013 那步 / check_comment_parser)不变。
 
     ── 为什么按内容配对而不是按位置(跨库审计 2026-08-24 COR-013)──────────
 
@@ -346,7 +377,7 @@ def write_comments(
     #    新增: 已经同步过的 note 会报一堆并不会发生的 insert, 而重排和"从源里消失"
     #    这两份新增的报告在 dry-run 下**永远为空**。预览失真比没有预览更坏 ——
     #    人会照着它下判断。(codex review)
-    rows = existing_comments(sb, note_id)
+    rows = existing if existing is not None else existing_comments(sb, note_id)
 
     # (role, content) → 还没被认领的已有 id, 按 comment_order 排。同一段内容
     # 重复出现时先来先认领, 顺序稳定。
@@ -484,12 +515,22 @@ def main() -> int:
                         help="把「库里有、源里找不到」的评论逐条写成 jsonl (D-085 一次性清理用; 只写文件, 不删库)")
     args = parser.parse_args()
 
+    # ── 夜跑跳过 on_demand 项目 (D-047 的闸以前只在入库 / essence / curate 三步生效; 评论步是裸循环, 审计 A-07, D-092)
+    # 最重的随贴评论块(NUC / NRT / HXZ 的素人评论)恰恰都在 on_demand 项目里, 内容从不变, 每晚全量重解析一遍。
+    # 判据与 sync_feishu 同一份: TV_SCHEDULED_RUN=true 且 sync_interval=on_demand 才跳; 手动 / 本地照跑。
+    sync_interval = ((load_mapping(args.project_id).get("sync_config") or {}).get("sync_interval"))
+    if skip_on_demand_on_cron(sync_interval, os.environ.get("TV_SCHEDULED_RUN") == "true"):
+        logger.info("%s 是 on_demand 项目, 定时跑跳过评论步(手动 Run workflow / 本地跑不跳)", args.project_id)
+        return 0
+
     sb = get_supabase_client()
     notes = fetch_notes_with_comments_text(sb, args.project_id)
     if args.limit:
         notes = notes[: args.limit]
     logger.info("Found %d notes with raw_extra._comment_text(_persona) for %s",
                 len(notes), args.project_id)
+    # 已入库评论每项目读一次、按 note 分组, 逐篇在内存里配对 (D-092; 以前每篇读一次, ≥2 次 HTTP/篇)。
+    by_note = fetch_project_comments(sb, args.project_id)
 
     stats = {"notes_processed": 0, "comments_written": 0, "skipped_empty": 0,
              "notes_source_cleared": 0, "vanished_parser_change": 0, "vanished_other": 0}
@@ -509,7 +550,7 @@ def main() -> int:
         covered.add(note["note_id"])
         written = write_comments(
             sb, note["note_id"], note["project_id"], parsed, args.dry_run,
-            vanished_log=vanished_log,
+            vanished_log=vanished_log, existing=by_note.get(note["note_id"], []),
         )
         stats["notes_processed"] += 1
         stats["comments_written"] += written
@@ -535,13 +576,8 @@ def main() -> int:
                     "--vanished-out 的名单里也就没有整条被清空的 note")
     else:
         try:
-            q = (
-                sb.schema("truth_vault")
-                .table("comments")
-                .select("note_id")
-                .eq("project_id", args.project_id)
-            )
-            with_rows = {r["note_id"] for r in fetch_all_pages(q, order_by="note_id")}
+            # 哪些 note 库里有评论: 开头那次项目级读已经拿到了, 不再查第二遍 (D-092)
+            with_rows = set(by_note)
             cleared = sorted(with_rows - covered)
             collect_cleared_vanished(sb, cleared, unparseable, vanished_log)
             stats["notes_source_cleared"] = len(cleared)
@@ -570,7 +606,9 @@ def main() -> int:
         logger.info("vanished 名单 %d 行 → %s", len(vanished_log), args.vanished_out)
 
     logger.info("Done: %s", json.dumps(stats, ensure_ascii=False))
-    return 0
+    # 对账没算成(-1)要非零: 它是"源被清空的 note 全部隐身"这种最该被看见的情况唯一的出口,
+    # 以前 return 0 → daily-sync 那步绿、看门狗绿, 对账挂了没有任何人知道 (审计 A-07, D-092)。
+    return 0 if stats["notes_source_cleared"] >= 0 else 1
 
 
 if __name__ == "__main__":

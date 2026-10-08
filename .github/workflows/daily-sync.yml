@@ -165,6 +165,8 @@ jobs:
         if: steps.check.outputs.skip != 'true'
         working-directory: scripts
         run: |
+          # D-092: 脚本自己按 TV_SCHEDULED_RUN + mapping 的 sync_interval 跳过 on_demand 项目(与入库步同一份判据),
+          # 已入库评论每项目读一次而不是每篇读一次, 「源被清空」对账失败非零退出 —— 这一步因此会红。
           DRYRUN=""
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRYRUN="--dry-run"
           fail_count=0
