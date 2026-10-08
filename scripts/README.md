@@ -111,6 +111,7 @@ CI 和 daily-sync workflow 都优先读 `.lock`; `.txt` 仅作为 "high-level in
 #   - schemas/notes_v1_17_judge_subjects.sql         → 判定账本 subject_type 加 comment / ssll_sample / external_note + prob 统一为「所选答案的概率」
 #         (改的是 v1_13 建的表, 必须在 v1_13 之后 —— 不是 v1_16 之后; judge 仓提供; D-085)
 #   - schemas/notes_v1_18_external_notes.sql         → 外部笔记表 external_notes (TikHub) + 参考分布视图 v_external_reference (必须在 v1_17 之后; D-085)
+#   - schemas/notes_v1_19_sync_status_stale_gated.sql → v_flywheel_sync_status: pending 排铺评工单 + 新列 gated_ssll_sync / stale_in_ssll (视图, 链尾; D-087)
 #   - autowriter-migrations/001_create_autowriter_schema.sql → 把 autowriter 表从 public 迁到 autowriter schema
 #   - autowriter-migrations/002_add_external_source.sql     → items 加 (external_source, external_source_id) 列
 #         + per-user partial UNIQUE (user_id, external_source, external_source_id) WHERE external_source IS NOT NULL.

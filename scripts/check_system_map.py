@@ -42,7 +42,7 @@ FEATURES_WF = ROOT / ".github" / "workflows" / "features-sync.yml"
 # ⚠️ 这个数【只许往下调】。要加新守卫就写成 scripts/ 里的脚本, ci.yml 里只留调用
 #    —— 那样不增加 heredoc 块数, 这条闸不会挡你。
 # 2026-09-24 (D-085): 78 → 76, 评论解析单测与特征层编排自检两块挪进 scripts/check_*.py。
-CI_HEREDOC_CAP = 76
+CI_HEREDOC_CAP = 75
 HEREDOC = "<<'PY'"
 
 
