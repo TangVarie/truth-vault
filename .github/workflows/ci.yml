@@ -56,6 +56,7 @@ jobs:
             scripts/check_feature_orchestration.py \
             scripts/check_comment_parser.py \
             scripts/check_gate1_ingest.py \
+            scripts/check_ssll_retract.py \
             librarian/__init__.py \
             librarian/clients.py \
             librarian/core.py \
@@ -3638,45 +3639,9 @@ jobs:
           print("  ✓ blank + '手动精修' feedback correctly filtered out")
           print("\nfeedback isinstance guard: passed")
           PY
-      - name: 通道 1 挡「铺评工单」爆贴, push 与回收共用一份判据 (D-068, 与书架 D-066 对称)
+      - name: 通道 1 push 与回收同一份判据, 回收认 tier 降档 / 退回未确认 / 指标不可信 (D-068 / D-087)
         working-directory: scripts
-        run: |
-          python - <<'PY'
-          # 断行为不断源码 (D-051): 假 PostgREST 链 + 打桩 fetch_all_pages, 真的走 fetch_pending_baokuan
-          # 和 retract_stale_synthetic_from_ssll(dry_run) 两个函数。
-          #   push 侧必须放行: clean / 只有起量后干预 / 铺评工单+参考 / synthetic+参考 / flags 没 routes 键
-          #   push 侧必须挡:   铺评工单+爆 / 两路都有+大爆 / synthetic+爆
-          #   回收侧候选 = push 侧挡的那三条 (对称: 已推错的撤回)
-          # 反证 (改坏之后必须变红): 去掉 metric_tier_untrustworthy_reason 里 routes 那两行 →
-          #   ticket_bao / both_dabao 从 push 里冒出来, 回收候选从 3 变 1。
-          import sync_truth_vault_baokuan_to_sanshengliubu as s
-          import sync_feishu_notes_to_truth_vault as engine
-          assert s._CM_ROUTE_TICKET == engine._CM_ROUTE_TICKET, "通道 1 与引擎的 route 字面量分叉了"
-
-          class Q:  # 假 PostgREST 查询链: 任何方法都返回自己
-              def __getattr__(self, name):
-                  return lambda *a, **k: self
-
-          rows = [
-              dict(note_id="clean",      tier="爆",   data_quality_flags=None),
-              dict(note_id="emptyflags", tier="爆",   data_quality_flags={"comment_maintained": False}),
-              dict(note_id="boost_bao",  tier="爆",   data_quality_flags={"comment_maintained_routes": ["起量后干预"]}),
-              dict(note_id="ticket_bao", tier="爆",   data_quality_flags={"comment_maintained": True, "comment_maintained_routes": ["铺评工单"]}),
-              dict(note_id="both_dabao", tier="大爆", data_quality_flags={"comment_maintained_routes": ["起量后干预", "铺评工单"]}),
-              dict(note_id="synth_bao",  tier="爆",   data_quality_flags={"synthetic": True}),
-              dict(note_id="ticket_ref", tier="参考", data_quality_flags={"comment_maintained_routes": ["铺评工单"]}),
-              dict(note_id="synth_ref",  tier="参考", data_quality_flags={"synthetic": True}),
-          ]
-          s.fetch_all_pages = lambda q, order_by=None: [dict(r) for r in rows]
-          got = sorted(r["note_id"] for r in s.fetch_pending_baokuan(Q()))
-          want = sorted(["clean", "emptyflags", "boost_bao", "ticket_ref", "synth_ref"])
-          assert got == want, f"push 侧判据不对: 期望 {want} 实得 {got}"
-
-          s.existing_ssll_sample_id = lambda sb, note_id: f"sid-{note_id}"
-          n = s.retract_stale_synthetic_from_ssll(Q(), dry_run=True)
-          assert n == 3, f"回收候选应为 ticket_bao / both_dabao / synth_bao 三条, 实得 {n}"
-          print("✓ D-068: 通道 1 push 挡 铺评工单/synthetic 的 爆/大爆, 参考与起量后干预放行; 回收对称 (3 条)")
-          PY
+        run: python check_ssll_retract.py   # 原 D-068 八条边界行逐字保留在 §1; D-087 的 B 路 / 分批 / 对称在 §2–§5 (D-075: 挪进 scripts/)
       - name: sanshengliubu sync shape self-check (build_reference_sample ↔ preflight ↔ ssll v2 schema)
         working-directory: scripts
         run: |
@@ -7276,6 +7241,33 @@ jobs:
           [ "$GOT" = "$WANT" ] || { echo "❌ v_external_reference 分组不对。期望 [$WANT] 实得 [$GOT]"; exit 1; }
           psql -v ON_ERROR_STOP=1 -c "DELETE FROM truth_vault.note_feature_answers WHERE subject_id IN ('CI_X1','CI_X2','CI_X3','CI_X4','CI_C1','r:c:g:1'); DELETE FROM truth_vault.external_notes WHERE note_id LIKE 'CI_X%';"
           echo "✓ v1.17/v1.18: comment / ssll_sample / external_note 可写, 闭集外拒; 参考分布按品类分组"
+      - name: Apply v1.19 sync_status stale / gated (+ idempotency)
+        # CREATE OR REPLACE VIEW, 既有列集与顺序不变、末尾追加两列; 链尾。两遍验幂等 (D-087)。
+        run: |
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_19_sync_status_stale_gated.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_19_sync_status_stale_gated.sql
+      - name: Sanity-check v1.19 (pending 不数被闸挡的; gated / stale 各数各的; 变老不算 stale)
+        # 七篇: 推过后改回 趴 / 推过后判成铺评工单 → stale 2; 未推的铺评工单 + synthetic → gated 2 (不进 pending);
+        #       干净未推 → pending 1; 推过且仍合格 → synced; 两年前推过、仍是爆 → synced 但【不算 stale】(变老 ≠ 推错, 同回收口径)。
+        # 反证 (2026-10-08 本地实跑): pending 去掉「排铺评工单」→ 1 变 2, 红; stale 加上 publish_time 判据 → 2 变 3, 红。
+        #   ⚠️ 老那篇必须是【推过的】(synced_to_ssll_at 非空), 否则 stale 的 publish_time 反证测不到 —— 第一版就是这么漏的。
+        run: |
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          INSERT INTO truth_vault.projects (project_id, brand, product, category) VALUES ('CI_V19', 'b', 'p', '保健品');
+          INSERT INTO truth_vault.notes (note_id, project_id, raw_content, tier, tier_source, publish_time, synced_to_ssll_at, data_quality_flags) VALUES
+            ('CI_V19_stale',   'CI_V19', 'c', '趴',   '状态字段', now(), now(), NULL),
+            ('CI_V19_stale2',  'CI_V19', 'c', '爆',   '状态字段', now(), now(), '{"comment_maintained_routes": ["铺评工单"]}'),
+            ('CI_V19_gated',   'CI_V19', 'c', '爆',   '状态字段', now(), NULL,  '{"comment_maintained_routes": ["铺评工单"]}'),
+            ('CI_V19_gated2',  'CI_V19', 'c', '大爆', '状态字段', now(), NULL,  '{"synthetic": true}'),
+            ('CI_V19_pending', 'CI_V19', 'c', '爆',   '状态字段', now(), NULL,  '{"comment_maintained_routes": ["起量后干预"]}'),
+            ('CI_V19_synced',  'CI_V19', 'c', '爆',   '状态字段', now(), now(), NULL),
+            ('CI_V19_old',     'CI_V19', 'c', '爆',   '状态字段', now() - interval '2 years', now(), NULL);
+          SQL
+          GOT=$(psql -v ON_ERROR_STOP=1 -tA -c "SELECT total_baokuan||'/'||synced_to_ssll||'/'||pending_ssll_sync||'/'||gated_ssll_sync||'/'||stale_in_ssll FROM truth_vault.v_flywheel_sync_status WHERE project_id='CI_V19'")
+          WANT="6/3/1/2/2"
+          [ "$GOT" = "$WANT" ] || { echo "❌ v1.19 口径不对 (total/synced/pending/gated/stale)。期望 [$WANT] 实得 [$GOT]"; exit 1; }
+          psql -v ON_ERROR_STOP=1 -c "DELETE FROM truth_vault.notes WHERE project_id='CI_V19'; DELETE FROM truth_vault.projects WHERE project_id='CI_V19';"
+          echo "✓ v1.19: pending 只数真会推的 (1), gated 2, stale 2, 变老的爆不算 stale"
       - name: Apply security revoke (anon/authenticated write on public.* ) (+ idempotency)
         # 撤 anon/authenticated 对 5 张 public 表的写权限(读保留,不开 RLS)。
         # guarded:表/角色不存在则跳过 → 裸 PG / CI 为 no-op。REVOKE 幂等,两遍验。

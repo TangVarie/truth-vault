@@ -25,6 +25,11 @@ public.reference_samples（sanshengliubu 保持在 public schema，D-024）。
           可以把 fallback 路径删掉。
     重跑只会处理新出现的爆款。
 
+自愈回收 (每次跑都先做, 不受 on_demand 闸管):
+    已推进 ssll 但【现在】不满足 push 判据的样本会被撤回 (ssll 行按 id 删, TV 两列标记清空):
+    tier 降档出 爆/大爆/参考、tier_source 退回 数值推断/NULL、爆/大爆 指标不可信 (synthetic / 铺评工单)。
+    判据只有一份 ssll_eligibility_reason(), 推什么撤什么对称 (D-068 / D-087)。
+
 环境变量:
     SUPABASE_URL
     SUPABASE_SERVICE_ROLE_KEY       (必须用 service_role，绕过 RLS)
@@ -150,11 +155,12 @@ def fetch_pending_baokuan(
     if project_filter:
         q = q.eq("project_id", project_filter)
     rows = fetch_all_pages(q, order_by="note_id")
-    # 指标不可信的 爆/大爆 不进 ssll —— 判据在 metric_tier_untrustworthy_reason(), push 和
-    # retract 共用一份 (两路: synthetic 伪爆贴 / 铺评工单, 见该函数 docstring)。
+    # push 侧的最后一道 = ssll_eligibility_reason(): tier / tier_source / 指标可信三件事一份判据,
+    # 回收侧 (retract_stale_synthetic_from_ssll) 用的是同一个函数 —— 推什么、撤什么对称 (D-068 / D-087)。
+    # 上面的 PostgREST 过滤已经保证 tier / tier_source, 这里真正起作用的是指标可信那一路;
     # 仍在 Python 过滤而非 PostgREST: JSONB ->>'synthetic' 为 NULL (绝大多数正常行)
     # 时 neq.true 会把 NULL 也滤掉 (NULL<>'true'=NULL=不通过), Python 端显式判最稳.
-    return [r for r in rows if metric_tier_untrustworthy_reason(r) is None]
+    return [r for r in rows if ssll_eligibility_reason(r) is None]
 
 
 def drop_on_demand_projects(
@@ -166,7 +172,8 @@ def drop_on_demand_projects(
     D-047 的第三张嘴, 也是【唯一跨库】的那张: 入库 / essence / curate 都在 truth_vault
     自己家里, 而这一步把内容写进另一个 Supabase 的 public.reference_samples ——
     三生六部检索池, 直接喂写作引擎。一旦推过去, TV 这边再改 mapping 也追不回来
-    (只有 synthetic 那条自愈路径能回收, 见 retract_stale_synthetic_from_ssll)。
+    (只有自愈回收那条路能撤 —— 它只认资格 (tier / tier_source / 指标可信, D-087), 不认 mapping,
+    见 retract_stale_synthetic_from_ssll)。
 
     为什么之前漏了: 这一步在 daily-sync.yml 里【根本没有项目循环】—— 一句
     `python sync_truth_vault_baokuan_to_sanshengliubu.py` 全局跑, 而 fetch_pending_baokuan
@@ -263,42 +270,155 @@ def metric_tier_untrustworthy_reason(row: dict[str, Any]) -> str | None:
     return None
 
 
+# 通道 1 认的 tier。与 fetch_pending_baokuan 的 .in_("tier", …) 和 v_flywheel_sync_status (v1_19) 同一份。
+SSLL_ELIGIBLE_TIERS: tuple[str, ...] = ("爆", "大爆", "参考")
+
+# PostgREST 的 .in_() 走 URL, 边缘按整个请求头 ≈26 KB 打 400 (D-080); 列表来自行数的必须分批 ≤200。
+# note_id 形如 `OKMAN_phase1_recXXXXXXXXXXX` (~30 字节), 100 一批 ≈ 3 KB, 离线八倍余量。
+_IN_LIST_CHUNK = 100
+
+
+def ssll_eligibility_reason(row: dict[str, Any]) -> str | None:
+    """这篇笔记【现在】有没有资格待在 ssll 的参考池里。有资格返回 None, 没资格返回原因。
+
+    push (fetch_pending_baokuan) 和回收 (retract_stale_synthetic_from_ssll) 共用这一份 —— 推什么、
+    撤什么必须对称 (D-068 的原则, D-087 补全)。三件事, 按先后:
+
+      "tier_demoted"   tier 不在 爆/大爆/参考 (趴 / 风控 / 预备 / 评估中 / NULL …)。OKMAN 08-18 那次
+                       飞书整批误标 → 当晚推送 → 次日改回, TV 的 tier 对了、ssll 的样本没人撤 (D-086)。
+      "tier_source"    tier_source 退回 数值推断 或 NULL —— push 侧 .neq('数值推断') 本来就连 NULL 一起排
+                       (SQL `<>` 对 NULL 不通过), 回收同口径。
+      synthetic / 铺评工单   指标不可信的 爆/大爆 (metric_tier_untrustworthy_reason, 参考放行)。
+
+    【不】看 publish_time: 12 个月窗挡的是"别把过气审美【新】推进去", 推进去之后变老不是推错,
+    ssll 检索侧自己做 surface 衰减 (docs/00 §2.2)。按它撤会让参考池随日历自己变薄。
+    【不】看 sync_interval: on_demand 闸挡的是"往外推", 不是"往回收" (drop_on_demand_projects docstring)。
+    """
+    if row.get("tier") not in SSLL_ELIGIBLE_TIERS:
+        return "tier_demoted"
+    if row.get("tier_source") in (None, "数值推断"):
+        return "tier_source"
+    return metric_tier_untrustworthy_reason(row)
+
+
 def retract_stale_synthetic_from_ssll(
     sb,
     project_filter: str | None = None,
     dry_run: bool = False,
 ) -> int:
-    """自愈回收:把【现在指标不可信的 爆/大爆】(synthetic 或 铺评工单) 却仍有 ssll 样本/同步标记的, 从 ssll 撤回。
+    """自愈回收: 把【已经推进 ssll、但现在不满足 push 判据】的样本从 ssll 撤回, 并清 TV 侧同步标记。
 
-    函数名保留 "synthetic" 字样: CI 守卫和 main() 的调用顺序断言都钉着这个名字; 语义自 D-068
-    起扩到 metric_tier_untrustworthy_reason() 的两路。
+    函数名保留 "synthetic" 字样: CI 守卫和 main() 的调用顺序断言都钉着这个名字; 语义 D-068 扩到
+    metric_tier_untrustworthy_reason() 的两路, D-087 扩到 ssll_eligibility_reason() 的全部三件事。
 
-    为什么需要:synthetic 标记可能在【同步之后】才打上 —— 运营事后在飞书把「笔记状态」标
-    「关注」(WTG 式), 或在【流量状态】写「伪爆贴」(RIO 式), 而该帖此前已作为"真爆款"同步进 ssll。
-    push 侧 `fetch_pending_baokuan` 的 synthetic 过滤只挡【新】同步, 不回收旧的 —— 旧的会以
-    高权重停留在 ssll `reference_samples`, 污染 vibe 仿写。本函数与 push 过滤【对称】
-    (`synthetic AND tier∈(爆,大爆)` 才撤;参考放行、不动), 每次 sync 跑一遍即自愈。
+    两条路, 候选从两头取, 判据只有一份 (ssll_eligibility_reason):
 
-    候选 = synthetic 爆/大爆【全部】(不只看 synced_to_ssll_at)—— 因为存在 orphan 行:
-    insert_reference_sample 成功但 mark_synced 失败时, ssll 有样本而 TV 侧 synced_to_ssll_at
-    仍为 NULL(见 existing_ssll_sample_id docstring);只看 synced 标记会漏掉它们(codex PR#98 review)。
-    对每条用 existing_ssll_sample_id 走【顶层列 + ai_analysis fallback 键】双路查到样本 id 再按 id 删
-    —— 覆盖回填 source_truth_vault_note_id 之前同步的 legacy 行(同 review)。最后清 synced_to_ssll_at。
+      B · 从 ssll 侧取 (D-087): 带 source_truth_vault_note_id 的【全部】样本 → 回 TV 查这些笔记现在的
+          tier / tier_source / flags → 不合格就清标记、按样本 id 删。这一路覆盖 tier 降档 / tier_source
+          退回未确认 / 指标不可信, 也天然覆盖 orphan 行 (ssll 有样本、TV 标记为 NULL)。
+          TV 里找不到的笔记【不动】—— 找不到 ≠ 不合格; `--project` 时别的项目的笔记也不动。
+      A · 从 TV 侧按 tier 取 (D-068, 原路保留): 指标不可信的 爆/大爆, 用 existing_ssll_sample_id 走
+          【顶层列 + ai_analysis fallback 键】双路查样本再删 —— 这一路还能够到没有 lineage 列的
+          legacy 行 (回填 source_truth_vault_note_id 之前同步的), B 路按列取不到它们。
+
+    为什么需要: 推进去之后才变的事 ——synthetic 标记事后才打 (WTG 式 / RIO 式)、D-060 的 route 事后
+    才判、飞书状态列整批误标又改回 (OKMAN 08-18, 284 条处方药参照在 ssll 躺了 7 周) —— push 侧的
+    过滤只挡【新】同步, 旧的会以高权重停留在 ssll `reference_samples`, 污染 vibe 仿写。每次 sync
+    跑一遍即自愈; 同一篇两路都命中只撤一次 (done 集合)。
     """
+    done: set[str] = set()
+    n_b = _retract_ineligible_from_ssll(sb, project_filter=project_filter, dry_run=dry_run, done=done)
+    n_a = _retract_untrustworthy_by_tier(sb, project_filter=project_filter, dry_run=dry_run, done=done)
+    logger.info("retract summary%s: 从 ssll 侧按资格撤 %d · 从 TV 侧按 tier 补撤 (legacy/orphan 路) %d",
+                " [dry-run]" if dry_run else "", n_b, n_a)
+    return n_a + n_b
+
+
+def _retract_one(sb, note_id: str, sample_ids: list[str], reason: str, *, dry_run: bool, done: set[str]) -> None:
+    """清 TV 两列标记 + 删 ssll 样本 (按 id, 不碰无 TV lineage 的原生样本)。两路共用, 写法只此一处。
+
+    写序固定【先清标记、再删样本】(codex review on #165): 两步是两次 PostgREST 调用, 中间断了 (网络抖一下、
+    进程被杀) 留下的是「标记空、样本还在」—— 下一夜 B 路从 ssll 侧照样取到它、照样撤; 它要是又合格了,
+    push 侧 existing_ssll_sample_id 认出旧样本、只补标记 (recovered orphan, 老路)。
+    反过来先删后清, 断在中间留下「标记还在、样本没了」: B 路看不见 (样本没了), A 路只扫 爆/大爆,
+    这篇以后再合格也永远推不回去, 看板还显示"已推"。check_ssll_retract.py 的假客户端钉着这条写序。
+    """
+    if dry_run:
+        logger.info("[dry-run] would retract from ssll: %s (%s, samples=%s)", note_id, reason, sample_ids)
+        done.add(note_id)
+        return
+    sb.schema("truth_vault").table("notes").update(
+        {"synced_to_ssll_at": None, "synced_ssll_reference_sample_id": None}
+    ).eq("note_id", note_id).execute()
+    for sid in sample_ids:
+        sb.schema("public").table("reference_samples").delete().eq("id", sid).execute()
+    logger.warning("Retracted from ssll (%s 不污染飞轮): %s (samples=%s)", reason, note_id, sample_ids)
+    done.add(note_id)
+
+
+def _retract_ineligible_from_ssll(sb, *, project_filter: str | None, dry_run: bool, done: set[str]) -> int:
+    """B 路: ssll 里每一条 TV 推过去的样本, 回 TV 核一次资格 (D-087)。返回撤回的笔记数。"""
+    samples = fetch_all_pages(
+        sb.schema("public")
+        .table("reference_samples")
+        .select("id, source_truth_vault_note_id")
+        .filter("source_truth_vault_note_id", "not.is", "null"),
+        order_by="id",
+    )
+    by_note: dict[str, list[str]] = {}
+    for s in samples:
+        nid, sid = s.get("source_truth_vault_note_id"), s.get("id")
+        if nid and sid:
+            by_note.setdefault(nid, []).append(sid)   # UNIQUE 索引下一篇一行; 索引之前的旧重复行也一起撤
+    note_ids = sorted(by_note)
+    notes: dict[str, dict[str, Any]] = {}
+    for i in range(0, len(note_ids), _IN_LIST_CHUNK):
+        q = (
+            sb.schema("truth_vault")
+            .table("notes")
+            .select("note_id, project_id, tier, tier_source, data_quality_flags")
+            .in_("note_id", note_ids[i:i + _IN_LIST_CHUNK])
+        )
+        if project_filter:
+            q = q.eq("project_id", project_filter)
+        for r in fetch_all_pages(q, order_by="note_id"):
+            notes[r["note_id"]] = r
+    retracted = 0
+    missing = 0
+    for nid in note_ids:
+        if nid in done:
+            continue
+        row = notes.get(nid)
+        if row is None:
+            # 全量跑时找不到 = TV 里已经没有这篇; 不替它做判断, 只报数。--project 时是别的项目的, 不算。
+            if not project_filter:
+                missing += 1
+            continue
+        reason = ssll_eligibility_reason(row)
+        if reason is None:
+            continue
+        _retract_one(sb, nid, by_note[nid], reason, dry_run=dry_run, done=done)
+        retracted += 1
+    if missing:
+        logger.warning("ssll 里有 %d 条样本的笔记在 TV 里找不到 —— 没动它们 (找不到 ≠ 不合格), 要人看", missing)
+    return retracted
+
+
+def _retract_untrustworthy_by_tier(sb, *, project_filter: str | None, dry_run: bool, done: set[str]) -> int:
+    """A 路 (D-068 原路): 指标不可信的 爆/大爆, 双键查样本再删。候选不按 synced_to_ssll_at 预筛 —— orphan 行
+    (insert 成功、mark_synced 失败, 标记为 NULL) 也要收 (codex PR#98 review)。返回撤回的笔记数。"""
     q = (
         sb.schema("truth_vault")
         .table("notes")
-        .select("note_id, tier, synced_to_ssll_at, data_quality_flags")
+        .select("note_id, tier, tier_source, synced_to_ssll_at, data_quality_flags")
         .in_("tier", ["爆", "大爆"])
     )
     if project_filter:
         q = q.eq("project_id", project_filter)
-    # 判定在 Python 端(JSONB 的 PostgREST 过滤对 NULL 行不稳, 同 fetch_pending_baokuan), 与 push
-    # 共用 metric_tier_untrustworthy_reason()。不再用 synced_to_ssll_at 预筛 —— orphan 行该标记为
-    # NULL 也要回收。
+    # 判定在 Python 端(JSONB 的 PostgREST 过滤对 NULL 行不稳, 同 fetch_pending_baokuan)。
     candidates = [
         (r, reason) for r in fetch_all_pages(q, order_by="note_id")
-        if (reason := metric_tier_untrustworthy_reason(r)) is not None
+        if r["note_id"] not in done and (reason := metric_tier_untrustworthy_reason(r)) is not None
     ]
     retracted = 0
     for r, reason in candidates:
@@ -307,19 +427,7 @@ def retract_stale_synthetic_from_ssll(
         sample_id = existing_ssll_sample_id(sb, note_id)
         if sample_id is None and not r.get("synced_to_ssll_at"):
             continue  # ssll 无样本、TV 也没标 synced → 本就不在飞轮, 无需动作
-        if dry_run:
-            logger.info("[dry-run] would retract untrustworthy baokuan from ssll: %s (%s, sample=%s)",
-                        note_id, reason, sample_id)
-            retracted += 1
-            continue
-        if sample_id is not None:
-            # 按 id 删(双键已解析到具体行)—— 不碰 ssll 原生样本(它们无 TV lineage 键)。
-            sb.schema("public").table("reference_samples").delete().eq("id", sample_id).execute()
-        sb.schema("truth_vault").table("notes").update(
-            {"synced_to_ssll_at": None, "synced_ssll_reference_sample_id": None}
-        ).eq("note_id", note_id).execute()
-        logger.warning("Retracted untrustworthy baokuan from ssll (%s 不污染飞轮): %s (sample=%s)",
-                       reason, note_id, sample_id)
+        _retract_one(sb, note_id, [sample_id] if sample_id else [], reason, dry_run=dry_run, done=done)
         retracted += 1
     return retracted
 
@@ -644,7 +752,8 @@ def main() -> int:
     sb = get_supabase_client()
     if not args.dry_run:
         preflight_check(sb)
-    # 先自愈回收【已同步但现在是 synthetic 爆/大爆】的(伪爆贴最高优先级, 不污染飞轮);再推新爆款。
+    # 先自愈回收【已推进 ssll、但现在不满足 push 判据】的 (synthetic / 铺评工单 / tier 降档 / tier_source
+    # 退回未确认; D-068 / D-087, 不污染飞轮); 再推新爆款。
     retracted = retract_stale_synthetic_from_ssll(sb, project_filter=args.project, dry_run=args.dry_run)
     pending = fetch_pending_baokuan(sb, project_filter=args.project)
     logger.info("Found %d baokuan pending sync to sanshengliubu", len(pending))

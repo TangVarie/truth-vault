@@ -5577,3 +5577,75 @@ owner：「你来做，明天先给我看名单再删」→ 看过名单后回�
 ### 没做
 
 - 没改 `sync_truth_vault_baokuan_to_sanshengliubu.py`；没改视图；没碰 TUGE 的 56 篇铺评工单（它们是正确地没推）。
+
+## D-087 · 通道 1 的回收与 push 用同一份判据：认 tier 降档 / tier_source 退回 / 指标不可信；看板加「被闸挡的」「推出去后不合格的」两列（2026-10-08）
+
+来源：D-086 「挡不住什么」第一条。owner：「回收判据对称化那个 PR 你开吧。」
+
+### 病灶（D-086 已记，这里只说机制）
+
+- push 侧 `fetch_pending_baokuan` 的资格 = tier ∈ (爆, 大爆, 参考) · tier_source ≠ 数值推断（`.neq`，NULL 一起排）· 12 个月窗 · 指标可信（D-068）。
+- 回收侧 `retract_stale_synthetic_from_ssll` 的候选只取 `tier IN (爆, 大爆)` 再判 synthetic / 铺评工单。**降档出 爆/大爆 的笔记根本不在候选里**，tier_source 退回也不在。
+  D-068 写的「push 与回收共用一份判据」只共用了三件事里的一件。
+- `v_flywheel_sync_status` 只数「现在是 爆/大爆 且已同步」，推出去后降档的看不见；`pending_ssll_sync` 把被 D-068 闸挡掉的也算成"待推"
+  （10-08 实查：全库 pending 69 = 69 篇铺评工单，看板上像通道 1 卡住，其实是正确地没推）。
+
+### 定了什么
+
+1. **判据只有一份，三件事都在里面**：`ssll_eligibility_reason(row)` → `tier_demoted` / `tier_source` / synthetic / 铺评工单 / None。
+   `fetch_pending_baokuan` 的 Python 过滤和回收都调它；`metric_tier_untrustworthy_reason` 保留，是它的第三段（`check_comment_maintained.py` 还在钉它）。
+2. **回收加 B 路，从 ssll 侧取候选**：带 `source_truth_vault_note_id` 的全部样本 → 按 note_id 分批（100 一批，D-080）回 TV 查现在的 tier / tier_source / flags →
+   不合格就按样本 id 删、清 TV 两列标记。天然覆盖 orphan（ssll 有行、TV 标记 NULL）。A 路（D-068 原路，按 tier 取、双键查样本）保留——它能够到没有 lineage 列的 legacy 行；
+   两路共用 `done` 集合，同一篇只撤一次。函数名不改（CI 的调用顺序断言钉着）。
+3. **三条刻意不撤**：① **publish_time**——12 个月窗挡的是"别把过气审美【新】推进去"，推进去之后变老不是推错，ssll 检索侧自己做 surface 衰减（docs/00 §2.2），按它撤会让参考池随日历自己变薄；
+   ② **TV 里找不到的笔记**——找不到 ≠ 不合格，只报数（`::warning` 级日志），要人看；③ **`--project` 时别的项目的**——既不撤也不算"找不到"。
+4. **视图 v1_19**（`notes_v1_19_sync_status_stale_gated.sql`，CREATE OR REPLACE，既有列集与顺序不变、末尾追加）：`pending_ssll_sync` 加排铺评工单；
+   新列 `gated_ssll_sync`（资格都够、只因 synthetic / 铺评工单被挡）、`stale_in_ssll`（标着已推、但现在不合格；回收每晚清，非零 = 回收没跑或跑挂）。
+   夜跑那行状态多打 `(gated N, stale N)`，用 `.get` 兜住迁移没 apply 的库。**没有加新灯**（docs/29 的规矩：答不上"谁看"就别加）——它跟着现有那行状态走。
+5. **守卫挪进 `scripts/check_ssll_retract.py`**（D-075）：D-068 原八条边界行逐字保留在 §1；§2 降档 / 退回 / 铺评工单 / orphan 撤、合格 / 参考 / 变老 / 找不到 / 原生样本不动、幂等；
+   §3 `--project` 隔离；§4 250 篇分批 ≤200；§5 push 与资格判据逐行对称。假客户端真的执行过滤算子和 delete / update，dry_run 与真写都跑。
+   ci.yml 那块内联 heredoc 换成一行调用，G2 棘轮 76 → 75，体积 498,882 字节。
+6. **写序固定：先清 TV 标记、再删 ssll 样本**（codex review on #165 第一条，改前是先删后清）。两步是两次 PostgREST 调用，中间断了（网络抖一下、进程被杀）留下「标记空、样本在」——
+   下一夜 B 路从 ssll 侧照样取到、照样撤；它要是又合格了，push 侧 `existing_ssll_sample_id` 认出旧样本、只补标记（recovered orphan，老路）。
+   原来先删后清，断在中间留下「标记在、样本没了」：B 路看不见（样本没了）、A 路只扫 爆/大爆，这篇以后再合格也永远推不回去，看板还显示"已推"。
+   守卫把写序钉进假客户端（删样本时该笔记标记必须已清），§6 把两种残留的自愈都验了。
+
+### 反证（2026-10-08 本地实跑，每条改坏即红、还原即绿）
+
+| # | 改坏什么 | 结果 |
+|---|---|---|
+| ① | `ssll_eligibility_reason` 去掉 tier 那一行 | 红：应撤 6 实得 3 |
+| ② | B 路把「TV 里找不到」也当不合格 | 红：应撤 6 实得 7（n_missing 被动了） |
+| ③ | 去掉两路 `done` 去重 | 红：应撤 6 实得 7（铺评工单那篇数了两次） |
+| ④ | `_IN_LIST_CHUNK` 调到 10,000 | 红：一次 in_() 250 个 note_id > 200 |
+| ⑤ | 资格判据加 publish_time | 红：n_old 被撤 |
+| ⑥ | `_retract_one` 改回先删样本、后清标记 | 红：§2 第一条 delete 就炸（标记还没清） |
+| SQL a | pending 不排铺评工单 | 红：期望 6/3/1/2/2 实得 6/3/2/2/2 |
+| SQL b | stale 按 publish_time 判 | 第一版**没红**——夹具里"老"那篇没推过，stale 本来就数不到它。把它改成推过的（synced 非空）再跑：红，2 变 3。夹具自己也会漏，反证就是用来抓这个的 |
+
+本地全量重放 ci.yml 的 sql job（PostgreSQL 16，48 步）全绿；python 侧 `check_ssll_retract` / `check_comment_maintained` / `check_system_map` 全过，
+main() 调用顺序与 `fetch_pending_baokuan` 选 platform 两条老守卫重跑仍绿。
+
+### 生产上会发生什么
+
+- 合并部署后第一次夜跑：B 路把 306 条 TV 样本全部回查一遍（4 个 in_ 批次、几秒），**预期撤 0**——D-086 已把 285 条清掉，10-08 实查 306 条全部合格
+  （tier_source 全是状态字段、无 untrustworthy、无 legacy 行、无 TV 里找不到的）。夜跑日志里 `retract summary` 两个数都该是 0。
+- v1_19 要 owner apply（Supabase MCP / SQL 编辑器整份执行，幂等）。apply 后 `v_flywheel_sync_status` 多两列；夜跑那行 `(gated 69, stale 0)` 是今天的预期值。
+- 以后再来一次 08-18 式误标：当晚推出去，**次日改回后的那次夜跑就撤回**，不再躺 7 周。
+
+### 挡不住什么
+
+- B 路只按 `source_truth_vault_note_id` 取样本；没有这一列的 legacy 行靠 A 路，而 A 路只认 爆/大爆 候选——一条 legacy 行的笔记降档成 趴，两路都够不着。
+  10-08 实查 legacy 行为 0，列是 2026-05 加的，之后的推送都填了；真要兜就把 B 路的取法扩到 `ai_analysis->>_truth_vault_note_id`，到时再加。
+- 回收只看 TV 这一侧的 tier；飞书整批误标之后 tier 还没改回之前，样本照样会在 ssll 待一晚。要挡"推出去"本身，得在 push 侧对单晚新增爆款数设上限，这是另一个决定。
+- `stale_in_ssll` 只看 TV 标记；ssll 侧有行、TV 标记为 NULL 的 orphan 它看不见（回收 B 路看得见，所以它会被清，只是看板上不显示）。
+- 回查与撤之间有一个读-写窗（codex #165 第二条）：B 路一批 100 篇读回来之后、撤到这一篇之前，要是有人把它的 tier 改回合格，它还是按读到的旧行被撤。
+  窗口 = 前面那些篇撤掉的耗时——平时撤 0，窗口是毫秒；08-18 那种 285 篇也就两三分钟。能在这个窗里改 TV tier 的只有手工 SQL：飞书回灌是同一个 job 里排在回收前面的步骤，不并发。
+  撤错了的后果是「推得回来的当晚就推回来；推不回来的（过了 12 个月窗 / on_demand 项目）要人手工补」。PostgREST 做不了跨表条件删，撤前再读一次只是把窗变小不是关掉，
+  **没为它加代码**；真要关得写 RPC，到时再说。
+- 三省六部仓那边有没有把参照缓存进别的表，这里仍看不见。
+
+### 没做
+
+- 没动 push 侧的 12 个月窗、on_demand 闸；没动书架（通道 2）的判据——它读 `v_flywheel_lesson_cards` 自己的闸（D-066），与本条无关。
+- 没给 `stale_in_ssll` 加 `::warning` 灯；要加先按 docs/29 回答谁看。
