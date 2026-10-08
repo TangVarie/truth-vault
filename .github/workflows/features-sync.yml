@@ -166,6 +166,9 @@ jobs:
           fail_count=0
           attempted=0          # 本轮真的发出过请求的项目数(on_demand 跳过的、一开始就抽完的不算)
           starved_list=""      # 发过请求、但一批都没成的项目
+          planned_total=0      # D-094 (审计 B-18): 按每个项目的待办与上限算出"本轮该成几批", 收尾和实际成的比
+          ok_total=0
+          edge502_total=0      # 边缘 502 的批: worker 多半在后台跑完了, 既不算成也不算欠
           for f in ../mappings/*.yaml; do
             p=$(basename "$f" .yaml)
             [ "$p" = "_template" ] && continue
@@ -187,6 +190,12 @@ jobs:
               rem=$(python count_unannotated_features.py "$p" 2>/dev/null || echo "?")
               [ "$rem" = "0" ] && { echo "  ✅ $p 特征已全部抽完"; break; }
               batch=$FEAT_REQ_MAX; [ "$batch" -gt "$budget" ] && batch=$budget
+              if [ "$sent" = "0" ]; then
+                # 第一次要之前算这个项目本轮"该成几批": min(待办, 上限) / 每批篇数, 向上取整; 待办取不到按上限算
+                want=$FEATURE_LIMIT
+                case "$rem" in ''|*[!0-9]*) ;; *) [ "$rem" -lt "$want" ] && want=$rem ;; esac
+                planned_total=$((planned_total + (want + FEAT_REQ_MAX - 1) / FEAT_REQ_MAX))
+              fi
               sent=1
               if code=$(curl -sS -w '%{http_code}' -o /tmp/feat.json --max-time 900 \
                 -X POST "${WORKER_URL%/}/annotate-features" \
@@ -209,6 +218,7 @@ jobs:
                 # 预算照扣(不重复要这几篇), 继续本项目; 下一个请求撞到锁会走上面的 409 等待。
                 echo "::warning::features $p 批次在边缘 502 (worker 可能仍在后台完成), 继续本项目。"
                 budget=$((budget - batch))
+                edge502_total=$((edge502_total + 1))
                 continue
               fi
               if [ "$code" != "200" ] || [ "$ok" != "true" ]; then
@@ -229,9 +239,21 @@ jobs:
             done
             if [ "$sent" = "1" ]; then
               attempted=$((attempted + 1))
+              ok_total=$((ok_total + ok_batches))
               [ "$ok_batches" = "0" ] && starved_list="$starved_list $p"
             fi
           done
+          # ── 慢性欠产 (D-094, 审计 B-18): 该成的批里成了不到一半 → 红 ──────────────────────
+          # 下面那条 starved 只抓"过半项目一批都没成"; 每个项目都只成了 1 批、其余全是 warning 的夜晚
+          # 它抓不住, D-077 自己写着"挡不住慢性欠产…看 note_feature_answers 的日增量", 而没人看那个日增量。
+          # 这里把"该成几批"算出来 (每个项目 min(待办, 上限)/每批篇数 向上取整) 和"实际成几批"比;
+          # 边缘 502 的批 worker 多半在后台跑完了, 既不算成也不算欠。
+          short=$((planned_total - ok_total - edge502_total))
+          echo "  本轮产量: 该成 $planned_total 批, 成 $ok_total 批, 边缘 502 $edge502_total 批, 欠 $short 批"
+          if [ "$planned_total" -gt 0 ] && [ $((short * 2)) -gt "$planned_total" ]; then
+            echo "::error::features 本轮该成 $planned_total 批只成了 $ok_total 批 (边缘 502 $edge502_total) —— 欠产过半, 不是瞬时。看上面每个项目的 warning 找原因 (中转站慢 / 409 连坐 / 模型 404)。"
+            fail_count=$((fail_count + 1))
+          fi
           # ── 大多数项目一篇没成 = 系统性问题, 不是"瞬时" (D-077) ───────────────────
           # 9-21 / 9-22 两晚: 10 个项目里 8 个一批都没成, 每个都被单独判成"瞬时失败"只打
           # warning, 整趟 success。单看每一个都说得通, 合起来就是这一步形同没跑。

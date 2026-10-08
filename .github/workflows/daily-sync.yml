@@ -340,8 +340,17 @@ jobs:
             fi
             # 预算耗尽: 不静默截断 —— 明说还剩谁没跑, 否则日志看着像"全都策展过了"。
             if [ "$remaining" -le 0 ]; then deferred="$deferred $p"; continue; fi
-            BODY="{\"limit\":${remaining},\"dry_run\":$DRY,\"project\":\"$p\"}"
-            echo "─── curate (worker) · project=$p · 本轮剩余预算=$remaining ───"
+            # ── 每请求封顶 CUR_REQ_MAX 张, 多轮凑 (D-094, 审计 B-05) ──
+            # 以前一个项目一次要 remaining(≤15) 张: 一张 ≤2 次 LLM 调用, 中转站坏日 47–86 s/调用 (D-088 实测),
+            # 15 张轻松撞 Railway 边缘 ~300 s → 502 "瞬时"; 而 worker 子进程还攥着 curate_flywheel_lessons.py
+            # 的锁继续跑 → 后面每个项目都 409 "瞬时" → 整晚一张没策展、job 绿、预算也没扣。essence 段早有
+            # ESS_REQ_MAX=8 的同款循环, curate 没有。5 张 × 2 次 × 86 s ≈ 14 min 仍可能超 —— 但 5 张比 15 张
+            # 撞线的概率低得多, 且撞了也只丢这一批; 共享预算 CUR_LIMIT 不变。
+            CUR_REQ_MAX=5
+            echo "─── curate (worker) · project=$p · 本轮剩余预算=$remaining · 每请求≤$CUR_REQ_MAX ───"
+            while [ "$remaining" -gt 0 ]; do
+            batch=$CUR_REQ_MAX; [ "$batch" -gt "$remaining" ] && batch=$remaining
+            BODY="{\"limit\":${batch},\"dry_run\":$DRY,\"project\":\"$p\"}"
             # 捕获 curl 退出码(不再一律 code=000 掩盖)—— 区分超时 vs 配置/连通错(PR#65 review)。
             # PR#86 review: curate 是这跑里【唯一/最后】碰 worker 的步骤(稳态下 essence 无待办、不发 curl,
             # 不校验 URL)→ 不能把"连不上"一律降级,否则坏 WORKER_URL 静默漏过。改为【连接级失败退避重试】:
@@ -376,6 +385,9 @@ jobs:
               n=$(jq -r '.stdout_tail // ""' /tmp/cur.json 2>/dev/null \
                   | grep -o '"ok": *[0-9][0-9]*' | tail -1 | grep -o '[0-9][0-9]*$' || true)
               [ -n "$n" ] && remaining=$((remaining - n))
+              # 这一批策展的张数少于要的 = 这个项目没有更多待策展的卡了 (或 Done 行没取到), 换下一个项目;
+              # 否则继续本项目再要一批。
+              if [ -z "$n" ] || [ "$n" -lt "$batch" ]; then break; fi
               continue
             fi
             jq -r '.stderr_tail // ""' /tmp/cur.json 2>/dev/null | tail -8
@@ -390,6 +402,8 @@ jobs:
               echo "::error::curate $p 失败(curl_rc=$curl_rc HTTP $code ok=$ok) —— 配置/连通/鉴权 或 全军覆没, 需排查。"
               fail_count=$((fail_count + 1))
             fi
+            break   # 这一批没成 (瞬时或系统性) → 换下一个项目, 不再对同一个项目追加请求
+            done
           done
           [ -n "$deferred" ] && echo "::notice::curate 本轮预算($CUR_LIMIT)用完, 这些项目留到下轮 cron:$deferred"
           [ "$done_any" = "0" ] && [ "$fail_count" = "0" ] && echo "  (本轮没有项目需要 curate 或全被 on_demand 闸跳过)"
@@ -473,6 +487,23 @@ jobs:
           if ! grep -q '^LIBRARIAN_TRAFFIC_CHECK_DONE rc=' /tmp/librarian_traffic.log; then
             echo "::warning title=通道 2 借阅流量检查崩了::脚本没跑到底(没有哨兵行), \
           上面的 traceback 是真问题 —— advisory 不拖红, 但通道 2 的监控现在是瞎的, 去修。"
+          fi
+
+      - name: 外部语料新鲜度 · Jev 周跑这周有没有进账本 (advisory, 不 fail)
+        if: steps.check.outputs.skip != 'true' && always()
+        working-directory: scripts
+        run: |
+          # D-094 (审计 B-23): external-corpus.yml 在 Jev 仓, 红了只发邮件给改过 cron 的人; "绿但空"在哪都看不见。
+          # 这盏灯看 truth_vault.external_notes 最新一行的 fetched_at, 超过 8 天 (周更 + 1 天余量) 就 rc=1。
+          # 修在 Jev 仓, advisory 不拖红; 崩了靠哨兵行判定 (同其它灯)。
+          set +e
+          python check_external_corpus_fresh.py 2>&1 | tee /tmp/external_corpus.log
+          set -e
+          if ! grep -q '^EXTERNAL_CORPUS_CHECK_DONE rc=' /tmp/external_corpus.log; then
+            echo "::warning title=外部语料新鲜度检查崩了::脚本没跑到底(没有哨兵行), \
+          上面的 traceback 是真问题 —— advisory 不拖红, 但这盏灯现在是瞎的, 去修。"
+          elif grep -q '^EXTERNAL_CORPUS_CHECK_DONE rc=1' /tmp/external_corpus.log; then
+            echo "::warning title=外部语料超过 8 天没进新货::去 Jev 仓看 external-corpus 最近一次 run (修在 Jev 仓)。"
           fi
 
       - name: 角度台账漏账检查 · 发了牌没走到成稿就告警 (advisory, 不 fail)

@@ -5834,3 +5834,25 @@ python job 里 import 馆员的 8 步（TV-03 / TV-05 / TV-06 / 守卫 6 / put_c
 
 - `check_gate2_run.py` 八节全过：§1 单层 MH = 普通 OR、RGB = Woolf、两层手算、退化回 None；§2 BH 含单调修正；§3 状态表逐条（validated / reversed / no_signal 区间 / insufficient / no_signal 方向不稳 / 新发现 / unreliable / 占位题不报警 / choice 按取值）+ 行形状与主键；§3b 热账号记号 OR>2 → confounded，真信号仍 validated；§4 占位题显著拒跑；§5 快照重复 / sha 对不上拒跑，快照外的行不进；§6 draft 拒跑；§7 取数条件与大项目动态。合成数据的效应全按计数造，不靠随机数。
 - 反证 battery 七条全红：① RGB 漏 QS 项；② BH 不做单调修正（**第一版没红**——§2 的三个用例恰好都是修正不起作用的形状，补了 0.01/0.011/0.5 那条才红）；③ 允许两个大项目反向；④ 不做账号先验分层；⑤ 占位题显著不拒跑；⑥ 快照重复不拒跑；⑦ draft 也跑。
+
+## D-094 · 夜跑三件小事：curate 每请求封顶 5 张；features 慢性欠产过半判红；外部语料新鲜度灯（2026-10-08）
+
+来源：`data-analysis/architecture-audit-2026-10-08.md` 的 B-05 / B-18 / B-23。三件都在 daily-sync / features-sync 两个 workflow 的调用方循环里，不改任何入库口径。
+
+### 定了什么
+
+1. **curate 每请求封顶 `CUR_REQ_MAX=5` 张，多轮凑（B-05）。** 以前一个项目一次要 `remaining`（≤15）张：一张 ≤2 次 LLM 调用，中转站坏日 47–86 s/调用（D-088 实测），15 张轻松撞 Railway 边缘 ~300 s → 502 判"瞬时"；而 worker 子进程还攥着 `curate_flywheel_lessons.py` 的锁继续跑 → 后面每个项目都 409 判"瞬时"→ 整晚一张没策展、job 绿、预算也没扣。essence 段早有 `ESS_REQ_MAX=8` 的同款循环，curate 没有。现在：同一项目一批成了且张数 = 要的就再要一批；回的张数少于要的（没更多待策展的卡）或一批没成（瞬时或系统性）就换下一个项目，不对同一项目追加。共享预算 `CUR_LIMIT` 不变，瞬时 / 系统性的判法不变。5 张 × 2 次 × 86 s ≈ 14 min 仍可能超——但撞线概率低得多，撞了也只丢这一批。
+2. **features 慢性欠产过半判红（B-18）。** D-077 那条 starved 只抓"过半项目一批都没成"；每个项目都只成了 1 批、其余全是 warning 的夜晚它抓不住，D-077 自己写着"挡不住慢性欠产…看 `note_feature_answers` 的日增量"，而没人看那个日增量。现在每个项目第一次要之前算"本轮该成几批" = ⌈min(待办, `FEATURE_LIMIT`) / `FEAT_REQ_MAX`⌉（待办取不到按上限算），收尾比：欠 = 该成 − 成 − 边缘 502；**欠 × 2 > 该成 → `::error` + 退出 1**。边缘 502 的批 worker 多半在后台跑完了，既不算成也不算欠。恰好一半不红（阈值是"过半"，与 starved 同口径）。原有的首批系统性红、starved 红照旧。
+3. **外部语料新鲜度灯 `EXTERNAL_CORPUS_CHECK_DONE`（B-23）。** `scripts/check_external_corpus_fresh.py` 看 `truth_vault.external_notes` 最新一行的 `fetched_at`：超过 8 天（周更 + 1 天余量）rc=1；表空 / 时间认不出 rc=2；新鲜 rc=0。daily-sync advisory 步，不拖红；崩了靠哨兵行判定（docs/29 规矩 3）。登记在 docs/29：owner 每周一次随夜跑结果扫，**修在 Jev 仓**。Jev 那边 10-08 起写库失败会让它自己的 job 红（Jev#6），这盏灯补的是"绿但空"（A-08 的另一半，或 triage 全拒）。阈值 `--max-age-days` 可调，下限 1。
+
+### 验证
+
+- **curate 循环**：把 daily-sync 那一步的 `run:` 原文抽出来，用假 `curl` / 假 `python skip_on_cron.py` 本地重放四个场景：① A 12 张 → 请求 5/5/2，B 吃剩 3，C 推迟；② A 502×3 → 瞬时警告，B、C 照跑不连坐；③ A 回 3 < 5 → 换项目不追加；④ A `ok=false` → 系统性红、B 照跑、收尾 `exit 1`。**反证**：改动前的同一步在场景 ① 下三个请求分别要 15 / 10 / 5 张。
+- **features 收尾**：同法重放八个场景：三项目各 10 篇全成 → 该成 15 成 15；每项目成 1 批后 503 → 该成 15 成 3 **红**（**反证：改动前同场景绿**）；两批边缘 502 → 欠 0；待办取不到按上限算 → 该成 12；全部抽完零请求 → 该成 0 不判；该成 4 成 2 → 不红；该成 4 成 1 → 红；B 首批 `ok=false` → 原判红照旧。
+- **新鲜度灯**：`--selftest` 五种形状（新鲜 / 过期 / naive 时间 / 表空 / 认不出）；反证：阈值比较写反 → 红；表空当新鲜 → 红。`check_system_map` G3 看到 3 盏灯；反证：从登记册删掉这一行 → G3 红。三个 workflow yaml 可 parse；`py_compile` 过。
+
+### 挡不住什么
+
+- curate 单批 5 张在中转站极坏日仍可能超 5 分钟；再小就要加 `/curate` 的分页协议，这次不动 worker。
+- features 的"该成几批"按本轮开始时的待办算；跑的过程中新入库的笔记不算欠。
+- 新鲜度灯只看"有没有新行"，不看行数是不是异常少（triage 拒了 95% 也算新鲜）。
