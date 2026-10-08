@@ -618,6 +618,11 @@ GROUP BY 1, 2, 3, 4, 5, 6;
 
 ## 附录 B · 闸二 SQL（都在本地合成数据上跑通）
 
+> **可执行版（2026-10-08，D-093）**：`scripts/gate2_run.py` 把 B.1 / B.2 + BH 校正 + 账号先验分层 + §6.2 的状态表落成纯 Python，
+> 写 `feature_validation` 行、出 `data-analysis/feature-gate2-<日期>.md`，跑之前先核快照唯一性（B.3 的那句）、题库是否冻结、
+> 占位题反证。守卫 `scripts/check_gate2_run.py`（单层 RGB = Woolf 闭式、状态表逐条、拒跑三条）。B.3 / B.4 不在里面。
+> 下面的 SQL 保留作口径与对账用。
+
 ### B.1 单个特征值：项目分层合并优势比 + 95% 置信区间
 
 点估计是 Mantel–Haenszel，区间用 Robins–Breslow–Greenland 方差。合成数据上与 statsmodels `StratifiedTable` 逐位一致（例：`ending_asks_reader = 是`，OR 2.477，CI 1.738–3.530）。BH 校正要 p 值，放 Python 里用 statsmodels 算，SQL 只出 2×2 和区间。

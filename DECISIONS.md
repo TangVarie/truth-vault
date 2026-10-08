@@ -5811,3 +5811,26 @@ python job 里 import 馆员的 8 步（TV-03 / TV-05 / TV-06 / 守卫 6 / put_c
 
 - 没变的笔记仍会被解析一遍（CPU，不是 HTTP）；真正的"按内容哈希跳过"要在 `notes` 上存一列哈希，这次没加列。
 - `collect_cleared_vanished` 对"源被清空"的那几篇仍按篇读（它们很少）。
+
+## D-093 · 闸二可执行版：`scripts/gate2_run.py` 把 §6.2 的四条判据、状态表、反证、预注册拒跑落成代码（2026-10-08）
+
+来源：`data-analysis/architecture-audit-2026-10-08.md` 的 A-03(a)：D-070 记着「闸二 SQL 仍在 docs/28 附录 B」，`statsmodels` 不在 requirements，`feature_validation` 只有 CI 夹具写过；10-08 的 237 篇定向回填清单末尾写的"再跑 `scripts/` 里闸二那套"——那套不存在。
+
+### 定了什么
+
+1. **纯 Python 实现，不加依赖。** B.1 的 Mantel–Haenszel 点估计 + Robins–Breslow–Greenland 方差原样翻成代码；Wald p 用 `math.erfc`；Benjamini–Hochberg 自己写（带单调修正）。与 statsmodels 的核对靠闭式：单层时 RGB 方差恰等于 Woolf 的 `1/a+1/b+1/c+1/d`，守卫钉着这一点；两层手算 R/S 对上。docs/28 B.1 那句"与 statsmodels 逐位一致（OR 2.477, CI 1.738–3.530）"的合成数据不在仓里，没法复现那两个数，不假装复现。
+2. **判据一字不改（§6.2）。** 区间跨 1 → `no_signal`；BH q > 0.10 → `no_signal`；大项目（正例 ≥ 20，动态算）里反向超过 1 个 → `no_signal`（标"方向不稳"）；按「项目 × 账号先验爆率」再分层后方向变了或点估计变化 > 30% → `confounded`；显著但与预注册 +/− 相反 → `reversed`；`?` 四条都过 → `validated` 并注明"新发现，方向未预设"；有该取值的笔记 < 30 或有支持的大项目 < 3 → `insufficient`；`--unreliable` 传入的题 → `unreliable`（闸一结论还没有机器可读形式，审计 B-17，这里不替它决定）。B.2 的两条纪律照搬：只数该取值真出现过的大项目、按快照五键分组。bool 只算「是」；choice 每个取值一行，方向按取值，没按取值写的（`body_question_marks`）按 `?` 并在 summary 里注明。占位题同一个 BH 家族。
+3. **账号先验分层。** 该账号**更早发布**的、已清洗标签（`v_l2_labels`）的笔记 ≥ 3 篇才算，爆率低于项目基线（项目内平均 y）→ 低于 / 否则不低于 / 不够 3 篇 → 无记录；同一时刻发的互不算"更早"。
+4. **跑之前三道拒跑（退出码 2，一行不写）。** ① 题库 `status` 不是 `frozen`（`--allow-draft` 只给试算和 CI 夹具）；② `--sha` 与题库文件 digest 对不上，或快照内 (笔记, 题) 不唯一（B.3 那句）；③ **占位题在任一方向被判"显著且稳定"**（区间不跨 1、q ≤ 0.10、大项目方向稳）——整跑作废（§6.2 反证 ①；`--ignore-placebo-alarm` 只出报告，不许 `--write`）。
+5. **取数条件按 §6.2**：`v_l2_labels` × 有 essence × `note_features.body_len ≥ 50`（没有 `body_len` 的不剔，注明）。账本按 (题, 抽取器) 一条一条查——`fetch_all_pages` 按 `order_by` 去重，整表按 `subject_id` 翻会把一篇 31 行合并成一行、重复也看不见。
+6. **输出**：`feature_validation` 行（`--write` 才 upsert，主键含 `gate2_run`，占位题也写、`hypothesis='0'`）+ `data-analysis/feature-gate2-<日期>.md`（`--out`）。
+
+### 没做
+
+- **B.3 组合对比（留一项目 AUC + 配对自助 1,000 次）与 B.4 置换反证**不在里面：那是"组合进不进 L2"的决定，不是单个特征值的闸；留第二步。
+- **没有拿生产跑试算。** 本容器没有 `SUPABASE_*` 环境变量；更要紧的是 §6.2 的预注册纪律——跑之前要冻结题库、把判据数字和快照记进 DECISIONS。今天的快照还有两个预注册前的决定没拍（审计 A-03）：361 篇旧 sha 笔记是重抽（`backfill-features.yml` 的 `reannotate`，D-090）还是排除；NUC / NRT_2 / NRT_3 在当前 sha 下 0 负例，是补 60–100 篇趴还是闸二只看 daily 项目。拍完、冻结、记 DECISIONS，再 `cd scripts && python gate2_run.py --sha ba0f570c --extractors code:v1,llm:claude-opus-4-6 --run-tag gate2-<日期> --unreliable <闸一不过的题> --out ../data-analysis/feature-gate2-<日期>.md`，看过报告再加 `--write`。
+
+### 验证
+
+- `check_gate2_run.py` 八节全过：§1 单层 MH = 普通 OR、RGB = Woolf、两层手算、退化回 None；§2 BH 含单调修正；§3 状态表逐条（validated / reversed / no_signal 区间 / insufficient / no_signal 方向不稳 / 新发现 / unreliable / 占位题不报警 / choice 按取值）+ 行形状与主键；§3b 热账号记号 OR>2 → confounded，真信号仍 validated；§4 占位题显著拒跑；§5 快照重复 / sha 对不上拒跑，快照外的行不进；§6 draft 拒跑；§7 取数条件与大项目动态。合成数据的效应全按计数造，不靠随机数。
+- 反证 battery 七条全红：① RGB 漏 QS 项；② BH 不做单调修正（**第一版没红**——§2 的三个用例恰好都是修正不起作用的形状，补了 0.01/0.011/0.5 那条才红）；③ 允许两个大项目反向；④ 不做账号先验分层；⑤ 占位题显著不拒跑；⑥ 快照重复不拒跑；⑦ draft 也跑。

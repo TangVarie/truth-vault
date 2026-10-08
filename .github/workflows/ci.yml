@@ -60,6 +60,8 @@ jobs:
             scripts/check_librarian_shortlist.py \
             scripts/check_ingest_guards.py \
             scripts/check_comments_sync_cost.py \
+            scripts/gate2_run.py \
+            scripts/check_gate2_run.py \
             librarian/__init__.py \
             librarian/clients.py \
             librarian/core.py \
@@ -3654,6 +3656,9 @@ jobs:
       - name: 评论步 —— 每项目读一次已有评论 / 夜跑跳过 on_demand / 对账失败非零退出 (D-092)
         working-directory: scripts
         run: python check_comments_sync_cost.py   # §1 一次读零写 · §2 只写变化 · §3 on_demand 跳过 · §4 对账失败 rc=1 · §5 老调用形状不变
+      - name: 闸二可执行版 —— MH/RGB 对 Woolf 闭式、BH、状态表逐条、账号先验分层、占位题 / 快照 / 冻结三条拒跑 (D-093)
+        working-directory: scripts
+        run: python check_gate2_run.py   # §1 统计闭式 · §2 BH · §3 状态表 · §3b confounded · §4 占位题拒跑 · §5 快照唯一 · §6 draft 拒跑 · §7 取数与大项目
       - name: sanshengliubu sync shape self-check (build_reference_sample ↔ preflight ↔ ssll v2 schema)
         working-directory: scripts
         run: |
