@@ -5,7 +5,7 @@
 > 每一条代码结论再拿 **生产库**（Supabase `kduysqedr`）、**GitHub Actions 运行记录**、**Supabase 安全顾问** 核一遍。
 > 下面每个数字都是 10-08 11:00 UTC 前后查出来的；标 **[生产确认]** 的是查到了，标 **[代码确认]** 的是代码能证明但生产还没出现过，标 **[疑似]** 的是推断。
 >
-> **一句话**：主干飞轮在转，但 **三处"真值"已经被悄悄污染**（写作台"人审"全是模型自审、31 篇笔记血缘倒挂、闸二快照分裂），
+> **一句话**：主干飞轮在转，但 **三处"真值"已经靠不住**（写作台"人审"全是作者自审且整批秒过、31 篇笔记血缘倒挂、闸二快照分裂），
 > **四处"断了没人知道"**（借卡超时让写手整份简报丢掉、回程 cron 永远比夜跑早、外部语料写库失败静默丢周、缺 secret 永久绿），
 > 其余是 20 来条灯不亮 / 文档漂 / 半态 的老问题。本文只审不修；§5 给了处理顺序。
 
@@ -29,13 +29,13 @@
 
 | # | 一句话 | 判定 |
 |---|---|---|
-| A-01 | 近 30 天 32 条 `human` 审稿全部是提交后 9–37 秒内整批自审 → `prepublish_evaluations` 的人审真值被污染 | 生产确认 |
+| A-01 | 近 30 天 32 条 `human` 审稿全部是作者自审、整批同秒通过、距 commit 9–37 秒；库里分不出调用者是人还是模型 → `prepublish_evaluations` 的人审真值在查清之前不能当真值用 | 生产确认（自审 + 整批秒过）· 调用者待查 |
 | A-02 | tv-sync 把 31 篇笔记的 `source_autowriter_version_id` 指到了"从 TV 补录进来的副本" → 对照视图把它们算成写作台产出 | 生产确认 |
 | A-03 | 闸二没有可执行脚本；361 篇（含闸一全部 100 篇）在旧题库 sha；NUC/NRT_2/NRT_3 在当前 sha 下 0 负例 | 生产确认 |
 | A-04 | open_project 同步借卡最长 60 s，MCP 客户端只容忍 ~22 s；09-22 冷借 13 次里 12 次超 22 s；此后周产量 175 → 16 → 0 | 生产确认 |
 | A-05 | aw 回程 cron 04:00 UTC；TV 夜跑实际 08:04–09:00 UTC 才起 → 回程每天看的是前一天的笔记 | 生产确认 |
 | A-06 | 采集对整批 tier 翻转没有任何闸；08-18 OKMAN 一晚 285 条升爆（82.4%） | 生产确认 |
-| A-07 | 评论步每晚对所有有评论的笔记全量重解析，≥2 次 HTTP/篇，无 `skip_on_cron`，永远 exit 0 | 代码确认 |
+| A-07 | 评论步每晚对所有有评论的笔记全量重解析，≥2 次 HTTP/篇，无 `skip_on_cron`；reconcile 失败仍 exit 0 | 代码确认 |
 | A-08 | 外部语料：`apply_rows` 写库失败 `continue-on-error`，但 `seen` 状态已先存 → 那一周静默丢；10-12 首次 main 定时跑缓存为空 | 代码确认 |
 | A-09 | 写手侧 MCP 把 `TYPESAFE_API_KEY` 和暗题（可一行算出）带到写手机器；project 自报 | 代码确认 |
 | A-10 | Jev 切主抽取会打碎账本：无 `done_by`、无 `code:v1`、一次问 20 题违反 §5.3、对照视图按 extractor 分裂 | 代码确认 · 决策项 |
@@ -51,7 +51,7 @@
 | 步骤 | 触发 / 幂等键 | 失败被吞在哪 | 谁能看见 |
 |---|---|---|---|
 | `feishu_sync` → `sync_feishu_notes_to_truth_vault.py main()`：`load_mapping` → `skip_on_demand_on_cron`（:1466）→ `assert_db_schema_ready`（:1539）→ 逐行 `transform_row` → `quarantine_record` → `upsert_notes_batch` → `upsert_metrics_batch` → `update_project_date_range` → 只报不改的 reconcile（:1946） | `note_id = f"{project_id}_{record_id}"`（`_common.py:530`），PostgREST `on_conflict=note_id`；**payload 里没有的键保留库值**；`metric_snapshots (note_id,window_label,source)`；隔离表 `(project_id,record_id,reason)` ignore_duplicates | 表级拉取失败只计数（:1596）；`transform_row` 异常只计数（:1729）；`_detect_missing_core_columns` 读库失败 → 守卫静默关闭（:476）；`update_project_date_range` 失败只 warning（:1919）；reconcile 查询失败 = "没有消失的"（:1969） | `errors>0` 才 exit 1；aggregate 步汇总 |
-| `comments_sync` → `sync_comments_from_raw_extra.py`：拉所有带 `raw_extra` 的笔记（:488）→ 每篇 `existing_comments` + `write_comments`（按 `(role,content)` 配对，id `{note_id}_h{sha12}_{nth}`）→ 清空 reconcile | **无 `skip_on_cron`**（yml:147-169）；内容键 id | reconcile 失败 → `stats=-1`，exit 0（:552）；`return 0` 永远（:573）；插入失败 raise → 该项目中途断，后面项目当晚全跳 | 看不见 |
+| `comments_sync` → `sync_comments_from_raw_extra.py`：拉所有带 `raw_extra` 的笔记（:488）→ 每篇 `existing_comments` + `write_comments`（按 `(role,content)` 配对，id `{note_id}_h{sha12}_{nth}`）→ 清空 reconcile | **无 `skip_on_cron`**（yml:147-169）；内容键 id | reconcile 失败 → `stats=-1` 仍 `return 0`（:552, :573），看不见；未捕获异常 → 该项目剩余笔记当晚跳过，yml `\|\| { fail_count++ }` 继续下一个项目（:162-165） | 异常路径：步红、aggregate 点名 `comments_sync`（:553-570）→ 邮件；reconcile 失败路径：看不见 |
 | essence / curate / ssll / prepublish | 见 1.2 / 1.3 / 1.4 | | |
 
 **tier 的来源链**：状态字段 → `tier` + `tier_source='状态字段'`（:792-799）；备注字段次之；评论兜底 `数值推断`（书架视图排除）。`人工补录` 没有任何代码路径写，库里手改会被下次 sync 覆盖。
@@ -145,10 +145,11 @@
 
 ### 2.1 P1
 
-**A-01 · 写作台 · 32 条"人审"全部是整批自审，9–37 秒内完成** — [生产确认]
-`assert_project_access:131-136` 只放项目 owner；`store.py:1354` `items.user_id = user_id`；`core.py:1944-1946` `reviewer_id=user_id` → `reviewer_id == items.user_id` 恒成立。生产：近 30 天 `decision_source='human'` 32 条，分 6 批（09-20 ~ 09-22），**每批 5–7 条在同一秒内 approved，距该批 commit 9–37 秒**，全部 `self_review=true`；`prepublish_evaluations` 近 30 天 `human` 32 条全是它们。协议 `protocol.md:107` 禁止自动通过。TV `audit_archived_provenance:488-491` 每晚打 32 条 WARN ④ 但没人看。
-后果：写作台 → TV 的"人审真值"（闸三 / 校准要用的）目前 100% 是模型给自己盖的章。
-修法：(1) 这 32 条改 `decision_source`（新值 `self_auto` 或并入 machine 集），TV `_MACHINE_DECISION_SOURCES` 同步；(2) `review_drafts` 拒绝 commit 后 N 分钟内 / reviewer == author 的整批 approve，或者引入团队成员模型；(3) 至少让 `sync_autowriter_decisions_to_prepublish.py` 对 `batches.params.source='deskcore'` 的 item 不写 `human`。
+**A-01 · 写作台 · 32 条"人审"全部是作者自审、整批同秒通过，调用者是人是模型库里分不出** — [生产确认：自审 + 整批秒过；调用者待查]
+`assert_project_access:131-136` 只放项目 owner；`store.py:1354` `items.user_id = user_id`；`core.py:1944-1946` `reviewer_id=user_id` → `reviewer_id == items.user_id` 恒成立。生产：09-08 ~ 10-08 窗内 `decision_source='human'` 32 条，分 6 批（09-20 ~ 09-22），**每批 5–7 条在同一秒内 approved，距该批 commit 9–37 秒**，全部 `self_review=true`；`prepublish_evaluations` 同窗 `human` 32 条全是它们。
+能证明的：这 32 条是作者自审，且一批 5–7 篇在不到 40 秒内整批通过。**不能证明的**：是模型自己调了 `review_drafts`（协议 `protocol.md:107` 禁止），还是 owner 在 MCP 客户端里说了一句"全过"——两种情形在库里一模一样。TV 的归档审计自己也写了这一点（`sync_autowriter_decisions_to_prepublish.py:438-442`：第一次真人自审分不出来，归 WARN ④ 不红）；它每晚打 32 条 WARN ④，没人看。
+后果：写作台 → TV 的"人审真值"（闸三 / 校准要用的）目前 100% 是作者给自己盖的章，且盖章速度不像逐篇读过。在查清调用者之前它不能当真值用。
+修法：(1) **先查再改**：Railway deskcore 日志里找这 6 次 `review_drafts` 调用的会话上下文，确认是人说的还是模型自作主张；查清前**不要**批量改 `decision_source`（改错会把真人审稿一起污染）；(2) 不管结论如何，`audit_archived_provenance` 的 WARN ④ 应升级成可见的灯，校准侧对 `reviewer_id == user_id` 的行打折或排除；(3) `review_drafts` 对 commit 后 N 分钟内、reviewer == author 的整批 approve 要求显式确认（或引入团队成员模型让 reviewer ≠ author）。
 
 **A-02 · 回程 · 31 篇笔记血缘指向"从 TV 补录进来的副本"（因果倒挂）** — [生产确认]
 `versions_for_linking`（`store.py:1956`）索引**所有** item，含 ingest 批次。隔天另一篇正文相同的 TV 笔记（交叉发、重发、上次崩了没链上）`body_exact` 命中补录副本 → `_backfillable`（`core.py:3901-3905`）→ `--write-tv` 把 `notes.source_autowriter_version_id` 写成一个"来自 TV"的版本。同轮重复处理正确（`dup_of` → `ingested`，:4015-4025），跨轮没有。
@@ -175,9 +176,10 @@
 生产：08-18 OKMAN 一晚 285 条升爆（82.4%）。
 修法（成比例）：`upsert_notes_batch` 前拉 `(note_id, tier)`，数从非正例/NULL 升到 {爆,大爆,参考} 的条数，`> max(15, 10% 项目笔记)` → 本轮 payload 剥掉 `tier/tier_source`（内容/指标照写），`::error` + exit 1，`workflow_dispatch` 加 `allow_mass_tier_flip`。
 
-**A-07 · 采集 · 评论步每晚全量重解析、无界、永远 exit 0** — [代码确认]
+**A-07 · 采集 · 评论步每晚全量重解析、无界；reconcile 失败仍 exit 0** — [代码确认]
 yml:147-169 无 `skip_on_cron`；`main():488` 拉所有带 `raw_extra` 的笔记（payload 含整段评论）；每篇 `existing_comments` → `fetch_all_pages` 以**空页**终止（`_common.py:1285`）→ ≥2 请求/篇 + 重排 + 插入；再 reconcile 翻全部评论 note_id。docstring `:52`"Skip if comments already has rows"自 COR-013 起是假的。17 个 mapping 都映射了随贴评论；最重的 NUC/NRT/HXZ 是 on_demand，内容不变。
-修法：(a) `notes` 上存 `sha256(_comment_text+_persona)`，没变就跳（别用 `updated_at`，`set_updated_at` 无条件 bump，D-078）；(b) 这步加 `skip_on_cron`；(c) 失败计数并非零退出。
+失败的响度要分两条路：未捕获异常（插入/重排失败）只断该项目剩余笔记，yml 的 `|| { fail_count++ }` 继续下一个项目，步红、aggregate 点名——这条路是看得见的；reconcile 失败 `stats=-1` 仍 `return 0`（:552, :573）——这条路看不见。
+修法：(a) `notes` 上存 `sha256(_comment_text+_persona)`，没变就跳（别用 `updated_at`，`set_updated_at` 无条件 bump，D-078）；(b) 这步加 `skip_on_cron`；(c) reconcile 失败也计数并非零退出。
 
 **A-08 · Jev ⑧ · 写库失败那一周静默丢；10-12 首次 main 定时跑缓存为空** — [代码确认]
 `scripts/external_corpus.py:87-88` 在 workflow 的写库步之前 `save_state()`（全部标 `seen`）；`external-corpus.yml:57-60` `apply_rows.py` 带 `continue-on-error: true`；`apply_rows.py:36-38` 失败返回 1。结果：job 绿、`actions/cache` 存了 `seen`、`known_ids` 没这些笔记、永远不再抓；唯一痕迹是 artifact。另：唯一一次好跑（#11）来自分支 `claude/focused-franklin-blz1ig`，Actions 缓存只能从同分支或默认分支恢复 → 10-12 在 main 上 `seen={}`、`monthly={}`，钱由 `known_ids` 护着，但 ~1,400 个 triage 拒绝项要重判；`run_once` 单线程（`external.py:371-434`），估 16–27 min，`timeout-minutes: 40`。`systemic_failure` 只在**全部**失败才红（:450-453）。
@@ -197,8 +199,8 @@ yml:147-169 无 `skip_on_cron`；`main():488` 拉所有带 `raw_extra` 的笔记
 | # | 环节 | 一句话 | 证据 | 生产（10-08） | 修法 |
 |---|---|---|---|---|---|
 | B-01 | 通道 2 | 饱和灯永远 rc=2，前提已退役 | 视图唯一的杠杆路径是 `notes.note_id = items.external_source_id`（`notes_v1_8:89`），没人写这列（push 没跑过，`deskcore/store.py:1327`"不碰 items.external_source"）；视图头自己说"对照指标…可以下线"（v1_8:40-46） | 8 个池 `lever_measurable_count` 全 0；`external_source_id` 非空 0；血缘替代路径只 1 条 | 退灯：删步、删 docs/29 行、记 DECISIONS；多样性已由 `fingerprint.cap_by_shape` 保 |
-| B-02 | 通道 2 | 无再策展路径；卡内容冻结在首次策展 | `/curate` 只转 `limit/project/dry_run`；无 workflow 传 `--recurate/--reannotate`；`library_version` 不含 essence/content 时间；v1_4 的 `updated_at` 触发器/索引"供馆员缓存失效"是死的 | **232 / 306 张卡**的 essence 或正文晚于 `curated_at` | worker 加 `recurate`/`curator_version`；`library_version` 折入 `max(essence_annotated_at)`；改 docs/14:125、v1_5:8 |
-| B-03 | 通道 2 | 30 天 prune 会在对比日之前删掉 D-088 的"改前"基线 | `prune_librarian_cache.py:64` 删 `last_hit_at < now-30d`；D-088 让旧键全失效，不会再命中 | 24 行 `select_ms` 基线，`last_hit_at` 09-21 ~ 09-30 → **10-21 起消失**，与"两周后对比"撞上 | prune 排除 `select_ms IS NOT NULL`，并把 24 个数现在抄进 `data-analysis/` |
+| B-02 | 通道 2 | 无再策展路径；卡内容冻结在首次策展 | `/curate` 只转 `limit/project/dry_run`；无 workflow 传 `--recurate/--reannotate`；`library_version` 不含 essence/content 时间；v1_4 的 `updated_at` 触发器/索引"供馆员缓存失效"是死的 | **164 / 306 张卡**的 `essence_annotated_at` 晚于 `curated_at`（只按 essence 算；`notes.updated_at` 不能用——`tv_notes_updated_at` 触发器对任何 UPDATE 都 bump，夜跑 upsert 让 229/306 都"晚于"） | worker 加 `recurate`/`curator_version`；`library_version` 折入 `max(essence_annotated_at)`；改 docs/14:125、v1_5:8 |
+| B-03 | 通道 2 | 30 天 prune 会在对比日之前删掉 D-088 的"改前"基线 | `prune_librarian_cache.py:64` 删 `last_hit_at < now-30d`；D-088 让旧键全失效，不会再命中 | 24 行 `select_ms` 基线，`last_hit_at` 09-21 ~ 09-30 → **10-21 起消失**，与"两周后对比"撞上 | 现在就把这 24 行（`cache_key`、`select_ms`、`created_at`）抄进 `data-analysis/`，或打标签 / 抄到一张只增的样本表；**不要**整体豁免 `select_ms IS NOT NULL` 行——v1_16 起每次冷借都带 `select_ms`（`core.py:488-509`），豁免等于关掉保留 |
 | B-04 | 通道 2 | 馆员降级对写手 = "没卡"，交通灯怪 autowriter | `app.py` 200 + `status=degraded`，`librarian_client.py:159-181` 只看 `selected`；降级不写缓存行 → `check_librarian_traffic.py:84-88` 打印"通道 2 暗着…修在 autowriter 仓" | `selected='[]'` 缓存 2 行（可被服务一个月） | aw 客户端 `status in (degraded,error)` → `BORROW_ERROR`；TV 把降级计进可查的地方 |
 | B-05 | 通道 2 | curate 单请求 15 卡 × 2 次 LLM vs 边缘 300 s → 502 + 锁仍持 → 后面项目全 409 | `worker/app.py:66` 900 s，`daily-sync.yml:87` 边缘 ~300 s；essence 有 `ESS_REQ_MAX=8`，curate 没有；预算只在 200 时扣（:361） | D-088 测到坏日 47–86 s/调用 | `CUR_REQ_MAX≈5` 同 essence 循环，或 worker 异步 |
 | B-06 | Jev | 账本写入非事务 | `judge/core.py:258-267` 200 行/批；`api.py:253/314` 无 try → 已付 Jev 钱后 500；`/judge` 200 篇 = 4,000 行 20 批可半写；`verify_supabase_state.sql` #86 只查"有答案无笔记"，不查反向 | 目前 0 半写 | 批失败回滚或记 run 级标记；#86 加反向 |
@@ -210,13 +212,13 @@ yml:147-169 无 `skip_on_cron`；`main():488` 拉所有带 `raw_extra` 的笔记
 | B-12 | 运维 | `SUPABASE_SERVICE_ROLE_KEY` 散在 ~10 处、无轮换清单 | TV Actions、Jev Actions、Railway ×6、Vercel；看板 README 说 service_role、代码优先 anon（`lib/supabase.ts:17`） | — | RISKS 加"secret → 每个消费者"矩阵；Vercel 真用 anon |
 | B-13 | 采集 | 状态格清空 = 旧爆永久；未映射状态值静默 NULL | 飞书省略空字段（:1759），`transform_row:792` 只在有值时设 `tier` → 保留库值；`状态="已发布"` → `tier=None, tier_source='状态字段'` 无 flag（只有方向有 `direction_unmapped`，:846） | **106 行** `tier IS NULL AND tier_source='状态字段'` | 状态列在 `field_mapping` 且本轮 `seen_cols` 里出现过 → 缺格视为显式 NULL；`data_quality_flags.tier_unmapped` + 计数 + `::warning` |
 | B-14 | 采集 | 未来 `publish_time` 不夹，漏到 6 个消费者 | `parse_feishu_date` 放行（`_common.py:750`）；`hours_since_publish` 负数（:1156）；`projects.end_date` 未来；`fetch_pending_baokuan` 12 月窗放行（`ssll:152`）、v1_19 同；`era_tag` 未来季度；aw `tvlink.in_window` 用 `lag_days` | **10 行**，最晚 2026-10-11；0 条在 ssll | `transform_row` 里 `> now()+24h` → 存 `raw_extra._publish_time_raw`、置 NULL、flag；`fetch_pending_baokuan`/v1_19 加 `publish_time <= now()` |
-| B-15 | 采集 | 隔离表只写不读、只增不减 | `quarantine_record` ignore_duplicates，首见冻结；唯一读者是 sync 自己的 acked 查询（:987）；无视图/看板/脚本消费 | `undeclared_fields_quarantine`：**5,013 pending / 28 reviewed；2,414 条 pending 的记录在 `notes` 里已经存在**（已修复仍 pending） | upsert 更新 `last_seen_at`；`notes` 里有了自动 `resolved`；每晚 `::notice` |
+| B-15 | 采集 | 隔离表只写不读、只增不减 | `quarantine_record` ignore_duplicates，首见冻结；唯一读者是 sync 自己的 acked 查询（:987）；无视图/看板/脚本消费 | `undeclared_fields_quarantine`：**5,013 pending / 28 reviewed**。pending 里 2,414 条的记录在 `notes` 里存在，但要分两类：2,039 条 reason 是 `undeclared_fields*`——D-055 起行照常入库、只记一笔账，存在是设计；**375 条 reason 是 `missing_required:raw_content`，现在 `notes` 里有了正文 = 已修复仍 pending** | upsert 更新 `last_seen_at`；`resolved` 的判定按 **reason** 来（该 reason 在后续一次完整扫描里不再出现），不能按"`notes` 里有行"；每晚 `::notice` pending-且-今日仍出现 的数 |
 | B-16 | 采集 | onboarder 校形不校合；合并后无人重读飞书 schema | 校闭集词表、D-021 覆盖；不校 `field_mapping` 右侧是不是真列、不校 `direction_decomposition` 键 ⊆ 实际值、不跑 `_reject_shadowed_tier_rules`；重命名只靠"曾经填过"探针（D-055），`_note_status_raw/_comment_text/_note_for_tier` 不在内（:404-412）；`preflight.yml` 手动 | — | 每周只读 `preflight_mapping.py`；`load_mapping` 断言目标 ⊆ 已知列 |
 | B-17 | 特征层 | 闸一裁决无机器可读形式；题库未冻结 | 过 10 / 不过 8 / κ 不可算 2，无 `retired:`、无 `gate1_status`；三道抖动题只有"加样本"没有裁决；`status: draft`、无 `frozen_sha256`；假设里多处 "?" | — | 一条 DECISIONS 逐题 gate-1 status，闸二脚本读它；闸二日 `status: frozen` |
 | B-18 | 特征层 | 慢性欠产不可见 | 项目级 transient 只 warning；红要 >½ 饿着；看门狗只看成功；docs/29 无产量灯 | 近 14 天夜增 120/晚 → 10-03 115 → 10-07 **84**，`bad=0`（是 daily 项目在排空，不是故障；D-089 的 24 只对还有存量的项目有意义） | `ok batches < ⌈attempted × LIMIT / (2·REQ_MAX)⌉` → `::error`；docs/29 加日增量灯 |
 | B-19 | 写作台 | 补录副本（1,593/30 d）三处漏 | (i) A-02 路径；(ii) `list_projects`"历史成稿指纹数"和 `backfill_gap.eligible` 计入（`legacy_version_pages` 上限 5000）；(iii) Streamlit 审稿页列为 pending（`store.py:1279`） | — | "真写" = `batches.params->>'source' IS DISTINCT FROM 'ingest'` 统一 |
 | B-20 | 写作台 | commit 半态目录 + `identity_error` 仍 consume | 指纹无版本（:1685；替换挂接失败旧指纹已删新指纹孤儿 :1596-1617）；版本无指纹（ingest :2970）；`consume_angle` 不看 `minted_ok`（:1633-1647）；`tv_note_links.item_id NULL` 从不修；锁释放失败 → 600 s TTL；`batch_metrics` 插入失败偏 8 s 样本 | 悬空 `consumed_version_id` 0；`item_id NULL` 0 | `if minted_ids.get(i) not in minted_ok and not d.get("version_id"): continue`；其余记入 runbook |
-| B-21 | 采集 | 飞书已删的笔记仍喂下游 | `notes_v1_9` 只报不改（:2042）；删后重建得新 `record_id` → 新 `note_id`，无按 `publish_url` 去重 | **TGV 144 · HATHERINE 6 · TUGE 4** 篇 `last_seen_at` 超 3 天且已进 ssll 或已标 essence | 决定 orphan 的下游地位（书架/ssll/L2 是否排除） |
+| B-21 | 采集 | 飞书已删的笔记仍喂下游 | `notes_v1_9` 只报不改（:2042）；删后重建得新 `record_id` → 新 `note_id`，无按 `publish_url` 去重 | 按**项目自身最近一次完整同步**比（不能用固定 3 天：on_demand 项目不进夜跑，`last_seen_at` 老是预期的）：**HATHERINE 6 · TUGE 4** 篇落后于本项目最近一次同步且已进 ssll 或已标 essence；七个 on_demand 项目 `last_seen_at` 全空（NUC 657 · NRT_3 598 · NRT_2 499 …）是从未盖章，不是消失 | 决定 orphan 的下游地位（书架/ssll/L2 是否排除）；消失判定用 `last_seen_run_id` 对本项目最近 run |
 | B-22 | 运维 | `public` 5 张表无 RLS；18 个 `v_dash_*` 是 SECURITY DEFINER | Supabase 安全顾问 ERROR 级 | `public.projects / pipeline_runs / reference_samples / outputs / stage_logs`（anon 可读写？需按 grant 再核）；18 视图 | 开 RLS（ssll 用 service_role 不受影响）；视图改 `security_invoker` 或限 anon 的 grant |
 | B-23 | Jev ⑧ | 外部语料周跑的可见性 = 0 | 无 TV 灯看 `v_external_reference` 新鲜度；"绿但空"（A-08 或全 triage 拒）哪里都看不见；邮件只发给最后改 cron 那行的人 | `max(fetched_at)` 10-08 05:13 | docs/29 灯：周二查 `max(fetched_at) > now()-8d` |
 
@@ -237,7 +239,7 @@ yml:147-169 无 `skip_on_cron`；`main():488` 拉所有带 `raw_extra` 的笔记
 - **C-13** 看板只读 18 个 `public.v_dash_*`（`lib/dashboard-data.ts:74-91`），v1_19 两列不会出现在 Vercel 上；硬编码 `AI_DIMS=14`、`ARCHETYPES=19`、三个 `SHOWCASE_EXT_*` 合成项目、静态 `TICKER_EVENTS`。
 - **C-14** Jev 未配置返回 503，TV 返回 401（`judge/api.py:100`）；deskcore 两个都容忍。
 - **C-15** 三个 `ci.yml` 和两个 backfill 无 `timeout-minutes`（默认 360）。
-- **C-16** 迁移命名三种口径（`20260920054230`、`notes_v1_17_…`、`aw_008_…`）；README Step 0 守卫只盖 `notes_v1_*`，`dashboard_views_v*` / `security_revoke_*` 无部署清单。生产迁移表今天 66 条，v1_2 ~ v1_19 齐（无 v1_3，文件也不存在）。
+- **C-16** 迁移命名三种口径（`20260920054230`、`notes_v1_17_…`、`aw_008_…`）；README Step 0 守卫只盖 `notes_v1_*`，`dashboard_views_v*` / `security_revoke_*` 无部署清单。生产迁移表今天 66 条，v1_2 ~ v1_19 齐；v1_3（`schemas/notes_v1_3_reference_tier.sql`）在迁移表里叫 `add_reference_tier`（20260527122114），名字对不上是第三种口径的又一例。
 - **C-17** 一次性表无过期：`autowriter.versions_num_backup_20260826`（448 kB，08-26 起"可以 drop"）、`truth_vault.reference_samples_backup_tv_stale_20261008`（704 kB）、`notes_ssll_marker_backup_20261008`（72 kB）——D-086 定 ≈10-22 drop；`v_l2_labels_v1` 等闸二；`prepublish_evaluations` legacy-only 仍每晚同步。
 - **C-18** `_detect_missing_core_columns` 读库失败 → 守卫静默关（`:476-478`）。
 - **C-19** worker 互斥是进程内的；Railway `restartPolicyMaxRetries: 3` 后服务停着，sync 侧会判 systemic 红——可接受，记文档。
@@ -272,14 +274,14 @@ yml:147-169 无 `skip_on_cron`；`main():488` 拉所有带 `raw_extra` 的笔记
 3. **时钟没对齐**：cron `02:17` 实际 `08:04–09:00`；`12:47` 实际 `16:45–20:48`；aw 回程 `04:00` 比夜跑早；features-sync 慢一点就越过 `23:41` 看门狗；Jev 周跑整点。
 4. **真值被自己人写**：reviewer == author（A-01）；MCP 的 project 自报（A-09）；人工补录 `tier_source` 没有写入路径；`人工` 审稿源头全是模型。
 5. **多个快照并存、没有选择器**：题库 sha 两半（A-03）；Jev vs Opus（A-10）；comment reader v0.3 vs v0.4（B-09）；补录副本 vs 真写（B-19）；旧 `_c{n}` 评论 id vs 新哈希 id。
-6. **半态只在代码注释里**：commit 的六种半态、ingest 的无 try 循环、worker 的临时盘死信队列、隔离表的 2,414 条"已修复仍 pending"。
+6. **半态只在代码注释里**：commit 的六种半态、ingest 的无 try 循环、worker 的临时盘死信队列、隔离表的 375 条"已修复仍 pending"。
 7. **文档记的是出发时的样子**：CURRENT_STATE 06-09、RISKS 05-22、README 的计数、runbook 的 02:00——每次决策都进了 DECISIONS，但上游入口文档没人回写。
 
 ---
 
 ## 5. 建议处理顺序（本文不做，供排期）
 
-1. **先止血（一天内）**：A-01 把 32 条自审改标 + `review_drafts` 加同人/秒级拒绝；A-02 这 31 篇血缘置空 + 匹配索引排除 ingest；B-03 把 24 个基线数抄进 `data-analysis/`（10-21 前）。
+1. **先止血（一天内）**：A-01 查 Railway 日志定这 6 次 `review_drafts` 的调用者，查清前校准侧先排除自审行、不改标；A-02 这 31 篇血缘置空 + 匹配索引排除 ingest；B-03 把 24 个基线行抄进 `data-analysis/`（10-21 前）。
 2. **再对时钟（一天内）**：A-05 回程 cron 挪到 14:00 UTC；Jev cron 改 `7 3 * * 1` + concurrency；A-08 写库失败要红（10-12 之前）。
 3. **闸二能跑之前（一周）**：A-03 的脚本 + 快照口径决定 + on_demand 负例回填；B-17 闸一裁决落 DECISIONS；题库冻结。
 4. **写手回来之前（一周）**：A-04 借卡解耦；B-04 降级→`BORROW_ERROR`；A-09 MCP 薄客户端化；B-07 决定项目层。
@@ -294,11 +296,12 @@ A-10 不排期：闸二第一次跑完之前不切 Jev 主抽取。
 ## 6. 附录：复核用 SQL（10-08 跑过的，可直接重跑）
 
 ```sql
--- A-01 自审
+-- A-01 自审（固定窗 09-08 ~ 10-08，重跑时别去掉窗，否则会把以后的真人审稿一起捞进来）
 select b.project_id, left(b.id::text,8) batch, count(*) n, min(v.created_at) first_commit,
        min(i.decided_at) first_decided, bool_and(i.reviewer_id=i.user_id) all_self
 from autowriter.items i join autowriter.versions v on v.item_id=i.id join autowriter.batches b on b.id=i.batch_id
-where i.decision_source='human' group by 1,2 order by 4;
+where i.decision_source='human' and i.decided_at >= '2026-09-08' and i.decided_at < '2026-10-09'
+group by 1,2 order by 4;
 
 -- A-02 血缘倒挂
 select n.project_id, l.match_kind, count(*) from truth_vault.notes n
@@ -323,9 +326,9 @@ select date_trunc('week',v.created_at)::date w, coalesce(b.params->>'source','ui
 from autowriter.versions v join autowriter.items i on i.id=v.item_id join autowriter.batches b on b.id=i.batch_id
 where v.created_at > now()-interval '60 days' group by 1,2 order by 1,2;
 
--- B-02 陈旧卡
+-- B-02 陈旧卡（只看 essence；notes.updated_at 被夜跑 upsert 触发器无条件 bump，不能当内容变更时间）
 select count(*) from truth_vault.v_flywheel_lesson_cards c join truth_vault.notes n on n.note_id=c.source_note_id
-where c.is_curated and (n.essence_annotated_at > c.curated_at or n.updated_at > c.curated_at + interval '1 day');
+where c.is_curated and n.essence_annotated_at > c.curated_at;
 
 -- B-03 基线存活
 select count(*), min(last_hit_at), max(last_hit_at) from truth_vault.flywheel_librarian_cache where select_ms is not null;
@@ -334,11 +337,16 @@ select count(*), min(last_hit_at), max(last_hit_at) from truth_vault.flywheel_li
 select count(*) from truth_vault.notes where tier is null and tier_source='状态字段';
 select count(*), max(publish_time) from truth_vault.notes where publish_time > now();
 select status, count(*) from truth_vault.undeclared_fields_quarantine group by 1;
-select count(*) from truth_vault.undeclared_fields_quarantine q
-join truth_vault.notes n on n.note_id = q.project_id||'_'||q.feishu_record_id where q.status='pending';
-select project_id, count(*) filter (where last_seen_at < now()-interval '3 days'
-  and (synced_to_ssll_at is not null or essence_annotated_at is not null)) vanished_downstream
-from truth_vault.notes group by 1 having count(*) filter (where last_seen_at < now()-interval '3 days') > 0;
+-- 已修复仍 pending：只算 missing_required 这一类；undeclared_fields* 的行按 D-055 本来就入库，存在不等于修复
+select q.reason, count(*) from truth_vault.undeclared_fields_quarantine q
+join truth_vault.notes n on n.note_id = q.project_id||'_'||q.feishu_record_id
+where q.status='pending' group by 1 order by 2 desc;
+-- 消失：对本项目自己最近一次同步比，不用固定天数（on_demand 项目不进夜跑）
+with pl as (select project_id, max(last_seen_at) last_full from truth_vault.notes group by 1)
+select n.project_id, count(*) filter (where n.last_seen_at < pl.last_full - interval '1 day'
+  and (n.synced_to_ssll_at is not null or n.essence_annotated_at is not null)) behind_downstream
+from truth_vault.notes n join pl on pl.project_id=n.project_id group by 1
+having count(*) filter (where n.last_seen_at < pl.last_full - interval '1 day') > 0;
 
 -- ⑤ / ⑧ / mock
 select count(*) from truth_vault.note_feature_answers where subject_type='aw_version';
