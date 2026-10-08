@@ -234,3 +234,43 @@ TV 侧前置（切法修复 + 1,210 条旧行清理）9/27 已做完，Jev 侧 `
 6. 跑评论回填 ②。
 7. 假期后一周看写作台周产量回不回到 9 月的水平；回不去再查协议 / skill 导入。
 8. 文档"当前事实"段统一刷一遍（README 下半、RISKS 表头、docs/00 §3 补两条路）。
+
+---
+
+## 5. 10-08 当天的进展（owner：「能做的都一一完成」）
+
+| 条 | 状态 | 在哪 |
+|---|---|---|
+| P0 通道 1 清理 285 条 | ✅ 已清（备份两张表，10-22 后可删） | D-086 |
+| P0 ② 回收判据对称化 + ③ 看板 gated / stale | ✅ #165 合并；v1_19 已 apply 到生产（gated 80 = 69 铺评工单 + 11 synthetic，stale 0） | D-087 |
+| P1 馆员冷路径预筛 | ✅ #167（整架取回、按项目挑 24 张、rank 前 8 永远在、输出封顶）；合并后 Railway 重部署馆员 | D-088 |
+| P1 judge 服务 | ⏳ **代码契约本地跑通**（见下），部署 + 两个 env 要 owner 做 | 本节 |
+| P1 闸二正例缺口 | 📋 `FEATURE_LIMIT` 默认 12 → 24；237 篇定向清单备好，触发等 owner 拍板 | D-089 |
+| P2 外部语料灯 | ✅ 登进 docs/29；10-12 周一 03:00 UTC 是 main 上第一次定时真跑 | docs/29 |
+| P2 评论回填 ② | 📋 Jev `scripts/backfill_comments.py --from-db --write` 就绪，要 `TYPESAFE_API_KEY` + Supabase 两个 env；9,652 条 × 2 套题库，费用 owner 定 | — |
+
+### judge 这条缝：本地已验证的部分
+
+10-08 在本机起真的 `judge.api`（`JUDGE_MOCK=1`，不联网、不写库）+ 真的 aw `judge_client`，写作台的请求体逐条打过去：
+
+| 情形 | judge 回 | aw 记成 |
+|---|---|---|
+| 真载荷（`write=true`，SPX_phase1） | 422（mock 拒绝写库，**只在 mock 下**；线上有 Supabase 就是 200 + written） | bad_request |
+| 同载荷 `write=false` | 200，passed / hard_fails / policy 齐全，4 次 Jev 调用 | **ok** |
+| OKMAN_phase1（处方药） | 403 `policy: …rx_cleared…` | **policy_blocked** |
+| `subject_id=draft` + write | 422 | bad_request |
+| 错 key | 401 | unavailable |
+| 端口没人听 | 连接拒绝 | unavailable |
+
+`/health` 回 `auth.mode: key`、13 个题库全列出。aw 侧 `judge.configured` 读的就是这两个 env。
+
+### judge 上线：owner 要做的（按顺序，约 15 分钟）
+
+1. Railway → New Service → GitHub repo `TangVarie/jevforcoentent`、分支 main、root `/`（`railway.json` 已配 start 与 `/health`）。
+2. 该服务的变量：`TYPESAFE_API_KEY`、`JUDGE_API_KEY`（自己生成，如 `openssl rand -hex 24`）、`SUPABASE_URL`、`SUPABASE_SERVICE_ROLE_KEY`（与 TV 同值）、`JUDGE_WORKERS=4`。**不要设** `JUDGE_MOCK` / `JUDGE_ALLOW_ANONYMOUS`。
+3. 部署后 `curl $JUDGE_URL/health`：要看到 `auth.mode: "key"`、`jev_key: true`、`write_enabled: true`、`mock: false`。
+4. deskcore（autowriter 的 Railway 服务）加 `JUDGE_URL`（第 1 步的公网地址，不带尾斜杠）与 `JUDGE_API_KEY`（同第 2 步）。改变量自动重部署。
+5. `curl $DESKCORE_URL/health | jq .config.judge` → `configured: true`。
+6. **`tv_project_map` 缺口**（10-08 实查近 30 天有稿的项目）：RIO轻享 4 个 aw 项目（129 版）和 hatherine-QNA流量帖（10 版）**没接 tv-map，一篇都不会发**。`python -m deskcore.cli tv-map` 把它们映到 `RIO_phase1` / `HATHERINE_phase1`（判定只要映射行在；`ingest_target` 另议）。
+7. 处方药：OKMAN 两个项目按 `data_policy.yaml` 一律 403（设计如此），合同确认后加进 `rx_cleared`。
+8. 随手 commit 一篇 → 返回 `judge.summary {"ok": 1}`；TV `select count(*) from truth_vault.note_feature_answers where subject_type = 'aw_version'` 从 0 变非 0。做到这步告诉我，我来核账本行与 `batch_metrics`，两周后按 §3.8 重定 `JUDGE_TIMEOUT_SEC`。

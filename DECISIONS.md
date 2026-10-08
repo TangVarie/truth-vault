@@ -5726,3 +5726,19 @@ python job 里 import 馆员的 8 步（TV-03 / TV-05 / TV-06 / 守卫 6 / put_c
 ### 没做
 
 - 没动 aw 的 `LIBRARIAN_TIMEOUT_SEC`、brief 字段、注入方式；没换模型；没加新灯（`select_ms` 列就是量它的地方，D-074）。
+
+## D-089 · 特征层：`FEATURE_LIMIT` 默认 12 → 24；闸二的正例缺口用 `note_ids` 定向抽 237 篇，不整项目回填；外部语料灯登进 docs/29（2026-10-08）
+
+来源：三仓复核报告 §3「闸二算不动」「外部语料定时跑连红没人看」；owner：「能做的都一一完成」。
+
+### 定了什么
+
+1. **`features-sync.yml` 默认 `FEATURE_LIMIT` 12 → 24。** 9-30 到 10-07 八晚实测 35–85 分钟（7 个项目还有余量 × 12 篇；ANSHEN / BJS / TUGE 已抽完），离 240 分钟上限还有三倍；翻倍后预期 70–170 分钟。RIO 还剩 598 篇，12/晚要 50 晚，24/晚 25 晚。
+   ⚠️ repo variable `FEATURE_LIMIT` 若设了会盖掉 yaml 默认值，要生效得去 Settings → Variables 改或删；这一步在仓库外，记在 yaml 注释里。
+2. **闸二缺的正例不靠整项目回填。** 10-08 实查 411 篇 爆/大爆 里 237 篇没有特征（on_demand 七项目 187 + daily 50）；趴那边 2,064 篇有特征早就够了。整项目回填 on_demand 是 2,359 篇、7–9 次 6 小时的 run，而闸二只缺这 237 篇——用 `backfill-features.yml` 的 `note_ids` 模式分两次（187 / 50，≤200 一次、batch 2）定向抽，约 4 h + 1 h。
+   清单与触发输入在 `data-analysis/gate2-baokuan-missing-features-2026-10-08.md`。**触发是 owner 拍板的事**（LLM 费用），这里只把清单备好。
+3. **`external-corpus.yml` 登进 docs/29「不打哨兵行、但也是灯的」表**：它在 Jev 仓、每周一 03:00 UTC、红了 GitHub 发邮件、修在 Jev 仓。9-28 / 10-05 两次定时跑连红没人收，就是因为它不在任何登记册里。
+
+### 没做
+
+- 没触发任何 backfill；没动 on_demand 闸（D-047）的语义；没给闸二加新灯。
