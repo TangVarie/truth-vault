@@ -14,6 +14,7 @@ dry_run 与真写两种模式都跑, 真写模式核对假客户端收到的 del
   ③ 去掉 done 去重                               → §2 两路都命中的那篇被数两次, 红
   ④ B 路 .in_() 不分批                            → §4 单次 in_ 超 200, 红
   ⑤ 回收按 publish_time 撤                        → §2 的 n_old (老但仍是爆) 被撤, 红
+  ⑥ _retract_one 改回「先删样本、后清标记」       → §2 第一条 delete 就炸 (标记还没清), 红
 
 跑法: cd scripts && python check_ssll_retract.py
 """
@@ -144,7 +145,12 @@ class FakeSB:
         if q.op == "delete":
             (col, op, sid), = q.filters
             assert q.table_ == "reference_samples" and col == "id" and op == "eq", q.filters
-            assert any(x["id"] == sid for x in self.samples), f"删了一个 ssll 里不存在的 id: {sid}"
+            hit = [x for x in self.samples if x["id"] == sid]
+            assert hit, f"删了一个 ssll 里不存在的 id: {sid}"
+            # 写序 (D-087, codex review on #165): 删样本之前这篇的 TV 标记必须已经清掉 —— 两步之间断了,
+            # 留下「标记空、样本在」下一夜 B 路认得出来; 反过来「标记在、样本没了」两路都够不着。
+            owner = hit[0].get("source_truth_vault_note_id") or hit[0].get("_legacy_key")
+            assert owner in self.updated, f"先删样本后清标记: 样本 {sid} 的笔记 {owner} 标记还没清"
             self.samples = [x for x in self.samples if x["id"] != sid]
             self.deleted.append(sid)
             return []
@@ -255,4 +261,17 @@ for r in mixed:
     eligible = s.ssll_eligibility_reason(r) is None
     assert (r["note_id"] in pushed) == eligible, f"push 与资格判据分叉: {r['note_id']} pushed={r['note_id'] in pushed} eligible={eligible}"
 print("✓ D-087: push 侧与回收侧是同一份判据 (12 行逐行对称)")
+
+# ══ §6 · 写序「先清标记、再删样本」, 断在中间留下的「标记空、样本在」两种走向都能自愈 ═══════════════
+#   (a) 笔记仍不合格 → 下一夜 B 路从 ssll 侧取到、撤掉 (就是 §2 n_orphan 的形态, 这里单独钉一次)
+#   (b) 笔记又合格了 → push 侧 fetch_pending_baokuan 取到它, existing_ssll_sample_id 认出旧样本 → 只补标记不重插
+notes6 = [note("h_bad", "趴", None, synced=None), note("h_good", "爆", None, synced=None)]
+sb6 = FakeSB(notes6, [{"id": "s-h_bad", "source_truth_vault_note_id": "h_bad"},
+                       {"id": "s-h_good", "source_truth_vault_note_id": "h_good"}])
+install(sb6)
+assert s.retract_stale_synthetic_from_ssll(sb6, dry_run=False) == 1 and sb6.deleted == ["s-h_bad"], \
+    f"标记空、样本在、仍不合格的那篇要被撤 (且只撤它): {sb6.deleted}"
+assert [r["note_id"] for r in s.fetch_pending_baokuan(sb6)] == ["h_good"], "标记空、又合格的那篇要回到 push 候选"
+assert s.existing_ssll_sample_id(sb6, "h_good") == "s-h_good", "push 侧要认出旧样本 (只补标记, 不重插)"
+print("✓ D-087: 先清标记再删样本; 断在中间的残留, 不合格的下一夜撤、合格的 push 侧认出旧样本只补标记")
 print("\ncheck_ssll_retract: all checks passed")

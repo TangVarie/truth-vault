@@ -314,7 +314,7 @@ def retract_stale_synthetic_from_ssll(
     两条路, 候选从两头取, 判据只有一份 (ssll_eligibility_reason):
 
       B · 从 ssll 侧取 (D-087): 带 source_truth_vault_note_id 的【全部】样本 → 回 TV 查这些笔记现在的
-          tier / tier_source / flags → 不合格就按样本 id 删、清标记。这一路覆盖 tier 降档 / tier_source
+          tier / tier_source / flags → 不合格就清标记、按样本 id 删。这一路覆盖 tier 降档 / tier_source
           退回未确认 / 指标不可信, 也天然覆盖 orphan 行 (ssll 有样本、TV 标记为 NULL)。
           TV 里找不到的笔记【不动】—— 找不到 ≠ 不合格; `--project` 时别的项目的笔记也不动。
       A · 从 TV 侧按 tier 取 (D-068, 原路保留): 指标不可信的 爆/大爆, 用 existing_ssll_sample_id 走
@@ -335,16 +335,23 @@ def retract_stale_synthetic_from_ssll(
 
 
 def _retract_one(sb, note_id: str, sample_ids: list[str], reason: str, *, dry_run: bool, done: set[str]) -> None:
-    """删 ssll 样本 (按 id, 不碰无 TV lineage 的原生样本) + 清 TV 两列标记。两路共用, 写法只此一处。"""
+    """清 TV 两列标记 + 删 ssll 样本 (按 id, 不碰无 TV lineage 的原生样本)。两路共用, 写法只此一处。
+
+    写序固定【先清标记、再删样本】(codex review on #165): 两步是两次 PostgREST 调用, 中间断了 (网络抖一下、
+    进程被杀) 留下的是「标记空、样本还在」—— 下一夜 B 路从 ssll 侧照样取到它、照样撤; 它要是又合格了,
+    push 侧 existing_ssll_sample_id 认出旧样本、只补标记 (recovered orphan, 老路)。
+    反过来先删后清, 断在中间留下「标记还在、样本没了」: B 路看不见 (样本没了), A 路只扫 爆/大爆,
+    这篇以后再合格也永远推不回去, 看板还显示"已推"。check_ssll_retract.py 的假客户端钉着这条写序。
+    """
     if dry_run:
         logger.info("[dry-run] would retract from ssll: %s (%s, samples=%s)", note_id, reason, sample_ids)
         done.add(note_id)
         return
-    for sid in sample_ids:
-        sb.schema("public").table("reference_samples").delete().eq("id", sid).execute()
     sb.schema("truth_vault").table("notes").update(
         {"synced_to_ssll_at": None, "synced_ssll_reference_sample_id": None}
     ).eq("note_id", note_id).execute()
+    for sid in sample_ids:
+        sb.schema("public").table("reference_samples").delete().eq("id", sid).execute()
     logger.warning("Retracted from ssll (%s 不污染飞轮): %s (samples=%s)", reason, note_id, sample_ids)
     done.add(note_id)
 
