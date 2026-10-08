@@ -41,10 +41,15 @@ on:
         description: "Skip Mode A essence annotation (saves Anthropic spend)"
         type: boolean
         default: false
+      allow_mass_tier_flip:
+        description: "放行整批 tier 翻转闸 (D-091)。默认一个项目一晚超过 max(15, 10% 存量) 篇在 爆/大爆/参考 与非正例之间翻转, 这些篇只写内容不写 tier 并红 (08-18 OKMAN 285 篇误标那种)。去飞书确认是真的批量改标之后, 勾上它再跑一次。"
+        type: boolean
+        default: false
   schedule:
     # 02:17 UTC = 10:17 北京时间. 飞书表通常这之前已经填好昨日数据.
-    # 非整点分钟是故意的 (GitHub 文档: 整点是 schedule 高负载时段, 会排队几小时); 写作台的
-    # tv-sync cron 在 04:00 UTC, 这趟必须在它之前跑完, 否则新笔记隔天才对上 (D-064)。
+    # 非整点分钟是故意的 (GitHub 文档: 整点是 schedule 高负载时段, 会排队几小时)。
+    # ⚠️ 实际起跑 08:04–09:00 UTC (2026-10-01 ~ 10-08 八次实测), 跑 45–55 分钟; 写作台的 tv-sync cron
+    # 2026-10-08 起挪到 14:00 UTC 排在它后面 (原 04:00 在它前面, 每天对的是前一天的笔记, 审计 A-05)。
     - cron: '17 2 * * *'
 
 # 同一时刻只允许一个 daily-sync 在跑。cron 与手动 workflow_dispatch 会撞:
@@ -135,13 +140,16 @@ jobs:
         run: |
           DRYRUN=""
           [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRYRUN="--dry-run"
+          # D-091: 整批 tier 翻转闸的放行开关只在手动触发时可能为 true; 定时跑永远不放行。
+          ALLOWFLIP=""
+          [ "${{ github.event.inputs.allow_mass_tier_flip }}" = "true" ] && ALLOWFLIP="--allow-mass-tier-flip"
           fail_count=0
           for f in ../mappings/*.yaml; do
             p=$(basename "$f" .yaml)
             [ "$p" = "_template" ] && continue
             [ -n "$PROJECT_FILTER" ] && [ "$p" != "$PROJECT_FILTER" ] && continue
             echo "─── feishu → TV · project=$p ───"
-            python sync_feishu_notes_to_truth_vault.py "$p" $DRYRUN || {
+            python sync_feishu_notes_to_truth_vault.py "$p" $DRYRUN $ALLOWFLIP || {
               echo "::error::feishu sync failed for $p"
               fail_count=$((fail_count + 1))
             }

@@ -58,6 +58,7 @@ jobs:
             scripts/check_gate1_ingest.py \
             scripts/check_ssll_retract.py \
             scripts/check_librarian_shortlist.py \
+            scripts/check_ingest_guards.py \
             librarian/__init__.py \
             librarian/clients.py \
             librarian/core.py \
@@ -3646,6 +3647,9 @@ jobs:
       - name: 馆员冷路径预筛 —— 整架取回、按项目级字段挑 ≤24 张、rank 前 8 永远在、输出封顶 (D-088)
         working-directory: scripts
         run: python check_librarian_shortlist.py   # §1 上限/直通 · §2 同品牌全进 · §3 跨主题保留 · §4 只看项目级 · §5 确定性 · §6 版本看整架 · §7 LLM 所见 + max_tokens
+      - name: 采集三道闸 —— 未来 publish_time 夹掉 / 状态格清空写回默认 + 没映上打旗 / 整批 tier 翻转 upsert 前挡住 (D-091)
+        working-directory: scripts
+        run: python check_ingest_guards.py   # §1 未来日期 · §2/§2b 清空与没映上 · §3 翻转计划 · §4 挡只剥翻转篇 · §5 读库分批 · §6/§7 接线
       - name: sanshengliubu sync shape self-check (build_reference_sample ↔ preflight ↔ ssll v2 schema)
         working-directory: scripts
         run: |

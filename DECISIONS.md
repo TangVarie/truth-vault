@@ -5765,3 +5765,28 @@ python job 里 import 馆员的 8 步（TV-03 / TV-05 / TV-06 / 守卫 6 / put_c
 ### 没做
 
 - 没动六个阻塞步的 `continue-on-error` 语义；没给评论步 / 撤回摘要加灯（那是 A-07 / C-20，另一个 PR）；没跑 `reannotate`；没碰 `prune_librarian_cache.py`。
+
+## D-091 · 采集加三道闸：未来 `publish_time` 夹掉；状态格清空写回默认、状态值没映上打旗；整批 tier 翻转在 upsert 之前挡住（2026-10-08）
+
+来源：`data-analysis/architecture-audit-2026-10-08.md` 的 A-06 / B-13 / B-14；owner：「继续完成你能做的内容」。三道都在 `sync_feishu_notes_to_truth_vault.py`，守卫在 `scripts/check_ingest_guards.py`（D-075：守卫逻辑写进 scripts/，ci.yml 只留一行调用）。
+
+### 定了什么
+
+1. **未来的 `publish_time` 不入库（B-14）。** `transform_row` 在字段映射之后：`publish_time > now + 24h` → 原值留 `raw_extra._publish_time_raw`、列置 NULL、`data_quality_flags.publish_time_future`。10-08 实查 10 行在未来（最远 10-11），它漏到 6 个消费者（`hours_since_publish` 负数、`projects.end_date` 未来、`era_tag` 未来季度、通道 1 的 12 个月窗、v1_19、写作台 `lag_days`）。24 小时的余量是给时区和"当天凌晨填今天"的，不夹。认不出的格式不算未来，照旧交给 Postgres 去拒。
+2. **状态格被清空 → 显式写回默认档（B-13 前半）。** 飞书不返回空字段，`transform_row` 只在格有值时写 `tier` → payload 没这个键 → upsert 保留库值 → 运营把状态清空（而不是改成 无水花）在 TV 看不见、D-087 的回收也看不见，旧 爆 永久留着。新函数 `apply_cleared_status` 在主循环之后、盖戳之后、upsert 之前跑：payload 里没有 `tier` 的篇写 `tier = 规则的 default`（没 default 就 NULL）、`tier_source = NULL`、旗子 `tier_cleared`。**判据「列还在」= 状态源列本轮至少在一行里出现过（`seen_cols`）**：列被改名时一行都不会出现 → 不动，交给 `_detect_missing_core_columns`；否则一次改名会把整个项目的 tier 刷成默认，那比旧 爆 留着坏得多。已经有 tier 的篇（规则命中、数值推断、`excluded_directions` 的 数据异常）不动；`synthetic` 的同类问题没动（它有自己的"能判定就显式写"规则，只是两个源都不在场时没写，范围外）。
+3. **状态值没映上 → 打旗（B-13 后半）。** 状态格有值、规则一个都没命中时 `tier` 本来就是 NULL、`tier_source='状态字段'`，但静默。10-08 实查 106 行。现在 `data_quality_flags.tier_unmapped = 原值`，主循环计数告警。不改 `tier` 的取值：tier 是钱字段（D-048），这里只让它可见。
+4. **整批 tier 翻转闸（A-06）。** 08-18 OKMAN 一晚 285 篇升爆（82.4%），第二天改回，285 条处方药参照在三省六部躺了 50 天（D-086）。事后网（`audit_log`、D-087 隔晚回收）都在"推出去之后"；这道闸在 upsert 之前把库里的 `tier` 读出来比一下（`_current_tiers`，按 100 一批 `in_()`，同 `_failed_rows_already_in_db`）：**翻转** = 库里已有这篇、payload 带 tier、且 (旧 ∈ {爆,大爆,参考}) ≠ (新 ∈ {爆,大爆,参考}）。升和降都算（整批撤回同样要人确认）；正例内部换档（爆→大爆）、非正例内部换档（趴→评估中）、库里没有的新篇、payload 不带 tier 的篇都不算。**阈值 `max(15, ⌈10% × 存量⌉)`**，存量 = 本轮 payload 里库里已有的篇数（整表同步时 = 项目存量；首次同步存量 0 → 永远不挡）。超过 → 这些篇从 payload 里拿掉 `tier`/`tier_source`（upsert 保留库值）、旗子 `tier_flip_blocked = {from, to}`、内容和指标照写、`errors += 1` 让当晚红并点名。放行：`--allow-mass-tier-flip` / 环境变量 `ALLOW_MASS_TIER_FLIP=1` / `daily-sync.yml` 的 `workflow_dispatch` 输入 `allow_mass_tier_flip`；**定时跑永远不放行**。读不到库 → 本轮闸不起作用、Done 行记 `tier_flip_guard_skipped=1`、日志 ERROR，但不计 `errors`：同 `_detect_missing_core_columns` 的降级约定——库真读不到时紧接着的 upsert 也写不进，那一侧会红；这里再红一次只会把 CI 里用 `object()` 当客户端的三步端到端回归一起打红（第一版就是这么红的）。
+   校准：OKMAN 285/346 远超 max(15, 35)；一个 300 篇的 daily 项目一晚 3–5 篇升爆离 30 很远；20 篇存量的小项目第 16 篇才挡。
+5. 顺手：`daily-sync.yml` 的 cron 注释改掉"写作台 tv-sync 在 04:00 之前"那句（aw 已挪到 14:00，审计 A-05）。
+
+### 验证
+
+- `check_ingest_guards.py` 七节全过（§1 / §2b 真走 `transform_row`；§5 打桩 `fetch_all_pages` 核分批；§6 / §7 核接线：三条放行路都在、定时跑不放行、三道闸的调用顺序在盖戳之后 upsert 之前、挡住要 `errors += 1`）。
+- 反证 battery（每条改坏引擎跑守卫，`-B` + 临时副本，吸取 D-088 的 `.pyc` 教训）：① `_is_future_publish_time` 恒 False → §1 红；② `apply_cleared_status` 不看 `seen_cols` → §2「列改名不动」红；③ 只数升不数降 → §3 降档红；④ 阈值去掉 `max(15, …)` → §3 红；⑤ 挡时把没翻的篇也剥 tier → §4 红；⑥ `_current_tiers` 不分批 → §5 红；⑦ 开关不读环境变量 → §6 红。**七条全红。**
+- ci.yml 里 16 步 import 引擎的内联回归本地重放（结果见 PR）；`check_ssll_retract` / `check_comment_parser` / `check_gate1_ingest` / `check_librarian_shortlist` 照跑；`check_system_map` 六条过。
+
+### 挡不住什么
+
+- 翻转闸看的是"一晚翻多少"，不看"翻得对不对"：一晚 14 篇误标照样进去（D-087 隔晚回收兜底）。
+- 清空判据依赖 `seen_cols`：状态列整列为空的项目（一行都不返回这列）不会被写回默认——那种项目本来也没有 tier。
+- 没动评论步（A-07）和 `synthetic` 的清除路径；没给未来 `publish_time` 加视图侧的 `<= now()`（置空之后视图自然看不到它）。
