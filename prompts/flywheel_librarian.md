@@ -16,9 +16,12 @@
 ## 输入
 
 - **brief**: 品牌 / 项目定位(system_prompt 包) / 本次策略·核心卖点·人群·选题(delta)。
-- **候选经验卡**(按 `rank_score` 排序): 每张含 `source_note_id` / tier / 品牌·品类 /
+- **候选经验卡**(按 `rank_score` 排序, **≤24 张**): 每张含 `source_note_id` / tier / 品牌·品类 /
   hook_type / structure / why_it_worked / transferable_tactic / 原文摘要。未策展的卡
   (经验字段为 NULL)用 essence + 摘要兜底。
+  **怎么来的(D-088, `core.shortlist`)**: 整架取回(306 张), 按 brief 的【项目级】字段打贴题分
+  (同品牌 +3 · 同品类 +2 · 人群词 +1)挑 24 张, 另外 rank 全局前 8 张无条件保留(跨主题迁移要有料)。
+  只看项目级字段、不看本次 delta —— 同项目内候选块稳定, prompt cache 才命中。零维护、不是规则表。
 
 ## 输出 (严格 JSON, 无 markdown 包装)
 
@@ -36,4 +39,5 @@
 2. `source_note_id` **必须**来自候选清单(不许编)。服务端会再校验、丢弃编造的 id。
 3. **推理选取**, 不是按相似度硬凑: 优先同品牌/同品类/同人群, 但允许跨主题借走可迁移的
    钩子/结构/手法(§2 的"跨主题迁移")。
-4. `why_relevant` / `borrow_what` 各 1 句, 给写手**可操作**的指引, 别复述卡内容。
+4. `why_relevant` / `borrow_what` **各 ≤30 字**, 给写手**可操作**的指引, 别复述卡内容、别加评语。
+   (D-088: 冷路径耗时大头是模型写出来的这几百 token 走中转站, 不是读卡; `max_tokens` 封顶 1000 兜底。)

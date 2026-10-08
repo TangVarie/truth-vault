@@ -16,11 +16,17 @@ librarian/
 
 ## 流程 (core.librarian_select)
 
-1. 取候选(`v_flywheel_lesson_cards`, 按 rank_score, 上限 50)。**空库 → 返回 `[]`**(消费方降级到自有正例)。
-2. 算 `library_version` = f(候选数, max(curated_at)) → 算 `cache_key`。
+1. 取【整架】(`v_flywheel_lesson_cards`, 按 rank_score, 上限 1000; 10-08 实查 306 张)。**空库 → 返回 `[]`**(消费方降级到自有正例)。
+2. 算 `library_version` = f(整架候选数, max(curated_at), 月份桶, id 集合摘要[, gate2_run]) → 算 `cache_key`。
 3. **命中缓存 → 直接返回**(跳过 LLM)。
-4. 未命中 → LLM 按 brief 推理选 3-5 张 → 校验 id 在候选内 → 富集卡内容 → 写缓存。
+4. 未命中 → **预筛 `shortlist()`(D-088)**: 按 brief 的项目级字段打贴题分(同品牌 +3 · 同品类 +2 · 人群词 +1)挑 ≤24 张,
+   rank 全局前 8 张无条件保留(跨主题迁移要有料); 只看项目级字段、不看本次 delta(同项目内候选块稳定, prompt cache 才命中)
+   → LLM 按 brief 推理选 3-5 张(两句批注各 ≤30 字, `max_tokens` 封顶 1000)→ 校验 id 在候选内 → 富集卡内容 → 写缓存。
    **LLM 失败 → 返回 `[]`**(绝不阻塞写稿; 飞轮是增强项)。
+
+> 为什么要预筛(D-088): 之前 fetch 前 50 张按 rank 硬切整批喂 LLM —— 品牌自己的卡常常不在前 50 里;
+> 冷路径 24 个样本 p50 49s / p95 79s, 7 次超过写作台 60s 的等待, 耗时大头是模型【写】的那几百 token 走中转站
+> (选 0 张的两次只用 3s / 11s)。所以卡给得更贴、字写得更少。守卫: `scripts/check_librarian_shortlist.py`。
 
 **两层省钱(应用 autowriter 同款策略)**:
 - **结果缓存**(上面 step 3, `flywheel_librarian_cache`):挡"完全相同的请求"(同 brief + 同 library_version),直接复用上次精选、**整次跳过 LLM**。
