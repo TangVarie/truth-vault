@@ -29,7 +29,7 @@ on:
         type: boolean
         default: false
       limit:
-        description: "覆盖每项目每轮上限 (默认取 repo variable FEATURE_LIMIT, 再默认 12). 留空 = 用默认"
+        description: "覆盖每项目每轮上限 (默认取 repo variable FEATURE_LIMIT, 再默认 24; D-089). 留空 = 用默认"
         type: string
         default: ""
   schedule:
@@ -64,9 +64,12 @@ jobs:
       # 这里只【触发】。未配 WORKER_URL → 优雅跳过, 不因连不上网关而红。
       WORKER_URL: ${{ secrets.WORKER_URL }}
       WORKER_API_KEY: ${{ secrets.WORKER_API_KEY }}
-      # 特征层每轮上限/项目。一篇 = 6 次分组调用, 12 篇 ≈ 每项目 72-96 次调用。
-      # 优先级: workflow_dispatch 的 limit > repo variable FEATURE_LIMIT > 12。
-      FEATURE_LIMIT: ${{ github.event.inputs.limit || vars.FEATURE_LIMIT || '12' }}
+      # 特征层每轮上限/项目。一篇 = 6 次分组调用, 24 篇 ≈ 每项目 144-192 次调用。
+      # 优先级: workflow_dispatch 的 limit > repo variable FEATURE_LIMIT > 24。
+      # 12 → 24 (D-089, 2026-10-08): 9-30 ~ 10-07 八晚实测 35-85 分钟 (7 个项目还有余量 × 12 篇),
+      # 离 240 分钟上限还有 3 倍; RIO 598 篇按 12/晚要 50 晚, 24/晚 25 晚。翻倍后预期 70-170 分钟。
+      # ⚠️ repo variable FEATURE_LIMIT 若设了会盖掉这里的默认值 —— 要生效得去 Settings → Variables 改或删。
+      FEATURE_LIMIT: ${{ github.event.inputs.limit || vars.FEATURE_LIMIT || '24' }}
       # 只跑某项目 (workflow_dispatch 的 project 输入); 空 = 全部. cron 触发时为空.
       PROJECT_FILTER: ${{ github.event.inputs.project }}
       # schedule 触发时为 'true' → 跳过 sync_interval=on_demand 的【未启用】项目 (D-047,
@@ -141,7 +144,7 @@ jobs:
           # 上限 WAIT_409_MAX 次 × WAIT_409_SEC 秒, 等不到才按瞬时处理, 不会卡死。
           WAIT_409_SEC=60
           WAIT_409_MAX=5
-          FEATURE_LIMIT="${FEATURE_LIMIT:-12}"
+          FEATURE_LIMIT="${FEATURE_LIMIT:-24}"
           case "$FEATURE_LIMIT" in ''|*[!0-9]*)
             echo "::error::FEATURE_LIMIT 必须是正整数, 收到 '$FEATURE_LIMIT'"; exit 1;; esac
           [ "$FEATURE_LIMIT" -ge 1 ] || { echo "::error::FEATURE_LIMIT 必须 ≥1"; exit 1; }

@@ -1,12 +1,13 @@
 """librarian/core.py — 飞轮馆员选取核心 (D-038 / docs/14)。
 
 librarian_select(brief) 的流程:
-    1. 取候选经验卡 (v_flywheel_lesson_cards, 按 rank_score 排序, 上限 CANDIDATE_CAP)。
+    1. 取【整架】经验卡 (v_flywheel_lesson_cards, 按 rank_score 排序, 上限 SHELF_FETCH_CAP)。
        空库 → 返回 []  (消费方降级到自有正例)。
-    2. 算 library_version = f(候选数, max(curated_at))。
+    2. 算 library_version = f(整架候选数, max(curated_at), …) —— 版本看整架, 不看预筛结果。
     3. 算 cache_key = hash(consumer + project_id + brief_digest + library_version);
        命中缓存 → 直接返回 (跳过 LLM)。
-    4. 未命中 → 渲染 brief + 候选 → LLM 推理选 3-5 张 → 校验 id → 富集摘要 → 写缓存。
+    4. 未命中 → 预筛 shortlist(): 按 brief 的【项目级】字段挑 ≤SHORTLIST_CAP 张 (D-088)
+       → 渲染 brief + 候选 → LLM 推理选 3-5 张 → 校验 id → 富集摘要 → 写缓存。
        LLM 出错 → 返回 []  (绝不阻塞写稿; 飞轮是增强项)。
 
 library_version 说明: 用 (候选数, max(curated_at)) 而非每行 updated_at ——
@@ -22,6 +23,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 from typing import Any, Optional
 
@@ -31,14 +33,25 @@ logger = logging.getLogger("flywheel_librarian")
 
 
 LIBRARIAN_VERSION = "flywheel_librarian_v1"
-CANDIDATE_CAP = 50          # 喂给 LLM 的候选上限 (库小, 50 足够; 大了再加 embedding 预筛)
 DEFAULT_SELECT_MIN = 3
 DEFAULT_SELECT_MAX = 5
+
+# ── 预筛 (D-088): 整架取回, 按【项目级】字段挑一小摞给 LLM ──────────────────────
+# 10-08 之前是 fetch 前 50 张 (按 rank_score 硬切) 整批喂 LLM: 书架 306 张、14 个品牌, 品牌自己的
+# 卡常常根本不在前 50 里 (rank 由 tier/recency/账号爆率定, 与 brief 无关); 而冷路径 24 个样本
+# p50 49s / p95 79s, 7 次超过写作台 60s 的等待 —— 耗时大头是模型【写】出来的那几百 token 走中转站,
+# 不是读 50 张卡 (选 0 张的那两次只用 3s / 11s)。所以两头一起收: 卡给得更贴 (整架里按品牌/品类挑),
+# 字写得更少 (两句批注各 ≤30 字 + max_tokens 封顶)。
+SHELF_FETCH_CAP = 1000        # 整个书架 (10-08 实查 306 张; PostgREST 单页上限 1000, 够用到书架翻三倍)
+SHORTLIST_CAP = 24            # 喂给 LLM 的候选上限
+SHORTLIST_GLOBAL_KEEP = 8     # rank 最高的 8 张不管贴不贴题永远在 —— 跨主题迁移 (docs/14 §2) 要有料可借
+LIBRARIAN_MAX_TOKENS = 1000   # 输出封顶: 5 张 × (id + 两句 ≤30 字) ≈ 600 token, 留 ~60% 余量 (原 1500)
 
 # ── prompt 分段(Anthropic prompt caching 友好, 同 autowriter generator 的策略) ──
 # 把【稳定且大】的部分作为带 cache_control: ephemeral 的 system 块, 重复请求共享缓存
 # 前缀、省 ~90% 成本/延迟。顺序按"前缀稳定性"排(越稳越靠前, 因为缓存匹配的是前缀):
-#   block1 = ROLE_TASK(永不变) + 候选卡(同 library_version 内不变, 且【跨项目共享】)
+#   block1 = ROLE_TASK(永不变) + 候选卡(同 library_version 内、【同项目内】不变 —— D-088 起预筛按
+#            项目级字段挑卡, 这块从"跨项目共享"变成"按项目稳定"; 同项目连发几篇照样命中)
 #   block2 = 项目 prompt 包(同项目内不变)
 #   user   = 本次 delta(每次变, 不缓存)
 # Anthropic 单请求最多 4 个 cache breakpoint, 这里用 2 个。这层 prompt-cache 与上面的
@@ -50,12 +63,14 @@ ROLE_TASK_INSTR = """你是帆谷内容飞轮的"经验馆员"。下面给你一
 
 推理(不是按相似度硬凑): 优先同品牌/同品类/同人群, 但也可跨主题借走可迁移的钩子/结构/手法。
 挑 3-5 张(候选不足就少挑; 一张都不合适就返回空数组)。
+why_relevant / borrow_what 各【不超过 30 字】: 写给写手的可操作批注, 别复述卡内容, 别加评语 ——
+你每多写一个字, 借书的人就多等一会儿。
 
 输出严格 JSON(无 markdown 包装):
 {"selected": [
   {"source_note_id": "<必须是候选里出现过的 id>",
-   "why_relevant": "<为什么对这次写作有用, 1 句>",
-   "borrow_what": "<借它哪个部位: 钩子/结构/评论区设计/某手法, 1 句>"}
+   "why_relevant": "<为什么对这次写作有用, ≤30 字>",
+   "borrow_what": "<借它哪个部位: 钩子/结构/评论区设计/某手法, ≤30 字>"}
 ]}"""
 
 # 项目级、稳定字段(进【缓存】的 system 块; 同项目跨请求复用)。
@@ -86,7 +101,8 @@ _BRIEF_DIGEST_KEYS = (
 
 
 # ── 候选 + 版本 ──────────────────────────────────────────────────────────
-def fetch_candidates(sb, limit: int = CANDIDATE_CAP) -> list[dict]:
+def fetch_candidates(sb, limit: int = SHELF_FETCH_CAP) -> list[dict]:
+    """整架取回 (D-088)。版本串看它; 喂 LLM 的那一摞由 shortlist() 再挑。"""
     return (
         sb.schema("truth_vault").table("v_flywheel_lesson_cards")
         .select(
@@ -137,6 +153,72 @@ def library_version(cards: list[dict], gate2_run: Optional[str] = None) -> str:
     id_digest = hashlib.sha256("\n".join(ids).encode("utf-8")).hexdigest()[:16]
     base = f"{len(cards)}:{max_curated or 'none'}:{month_bucket}:{id_digest}"
     return f"{base}:{gate2_run}" if gate2_run else base
+
+
+def _project_text(brief: dict) -> str:
+    """brief 的【项目级】字段拼成一段小写文本, 预筛只看它, 不看本次 delta —— 同项目内 shortlist 才稳定,
+    候选卡那块 prompt cache 才命中得了 (block1 的稳定性就靠这一条)。"""
+    parts = []
+    for key, _ in _PROJECT_FIELDS:
+        val = brief.get(key)
+        if val:
+            parts.append(json.dumps(val, ensure_ascii=False, sort_keys=True)
+                         if isinstance(val, (list, dict)) else str(val))
+    return "\n".join(parts).lower()
+
+
+def _match_tokens(val) -> list[str]:
+    """卡上 target_audience 之类的字段 (list 或逗号串) → 可匹配的词 (≥2 字)。"""
+    if isinstance(val, list):
+        items = val
+    elif isinstance(val, str):
+        items = re.split(r"[,，、;；/\s]+", val)
+    else:
+        items = []
+    return [t.strip().lower() for t in items if isinstance(t, str) and len(t.strip()) >= 2]
+
+
+def _affinity(card: dict, brand_text: str, project_text: str) -> int:
+    """贴题分: 同品牌 +3 · 同品类 +2 · 人群词命中 +1。字面匹配 + 卡自带的结构化字段, 零维护, 不是
+    手工规则表 (D-038 §6.1 的边界: 结构性过滤可以, 维护一张"品类 → 借什么"的表不行)。"""
+    score = 0
+    cb = (card.get("brand") or "").strip().lower()
+    if cb and brand_text and (cb in brand_text):
+        score += 3
+    cc = (card.get("category") or "").strip().lower()
+    if cc and cc in project_text:
+        score += 2
+    if any(t in project_text for t in _match_tokens(card.get("target_audience"))):
+        score += 1
+    return score
+
+
+def _rank_key(c: dict):
+    return (-(c.get("rank_score") or 0.0), str(c.get("source_note_id") or ""))
+
+
+def shortlist(cards: list[dict], brief: dict, *, cap: int = SHORTLIST_CAP,
+              keep: int = SHORTLIST_GLOBAL_KEEP) -> list[dict]:
+    """从整架卡里挑 ≤cap 张给 LLM (D-088)。
+
+    · 贴题分高的先 (同品牌 +3 · 同品类 +2 · 人群词 +1), 同分按 rank_score;
+    · rank 全局前 keep 张【无条件保留】—— 跨主题迁移 (docs/14 §2) 要有料可借, 不然同品牌卡少的项目
+      只能在自家几张里打转;
+    · 只看 brief 的项目级字段 (_project_text), 本次 delta 不参与 —— 同项目内结果稳定, prompt cache 才有用;
+    · 卡不超过 cap → 原样全给 (只排序), 书架小的时候行为与 D-088 之前一致;
+    · 返回按 rank_score 降序 (prompt 里"按 rank_score 排序"的说法不变), 同分按 id, 全程确定性。
+    """
+    by_rank = sorted(cards, key=_rank_key)
+    if len(by_rank) <= cap:
+        return by_rank
+    brand_text = " ".join(str(brief.get(k) or "") for k in ("brand", "project_name")).strip().lower()
+    project_text = _project_text(brief)
+    chosen = {str(c.get("source_note_id")) for c in by_rank[:max(0, keep)]}
+    for c in sorted(cards, key=lambda c: (-_affinity(c, brand_text, project_text),) + _rank_key(c)):
+        if len(chosen) >= cap:
+            break
+        chosen.add(str(c.get("source_note_id")))
+    return [c for c in by_rank if str(c.get("source_note_id")) in chosen]
 
 
 def latest_gate2_run(sb) -> Optional[str]:
@@ -259,7 +341,7 @@ def _render_cards(cards: list[dict]) -> str:
 
 def build_system_blocks(brief: dict, cards: list[dict]) -> list[dict]:
     """两个带 cache_control 的 system 块(prompt caching):
-      block1 = ROLE_TASK + 候选卡 (同 library_version 内稳定, 跨项目共享 → 命中率最高)
+      block1 = ROLE_TASK + 候选卡 (同 library_version 内、同项目内稳定 —— cards 是 shortlist() 按项目级字段挑的)
       block2 = 项目 prompt 包      (同项目内稳定)
     本次 delta 不在这里(进 user message)。"""
     cards_text = (
@@ -294,6 +376,7 @@ def _select_via_llm(brief: dict, cards: list[dict], model: str) -> list[dict]:
     raw = call_anthropic(
         build_user_message(brief), model,
         system=build_system_blocks(brief, cards),
+        max_tokens=LIBRARIAN_MAX_TOKENS,   # D-088: 输出封顶, 冷路径的耗时大头就是这几百 token
     )
     parsed = parse_json(raw)
     if not isinstance(parsed, dict) or not isinstance(parsed.get("selected"), list):
@@ -377,18 +460,22 @@ def librarian_select(brief: dict, *, model: Optional[str] = None,
 
     cards = fetch_candidates(sb)
     if not cards:
-        return {"_dry_run": True, "candidate_count": 0, "note": "空库 → 返回 []"} if dry_run else []
+        return {"_dry_run": True, "candidate_count": 0, "shelf_count": 0, "note": "空库 → 返回 []"} if dry_run else []
 
+    # 版本串看【整架】(D-088): 预筛挑掉的那张换了也要换缓存键 —— TV-03 那课 (50 张换 1 张版本不变)
+    # 的边界如今是整个书架, 不是喂给 LLM 的那 24 张。
     lib_v = library_version(cards, gate2_run=latest_gate2_run(sb))
     key = cache_key(brief, lib_v)
+    shown = shortlist(cards, brief)
 
     if dry_run:
         return {
             "_dry_run": True,
-            "candidate_count": len(cards),
+            "candidate_count": len(shown),
+            "shelf_count": len(cards),
             "library_version": lib_v,
             "cache_key": key,
-            "prompt": build_prompt(brief, cards),
+            "prompt": build_prompt(brief, shown),
         }
 
     if use_cache:
@@ -400,13 +487,13 @@ def librarian_select(brief: dict, *, model: Optional[str] = None,
 
     t0 = time.monotonic()
     try:
-        selected = _select_via_llm(brief, cards, model)
+        selected = _select_via_llm(brief, shown, model)
     except Exception:
         # 降级: 绝不阻塞写稿。但必须记日志 —— 否则 schema 缺列 / 解析全错这类真 bug
         # 会被静默吞成 [],服务永远返回空、看不出问题(原审计标的"排障盲区")。
         logger.exception(
-            "librarian_select LLM 选取失败,降级返回 [] (consumer=%s project_id=%s cards=%d)",
-            brief.get("consumer"), brief.get("project_id"), len(cards),
+            "librarian_select LLM 选取失败,降级返回 [] (consumer=%s project_id=%s shelf=%d shown=%d)",
+            brief.get("consumer"), brief.get("project_id"), len(cards), len(shown),
         )
         if _status_out is not None:
             _status_out["status"] = STATUS_DEGRADED

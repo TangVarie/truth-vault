@@ -40,6 +40,7 @@ D-053 定过一条：**天天红的 CI 等于没有 CI**。它有一条推论，
 | `sync-watchdog.yml` | 独立 workflow，每日 23:41 UTC | 昨天的定时任务到底成了没有（站在 job **外面**看） | **owner · 它红了会发邮件**，所以是推送不是轮询 | TV 侧。它是唯一"不靠 job 自己汇报"的灯 |
 | 夜跑用时灯 | `daily-sync.yml` 末尾 | 夜跑用了上限的百分之多少 | **owner · 过 70% 才 `::warning`**，平时不出声 | TV 侧：要么优化步骤，要么提上限（提之前先想清楚为什么） |
 | `/health` 的 `config.pipeline` | deskcore `/health` | 角度漏账比例 | **没人定期看 —— 这是已知缺口。** 现在靠 `ANGLE_LEDGER_CHECK_DONE` 那盏替它值班 | — |
+| `external-corpus.yml` | **JevforCoentent 仓**，独立 workflow，每周一 03:00 UTC | 外部语料这周有没有进 TV 账本（`v_external_reference` 有没有新周的行） | **owner · 每周一看一次**；它红了 GitHub 发邮件（Jev 仓的 Actions 通知） | **修在 Jev 仓**（TikHub 密钥 / UA / 详情解析）。9-28、10-05 两次定时跑连红没人收，10-08 才修——登进来就是为了这件事不再发生 |
 
 ---
 

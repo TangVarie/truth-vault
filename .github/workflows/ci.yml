@@ -57,6 +57,7 @@ jobs:
             scripts/check_comment_parser.py \
             scripts/check_gate1_ingest.py \
             scripts/check_ssll_retract.py \
+            scripts/check_librarian_shortlist.py \
             librarian/__init__.py \
             librarian/clients.py \
             librarian/core.py \
@@ -3642,6 +3643,9 @@ jobs:
       - name: 通道 1 push 与回收同一份判据, 回收认 tier 降档 / 退回未确认 / 指标不可信 (D-068 / D-087)
         working-directory: scripts
         run: python check_ssll_retract.py   # 原 D-068 八条边界行逐字保留在 §1; D-087 的 B 路 / 分批 / 对称在 §2–§5 (D-075: 挪进 scripts/)
+      - name: 馆员冷路径预筛 —— 整架取回、按项目级字段挑 ≤24 张、rank 前 8 永远在、输出封顶 (D-088)
+        working-directory: scripts
+        run: python check_librarian_shortlist.py   # §1 上限/直通 · §2 同品牌全进 · §3 跨主题保留 · §4 只看项目级 · §5 确定性 · §6 版本看整架 · §7 LLM 所见 + max_tokens
       - name: sanshengliubu sync shape self-check (build_reference_sample ↔ preflight ↔ ssll v2 schema)
         working-directory: scripts
         run: |
