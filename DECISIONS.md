@@ -6077,3 +6077,24 @@ UPDATE truth_vault.notes n SET source_autowriter_version_id = b.source_autowrite
 - **C-13** 看板的 `AI_DIMS=14` / `ARCHETYPES=19` / `SHOWCASE_EXT_*` / 静态 `TICKER_EVENTS`：接受为展示常量；v1_19 两列不上 Vercel，owner 看 Actions 日志和 `verify`。
 - **C-20** `stale_in_ssll` / `gated` / 撤回摘要仍只打印：按 D-087 延后，`v_flywheel_sync_status.stale_in_ssll` 连续两周全 0（回收每晚干净）再把 `|| true` 拿掉。
 - **B-12** 看板那把 service_role：见 D-101 §5，owner 从 Vercel 删；RISKS 的 secret 矩阵就是轮换清单。
+
+## D-104 · 飞书已删的 10 篇从 TV 删掉（备份在库里）；一次性对象按 D-103 清单清掉（2026-10-09）
+
+来源：D-103 把「删不删」留给 owner，owner 10-09 把判断交给我，看完实查后定删，owner 在 SQL editor 跑的（MCP 的 DROP / DELETE 要人确认，两次都在那一步超时）。
+
+### 实查
+
+- **HATHERINE_phase1 6 篇**：全是写作台 ingest 进来的副本（`autowriter.tv_note_links.match_kind = 'ingested'`，09-17 建链），运营随后在飞书另录了**正文一字不差**的正式行（`reczz28Hc…` 那 6 条，照常同步），再把副本删了。留着就是同一篇算两次。
+- **TUGE_phase1 4 篇**：没有发布时间、没有 tier、没有任何指标，9 月 10～14 日之后飞书里就没有了——没发出去就撤掉的稿。
+- 下游：10 篇都只有 essence 标注和特征层答案（31 行 / 篇，`primary`），不在闸一样本里、没进 ssll、没有经验卡；评论 3 条、指标快照 1 条。
+
+### 定了什么
+
+1. **10 篇全删**，连同 310 行 `note_feature_answers`、10 行 aw `tv_note_links`；评论 / 指标快照 / `note_features` 随 `notes` 级联。删前快照：`truth_vault.backup_notes_vanished_20261009`（10）、`backup_nfa_vanished_20261009`（310）、`backup_comments_vanished_20261009`（3）、`backup_metric_snapshots_vanished_20261009`（1）、`autowriter.backup_tv_note_links_vanished_20261009`（10），11-09 后可 drop；notes 那张的 COMMENT 里有回滚方法。
+2. 删掉 aw 那 6 条 `ingested` 链接是故意的：14:00 UTC 的 tv-sync 会把那 6 个版本按标题重新对到运营的正式行上（`title_exact`），血缘从副本转到真发出去的那篇。
+3. 同一轮清掉了 D-103 清单里到期的两个：`truth_vault.idx_tv_evals_aw_item_evaluator_uniq_v111_dropme`（D-102 §5 的绕路）、`autowriter.versions_num_backup_20260826`。
+4. 验证（owner 跑完回读）：`v_notes_vanished` 0 行、索引 0、表 0。
+
+### 不变的
+
+- B-21 的机制仍是**只报不删**：`v_notes_vanished` + verify #93 每晚报，删不删每次都看实查再定。这次能删是因为 10 篇全是副本或废稿；下次若是真发过的篇（有 tier / 指标 / 进过 ssll），先看 D-087 的回收路再说。
