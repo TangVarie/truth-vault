@@ -6025,3 +6025,55 @@ UPDATE truth_vault.notes n SET source_autowriter_version_id = b.source_autowrite
 - `/console` 的密码只挡 UI，不挡 REST：anon key 仍能读 18 个聚合视图（设计如此，视图里没有正文）。
 - ssll 新建 public 表会继承 anon 全权限（第 4 条）。
 
+## D-102 · 写作台「人审」里模型代记的决定改标 `human_via_agent`；真值只认 `human`（2026-10-09）
+
+来源：审计 A-01，owner 10-09 把决定交给我。证据在 `data-analysis/a01-review-drafts-timeline-2026-10-09.md`（Supabase edge logs 会过期，所以把时间线存了档）：`autowriter.items` 里 32 条 `decision_source='human'`，分 6 批，每批全部在模型自己的工具链里（check → commit → review → export），commit 后 10–38 s 整批通过，`reviewer_id` = 稿件作者本人，中间没有任何人能读完稿子的窗口。它们不是人审，是模型替用户记的。
+
+### 定了什么
+
+1. **aw 侧（migration 012，10-09 已对生产 apply；PR autowriter#94）**：`decision_source` 加 `human_via_agent`；`items` 加 `decision_note`（≤ 200 字，用户原话）和 `decided_within_s`（距批次 commit 的秒数）。deskcore 的 `review_drafts` 工具从此**只**写 `human_via_agent`，`human` 只留给 Streamlit 里真人点的那个按钮。写手面（`protocol.md`）不改——写手说"这几篇过"仍然是过，变的只是库里记的来源。
+2. **TV 侧（`schemas/notes_v1_20_human_via_agent.sql`，10-09 已对生产 apply）**：`prepublish_evaluations.evaluator_type` 加 `human_via_agent`，唯一索引谓词扩到同步拥有的四类。`sync_autowriter_decisions_to_prepublish._provenance` 原样映过来，`evaluator_id` 记 reviewer（= 作者，这就是该类型的语义）。**真值 / 校准只认 `human`**：`v_l2_labels` 等视图一行没改，`human_via_agent` 自动不在里头。
+3. **32 条历史改标（10-09 已做，备份 `autowriter.backup_items_self_review_20261009`，11-09 后可 drop）**：按证据改成 `human_via_agent`，`decision_note` 写明"D-102 按证据改标"，`decided_within_s` 填实际秒数（10–38）。TV 那 32 行 `prepublish_evaluations` **不手改**，由夜跑同步就地收敛（`converge`）：#171 合并前的那一晚旧代码不认识新值，会先收敛成 `unverified`；合并后再收敛到 `human_via_agent`。两步都是设计内的自愈，不是故障。
+4. **灯**：`verify_supabase_state.sql` #91（作者自审行数，期望 0）；daily-sync 的归档复核 WARN 现在带 `::warning` 注解（docs/29）。
+5. **生产 DDL 的一处绕路**：`DROP INDEX` 经 MCP 要人确认、60 s 超时两次，老索引改名成 `idx_tv_evals_aw_item_evaluator_uniq_v111_dropme` 留着（谓词是新索引的子集，多一份无害），owner 在 SQL editor 里顺手 `DROP INDEX truth_vault.idx_tv_evals_aw_item_evaluator_uniq_v111_dropme`（和 C-17 那几张表一起）。schema 文件本身仍是 DROP + CREATE，CI 的 PG 链两遍验幂等。
+
+### 没做
+
+- 不给 `human_via_agent` 定校准权重：真值不认它就够了；要它有用，先得有真人复核过的样本对比。
+- 不回头审 Streamlit 路径的 `human`：10-09 实查 `decision_source='human'` 全部来自工具链，Streamlit 一条都没有。
+
+## D-103 · 审计 owner 决定项一次定掉：闸一裁决进题库、飞书已删篇不喂下游、一次性表清单、其余记为接受（2026-10-09）
+
+来源：审计 B-17 / B-21 / C-17 / C-09 / B-07 / C-12 / C-13 / C-20 / B-12，owner 10-09 "所有决定你帮我判断"。
+
+### B-17 · 闸一裁决机器可读
+
+- 题库每道模型题加 `gate1_status`：`pending` / `pass` / `fail` / `kappa_undefined`（样本里答案近乎常数、κ 算不出；不算没过）。**它不进 `bank_sha256`**：`feature_bank.bank_digest` 把这一行剔掉再算（同 `status` / `frozen_sha256` 的规则），实测加了 20 行之后 digest 仍是 `ba0f570c`，5,900 篇已落库的答案不会因为裁一道题变成旧 sha。字段说明没写进文件头注释——改头部注释**会**换 digest（digest 盖整个文件的字节），写在第一题那行的行尾注释里（那一行整行被剔）。
+- `validate_bank`：取值闭集；`status: frozen` 时任何一题还是 `pending` → 不合法（闸一裁完才能预注册）。`gate2_run`：`fail` 的题自动 `unreliable`（∪ `--unreliable` 手传），`kappa_undefined` 照常进统计按 support 判。CI：`check_gate2_run.py` §6c，守卫 1 反证 ⑦（冻结带 pending 红、取值闭集红、裁决不动 digest）。
+- **现在 20 题全是 `pending`，故意的**：09-28 的闸一结果（过 10 / 不过 8 / κ 不可算 2）是对 v1 题面 + Opus 4.6 抽取器的；之后 5 道题按分歧格裁决升了版（D-082），抽取器也要换成 Sonnet 5.5 / Haiku 5.5（网关换了，老模型名 503）。拿旧裁决填新题面是把两件事混在一起。顺序定死：① #171 合并后跑两趟影子（`backfill-features.yml` note_ids 模式，100 篇闸一样本，run_tag `gate1-sonnet55` / `gate1-haiku55`）→ ② 对 Jev 三遍 + owner 67 篇算一致率 / κ，逐题填 `gate1_status`，记一条 DECISIONS，选抽取器（过线的最便宜那个）→ ③ `status: frozen` + `frozen_sha256` → ④ 361 篇旧 sha 重标到 `ba0f570c`（`reannotate=true`，两趟 ≤ 200）→ ⑤ 闸二。
+
+### B-21 · 飞书已删的篇
+
+- 视图 `truth_vault.v_notes_vanished`（`schemas/notes_v1_21_vanished_notes.sql`，10-09 已对生产 apply）：盖过 `last_seen` 戳、但 `last_seen_run_id` ≠ **本项目**最近一次完整同步的 run_id。比的是本项目自己的最近一次 run，不是固定天数（on_demand 项目不进夜跑）；从没盖过戳的（七个 on_demand 项目，2,275 篇）不算。
+- 三条新生产路径按它排除：新策展 / 重策展（`curate_flywheel_lessons.fetch_uncurated_cards`）、通道 1 推送（`fetch_pending_baokuan`）、闸二取数（`gate2_run.fetch_dataset`，`vanished_dropped` 数出来）。`_common.fetch_vanished_note_ids` 一个入口；视图不在就直接抛（三条路一起红，不静默）。CI `check_vanished_notes.py` 六节 + PG 链 v1.21 sanity（判据改成"3 天没见到"会红）。
+- **只报不删**：不删 note，不自动撤 ssll 样本 / 经验卡（回收只认资格，D-087）。10-09 实查 10 篇（HATHERINE 6 · TUGE 4）：全已标 essence，0 在 ssll，0 有经验卡——所以今天没有要撤的东西。灯 `verify` #93（期望 0）；owner 看视图决定删不删。删后重建换 `record_id` 的那一半（按 `publish_url` 去重）不做：不知道运营这么干的频率，先看 #93 的数。
+
+### C-17 · 一次性表的过期日（owner 在 SQL editor 跑；MCP 的 DROP 要人确认）
+
+| 对象 | 可 drop 日 |
+|---|---|
+| `autowriter.versions_num_backup_20260826` | 现在 |
+| `truth_vault.idx_tv_evals_aw_item_evaluator_uniq_v111_dropme`（索引，D-102 §5） | 现在 |
+| `truth_vault.reference_samples_backup_tv_stale_20261008`、`truth_vault.notes_ssll_marker_backup_20261008` | ≈ 10-22（D-086） |
+| `truth_vault.backup_inverted_lineage_20261009`、`autowriter.backup_tv_note_links_inverted_20261009`（D-099）、`autowriter.backup_items_self_review_20261009`（D-102） | 11-09 后 |
+
+`verify` #92 从此数"名字带日期后缀且超过 30 天"的表，到期没删会一直是 ⚠️。
+
+### 记为接受 / 延后（不改代码）
+
+- **C-09** 题库孤儿：Jev `/banks` 只列每个 `bank_id` 的最新版本，老版本和只有测试引用的留文件不删（账本里有它们的 `bank_sha256`，删了历史行对不上）；随 A-09 的 Jev PR 落地。
+- **B-07** `project_layer_cleared: []`：保持显式白名单。项目 brief 里有品牌内部信息，默认不进写前题库是保密立场，不是忘了设；要给哪个项目开，加进列表就是一条决定。
+- **C-12** judge 保持 shadow：闸二一个 `validated` 都还没有，enforcing 没有依据；等闸二出结果再加 `decision_source` 值 + TV `_MACHINE_DECISION_SOURCES`。
+- **C-13** 看板的 `AI_DIMS=14` / `ARCHETYPES=19` / `SHOWCASE_EXT_*` / 静态 `TICKER_EVENTS`：接受为展示常量；v1_19 两列不上 Vercel，owner 看 Actions 日志和 `verify`。
+- **C-20** `stale_in_ssll` / `gated` / 撤回摘要仍只打印：按 D-087 延后，`v_flywheel_sync_status.stale_in_ssll` 连续两周全 0（回收每晚干净）再把 `|| true` 拿掉。
+- **B-12** 看板那把 service_role：见 D-101 §5，owner 从 Vercel 删；RISKS 的 secret 矩阵就是轮换清单。

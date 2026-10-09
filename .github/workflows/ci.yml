@@ -68,6 +68,7 @@ jobs:
             scripts/check_curate_stale.py \
             scripts/check_prompt_cache_fallback.py \
             scripts/check_essence_subtype_backfill.py \
+            scripts/check_vanished_notes.py \
             librarian/__init__.py \
             librarian/clients.py \
             librarian/core.py \
@@ -890,7 +891,9 @@ jobs:
           import pathlib, tempfile
           raw = pathlib.Path(fb.BANK_PATH).read_bytes()
           digest = fb.bank_digest(raw)
-          frozen = raw.replace(b"status: draft", b"status: frozen", 1) + f"frozen_sha256: {digest}\n".encode()
+          # 冻结要求每题都有闸一裁决 (D-103): 把 pending 全换成 pass; 这些行不进 digest, 所以 ④c 照样成立
+          frozen = (raw.replace(b"status: draft", b"status: frozen", 1).replace(b"gate1_status: pending", b"gate1_status: pass")
+                    + f"frozen_sha256: {digest}\n".encode())
           with tempfile.NamedTemporaryFile("wb", suffix=".yaml", delete=False) as f:
               f.write(frozen); tmp = f.name
           fb2 = fb.load_bank(tmp)
@@ -902,6 +905,12 @@ jobs:
           assert any("frozen_sha256 不符" in e for e in fb.validate_bank(bad))
           # ④c 冻结前后落库的 bank_sha256 不变 —— 否则「冻结」这个动作本身会把答案分成两批
           assert fb.load_bank()["_sha256"] == fb2["_sha256"]
+          # 反证 ⑦ (审计 B-17, D-103): 冻结的题库带着没裁的题 → 红; 取值不在闭集 → 红; 裁决本身不动 digest (④c 同一条理由)
+          b = copy.deepcopy(fb2); b["questions"][0]["gate1_status"] = "pending"
+          assert any("gate1_status 还是 pending" in e for e in fb.validate_bank(b)), "冻结带 pending 没被抓住"
+          b = copy.deepcopy(bank); b["questions"][0]["gate1_status"] = "maybe"
+          assert any("gate1_status=" in e for e in fb.validate_bank(b)), "gate1_status 不在闭集没被抓住"
+          assert fb.bank_digest(raw.replace(b"gate1_status: pending", b"gate1_status: fail")) == digest, "裁一道题不该换 digest"
           # 反证 ⑥: choice 题的 aw_instruction_values 必须在选项里; bool 题不许有
           b = copy.deepcopy(bank); next(x for x in b["questions"] if x["id"] == "opening_type")["aw_instruction_values"] = ["不存在的选项"]
           assert any("不在选项里" in e for e in fb.validate_bank(b))
@@ -1741,13 +1750,20 @@ jobs:
               ({"decision_source": "   ", "user_id": "author-1"}, ("unverified", None)),
               ({"decision_source": "brand_new_source_2027", "user_id": "a"}, ("unverified", "brand_new_source_2027")),
               ({"user_id": "author-1"}, ("unverified", None)),
+              # D-102 (审计 A-01): 模型替用户记的决定 —— 不是 human, 也不是机器; evaluator_id 记 reviewer (= 作者本人, 该类型的语义)
+              ({"decision_source": "human_via_agent", "reviewer_id": "author-1", "user_id": "author-1"}, ("human_via_agent", "author-1")),
+              ({"decision_source": "human_via_agent", "reviewer_id": None, "user_id": "author-1"}, ("human_via_agent", None)),
           ]
           for item, want in cases:
               got = m._provenance(item)
               assert got == want, f"{item.get('decision_source')!r} → {got}, 期望 {want}"
-          # ② 作者【永远】不能出现在 evaluator_id 里 —— 作者不是审稿人。
+          # ② 'human' 行里作者【永远】不能出现在 evaluator_id 里 —— 作者不是审稿人。
+          #    human_via_agent 例外: 它的语义就是"作者的话由模型代记", evaluator_id 记作者是对的 (D-102)。
           for item, _ in cases:
-              assert m._provenance(item)[1] != item.get("user_id"), f"作者被当成评价人: {item}"
+              got = m._provenance(item)
+              if got[0] == "human":
+                  assert got[1] != item.get("user_id"), f"作者被当成评价人: {item}"
+          assert "human_via_agent" in m._SYNC_EVALUATOR_TYPES, "human_via_agent 必须算本同步拥有的类型, 否则已归档判断会漏掉它 (D-102)"
 
           # ③ 降级判据必须窄: 只认"缺那三列", 不能把别的错一起吞成降级。
           class E(Exception): pass
@@ -3665,7 +3681,7 @@ jobs:
         run: python check_comments_sync_cost.py   # §1 一次读零写 · §2 只写变化 · §3 on_demand 跳过 · §4 对账失败 rc=1 · §5 老调用形状不变
       - name: 闸二可执行版 —— MH/RGB 对 Woolf 闭式、BH、状态表逐条、账号先验分层、占位题 / 快照 / 冻结三条拒跑 (D-093)
         working-directory: scripts
-        run: python check_gate2_run.py   # §1 统计闭式 · §2 BH · §3 状态表 · §3b confounded · §4 占位题拒跑 · §5 快照唯一 · §6 draft 拒跑 · §7 取数与大项目
+        run: python check_gate2_run.py   # §1 统计闭式 · §2 BH · §3 状态表 · §3b confounded · §4 占位题拒跑 · §5 快照唯一 · §6 draft 拒跑 · §6c 闸一裁决 · §7 取数与大项目
       - name: 外部语料新鲜度灯 · report() 五种形状 (D-094)
         working-directory: scripts
         run: python check_external_corpus_fresh.py --selftest
@@ -3681,6 +3697,9 @@ jobs:
       - name: direction_subtype 补标路 (审计 C-03) · fetch 判据 / count 同判据 / worker 映射 / workflow 接线
         working-directory: scripts
         run: python check_essence_subtype_backfill.py
+      - name: 飞书已删篇不再喂下游 (审计 B-21, D-103) · 视图判据 / 取 id / 新策展 / 通道 1 / 闸二取数 / verify 灯
+        working-directory: scripts
+        run: python check_vanished_notes.py
       - name: sanshengliubu sync shape self-check (build_reference_sample ↔ preflight ↔ ssll v2 schema)
         working-directory: scripts
         run: |
@@ -7213,6 +7232,32 @@ jobs:
           [ "$GOT" = "$WANT" ] || { echo "❌ v1.19 口径不对 (total/synced/pending/gated/stale)。期望 [$WANT] 实得 [$GOT]"; exit 1; }
           psql -v ON_ERROR_STOP=1 -c "DELETE FROM truth_vault.notes WHERE project_id='CI_V19'; DELETE FROM truth_vault.projects WHERE project_id='CI_V19';"
           echo "✓ v1.19: pending 只数真会推的 (1), gated 2, stale 2, 变老的爆不算 stale"
+      - name: Apply v1.20 evaluator_type human_via_agent (+ idempotency) then v1.21 v_notes_vanished (+ idempotency)
+        # v1.20 (D-102): CHECK 加 human_via_agent + 唯一索引谓词扩到四类 (DROP IF EXISTS + 重建, 幂等)。
+        # v1.21 (D-103): CREATE OR REPLACE VIEW, 只依赖 v1_9 的 last_seen 两列和 v1_4 的经验卡表; 链尾。
+        run: |
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_20_human_via_agent.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_20_human_via_agent.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_21_vanished_notes.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_21_vanished_notes.sql
+      - name: Sanity-check v1.20 / v1.21 (human_via_agent 进 CHECK; 消失 = 戳落后于本项目最近一次 run, 没盖过戳不算)
+        # 四篇: r2 最新 → 不算; r1 落后 → 消失 1; 没盖过戳 → 不算; 另一项目只有 NULL 戳 → 0 行 (不是消失, 是没经历过完整同步)。
+        # 反证 (2026-10-09 本地实跑): 判据改成 "3 天没见到" → CI_V21_never 也进来, 1 变 2, 红。
+        run: |
+          psql -v ON_ERROR_STOP=1 -tA -c "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='prepublish_evaluations_evaluator_type_check'" | grep -q human_via_agent || { echo "❌ v1.20: CHECK 里没有 human_via_agent"; exit 1; }
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          INSERT INTO truth_vault.projects (project_id, brand, product, category) VALUES ('CI_V21', 'b', 'p', '保健品'), ('CI_V21_OD', 'b', 'p', '保健品');
+          INSERT INTO truth_vault.notes (note_id, project_id, raw_content, last_seen_run_id, last_seen_at) VALUES
+            ('CI_V21_latest',   'CI_V21',    'c', 'r2', now()),
+            ('CI_V21_vanished', 'CI_V21',    'c', 'r1', now() - interval '1 day'),
+            ('CI_V21_never',    'CI_V21',    'c', NULL, NULL),
+            ('CI_V21_od_never', 'CI_V21_OD', 'c', NULL, NULL);
+          SQL
+          GOT=$(psql -v ON_ERROR_STOP=1 -tA -c "SELECT string_agg(note_id || ':' || latest_run_id || ':' || has_lesson_card, ',' ORDER BY note_id) FROM truth_vault.v_notes_vanished WHERE project_id LIKE 'CI_V21%'")
+          WANT="CI_V21_vanished:r2:f"
+          [ "$GOT" = "$WANT" ] || { echo "❌ v1.21 判据不对。期望 [$WANT] 实得 [$GOT]"; exit 1; }
+          psql -v ON_ERROR_STOP=1 -c "DELETE FROM truth_vault.notes WHERE project_id LIKE 'CI_V21%'; DELETE FROM truth_vault.projects WHERE project_id LIKE 'CI_V21%';"
+          echo "✓ v1.20 / v1.21: human_via_agent 进 CHECK; 消失只数 r1 那篇, 没盖过戳的两篇不算"
       - name: Apply security revoke (anon/authenticated write on public.* ) (+ idempotency)
         # 撤 anon/authenticated 对 5 张 public 表的写权限(读保留,不开 RLS)。
         # guarded:表/角色不存在则跳过 → 裸 PG / CI 为 no-op。REVOKE 幂等,两遍验。

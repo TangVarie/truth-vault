@@ -36,6 +36,10 @@ LAYERS = ("surface", "essence")
 HYPOTHESES = ("+", "-", "?")
 TITLE_EXTRACTION_MODES = ("column", "markers", "none")
 CODE_EXTRACTOR = "code:v1"
+# 闸一裁决 (审计 B-17, D-103): 每道模型题一个 gate1_status。pending = 还没裁; pass / fail = docs/28 §6.1 的线;
+# kappa_undefined = 样本里答案近乎常数, κ 算不出来 (不算没过, 闸二按 support 自己判)。fail 的题闸二一律打 unreliable。
+GATE1_STATUSES = ("pending", "pass", "fail", "kappa_undefined")
+GATE1_DEFAULT = "pending"
 
 # invalid_reason 闭集（docs/28 §5.1 / 问题库答题契约）
 INVALID_EVIDENCE_NOT_FOUND = "evidence_not_found"
@@ -87,6 +91,9 @@ SPAN_LABELS = {
 # 规范化时剔掉的两行: 二者都是「冻结」这个动作自己写的, 不是题目内容。
 # 都是顶格 key（^ 锚在行首、不吃缩进）, 所以选项里的 status:/frozen_sha256: 不会误伤。
 _META_LINES = re.compile(rb"(?m)^(?:frozen_sha256|status):.*(?:\r?\n|$)")
+# gate1_status 是「对题的裁决」, 不是题目内容 (同 status / frozen_sha256 的道理): 裁一道题不该让 5,900 篇已落库的答案
+# 全变成旧 sha。只匹配【缩进的】那一行 (题内字段), 顶格的 status: 走上面那条。
+_GATE1_LINES = re.compile(rb"(?m)^[ \t]+gate1_status:.*(?:\r?\n|$)")
 
 
 def bank_digest(raw: bytes) -> str:
@@ -99,8 +106,9 @@ def bank_digest(raw: bytes) -> str:
     直接退出 2。剔掉这两行之后, 冻结前后的 digest 完全一样: 冻结这个动作算得出来,
     落进 note_feature_answers.bank_sha256 的值也不会因为「冻结」把答案劈成两批。
     digest 管的是**题目内容**, 生命周期状态不在里头。
+    闸一裁决 (gate1_status) 同理: 裁决是对题的评价, 改它不动题目内容 (D-103)。
     """
-    return hashlib.sha256(_META_LINES.sub(b"", raw)).hexdigest()
+    return hashlib.sha256(_GATE1_LINES.sub(b"", _META_LINES.sub(b"", raw))).hexdigest()
 
 
 def load_bank(path: Path | str = BANK_PATH) -> dict:
@@ -125,7 +133,8 @@ def validate_bank(bank: dict) -> list[str]:
 
     判据来自 docs/28 §4.1 六条规矩 + §5.3 分组约束 + §4.3 冻结纪律:
       id 唯一; 每题在且只在一个 call_group 里; 组 ≤ 4 题; bool 题有正反例; choice 题的
-      hypothesis 键与选项一致; scope / layer / hypothesis 闭集; 冻结后 sha256 不变。
+      hypothesis 键与选项一致; scope / layer / hypothesis / gate1_status 闭集; 冻结后 sha256 不变;
+      冻结时每道模型题的 gate1_status 都不能还是 pending (闸一先裁完才能预注册, D-103)。
     """
     errs: list[str] = []
     if not bank.get("bank_version"):
@@ -190,6 +199,8 @@ def validate_bank(bank: dict) -> list[str]:
             errs.append(f"{qid}: type={q.get('type')!r} 不是 bool / choice")
         if q.get("type") == "bool" and q.get("aw_instruction_values") is not None:
             errs.append(f"{qid}: aw_instruction_values 只用于 choice 题 (bool 题的指令对应「是」)")
+        if q.get("gate1_status", GATE1_DEFAULT) not in GATE1_STATUSES:
+            errs.append(f"{qid}: gate1_status={q.get('gate1_status')!r} 不在 {GATE1_STATUSES}")
     for m in membership:
         if m not in ids:
             errs.append(f"call_groups 里的 {m} 不是问题库里的题")
@@ -203,6 +214,10 @@ def validate_bank(bank: dict) -> list[str]:
         if str(p.get("hypothesis")) != "0":
             errs.append(f"占位题 {p.get('id')} 的 hypothesis 必须是 '0'")
     if bank.get("status") == "frozen":
+        pending = [q.get("id") for q in qs if q.get("gate1_status", GATE1_DEFAULT) == GATE1_DEFAULT]
+        if pending:
+            errs.append(f"status=frozen 但 {len(pending)} 道题 gate1_status 还是 pending: {pending} —— 闸一裁完 (pass / fail / "
+                        "kappa_undefined) 才能冻结, 预注册不能带着没裁的题 (审计 B-17, D-103)")
         want = bank.get("frozen_sha256")
         if not want:
             errs.append("status=frozen 但没记 frozen_sha256")

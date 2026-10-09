@@ -159,13 +159,19 @@ _STATUS_TO_DECISION = {
 #     也不默认成人工 —— 默认成人工正是本次要修的病。
 _MACHINE_DECISION_SOURCES = frozenset({"auto_hard_rule", "auto_dedup", "system"})
 _EVAL_TYPE_UNVERIFIED = "unverified"
+# 审计 A-01 (D-102, 2026-10-09): deskcore 的 review_drafts 写的决定是【模型替用户记的】—— 实查 32 条 'human' 全嵌在模型
+# 自己的工具链里 (commit 后 10–27 s 整批通过), 库里分不出是人说的还是模型自作主张。aw 侧 (migration 012) 起 MCP
+# 工具一律写 decision_source='human_via_agent' (带 decision_note = 用户原话), 'human' 只留给 Streamlit 真人点击。
+# TV 这边原样映成 evaluator_type='human_via_agent': 不是人审真值 (真值视图只认 'human'), 但也不是机器判定,
+# evaluator_id 记 reviewer (= 作者本人, 这是该类型的语义, 不是旧实现那种冒认)。
+_EVAL_TYPE_HUMAN_VIA_AGENT = "human_via_agent"
 
-# 本同步【只】拥有这三类 evaluator_type —— 也正是 v1.11 唯一索引覆盖的那三类
-# (schemas/notes_v1_11_evaluator_provenance.sql)。两处必须是同一个集合:
+# 本同步【只】拥有这四类 evaluator_type —— 也正是 v1.11 (+ v1.20 加 human_via_agent) 唯一索引覆盖的那四类
+# (schemas/notes_v1_11_evaluator_provenance.sql, notes_v1_20_human_via_agent.sql)。两处必须是同一个集合:
 #   · 判"这条 item 已归档了吗"只能看这三类;
 #   · persona / critic / model 是别的链路写的, 与本同步正交, 看见它们【不能】
 #     当成"已归档"而跳过 —— 那会把真正的审稿决策静默吞掉(codex review P1)。
-_SYNC_EVALUATOR_TYPES = frozenset({"human", "rule_based", _EVAL_TYPE_UNVERIFIED})
+_SYNC_EVALUATOR_TYPES = frozenset({"human", "rule_based", _EVAL_TYPE_UNVERIFIED, _EVAL_TYPE_HUMAN_VIA_AGENT})
 
 # ── in_() 列表走 URL, 一次别塞太多 (2026-09-23, daily-sync #179 的红; D-080) ──────
 # 生产实测(anon key 走同一条 builder 链的探针): Supabase 边缘按【整个请求头】
@@ -195,6 +201,10 @@ def _provenance(item: dict) -> tuple[str, str | None]:
         # 人工但拿不到 reviewer: 仍算人工(来源明确说了是人审), 但 evaluator_id 留空 ——
         # 填作者等于错认"他自己审了自己", 那是旧实现的错。
         return "human", (reviewer or None)
+    if src == _EVAL_TYPE_HUMAN_VIA_AGENT:
+        reviewer = item.get("reviewer_id")
+        reviewer = str(reviewer).strip() if reviewer else ""
+        return _EVAL_TYPE_HUMAN_VIA_AGENT, (reviewer or None)
     if src in _MACHINE_DECISION_SOURCES:
         return "rule_based", src
     # 没见过的新取值: 不猜。标 unverified 并把原串留在 evaluator_id 里, 方便排查。
@@ -689,6 +699,9 @@ def main() -> int:
     audit_fail, audit_warn = 0, 0
     try:
         audit_fail, audit_warn = audit_archived_provenance(sb, since_iso)
+        if audit_warn:
+            # 审计 A-01 / docs/29: WARN ④ (作者自审) 以前只在日志里; 现在打成 Actions 注解, 夜跑页面上看得见。
+            print(f"::warning title=归档复核 WARN {audit_warn} 条::作者自审或可自愈的漂移 (见上面日志); 人审真值要打折 —— D-102")
     except Exception:
         # 复核本身挂了不该把同步判成失败(同步已经成功了), 但必须喊出来。
         logger.exception("归档复核执行失败 —— 本轮同步结果不受影响, 但复核没跑成")

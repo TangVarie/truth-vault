@@ -45,6 +45,7 @@ from typing import Any
 
 from _common import (
     fetch_all_pages,
+    fetch_vanished_note_ids,
     get_supabase_client,
     load_mapping,
     setup_logger,
@@ -155,6 +156,11 @@ def fetch_pending_baokuan(
     if project_filter:
         q = q.eq("project_id", project_filter)
     rows = fetch_all_pages(q, order_by="note_id")
+    # 飞书里已删的篇不推 (审计 B-21, D-103): 本项目最近一次完整同步没见到它 = 运营删了, 推过去就是拿删掉的稿当参照。
+    # 已推过的不在这里撤 —— 回收 (retract_stale_synthetic_from_ssll) 只认资格 (D-087), 删没删由 owner 看 v_notes_vanished 定。
+    vanished = fetch_vanished_note_ids(sb, project_filter)
+    if vanished:
+        rows = [r for r in rows if r["note_id"] not in vanished]
     # push 侧的最后一道 = ssll_eligibility_reason(): tier / tier_source / 指标可信三件事一份判据,
     # 回收侧 (retract_stale_synthetic_from_ssll) 用的是同一个函数 —— 推什么、撤什么对称 (D-068 / D-087)。
     # 上面的 PostgREST 过滤已经保证 tier / tier_source, 这里真正起作用的是指标可信那一路;

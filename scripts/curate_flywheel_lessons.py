@@ -43,7 +43,7 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from _common import fetch_all_pages, get_supabase_client, setup_logger, _iso_now
+from _common import fetch_all_pages, fetch_vanished_note_ids, get_supabase_client, setup_logger, _iso_now
 # 复用 essence pass 的带重试 Anthropic 调用 + JSON 解析, 避免重复实现那套 retry。
 # (导入 annotate_essence_pass 仅触发其 def/常量定义, main 有 __name__ guard, 无副作用。)
 from annotate_essence_pass import call_claude, parse_claude_json
@@ -215,6 +215,13 @@ def fetch_uncurated_cards(sb, project_id, recurate: bool, stale_only: bool = Fal
     # 它作主排序, source_note_id 作次级键把跨页顺序钉死。
     cards = fetch_all_pages(q.order("rank_score", desc=True),
                             order_by="source_note_id")
+    # 飞书里已删的篇不再策展 / 重策展 (审计 B-21, D-103): 卡是从删前快照生成的, 之后没人维护。已有的卡不动。
+    vanished = fetch_vanished_note_ids(sb, project_id)
+    if vanished:
+        before = len(cards)
+        cards = [c for c in cards if c["source_note_id"] not in vanished]
+        if before != len(cards):
+            logger.info("跳过 %d 张飞书里已删 (v_notes_vanished) 的卡", before - len(cards))
     if stale_only:
         ess = fetch_essence_annotated_at(sb, [c["source_note_id"] for c in cards])
         cards = stale_cards(cards, ess)

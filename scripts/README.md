@@ -112,6 +112,8 @@ CI 和 daily-sync workflow 都优先读 `.lock`; `.txt` 仅作为 "high-level in
 #         (改的是 v1_13 建的表, 必须在 v1_13 之后 —— 不是 v1_16 之后; judge 仓提供; D-085)
 #   - schemas/notes_v1_18_external_notes.sql         → 外部笔记表 external_notes (TikHub) + 参考分布视图 v_external_reference (必须在 v1_17 之后; D-085)
 #   - schemas/notes_v1_19_sync_status_stale_gated.sql → v_flywheel_sync_status: pending 排铺评工单 + 新列 gated_ssll_sync / stale_in_ssll (视图, 链尾; D-087)
+#   - schemas/notes_v1_20_human_via_agent.sql        → prepublish_evaluations.evaluator_type 加 human_via_agent (模型替用户记的决定, 不当人审真值) + 唯一索引谓词扩到四类 (D-102)
+#   - schemas/notes_v1_21_vanished_notes.sql         → 视图 v_notes_vanished: 盖过 last_seen 戳、但本项目最近一次完整同步没见到的篇 (飞书已删); 新策展 / 通道 1 / 闸二取数按它排除 (在 v1_9 之后; D-103)
 #   - autowriter-migrations/001_create_autowriter_schema.sql → 把 autowriter 表从 public 迁到 autowriter schema
 #   - autowriter-migrations/002_add_external_source.sql     → items 加 (external_source, external_source_id) 列
 #         + per-user partial UNIQUE (user_id, external_source, external_source_id) WHERE external_source IS NOT NULL.

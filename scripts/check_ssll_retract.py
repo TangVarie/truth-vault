@@ -163,8 +163,10 @@ class FakeSB:
         raise AssertionError(q.op)
 
 
-def install(sb: FakeSB):
+def install(sb: FakeSB, vanished: set[str] = frozenset()):
     s.fetch_all_pages = lambda q, page_size=1000, order_by=None: [dict(r) for r in sb.rows_for(q)]
+    # 飞书已删篇 (v_notes_vanished, D-103) 的查询在 _common 里, 这里按名单桩掉; 真视图由 check_vanished_notes.py 守
+    s.fetch_vanished_note_ids = lambda _sb, project_id=None: set(vanished)
 
 
 def note(note_id, tier, flags=None, *, project_id="P", tier_source="状态字段", publish_time=RECENT, synced=None):
@@ -190,6 +192,11 @@ install(sb)
 got = sorted(r["note_id"] for r in s.fetch_pending_baokuan(sb))
 want = sorted(["clean", "emptyflags", "boost_bao", "ticket_ref", "synth_ref"])
 assert got == want, f"push 侧判据不对: 期望 {want} 实得 {got}"
+# §1b 飞书已删篇 (v_notes_vanished, 审计 B-21 / D-103): 资格全够的 clean 一旦在名单里就不推; 回收侧不认它 (只认资格, D-087)
+install(sb, vanished={"clean"})
+got_v = sorted(r["note_id"] for r in s.fetch_pending_baokuan(sb))
+assert got_v == sorted(x for x in want if x != "clean"), f"飞书已删的 clean 不该推: {got_v}"
+install(sb)
 # 回收候选 = push 侧挡的那三条 (标了 synced, ssll 里没行 → A 路靠标记认出来)
 n = s.retract_stale_synthetic_from_ssll(sb, dry_run=True)
 assert n == 3, f"回收候选应为 ticket_bao / both_dabao / synth_bao 三条, 实得 {n}"
