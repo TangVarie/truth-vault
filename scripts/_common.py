@@ -358,7 +358,53 @@ def load_mapping(project_id: str) -> dict:
             f"拼错的话会静默失效(所有读取点都是 .get, 取不到就退默认值); "
             f"确实要新增就同步加进 _common._ALLOWED_MAPPING_KEYS。"
         )
+    # ── field_mapping 右侧必须是真列或登记过的中间量 (2026-10-08 审计 B-16) ─────────────
+    # 以前只校左侧(飞书列名)与闭集词表, 右侧写什么都收。写错一个列名 (``publish_tiem``) 的
+    # 失效方式是: transform_row 把它当 notes 列塞进 upsert → PostgREST 400 整块拒 → 退回逐行
+    # 又全拒 → 这个项目当晚 0 行入库, 日志里是 500 条 "per-row note upsert failed"。写成一个
+    # 没登记的下划线中间量 (``_statusraw``) 更坏: 没人读它, tier 静默 NULL, 一行不报。
+    bad_targets = sorted({
+        str(t) for t in (m.get("field_mapping") or {}).values()
+        if str(t) not in _KNOWN_NOTE_COLUMNS and str(t) not in _KNOWN_INTERMEDIATES
+    })
+    if bad_targets:
+        raise ValueError(
+            f"{path}: field_mapping 的目标 {bad_targets} 既不是 truth_vault.notes 的列, "
+            f"也不是登记过的中间量。列名拼错会让这个项目整晚 0 行入库; 中间量拼错会让 tier / "
+            f"intent 静默 NULL。真要加列: 先 schemas/ 迁移, 再加进 _common._KNOWN_NOTE_COLUMNS; "
+            f"真要加中间量: 在 transform_row 里接上读它的代码, 再加进 _KNOWN_INTERMEDIATES。"
+        )
     return m
+
+
+# truth_vault.notes 的列 (按 2026-10-08 生产 information_schema 抄下来, 与 schemas/notes_v1_*
+# 一致)。field_mapping 右侧只能落在这里或 _KNOWN_INTERMEDIATES 里。加列的顺序: 先迁移, 再这里。
+_KNOWN_NOTE_COLUMNS = frozenset({
+    "note_id", "project_id", "account_id", "source_sanshengliubu_output_id",
+    "source_autowriter_item_id", "source_autowriter_version_id", "title", "body", "hashtags",
+    "raw_content", "intent", "content_format", "emotional_lever", "emotional_valence",
+    "emotional_intensity", "human_truth_archetype", "trend_dependencies", "target_audience",
+    "inferred_audience_profile", "actual_audience_data", "user_pain_point", "product_focus",
+    "direction_subtype", "publish_time", "publish_url", "target_blue_keywords", "impressions",
+    "reads", "interactions", "hit_blue_keywords", "read_rate", "interaction_rate", "tier",
+    "tier_source", "data_quality_status", "data_quality_flags", "pinned_comment",
+    "has_compliance_issue", "compliance_notes", "essence_annotated_by", "essence_annotated_at",
+    "essence_vocab_version", "essence_annotation_mode", "audience_inferred_at",
+    "audience_actual_synced_at", "synced_to_ssll_at", "synced_to_aw_at",
+    "synced_ssll_reference_sample_id", "synced_autowriter_item_id", "raw_extra", "era_tag",
+    "feishu_record_id", "platform", "ingested_at", "created_at", "updated_at", "last_seen_at",
+    "last_seen_run_id", "comments_count",
+    # metric_snapshots 的分项: transform_row 先收进 note 再拆到 metric_dict (likes/saves/shares
+    # 走 _NUMERIC_COLS), 这里一并放行, 否则早期表的分列映射会被挡。
+    "likes", "saves", "shares", "search_rank", "keyword_rank",
+})
+
+# 下划线开头的中间量: transform_row 之后有代码读它才算数。17 张表 2026-10-08 实际用到的全在这。
+_KNOWN_INTERMEDIATES = frozenset({
+    "_status_raw", "_note_for_tier", "_note_status_raw", "_published_status",
+    "_intent_raw", "_direction_raw", "_audience_raw", "_account_name",
+    "_comment_text", "_comment_text_persona",
+})
 
 
 def skip_on_demand_on_cron(sync_interval: Optional[str], scheduled: bool) -> bool:
@@ -1327,6 +1373,20 @@ def _iso_now_tz() -> str:
 # Logging
 # ─────────────────────────────────────────────────────────────────────────
 
+class SecretMaskingFormatter(logging.Formatter):
+    """把 ``mask_secrets`` 挂在 formatter 上: 消息、参数、traceback 全部经它一遍再出去。
+
+    为什么在 formatter 而不是靠调用点自觉 (2026-10-08 审计 B-11): ``mask_secrets`` 2026-05-22
+    加进来之后**一个调用点都没有**, RISKS R-023 却记着"TV 已关闭"。supabase-py / requests 的
+    异常文本会带 URL 和 bearer, ``logger.exception`` 原样打进 Actions 日志。formatter 是所有
+    走 ``setup_logger`` 的脚本唯一的出口, 挂这里不用改 18 个脚本。
+    ⚠️ 挡不住什么: 直接 ``print()`` 的、以及不走 ``setup_logger`` 自建 handler 的, 不经这里。
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        return mask_secrets(super().format(record))
+
+
 def setup_logger(name: str, level: str = "INFO") -> logging.Logger:
     logger = logging.getLogger(name)
     if logger.handlers:
@@ -1334,7 +1394,7 @@ def setup_logger(name: str, level: str = "INFO") -> logging.Logger:
     logger.setLevel(getattr(logging, level.upper(), logging.INFO))
     h = logging.StreamHandler(sys.stdout)
     h.setFormatter(
-        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s · %(message)s")
+        SecretMaskingFormatter("%(asctime)s [%(levelname)s] %(name)s · %(message)s")
     )
     logger.addHandler(h)
     return logger

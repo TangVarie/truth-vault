@@ -5856,3 +5856,27 @@ python job 里 import 馆员的 8 步（TV-03 / TV-05 / TV-06 / 守卫 6 / put_c
 - curate 单批 5 张在中转站极坏日仍可能超 5 分钟；再小就要加 `/curate` 的分页协议，这次不动 worker。
 - features 的"该成几批"按本轮开始时的待办算；跑的过程中新入库的笔记不算欠。
 - 新鲜度灯只看"有没有新行"，不看行数是不是异常少（triage 拒了 95% 也算新鲜）。
+
+## D-095 · 日志出口挂 secret 掩码；mapping 右侧只能是真列或登记过的中间量；钥匙 → 持有者矩阵；账本半写反查（2026-10-09）
+
+来源：`data-analysis/architecture-audit-2026-10-08.md` 的 B-11 / B-16 / B-12，以及 Jev 仓 B-06 在 TV 侧的反查。
+
+### 定了什么
+
+1. **`setup_logger` 的 formatter 换成 `SecretMaskingFormatter`（B-11）。** `mask_secrets` 2026-05-22 加进来之后零调用点，RISKS R-023 却记着"TV 已关闭"。formatter 是所有走 `setup_logger` 的脚本（18 个）唯一的出口，消息 / %-参数 / traceback 三条路都经 `mask_secrets`。CI 守卫 `scripts/check_secret_masking.py` 五节：三条路各一节、"源码里至少一处代码调用"（再变死代码就红）、以及边界（自建 handler 不经这里，不假装全覆盖）。R-023 加后记。Jev 仓 `apply_rows` 打印前抹 key（Jev#6）。
+2. **`load_mapping` 校 `field_mapping` 右侧（B-16）。** 目标必须 ∈ `_KNOWN_NOTE_COLUMNS`（按 10-08 生产 `information_schema` 抄的 `truth_vault.notes` 列 + `metric_snapshots` 的分项 likes/saves/shares/search_rank/keyword_rank，它们先收进 note 再拆）∪ `_KNOWN_INTERMEDIATES`（17 张表实际用到的 10 个下划线中间量）。列名拼错以前的失效方式是 PostgREST 400 整块拒 → 逐行又全拒 → 该项目当晚 0 行入库；中间量拼错更坏：没人读它，tier / intent 静默 NULL。**加列的顺序**：先 `schemas/` 迁移，再加进 `_KNOWN_NOTE_COLUMNS`；加中间量：先在 `transform_row` 接上读它的代码，再登记。B-16 的另一半（每周只读 preflight 全项目）没做：preflight 对现有项目会不会从第一天就红，本容器没飞书凭据验不了，而"一开始就天天红的灯一周之内就没人看"（docs/29 规矩 4）。
+3. **RISKS R-032：secret → 持有者矩阵（B-12）。** 13 把钥匙 × 9 类持有者，按三仓源码盘点（Railway 列按代码读取的变量名，方括号读法没盘到，以各服务 Variables 页为准）；附轮换 SOP。看板 README 从"配 service_role"改成"配 anon"（`lib/supabase.ts` 2026-06 起就优先读 anon，README 一直教错）。
+4. **`verify_supabase_state.sql` 加 #87（B-06 反向）。** 同一跑（run_tag × extractor × bank_version）下行数少于该跑最大值的 subject 数，近 30 天窗。#86 只查"有答案无笔记"；半写（PostgREST 批之间没有事务）是另一头。Jev 仓同 PR 起 `/judge` / `/judge_draft` 写失败回 200 + `written` 真实行数 + `write_error`，不再把已付钱的判定整个变 500。
+
+### 验证
+
+- `check_secret_masking.py` 五节过；反证：formatter 换回普通 `Formatter` → §1–§3 红（6 条）。
+- 17 张 mapping 全部 `load_mapping` 过；反证：复制 OKMAN 把 `publish_time` 改成 `publish_tiem` → 红；把 `_status_raw` 改成 `_statusraw` → 红。
+- `check_system_map` 六条过（G6 495,920 / 505,000）；ci.yml 可 parse，新步是一行调用（G2 不变）。
+- #87 的 SQL 没拿生产跑（本容器无 `SUPABASE_*`；它是 `verify_supabase_state.sql` 的一行，与其它 90 条一起由人跑）。
+
+### 挡不住什么
+
+- 掩码挡不住 `print()` 和自建 handler；D-021 的 quarantine 路径里有 `print`，没改。
+- `_KNOWN_NOTE_COLUMNS` 是手抄的快照；生产加了列而这里没加，表现是 `load_mapping` 红（看得见），不是静默。
+- R-032 矩阵是手抄的，新消费者不会自动出现。

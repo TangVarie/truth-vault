@@ -419,6 +419,22 @@ SELECT '86', 'H · 跨 schema 孤儿',
     )::TEXT, 'N/A'),
     '0',
     '> 0 表示外部笔记行没写进来 (judge 仓 apply_rows 先写 external_notes 再写账本) 或被删. N/A = v1.18 还没 apply.'
+UNION ALL
+SELECT '87', 'H · 跨 schema 孤儿',
+    'note_feature_answers 近 30 天里 "同一跑 (run_tag × extractor × bank_version) 下行数少于该跑最大值" 的 subject 数 (#86 的反向: 半写)',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(*) FROM (
+            SELECT run_tag, extractor, bank_version, subject_id, COUNT(*) AS n,
+                   MAX(COUNT(*)) OVER (PARTITION BY run_tag, extractor, bank_version) AS n_max
+            FROM truth_vault.note_feature_answers
+            WHERE extracted_at > now() - interval '30 days'
+            GROUP BY run_tag, extractor, bank_version, subject_id
+        ) s WHERE n < n_max$q$
+    )::TEXT, 'N/A'),
+    '0',
+    '> 0 多半是 judge 仓 postgrest_upsert 写到一半失败 (PostgREST 批之间没有事务; 2026-10-09 起 judge 回 write_error 带已写行数, '
+    'TV 审计 B-06). 修法: 拿当时 /judge 回包里的 ledger_rows 重跑 (upsert 幂等). 也可能是同一 bank_version 中途改了题数——'
+    '那种情况 subject 数会很大且集中在一天, 对照 banks/ 的 git log.'
 
 -- ── I · 数据一致性副作用 ──────────────────────────────────────────────
 UNION ALL
