@@ -12,8 +12,10 @@ name: Daily TV sync
 #        SUPABASE_URL
 #        SUPABASE_SERVICE_ROLE_KEY
 #        FEISHU_APP_ID, FEISHU_APP_SECRET
-#        WORKER_URL, WORKER_API_KEY   (essence/curate 搬 Railway worker 后用; D-038/docs/17 §7-D)
-#        (注: ANTHROPIC_API_KEY/BASE_URL/ESSENCE_MODEL 随 essence/curate 搬 Railway 已从 GitHub 移除)
+#        ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL   (essence / curate 直连中转站; D-100)
+#        (注: 2026-06 曾因旧中转站 GitHub 连不上把 essence/curate 搬去 Railway worker (docs/17 §7-D), 2026-10-09 换站后
+#         runner 直连得上, D-100 搬回; Railway worker 现在只跑特征层 (features-sync.yml 带 WORKER_URL)。
+#         模型用 repo variable ESSENCE_MODEL / FLYWHEEL_CURATOR_MODEL 覆盖, 不设 = 代码默认 claude-sonnet-5-5)
 #        (注: AUTOWRITER_SYNC_USER_ID / AUTOWRITER_INJECTION_* 随通道2 push
 #         退役已移除 — D-038; 详见下方 steps 中退役注释)
 #   2. 在下方 on: 块里把 schedule 那段取消注释
@@ -86,8 +88,9 @@ jobs:
       # essence/curate 的 LLM 调用已搬到 Railway worker(GitHub 海外 runner 连不上中转站;
       # D-038 / docs/17 §7-D)。GitHub 这边只【触发】worker —— 不再需要 ANTHROPIC_*/ESSENCE_MODEL。
       # 未配 WORKER_URL → essence/curate 优雅跳过(不再因 GitHub 连不上网关而红)。
-      WORKER_URL: ${{ secrets.WORKER_URL }}
-      WORKER_API_KEY: ${{ secrets.WORKER_API_KEY }}
+      # D-100: essence / curate 直连中转站 (worker 只剩特征层, 在 features-sync.yml)
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
       # essence 每日上限/项目。essence 步骤会【循环多个 ≤15 的子批】凑够这个数 —— 因为单个
       # worker 请求受 Railway 边缘【~5min 超时】约束,每请求最多 ~15 条(≈3.5min;>15 会 502)。
       # 想每天标更多就在 repo Variables 调大 WORKER_LIMIT(如 50 = 每天每项目最多 50,内部
@@ -131,11 +134,12 @@ jobs:
             echo "See .github/workflows/daily-sync.yml header for setup steps."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
-          # WORKER_URL / WORKER_API_KEY 同理 (codex review on #169): essence 与 curate 两步都是 `env.WORKER_URL != ''` 才跑,
-          # 定时跑少了这两把 secret 会静默跳过、整轮照绿 —— 和上面 SUPABASE 那条是同一种"永远静默绿"。
+          # ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL 同理 (codex review on #169 抓的是 WORKER_URL; D-100 直连后换成这两把):
+          # essence 与 curate 两步都是 `env.ANTHROPIC_API_KEY != ''` 才跑, 定时跑少了会静默跳过、整轮照绿 ——
+          # 和上面 SUPABASE 那条是同一种"永远静默绿"。手动触发仍允许只同步不跑 LLM。
           # (措辞里别出现「斜杠 + curate」这个子串: ci.yml 的 D-047 守卫按它找策展那一步, 会先撞到这里。)
-          if [ "${{ github.event_name }}" = "schedule" ] && { [ -z "$WORKER_URL" ] || [ -z "$WORKER_API_KEY" ]; }; then
-            echo "::error::WORKER_URL/WORKER_API_KEY not configured on a scheduled run — essence and curate would be skipped silently. Fix repo secrets."
+          if [ "${{ github.event_name }}" = "schedule" ] && { [ -z "$ANTHROPIC_API_KEY" ] || [ -z "$ANTHROPIC_BASE_URL" ]; }; then
+            echo "::error::ANTHROPIC_API_KEY/ANTHROPIC_BASE_URL not configured on a scheduled run — essence and curate would be skipped silently. Fix repo secrets."
             exit 1
           fi
 
@@ -192,35 +196,25 @@ jobs:
             exit 1
           fi
 
-      - name: essence + sub_direction annotation (Mode A, D-028) via Railway worker
+      - name: essence + sub_direction annotation (Mode A, D-028) · 直连中转站 (D-100)
         id: essence_sync
         continue-on-error: true
-        if: steps.check.outputs.skip != 'true' && env.WORKER_URL != '' && github.event.inputs.skip_essence != 'true'
+        if: steps.check.outputs.skip != 'true' && env.ANTHROPIC_API_KEY != '' && github.event.inputs.skip_essence != 'true'
         working-directory: scripts
+        env:
+          ESSENCE_MODEL: ${{ vars.ESSENCE_MODEL }}
         run: |
-          # LLM 调用搬到 Railway worker(GitHub 连不上中转站, D-038/docs/17 §7-D);这里只 curl 触发。
-          # ⚠️ 单个 worker 请求受 Railway 边缘【~5min 超时】。带 sub_direction(D-014, 如 NUC)的项目
-          #    每条要【两次】LLM 调用(essence + 子方向分类)→ 单请求耗时翻倍, 15 条会撞 5min → 502
-          #    (NUC_1 首灌实测: 15 条/请求的第 3 批超时, body 非 JSON)。故每请求封顶 8 留余量,
-          #    不够靠多轮循环凑 WORKER_LIMIT。标注幂等(essence_annotated_at IS NULL 续作), 标完即停。
-          ESS_REQ_MAX=8    # 单请求硬上限。含 sub_direction 的项目每条 2 次 LLM, 8 条≈4min<5min;
-                           # 不带 sub_dir 的本可更大, 取保守统一值避免按项目分叉(够用, 靠循环补)。
-          DRY=false
-          [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY=true
-          # 区分 worker 调用失败是【瞬时】(够到了 worker 但慢/被边缘掐断 → 幂等下轮续, 只告警)
-          # 还是【系统性】(配置/连通/鉴权坏 → 该红, 否则 curation 静默瘫痪还报绿; codex PR#65 review:
-          # 原来 `|| code=000` 把超时和 URL拼错/DNS失败/拒连混为一谈, 都只告警 = 漏掉真问题)。
-          # 据 curl 退出码区分(只有【够到 worker 但中断】算瞬时; 【没够到/配置坏】判系统性):
-          worker_fail_kind() {  # $1=curl_rc $2=http_code → echo transient|systemic
-            case "$1" in
-              28|52|56|18) echo transient; return ;;  # 28超时 52空回复 56接收重置 18传输不全 = 够到但中断
-              0) : ;;                                  # curl 本身成功, 看 http_code
-              *) echo systemic; return ;;             # 6 DNS / 7 拒连 / 3 URL格式 / 35,60 SSL = 没够到/配置坏
-            esac
-            # 409 = worker 侧互斥锁拒绝(另一个 run/backfill 正在标同一批, worker/app.py)。
-            # 够到了 worker、没干活、完全幂等 → 与网关超时同类, 下轮 cron 续标, 不拖红。
-            case "$2" in 409|502|503|504) echo transient ;; *) echo systemic ;; esac  # 忙/网关超时=瞬时; 其余 4xx=系统性
-          }
+          # 直连中转站 (D-100): 2026-10-09 换站后 GitHub runner 连得上 (gateway-probe http=200), essence 从 Railway worker
+          # 搬回来直跑 (2026-06 搬去 worker 只因旧站 GitHub 连不上, docs/17 §7-D)。以前 ESS_REQ_MAX=8 的分批循环、
+          # worker_fail_kind 的瞬时/系统性分类、409 锁, 都是 Railway 边缘 ~5 min 超时和跨 run 共用一个 worker 才有的
+          # 东西 —— 直跑没有那道墙: 每项目【一次】调用, --limit 给整份日预算; 脚本自己按 essence_annotated_at IS NULL
+          # 续作、单条失败各重试一次、只有全军覆没 / hygiene 漂移才退非零 (_exit_code_for_stats, 可单测)。
+          # 跨 workflow 的互斥改由 concurrency.group 兜: backfill-essence / recurate-lessons 和本 workflow 同一个组,
+          # 排队不并跑 (以前靠 worker 的每脚本锁)。
+          # 模型: repo variable ESSENCE_MODEL 覆盖; 没设 = 代码默认 claude-sonnet-5-5 (D-098)。GitHub 会把没设的
+          # variable 注成空串, 而 os.environ.get(..., default) 对空串不回默认 —— 所以空就 unset。
+          [ -n "$ESSENCE_MODEL" ] || unset ESSENCE_MODEL
+          DRY_FLAG=""; [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY_FLAG="--dry-run"
           fail_count=0
           for f in ../mappings/*.yaml; do
             p=$(basename "$f" .yaml)
@@ -240,96 +234,47 @@ jobs:
               echo "  ⏭  $p sync_interval=on_demand → 夜间 cron 跳过 essence(与入库同一道闸, D-047)"
               continue
             fi
-            echo "─── essence annotate (worker) · project=$p · 每日上限=$WORKER_LIMIT · 每请求≤$ESS_REQ_MAX ───"
-            budget=$WORKER_LIMIT
-            ok_batches=0   # 本项目本轮成功的子批数(>0 = 本轮已有进展)
-            while [ "$budget" -gt 0 ]; do
-              rem=$(python count_unannotated_essence.py "$p" 2>/dev/null || echo "?")
-              [ "$rem" = "0" ] && { echo "  ✅ $p essence 已全部标完"; break; }
-              batch=$ESS_REQ_MAX; [ "$batch" -gt "$budget" ] && batch=$budget
-              # 捕获 curl 退出码(不再一律 code=000 掩盖)—— 用于区分超时 vs 配置/连通错(PR#65 review)。
-              if code=$(curl -sS -w '%{http_code}' -o /tmp/ess.json --max-time 900 \
-                -X POST "${WORKER_URL%/}/annotate-essence" \
-                -H "X-Worker-Key: $WORKER_API_KEY" -H 'content-type: application/json' \
-                -d "{\"project\":\"$p\",\"limit\":${batch},\"dry_run\":$DRY}"); then
-                curl_rc=0
-              else
-                curl_rc=$?; code=000   # curl 失败时 http_code 不可靠, 记 000; 真因看 curl_rc
-              fi
-              # ⚠️ `|| echo false` 必须有: 502/超时时 body 是 HTML(非 JSON), jq 解析失败退出码 5,
-              #    在 bash -e 下会【直接崩整步】(绕过下方 502 判断, NUC_1 首灌实测 exit 5)。守卫后降级 ok=false。
-              ok=$(jq -r '.ok // false' /tmp/ess.json 2>/dev/null || echo false)
-              echo "  HTTP $code · ok=$ok · $(jq -r '.stdout_tail // ""' /tmp/ess.json 2>/dev/null | grep -o 'Done:.*' | tail -1)"
-              if [ "$code" != "200" ] || [ "$ok" != "true" ]; then
-                jq -r '.stderr_tail // ""' /tmp/ess.json 2>/dev/null | tail -8
-                # 容忍策略(标注幂等: essence_annotated_at IS NULL, 下轮 cron 续标):
-                # - 瞬时(curl 超时/边缘掐断 · 502/503/504 网关)= worker 可能已提交 → 只告警不拖红, 下轮续。
-                # - 系统性但【本轮已标过批】(ok_batches>0)= 多半单条抽风/部分失败、有进展 → 也只告警。
-                # - 系统性且【第一批就失败】(ok_batches=0)= 配置/连通/鉴权坏 或 全军覆没 → 判红排查。
-                kind=$(worker_fail_kind "$curl_rc" "$code")
-                if [ "$kind" = "transient" ]; then
-                  echo "::warning::essence $p 瞬时失败(curl_rc=$curl_rc HTTP $code ok=$ok), 幂等下轮 cron 续标, 不拖红。"
-                elif [ "$ok_batches" -gt 0 ]; then
-                  echo "::warning::essence $p 子批失败(curl_rc=$curl_rc HTTP $code ok=$ok), 本轮已标 $ok_batches 批; 余量下轮续标, 不拖红。"
-                else
-                  echo "::error::essence $p 首批即系统性失败(curl_rc=$curl_rc HTTP $code ok=$ok) —— 配置/连通/鉴权 或 全军覆没, 需排查。"
-                  fail_count=$((fail_count + 1))
-                fi
-                break
-              fi
-              ok_batches=$((ok_batches + 1))
-              budget=$((budget - batch))
-            done
+            rem=$(python count_unannotated_essence.py "$p" 2>/dev/null || echo "?")
+            [ "$rem" = "0" ] && { echo "  ✅ $p essence 已全部标完"; continue; }
+            echo "─── essence annotate (直连) · project=$p · 待标=$rem · 每日上限=$WORKER_LIMIT ───"
+            rc=0; python annotate_essence_pass.py "$p" --limit "$WORKER_LIMIT" $DRY_FLAG > /tmp/ess.log 2>&1 || rc=$?
+            grep -E 'Found [0-9]+ notes|Done:|全部失败|卫生断言|有 [0-9]+ 条失败' /tmp/ess.log | tail -4 || true
+            if [ "$rc" != "0" ]; then
+              tail -n 12 /tmp/ess.log
+              # 脚本退非零 = 全军覆没 / hygiene 漂移 / 参数错 —— 多半是模型名 · 中转站 · 余额这类系统性问题, 判红排查。
+              # 零星单条失败脚本自己退 0 并告警, 下轮幂等续标, 不拖红 (对齐 best-effort 富集定位)。
+              echo "::error::essence $p 退出码 $rc —— 全军覆没 / hygiene 漂移 / 配置 (模型名 · 中转站 · 余额), 需排查; 已标的不丢, 下轮幂等续标。"
+              fail_count=$((fail_count + 1))
+            fi
           done
           if [ $fail_count -gt 0 ]; then
             echo "::error::essence annotation failed for $fail_count project(s)"
             exit 1
           fi
 
-      - name: 策展 flywheel 经验卡 (pull 馆员书架, D-038 / docs/14) via Railway worker
+      - name: 策展 flywheel 经验卡 (pull 馆员书架, D-038 / docs/14) · 直连中转站 (D-100)
         id: curate_sync
         continue-on-error: true
-        if: steps.check.outputs.skip != 'true' && env.WORKER_URL != '' && github.event.inputs.skip_essence != 'true'
+        if: steps.check.outputs.skip != 'true' && env.ANTHROPIC_API_KEY != '' && github.event.inputs.skip_essence != 'true'
         working-directory: scripts
+        env:
+          FLYWHEEL_CURATOR_MODEL: ${{ vars.FLYWHEEL_CURATOR_MODEL }}
         run: |
           # 把合格爆款(爆/大爆/参考, 非 synthetic)提炼成"经验卡", 喂 pull 模型的 LLM 馆员书架。
-          # LLM 调用在 Railway worker 上跑(GitHub 连不上中转站);这里只 curl 触发。
+          # 直连中转站 (D-100), 同 essence 步。CUR_REQ_MAX=5 的分批 (D-094) 是为 Railway 边缘超时存在的, 直跑不需要:
+          # 每项目一次调用, --limit 给剩余的共享预算。四条纪律不变 (ci.yml 的 D-047 守卫钉着): on_demand 闸 /
+          # 预算全局共享且随实际策展数递减 / 预算用完点名谁被推迟 / 一个项目挂了不带走其余项目但收尾判红。
           # 尊重 workflow 的 project 输入: 定向跑某项目时只策展该项目(PR#30 review r3338862087)。
           # 复用 skip_essence flag(同属 LLM 花费, 一起跳)。书架空时 0 卡, no-op。
-          # curate 同走 Railway 边缘(~5min/请求)。curate 待办是【爆款数】量级(远少于笔记),
-          # 15/天足够;单请求 >~15 张同样会撞 5min 超时。故每请求封顶 15、不随 WORKER_LIMIT 放大
-          # (避免 502);待办多时下轮 cron 续(is_curated=false 幂等)。
+          # 预算: curate 待办是【爆款数】量级(远少于笔记), 15/天足够; 共享预算不随项目数放大 (加闸门不该顺手把账单乘以项目数)。
+          [ -n "$FLYWHEEL_CURATOR_MODEL" ] || unset FLYWHEEL_CURATOR_MODEL
           CUR_LIMIT=$WORKER_LIMIT; [ "$CUR_LIMIT" -gt 15 ] && CUR_LIMIT=15
-          DRY=false
-          [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY=true
-          # 同 essence 步: 区分瞬时(够到 worker 但慢/掐断)vs 系统性(配置/连通/鉴权坏)。PR#65 review。
-          worker_fail_kind() {  # $1=curl_rc $2=http_code → echo transient|systemic
-            case "$1" in
-              28|52|56|18) echo transient; return ;;  # 28超时 52空回复 56接收重置 18传输不全 = 够到但中断
-              0) : ;;                                  # curl 本身成功, 看 http_code
-              *) echo systemic; return ;;             # 6 DNS / 7 拒连 / 3 URL格式 / 35,60 SSL = 没够到/配置坏(已退避重试仍失败才到这 → 判红, 不掩盖坏 WORKER_URL; PR#86 review)
-            esac
-            # 409 = worker 侧互斥锁拒绝(另一个 run 正在跑 curate_flywheel_lessons.py)。
-            # 与 essence 段同一契约: 够到了 worker、没干活、幂等 → 瞬时, 下轮 cron 续, 不拖红。
-            # 【不】加进上面的退避重试: 锁是被另一次完整 curate 占着(分钟级),
-            # 20s+40s 骑不过去, 白等; 直接归瞬时、下轮再来才是设计的那条路。
-            case "$2" in 409|502|503|504) echo transient ;; *) echo systemic ;; esac
-          }
+          DRY_FLAG=""; [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY_FLAG="--dry-run"
           # ── on_demand 闸 (D-047 第二张嘴) ──
-          # curate 以前是【全局单次调用】: fetch_uncurated_cards() 只按 is_curated=false 取,
-          # 不看 sync_interval; 而它的候选视图 v_flywheel_lesson_cards 的 WHERE 只有
-          # tier ∈ (爆,大爆,参考) + tier_source ≠ 数值推断 + publish_time NOT NULL ——
-          # 【不要求先有 essence】。所以 essence 那道闸挡不住它: 没验证过的表一落库,
-          # 它的爆款当晚就被策展成经验卡进书架 → 三生六部 → autowriter。
-          #
-          # 判据不能塞进 curate_flywheel_lessons.py —— 那个脚本跑在 Railway worker 上,
-          # 而 TV_SCHEDULED_RUN 只存在于本 job 的环境里, 塞进去会永远判成"非 cron"。
-          # /curate 又只收单个 project(没有"排除某些"), 所以只能在调用方按项目循环。
-          #
-          # ⚠️ 预算【仍是全局共享的 CUR_LIMIT】, 不是每个项目各给一份 ——
-          # 加闸门不该顺手把每晚的 LLM 账单乘以项目数。15 这个数原本兼着两个作用:
-          # 「每日够用」+「单请求 >~15 张会撞 worker 5min 超时」; 共享预算两个都保住。
-          # 待办没做完是幂等的(is_curated=false), 下轮 cron 续 —— 与改动前同一条路。
+          # curate 以前是【全局单次调用】: fetch_uncurated_cards() 只按 is_curated=false 取, 不看 sync_interval;
+          # 而它的候选视图 v_flywheel_lesson_cards 的 WHERE 只有 tier/tier_source/publish_time —— 【不要求先有 essence】。
+          # 所以 essence 那道闸挡不住它: 没验证过的表一落库, 它的爆款当晚就被策展成经验卡进书架 → 三生六部 → autowriter。
+          # 判据走 skip_on_cron.py, 按项目循环 (脚本只收单个 --project, 没有"排除某些")。
           remaining=$CUR_LIMIT
           fail_count=0
           done_any=0
@@ -347,71 +292,22 @@ jobs:
             fi
             # 预算耗尽: 不静默截断 —— 明说还剩谁没跑, 否则日志看着像"全都策展过了"。
             if [ "$remaining" -le 0 ]; then deferred="$deferred $p"; continue; fi
-            # ── 每请求封顶 CUR_REQ_MAX 张, 多轮凑 (D-094, 审计 B-05) ──
-            # 以前一个项目一次要 remaining(≤15) 张: 一张 ≤2 次 LLM 调用, 中转站坏日 47–86 s/调用 (D-088 实测),
-            # 15 张轻松撞 Railway 边缘 ~300 s → 502 "瞬时"; 而 worker 子进程还攥着 curate_flywheel_lessons.py
-            # 的锁继续跑 → 后面每个项目都 409 "瞬时" → 整晚一张没策展、job 绿、预算也没扣。essence 段早有
-            # ESS_REQ_MAX=8 的同款循环, curate 没有。5 张 × 2 次 × 86 s ≈ 14 min 仍可能超 —— 但 5 张比 15 张
-            # 撞线的概率低得多, 且撞了也只丢这一批; 共享预算 CUR_LIMIT 不变。
-            CUR_REQ_MAX=5
-            echo "─── curate (worker) · project=$p · 本轮剩余预算=$remaining · 每请求≤$CUR_REQ_MAX ───"
-            while [ "$remaining" -gt 0 ]; do
-            batch=$CUR_REQ_MAX; [ "$batch" -gt "$remaining" ] && batch=$remaining
-            BODY="{\"limit\":${batch},\"dry_run\":$DRY,\"project\":\"$p\"}"
-            # 捕获 curl 退出码(不再一律 code=000 掩盖)—— 区分超时 vs 配置/连通错(PR#65 review)。
-            # PR#86 review: curate 是这跑里【唯一/最后】碰 worker 的步骤(稳态下 essence 无待办、不发 curl,
-            # 不校验 URL)→ 不能把"连不上"一律降级,否则坏 WORKER_URL 静默漏过。改为【连接级失败退避重试】:
-            # Railway worker 临时挂/冷启/重启 → 重试骑过(变绿);真坏(DNS拼错/拒连/URL错)三次都失败 → 仍判红。
-            for attempt in 1 2 3; do
-              if code=$(curl -sS -w '%{http_code}' -o /tmp/cur.json --max-time 900 \
-                -X POST "${WORKER_URL%/}/curate" \
-                -H "X-Worker-Key: $WORKER_API_KEY" -H 'content-type: application/json' \
-                -d "$BODY"); then
-                curl_rc=0
-              else
-                curl_rc=$?; code=000   # curl 失败时 http_code 不可靠, 记 000; 真因看 curl_rc
-              fi
-              # || echo false: 防 502/超时的非 JSON body 让 jq(退出码 5)在 bash -e 下崩整步。
-              ok=$(jq -r '.ok // false' /tmp/cur.json 2>/dev/null || echo false)
-              { [ "$code" = "200" ] && [ "$ok" = "true" ]; } && break
-              [ "$attempt" -ge 3 ] && break
-              # 仅对【连接级 / 网关 5xx】退避重试(够到但中断 6/7 临时不可达 28/52/56/18 + 502/503/504);
-              # 4xx/200+ok=false 等是确定性结果, 立即往下判, 不浪费重试。
-              case "$curl_rc" in 6|7|28|52|56|18) echo "  curate worker 不可达(curl_rc=$curl_rc), 第 ${attempt}/3 次退避重试…"; sleep $((attempt * 20)); continue ;; esac
-              case "$code" in 502|503|504) echo "  curate worker 网关 $code, 第 ${attempt}/3 次退避重试…"; sleep $((attempt * 20)); continue ;; esac
-              break
-            done
-            echo "HTTP $code · curl_rc=$curl_rc · ok=$ok · returncode=$(jq -r '.returncode // "?"' /tmp/cur.json 2>/dev/null || echo '?')"
-            jq -r '.stdout_tail // ""' /tmp/cur.json 2>/dev/null | tail -8
-            if [ "$code" = "200" ] && [ "$ok" = "true" ]; then
+            echo "─── curate (直连) · project=$p · 本轮剩余预算=$remaining ───"
+            rc=0; python curate_flywheel_lessons.py --project "$p" --limit "$remaining" $DRY_FLAG > /tmp/cur.log 2>&1 || rc=$?
+            grep -E 'Done:|全部失败|有 [0-9]+ 张失败' /tmp/cur.log | tail -3 || true
+            if [ "$rc" = "0" ]; then
               done_any=1
-              # 扣掉这个项目真策展了几张(worker 回的 Done: {"ok": N,...});取不到就保守按 0 扣,
-              # 宁可多跑一轮也别把预算算没了导致后面的项目被静默跳过。
-              # 只认 `"ok": <数字>`(curate_flywheel_lessons 的 Done 行)。要求至少一位数字 ——
-              # 否则 `"ok": true` 这种会匹配出空串, $((remaining - )) 直接语法错。
-              n=$(jq -r '.stdout_tail // ""' /tmp/cur.json 2>/dev/null \
-                  | grep -o '"ok": *[0-9][0-9]*' | tail -1 | grep -o '[0-9][0-9]*$' || true)
+              # 扣掉这个项目真策展了几张 (Done: {"ok": N,...}); 取不到就保守按 0 扣, 宁可多跑一轮也别把预算算没了
+              # 导致后面的项目被静默跳过。只认 `"ok": <数字>` (至少一位数字, 否则 `"ok": true` 会匹配出空串)。
+              n=$(grep -o '"ok": *[0-9][0-9]*' /tmp/cur.log | tail -1 | grep -o '[0-9][0-9]*$' || true)
               [ -n "$n" ] && remaining=$((remaining - n))
-              # 这一批策展的张数少于要的 = 这个项目没有更多待策展的卡了 (或 Done 行没取到), 换下一个项目;
-              # 否则继续本项目再要一批。dry-run 不写 is_curated, 再要一批拿到的还是同一批 —— 每项目只请求一次
-              # (codex review on #169)。
-              if [ -z "$n" ] || [ "$n" -lt "$batch" ] || [ "$DRY" = "true" ]; then break; fi
-              continue
-            fi
-            jq -r '.stderr_tail // ""' /tmp/cur.json 2>/dev/null | tail -8
-            # curate 是 best-effort 富集、幂等(is_curated=false 下轮续)。同 essence 的容忍:
-            # - 瞬时(curl 超时/边缘掐断 · 502/503/504 网关)= Railway 偶发 → 只告警不拖红
-            #   (NUC_1 实测: essence 跑满后紧接的 curate 撞 HTTP 000, 此前是它 exit 1 拖红整 run)。
-            # - 系统性(curl DNS/拒连/URL错 · 4xx 鉴权 · 200+ok=false=worker 真跑了但全军覆没 #56)→ 判红。
-            # 改成循环之后: 一个项目挂了【不带走其余项目】(与 essence 段同构), 但仍会在收尾判红。
-            if [ "$(worker_fail_kind "$curl_rc" "$code")" = "transient" ]; then
-              echo "::warning::curate $p 瞬时失败(curl_rc=$curl_rc HTTP $code ok=$ok); 幂等下轮 cron 续, 不拖红。"
             else
-              echo "::error::curate $p 失败(curl_rc=$curl_rc HTTP $code ok=$ok) —— 配置/连通/鉴权 或 全军覆没, 需排查。"
+              tail -n 8 /tmp/cur.log
+              # 脚本退非零 = 全军覆没 (ok=0 且有失败) / 参数错 —— 系统性, 判红; 零星单卡失败脚本退 0 并告警,
+              # 失败卡 is_curated=false 下轮幂等重试。一个项目挂了不带走其余项目, 但收尾判红。
+              echo "::error::curate $p 退出码 $rc —— 全军覆没 / 配置 (模型名 · 中转站 · 余额), 需排查; 失败卡下轮幂等重试。"
               fail_count=$((fail_count + 1))
             fi
-            break   # 这一批没成 (瞬时或系统性) → 换下一个项目, 不再对同一个项目追加请求
-            done
           done
           [ -n "$deferred" ] && echo "::notice::curate 本轮预算($CUR_LIMIT)用完, 这些项目留到下轮 cron:$deferred"
           [ "$done_any" = "0" ] && [ "$fail_count" = "0" ] && echo "  (本轮没有项目需要 curate 或全被 on_demand 闸跳过)"

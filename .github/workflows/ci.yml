@@ -68,6 +68,7 @@ jobs:
             scripts/check_curate_stale.py \
             scripts/check_prompt_cache_fallback.py \
             scripts/check_essence_subtype_backfill.py \
+            scripts/check_vanished_notes.py \
             librarian/__init__.py \
             librarian/clients.py \
             librarian/core.py \
@@ -890,7 +891,9 @@ jobs:
           import pathlib, tempfile
           raw = pathlib.Path(fb.BANK_PATH).read_bytes()
           digest = fb.bank_digest(raw)
-          frozen = raw.replace(b"status: draft", b"status: frozen", 1) + f"frozen_sha256: {digest}\n".encode()
+          # 冻结要求每题都有闸一裁决 (D-103): 把 pending 全换成 pass; 这些行不进 digest, 所以 ④c 照样成立
+          frozen = (raw.replace(b"status: draft", b"status: frozen", 1).replace(b"gate1_status: pending", b"gate1_status: pass")
+                    + f"frozen_sha256: {digest}\n".encode())
           with tempfile.NamedTemporaryFile("wb", suffix=".yaml", delete=False) as f:
               f.write(frozen); tmp = f.name
           fb2 = fb.load_bank(tmp)
@@ -902,6 +905,12 @@ jobs:
           assert any("frozen_sha256 不符" in e for e in fb.validate_bank(bad))
           # ④c 冻结前后落库的 bank_sha256 不变 —— 否则「冻结」这个动作本身会把答案分成两批
           assert fb.load_bank()["_sha256"] == fb2["_sha256"]
+          # 反证 ⑦ (审计 B-17, D-103): 冻结的题库带着没裁的题 → 红; 取值不在闭集 → 红; 裁决本身不动 digest (④c 同一条理由)
+          b = copy.deepcopy(fb2); b["questions"][0]["gate1_status"] = "pending"
+          assert any("gate1_status 还是 pending" in e for e in fb.validate_bank(b)), "冻结带 pending 没被抓住"
+          b = copy.deepcopy(bank); b["questions"][0]["gate1_status"] = "maybe"
+          assert any("gate1_status=" in e for e in fb.validate_bank(b)), "gate1_status 不在闭集没被抓住"
+          assert fb.bank_digest(raw.replace(b"gate1_status: pending", b"gate1_status: fail")) == digest, "裁一道题不该换 digest"
           # 反证 ⑥: choice 题的 aw_instruction_values 必须在选项里; bool 题不许有
           b = copy.deepcopy(bank); next(x for x in b["questions"] if x["id"] == "opening_type")["aw_instruction_values"] = ["不存在的选项"]
           assert any("不在选项里" in e for e in fb.validate_bank(b))
@@ -1741,13 +1750,20 @@ jobs:
               ({"decision_source": "   ", "user_id": "author-1"}, ("unverified", None)),
               ({"decision_source": "brand_new_source_2027", "user_id": "a"}, ("unverified", "brand_new_source_2027")),
               ({"user_id": "author-1"}, ("unverified", None)),
+              # D-102 (审计 A-01): 模型替用户记的决定 —— 不是 human, 也不是机器; evaluator_id 记 reviewer (= 作者本人, 该类型的语义)
+              ({"decision_source": "human_via_agent", "reviewer_id": "author-1", "user_id": "author-1"}, ("human_via_agent", "author-1")),
+              ({"decision_source": "human_via_agent", "reviewer_id": None, "user_id": "author-1"}, ("human_via_agent", None)),
           ]
           for item, want in cases:
               got = m._provenance(item)
               assert got == want, f"{item.get('decision_source')!r} → {got}, 期望 {want}"
-          # ② 作者【永远】不能出现在 evaluator_id 里 —— 作者不是审稿人。
+          # ② 'human' 行里作者【永远】不能出现在 evaluator_id 里 —— 作者不是审稿人。
+          #    human_via_agent 例外: 它的语义就是"作者的话由模型代记", evaluator_id 记作者是对的 (D-102)。
           for item, _ in cases:
-              assert m._provenance(item)[1] != item.get("user_id"), f"作者被当成评价人: {item}"
+              got = m._provenance(item)
+              if got[0] == "human":
+                  assert got[1] != item.get("user_id"), f"作者被当成评价人: {item}"
+          assert "human_via_agent" in m._SYNC_EVALUATOR_TYPES, "human_via_agent 必须算本同步拥有的类型, 否则已归档判断会漏掉它 (D-102)"
 
           # ③ 降级判据必须窄: 只认"缺那三列", 不能把别的错一起吞成降级。
           class E(Exception): pass
@@ -2256,7 +2272,8 @@ jobs:
           # ④ essence 那一步真的接上了这道闸 —— 只写工具不接线是这类护栏最常见的死法
           wf = yaml.safe_load(pathlib.Path("../.github/workflows/daily-sync.yml").read_text())
           steps = [s for s in wf["jobs"]["sync"]["steps"] if s.get("run")]
-          ess = [s for s in steps if "annotate-essence" in s["run"]]
+          # D-100: essence 直跑 (python annotate_essence_pass.py), 不再 curl worker; 按脚本名找那一步
+          ess = [s for s in steps if "python annotate_essence_pass.py" in s["run"]]
           assert ess, "找不到 essence 那一步"
           body = ess[0]["run"]
           # 同 ⑦ 的教训: 这一步的注释里也写着 skip_on_cron.py(D-051 那句反例), 用 `in body` /
@@ -2264,14 +2281,14 @@ jobs:
           gate = [l for l in body.splitlines()
                   if "skip_on_cron.py" in l and not l.strip().startswith("#")]
           assert gate, "essence 步骤没接 on_demand 闸(D-047 回归) —— 只有注释提到它不算接上"
-          assert body.index(gate[0]) < body.index("annotate-essence"), \
+          assert body.index(gate[0]) < body.index('python annotate_essence_pass.py "$p"'), \
               "闸必须在真正发起标注请求之前"
           print("  ✓ daily-sync 的 essence 步骤已接闸, 且在发请求之前")
 
           # ⑤ curate 是同一泄漏口的【第二张嘴】—— 它的候选视图 v_flywheel_lesson_cards
           #    不要求 essence(WHERE 只有 tier/tier_source/publish_time), 所以 essence
           #    那道闸挡不住它。只挡一张嘴比不挡更危险: 会让人以为已经挡住了。
-          cur = [s for s in steps if "/curate" in s["run"]]
+          cur = [s for s in steps if "python curate_flywheel_lessons.py" in s["run"]]
           assert cur, "找不到 curate 那一步"
           cbody = cur[0]["run"]
           cgate = [l for l in cbody.splitlines()
@@ -2279,13 +2296,13 @@ jobs:
           assert cgate, "curate 步骤没接 on_demand 闸(D-047 回归) —— 只有注释提到它不算接上"
           # 判据钉在【真正发请求那一行】上, 不是任何出现 "/curate" 的地方 ——
           # 注释里也会提到 /curate, 拿它比位置会把守卫变成在考注释怎么写。
-          POST = '-X POST "${WORKER_URL%/}/curate"'
-          assert POST in cbody, "找不到 curate 的 curl 请求行(改了写法就同步改这条守卫)"
+          POST = 'python curate_flywheel_lessons.py --project "$p"'
+          assert POST in cbody, "找不到 curate 的调用行(D-100 起直跑脚本, 不再 curl worker; 改了写法就同步改这条守卫)"
           assert cbody.index(cgate[0]) < cbody.index(POST), \
               "闸必须在真正发起 curate 请求之前"
           # 必须是【按项目循环】: 全局单次调用没法排除某些项目(/curate 只收单个 project)
           assert 'for f in ../mappings/*.yaml' in cbody, "curate 必须按项目循环, 否则闸无处可插"
-          assert '\\"project\\":\\"$p\\"' in cbody, "循环里必须把当前项目传给 /curate"
+          assert '--project "$p"' in cbody, "循环里必须把当前项目传给 curate_flywheel_lessons.py"
           # 预算必须【共享】而不是每项目各给一份 —— 加闸门不该顺手把账单乘以项目数
           assert "remaining=$CUR_LIMIT" in cbody, "curate 预算要全局共享(remaining), 不是每项目各 CUR_LIMIT"
           assert "remaining - n" in cbody or "remaining-n" in cbody, "预算没有随实际策展数递减"
@@ -3664,7 +3681,7 @@ jobs:
         run: python check_comments_sync_cost.py   # §1 一次读零写 · §2 只写变化 · §3 on_demand 跳过 · §4 对账失败 rc=1 · §5 老调用形状不变
       - name: 闸二可执行版 —— MH/RGB 对 Woolf 闭式、BH、状态表逐条、账号先验分层、占位题 / 快照 / 冻结三条拒跑 (D-093)
         working-directory: scripts
-        run: python check_gate2_run.py   # §1 统计闭式 · §2 BH · §3 状态表 · §3b confounded · §4 占位题拒跑 · §5 快照唯一 · §6 draft 拒跑 · §7 取数与大项目
+        run: python check_gate2_run.py   # §1 统计闭式 · §2 BH · §3 状态表 · §3b confounded · §4 占位题拒跑 · §5 快照唯一 · §6 draft 拒跑 · §6c 闸一裁决 · §7 取数与大项目
       - name: 外部语料新鲜度灯 · report() 五种形状 (D-094)
         working-directory: scripts
         run: python check_external_corpus_fresh.py --selftest
@@ -3680,6 +3697,9 @@ jobs:
       - name: direction_subtype 补标路 (审计 C-03) · fetch 判据 / count 同判据 / worker 映射 / workflow 接线
         working-directory: scripts
         run: python check_essence_subtype_backfill.py
+      - name: 飞书已删篇不再喂下游 (审计 B-21, D-103) · 视图判据 / 取 id / 新策展 / 通道 1 / 闸二取数 / verify 灯
+        working-directory: scripts
+        run: python check_vanished_notes.py
       - name: sanshengliubu sync shape self-check (build_reference_sample ↔ preflight ↔ ssll v2 schema)
         working-directory: scripts
         run: |
@@ -5892,12 +5912,13 @@ jobs:
               for m in re.finditer(r"( *)worker_fail_kind\(\) \{.*?\n\1\}", yml, re.S):
                   defs.append((f, textwrap.dedent(m.group(0))))
           files = {f for f, _ in defs}
-          assert len(defs) >= 3, (
-              f"只找到 {len(defs)} 份 worker_fail_kind() —— 期望 daily-sync 的 essence + curate "
-              f"和 features-sync 各一份。少了就是有一步不再做失败分类了, 或正则失配, 两种都不能放过。"
-              f"(找到的文件: {sorted(files)})"
+          # D-100 之后 daily-sync 的 essence / curate 直连中转站, 不再经 worker, 也就没有这份分类器;
+          # 只剩 features-sync 一份。以后哪一步再接 worker, 就把它的文件加回下面的 want。
+          assert len(defs) >= 1, (
+              f"只找到 {len(defs)} 份 worker_fail_kind() —— 期望 features-sync 一份。"
+              f"少了就是特征层那步不再做失败分类了, 或正则失配, 两种都不能放过。(找到的文件: {sorted(files)})"
           )
-          for want in (".github/workflows/daily-sync.yml", ".github/workflows/features-sync.yml"):
+          for want in (".github/workflows/features-sync.yml",):
               assert want in files, f"{want} 里一份 worker_fail_kind() 都没有 —— 那一趟不再做失败分类了?"
           cases = {
               ("0", "409"): "transient",   # worker 忙 → 幂等下轮续
@@ -7211,6 +7232,33 @@ jobs:
           [ "$GOT" = "$WANT" ] || { echo "❌ v1.19 口径不对 (total/synced/pending/gated/stale)。期望 [$WANT] 实得 [$GOT]"; exit 1; }
           psql -v ON_ERROR_STOP=1 -c "DELETE FROM truth_vault.notes WHERE project_id='CI_V19'; DELETE FROM truth_vault.projects WHERE project_id='CI_V19';"
           echo "✓ v1.19: pending 只数真会推的 (1), gated 2, stale 2, 变老的爆不算 stale"
+      - name: Apply v1.20 evaluator_type human_via_agent (+ idempotency) then v1.21 v_notes_vanished (+ idempotency)
+        # v1.20 (D-102): CHECK 加 human_via_agent + 唯一索引谓词扩到四类 (DROP IF EXISTS + 重建, 幂等)。
+        # v1.21 (D-103): CREATE OR REPLACE VIEW, 只依赖 v1_9 的 last_seen 两列和 v1_4 的经验卡表; 链尾。
+        run: |
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_20_human_via_agent.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_20_human_via_agent.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_21_vanished_notes.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_21_vanished_notes.sql
+      - name: Sanity-check v1.20 / v1.21 (human_via_agent 进 CHECK; 消失 = 戳落后于本项目最近一次 run, 没盖过戳不算)
+        # 四篇: r2 最新 → 不算; r1 落后 → 消失 1; 没盖过戳 → 不算; 另一项目只有 NULL 戳 → 0 行 (不是消失, 是没经历过完整同步)。
+        # 反证 (按视图判据推演, 本地没有 PG): 判据改成 "3 天没见到" → CI_V21_never 也进来, 1 变 2, 红。10-09 CI 第一次红在期望串的
+        # bool 形态 (f vs false), 视图本身只回了 r1 那篇 —— 判据对。
+        run: |
+          psql -v ON_ERROR_STOP=1 -tA -c "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='prepublish_evaluations_evaluator_type_check'" | grep -q human_via_agent || { echo "❌ v1.20: CHECK 里没有 human_via_agent"; exit 1; }
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          INSERT INTO truth_vault.projects (project_id, brand, product, category) VALUES ('CI_V21', 'b', 'p', '保健品'), ('CI_V21_OD', 'b', 'p', '保健品');
+          INSERT INTO truth_vault.notes (note_id, project_id, raw_content, last_seen_run_id, last_seen_at) VALUES
+            ('CI_V21_latest',   'CI_V21',    'c', 'r2', now()),
+            ('CI_V21_vanished', 'CI_V21',    'c', 'r1', now() - interval '1 day'),
+            ('CI_V21_never',    'CI_V21',    'c', NULL, NULL),
+            ('CI_V21_od_never', 'CI_V21_OD', 'c', NULL, NULL);
+          SQL
+          GOT=$(psql -v ON_ERROR_STOP=1 -tA -c "SELECT string_agg(note_id || ':' || latest_run_id || ':' || has_lesson_card, ',' ORDER BY note_id) FROM truth_vault.v_notes_vanished WHERE project_id LIKE 'CI_V21%'")
+          WANT="CI_V21_vanished:r2:false"   # has_lesson_card 是 boolean, 拼进 text 是 false 不是 psql 单列输出的 f
+          [ "$GOT" = "$WANT" ] || { echo "❌ v1.21 判据不对。期望 [$WANT] 实得 [$GOT]"; exit 1; }
+          psql -v ON_ERROR_STOP=1 -c "DELETE FROM truth_vault.notes WHERE project_id LIKE 'CI_V21%'; DELETE FROM truth_vault.projects WHERE project_id LIKE 'CI_V21%';"
+          echo "✓ v1.20 / v1.21: human_via_agent 进 CHECK; 消失只数 r1 那篇, 没盖过戳的两篇不算"
       - name: Apply security revoke (anon/authenticated write on public.* ) (+ idempotency)
         # 撤 anon/authenticated 对 5 张 public 表的写权限(读保留,不开 RLS)。
         # guarded:表/角色不存在则跳过 → 裸 PG / CI 为 no-op。REVOKE 幂等,两遍验。

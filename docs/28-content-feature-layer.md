@@ -289,6 +289,8 @@ Jev 是 TypeSafe AI 2026-09-15 发布的判断型模型：输入一段文本和�
 
 过不了的题：改题干（版本 +1）重测，或者删掉。附带产出 §2.2 那几组 essence 互证的对不上比例（只报告，不当闸）。
 
+裁决落在题库每题的 `gate1_status`（`pending` / `pass` / `fail` / `kappa_undefined`，D-103）：它是对题的评价、不是题目内容，所以不进 `bank_sha256`（和 `status` / `frozen_sha256` 两行同一条规则）；闸二脚本读它，`fail` 的题自动 `unreliable`，`kappa_undefined`（样本里答案近乎常数、κ 算不出）照常进统计按 support 判；`status: frozen` 要求没有一题还是 `pending`。
+
 产出：`data-analysis/feature-gate1-<日期>.md`。
 
 ### 6.2 闸二 · 有区分度（判据先写死）

@@ -86,13 +86,13 @@ def main() -> int:
     notes = [{"note_id": "n1", "essence_annotated_at": "2026-09-03T00:00:00"},
              {"note_id": "n2", "essence_annotated_at": "2026-09-03T00:00:00"},
              {"note_id": "n3", "essence_annotated_at": "2026-09-03T00:00:00"}]
-    sb = _SB({"v_flywheel_lesson_cards": view, "notes": notes})
+    sb = _SB({"v_flywheel_lesson_cards": view, "notes": notes, "v_notes_vanished": []})
     got3 = [c["source_note_id"] for c in cur.fetch_uncurated_cards(sb, None, True, stale_only=True)]
     if got3 != ["n1"]:
         fails.append(f"§3 stale_only 应只回 n1 (已策展且 essence 更新), 实际 {got3}")
     if not any(("eq", "is_curated", True) in f for f in sb.log):
         fails.append("§3 stale_only 必须先按 is_curated=true 取 (别把未策展的也拉下来)")
-    sb2 = _SB({"v_flywheel_lesson_cards": view, "notes": notes})
+    sb2 = _SB({"v_flywheel_lesson_cards": view, "notes": notes, "v_notes_vanished": []})
     got_default = [c["source_note_id"] for c in cur.fetch_uncurated_cards(sb2, None, False)]
     if got_default != ["n3"] or not any(("eq", "is_curated", False) in f for f in sb2.log):
         fails.append(f"§3 默认路径仍该只取 is_curated=false → n3, 实际 {got_default}")

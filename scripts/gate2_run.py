@@ -110,6 +110,12 @@ def _parse_ts(v) -> Optional[datetime]:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def gate1_unreliable(bank: dict) -> set[str]:
+    """题库里闸一裁成 fail 的题 (gate1_status, 审计 B-17 / D-103) → 闸二一律 unreliable。
+    pending (还没裁) 和 kappa_undefined (κ 算不出) 不在内: 前者冻结时 validate_bank 会拦, 后者闸二按 support 自己判。"""
+    return {q["id"] for q in fb.llm_questions(bank) if q.get("gate1_status") == "fail"}
+
+
 def analysis_notes(notes: list[dict], *, min_body: int = 50) -> list[dict]:
     """§6.2 的取数条件: 有 essence、正文 ≥ 50 字 (body_len 未知的不剔)。"""
     out = []
@@ -228,7 +234,8 @@ def run_gate2(dataset: dict, bank: dict, *, sha: str, extractors: list[str], run
     if errs:
         raise Gate2Refused("问题库没过 validate_bank: " + "; ".join(errs) +
                            " —— 冻结后改题要升 version、重新冻结并记 DECISIONS, 不能拿改后的 digest 当预注册快照。")
-    unreliable = set(unreliable)
+    # 闸一裁决两处来源取并集: 题库里的 gate1_status: fail (机器可读, D-103) ∪ --unreliable 手传的题号 (试算 / 追加)
+    unreliable = set(unreliable) | gate1_unreliable(bank)
     ext = set(extractors)
 
     # 快照内的答案 + 唯一性 (B.3)
@@ -410,7 +417,7 @@ def render_report(result: dict) -> str:
         lines += ["过: " + ("; ".join(f"`{r['question_id']}` {r['status']} (q={r['q_value']:.2f})" if r["q_value"] is not None
                                        else f"`{r['question_id']}` {r['status']}" for r in plc) or "快照里没有占位题")]
     lines += ["", "## 没做", "", "- B.3 组合对比 (留一项目 AUC + 配对自助) 与 B.4 置换反证不在本脚本里: 那是「组合进不进 L2」的决定。",
-              "- `unreliable` 只按 `--unreliable` 传入的题号打 (闸一结论还没有机器可读形式, 审计 B-17)。"]
+              "- `unreliable` = 题库里 `gate1_status: fail` 的题 ∪ `--unreliable` 传入的题号 (D-103); `kappa_undefined` 的题照常进统计, 按 support 判。"]
     return "\n".join(lines) + "\n"
 
 
@@ -419,17 +426,20 @@ def render_report(result: dict) -> str:
 def fetch_dataset(sb, *, bank: dict, sha: str, extractors: list[str], projects: Optional[set[str]] = None) -> dict:
     """``bank`` 必须是 main() 里 --bank 读进来的那一份: 取哪些题按它算 (codex review on #169, P1 —— 以前这里重新
     load 默认题库, --bank 指向别的冻结题库时, 只在那份里的题永远取不到答案、报告里静默少题)。"""
-    from _common import fetch_all_pages
+    from _common import fetch_all_pages, fetch_vanished_note_ids
     labels = fetch_all_pages(sb.schema("truth_vault").table("v_l2_labels")
                              .select("note_id, project_id, account_id, publish_time, y"), order_by="note_id")
     ess = {r["note_id"]: r.get("emotional_lever") is not None
            for r in fetch_all_pages(sb.schema("truth_vault").table("notes").select("note_id, emotional_lever"), order_by="note_id")}
     blen = {r["note_id"]: r.get("body_len")
             for r in fetch_all_pages(sb.schema("truth_vault").table("note_features").select("note_id, body_len"), order_by="note_id")}
+    # 飞书里已删 (本项目最近一次完整同步没见到) 的篇不进闸二 (审计 B-21, D-103): 它们的标签是删前的快照, 之后没人维护。
+    vanished = fetch_vanished_note_ids(sb)
     notes = [{"note_id": r["note_id"], "project_id": r["project_id"], "account_id": r.get("account_id"),
               "publish_time": r.get("publish_time"), "y": int(r["y"]), "has_essence": ess.get(r["note_id"], False),
               "body_len": blen.get(r["note_id"])}
-             for r in labels if (projects is None or r["project_id"] in projects)]
+             for r in labels if (projects is None or r["project_id"] in projects) and r["note_id"] not in vanished]
+    n_vanished = sum(1 for r in labels if r["note_id"] in vanished and (projects is None or r["project_id"] in projects))
     # ⚠️ fetch_all_pages 按 order_by 那一列去重 (它要求唯一列)。账本一篇 31 行, 整表按 subject_id 翻页会把同一篇
     #    合并成一行、重复也看不见。所以按 (题, 抽取器) 一条一条查: 这个切片里 subject_id 唯一 (sha 钉住了版本),
     #    跨抽取器的重复在 run_gate2 里按 (笔记, 题) 数出来。
@@ -442,7 +452,7 @@ def fetch_dataset(sb, *, bank: dict, sha: str, extractors: list[str], projects: 
                  .eq("subject_type", "note").eq("run_tag", "primary").like("bank_sha256", f"{sha}%")
                  .eq("question_id", qid).eq("extractor", ext))
             answers.extend(fetch_all_pages(q, order_by="subject_id"))
-    return {"notes": notes, "answers": answers}
+    return {"notes": notes, "answers": answers, "vanished_dropped": n_vanished}
 
 
 def write_validation(sb, rows: list[dict]) -> int:
@@ -458,7 +468,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--run-tag", default="gate2-" + datetime.now(timezone.utc).strftime("%Y-%m-%d"))
     ap.add_argument("--bank", default=str(fb.BANK_PATH))
     ap.add_argument("--projects", default="", help="逗号分隔只看这些项目; 空 = 全部")
-    ap.add_argument("--unreliable", default="", help="逗号分隔, 闸一没过的题号 → unreliable")
+    ap.add_argument("--unreliable", default="", help="逗号分隔, 额外打 unreliable 的题号 (题库 gate1_status: fail 的题自动算, D-103)")
     ap.add_argument("--q-max", type=float, default=0.10)
     ap.add_argument("--min-support", type=int, default=30)
     ap.add_argument("--min-big", type=int, default=3)

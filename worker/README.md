@@ -42,6 +42,11 @@ staging)**没有任何症状** —— 服务照常 200、日志照常干净。�
 
 ## 部署(Railway · 新建第三个 service,与 librarian/onboarder 并存)
 
+> **2026-10-09 D-100**: essence (`/annotate-essence`) 与策展 (`/curate`) 的调用方已经搬回 GitHub Actions 直跑脚本
+> (daily-sync / backfill-essence / recurate-lessons 直连中转站, 新站 GitHub runner 连得上)。worker 现在**只剩特征层**
+> (`/annotate-features`, features-sync / backfill-features 在用); 两个 essence / curate 端点保留可用但没有调用方。
+> 下面关于 GitHub 不再需要 `ANTHROPIC_*` 的那段已过时: **GitHub 又需要它们了**(repo secret, gateway-probe 共用那两把)。
+
 1. New service → 连本 repo;Settings → **Config file 指到 `/worker/railway.json`**(root = repo 根,让 subprocess 找得到 `scripts/`)。
 2. 配 env:
    - `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY`(service_role,绕 RLS 读写 truth_vault)
@@ -52,7 +57,7 @@ staging)**没有任何症状** —— 服务照常 200、日志照常干净。�
    - `WORKER_API_KEY`(自定口令,建议设 = GitHub `WORKER_API_KEY` secret)
    - `WORKER_RUN_TIMEOUT_S`(可选,单次 subprocess 硬超时,默认 900)
 3. GitHub repo secrets 加:`WORKER_URL`(Railway 域名)、`WORKER_API_KEY`(= Railway 那个)。
-4. daily-sync 的 essence/curate 步骤 **gate 在 `WORKER_URL != ''`** —— 不配则优雅跳过(绿);配了才真跑。
+4. (D-100 前) daily-sync 的 essence/curate 步骤 gate 在 `WORKER_URL != ''`; **现在** daily-sync 不读 `WORKER_URL`, 只有 features-sync / backfill-features 读。
 
 > ⚠️ 配完 worker 后,GitHub 上的 `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` 就**不再需要**了
 > (essence/curate 的 LLM 调用已搬到 Railway)。删掉它们可避免有人误以为 GitHub 还在直跑 LLM。

@@ -13,6 +13,7 @@
   ⑥ 快照内重复不拒跑                               → §5 红
   ⑦ draft 题库不带 --allow-draft 也跑              → §6 红
   ⑧ run_gate2 不调 validate_bank (冻结后改题照跑)   → §6b 红
+  ⑨ 题库 gate1_status: fail 的题没打 unreliable / 冻结带着 pending 照跑 → §6c 红
 
 跑法: cd scripts && python check_gate2_run.py
 """
@@ -271,17 +272,19 @@ def check_frozen_but_edited_refused() -> None:
     当 --sha 传进来 —— §5 的 sha 比对和 §6 的 frozen 检查都过, 只有 validate_bank 看得出 frozen_sha256 ≠ 规范化 digest。"""
     notes, answers, _ = _dataset()
     _fill_bool(answers, notes, "title_is_question", p_pos=0.6, p_neg=0.3)
-    frozen_ok = dict(BANK, status="frozen", frozen_sha256=BANK["_sha256"])
+    # 冻结的题库每题都得带闸一裁决 (§6c, D-103); 这里只测 digest 那条, 所以统一填 pass
+    judged = [dict(q, gate1_status="pass") for q in BANK["questions"]]
+    frozen_ok = dict(BANK, status="frozen", frozen_sha256=BANK["_sha256"], questions=judged)
     res = _run(notes, answers, bank=frozen_ok, allow_draft=False)
     assert _row(res, "title_is_question")["status"] == "validated", "§6b 正经冻结 (frozen_sha256 == digest) 的题库必须能跑"
-    edited = dict(BANK, status="frozen", frozen_sha256="0" * 64)
+    edited = dict(BANK, status="frozen", frozen_sha256="0" * 64, questions=judged)
     try:
         _run(notes, answers, bank=edited, allow_draft=False)
     except G.Gate2Refused as exc:
         assert "validate_bank" in str(exc) and "frozen_sha256" in str(exc), exc
     else:
         raise AssertionError("§6b frozen 但 frozen_sha256 与规范化 digest 不符 (冻结后改过题) 必须拒跑")
-    broken = dict(BANK, status="frozen", frozen_sha256=BANK["_sha256"], call_groups={})
+    broken = dict(BANK, status="frozen", frozen_sha256=BANK["_sha256"], call_groups={}, questions=judged)
     try:
         _run(notes, answers, bank=broken, allow_draft=False)
     except G.Gate2Refused as exc:
@@ -289,6 +292,39 @@ def check_frozen_but_edited_refused() -> None:
     else:
         raise AssertionError("§6b 结构不合法的题库 (缺 call_groups) 必须拒跑")
     print("  §6b frozen_sha256 == digest 能跑; 冻结后改过题 (digest 不符) 拒跑; 结构不合法拒跑 ✓")
+
+
+def check_gate1_status_from_bank() -> None:
+    """闸一裁决机器可读 (审计 B-17, D-103): 题库里 gate1_status: fail 的题闸二自动 unreliable (不靠 --unreliable 手传);
+    冻结时任何一题还是 pending → validate_bank 拦住、run_gate2 拒跑; 取值不在闭集 → 拒跑。"""
+    import copy
+    notes, answers, _ = _dataset()
+    _fill_bool(answers, notes, "title_is_question", p_pos=0.6, p_neg=0.3)
+    def _with(status):
+        b = copy.deepcopy(BANK)
+        next(q for q in b["questions"] if q["id"] == "title_is_question")["gate1_status"] = status
+        return b
+    assert G.gate1_unreliable(BANK) == set(), "仓里的题库现在应该全是 pending (还没裁)"
+    res = _run(notes, answers, bank=_with("fail"))
+    assert _row(res, "title_is_question")["status"] == "unreliable", "§6c gate1_status: fail 的题必须 unreliable"
+    assert "title_is_question" in res["params"]["unreliable"], res["params"]["unreliable"]
+    for ok in ("pass", "kappa_undefined"):
+        res = _run(notes, answers, bank=_with(ok))
+        assert _row(res, "title_is_question")["status"] == "validated", f"§6c gate1_status: {ok} 的题照常进统计"
+    frozen_pending = dict(BANK, status="frozen", frozen_sha256=BANK["_sha256"])
+    try:
+        _run(notes, answers, bank=frozen_pending, allow_draft=False)
+    except G.Gate2Refused as exc:
+        assert "gate1_status" in str(exc) and "pending" in str(exc), exc
+    else:
+        raise AssertionError("§6c 冻结的题库里还有 gate1_status: pending 的题必须拒跑")
+    try:
+        _run(notes, answers, bank=_with("maybe"))
+    except G.Gate2Refused as exc:
+        assert "gate1_status" in str(exc), exc
+    else:
+        raise AssertionError("§6c gate1_status 不在闭集必须拒跑")
+    print("  §6c gate1_status: fail → unreliable; pass / kappa_undefined 照常; 冻结带 pending 拒跑; 取值闭集 ✓")
 
 
 # ── §7 取数条件 / 大项目动态 ─────────────────────────────────────────────────────
@@ -318,8 +354,9 @@ def main() -> int:
     check_snapshot_uniqueness()
     check_frozen_required()
     check_frozen_but_edited_refused()
+    check_gate1_status_from_bank()
     check_analysis_filter_and_big_projects()
-    print("\ncheck_gate2_run: 9 节全过")
+    print("\ncheck_gate2_run: 10 节全过")
     return 0
 
 

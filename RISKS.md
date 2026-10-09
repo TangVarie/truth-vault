@@ -562,7 +562,7 @@ sync 脚本只查 `_status_raw`, 不查 `_note_for_tier` (备注字段). TGV_1 �
 |---|---|---|---|---|---|---|---|---|---|
 | `SUPABASE_SERVICE_ROLE_KEY` | ✓ daily-sync · features-sync · backfill-features · backfill-essence | ✓ | ✓ | ✓ | ✓ (`db.py` / `deskcore/app.py`) | ✓ (write=true 写账本) | ✓ (`apply_rows`) | ⚠️ 历史配置, 应换 anon 后删 | — |
 | `SUPABASE_ANON_KEY` | — | — | — | — | — | — | — | ✓ 只读 `v_dash_*` | — |
-| `ANTHROPIC_API_KEY` + `ANTHROPIC_BASE_URL` (中转站) | ✓ gateway-probe | ✓ essence / features / curate | ✓ 冷路径馆员 | ✓ | ✓ deskcore (蒸馏 / 校准) | ✓ `loop.py` 修改单 (另有 `MOONSHOT_API_KEY`) | — | — | — |
+| `ANTHROPIC_API_KEY` + `ANTHROPIC_BASE_URL` (中转站) | ✓ gateway-probe · **daily-sync / backfill-essence / recurate-lessons (D-100 起 essence / curate 直跑)** | ✓ features (essence / curate 端点 D-100 起没有调用方) | ✓ 冷路径馆员 | ✓ | ✓ deskcore (蒸馏 / 校准) | ✓ `loop.py` 修改单 (另有 `MOONSHOT_API_KEY`) | — | — | — |
 | `GOOGLE_API_KEY` (embedding) | — | — | — | — | ✓ `dedup` / 回填 / 补录 | — | — | — | — |
 | `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | ✓ daily-sync · preflight | — | — | ✓ | — | — | — | — | — |
 | `WORKER_API_KEY` | ✓ (调用方) | 🔑 | — | — | — | — | — | — | — |

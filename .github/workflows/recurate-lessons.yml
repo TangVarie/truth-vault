@@ -1,14 +1,8 @@
-# 把【essence 比卡新】的经验卡重新策展一遍 (D-096, 2026-10-08 审计 B-02)。
-#
-# 为什么要有它: 经验卡的内容冻结在第一次策展; 之后 essence pass 重标过那篇笔记 (情绪杠杆 / 受众
-# 变了), 卡不知道。10-08 实查 164/306 张卡的 essence_annotated_at 晚于 curated_at。daily-sync
-# 的 curate 只处理 is_curated=false, 永远不会碰它们。
-#
-# 怎么收敛: worker /curate 带 recurate=stale → 脚本只取 essence_annotated_at > curated_at 的卡,
-# 按 rank 取 limit 张重策展; 重策展后 curated_at 变新, 下一轮自然轮到后面的卡, 直到一轮回 0。
-# 每张 ≤2 次 LLM 调用; 164 张 ≈ 330 次调用, 中转站坏日 86 s/次 → 别指望一次跑完, 多触发几次幂等续作。
-#
-# 与 daily-sync 的 curate 共用 worker 的脚本锁: 撞上会 409, 这里等 90 s 再试, 最多 5 次。
+# 重策展: 把 essence 比经验卡新的卡重新提炼一遍 (审计 B-02, D-096)。手动触发, 幂等 (一张卡重策展后 curated_at
+# 更新, 下一轮就不再选中), 到顶没收敛会 ::warning, 再触发一次接着跑。
+# 2026-10-09 D-100: 直跑 curate_flywheel_lessons.py --recurate-stale (直连中转站), 不再经 Railway worker 的 /curate。
+# daily-sync 的夜间策展行为不变 (它只策展没策展过的卡); 本 workflow 是唯一的重策展入口。
+# ⚠️ 花钱: 一张卡 ≤2 次 LLM 调用。先小 limit 看一轮再放大。
 name: Recurate lessons (essence newer than card)
 
 on:
@@ -19,14 +13,15 @@ on:
         required: false
         default: ""
       limit:
-        description: "每轮几张。⚠️ 受 Railway 边缘 ~5min 超时约束, 一张 ≤2 次 LLM 调用: ≤5 稳 (同 daily-sync CUR_REQ_MAX); 别超 8"
+        description: "每轮几张 (一轮 = 一次 curate_flywheel_lessons.py --recurate-stale --limit N, 直连中转站 D-100)。一张 ≤2 次 LLM 调用; 上限 50 (一轮 ≤ ~15min, 失败重跑的粒度)"
         required: false
-        default: "5"
+        default: "10"
       max_batches:
-        description: "最多几轮 (一轮 = 一次 /curate 请求)。到顶没收敛会 ::warning, 再触发一次接着跑 (幂等)"
+        description: "最多几轮。到顶没收敛会 ::warning, 再触发一次接着跑 (幂等)"
         required: false
         default: "20"
 
+# 同时只允许一个重策展在跑 (两个 run 会各自快照同一批陈旧卡、重复烧 LLM)。
 concurrency:
   group: recurate-lessons
   cancel-in-progress: false
@@ -36,64 +31,59 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 300
     env:
-      WORKER_URL: ${{ secrets.WORKER_URL }}
-      WORKER_API_KEY: ${{ secrets.WORKER_API_KEY }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      # D-100: 直连中转站, 不再经 Railway worker
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+      FLYWHEEL_CURATOR_MODEL: ${{ vars.FLYWHEEL_CURATOR_MODEL }}
       PROJECT: ${{ github.event.inputs.project }}
       LIMIT: ${{ github.event.inputs.limit }}
       MAXB: ${{ github.event.inputs.max_batches }}
     steps:
       - uses: actions/checkout@v4
-
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps (lockfile)
+        run: |
+          if [ -f scripts/requirements.lock ]; then
+            pip install -r scripts/requirements.lock
+          else
+            pip install -r scripts/requirements.txt
+          fi
       - name: Guard secrets + inputs
         run: |
-          [ -n "$WORKER_URL" ] || { echo "::error::缺 secret WORKER_URL"; exit 1; }
-          [ -n "$WORKER_API_KEY" ] || { echo "::error::缺 secret WORKER_API_KEY"; exit 1; }
+          [ -n "$SUPABASE_URL" ] || { echo "::error::缺 secret SUPABASE_URL"; exit 1; }
+          [ -n "$SUPABASE_SERVICE_ROLE_KEY" ] || { echo "::error::缺 secret SUPABASE_SERVICE_ROLE_KEY"; exit 1; }
+          [ -n "$ANTHROPIC_API_KEY" ] || { echo "::error::缺 secret ANTHROPIC_API_KEY (D-100 直连中转站)"; exit 1; }
+          [ -n "$ANTHROPIC_BASE_URL" ] || { echo "::error::缺 secret ANTHROPIC_BASE_URL (中转站地址)"; exit 1; }
           case "$LIMIT" in ''|*[!0-9]*) echo "::error::limit 必须是正整数, 收到 '$LIMIT'"; exit 1;; esac
           case "$MAXB"  in ''|*[!0-9]*) echo "::error::max_batches 必须是正整数, 收到 '$MAXB'"; exit 1;; esac
-          [ "$LIMIT" -ge 1 ] && [ "$LIMIT" -le 8 ] || { echo "::error::limit 要在 1–8 (>8 撞 Railway 边缘 5min 超时)"; exit 1; }
+          [ "$LIMIT" -ge 1 ] && [ "$LIMIT" -le 50 ] || { echo "::error::limit 要在 1–50 (一轮就是失败重跑的粒度)"; exit 1; }
           [ "$MAXB" -ge 1 ] || { echo "::error::max_batches 必须 ≥1"; exit 1; }
           if [ -n "$PROJECT" ] && [ ! -f "mappings/${PROJECT}.yaml" ]; then
             echo "::error::未知项目 '${PROJECT}': mappings/${PROJECT}.yaml 不存在"; exit 1
           fi
           echo "✅ project='${PROJECT:-(all)}' limit=$LIMIT max_batches=$MAXB"
-
-      - name: Loop /curate recurate=stale until a round comes back empty
+      - name: Loop curate_flywheel_lessons.py --recurate-stale until a round comes back empty (直连中转站, D-100)
+        working-directory: scripts
         run: |
           set +e
+          # GitHub 把没设的 variable 注成空串, os.environ.get(..., default) 对空串不回默认 —— 空就 unset (走代码默认 claude-sonnet-5-5, D-098)。
+          [ -n "$FLYWHEEL_CURATOR_MODEL" ] || unset FLYWHEEL_CURATOR_MODEL
+          PROJ_FLAG=(); [ -n "$PROJECT" ] && PROJ_FLAG=(--project "$PROJECT")
           total=0
           converged=0
           for i in $(seq 1 "$MAXB"); do
-            if [ -n "$PROJECT" ]; then
-              BODY="{\"limit\":${LIMIT},\"recurate\":\"stale\",\"project\":\"$PROJECT\"}"
-            else
-              BODY="{\"limit\":${LIMIT},\"recurate\":\"stale\"}"
-            fi
-            code=000; ok=false
-            for attempt in 1 2 3 4 5; do
-              code=$(curl -sS -w '%{http_code}' -o /tmp/r.json --max-time 900 \
-                -X POST "${WORKER_URL%/}/curate" \
-                -H "X-Worker-Key: $WORKER_API_KEY" -H 'content-type: application/json' \
-                -d "$BODY") || code=000
-              ok=$(jq -r '.ok // false' /tmp/r.json 2>/dev/null || echo false)
-              if [ "$code" = "409" ]; then
-                echo "  ⏳ round $i: worker 的 curate 锁被占着 (多半是 daily-sync 在跑), 等 90s 再试 ($attempt/5)"
-                sleep 90; continue
-              fi
-              break
-            done
-            n=$(jq -r '.stdout_tail // ""' /tmp/r.json 2>/dev/null | grep -o '"ok": *[0-9][0-9]*' | tail -1 | grep -o '[0-9][0-9]*$' || true)
-            rec=$(jq -r '.recurate // ""' /tmp/r.json 2>/dev/null || true)
-            echo "── round $i/$MAXB · HTTP $code · ok=$ok · recurate=${rec:-(无)} · 重策展 ${n:-?} 张 ──"
-            jq -r '.stdout_tail // ""' /tmp/r.json 2>/dev/null | tail -4
-            # 旧版 worker 会忽略不认识的 recurate 字段、跑一轮普通策展然后回 200 (codex review on #169):
-            # 回包里没有 recurate=stale 就是旧版, 立刻停, 别把预算花在不相干的卡上还报"收敛"。
-            if [ "$code" = "200" ] && [ "$rec" != "stale" ]; then
-              echo "::error::worker 回包没有 recurate=stale —— Railway 上还是旧版 worker, 这一轮跑的是普通策展不是重策展。先部署 worker 再触发。"
-              exit 1
-            fi
-            if [ "$code" != "200" ] || [ "$ok" != "true" ]; then
-              jq -r '.stderr_tail // ""' /tmp/r.json 2>/dev/null | tail -8
-              echo "::error::round $i 失败 (HTTP $code ok=$ok) —— 已重策展的 $total 张不丢, 修好后再触发接着跑。"
+            python curate_flywheel_lessons.py --recurate-stale --limit "$LIMIT" "${PROJ_FLAG[@]}" > /tmp/r.log 2>&1; rc=$?
+            # 只认 Done 行里的 `"ok": <数字>` (至少一位数字, 否则 `"ok": true` 会匹配出空串)
+            n=$(grep -o '"ok": *[0-9][0-9]*' /tmp/r.log | tail -1 | grep -o '[0-9][0-9]*$' || true)
+            echo "── round $i/$MAXB · 退出码 $rc · 重策展 ${n:-?} 张 ──"
+            grep -E 'Done:|stale|全部失败|有 [0-9]+ 张失败' /tmp/r.log | tail -4
+            if [ "$rc" != "0" ]; then
+              tail -n 8 /tmp/r.log
+              echo "::error::round $i 退出码 $rc (全军覆没 / 配置: 模型名 · 中转站 · 余额) —— 已重策展的 $total 张不丢, 修好后再触发接着跑。"
               exit 1
             fi
             [ -n "$n" ] && total=$((total + n))

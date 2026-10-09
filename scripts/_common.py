@@ -1398,6 +1398,17 @@ class SecretMaskingFormatter(logging.Formatter):
         return mask_secrets(super().format(record))
 
 
+def fetch_vanished_note_ids(sb, project_id: Optional[str] = None) -> set[str]:
+    """飞书里已经删掉的篇 (审计 B-21, D-103): schemas/notes_v1_21 的 v_notes_vanished —— 盖过 last_seen 戳、但
+    【本项目最近一次完整同步】没见到的 note_id。从没盖过戳的 (on_demand 项目) 不算; 比的是本项目自己的最近一次 run,
+    不是固定天数。三个新生产路径 (新策展 / 通道 1 推送 / 闸二取数) 用它排除; 只报不删, 删不删是 owner 的事。
+    视图不存在就直接抛 —— 三条路一起红好过静默把删了的篇继续喂下游 (B-10 的道理)。"""
+    q = sb.schema("truth_vault").table("v_notes_vanished").select("note_id")
+    if project_id:
+        q = q.eq("project_id", project_id)
+    return {r["note_id"] for r in fetch_all_pages(q, order_by="note_id")}
+
+
 def setup_logger(name: str, level: str = "INFO") -> logging.Logger:
     logger = logging.getLogger(name)
     if logger.handlers:

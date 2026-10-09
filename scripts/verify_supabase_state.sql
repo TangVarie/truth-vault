@@ -464,6 +464,40 @@ SELECT '89', 'H · 跨 schema 孤儿',
     '0',
     '> 0 = 有人只改了血缘的一列 (codex review on #170 抓到的形态). 修法: 按 version 反查 item 补齐, 或两列一起置空再让 tv-sync 重对.'
 
+UNION ALL
+SELECT '91', 'H · 跨 schema 孤儿',
+    'prepublish_evaluations 里 evaluator_type=human 且 evaluator_id = 稿件作者 (autowriter.items.user_id) 的行数 (作者自审; 审计 A-01 / D-102: 这些不能当人审真值)',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(*)
+        FROM truth_vault.prepublish_evaluations e
+        JOIN autowriter.items i ON i.id = e.autowriter_item_id
+        WHERE e.evaluator_type = 'human' AND e.evaluator_id = i.user_id::TEXT$q$
+    )::TEXT, 'N/A'),
+    '0',
+    '> 0 = 要么 aw 侧还没把模型代记的决定改成 human_via_agent (migration 012 + 32 条历史改标), 要么真有人在 Streamlit 里审自己的稿. '
+    '前者等 aw 部署; 后者校准时按 D-102 打折.'
+
+UNION ALL
+SELECT '92', 'I · 数据一致性',
+    '名字带 backup / 日期后缀 (_YYYYMMDD) 且日期已超过 30 天的一次性表个数 (审计 C-17: 一次性表没有过期日)',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(*)
+        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE c.relkind = 'r' AND n.nspname IN ('truth_vault', 'autowriter', 'public')
+          AND c.relname ~ '(backup|_20[0-9]{6}$)'
+          AND substring(c.relname from '_(20[0-9]{6})$') IS NOT NULL
+          AND to_date(substring(c.relname from '_(20[0-9]{6})$'), 'YYYYMMDD') < current_date - 30$q$
+    )::TEXT, 'N/A'),
+    '0',
+    '> 0 = 该 drop 了. 每张表的 COMMENT 里有回滚 SQL 和可 drop 日期 (D-086 / D-099 / D-102); 先看注释再 drop, 别顺手删了还没到期的.'
+
+UNION ALL
+SELECT '93', 'I · 数据一致性',
+    'v_notes_vanished 行数: 盖过 last_seen 戳、但本项目最近一次完整同步没见到的篇 (飞书里删了; 审计 B-21 / D-103)',
+    COALESCE(pg_temp.safe_count($q$SELECT COUNT(*) FROM truth_vault.v_notes_vanished$q$)::TEXT, 'N/A'),
+    '0',
+    '> 0 = 飞书里删了但 TV 还留着 (10-09 实查 HATHERINE 6 · TUGE 4, 全已标 essence、0 在 ssll、0 有经验卡). 新策展 / 通道 1 推送 / 闸二取数 10-09 起自动排除; 已推去 ssll 的样本和已有的经验卡不自动撤 —— 看视图里 synced_to_ssll_at / has_lesson_card 两列, owner 决定删 note 还是留档.'
+
 -- ── I · 数据一致性副作用 ──────────────────────────────────────────────
 UNION ALL
 SELECT '90', 'I · 数据一致性',

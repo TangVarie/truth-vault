@@ -5977,3 +5977,103 @@ UPDATE truth_vault.notes n SET source_autowriter_version_id = b.source_autowrite
 
 - 这 31 篇若真有写作台原稿，今晚 14:00 UTC 的 tv-sync 会在排除补录副本的索引上重新对上并回填；没有的留 unmatched，TV 侧不再有来源。明天看 `autowriter.tv_note_links` 这 31 篇的 `match_kind` 分布即可。
 - 两张备份表没有自动清理；确认无误后（建议 30 天）手动 DROP，记在这。
+
+## D-100 · essence 与策展从 Railway worker 搬回 GitHub Actions 直跑（新中转站 runner 直连得上）；worker 只剩特征层（2026-10-09）
+
+来源：owner 2026-10-09「essence 和策展搬回 GitHub 你来做」。前提是当天 gateway-probe 实测 GitHub runner 对新站 http=200（D-098）——2026-06 把这两步搬去 Railway worker 的唯一理由（旧站 GitHub 连不上，docs/17 §7-D）已经不成立。
+
+### 定了什么
+
+1. **三个 workflow 直跑脚本**：daily-sync 的 essence / curate 两步、`backfill-essence.yml`、`recurate-lessons.yml` 改成 `python annotate_essence_pass.py` / `python curate_flywheel_lessons.py`（`working-directory: scripts`，`ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` 从 repo secret 来，和 gateway-probe 同两把）。worker 的 `/annotate-essence` 与 `/curate` 端点保留但没有调用方；worker 只剩 `/annotate-features`（features-sync / backfill-features 不动——特征层一篇 6 次调用、每晚 7 个项目 × 24 篇，先看一周直跑的 essence / curate 稳不稳再决定要不要也搬）。
+2. **为 Railway 边缘 5 min 超时存在的东西全部拆掉**：essence 的 `ESS_REQ_MAX=8` 分批循环、curate 的 `CUR_REQ_MAX=5` 分批（D-094 B-05）、`worker_fail_kind` 的瞬时 / 系统性分类、409 等锁、backfill 的 batch ≤15 / recurate 的 limit ≤8 上限。直跑后每项目**一次**调用，`--limit` 给整份预算（essence 每项目 `WORKER_LIMIT`，curate 共享 15 张随实际策展数递减）。失败语义收敛到脚本自己的退出码：零星单条失败脚本退 0 并告警、下轮幂等续作；全军覆没 / hygiene 漂移 / 参数错才退非零 → 该项目 `::error`、收尾判红，不带走其余项目（和以前一样）。
+3. **四条纪律不变，ci.yml 的 D-047 守卫改成按脚本名钉**：on_demand 闸（`skip_on_cron.py` 必须在 `python annotate_essence_pass.py "$p"` / `python curate_flywheel_lessons.py --project "$p"` 之前）、curate 按项目循环且把当前项目传给脚本、预算全局共享递减、推迟点名、逐项目隔离。`worker_fail_kind` 守卫改成只要求 features-sync 一份（以后哪一步再接 worker 就加回 want）。
+4. **跨 workflow 互斥没有了 worker 的每脚本锁**：daily-sync / backfill-essence / recurate-lessons 各自的 concurrency group 不变、互不排队。重叠时的代价只是同一批待办被两边各标一次（写入幂等、内容相同），上限是一个 `WORKER_LIMIT`（15 篇）的重复花费；没有用同一个 group 串起来，因为 GitHub 对同组只留一个 pending，手动 backfill 排队时可能把夜跑挤掉，那个比重复 15 篇贵。
+5. **模型变量改成 repo variable**：`ESSENCE_MODEL` / `FLYWHEEL_CURATOR_MODEL`，不设 = 代码默认 `claude-sonnet-5-5`（D-098）。GitHub 把没设的 variable 注成空串而 `os.environ.get(..., default)` 对空串不回默认，所以步骤开头空就 `unset`。
+6. **定时跑缺 `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` 直接红**（接 codex review on #169 那条，把 `WORKER_URL` 换成这两把）；手动触发仍允许只同步不跑 LLM（步骤 `if: env.ANTHROPIC_API_KEY != ''`）。
+7. **`backfill-essence.yml` 的 `mode=missing_subtype`**：remaining 与 pass 吃同一个 `$COUNT_FLAG`（`--only-missing-subtype`），守卫 `check_essence_subtype_backfill` §4 钉这一点。
+
+### 验证
+
+- 四个 step body 抽出来在假 `python`（按脚本名分发、读场景文件）下重放：essence —— 待标 / 已标完 / on_demand 跳过 / 一个项目退非零只红它 / dry-run 透传；curate —— 预算 15 按实际策展数递减到 0 / 吃满推迟点名 / 一个项目退非零其余照跑收尾红；backfill-essence —— 两轮灌完无 warning / pass 退非零两次 → error / 到顶还剩 → warning；recurate —— 3→2→0 收敛 / 第二轮炸 → error 且已做的不丢；Check secrets —— 定时缺 ANTHROPIC 红、手动缺不红、全配 0。
+- ci.yml 相关 38 步 heredoc 本地重放全绿（含 D-047 两道闸、bash -e 闸行形态、409 分类器、失败聚合）；`check_essence_subtype_backfill` / `check_curate_stale` / `check_system_map` 过；四个 workflow yaml 可 parse；G6 bytes 未超。
+- **没拿生产跑**：合并后第一晚的 daily-sync（essence + curate 直跑）和一次手动 `recurate-lessons` 就是验收；Railway worker 的 essence / curate 端点这周先留着，确认直跑稳了再从 worker 删（下一条 D 记）。
+
+### 挡不住什么
+
+- GitHub runner 到新站的连通性是 10-09 一次探测的结果；哪天新站也把 GitHub 的出口 IP 挡了，症状是 essence / curate 整步红（脚本退非零）而不是静默——那时再把 `WORKER_URL` 那条路加回来。
+- 特征层仍在 worker 上，还吃 Railway 边缘 5 min 超时和 worker 锁；要不要也搬是下一个决定。
+
+## D-101 · public 下 5 张 ssll 表开 RLS、收掉 anon 的读；18 个看板视图保持 SECURITY DEFINER 记为已接受例外；看板那把 service_role 由 owner 从 Vercel 删（2026-10-09）
+
+来源：审计 B-22 / B-12，owner 10-09 把决定交给我。只读盘点在前（catalog + advisor + 三仓 grep），`schemas/security_rls_public_ssll_tables.sql` 已对生产 apply。
+
+### 定了什么
+
+1. **真正的暴露面是 5 张 ssll 表，不是 18 个视图。** `public.projects / pipeline_runs / stage_logs / outputs / reference_samples` 没开 RLS 且 anon 有 SELECT：拿着 anon key（看板那把，公网可见）就能整表拉走 `reference_samples.post_body / cover_image_b64 / top_comments / ai_analysis`、`stage_logs.input_data / output_data`、`outputs.prompt_system`、`projects.brief`（约 1,512 行）。写 2026-08 已收，读今天收：5 张表 `ENABLE ROW LEVEL SECURITY`，`REVOKE SELECT, REFERENCES, TRIGGER ... FROM anon`。
+2. **authenticated 留一条只读 policy**（`ssll_authenticated_read`）：ssll 运行时用哪把 key 没查实（仓不在本会话，GitHub 搜索无结果；文档说 service_role，它 BYPASSRLS 不受影响）。若它其实走 Supabase Auth 登录会话，不留这条会静默读到 0 行。anon = 公网，一律收。
+3. **18 个 `v_dash_*` 不改 `security_invoker`**：它们是有意的 definer（`dashboard_views_v1.sql` 头部写明），全是不可更新的聚合视图，anon 只有 SELECT，底表 anon 既无 USAGE 也无 SELECT。改 invoker 看板直接全空（`getDashboardData` 的 catch 会吞错返回空数据、无报警）；给 anon 开 truth_vault 读权限等于把 6,300 篇 notes 原文暴露给公网，比现状差得多。advisor 的 18 条 `security_definer_view` 记为已接受例外。
+4. **默认权限隐患不动**：`pg_default_acl` 里 postgres 在 public 新建的表 anon 自动 `arwdDxtm`。public 是 ssll 的域，改默认值要 ssll 同意；这里只记一句，下次 ssll 建表记得 revoke。
+5. **B-12 看板那把 service_role**：代码 2026-06 起优先 anon（`dashboard/lib/supabase.ts:17`），README 10-08 已改教 anon；Vercel 的 env 列表 API 403 看不到，**owner 去 Vercel 项目 truth-vault 的 env 里把 `SUPABASE_SERVICE_ROLE_KEY` 删掉**（删了之后 `/health` 之外的一切不受影响，看板只走 anon）。
+
+### 验证
+
+- apply 后：5 张表 `relrowsecurity = t`、anon `has_table_privilege(select) = false`、authenticated 经 policy 可读；`SET ROLE anon` 读 `reference_samples` → 42501；`SET ROLE anon` 读 `v_dash_overview` → notes 6300、`v_dash_system_pulse` 1 行、`v_dash_top_hits` 8 行（看板路径没断）。
+- 没验证的：ssll 下一次跑 vibe_loop / 打开项目列表是否照常（它最后一次写库 08-28，仓最后 push 09-27）。若它读到 0 行 → 它用的不是 service_role，按 `security_rls_public_ssll_tables.sql` 末尾的回滚或改 key。
+
+### 挡不住什么
+
+- `/console` 的密码只挡 UI，不挡 REST：anon key 仍能读 18 个聚合视图（设计如此，视图里没有正文）。
+- ssll 新建 public 表会继承 anon 全权限（第 4 条）。
+
+## D-102 · 写作台「人审」里模型代记的决定改标 `human_via_agent`；真值只认 `human`（2026-10-09）
+
+来源：审计 A-01，owner 10-09 把决定交给我。证据在 `data-analysis/a01-review-drafts-timeline-2026-10-09.md`（Supabase edge logs 会过期，所以把时间线存了档）：`autowriter.items` 里 32 条 `decision_source='human'`，分 6 批，每批全部在模型自己的工具链里（check → commit → review → export），commit 后 10–38 s 整批通过，`reviewer_id` = 稿件作者本人，中间没有任何人能读完稿子的窗口。它们不是人审，是模型替用户记的。
+
+### 定了什么
+
+1. **aw 侧（migration 012，10-09 已对生产 apply；PR autowriter#94）**：`decision_source` 加 `human_via_agent`；`items` 加 `decision_note`（≤ 200 字，用户原话）和 `decided_within_s`（距批次 commit 的秒数）。deskcore 的 `review_drafts` 工具从此**只**写 `human_via_agent`，`human` 只留给 Streamlit 里真人点的那个按钮。写手面（`protocol.md`）不改——写手说"这几篇过"仍然是过，变的只是库里记的来源。
+2. **TV 侧（`schemas/notes_v1_20_human_via_agent.sql`，10-09 已对生产 apply）**：`prepublish_evaluations.evaluator_type` 加 `human_via_agent`，唯一索引谓词扩到同步拥有的四类。`sync_autowriter_decisions_to_prepublish._provenance` 原样映过来，`evaluator_id` 记 reviewer（= 作者，这就是该类型的语义）。**真值 / 校准只认 `human`**：`v_l2_labels` 等视图一行没改，`human_via_agent` 自动不在里头。
+3. **32 条历史改标（10-09 已做，备份 `autowriter.backup_items_self_review_20261009`，11-09 后可 drop）**：按证据改成 `human_via_agent`，`decision_note` 写明"D-102 按证据改标"，`decided_within_s` 填实际秒数（按被审那一版 `versions.created_at` 算，9–37；codex review on autowriter#94 把口径从批次改成版本后同日重算，这 32 篇都没有替换稿，只差 1 秒以内的取整）。TV 那 32 行 `prepublish_evaluations` **不手改**，由夜跑同步就地收敛（`converge`）：#171 合并前的那一晚旧代码不认识新值，会先收敛成 `unverified`；合并后再收敛到 `human_via_agent`。两步都是设计内的自愈，不是故障。
+4. **灯**：`verify_supabase_state.sql` #91（作者自审行数，期望 0）；daily-sync 的归档复核 WARN 现在带 `::warning` 注解（docs/29）。
+5. **生产 DDL 的一处绕路**：`DROP INDEX` 经 MCP 要人确认、60 s 超时两次，老索引改名成 `idx_tv_evals_aw_item_evaluator_uniq_v111_dropme` 留着（谓词是新索引的子集，多一份无害），owner 在 SQL editor 里顺手 `DROP INDEX truth_vault.idx_tv_evals_aw_item_evaluator_uniq_v111_dropme`（和 C-17 那几张表一起）。schema 文件本身仍是 DROP + CREATE，CI 的 PG 链两遍验幂等。
+
+### 没做
+
+- 不给 `human_via_agent` 定校准权重：真值不认它就够了；要它有用，先得有真人复核过的样本对比。
+- 不回头审 Streamlit 路径的 `human`：10-09 实查 `decision_source='human'` 全部来自工具链，Streamlit 一条都没有。
+
+## D-103 · 审计 owner 决定项一次定掉：闸一裁决进题库、飞书已删篇不喂下游、一次性表清单、其余记为接受（2026-10-09）
+
+来源：审计 B-17 / B-21 / C-17 / C-09 / B-07 / C-12 / C-13 / C-20 / B-12，owner 10-09 "所有决定你帮我判断"。
+
+### B-17 · 闸一裁决机器可读
+
+- 题库每道模型题加 `gate1_status`：`pending` / `pass` / `fail` / `kappa_undefined`（样本里答案近乎常数、κ 算不出；不算没过）。**它不进 `bank_sha256`**：`feature_bank.bank_digest` 把这一行剔掉再算（同 `status` / `frozen_sha256` 的规则），实测加了 20 行之后 digest 仍是 `ba0f570c`，5,900 篇已落库的答案不会因为裁一道题变成旧 sha。字段说明没写进文件头注释——改头部注释**会**换 digest（digest 盖整个文件的字节），写在第一题那行的行尾注释里（那一行整行被剔）。
+- `validate_bank`：取值闭集；`status: frozen` 时任何一题还是 `pending` → 不合法（闸一裁完才能预注册）。`gate2_run`：`fail` 的题自动 `unreliable`（∪ `--unreliable` 手传），`kappa_undefined` 照常进统计按 support 判。CI：`check_gate2_run.py` §6c，守卫 1 反证 ⑦（冻结带 pending 红、取值闭集红、裁决不动 digest）。
+- **现在 20 题全是 `pending`，故意的**：09-28 的闸一结果（过 10 / 不过 8 / κ 不可算 2）是对 v1 题面 + Opus 4.6 抽取器的；之后 5 道题按分歧格裁决升了版（D-082），抽取器也要换成 Sonnet 5.5 / Haiku 5.5（网关换了，老模型名 503）。拿旧裁决填新题面是把两件事混在一起。顺序定死：① #171 合并后跑两趟影子（`backfill-features.yml` note_ids 模式，100 篇闸一样本，run_tag `gate1-sonnet55` / `gate1-haiku55`）→ ② 对 Jev 三遍 + owner 67 篇算一致率 / κ，逐题填 `gate1_status`，记一条 DECISIONS，选抽取器（过线的最便宜那个）→ ③ `status: frozen` + `frozen_sha256` → ④ 361 篇旧 sha 重标到 `ba0f570c`（`reannotate=true`，两趟 ≤ 200）→ ⑤ 闸二。
+
+### B-21 · 飞书已删的篇
+
+- 视图 `truth_vault.v_notes_vanished`（`schemas/notes_v1_21_vanished_notes.sql`，10-09 已对生产 apply）：盖过 `last_seen` 戳、但 `last_seen_run_id` ≠ **本项目**最近一次完整同步的 run_id。比的是本项目自己的最近一次 run，不是固定天数（on_demand 项目不进夜跑）；从没盖过戳的（七个 on_demand 项目，2,275 篇）不算。
+- 三条新生产路径按它排除：新策展 / 重策展（`curate_flywheel_lessons.fetch_uncurated_cards`）、通道 1 推送（`fetch_pending_baokuan`）、闸二取数（`gate2_run.fetch_dataset`，`vanished_dropped` 数出来）。`_common.fetch_vanished_note_ids` 一个入口；视图不在就直接抛（三条路一起红，不静默）。CI `check_vanished_notes.py` 六节 + PG 链 v1.21 sanity（判据改成"3 天没见到"会红）。
+- **只报不删**：不删 note，不自动撤 ssll 样本 / 经验卡（回收只认资格，D-087）。10-09 实查 10 篇（HATHERINE 6 · TUGE 4）：全已标 essence，0 在 ssll，0 有经验卡——所以今天没有要撤的东西。灯 `verify` #93（期望 0）；owner 看视图决定删不删。删后重建换 `record_id` 的那一半（按 `publish_url` 去重）不做：不知道运营这么干的频率，先看 #93 的数。
+
+### C-17 · 一次性表的过期日（owner 在 SQL editor 跑；MCP 的 DROP 要人确认）
+
+| 对象 | 可 drop 日 |
+|---|---|
+| `autowriter.versions_num_backup_20260826` | 现在 |
+| `truth_vault.idx_tv_evals_aw_item_evaluator_uniq_v111_dropme`（索引，D-102 §5） | 现在 |
+| `truth_vault.reference_samples_backup_tv_stale_20261008`、`truth_vault.notes_ssll_marker_backup_20261008` | ≈ 10-22（D-086） |
+| `truth_vault.backup_inverted_lineage_20261009`、`autowriter.backup_tv_note_links_inverted_20261009`（D-099）、`autowriter.backup_items_self_review_20261009`（D-102） | 11-09 后 |
+
+`verify` #92 从此数"名字带日期后缀且超过 30 天"的表，到期没删会一直是 ⚠️。
+
+### 记为接受 / 延后（不改代码）
+
+- **C-09** 题库孤儿：Jev `/banks` 只列每个 `bank_id` 的最新版本，老版本和只有测试引用的留文件不删（账本里有它们的 `bank_sha256`，删了历史行对不上）；随 A-09 的 Jev PR 落地。
+- **B-07** `project_layer_cleared: []`：保持显式白名单。项目 brief 里有品牌内部信息，默认不进写前题库是保密立场，不是忘了设；要给哪个项目开，加进列表就是一条决定。
+- **C-12** judge 保持 shadow：闸二一个 `validated` 都还没有，enforcing 没有依据；等闸二出结果再加 `decision_source` 值 + TV `_MACHINE_DECISION_SOURCES`。
+- **C-13** 看板的 `AI_DIMS=14` / `ARCHETYPES=19` / `SHOWCASE_EXT_*` / 静态 `TICKER_EVENTS`：接受为展示常量；v1_19 两列不上 Vercel，owner 看 Actions 日志和 `verify`。
+- **C-20** `stale_in_ssll` / `gated` / 撤回摘要仍只打印：按 D-087 延后，`v_flywheel_sync_status.stale_in_ssll` 连续两周全 0（回收每晚干净）再把 `|| true` 拿掉。
+- **B-12** 看板那把 service_role：见 D-101 §5，owner 从 Vercel 删；RISKS 的 secret 矩阵就是轮换清单。

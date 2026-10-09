@@ -34,6 +34,10 @@ on:
         description: "只在 note_ids 模式生效。true = 忽略「跑过」标记, 这几篇在当前题库下整篇重抽、同 (question_id, question_version, extractor, run_tag) 的旧行被覆盖(bank_sha256 跟着换成当前), 旧版本号的行(如 opening_type v1)原样留着。闸二前把旧 sha 下的 361 篇拉到当前快照用(D-090; 配 bank_sha 一起用, 别拿旧题面重抽)。默认 false。"
         required: false
         default: "false"
+      model:
+        description: "只在 note_ids 模式生效, 可空。覆盖 worker 的 FEATURE_MODEL (如 claude-haiku-5-5), 闸一影子跑用: 同一批篇、换个模型、落到别的 run_tag, 再用 gate1_agreement.py 对 Jev / owner 裁决算一致率 (D-098: 换站后主抽取器要重过闸一)。pass 写的抽取器是 llm:<model>; 只能配非 primary 的 run_tag。[A-Za-z0-9][A-Za-z0-9_.:/-]{0,79}"
+        required: false
+        default: ""
 
 # 同一项目同时只允许一个 backfill 在跑 —— 否则两个 run 会各自快照同一批未抽取笔记、
 # 重复烧 LLM 且非确定性地互相覆盖 essence(codex PR#43 review r3355530533)。
@@ -57,6 +61,7 @@ jobs:
       RUN_TAG: ${{ github.event.inputs.run_tag }}
       BANK_SHA: ${{ github.event.inputs.bank_sha }}
       REANNOTATE: ${{ github.event.inputs.reannotate }}
+      MODEL: ${{ github.event.inputs.model }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -109,11 +114,19 @@ jobs:
               echo "$BANK_SHA" | grep -Eq '^[0-9a-f]{8,64}$' || { echo "::error::bank_sha '$BANK_SHA' 要是 8–64 位小写十六进制"; exit 1; }
             fi
             case "$REANNOTATE" in true|false) ;; *) echo "::error::reannotate 只能是 true / false, 收到 '$REANNOTATE'"; exit 1;; esac
-            echo "✅ inputs OK (note_ids 模式): $n 篇 · batch=$BATCH · run_tag=$RUN_TAG · bank_sha=${BANK_SHA:-(不查)} · reannotate=$REANNOTATE · 并发组=$PROJECT"
+            if [ -n "$MODEL" ]; then
+              # 和 worker 的 _MODEL_RE 同一条正则; jev:/llm:/code:/human: 是抽取器标签不是模型名 (pass 自己写 llm:<model>, D-085)。
+              echo "$MODEL" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,79}$' || { echo "::error::model '$MODEL' 不合 [A-Za-z0-9][A-Za-z0-9_.:/-]{0,79}"; exit 1; }
+              case "$MODEL" in jev:*|llm:*|code:*|human:*) echo "::error::model '$MODEL' 是抽取器标签, 不是模型名"; exit 1;; esac
+              # primary 是夜跑主抽取器的快照: 混进第二个 llm:* 抽取器, 闸二按 (篇, 题) 唯一性会拒跑 (gate2_run §5)。换模型只能落别的 run_tag。
+              [ "$RUN_TAG" != "primary" ] || { echo "::error::model 只能配非 primary 的 run_tag (如 gate1-haiku55), 收到 run_tag=primary"; exit 1; }
+            fi
+            echo "✅ inputs OK (note_ids 模式): $n 篇 · batch=$BATCH · run_tag=$RUN_TAG · bank_sha=${BANK_SHA:-(不查)} · reannotate=$REANNOTATE · model=${MODEL:-(worker 默认)} · 并发组=$PROJECT"
             exit 0
           fi
           [ -z "$RUN_TAG" ] || [ "$RUN_TAG" = "primary" ] || { echo "::error::run_tag 只在 note_ids 模式生效(整项目回填永远落 primary, count_unannotated_features 也只数 primary), 收到 '$RUN_TAG'"; exit 1; }
           [ -z "$BANK_SHA" ] || { echo "::error::bank_sha 只在 note_ids 模式生效, 收到 '$BANK_SHA'"; exit 1; }
+          [ -z "$MODEL" ] || { echo "::error::model 只在 note_ids 模式生效 (整项目回填永远用 worker 的 FEATURE_MODEL 落 primary), 收到 '$MODEL'"; exit 1; }
           # project 必须是已知项目(有 mapping)。否则拼错的名字会查到 remaining=0 → 被当成
           # "已灌完"绿着退出、一条没处理(codex review r3355530520)。
           if [ ! -f "../mappings/${PROJECT}.yaml" ]; then
@@ -134,7 +147,7 @@ jobs:
           probe_id=$(echo "$NOTE_IDS" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -v '^$' | head -1)
           probe_proj="${probe_id%_rec*}"
           [ -n "$RUN_TAG" ] || RUN_TAG=primary
-          body=$(jq -nc --arg p "$probe_proj" --arg id "$probe_id" --arg t "$RUN_TAG" '{project:$p, limit:1, dry_run:true, note_ids:[$id], run_tag:$t}')
+          body=$(jq -nc --arg p "$probe_proj" --arg id "$probe_id" --arg t "$RUN_TAG" --arg m "$MODEL" '{project:$p, limit:1, dry_run:true, note_ids:[$id], run_tag:$t} + (if $m != "" then {model:$m} else {} end)')
           code=$(curl -sS -w '%{http_code}' -o /tmp/probe.json --max-time 300 \
             -X POST "${WORKER_URL%/}/annotate-features" \
             -H "X-Worker-Key: $WORKER_API_KEY" -H 'content-type: application/json' -d "$body") || code=000
@@ -157,6 +170,11 @@ jobs:
             esac
           fi
           echo "$bank_line" | grep -q "run_tag=$RUN_TAG" || { echo "::error::worker 没按 run_tag=$RUN_TAG 跑 (探针打的是 '${bank_line:-空}') —— 旧版 worker 会吞掉 run_tag 落到 primary。停。"; exit 1; }
+          if [ -n "$MODEL" ]; then
+            # 探针那行带 model=…: 旧版 worker 会吞掉 model 字段、用自己的 FEATURE_MODEL 跑 —— 影子跑成了主模型的重复, 停。
+            case "$bank_line" in *"model=$MODEL run_tag="*) echo "✅ worker 按 model=$MODEL 跑";;
+              *) echo "::error::worker 没按 model=$MODEL 跑 (探针打的是 '${bank_line:-空}') —— 旧版 worker 会吞掉 model 字段。停。"; exit 1;; esac
+          fi
 
           mapfile -t ids < <(echo "$NOTE_IDS" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -v '^$' | sort -u)
           total=${#ids[@]}; sent=0; ok_chunks=0; bad_chunks=0
@@ -165,7 +183,7 @@ jobs:
             for ((i=0; i<${#plist[@]}; i+=BATCH)); do
               chunk=("${plist[@]:i:BATCH}")
               # reannotate 只在真跑时带(探针是 dry_run, 不需要); worker 把它翻成 --reannotate (app.py 的 flag 闭集)。
-              body=$(printf '%s\n' "${chunk[@]}" | jq -R . | jq -sc --arg p "$proj" --argjson n "$BATCH" --arg t "$RUN_TAG" --argjson r "$([ "$REANNOTATE" = "true" ] && echo true || echo false)" '{project:$p, limit:$n, note_ids:., run_tag:$t} + (if $r then {reannotate:true} else {} end)')
+              body=$(printf '%s\n' "${chunk[@]}" | jq -R . | jq -sc --arg p "$proj" --argjson n "$BATCH" --arg t "$RUN_TAG" --arg m "$MODEL" --argjson r "$([ "$REANNOTATE" = "true" ] && echo true || echo false)" '{project:$p, limit:$n, note_ids:., run_tag:$t} + (if $r then {reannotate:true} else {} end) + (if $m != "" then {model:$m} else {} end)')
               echo "── $proj · 第 $((i/BATCH+1)) 批 (${#chunk[@]} 篇) · 已发 $sent/$total ──"
               ok=false; code=000
               for attempt in 1 2 3 4 5 6; do
