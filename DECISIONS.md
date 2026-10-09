@@ -5943,7 +5943,8 @@ python job 里 import 馆员的 8 步（TV-03 / TV-05 / TV-06 / 守卫 6 / put_c
 ### 验证
 
 - 23 处替换按文件逐个断言命中数（脚本里多一处少一处都停），替换后 `scripts/ librarian/ onboarder/ worker/ gateway-probe.yml` 里不再有 `claude-sonnet-4-6` 的默认值；`check_feature_orchestration.py` 过（`_MODEL_RE` 放行 `claude-sonnet-5-5`）；ci.yml 相关 heredoc 本地重放；`py_compile`；gateway-probe yaml 可 parse。
-- **没向新站发过一次真实请求**（本会话没有新 key）：`-thinking` 后缀新站认不认、`cache_control` 透不透传（看馆员 `/health` 的 `prompt_cache_fallbacks`，D-097）、倍率多少，都要 owner 换完 secret 之后看第一晚的 daily-sync 和 aw 的 telemetry。
+- **gateway-probe 实测（2026-10-09 05:23 UTC，owner 换完 secret 之后，各 1 token）**：新站对 `claude-sonnet-4-6` 回 **503**（通道里没这个模型），对 `claude-sonnet-5-5` 回 **200**（3.3 s 拿到响应）。所以旧名在新站上**一个都跑不通**：Railway 已删掉模型 env、但 main 上的代码默认值还是 4-6，本条合进 main 并重新部署之前，worker / librarian / onboarder 每次 LLM 调用都是 503（daily-sync 的 essence / curate 会按"200 + ok=false = 系统性"判红，馆员降级成 `[]`）。**本 PR 要在下一次 daily-sync（~08:04 UTC）之前合并**；来不及就先在 Railway 把 `ESSENCE_MODEL` / `FLYWHEEL_LIBRARIAN_MODEL` / `FLYWHEEL_CURATOR_MODEL` / `ONBOARDER_MODEL` 临时设成 `claude-sonnet-5-5` 顶一晚。另：GitHub 的 runner 能直连新站（旧站连不上才有 D-038 走 Railway 的设计），要不要把 essence / curate 搬回 GitHub 是另一个决定，这里不动。
+- `-thinking` 后缀新站认不认、`cache_control` 透不透传（看馆员 `/health` 的 `prompt_cache_fallbacks`，D-097）、倍率多少，仍要看第一晚的 daily-sync 和 aw 的 telemetry。
 
 ### 挡不住什么
 
