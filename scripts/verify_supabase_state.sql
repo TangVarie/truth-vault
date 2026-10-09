@@ -438,18 +438,31 @@ SELECT '87', 'H · 跨 schema 孤儿',
 
 UNION ALL
 SELECT '88', 'H · 跨 schema 孤儿',
-    'TV notes.source_autowriter_version_id 指向【从 TV 补录进 aw 的副本】(batches.params.source = ingest) 的篇数 (血缘倒挂, 审计 A-02)',
+    'TV notes 的 source_autowriter_version_id 或 source_autowriter_item_id 指向【从 TV 补录进 aw 的副本】(batches.params.source = ingest) 的篇数 (血缘倒挂, 审计 A-02; 两列都看)',
     COALESCE(pg_temp.safe_count(
         $q$SELECT COUNT(*)
         FROM truth_vault.notes n
-        JOIN autowriter.versions v ON v.id = n.source_autowriter_version_id
-        JOIN autowriter.items i ON i.id = v.item_id
-        JOIN autowriter.batches b ON b.id = i.batch_id
+        LEFT JOIN autowriter.versions v ON v.id = n.source_autowriter_version_id
+        LEFT JOIN autowriter.items i ON i.id = COALESCE(n.source_autowriter_item_id, v.item_id)
+        LEFT JOIN autowriter.batches b ON b.id = i.batch_id
         WHERE COALESCE(b.params->>'source', '') = 'ingest'$q$
     )::TEXT, 'N/A'),
     '0',
     '> 0 = 补录副本又进了对照索引 (aw store.versions_for_linking 该排除 is_ingest_batch; 2026-10-09 D-099 清过 31 篇, '
-    '备份在 truth_vault.backup_inverted_lineage_20261009). 修法: 先修 aw 再置空, 别反过来, 否则当晚 tv-sync 又填回来.'
+    '备份在 truth_vault.backup_inverted_lineage_20261009, 两列都备了). 修法: 先修 aw 再【两列一起】置空, 别反过来, 否则当晚 tv-sync 又填回来.'
+
+UNION ALL
+SELECT '89', 'H · 跨 schema 孤儿',
+    'TV notes 血缘两列不一致的篇数: 一列空一列不空, 或 item_id ≠ 该 version 所属的 item (D-064 的 COALESCE 回填只补空列, 单清一列会留下错配)',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(*)
+        FROM truth_vault.notes n
+        LEFT JOIN autowriter.versions v ON v.id = n.source_autowriter_version_id
+        WHERE (n.source_autowriter_item_id IS NULL) <> (n.source_autowriter_version_id IS NULL)
+           OR (v.id IS NOT NULL AND n.source_autowriter_item_id <> v.item_id)$q$
+    )::TEXT, 'N/A'),
+    '0',
+    '> 0 = 有人只改了血缘的一列 (codex review on #170 抓到的形态). 修法: 按 version 反查 item 补齐, 或两列一起置空再让 tv-sync 重对.'
 
 -- ── I · 数据一致性副作用 ──────────────────────────────────────────────
 UNION ALL

@@ -5951,23 +5951,24 @@ python job 里 import 馆员的 8 步（TV-03 / TV-05 / TV-06 / 守卫 6 / put_c
 - 新站的价格倍率是沿用旧站的 1.8×（aw `config.RELAY_PRICE_MULTIPLIER`），账单核过之前成本面板只是估的。
 - 换站不解决"中转站单点"（审计 §4 的大项）：所有 LLM 调用仍走一个网关，它坏一天就是整条流水线停一天。
 
-## D-099 · 31 篇倒挂血缘已置空（SPX 23 / HATHERINE 7 / LNKT 1），备份在库里；verify 加 #88（2026-10-09）
+## D-099 · 31 篇倒挂血缘已置空（SPX 23 / HATHERINE 7 / LNKT 1，两列一起），备份在库里；verify 加 #88 / #89（2026-10-09）
 
 来源：审计 A-02（aw PR #93，2026-10-09 05:27 UTC 合进 `claude/xhs-content-workstation-BSEuH`，Railway deskcore 05:40 UTC 前后换成 e28d00a）。补录副本进了对照索引，隔天另一条正文相同的笔记 `body_exact` 命中它，`--write-tv` 把"来自 TV 的版本"写成了笔记来源 —— tv_sync docstring 明说要排除的因果倒置绕了一条路回来。
 
 ### 做了什么
 
-1. **备份**：`truth_vault.backup_inverted_lineage_20261009`（31 行：note_id / project_id / 原 `source_autowriter_version_id` / updated_at），`autowriter.backup_tv_note_links_inverted_20261009`（31 行：对应的 `tv_note_links` 整行）。判据是跨 schema 的 join：`notes.source_autowriter_version_id → autowriter.versions → items → batches.params->>'source' = 'ingest'`。
-2. **TV 侧**：这 31 篇 `notes.source_autowriter_version_id` 置 NULL（按备份表的 (note_id, version_id) 对，不是按 project 整批）。
+1. **备份**：`truth_vault.backup_inverted_lineage_20261009`（31 行：note_id / project_id / 原 `source_autowriter_version_id` / 原 `source_autowriter_item_id` / updated_at），`autowriter.backup_tv_note_links_inverted_20261009`（31 行：对应的 `tv_note_links` 整行）。判据是跨 schema 的 join：`notes.source_autowriter_version_id → autowriter.versions → items → batches.params->>'source' = 'ingest'`。
+2. **TV 侧**：这 31 篇 `notes.source_autowriter_version_id` **和** `source_autowriter_item_id` 都置 NULL（按备份表的 (note_id, 原值) 对，不是按 project 整批）。第一版只清了 version 列，codex review on #170 抓到：补录时两列一起写的，`deskcore_tv_backfill_lineage` 回填用 COALESCE 只补空列（D-064），单清一列会让今晚对上真原稿的篇变成「新 version + 旧副本 item」的错配，对不上的篇永远留着副本 item。
 3. **aw 侧**：对应的 31 行 `tv_note_links`（30 `body_exact` + 1 `fuzzy`，全部已 `synced_to_tv_at`）**没删**，改成 unmatched 形态：`version_id` / `item_id` / `score` / `lag_days` / `synced_to_tv_at` 置空，`match_kind = 'unmatched'`，`candidates` 写明原因。tv-sync 对没有 `version_id` 的行每晚重看（`already_linked` 只认有 version_id 的），效果与删等价、还留痕。（原计划 DELETE，Supabase MCP 对 DELETE 要人确认、60 s 超时两次，UPDATE 不用。）
-4. **复核**：跨 schema join 倒挂 0 行；31 篇 NULL；31 行 unmatched。
+4. **复核**：跨 schema join 倒挂 0 行（version 列、item 列各查一遍）；两列不一致（一空一不空 / item ≠ version 所属 item）0 行；31 篇两列皆 NULL；31 行 unmatched。
 5. **时序**：写库时 deskcore 还是旧码 1cb9046，但旧码的 cron 是 04:00 UTC（当天已过）、新 config 是 14:00 UTC，而 14:00 之前 Railway 已换成 e28d00a（/health 的 `build.commit` 实查），所以"先部署再置空"的前提成立。
-6. **verify_supabase_state.sql 加 #88**：倒挂血缘计数必须为 0；> 0 的修法是先修 aw 再置空，别反过来。
+6. **verify_supabase_state.sql 加 #88 / #89**：#88 倒挂血缘计数（两列都看）必须为 0；#89 两列不一致计数必须为 0。> 0 的修法是先修 aw 再两列一起置空，别反过来。
 
 ### 回滚
 
 ```sql
-UPDATE truth_vault.notes n SET source_autowriter_version_id = b.source_autowriter_version_id
+UPDATE truth_vault.notes n SET source_autowriter_version_id = b.source_autowriter_version_id,
+                               source_autowriter_item_id    = b.source_autowriter_item_id
   FROM truth_vault.backup_inverted_lineage_20261009 b WHERE b.note_id = n.note_id;
 -- tv_note_links: 用 autowriter.backup_tv_note_links_inverted_20261009 整行覆盖回去 (按 note_id)。
 ```
