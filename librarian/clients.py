@@ -59,7 +59,10 @@ PROMPT_CACHE_FALLBACKS: dict = {"count": 0, "last_at": None, "last_error": ""}
 def _note_cache_fallback(exc: BaseException) -> None:
     PROMPT_CACHE_FALLBACKS["count"] += 1
     PROMPT_CACHE_FALLBACKS["last_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    PROMPT_CACHE_FALLBACKS["last_error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+    # 只记异常**类型**, 不记 str(exc): 这个 dict 会被没鉴权的 /health 原样回显, 而 SDK / 网关异常的文本里可能带
+    # 请求 URL、租户路径、query 里的凭据 —— 它不经 SecretMaskingFormatter (codex review on #169, P1)。
+    # 真正的错误文本在日志里 (那条过掩码)。
+    PROMPT_CACHE_FALLBACKS["last_error"] = type(exc).__name__
 
 
 def call_anthropic(prompt: str, model: str, *, system=None, max_tokens: int = 1500,
@@ -136,9 +139,9 @@ def call_anthropic(prompt: str, model: str, *, system=None, max_tokens: int = 15
         if isinstance(system, list):
             _note_cache_fallback(exc)
             logger.warning(
-                "带 cache_control 的馆员调用失败,去掉缓存块用纯 system 重试一次"
+                "带 cache_control 的馆员调用失败(%s: %s),去掉缓存块用纯 system 重试一次"
                 "(疑似该中转站通道不支持 prompt caching; 本实例累计 %d 次, /health 的 config.prompt_cache_fallbacks 可查)",
-                PROMPT_CACHE_FALLBACKS["count"],
+                type(exc).__name__, str(exc)[:200], PROMPT_CACHE_FALLBACKS["count"],
             )
             return _run(_flatten_system_blocks(system))
         raise

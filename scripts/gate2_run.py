@@ -221,6 +221,13 @@ def run_gate2(dataset: dict, bank: dict, *, sha: str, extractors: list[str], run
     if bank.get("status") != "frozen" and not allow_draft:
         raise Gate2Refused("问题库 status 不是 frozen —— 闸二跑之前先冻结 (status: frozen + frozen_sha256), 判据数字记进 "
                            "DECISIONS (docs/28 §6.2 预注册)。试算用 --allow-draft。")
+    # 冻结后改过题的题库 (codex review on #169, P1): status 还是 frozen、frozen_sha256 记的是改之前的快照, 操作者拿改后文件
+    # 的新 digest 当 --sha 传进来, 上面两条都过 —— 预注册就被绕开了。validate_bank 本来就查"frozen_sha256 == 规范化 digest",
+    # 这里把它整个调一遍: 结构不合法或 digest 不符都拒跑。
+    errs = fb.validate_bank(bank)
+    if errs:
+        raise Gate2Refused("问题库没过 validate_bank: " + "; ".join(errs) +
+                           " —— 冻结后改题要升 version、重新冻结并记 DECISIONS, 不能拿改后的 digest 当预注册快照。")
     unreliable = set(unreliable)
     ext = set(extractors)
 
@@ -409,7 +416,9 @@ def render_report(result: dict) -> str:
 
 # ── 取数 (生产) ───────────────────────────────────────────────────────────────
 
-def fetch_dataset(sb, *, sha: str, extractors: list[str], projects: Optional[set[str]] = None) -> dict:
+def fetch_dataset(sb, *, bank: dict, sha: str, extractors: list[str], projects: Optional[set[str]] = None) -> dict:
+    """``bank`` 必须是 main() 里 --bank 读进来的那一份: 取哪些题按它算 (codex review on #169, P1 —— 以前这里重新
+    load 默认题库, --bank 指向别的冻结题库时, 只在那份里的题永远取不到答案、报告里静默少题)。"""
     from _common import fetch_all_pages
     labels = fetch_all_pages(sb.schema("truth_vault").table("v_l2_labels")
                              .select("note_id, project_id, account_id, publish_time, y"), order_by="note_id")
@@ -425,7 +434,7 @@ def fetch_dataset(sb, *, sha: str, extractors: list[str], projects: Optional[set
     #    合并成一行、重复也看不见。所以按 (题, 抽取器) 一条一条查: 这个切片里 subject_id 唯一 (sha 钉住了版本),
     #    跨抽取器的重复在 run_gate2 里按 (笔记, 题) 数出来。
     answers: list[dict] = []
-    qids = sorted({t["question_id"] for t in bank_targets(fb.load_bank())})
+    qids = sorted({t["question_id"] for t in bank_targets(bank)})
     for qid in qids:
         for ext in extractors:
             q = (sb.schema("truth_vault").table("note_feature_answers")
@@ -473,7 +482,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         else:
             from _common import get_supabase_client
             sb = get_supabase_client()
-            dataset = fetch_dataset(sb, sha=args.sha, extractors=extractors, projects=projects)
+            dataset = fetch_dataset(sb, bank=bank, sha=args.sha, extractors=extractors, projects=projects)
         result = run_gate2(dataset, bank, sha=args.sha, extractors=extractors, run_tag=args.run_tag, q_max=args.q_max,
                            min_support=args.min_support, min_big=args.min_big, big_pos=args.big_pos,
                            confound_delta=args.confound_delta, unreliable=unreliable, allow_draft=args.allow_draft,

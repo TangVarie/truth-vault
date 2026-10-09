@@ -131,6 +131,13 @@ jobs:
             echo "See .github/workflows/daily-sync.yml header for setup steps."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
+          # WORKER_URL / WORKER_API_KEY 同理 (codex review on #169): essence 与 curate 两步都是 `env.WORKER_URL != ''` 才跑,
+          # 定时跑少了这两把 secret 会静默跳过、整轮照绿 —— 和上面 SUPABASE 那条是同一种"永远静默绿"。
+          # (措辞里别出现「斜杠 + curate」这个子串: ci.yml 的 D-047 守卫按它找策展那一步, 会先撞到这里。)
+          if [ "${{ github.event_name }}" = "schedule" ] && { [ -z "$WORKER_URL" ] || [ -z "$WORKER_API_KEY" ]; }; then
+            echo "::error::WORKER_URL/WORKER_API_KEY not configured on a scheduled run — essence and curate would be skipped silently. Fix repo secrets."
+            exit 1
+          fi
 
       - name: feishu → TV (per project from mappings/)
         id: feishu_sync
@@ -386,8 +393,9 @@ jobs:
                   | grep -o '"ok": *[0-9][0-9]*' | tail -1 | grep -o '[0-9][0-9]*$' || true)
               [ -n "$n" ] && remaining=$((remaining - n))
               # 这一批策展的张数少于要的 = 这个项目没有更多待策展的卡了 (或 Done 行没取到), 换下一个项目;
-              # 否则继续本项目再要一批。
-              if [ -z "$n" ] || [ "$n" -lt "$batch" ]; then break; fi
+              # 否则继续本项目再要一批。dry-run 不写 is_curated, 再要一批拿到的还是同一批 —— 每项目只请求一次
+              # (codex review on #169)。
+              if [ -z "$n" ] || [ "$n" -lt "$batch" ] || [ "$DRY" = "true" ]; then break; fi
               continue
             fi
             jq -r '.stderr_tail // ""' /tmp/cur.json 2>/dev/null | tail -8
@@ -504,6 +512,9 @@ jobs:
           上面的 traceback 是真问题 —— advisory 不拖红, 但这盏灯现在是瞎的, 去修。"
           elif grep -q '^EXTERNAL_CORPUS_CHECK_DONE rc=1' /tmp/external_corpus.log; then
             echo "::warning title=外部语料超过 8 天没进新货::去 Jev 仓看 external-corpus 最近一次 run (修在 Jev 仓)。"
+          elif grep -q '^EXTERNAL_CORPUS_CHECK_DONE rc=2' /tmp/external_corpus.log; then
+            # rc=2 = 判不了 (表空 / 时间认不出): "从没进过货"正是这盏灯要抓的那种"绿但空", 不能只躺在日志里 (codex review on #169)
+            echo "::warning title=外部语料新鲜度判不了::external_notes 是空的或最新时间认不出 —— 外部语料可能从没写进过 TV, 去 Jev 仓看 external-corpus 有没有成功过一次。"
           fi
 
       - name: 角度台账漏账检查 · 发了牌没走到成稿就告警 (advisory, 不 fail)

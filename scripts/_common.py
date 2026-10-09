@@ -399,11 +399,13 @@ _KNOWN_NOTE_COLUMNS = frozenset({
     "likes", "saves", "shares", "search_rank", "keyword_rank",
 })
 
-# 下划线开头的中间量: transform_row 之后有代码读它才算数。17 张表 2026-10-08 实际用到的全在这。
+# 下划线开头的中间量: transform_row 之后有代码读它才算数。17 张表 2026-10-08 实际用到的全在这,
+# 外加模板 / onboarder 会写出来、transform_row 当"剩下的中间量"收进 raw_extra 的两个 (codex review on #169)。
 _KNOWN_INTERMEDIATES = frozenset({
     "_status_raw", "_note_for_tier", "_note_status_raw", "_published_status",
     "_intent_raw", "_direction_raw", "_audience_raw", "_account_name",
     "_comment_text", "_comment_text_persona",
+    "_account_followers", "_account_url",       # mappings/_template.yaml:95 / onboarder/corpus.py:50 —— 透传进 raw_extra
 })
 
 

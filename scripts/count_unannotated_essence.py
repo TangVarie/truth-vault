@@ -11,25 +11,25 @@ from __future__ import annotations
 
 import sys
 
-from _common import get_supabase_client
+from _common import get_supabase_client, load_mapping
 
 
 def count_remaining(project_id: str, only_missing_subtype: bool = False) -> int:
-    """only_missing_subtype (审计 C-03): 与 annotate_essence_pass.fetch_unannotated_notes 的
-    --only-missing-subtype 同一判据 —— 已标 essence、direction_subtype 空、raw_extra._direction_raw 非空。"""
+    """only_missing_subtype (审计 C-03): 直接调 annotate_essence_pass.subtype_backfill_candidates 数 —— 和抽取
+    **同一个函数**, 判据只有一处 (含"方向要定义了 sub_directions"那道筛, codex review on #169)。
+    这条路不是 count=exact 而是把候选拉回来数: 候选量是百级 (NUC 206), 可接受。"""
     sb = get_supabase_client()
-    q = (
+    if only_missing_subtype:
+        from annotate_essence_pass import subtype_backfill_candidates
+        return len(subtype_backfill_candidates(sb, project_id, load_mapping(project_id)))
+    res = (
         sb.schema("truth_vault").table("notes")
         .select("note_id", count="exact")
         .eq("project_id", project_id)
+        .is_("essence_annotated_at", "null")
+        .limit(1)
+        .execute()
     )
-    if only_missing_subtype:
-        q = (q.not_.is_("essence_annotated_at", "null")
-              .is_("direction_subtype", "null")
-              .not_.is_("raw_extra->_direction_raw", "null"))
-    else:
-        q = q.is_("essence_annotated_at", "null")
-    res = q.limit(1).execute()
     # postgrest 的 exact count;兜底用 data 长度(理论不会走到)。
     return res.count if res.count is not None else len(res.data or [])
 

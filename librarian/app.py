@@ -79,6 +79,7 @@ def health() -> dict:
         "auth": service_auth.auth_health("LIBRARIAN", header="X-Librarian-Key"),
         # 审计 C-02: prompt caching 降级以前只在 stdout 里一行 warning。count > 0 且持续涨 =
         # 这个中转站不支持 cache_control, 每次借阅都在多付 input token; select_ms 里也掺着这次重试。
+        # last_error 只是异常类型名 (这个端点没鉴权, 异常文本可能带 URL / 凭据; codex review on #169)。
         "config": {"prompt_cache_fallbacks": dict(_clients.PROMPT_CACHE_FALLBACKS)},
     }
 

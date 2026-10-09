@@ -561,12 +561,16 @@ def parse_claude_json(text: str) -> Optional[dict]:
 # ─────────────────────────────────────────────────────────────────────────
 
 def fetch_unannotated_notes(sb, project_id: str, reannotate: bool,
-                            only_missing_subtype: bool = False) -> list[dict]:
+                            only_missing_subtype: bool = False, mapping: Optional[dict] = None) -> list[dict]:
     """默认: 还没标 essence 的。--reannotate: 全部 (不收敛: 每轮 --limit 都从 note_id 最小的开始重做)。
     --only-missing-subtype (审计 C-03): 已标 essence、但 direction_subtype 空、且飞书给了方向原文
     (raw_extra._direction_raw 非空) 的 —— NUC 10-08 实查 206 篇。以前只有 --reannotate 全重做能补,
     从没跑过。这条路收敛: 标上 direction_subtype 之后下一轮就不再选中; 子方向持续判不出的那几篇
-    每轮还会被选到, 由 backfill-essence 的"两轮 remaining 没下降就停"兜住。"""
+    每轮还会被选到, 由 backfill-essence 的"两轮 remaining 没下降就停"兜住。
+    ⚠️ 给了 mapping 就再筛一道: 只留方向在 direction_decomposition 里**定义了 sub_directions** 的篇
+    (codex review on #169, P1)。单方向配置 (NUC 的 糖尿病相关 / 抗癌放化疗相关) 本来就没有子方向可判,
+    get_sub_directions_for_note 回 None、direction_subtype 永远空 —— 不筛的话这些篇每轮都被重标、
+    remaining 永远不到 0、backfill 最后判失败。count_unannotated_essence 走同一个函数, 两边判据一致。"""
     q = (
         sb.schema("truth_vault")
         .table("notes")
@@ -583,7 +587,15 @@ def fetch_unannotated_notes(sb, project_id: str, reannotate: bool,
               .not_.is_("raw_extra->_direction_raw", None))
     elif not reannotate:
         q = q.is_("essence_annotated_at", None)
-    return fetch_all_pages(q, order_by="note_id")
+    notes = fetch_all_pages(q, order_by="note_id")
+    if only_missing_subtype and mapping is not None:
+        notes = [n for n in notes if get_sub_directions_for_note(mapping, n) is not None]
+    return notes
+
+
+def subtype_backfill_candidates(sb, project_id: str, mapping: dict) -> list[dict]:
+    """--only-missing-subtype 到底会碰哪些篇: 抽取和 count_unannotated_essence 都调这一个, 判据只有一处。"""
+    return fetch_unannotated_notes(sb, project_id, True, only_missing_subtype=True, mapping=mapping)
 
 
 def write_essence_back(
@@ -771,7 +783,7 @@ def main() -> int:
     mapping = load_mapping(args.project_id)  # loaded for direction_decomposition future use
     sb = get_supabase_client()
     notes = fetch_unannotated_notes(sb, args.project_id, args.reannotate or args.only_missing_subtype,
-                                    only_missing_subtype=args.only_missing_subtype)
+                                    only_missing_subtype=args.only_missing_subtype, mapping=mapping)
     if args.limit:
         notes = notes[: args.limit]
     logger.info("Found %d notes to annotate for project %s (model=%s, only_missing_subtype=%s)",

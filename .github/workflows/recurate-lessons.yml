@@ -82,8 +82,15 @@ jobs:
               break
             done
             n=$(jq -r '.stdout_tail // ""' /tmp/r.json 2>/dev/null | grep -o '"ok": *[0-9][0-9]*' | tail -1 | grep -o '[0-9][0-9]*$' || true)
-            echo "── round $i/$MAXB · HTTP $code · ok=$ok · 重策展 ${n:-?} 张 ──"
+            rec=$(jq -r '.recurate // ""' /tmp/r.json 2>/dev/null || true)
+            echo "── round $i/$MAXB · HTTP $code · ok=$ok · recurate=${rec:-(无)} · 重策展 ${n:-?} 张 ──"
             jq -r '.stdout_tail // ""' /tmp/r.json 2>/dev/null | tail -4
+            # 旧版 worker 会忽略不认识的 recurate 字段、跑一轮普通策展然后回 200 (codex review on #169):
+            # 回包里没有 recurate=stale 就是旧版, 立刻停, 别把预算花在不相干的卡上还报"收敛"。
+            if [ "$code" = "200" ] && [ "$rec" != "stale" ]; then
+              echo "::error::worker 回包没有 recurate=stale —— Railway 上还是旧版 worker, 这一轮跑的是普通策展不是重策展。先部署 worker 再触发。"
+              exit 1
+            fi
             if [ "$code" != "200" ] || [ "$ok" != "true" ]; then
               jq -r '.stderr_tail // ""' /tmp/r.json 2>/dev/null | tail -8
               echo "::error::round $i 失败 (HTTP $code ok=$ok) —— 已重策展的 $total 张不丢, 修好后再触发接着跑。"

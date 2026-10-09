@@ -12,6 +12,7 @@
   ⑤ 占位题显著不拒跑                               → §4 红
   ⑥ 快照内重复不拒跑                               → §5 红
   ⑦ draft 题库不带 --allow-draft 也跑              → §6 红
+  ⑧ run_gate2 不调 validate_bank (冻结后改题照跑)   → §6b 红
 
 跑法: cd scripts && python check_gate2_run.py
 """
@@ -110,7 +111,8 @@ def _fill_bool(answers, notes, qid, *, p_pos: float, p_neg: float, only_projects
 def _run(notes, answers, **kw):
     kw.setdefault("allow_draft", True)
     sha = kw.pop("sha", SHA)
-    return G.run_gate2({"notes": notes, "answers": answers}, BANK, sha=sha, extractors=EXTRACTORS, run_tag="gate2-test", **kw)
+    bank = kw.pop("bank", BANK)
+    return G.run_gate2({"notes": notes, "answers": answers}, bank, sha=sha, extractors=EXTRACTORS, run_tag="gate2-test", **kw)
 
 
 def _row(res, qid, value="是"):
@@ -264,6 +266,31 @@ def check_frozen_required() -> None:
     print("  §6 题库 draft 且没 --allow-draft → 拒跑 ✓")
 
 
+def check_frozen_but_edited_refused() -> None:
+    """冻结后改过题 (codex review on #169, P1): status=frozen、frozen_sha256 还是改之前的, 操作者拿改后文件的新 digest
+    当 --sha 传进来 —— §5 的 sha 比对和 §6 的 frozen 检查都过, 只有 validate_bank 看得出 frozen_sha256 ≠ 规范化 digest。"""
+    notes, answers, _ = _dataset()
+    _fill_bool(answers, notes, "title_is_question", p_pos=0.6, p_neg=0.3)
+    frozen_ok = dict(BANK, status="frozen", frozen_sha256=BANK["_sha256"])
+    res = _run(notes, answers, bank=frozen_ok, allow_draft=False)
+    assert _row(res, "title_is_question")["status"] == "validated", "§6b 正经冻结 (frozen_sha256 == digest) 的题库必须能跑"
+    edited = dict(BANK, status="frozen", frozen_sha256="0" * 64)
+    try:
+        _run(notes, answers, bank=edited, allow_draft=False)
+    except G.Gate2Refused as exc:
+        assert "validate_bank" in str(exc) and "frozen_sha256" in str(exc), exc
+    else:
+        raise AssertionError("§6b frozen 但 frozen_sha256 与规范化 digest 不符 (冻结后改过题) 必须拒跑")
+    broken = dict(BANK, status="frozen", frozen_sha256=BANK["_sha256"], call_groups={})
+    try:
+        _run(notes, answers, bank=broken, allow_draft=False)
+    except G.Gate2Refused as exc:
+        assert "validate_bank" in str(exc) and "call_groups" in str(exc), exc
+    else:
+        raise AssertionError("§6b 结构不合法的题库 (缺 call_groups) 必须拒跑")
+    print("  §6b frozen_sha256 == digest 能跑; 冻结后改过题 (digest 不符) 拒跑; 结构不合法拒跑 ✓")
+
+
 # ── §7 取数条件 / 大项目动态 ─────────────────────────────────────────────────────
 def check_analysis_filter_and_big_projects() -> None:
     notes, answers, _ = _dataset(projects=3, pos=40, neg=100)
@@ -290,8 +317,9 @@ def main() -> int:
     check_placebo_alarm_refuses()
     check_snapshot_uniqueness()
     check_frozen_required()
+    check_frozen_but_edited_refused()
     check_analysis_filter_and_big_projects()
-    print("\ncheck_gate2_run: 8 节全过")
+    print("\ncheck_gate2_run: 9 节全过")
     return 0
 
 
