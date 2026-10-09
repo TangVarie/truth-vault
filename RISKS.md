@@ -370,6 +370,14 @@
   - aw: `logger_utils.mask_secrets` (7 类) 接入日志 + UI 错误展示 (autowriter
     维护者周知完成)
 - **Owner**: 已完成.
+- **后记 (2026-10-08 架构审计 B-11)**: 上面那句 "TV 已关闭" 当时不成立 —— `mask_secrets()`
+  从 05-22 到 10-08 **零调用点**, `setup_logger` 用的是普通 `Formatter`, supabase-py 异常里的
+  bearer / URL 原样进 Actions 日志; Jev 仓 `apply_rows.py` 直接 `print(exc)`; 只有 aw 真接了。
+  10-08 修法: TV `_common.SecretMaskingFormatter` 挂进 `setup_logger` (消息 / %-参数 / traceback
+  三条路都过 `mask_secrets`), CI 守卫 `scripts/check_secret_masking.py` 钉住出口 + "源码里至少
+  一处代码调用" (再变死代码就红); Jev `apply_rows` 打印前抹掉 key。**挡不住什么**: 直接
+  `print()` 的、不走 `setup_logger` 自建 handler 的, 不经这里 (守卫 §5 明说)。"三仓已闭"这种
+  结论以后要附一条 CI 守卫, 不然就是写在纸上的关闭。
 
 ### R-024 · autowriter worker 多次启动重叠 + stacktrace 泄漏 [audit 2026-05-22 deep-dive P1] ✅ 已关闭 2026-05-22 (重复启动已被 phase 状态机阻止 + 错误脱敏并入 R-023)
 
@@ -539,3 +547,38 @@ feedback 非空不管是否有前一版. Session #9 都加了 version_num 严格
 sync 脚本只查 `_status_raw`, 不查 `_note_for_tier` (备注字段). TGV_1 的 47 条
 「新爆」全部 tier=NULL. Session #9 根据 mapping 的 `tier_extraction.source` 动态选择.
 见 commit `b4218f6`.
+
+### R-032 · 每把 secret 散在哪些消费者手里没有清单, 轮换一把要靠记忆 [2026-10-08 架构审计 B-12]
+
+- **是什么**: `SUPABASE_SERVICE_ROLE_KEY` 一把钥匙能读写三个 schema 的一切, 它被 ~10 个地方持有
+  (三仓 Actions、六个 Railway 服务、Vercel), 没有一张"钥匙 → 持有者"的表。泄露或到期要轮换时,
+  漏掉一个持有者就是一个静默坏掉的夜跑 (B-10 修了"缺 secret 要红", 但"换错 / 漏换"仍靠人记)。
+- **后果**: 轮换不敢做 (怕漏), 于是一把 2026-05 的 service_role 一直用到现在; 看板上多挂一把
+  service_role 是多余的爆炸半径 (代码 2026-06 起优先读 anon, README 直到 10-08 还教人配 service_role)。
+- **矩阵 (2026-10-09 按三仓源码盘点; Railway 列按代码读取的变量名, 用 `os.environ[...]` 方括号读的
+  没盘到, 以各服务 Variables 页为准; ✓ = 读/持有, 🔑 = 这把钥匙的签发方)**:
+
+| secret | TV Actions | TV Railway worker | TV Railway librarian | TV Railway onboarder | aw Railway deskcore / tv-sync | Jev Railway judge | Jev Actions external-corpus | Vercel dashboard | 写手机器 (MCP) |
+|---|---|---|---|---|---|---|---|---|---|
+| `SUPABASE_SERVICE_ROLE_KEY` | ✓ daily-sync · features-sync · backfill-features · backfill-essence | ✓ | ✓ | ✓ | ✓ (`db.py` / `deskcore/app.py`) | ✓ (write=true 写账本) | ✓ (`apply_rows`) | ⚠️ 历史配置, 应换 anon 后删 | — |
+| `SUPABASE_ANON_KEY` | — | — | — | — | — | — | — | ✓ 只读 `v_dash_*` | — |
+| `ANTHROPIC_API_KEY` + `ANTHROPIC_BASE_URL` (中转站) | ✓ gateway-probe | ✓ essence / features / curate | ✓ 冷路径馆员 | ✓ | ✓ deskcore (蒸馏 / 校准) | ✓ `loop.py` 修改单 (另有 `MOONSHOT_API_KEY`) | — | — | — |
+| `GOOGLE_API_KEY` (embedding) | — | — | — | — | ✓ `dedup` / 回填 / 补录 | — | — | — | — |
+| `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | ✓ daily-sync · preflight | — | — | ✓ | — | — | — | — | — |
+| `WORKER_API_KEY` | ✓ (调用方) | 🔑 | — | — | — | — | — | — | — |
+| `ONBOARDER_API_KEY` | ✓ onboard-table (调用方) | — | — | 🔑 | — | — | — | — | — |
+| `LIBRARIAN_API_KEY` | — | — | 🔑 | — | ✓ (调用方 `librarian_client`) | — | — | — | — |
+| `DESKCORE_KEYS` / `DESKCORE_API_KEY` | — | — | — | — | 🔑 | — | — | — | ✓ 每个写手一把 |
+| `JUDGE_API_KEY` | — | — | — | — | ✓ (调用方 `judge_client`) | 🔑 | — | — | — |
+| `TYPESAFE_API_KEY` (Jev) | — | — | — | — | — | ✓ | ✓ | — | ⚠️ `judge/mcp_server.py` 带到写手机器 (A-09, owner 决定) |
+| `TIKHUB_API_KEY` | — | — | — | — | — | — | ✓ | — | — |
+| `GITHUB_TOKEN` (自动) | ✓ sync-watchdog | — | — | — | — | — | — | — | — |
+
+- **轮换 SOP (照矩阵走, 一行一行勾)**: ① Supabase 控制台生成新 service_role → ② 按列更新 TV Actions 4 个
+  workflow 共用的 repo secret (1 处)、TV Railway 3 服务、aw Railway 2 服务、Jev Railway 1 服务、Jev Actions
+  repo secret (1 处) → ③ Vercel **不配** service_role (anon 即可) → ④ 各仓手动跑一次 workflow / 打一次
+  `/health` 验证 → ⑤ 作废旧钥匙 → ⑥ 当晚看 sync-watchdog (B-10 起缺 secret 会红, 换错也会红)。
+- **挡不住什么**: 矩阵是手抄的, 新加一个消费者不会自动出现在这里 —— 加消费者的 PR 要改这张表 (下次改
+  `docs/04` 接新服务 SOP 时把它写进 checklist, 10-09 还没写); 写手机器上的 `DESKCORE_KEYS` / `TYPESAFE_API_KEY` 不在任何
+  集中管理里。
+- **Owner**: owner. 看板那把 service_role 换 anon 是 5 分钟的事, 先做。

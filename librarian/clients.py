@@ -50,6 +50,21 @@ def parse_json(text: str):
         return None
 
 
+# prompt caching 降级计数 (2026-10-08 审计 C-02): 以前降级只打一行 warning 进 Railway stdout, 没人看;
+# 于是"这个中转站根本不支持 cache_control、每次都在多付一倍 input token"这件事可以持续几个月。
+# 进程内计数, /health 回显 (重启清零 —— 它答的是"这个实例最近有没有在降级", 不是历史总量)。
+PROMPT_CACHE_FALLBACKS: dict = {"count": 0, "last_at": None, "last_error": ""}
+
+
+def _note_cache_fallback(exc: BaseException) -> None:
+    PROMPT_CACHE_FALLBACKS["count"] += 1
+    PROMPT_CACHE_FALLBACKS["last_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    # 只记异常**类型**, 不记 str(exc): 这个 dict 会被没鉴权的 /health 原样回显, 而 SDK / 网关异常的文本里可能带
+    # 请求 URL、租户路径、query 里的凭据 —— 它不经 SecretMaskingFormatter (codex review on #169, P1)。
+    # 真正的错误文本在日志里 (那条过掩码)。
+    PROMPT_CACHE_FALLBACKS["last_error"] = type(exc).__name__
+
+
 def call_anthropic(prompt: str, model: str, *, system=None, max_tokens: int = 1500,
                    max_attempts: int = 3) -> str:
     """One Anthropic call with exponential-backoff retry on transient errors.
@@ -115,16 +130,18 @@ def call_anthropic(prompt: str, model: str, *, system=None, max_tokens: int = 15
 
     try:
         return _run(system)
-    except Exception:
+    except Exception as exc:
         # cache_control 降级:带 prompt caching 块的请求失败时,去掉 cache_control 用纯 system
         # 再试一次。很多中转站/转卖通道【不支持 Anthropic prompt caching】(透传 cache_control
         # 会 400/被通道吞)—— 这正是"同一通道 worker(纯 system)能跑、librarian(带缓存块)
         # 失败"的差异点。注:余额不足/鉴权/模型不存在这类错误,纯 system 也会同样失败 → 仍会
         # 抛出,不会被本降级掩盖(只损失缓存省钱,不改变内容/结果)。
         if isinstance(system, list):
+            _note_cache_fallback(exc)
             logger.warning(
-                "带 cache_control 的馆员调用失败,去掉缓存块用纯 system 重试一次"
-                "(疑似该中转站通道不支持 prompt caching)"
+                "带 cache_control 的馆员调用失败(%s: %s),去掉缓存块用纯 system 重试一次"
+                "(疑似该中转站通道不支持 prompt caching; 本实例累计 %d 次, /health 的 config.prompt_cache_fallbacks 可查)",
+                type(exc).__name__, str(exc)[:200], PROMPT_CACHE_FALLBACKS["count"],
             )
             return _run(_flatten_system_blocks(system))
         raise

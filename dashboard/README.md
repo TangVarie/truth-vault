@@ -18,7 +18,7 @@ Next.js 14(App Router)· React · TypeScript · Tailwind · `@supabase/supabase-
 ```bash
 cd dashboard
 npm install
-cp .env.example .env.local   # 填 SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY
+cp .env.example .env.local   # 填 SUPABASE_URL + SUPABASE_ANON_KEY(看板只读聚合视图, 用 anon 够了; 见下「安全」)
 npm run dev                  # http://localhost:3000
 ```
 
@@ -30,12 +30,12 @@ npm run dev                  # http://localhost:3000
 ## 部署到 Vercel(Phase 1)
 1. Vercel → **New Project** → 连 GitHub repo `TangVarie/truth-vault`。
 2. **Root Directory** 设为 `dashboard`(关键:从子目录部署)。
-3. **Environment Variables** 配 `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY`(service_role,只服务端用)。
+3. **Environment Variables** 配 `SUPABASE_URL` + `SUPABASE_ANON_KEY`(`lib/supabase.ts` 优先读 anon;历史上配过的 `SUPABASE_SERVICE_ROLE_KEY` 仍兼容,但看板不需要它——2026-10-08 审计 B-12:Vercel 上若还挂着 service_role,换成 anon 后把 service_role 从 Vercel 删掉,少一个轮换点)。
 4. Deploy → 得到 `*.vercel.app` 网址。
 
 ## 自定义域名(Phase 4)
 Vercel 项目 → **Settings → Domains** → 加域名 → 按提示配一条 DNS(CNAME)。后期随时换/加。
 
 ## 安全
-- `SUPABASE_SERVICE_ROLE_KEY` **只在服务端**(Server Components)使用,**绝不进浏览器、绝不提交进 git**。
+- key(anon 或兼容的 service_role)**只在服务端**(Server Components)使用,**绝不进浏览器、绝不提交进 git**。看板只 `select` GRANT 给 anon 的 `public.v_dash_*` 聚合视图,**anon key 就够**;service_role 能读写三个 schema 的一切,放在看板上是多余的爆炸半径。谁持有哪把 key 见 `RISKS.md` R-032 矩阵。
 - 公开页只渲染安全聚合数;内部 drill-down/队列/失败 后续走登录(Vercel 密码保护或 Supabase Auth)。

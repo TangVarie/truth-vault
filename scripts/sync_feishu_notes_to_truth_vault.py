@@ -37,7 +37,7 @@ import re
 import sys
 import uuid
 import time
-from typing import Any, Iterator
+from typing import Any, Iterator, Optional
 
 import requests
 from supabase import Client
@@ -474,7 +474,13 @@ def _detect_missing_core_columns(
             order_by="note_id",
         )
     except Exception as exc:
+        # 审计 C-18: 这道闸读库失败以前只有一行 warning 日志, 整轮照绿 —— "守卫静默关"。
+        # 它仍然不该把同步打死 (降级成不监控是对的), 但得让看 run 的人看见: Actions 的 annotation
+        # 会挂在 run 顶上, 日志里的一行 warning 不会。
         logger.warning("核心列消失检测: 读 notes 失败(%s) —— 本轮跳过该检测。", exc)
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            print(f"::warning title=核心列消失检测没跑 ({mapping['project_id']})::读 notes 失败 "
+                  f"({type(exc).__name__}), 本轮这道闸是关着的 —— 同一轮真有核心列被改名也不会报。", flush=True)
         return []
     ever_filled = set()
     for p in probes:
@@ -593,6 +599,114 @@ def _capabilities_absent(mapping: dict) -> dict[str, str]:
     return out
 
 
+# ── 整批 tier 翻转闸 (审计 A-06, D-091) ────────────────────────────────────────
+MASS_TIER_FLIP_MIN = 15          # 一晚翻转篇数的绝对下限: 小项目 10% 只有两三篇, 正常改标也会撞
+MASS_TIER_FLIP_RATIO = 0.10      # 相对存量(本轮 payload 里库里已有 note 的篇数)
+_FLIP_POSITIVE = frozenset({"爆", "大爆", "参考"})   # 通道 1 / 书架认的"正例"; 翻进翻出这个集合才算翻转
+
+
+def _is_future_publish_time(value: Any, now=None, grace_hours: int = 24) -> bool:
+    """publish_time 在 now + grace 之后。认不出的格式不算未来(交给 Postgres 去拒)。"""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    try:
+        pt = _dt.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    if pt.tzinfo is None:
+        pt = pt.replace(tzinfo=_tz.utc)
+    now = now or _dt.now(_tz.utc)
+    return pt > now + _td(hours=grace_hours)
+
+
+def apply_cleared_status(mapping: dict, pending_notes: list[dict], seen_cols: set[str]) -> int:
+    """状态格被清空的篇 → 显式写 tier=默认档(规则无 default 则 NULL)、tier_source 置空、打旗子。回改了几篇。
+
+    只在「状态源列本轮至少出现过一次」时动(列被改名 / 整列空时一行都不会出现 → 不动, 交给核心列消失闸);
+    已经有 tier 的篇(规则命中、数值推断、excluded_directions 的 数据异常)不动。
+    """
+    rules = (mapping.get("tier_extraction") or {}).get("rules")
+    if not rules:
+        return 0
+    key = "_note_for_tier" if (mapping.get("tier_extraction") or {}).get("source") == "备注字段" else "_status_raw"
+    src_cols = {c for c, t in mapping["field_mapping"].items() if t == key}
+    if not (src_cols & set(seen_cols)):
+        return 0
+    n = 0
+    for note in pending_notes:
+        if "tier" in note:
+            continue
+        note["tier"] = extract_tier(None, rules)
+        note["tier_source"] = None
+        flags = dict(note.get("data_quality_flags") or {})
+        flags["tier_cleared"] = True
+        note["data_quality_flags"] = flags
+        n += 1
+    return n
+
+
+def _current_tiers(client, project_id: str, note_ids: list[str]) -> dict[str, Optional[str]] | None:
+    """库里这些 note 现在的 tier({note_id: tier}, 不在库里的不出现)。读不到 → None(调用方记错、不挡)。"""
+    out: dict[str, Optional[str]] = {}
+    ids = sorted(set(note_ids))
+    try:
+        for i in range(0, len(ids), 100):          # in_() 走 URL, 分批免得撑爆(同 _failed_rows_already_in_db)
+            rows = fetch_all_pages(
+                client.schema("truth_vault").table("notes").select("note_id, tier")
+                .eq("project_id", project_id).in_("note_id", ids[i:i + 100]),
+                order_by="note_id",
+            )
+            out.update({r["note_id"]: r.get("tier") for r in rows})
+    except Exception as exc:
+        logger.warning("整批翻转闸: 读 notes.tier 失败(%s)", exc)
+        return None
+    return out
+
+
+def plan_tier_flip(pending_notes: list[dict], current: dict[str, Optional[str]], *, allow: bool = False) -> dict:
+    """算这一轮有多少篇在 正例/非正例 之间翻转, 过线且没放行 → blocked。纯函数, 不碰库。
+
+    翻转 = 库里已有这篇, 且 payload 带 tier, 且 (旧∈正例) ≠ (新∈正例)。正例内部换档(爆→大爆)、
+    非正例内部换档(趴→评估中)、库里没有的新篇、payload 不带 tier 的篇都不算。
+    """
+    ups: list[str] = []
+    downs: list[str] = []
+    existing = 0
+    for n in pending_notes:
+        nid = n.get("note_id")
+        if nid not in current:
+            continue
+        existing += 1
+        if "tier" not in n:
+            continue
+        was = current[nid] in _FLIP_POSITIVE
+        now = n["tier"] in _FLIP_POSITIVE
+        if was == now:
+            continue
+        (ups if now else downs).append(nid)
+    threshold = max(MASS_TIER_FLIP_MIN, int(MASS_TIER_FLIP_RATIO * existing + 0.999999))
+    flips = ups + downs
+    return {"upgrades": ups, "downgrades": downs, "flips": flips, "existing": existing,
+            "threshold": threshold, "blocked": (len(flips) > threshold) and not allow,
+            "current": {nid: current.get(nid) for nid in flips}}
+
+
+def apply_tier_flip_block(pending_notes: list[dict], plan: dict) -> int:
+    """被挡的篇: 从 payload 里拿掉 tier / tier_source(upsert 保留库值), 打旗子记下本想写成什么。回改了几篇。"""
+    blocked = set(plan["flips"])
+    n = 0
+    for note in pending_notes:
+        nid = note.get("note_id")
+        if nid not in blocked or "tier" not in note:
+            continue
+        flags = dict(note.get("data_quality_flags") or {})
+        flags["tier_flip_blocked"] = {"from": plan["current"].get(nid), "to": note.get("tier")}
+        note["data_quality_flags"] = flags
+        note.pop("tier", None)
+        note.pop("tier_source", None)
+        n += 1
+    return n
+
+
 def _failed_rows_already_in_db(
     client, project_id: str, record_ids: set[str],
 ) -> set[str]:
@@ -678,6 +792,20 @@ def transform_row(
             intermediates[schema_target] = value
         else:
             note[schema_target] = _coerce_value(schema_target, value)
+
+    # ── 未来的 publish_time 不入库 (2026-10-08 审计 B-14, D-091) ──────────────────────
+    # 运营手滑 / 预排期的日期以前原样进库: 10-08 实查 10 行 publish_time 在未来(最远 10-11)。
+    # 它漏到 6 个消费者: hours_since_publish 负数、projects.end_date 跑到未来、era_tag 成未来
+    # 季度、通道 1 的 12 个月窗放行、v_flywheel_sync_status 同、写作台 tvlink 的 lag_days。
+    # 原值留在 raw_extra 里可追, 列置空, 旗子可查。只在超过 24 小时才算未来: 时区 / 当天凌晨
+    # 填的"今天"不该被夹掉。
+    pt = note.get("publish_time")
+    if pt is not None and _is_future_publish_time(pt):
+        raw_extra["_publish_time_raw"] = pt
+        note["publish_time"] = None
+        flags = dict(note.get("data_quality_flags") or {})
+        flags["publish_time_future"] = str(pt)[:40]
+        note["data_quality_flags"] = flags
 
     # ── metrics_from_kv_text: 指标藏在「键：值；」文本 cell 里的表 ────────────────
     #   yaml: metrics_from_kv_text:
@@ -790,14 +918,19 @@ def transform_row(
         "_note_for_tier" if tier_source == "备注字段" else "_status_raw"
     )
     if tier_intermediate_key in intermediates and tier_extraction.get("rules"):
-        note["tier"] = extract_tier(
-            intermediates[tier_intermediate_key],
-            tier_extraction["rules"],
-        )
+        raw_status = intermediates[tier_intermediate_key]
+        note["tier"] = extract_tier(raw_status, tier_extraction["rules"])
         # Track tier_source so downstream views can distinguish 状态字段 vs 备注字段
         # vs 数值推断 (the latter still TODO — see numeric fallback).
         note["tier_source"] = tier_source
         consumed_intermediates.add(tier_intermediate_key)
+        # 状态格有值、规则一个都没命中 → tier NULL 但 tier_source='状态字段': 以前静默。
+        # 10-08 实查 106 行(XIWU 当年「已发布」填进方向列的同款事故, 这次在状态列)。打旗子, 主循环计数告警
+        # (审计 B-13 后半, D-091)。不改 tier 的取值: tier 是钱字段, 这里只让它可见。
+        if note["tier"] is None and raw_status not in (None, "", []):
+            flags = dict(note.get("data_quality_flags") or {})
+            flags["tier_unmapped"] = str(_direction_key(raw_status))[:80]
+            note["data_quality_flags"] = flags
     if "_intent_raw" in intermediates and "intent_mapping" in mapping:
         note["intent"] = map_intent(
             intermediates["_intent_raw"],
@@ -1452,6 +1585,12 @@ def main() -> int:
                         help="Print actions without writing to Supabase")
     parser.add_argument("--limit", type=int, default=0,
                         help="Stop after N records (debug)")
+    parser.add_argument("--allow-mass-tier-flip", action="store_true",
+                        default=os.environ.get("ALLOW_MASS_TIER_FLIP", "") in ("1", "true", "True"),
+                        help="放行整批 tier 翻转闸(D-091)。默认一晚超过 max(%d, %d%% 存量) 篇在 爆/大爆/参考 与"
+                             "非正例之间翻转就只写内容不写 tier 并红; 运营确认是真的批量改标时用本开关"
+                             "(workflow_dispatch 的 allow_mass_tier_flip)。" % (
+                                 MASS_TIER_FLIP_MIN, int(MASS_TIER_FLIP_RATIO * 100)))
     args = parser.parse_args()
 
     mapping = load_mapping(args.project_id)
@@ -1553,7 +1692,12 @@ def main() -> int:
     # 所以照样挡住盖戳和对账(见下方 records_all_ok), 只是不进 errors、不把退出码变红。
     stats = {"total": 0, "upserted": 0, "quarantined": 0,
              "empty_placeholder": 0, "errors": 0, "known_backlog": 0,
+             # 审计 B-15: 隔离里多少是今晚新冒的、多少是老的又冒了 (只计需要人看的那两类, 空占位不计)
+             "quarantine_new": 0, "quarantine_seen_again": 0,
              "undeclared_absorbed": 0, "missing_core_columns": 0,
+             # D-091: 未来发布时间夹掉 / 状态格清空写回默认 / 状态值没映上 / 整批翻转被挡
+             "publish_time_future": 0, "tier_cleared": 0, "tier_unmapped": 0,
+             "tier_flip_blocked": 0, "tier_flip_guard_skipped": 0,
              "missing_capabilities": [],
              "missing_capabilities_exempt": [], "stale_capability_exemptions": [],
              "metrics_written": 0, "metrics_failed": 0,
@@ -1620,16 +1764,24 @@ def main() -> int:
         logger.info("已知待办名单: %d 条隔离行人已认领(status=reviewed/rejected), 命中的不计错",
                     len(acked_quarantine))
 
-    def _count_quarantined(record_id: str, reason: str) -> None:
+    def _count_quarantined(record_id: str, reason: str, fresh: bool | None = None) -> None:
         """隔离一条: 认领过的进 known_backlog, 没认领过的进 errors。
 
         两边都算"这次没处理成" —— records_all_ok 用的是两者之和, 所以【盖戳和对账
         的严格程度一格没松】。这一点是本改动的要害: 隔离行没被 upsert, 也就没盖上
         本次 last_seen 戳; 要是让它进了对账, 会被报成"消失了"(COR-002/COR-011
         堵的就是这个洞)。红转黄只动退出码, 不动对账。
+
+        fresh (审计 B-15): quarantine_record 回的"是不是新行"。False = 这条隔离早就在表里、今晚
+        又冒了一次 —— 它要么是没人认领的老问题, 要么是人标了 resolved 又回来了。以前首见冻结之后
+        没人分得清 5,013 条 pending 里哪些还活着。只计数, 不改隔离表 (名单只能由人改, D-053)。
         """
         stats["quarantined"] += 1
         failed_record_ids.add(record_id)
+        if fresh is True:
+            stats["quarantine_new"] += 1
+        elif fresh is False:
+            stats["quarantine_seen_again"] += 1
         if (record_id, reason) in acked_quarantine:
             stats["known_backlog"] += 1
         else:
@@ -1656,10 +1808,11 @@ def main() -> int:
             if inh_reason:
                 logger.warning("record_id=%s 抖音行找不到可继承的上一行小红书文案(%s, 素人=%s) → quarantine",
                                feishu_record_id, inh_reason, raw_fields.get("素人编号"))
+                fresh = None
                 if not args.dry_run:
-                    quarantine_record(sb, mapping["project_id"], feishu_record_id,
-                                      raw_fields, [content_col], reason=inh_reason)
-                _count_quarantined(feishu_record_id, inh_reason)
+                    fresh = quarantine_record(sb, mapping["project_id"], feishu_record_id,
+                                              raw_fields, [content_col], reason=inh_reason)
+                _count_quarantined(feishu_record_id, inh_reason, fresh)
                 continue
         try:
             note, metric, undeclared = transform_row(mapping, feishu_record_id, raw_fields)
@@ -1699,8 +1852,9 @@ def main() -> int:
                     note.get(k) for k in _NOTE_DATA_SIGNALS
                 )
                 miss_reason = f"missing_required:{','.join(missing)}"
+                fresh = None
                 if not args.dry_run:
-                    quarantine_record(
+                    fresh = quarantine_record(
                         sb, mapping["project_id"], feishu_record_id,
                         raw_fields, missing, reason=miss_reason,
                     )
@@ -1715,7 +1869,7 @@ def main() -> int:
                     # COR-002: 这是一条本该是笔记、却缺正文的行 —— 它在飞书里还在,
                     # 只是这次没处理成。算进"没处理成"让 records_all_ok=False, 阻止对账
                     # 把它报成"消失了"。空占位行(父记录占位/评论碎片)是正常噪音, 不计。
-                    _count_quarantined(feishu_record_id, miss_reason)
+                    _count_quarantined(feishu_record_id, miss_reason, fresh)
                 continue
 
             # Collect for the batched write after the loop. Dedupe the account
@@ -1723,6 +1877,11 @@ def main() -> int:
             acct = note.get("account_id")
             if acct:
                 account_platforms.setdefault(acct, note.get("platform", "xiaohongshu"))
+            dq = note.get("data_quality_flags") or {}
+            if dq.get("publish_time_future"):
+                stats["publish_time_future"] += 1
+            if dq.get("tier_unmapped"):
+                stats["tier_unmapped"] += 1
             pending_notes.append(note)
             if metric:
                 pending_metrics.append(metric)
@@ -1826,6 +1985,55 @@ def main() -> int:
         for n in pending_notes:
             n["last_seen_at"] = _iso_now_tz()
             n["last_seen_run_id"] = run_id
+
+    # ── 状态格被清空 → 显式写回默认档 (审计 B-13, D-091) ──────────────────────────
+    # 飞书不返回空字段, transform_row 只在格有值时写 tier → payload 没这个键 → upsert 保留库值。
+    # 于是「运营把状态清空」(而不是改成 无水花)在 TV 看不见、D-087 的回收也看不见, 旧 爆 永久留着。
+    # 判据「列还在」= 本轮至少一行返回过这个源列(seen_cols): 列被改名时一行都不会返回, 那是
+    # _detect_missing_core_columns 的事, 这里不动 —— 否则一次改名会把整个项目的 tier 全刷成默认。
+    stats["tier_cleared"] = apply_cleared_status(mapping, pending_notes, seen_cols)
+    if stats["tier_cleared"]:
+        logger.warning("状态格清空 → 写回默认档: %d 篇(tier_source 置空, data_quality_flags.tier_cleared)。",
+                       stats["tier_cleared"])
+    if stats["tier_unmapped"]:
+        logger.warning("【状态值没映上】%d 篇状态格有值但规则一个都没命中, tier 落成 NULL(data_quality_flags."
+                       "tier_unmapped 里是原值)。多半是运营用了 mapping 不认识的新选项, 对上号就补 tier_extraction.rules。",
+                       stats["tier_unmapped"])
+    if stats["publish_time_future"]:
+        logger.warning("【未来发布时间】%d 篇 publish_time 在 24 小时之后, 已置空(原值在 raw_extra._publish_time_raw)。",
+                       stats["publish_time_future"])
+
+    # ── 整批 tier 翻转闸 (审计 A-06, D-091) ──────────────────────────────────────
+    # 08-18 OKMAN 一晚 285 篇升爆(82.4%), 第二天改回, 285 条处方药参照在三省六部躺了 50 天(D-086)。
+    # 事后网(audit_log / D-087 隔晚回收)都在"推出去之后"; 这道闸在 upsert 之前比一下库里的 tier:
+    # 一晚在 正例(爆/大爆/参考) 与 非正例 之间翻转超过 max(15, 10% 存量) 篇 → 这些篇只写内容和
+    # 指标、不写 tier/tier_source, 红; 运营确认是真批量改标就带 --allow-mass-tier-flip 再跑一次。
+    current_tiers = _current_tiers(sb, mapping["project_id"], [n["note_id"] for n in pending_notes]) \
+        if (pending_notes and not args.dry_run) else {}
+    if current_tiers is None:
+        # 读不到库 → 降级成不监控、Done 行里记一笔(同 _detect_missing_core_columns 的约定)。不计 errors:
+        # 库真读不到时下面的 upsert 多半也写不进, 那一侧会红; 这里再红一次只会把假客户端 / 只读探针都打红。
+        logger.error("整批翻转闸: 读不到库里的 tier, 本轮闸没起作用(照常写 tier) —— tier_flip_guard_skipped=1。")
+        stats["tier_flip_guard_skipped"] = 1
+        current_tiers = {}
+    flip = plan_tier_flip(pending_notes, current_tiers, allow=args.allow_mass_tier_flip)
+    if flip["flips"]:
+        logger.info("tier 翻转: 升 %d 篇 / 降 %d 篇 (存量 %d, 阈值 %d%s)",
+                    len(flip["upgrades"]), len(flip["downgrades"]), flip["existing"], flip["threshold"],
+                    ", 已放行" if args.allow_mass_tier_flip else "")
+    if flip["blocked"]:
+        apply_tier_flip_block(pending_notes, flip)
+        stats["tier_flip_blocked"] = len(flip["flips"])
+        stats["errors"] += 1
+        logger.error(
+            "【整批 tier 翻转被挡】%s 一晚有 %d 篇要在 正例/非正例 之间翻转(升 %d · 降 %d), 超过阈值 %d"
+            "(= max(%d, %d%% × 存量 %d))。这 %d 篇本轮只写内容和指标、不写 tier(旗子在 data_quality_flags."
+            "tier_flip_blocked)。去飞书确认是不是误标(08-18 OKMAN 那种); 确认是真的批量改标 → "
+            "Run workflow 勾 allow_mass_tier_flip 再跑一次。升: %s",
+            mapping["project_id"], len(flip["flips"]), len(flip["upgrades"]), len(flip["downgrades"]),
+            flip["threshold"], MASS_TIER_FLIP_MIN, int(MASS_TIER_FLIP_RATIO * 100), flip["existing"],
+            len(flip["flips"]), flip["upgrades"][:10],
+        )
 
     failed_accounts = ensure_accounts_batch(sb, account_platforms, dry_run=args.dry_run)
     written_ids = upsert_notes_batch(sb, pending_notes, dry_run=args.dry_run)
@@ -2074,6 +2282,14 @@ def main() -> int:
         logger.warning(msg)
         if os.environ.get("GITHUB_ACTIONS") == "true":
             print(f"::warning title=已知待办隔离 ({mapping['project_id']})::{msg}", flush=True)
+    # 审计 B-15: 隔离表只写不读、首见冻结 —— "今晚又冒了一次"的老隔离以前和新隔离分不开。
+    # 这里只报数 (::notice, 不红): 老的又冒 = 没人认领也没修; 认领过的 (known_backlog) 另有上面那条。
+    seen_again = stats["quarantine_seen_again"] - min(stats["quarantine_seen_again"], stats["known_backlog"])
+    if seen_again > 0 and os.environ.get("GITHUB_ACTIONS") == "true":
+        print(f"::notice title=老隔离又冒了 ({mapping['project_id']})::{seen_again} 条隔离行不是今晚新出现的, "
+              f"也没人在隔离表认领 (status 还是 pending) —— 它们每晚都在, 去 undeclared_fields_quarantine 看 reason: "
+              f"要么补数据, 要么把 status 改成 reviewed/rejected 让它进已知待办。本轮新隔离 {stats['quarantine_new']} 条。",
+              flush=True)
     logger.info("Done: %s", json.dumps(stats, ensure_ascii=False))
     return 0 if stats["errors"] == 0 else 1
 

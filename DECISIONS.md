@@ -5742,3 +5742,211 @@ python job 里 import 馆员的 8 步（TV-03 / TV-05 / TV-06 / 守卫 6 / put_c
 ### 没做
 
 - 没触发任何 backfill；没动 on_demand 闸（D-047）的语义；没给闸二加新灯。
+
+## D-090 · 灯与可见性：定时跑缺 secret 要红；饱和灯退灯；worker `/health` 报 `curator_model`；backfill `note_ids` 路径加 `reannotate`；D-088 对照基线落盘（2026-10-08）
+
+来源：`data-analysis/architecture-audit-2026-10-08.md` §2 的 B-10 / B-01 / C-06 / A-03(b) / B-03；owner：「继续完成你能做的内容」。五件都是"让看不见的变成看得见"，不改任何数据口径。
+
+### 定了什么
+
+1. **`daily-sync.yml` / `features-sync.yml` 的 secret 检查：`schedule` 事件缺 secret 直接红。** 以前缺 `SUPABASE_URL/KEY`（features-sync 还有 `WORKER_URL`）是 `skip=true`：六个阻塞步全跳过，aggregate 把 `skipped` 当合法，看门狗只看 `conclusion=success`——一把 secret 被删或过期，夜跑会**永远静默绿**，没有任何灯会亮。手动 / push 触发保留优雅跳过（本地分支、fork 上没 secret 是正常的）。
+2. **`SATURATION_CHECK_DONE` 退灯。** `check_positive_saturation.py` 读的视图 `v_autowriter_positive_pool_saturation` 唯一的杠杆路径是 `notes.note_id = items.external_source_id`，而那列没有任何代码写（push 没跑过，deskcore 明说"不碰 items.external_source"）：10-08 实查 8 个池 `lever_measurable_count` 全 0，所以从上线起每晚 rc=2「无法评估」，一次也没能回答自己的问题；它模拟的"created_at DESC 取 5 条"也早被 deskcore 的相关度 + 开头形状多样性取代（视图头自己写着"对照指标…可以下线"）。按 docs/29 退灯规矩：步骤从 `daily-sync.yml` 摘掉、登记册行删掉、脚本删掉、CI 里那步 8 用例冒烟一起删（G2 棘轮只降不升）；v1_8 的视图留着不碍事。多样性现在由写作台 `fingerprint.cap_by_shape` 保。
+3. **worker `/health` 多报 `config.curator_model`。** `/curate` 的子进程读的是 `FLYWHEEL_CURATOR_MODEL`，与 `/health` 已报的 `essence_model` / `feature_model` 不是同一个变量；中转站不服务默认模型时 curate 整晚 systemic 红、看 `/health` 却一切正常。`worker/README.md` 补了这个变量。
+4. **`backfill-features.yml` 的 `note_ids` 路径加 `reannotate` 输入。** worker 早就接受 `reannotate`（`app.py` 的 flag 闭集），只是 workflow 没暴露。闸二要钉当前题库 sha `ba0f570c`，而 primary 下有 361 篇（含闸一全部 100 篇、50 篇爆款）停在旧 sha `3d299a1e`，DONE 标记挡着不让重抽——现在可以 `note_ids` + `reannotate=true` + `bank_sha` 定向拉到当前快照（≈361×6 次 Opus，batch 2 约 6 h）。要不要拉、还是闸二只用新 sha，是预注册时的决定，不在本条。
+5. **D-088 的"改前"基线 24 行抄进 `data-analysis/librarian-cold-baseline-2026-09.md`。** D-088 让 `library_version` 从 50 变 306，旧键不会再被命中；`prune_librarian_cache.py --ttl-days 30` 按 `last_hit_at` 删，这 24 行 10-21 起消失，正是"两周后对比"那天。Codex（#168）指出不能整体豁免 `select_ms` 行（v1_16 起每次冷借都带它，豁免等于关掉保留），所以抄下来、prune 不动。p50 49.5 s · p95 ≈79 s · 超 60 s 7/24 · 超 22 s 20/24。
+
+顺手：README「数据现状」表和目录树的计数按 10-08 实查改（6,300 篇 / 17 项目 10 daily / 411 爆款 / essence 100% / ssll 306；9 个 workflow / 28 个 SQL / CI 79+50+7 步）。
+
+### 验证
+
+- 三个 workflow yaml 能 parse；`check_system_map.py` 六条过（G2 heredoc 数降 1，G3 登记册与哨兵脚本一致，G6 字节降）；`worker/app.py` py_compile 过。
+- 反证：把 `docs/29` 的饱和行删掉而脚本留着 → G3 红（脚本打哨兵行却不在登记册里）；这正是为什么脚本必须一起删。
+
+### 没做
+
+- 没动六个阻塞步的 `continue-on-error` 语义；没给评论步 / 撤回摘要加灯（那是 A-07 / C-20，另一个 PR）；没跑 `reannotate`；没碰 `prune_librarian_cache.py`。
+
+## D-091 · 采集加三道闸：未来 `publish_time` 夹掉；状态格清空写回默认、状态值没映上打旗；整批 tier 翻转在 upsert 之前挡住（2026-10-08）
+
+来源：`data-analysis/architecture-audit-2026-10-08.md` 的 A-06 / B-13 / B-14；owner：「继续完成你能做的内容」。三道都在 `sync_feishu_notes_to_truth_vault.py`，守卫在 `scripts/check_ingest_guards.py`（D-075：守卫逻辑写进 scripts/，ci.yml 只留一行调用）。
+
+### 定了什么
+
+1. **未来的 `publish_time` 不入库（B-14）。** `transform_row` 在字段映射之后：`publish_time > now + 24h` → 原值留 `raw_extra._publish_time_raw`、列置 NULL、`data_quality_flags.publish_time_future`。10-08 实查 10 行在未来（最远 10-11），它漏到 6 个消费者（`hours_since_publish` 负数、`projects.end_date` 未来、`era_tag` 未来季度、通道 1 的 12 个月窗、v1_19、写作台 `lag_days`）。24 小时的余量是给时区和"当天凌晨填今天"的，不夹。认不出的格式不算未来，照旧交给 Postgres 去拒。
+2. **状态格被清空 → 显式写回默认档（B-13 前半）。** 飞书不返回空字段，`transform_row` 只在格有值时写 `tier` → payload 没这个键 → upsert 保留库值 → 运营把状态清空（而不是改成 无水花）在 TV 看不见、D-087 的回收也看不见，旧 爆 永久留着。新函数 `apply_cleared_status` 在主循环之后、盖戳之后、upsert 之前跑：payload 里没有 `tier` 的篇写 `tier = 规则的 default`（没 default 就 NULL）、`tier_source = NULL`、旗子 `tier_cleared`。**判据「列还在」= 状态源列本轮至少在一行里出现过（`seen_cols`）**：列被改名时一行都不会出现 → 不动，交给 `_detect_missing_core_columns`；否则一次改名会把整个项目的 tier 刷成默认，那比旧 爆 留着坏得多。已经有 tier 的篇（规则命中、数值推断、`excluded_directions` 的 数据异常）不动；`synthetic` 的同类问题没动（它有自己的"能判定就显式写"规则，只是两个源都不在场时没写，范围外）。
+3. **状态值没映上 → 打旗（B-13 后半）。** 状态格有值、规则一个都没命中时 `tier` 本来就是 NULL、`tier_source='状态字段'`，但静默。10-08 实查 106 行。现在 `data_quality_flags.tier_unmapped = 原值`，主循环计数告警。不改 `tier` 的取值：tier 是钱字段（D-048），这里只让它可见。
+4. **整批 tier 翻转闸（A-06）。** 08-18 OKMAN 一晚 285 篇升爆（82.4%），第二天改回，285 条处方药参照在三省六部躺了 50 天（D-086）。事后网（`audit_log`、D-087 隔晚回收）都在"推出去之后"；这道闸在 upsert 之前把库里的 `tier` 读出来比一下（`_current_tiers`，按 100 一批 `in_()`，同 `_failed_rows_already_in_db`）：**翻转** = 库里已有这篇、payload 带 tier、且 (旧 ∈ {爆,大爆,参考}) ≠ (新 ∈ {爆,大爆,参考}）。升和降都算（整批撤回同样要人确认）；正例内部换档（爆→大爆）、非正例内部换档（趴→评估中）、库里没有的新篇、payload 不带 tier 的篇都不算。**阈值 `max(15, ⌈10% × 存量⌉)`**，存量 = 本轮 payload 里库里已有的篇数（整表同步时 = 项目存量；首次同步存量 0 → 永远不挡）。超过 → 这些篇从 payload 里拿掉 `tier`/`tier_source`（upsert 保留库值）、旗子 `tier_flip_blocked = {from, to}`、内容和指标照写、`errors += 1` 让当晚红并点名。放行：`--allow-mass-tier-flip` / 环境变量 `ALLOW_MASS_TIER_FLIP=1` / `daily-sync.yml` 的 `workflow_dispatch` 输入 `allow_mass_tier_flip`；**定时跑永远不放行**。读不到库 → 本轮闸不起作用、Done 行记 `tier_flip_guard_skipped=1`、日志 ERROR，但不计 `errors`：同 `_detect_missing_core_columns` 的降级约定——库真读不到时紧接着的 upsert 也写不进，那一侧会红；这里再红一次只会把 CI 里用 `object()` 当客户端的三步端到端回归一起打红（第一版就是这么红的）。
+   校准：OKMAN 285/346 远超 max(15, 35)；一个 300 篇的 daily 项目一晚 3–5 篇升爆离 30 很远；20 篇存量的小项目第 16 篇才挡。
+5. 顺手：`daily-sync.yml` 的 cron 注释改掉"写作台 tv-sync 在 04:00 之前"那句（aw 已挪到 14:00，审计 A-05）。
+
+### 验证
+
+- `check_ingest_guards.py` 七节全过（§1 / §2b 真走 `transform_row`；§5 打桩 `fetch_all_pages` 核分批；§6 / §7 核接线：三条放行路都在、定时跑不放行、三道闸的调用顺序在盖戳之后 upsert 之前、挡住要 `errors += 1`）。
+- 反证 battery（每条改坏引擎跑守卫，`-B` + 临时副本，吸取 D-088 的 `.pyc` 教训）：① `_is_future_publish_time` 恒 False → §1 红；② `apply_cleared_status` 不看 `seen_cols` → §2「列改名不动」红；③ 只数升不数降 → §3 降档红；④ 阈值去掉 `max(15, …)` → §3 红；⑤ 挡时把没翻的篇也剥 tier → §4 红；⑥ `_current_tiers` 不分批 → §5 红；⑦ 开关不读环境变量 → §6 红。**七条全红。**
+- ci.yml 里 16 步 import 引擎的内联回归本地重放（结果见 PR）；`check_ssll_retract` / `check_comment_parser` / `check_gate1_ingest` / `check_librarian_shortlist` 照跑；`check_system_map` 六条过。
+
+### 挡不住什么
+
+- 翻转闸看的是"一晚翻多少"，不看"翻得对不对"：一晚 14 篇误标照样进去（D-087 隔晚回收兜底）。
+- 清空判据依赖 `seen_cols`：状态列整列为空的项目（一行都不返回这列）不会被写回默认——那种项目本来也没有 tier。
+- 没动评论步（A-07）和 `synthetic` 的清除路径；没给未来 `publish_time` 加视图侧的 `<= now()`（置空之后视图自然看不到它）。
+
+## D-092 · 评论步：已入库评论每项目读一次、夜跑跳过 on_demand、对账失败非零退出（2026-10-08）
+
+来源：`data-analysis/architecture-audit-2026-10-08.md` 的 A-07。评论步每晚对所有带评论的笔记全量重解析：每篇先 `existing_comments` 读一遍已有评论（`fetch_all_pages` 以空页终止，≥2 次 HTTP/篇），17 个 mapping 全在裸循环里、on_demand 项目不跳、「源被清空」对账失败仍 `return 0`。实测约 1 s/篇，整轮 44 分钟里它占 2.5–3k 篇的量，随库线性涨；最重的随贴评论块（NUC / NRT / HXZ 的素人评论）恰恰都在 on_demand 项目里，内容从不变。守卫在 `scripts/check_comments_sync_cost.py`（D-075）。
+
+### 定了什么
+
+1. **已入库评论每项目读一次。** 新函数 `fetch_project_comments(sb, project_id)` 一次翻页读完整个项目的评论、按 `note_id` 分组、每组按 `comment_order` 稳定排序（口径同 `existing_comments`）；`write_comments` 加可选参数 `existing`，主循环把分好的那一份传进去，逐篇在内存里按 `(role, content)` 配对。不传 `existing` 的老调用（ci COR-013 那步、`check_comment_parser`）行为不变。末尾「源被清空」对账直接用这份分组的键，不再查第二遍。写的部分一字不动：仍按内容配对、复用旧 id、只在位置变了时更新 `comment_order`、新行插入、消失只报不删。
+2. **夜跑跳过 on_demand 项目。** 判据与入库步同一份：`skip_on_demand_on_cron(mapping.sync_config.sync_interval, TV_SCHEDULED_RUN == "true")`，在连库之前判；手动 Run workflow / 本地跑不跳。D-047 的闸以前只在入库 / essence / curate 三步生效，评论步是漏网的第四步。
+3. **对账失败非零退出。** `notes_source_cleared = -1`（对账没算成）→ `return 1`。它是"源被清空的 note 全部隐身"这种最该被看见的情况唯一的出口；以前 `return 0`，daily-sync 那步绿、看门狗绿。daily-sync 的评论步本来就会在脚本非零时 `fail_count++` 并红（审计 §1.1 地图里那条）。
+
+### 验证
+
+- `check_comments_sync_cost.py` 五节全过（真的驱动 `main()`，假 PostgREST 记下每次 select / insert / update）：§1 三篇都已入库 → `comments` 表只读 1 次（按 `project_id`）、零写；§2 头部插一条 → 1 次读、插 1 条、重排 2 条；§3 定时跑 + on_demand 跳过且一次库都不碰，手动 / daily 照跑；§4 对账失败 rc=1、成功 rc=0；§5 老调用形状不变。
+- 反证 battery 四条全红：① 主循环不传 `existing` → §1 读了 4 次；② 去掉跳过 → §3；③ 对账失败仍 `return 0` → §4；④ 项目级读丢了 `comment_order` 排序 → §1 源没变却要写（配对顺序乱了）。
+- ci.yml 里 COR-013 那步（驱动 `write_comments` 的假件）本地重放绿；`check_comment_parser` / `check_comment_maintained` 照过；`check_system_map` 六条过。
+
+### 挡不住什么
+
+- 没变的笔记仍会被解析一遍（CPU，不是 HTTP）；真正的"按内容哈希跳过"要在 `notes` 上存一列哈希，这次没加列。
+- `collect_cleared_vanished` 对"源被清空"的那几篇仍按篇读（它们很少）。
+
+## D-093 · 闸二可执行版：`scripts/gate2_run.py` 把 §6.2 的四条判据、状态表、反证、预注册拒跑落成代码（2026-10-08）
+
+来源：`data-analysis/architecture-audit-2026-10-08.md` 的 A-03(a)：D-070 记着「闸二 SQL 仍在 docs/28 附录 B」，`statsmodels` 不在 requirements，`feature_validation` 只有 CI 夹具写过；10-08 的 237 篇定向回填清单末尾写的"再跑 `scripts/` 里闸二那套"——那套不存在。
+
+### 定了什么
+
+1. **纯 Python 实现，不加依赖。** B.1 的 Mantel–Haenszel 点估计 + Robins–Breslow–Greenland 方差原样翻成代码；Wald p 用 `math.erfc`；Benjamini–Hochberg 自己写（带单调修正）。与 statsmodels 的核对靠闭式：单层时 RGB 方差恰等于 Woolf 的 `1/a+1/b+1/c+1/d`，守卫钉着这一点；两层手算 R/S 对上。docs/28 B.1 那句"与 statsmodels 逐位一致（OR 2.477, CI 1.738–3.530）"的合成数据不在仓里，没法复现那两个数，不假装复现。
+2. **判据一字不改（§6.2）。** 区间跨 1 → `no_signal`；BH q > 0.10 → `no_signal`；大项目（正例 ≥ 20，动态算）里反向超过 1 个 → `no_signal`（标"方向不稳"）；按「项目 × 账号先验爆率」再分层后方向变了或点估计变化 > 30% → `confounded`；显著但与预注册 +/− 相反 → `reversed`；`?` 四条都过 → `validated` 并注明"新发现，方向未预设"；有该取值的笔记 < 30 或有支持的大项目 < 3 → `insufficient`；`--unreliable` 传入的题 → `unreliable`（闸一结论还没有机器可读形式，审计 B-17，这里不替它决定）。B.2 的两条纪律照搬：只数该取值真出现过的大项目、按快照五键分组。bool 只算「是」；choice 每个取值一行，方向按取值，没按取值写的（`body_question_marks`）按 `?` 并在 summary 里注明。占位题同一个 BH 家族。
+3. **账号先验分层。** 该账号**更早发布**的、已清洗标签（`v_l2_labels`）的笔记 ≥ 3 篇才算，爆率低于项目基线（项目内平均 y）→ 低于 / 否则不低于 / 不够 3 篇 → 无记录；同一时刻发的互不算"更早"。
+4. **跑之前三道拒跑（退出码 2，一行不写）。** ① 题库 `status` 不是 `frozen`（`--allow-draft` 只给试算和 CI 夹具）；② `--sha` 与题库文件 digest 对不上，或快照内 (笔记, 题) 不唯一（B.3 那句）；③ **占位题在任一方向被判"显著且稳定"**（区间不跨 1、q ≤ 0.10、大项目方向稳）——整跑作废（§6.2 反证 ①；`--ignore-placebo-alarm` 只出报告，不许 `--write`）。
+5. **取数条件按 §6.2**：`v_l2_labels` × 有 essence × `note_features.body_len ≥ 50`（没有 `body_len` 的不剔，注明）。账本按 (题, 抽取器) 一条一条查——`fetch_all_pages` 按 `order_by` 去重，整表按 `subject_id` 翻会把一篇 31 行合并成一行、重复也看不见。
+6. **输出**：`feature_validation` 行（`--write` 才 upsert，主键含 `gate2_run`，占位题也写、`hypothesis='0'`）+ `data-analysis/feature-gate2-<日期>.md`（`--out`）。
+
+### 没做
+
+- **B.3 组合对比（留一项目 AUC + 配对自助 1,000 次）与 B.4 置换反证**不在里面：那是"组合进不进 L2"的决定，不是单个特征值的闸；留第二步。
+- **没有拿生产跑试算。** 本容器没有 `SUPABASE_*` 环境变量；更要紧的是 §6.2 的预注册纪律——跑之前要冻结题库、把判据数字和快照记进 DECISIONS。今天的快照还有两个预注册前的决定没拍（审计 A-03）：361 篇旧 sha 笔记是重抽（`backfill-features.yml` 的 `reannotate`，D-090）还是排除；NUC / NRT_2 / NRT_3 在当前 sha 下 0 负例，是补 60–100 篇趴还是闸二只看 daily 项目。拍完、冻结、记 DECISIONS，再 `cd scripts && python gate2_run.py --sha ba0f570c --extractors code:v1,llm:claude-opus-4-6 --run-tag gate2-<日期> --unreliable <闸一不过的题> --out ../data-analysis/feature-gate2-<日期>.md`，看过报告再加 `--write`。
+
+### 验证
+
+- `check_gate2_run.py` 八节全过：§1 单层 MH = 普通 OR、RGB = Woolf、两层手算、退化回 None；§2 BH 含单调修正；§3 状态表逐条（validated / reversed / no_signal 区间 / insufficient / no_signal 方向不稳 / 新发现 / unreliable / 占位题不报警 / choice 按取值）+ 行形状与主键；§3b 热账号记号 OR>2 → confounded，真信号仍 validated；§4 占位题显著拒跑；§5 快照重复 / sha 对不上拒跑，快照外的行不进；§6 draft 拒跑；§7 取数条件与大项目动态。合成数据的效应全按计数造，不靠随机数。
+- 反证 battery 七条全红：① RGB 漏 QS 项；② BH 不做单调修正（**第一版没红**——§2 的三个用例恰好都是修正不起作用的形状，补了 0.01/0.011/0.5 那条才红）；③ 允许两个大项目反向；④ 不做账号先验分层；⑤ 占位题显著不拒跑；⑥ 快照重复不拒跑；⑦ draft 也跑。
+
+## D-094 · 夜跑三件小事：curate 每请求封顶 5 张；features 慢性欠产过半判红；外部语料新鲜度灯（2026-10-08）
+
+来源：`data-analysis/architecture-audit-2026-10-08.md` 的 B-05 / B-18 / B-23。三件都在 daily-sync / features-sync 两个 workflow 的调用方循环里，不改任何入库口径。
+
+### 定了什么
+
+1. **curate 每请求封顶 `CUR_REQ_MAX=5` 张，多轮凑（B-05）。** 以前一个项目一次要 `remaining`（≤15）张：一张 ≤2 次 LLM 调用，中转站坏日 47–86 s/调用（D-088 实测），15 张轻松撞 Railway 边缘 ~300 s → 502 判"瞬时"；而 worker 子进程还攥着 `curate_flywheel_lessons.py` 的锁继续跑 → 后面每个项目都 409 判"瞬时"→ 整晚一张没策展、job 绿、预算也没扣。essence 段早有 `ESS_REQ_MAX=8` 的同款循环，curate 没有。现在：同一项目一批成了且张数 = 要的就再要一批；回的张数少于要的（没更多待策展的卡）或一批没成（瞬时或系统性）就换下一个项目，不对同一项目追加。共享预算 `CUR_LIMIT` 不变，瞬时 / 系统性的判法不变。5 张 × 2 次 × 86 s ≈ 14 min 仍可能超——但撞线概率低得多，撞了也只丢这一批。
+2. **features 慢性欠产过半判红（B-18）。** D-077 那条 starved 只抓"过半项目一批都没成"；每个项目都只成了 1 批、其余全是 warning 的夜晚它抓不住，D-077 自己写着"挡不住慢性欠产…看 `note_feature_answers` 的日增量"，而没人看那个日增量。现在每个项目第一次要之前算"本轮该成几批" = ⌈min(待办, `FEATURE_LIMIT`) / `FEAT_REQ_MAX`⌉（待办取不到按上限算），收尾比：欠 = 该成 − 成 − 边缘 502；**欠 × 2 > 该成 → `::error` + 退出 1**。边缘 502 的批 worker 多半在后台跑完了，既不算成也不算欠。恰好一半不红（阈值是"过半"，与 starved 同口径）。原有的首批系统性红、starved 红照旧。
+3. **外部语料新鲜度灯 `EXTERNAL_CORPUS_CHECK_DONE`（B-23）。** `scripts/check_external_corpus_fresh.py` 看 `truth_vault.external_notes` 最新一行的 `fetched_at`：超过 8 天（周更 + 1 天余量）rc=1；表空 / 时间认不出 rc=2；新鲜 rc=0。daily-sync advisory 步，不拖红；崩了靠哨兵行判定（docs/29 规矩 3）。登记在 docs/29：owner 每周一次随夜跑结果扫，**修在 Jev 仓**。Jev 那边 10-08 起写库失败会让它自己的 job 红（Jev#6），这盏灯补的是"绿但空"（A-08 的另一半，或 triage 全拒）。阈值 `--max-age-days` 可调，下限 1。
+
+### 验证
+
+- **curate 循环**：把 daily-sync 那一步的 `run:` 原文抽出来，用假 `curl` / 假 `python skip_on_cron.py` 本地重放四个场景：① A 12 张 → 请求 5/5/2，B 吃剩 3，C 推迟；② A 502×3 → 瞬时警告，B、C 照跑不连坐；③ A 回 3 < 5 → 换项目不追加；④ A `ok=false` → 系统性红、B 照跑、收尾 `exit 1`。**反证**：改动前的同一步在场景 ① 下三个请求分别要 15 / 10 / 5 张。
+- **features 收尾**：同法重放八个场景：三项目各 10 篇全成 → 该成 15 成 15；每项目成 1 批后 503 → 该成 15 成 3 **红**（**反证：改动前同场景绿**）；两批边缘 502 → 欠 0；待办取不到按上限算 → 该成 12；全部抽完零请求 → 该成 0 不判；该成 4 成 2 → 不红；该成 4 成 1 → 红；B 首批 `ok=false` → 原判红照旧。
+- **新鲜度灯**：`--selftest` 五种形状（新鲜 / 过期 / naive 时间 / 表空 / 认不出）；反证：阈值比较写反 → 红；表空当新鲜 → 红。`check_system_map` G3 看到 3 盏灯；反证：从登记册删掉这一行 → G3 红。三个 workflow yaml 可 parse；`py_compile` 过。
+
+### 挡不住什么
+
+- curate 单批 5 张在中转站极坏日仍可能超 5 分钟；再小就要加 `/curate` 的分页协议，这次不动 worker。
+- features 的"该成几批"按本轮开始时的待办算；跑的过程中新入库的笔记不算欠。
+- 新鲜度灯只看"有没有新行"，不看行数是不是异常少（triage 拒了 95% 也算新鲜）。
+
+## D-095 · 日志出口挂 secret 掩码；mapping 右侧只能是真列或登记过的中间量；钥匙 → 持有者矩阵；账本半写反查（2026-10-09）
+
+来源：`data-analysis/architecture-audit-2026-10-08.md` 的 B-11 / B-16 / B-12，以及 Jev 仓 B-06 在 TV 侧的反查。
+
+### 定了什么
+
+1. **`setup_logger` 的 formatter 换成 `SecretMaskingFormatter`（B-11）。** `mask_secrets` 2026-05-22 加进来之后零调用点，RISKS R-023 却记着"TV 已关闭"。formatter 是所有走 `setup_logger` 的脚本（18 个）唯一的出口，消息 / %-参数 / traceback 三条路都经 `mask_secrets`。CI 守卫 `scripts/check_secret_masking.py` 五节：三条路各一节、"源码里至少一处代码调用"（再变死代码就红）、以及边界（自建 handler 不经这里，不假装全覆盖）。R-023 加后记。Jev 仓 `apply_rows` 打印前抹 key（Jev#6）。
+2. **`load_mapping` 校 `field_mapping` 右侧（B-16）。** 目标必须 ∈ `_KNOWN_NOTE_COLUMNS`（按 10-08 生产 `information_schema` 抄的 `truth_vault.notes` 列 + `metric_snapshots` 的分项 likes/saves/shares/search_rank/keyword_rank，它们先收进 note 再拆）∪ `_KNOWN_INTERMEDIATES`（17 张表实际用到的 10 个下划线中间量）。列名拼错以前的失效方式是 PostgREST 400 整块拒 → 逐行又全拒 → 该项目当晚 0 行入库；中间量拼错更坏：没人读它，tier / intent 静默 NULL。**加列的顺序**：先 `schemas/` 迁移，再加进 `_KNOWN_NOTE_COLUMNS`；加中间量：先在 `transform_row` 接上读它的代码，再登记。B-16 的另一半（每周只读 preflight 全项目）没做：preflight 对现有项目会不会从第一天就红，本容器没飞书凭据验不了，而"一开始就天天红的灯一周之内就没人看"（docs/29 规矩 4）。
+3. **RISKS R-032：secret → 持有者矩阵（B-12）。** 13 把钥匙 × 9 类持有者，按三仓源码盘点（Railway 列按代码读取的变量名，方括号读法没盘到，以各服务 Variables 页为准）；附轮换 SOP。看板 README 从"配 service_role"改成"配 anon"（`lib/supabase.ts` 2026-06 起就优先读 anon，README 一直教错）。
+4. **`verify_supabase_state.sql` 加 #87（B-06 反向）。** 同一跑（run_tag × extractor × bank_version）下行数少于该跑最大值的 subject 数，近 30 天窗。#86 只查"有答案无笔记"；半写（PostgREST 批之间没有事务）是另一头。Jev 仓同 PR 起 `/judge` / `/judge_draft` 写失败回 200 + `written` 真实行数 + `write_error`，不再把已付钱的判定整个变 500。
+
+### 验证
+
+- `check_secret_masking.py` 五节过；反证：formatter 换回普通 `Formatter` → §1–§3 红（6 条）。
+- 17 张 mapping 全部 `load_mapping` 过；反证：复制 OKMAN 把 `publish_time` 改成 `publish_tiem` → 红；把 `_status_raw` 改成 `_statusraw` → 红。
+- `check_system_map` 六条过（G6 495,920 / 505,000）；ci.yml 可 parse，新步是一行调用（G2 不变）。
+- #87 的 SQL 没拿生产跑（本容器无 `SUPABASE_*`；它是 `verify_supabase_state.sql` 的一行，与其它 90 条一起由人跑）。
+
+### 挡不住什么
+
+- 掩码挡不住 `print()` 和自建 handler；D-021 的 quarantine 路径里有 `print`，没改。
+- `_KNOWN_NOTE_COLUMNS` 是手抄的快照；生产加了列而这里没加，表现是 `load_mapping` 红（看得见），不是静默。
+- R-032 矩阵是手抄的，新消费者不会自动出现。
+
+## D-096 · 经验卡有了"essence 比卡新就重策展"的路；隔离行分得清新冒的和老的又冒；CI job 有超时；核心列闸没跑要看得见（2026-10-09）
+
+来源：`data-analysis/architecture-audit-2026-10-08.md` 的 B-02 / B-15 / C-15 / C-18 / C-19 / C-05。
+
+### 定了什么
+
+1. **重策展只做"陈旧"的（B-02）。** `curate_flywheel_lessons.py --recurate-stale`：取已策展的卡，按 150 个一组查 `notes.essence_annotated_at`（视图没导出这一列，不改视图，客户端拼），只留 `essence_annotated_at > curated_at` 的（10-08 实查 164/306）；缺时间 / 认不出 / 没 `curated_at` 一律不算陈旧（不乱花钱）。重策展写回 `curated_at = now()` → 下一轮自然轮到后面的卡 → 多轮 `--limit` 收敛；`library_version` 含 `max(curated_at)`，缓存自然失效。worker `/curate` 加 `recurate: "stale" | "all"`（`all` 不收敛：每次都从 rank 最高的 limit 张开始，只给手工 / 测试；别的值 400）。新 workflow `recurate-lessons.yml`（手动）：每轮 ≤8 张（同 CUR_REQ_MAX 的边缘约束），一轮回 0 张即收敛，撞 daily-sync 的锁 409 等 90 s 最多 5 次。**daily-sync 的 curate 行为一字不变**（守卫 §3 钉着默认路径仍只取 `is_curated=false`、不查 notes）。docs/14 §4.2 那句 `max(updated_at)` 改成实际的 `library_version` 定义并注明"essence 重标不会让卡变"。
+2. **隔离行报"新冒 / 老的又冒"（B-15 的轻版）。** `quarantine_record` 返回这一行是不是新插入的（`ignore_duplicates` 下 PostgREST 只回插入的行；假件 / 没回 data → None 不计）；sync 的 `_count_quarantined` 分 `quarantine_new` / `quarantine_seen_again`，收尾对"老的又冒且没人认领"打 `::notice`。**不改隔离表、不自动 resolved**：名单只能由人改（D-053 的规矩不动）。审计提的 `last_seen_at` 列 + 按 reason 判 resolved 没做——那要迁移和改语义，先用这个 0 迁移的版本看一周。
+3. **ci.yml 三个 job 加 `timeout-minutes`（C-15）：** python 45（实测 ~2 min）/ sql 20 / yaml 10。两个 backfill workflow 本来就是多轮长跑，留默认 360。
+4. **核心列消失检测读库失败要看得见（C-18）：** 仍降级成不监控（它不该把同步打死），但在 Actions 上打 `::warning` annotation，不再只是日志里一行。
+5. **worker README 记下（C-19）：** 互斥锁是进程内的；`restartPolicyMaxRetries: 3` 之后服务停着，sync 侧判 systemic 红是对的，修法是 Redeploy。
+6. **两处过期文案（C-05）：** `prompts/flywheel_librarian.md` block1 "跨项目共享" → "同项目内"（D-088 起按项目预筛）；aw runbook 的 `CANDIDATE_CAP=50` → 24（D-089）。
+
+### 验证
+
+- `check_curate_stale.py` 五节过（挑选 / 时区 / 取数 / worker 映射 / 收敛前提）；反证：`>` 写成 `>=` → §1 红；worker 把 `stale` 映成 `--recurate` → §4 红；默认路径也查 notes → §3 红。
+- ci.yml 里 30 步 import 入库引擎 / curate / worker / `_common` 的 heredoc 本地重放全绿（第一版把 `synthetic` 字面量拼进了别的串，TV-05 那步红，改回独立字面量后绿）。`check_secret_masking` / `check_ingest_guards` / `check_system_map`（G1 10 个 workflow）照过；两个 yaml 可 parse。
+- 没拿生产跑重策展（花钱的动作，owner 手动触发 `recurate-lessons.yml`；先 `limit=5 max_batches=1` 看一轮再放开）。
+
+### 挡不住什么
+
+- `recurate=all` 不收敛，所以没进 workflow；要全量重策展得先把它改成"按 curated_at 升序"——这次没做。
+- "老的又冒"只能数 pending 的；人标了 resolved 又冒出来的那种在 `known_backlog` 之外、`seen_again` 之内，分不出来。
+
+## D-097 · prompt caching 降级要被数出来；direction_subtype 补标有了收敛的路；闸一样本按 §6.1 抽（2026-10-09）
+
+来源：`data-analysis/architecture-audit-2026-10-08.md` 的 C-02 / C-03 / C-10 / C-01。
+
+### 定了什么
+
+1. **降级计数（C-02）。** `librarian/clients.py` 与 `annotate_essence_pass.py` 的 cache_control 降级以前只打一行 warning 进 Railway stdout；中转站不支持 prompt caching 的话每次调用都在多付一倍 input token，几个月没人知道。现在进程内计数：馆员 `/health` 回 `config.prompt_cache_fallbacks`（count / last_at / last_error；重启清零——它答的是"这个实例最近有没有在降级"），essence 的 Done 行 stats 带 `prompt_cache_fallbacks`。`select_ms` 掺着这次重试的问题没改口径（D-088 的基线按旧口径，改了对不上），只在 /health 注释里说清。
+2. **`--only-missing-subtype`（C-03）。** essence pass 新选择：已标 essence、`direction_subtype` 空、`raw_extra._direction_raw` 非空（NUC 10-08 实查 206 篇）。`--reannotate` 不收敛（每轮 `--limit` 都从 note_id 最小的开始重做），这条路收敛：标上子方向的下一轮不再选中；判不出的靠 backfill-essence "两轮 remaining 没下降就停"兜住。`count_unannotated_essence.py --only-missing-subtype` 用**同一判据**（守卫钉着两边一致，否则不收敛）；worker `/annotate-essence` 加 `only_missing_subtype`；`backfill-essence.yml` 加 `mode: pending | missing_subtype`。会重做整篇 essence（每篇一次 LLM 调用）——只做子方向那一步要拆循环，这次没拆。
+3. **闸一样本（C-10，Jev 仓）。** `fq_shadow.py --from-db --gate1-sample`：从 `v_l2_labels` 按 docs/28 §6.1 抽 5 个大项目 × (30 爆 + 30 趴)，固定 seed，排序后再抽（库返回顺序变了名单不变），名单写 `fq-gate1-sample.json` 存档；`v_l2_labels` / `notes` / 账本都翻页、按 150 个 id 一组查（以前 `order=note_id&limit=N` 既产不出样本又被钳到 1000）。
+4. **docs/14 写明 `rank_score` 实际只有 tier → recency 两项在排序（C-01）**：`tier_source` 项在书架上是常数，账号项 60/306 用默认且分母口径有问题；要让账号项起作用得先修 `personal_bao_rate`，这次没动。
+
+### 验证
+
+- `check_prompt_cache_fallback.py` 五节（假 anthropic 模块，不碰网络）；反证：馆员降级不计数 → 3 条红。
+- `check_essence_subtype_backfill.py` 四节；反证：count 判据与 fetch 不一致 → §2 红；worker 不映射 → §3 红。
+- ci.yml 里 38 步相关 heredoc 本地重放全绿；`check_system_map` 六条过；两个 yaml 可 parse。
+- Jev `tests/test_fq_shadow_sampling.py` 三条（30+30 且不足全取 / 同 seed 同名单且与返回顺序无关 / 翻页 + 分组查 + 名单存档与实取一致）；全套 86 passed。
+- 没拿生产跑 `mode=missing_subtype`（206 篇 × 一次 LLM 调用，owner 触发 `backfill-essence.yml` 选 NUC_phase1 + missing_subtype；先 `batch=12 max_batches=1` 看一轮）。
+
+### 挡不住什么
+
+- 降级计数是进程内的：Railway 重启就清零；要历史趋势得落库，这次没落。
+- `--only-missing-subtype` 重做整篇 essence，会把那 206 篇的 essence 字段也重写一遍（词表版本若变了是好事，没变就是多花一次钱）。
+
+## D-098 · 模型默认值切到 Claude 5.5 系（新中转站命名 `claude-sonnet-5-5`）（2026-10-09）
+
+来源：owner 2026-10-09 换了中转站（New API 一类的网关），模型名是 `claude-sonnet-5-5` 这种**不带日期**的形态；旧站 10-08 11:00 UTC 起对所有调用回 403，backfill-features 37759472969 / features-sync 37828788957 都是它。
+
+### 定了什么
+
+1. **代码默认值全部改成 `claude-sonnet-5-5`**：TV 的 `ESSENCE_MODEL` / `FEATURE_MODEL`（跟 `ESSENCE_MODEL`）/ `FLYWHEEL_CURATOR_MODEL` / `FLYWHEEL_LIBRARIAN_MODEL` / `COMMENT_THREADING_MODEL` / `ONBOARDER_MODEL`，worker `/health` 回显的 `(default)` 文案，`gateway-probe.yml` 的 ping，`.env.example` / docs/19 / docs/16 / IMPLEMENTATION_GUIDE / 两份 prompt 的说明；autowriter `CLAUDE_MODEL` 同（那边另有 D 记在 aw PR #93）。**按阶段选型**：所有写进库的东西（essence / 特征层 20 题 / 策展 / 馆员选卡 / 评论线程）和写稿 = Sonnet 5.5（官方 $2/$10，比 Sonnet 4.6 的 $3/$15 便宜且更强）；Opus 5.5 不做任何默认（特征层是闭集判题，Sonnet 够；写稿面板上手动可选）；Haiku 5.5（$0.10/$0.50）**不进默认**——要上得先按 docs/28 §6.1 走闸一 shadow（`/annotate-features` 带 `model: claude-haiku-5-5, run_tag: gate1-haiku`），一致率过线再换，这次没跑。
+2. **特征层 extractor 标签随之从 `llm:claude-opus-4-6` 变成 `llm:claude-sonnet-5-5`**（它就是 `llm:<FEATURE_MODEL>`）。续跑判据 D-085 默认 `done_by = llm:%`，opus-4-6 答过的篇**不会**被重抽，昨晚起失败的那批会由新模型接着答；闸一 / 闸二都要显式钉抽取器（`gate1_agreement --tv-extractor`、`gate2_run --extractors code:v1,llm:claude-opus-4-6,llm:claude-sonnet-5-5`），同一篇同一题被两个 LLM 抽取器各答一次会撞 run_gate2 的"(笔记, 题) 唯一"拒跑，不会静默合并——到时按 D-090 的 `reannotate` 把旧 sha 那 361 篇连同混抽取器的篇统一重抽到一个抽取器下再跑闸二。
+3. **环境变量（代码外，owner 做）**：Railway 的 worker / librarian / onboarder 三个服务和 autowriter 的 `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY` 换成新站；GitHub TV 仓的同名 secret 只有 `gateway-probe.yml` 用（daily-sync 早已不带，见 D-038），换了之后手动触发一次 gateway-probe 看 http=200 即验证；Railway 上若**显式**设了 `FEATURE_MODEL=claude-opus-4-6` / `ESSENCE_MODEL=claude-sonnet-4-6` / `FLYWHEEL_*_MODEL=…` 旧名，代码默认值不生效，要改成新名或删掉（删掉即走默认）。三个服务的模型 env **名字各不相同**（docs/19 §踩坑），换站时一个都别漏。
+4. **没动的**：`gate2_run.py` / `gate1_agreement.py` 帮助文本里的 `llm:claude-opus-4-6` 例子（它们指的是账本里已经存在的抽取器，不是默认值）；ci.yml / `check_feature_orchestration.py` 里拿 4.x 名字当 fixture 的断言（只多放一个 `claude-sonnet-5-5` 进 `MODEL_OK`，证明 `_MODEL_RE` 放行新命名）；onboarder/clients.py 那段"实测那次日志里 model 就是 sonnet-4-6"的历史注释。
+
+### 验证
+
+- 23 处替换按文件逐个断言命中数（脚本里多一处少一处都停），替换后 `scripts/ librarian/ onboarder/ worker/ gateway-probe.yml` 里不再有 `claude-sonnet-4-6` 的默认值；`check_feature_orchestration.py` 过（`_MODEL_RE` 放行 `claude-sonnet-5-5`）；ci.yml 相关 heredoc 本地重放；`py_compile`；gateway-probe yaml 可 parse。
+- **gateway-probe 实测（2026-10-09 05:23 UTC，owner 换完 secret 之后，各 1 token）**：新站对 `claude-sonnet-4-6` 回 **503**（通道里没这个模型），对 `claude-sonnet-5-5` 回 **200**（3.3 s 拿到响应）。所以旧名在新站上**一个都跑不通**：Railway 已删掉模型 env、但 main 上的代码默认值还是 4-6，本条合进 main 并重新部署之前，worker / librarian / onboarder 每次 LLM 调用都是 503（daily-sync 的 essence / curate 会按"200 + ok=false = 系统性"判红，馆员降级成 `[]`）。**本 PR 要在下一次 daily-sync（~08:04 UTC）之前合并**；来不及就先在 Railway 把 `ESSENCE_MODEL` / `FLYWHEEL_LIBRARIAN_MODEL` / `FLYWHEEL_CURATOR_MODEL` / `ONBOARDER_MODEL` 临时设成 `claude-sonnet-5-5` 顶一晚。另：GitHub 的 runner 能直连新站（旧站连不上才有 D-038 走 Railway 的设计），要不要把 essence / curate 搬回 GitHub 是另一个决定，这里不动。
+- `-thinking` 后缀新站认不认、`cache_control` 透不透传（看馆员 `/health` 的 `prompt_cache_fallbacks`，D-097）、倍率多少，仍要看第一晚的 daily-sync 和 aw 的 telemetry。
+
+### 挡不住什么
+
+- 新站的价格倍率是沿用旧站的 1.8×（aw `config.RELAY_PRICE_MULTIPLIER`），账单核过之前成本面板只是估的。
+- 换站不解决"中转站单点"（审计 §4 的大项）：所有 LLM 调用仍走一个网关，它坏一天就是整条流水线停一天。

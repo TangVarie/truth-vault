@@ -111,11 +111,11 @@ Schema 起点决定上限。在 v1 第一版就要包含 essence 层和 audience
 
 | | |
 |---|---|
-| 笔记总数 | **5,949** |
-| 项目数 | **16**（9 个进夜间 cron，7 个 on_demand） |
-| 爆款（爆 + 大爆） | 373 |
-| 已 essence 标注 | 5,714（96%） |
-| 已推三生六部 | 606 |
+| 笔记总数 | **6,300**（2026-10-08） |
+| 项目数 | **17**（10 个进夜间 cron，7 个 on_demand） |
+| 爆款（爆 + 大爆） | 411 |
+| 已 essence 标注 | 6,300（100%） |
+| 已推三生六部 | 306（D-086 清掉 285 条误标后） |
 | 有真实受众数据 | 1,104 |
 
 ### 按项目
@@ -185,7 +185,7 @@ Schema 起点决定上限。在 v1 第一版就要包含 essence 层和 audience
 | `daily-sync.yml` | cron `17 2 * * *`（**实际起跑会漂到 06:30~08:00 UTC**，GitHub 排队） | 飞书→TV / 评论 / essence / 策展 / 通道1 / 回流 |
 | `features-sync.yml` | cron `47 12 * * *` | 内容特征层增量抽取（D-073 从 daily-sync 拆出来） |
 | `sync-watchdog.yml` | cron `41 23 * * *` | 站在 job 外面查「昨天那几趟定时任务成了没有」（D-073） |
-| `ci.yml` | push + PR | python 72 步 + SQL 43 步 + yaml 5 步 |
+| `ci.yml` | push + PR | python 79 步 + SQL 50 步 + yaml 7 步（2026-10-08） |
 | `preflight.yml` | 手动 | 接新表前的只读体检 |
 | `onboard-table.yml` | 手动 | 批量接表 |
 | `backfill-essence.yml` | 手动 | essence 补标 |
@@ -208,10 +208,10 @@ truth-vault/
 ├── RISKS.md                 ← 生产风险登记
 ├── MIGRATION_PLAN.md        ← 跨库迁移计划
 │
-├── .github/workflows/       ← 6 个 workflow（见上表）
-├── docs/                    ← 29 篇设计文档（00 是入口，99 是弯路存档）
-├── schemas/                 ← 20 个 SQL：notes_v1_2 ~ v1_10 + dashboard_views_v1~v6 + 安全补丁
-├── mappings/                ← 每项目一份 yaml（16 个项目 + _template）
+├── .github/workflows/       ← 9 个 workflow（见上表）
+├── docs/                    ← 设计文档（00 是入口，29 是灯登记册，99 是弯路存档）
+├── schemas/                 ← 28 个 SQL：notes_v1_2 ~ v1_19 + dashboard_views_v1~v6 + 安全补丁
+├── mappings/                ← 每项目一份 yaml（17 个项目 + _template）
 ├── prompts/                 ← LLM prompt 库（essence / audience）
 ├── scripts/                 ← 20+ 个 Python 脚本，见 scripts/README.md
 │   ├── sync_feishu_notes_to_truth_vault.py   ← ⭐ 主入口：飞书 → TV，所有入库闸都在这
@@ -294,7 +294,7 @@ truth-vault/
 
 ## 现在在哪 / 下一步
 
-✅ **飞轮在转**：16 个项目 5,949 篇入库，9 个每晚自动同步；通道 1（ssll）+ 通道 2（pull/馆员）都 live；essence 标注覆盖 96%。
+✅ **飞轮在转**：17 个项目 6,300 篇入库，10 个每晚自动同步；通道 1（ssll）+ 通道 2（pull/馆员）都 live；essence 标注覆盖 100%。哪里还没接上、哪里会断，看 `data-analysis/architecture-audit-2026-10-08.md`。
 
 ✅ **入库这一层基本稳了**：9 月密集补了 D-046 ~ D-059 一整套闸。现在运营改表的三种形态（加列 / 改名 / 清空）都能被正确分流 —— 加列不拖行、改名点名、要害字段空了直接红。
 

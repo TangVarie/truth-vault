@@ -100,6 +100,8 @@ raw_excerpt         ← raw_content 片段（供仿写，截断防 prompt 爆）
 rank_score          ← 吸收 D-036：tier 权重 + recency + account_bao_rate
 ```
 
+> **rank_score 实际上只有 tier → recency 两项在排序**（2026-10-08 审计 C-01）：`tier_source` 那项在书架上是常数（能上架的只会是 状态字段 / 备注字段，都 +0.2）；账号项 60/306 张卡用默认 0.3，且 `personal_bao_rate` 的分母含风控 / 删除、分子含 `数值推断`。想让账号项起作用得先修 `accounts.personal_bao_rate` 的口径（D-036 的遗留），这里没动。
+
 `hook_type / structure / why_it_worked / transferable_tactic` 由**独立策展 pass** 提炼（prompt 在 `prompts/flywheel_curator.md`，**不并进** `essence_annotator.md`——见下方实现说明与 §6.4）。
 
 **实现说明（v1.4 已落地）**：经验卡字段落在独立表 `truth_vault.flywheel_lesson_annotations`（按 note_id 一行，仿 `note_features` 范式，不污染 notes 主表），由策展 pass 写入；视图 `truth_vault.v_flywheel_lesson_cards` 把合格爆款 + essence + 经验卡（LEFT JOIN，未策展也出卡，馆员用 raw_excerpt + essence 兜底）+ rank_score 组装好。eligibility 同注入候选但**去掉 aw 映射要求**（pull 不预路由）；**synthetic 伪贴只挡指标型 tier（爆/大爆），参考放行**——参考是纯人工内容判断、与指标真假无关（Session #15 运营拍板，同通道1 ssll `fetch_pending_baokuan`：`synthetic AND tier IN (爆,大爆)` 才排除）；放行的卡带 `synthetic=true` 标记（馆员 `_render_cards` 提示"指标未验证"、富集进 selected，aw 可据此降权/标注）。导出列名用 `source_note_id`（对齐 §4.1 + lineage 契约）；表带 `updated_at` + `set_updated_at` 触发器供馆员缓存失效。**当前书架有 1 张卡**：WTG 那条参考（`WTG_phase1_recvk9VPCTNG1b`，synthetic 但 tier=参考 → 放行，`is_curated=false`，馆员用 essence+excerpt 兜底，下次策展 pass 补 4 字段）；其余真·爆款进库后扩充。② 策展 pass **已实现**：`scripts/curate_flywheel_lessons.py` + `prompts/flywheel_curator.md`（读 `is_curated=false` 的卡 → LLM 产 4 字段 → 写 `flywheel_lesson_annotations`）。
@@ -122,7 +124,8 @@ rank_score          ← 吸收 D-036：tier 权重 + recency + account_bao_rate
 - **缓存（必须，省 LLM 成本）** — ✅ 表已建：`schemas/notes_v1_5_librarian_cache.sql`。内容寻址缓存，一张 Supabase 表 `truth_vault.flywheel_librarian_cache`：
   - `cache_key = hash(consumer + project_id + brief_digest + library_version)`
   - 命中 → 直接返回上次精选，**跳过 LLM**；未命中 → 跑馆员 → 写回。
-  - **自动失效**：`library_version` = 经验卡 `max(updated_at)` / 计数器；新爆款入库 → 版本变 → 旧 key 不命中 → 重算。brief 改 → `brief_digest` 变 → 重算。
+  - **自动失效**：`library_version` = f(候选数, `max(curated_at)`, 月份桶, 候选 id 集合摘要[, gate2_run])（`librarian/core.py:library_version`；v1_5 头注释里写的 `max(updated_at)` 是最初设计，实际没用 `updated_at`——夜跑 upsert 让它天天变）；新爆款入库 / 重策展 → 版本变 → 旧 key 不命中 → 重算。brief 改 → `brief_digest` 变 → 重算。
+    ⚠️ **essence 重标不会让卡变**（审计 B-02）：卡内容冻结在第一次策展，essence pass 之后重标那篇笔记，卡不知道、`library_version` 也不变。补法是 `recurate-lessons.yml`（D-096）：worker `/curate` 带 `recurate=stale` 只重策展 `essence_annotated_at > curated_at` 的卡，重策展后 `curated_at` 变新 → 版本变 → 缓存自然失效。
   - 爆款稀少（库几乎不变）+ brief 稳定 → 命中率极高，绝大多数请求 **0 LLM**。底层调用再叠 Anthropic prompt caching 兜底。
 - **运行时机**: 消费方每次起 batch / 写稿请求时同步调一次（per-batch，不必 per-item）。
 - **鉴权**: 服务用 service_role 读 TV 策展库 + 缓存；对外（aw/ssll 调用）用一个内部 API key / JWT，别裸暴露公网。

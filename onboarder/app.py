@@ -22,7 +22,7 @@
   healthcheck: /health
   env:   ANTHROPIC_BASE_URL / ANTHROPIC_API_KEY(用【能跑通的那条通道】)/
          FEISHU_APP_ID / FEISHU_APP_SECRET / ONBOARDER_API_KEY(鉴权,建议设)/
-         ONBOARDER_MODEL(可选,默认 claude-sonnet-4-6)
+         ONBOARDER_MODEL(可选,默认 claude-sonnet-5-5)
 """
 
 from __future__ import annotations

@@ -11,11 +11,17 @@ from __future__ import annotations
 
 import sys
 
-from _common import get_supabase_client
+from _common import get_supabase_client, load_mapping
 
 
-def count_remaining(project_id: str) -> int:
+def count_remaining(project_id: str, only_missing_subtype: bool = False) -> int:
+    """only_missing_subtype (审计 C-03): 直接调 annotate_essence_pass.subtype_backfill_candidates 数 —— 和抽取
+    **同一个函数**, 判据只有一处 (含"方向要定义了 sub_directions"那道筛, codex review on #169)。
+    这条路不是 count=exact 而是把候选拉回来数: 候选量是百级 (NUC 206), 可接受。"""
     sb = get_supabase_client()
+    if only_missing_subtype:
+        from annotate_essence_pass import subtype_backfill_candidates
+        return len(subtype_backfill_candidates(sb, project_id, load_mapping(project_id)))
     res = (
         sb.schema("truth_vault").table("notes")
         .select("note_id", count="exact")
@@ -29,10 +35,11 @@ def count_remaining(project_id: str) -> int:
 
 
 def main() -> int:
-    if len(sys.argv) < 2 or not sys.argv[1].strip():
-        print("usage: count_unannotated_essence.py <project_id>", file=sys.stderr)
+    args = [a for a in sys.argv[1:] if a != "--only-missing-subtype"]
+    if not args or not args[0].strip():
+        print("usage: count_unannotated_essence.py <project_id> [--only-missing-subtype]", file=sys.stderr)
         return 2
-    print(count_remaining(sys.argv[1].strip()))
+    print(count_remaining(args[0].strip(), only_missing_subtype="--only-missing-subtype" in sys.argv[1:]))
     return 0
 
 

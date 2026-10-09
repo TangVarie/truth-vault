@@ -10,6 +10,7 @@ jobs:
   python:
     name: Python syntax + unit tests
     runs-on: ubuntu-latest
+    timeout-minutes: 45   # 实测 ~2 min; 默认 360 会让一个卡死的步骤占 6 小时 (审计 C-15)
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -58,6 +59,15 @@ jobs:
             scripts/check_gate1_ingest.py \
             scripts/check_ssll_retract.py \
             scripts/check_librarian_shortlist.py \
+            scripts/check_ingest_guards.py \
+            scripts/check_comments_sync_cost.py \
+            scripts/gate2_run.py \
+            scripts/check_gate2_run.py \
+            scripts/check_external_corpus_fresh.py \
+            scripts/check_secret_masking.py \
+            scripts/check_curate_stale.py \
+            scripts/check_prompt_cache_fallback.py \
+            scripts/check_essence_subtype_backfill.py \
             librarian/__init__.py \
             librarian/clients.py \
             librarian/core.py \
@@ -3646,6 +3656,30 @@ jobs:
       - name: 馆员冷路径预筛 —— 整架取回、按项目级字段挑 ≤24 张、rank 前 8 永远在、输出封顶 (D-088)
         working-directory: scripts
         run: python check_librarian_shortlist.py   # §1 上限/直通 · §2 同品牌全进 · §3 跨主题保留 · §4 只看项目级 · §5 确定性 · §6 版本看整架 · §7 LLM 所见 + max_tokens
+      - name: 采集三道闸 —— 未来 publish_time 夹掉 / 状态格清空写回默认 + 没映上打旗 / 整批 tier 翻转 upsert 前挡住 (D-091)
+        working-directory: scripts
+        run: python check_ingest_guards.py   # §1 未来日期 · §2/§2b 清空与没映上 · §3 翻转计划 · §4 挡只剥翻转篇 · §5 读库分批 · §6/§7 接线
+      - name: 评论步 —— 每项目读一次已有评论 / 夜跑跳过 on_demand / 对账失败非零退出 (D-092)
+        working-directory: scripts
+        run: python check_comments_sync_cost.py   # §1 一次读零写 · §2 只写变化 · §3 on_demand 跳过 · §4 对账失败 rc=1 · §5 老调用形状不变
+      - name: 闸二可执行版 —— MH/RGB 对 Woolf 闭式、BH、状态表逐条、账号先验分层、占位题 / 快照 / 冻结三条拒跑 (D-093)
+        working-directory: scripts
+        run: python check_gate2_run.py   # §1 统计闭式 · §2 BH · §3 状态表 · §3b confounded · §4 占位题拒跑 · §5 快照唯一 · §6 draft 拒跑 · §7 取数与大项目
+      - name: 外部语料新鲜度灯 · report() 五种形状 (D-094)
+        working-directory: scripts
+        run: python check_external_corpus_fresh.py --selftest
+      - name: secret 掩码挂在 logger 出口 (B-11, RISKS R-023 后记) · 消息 / %-参数 / traceback / 源码引用 / 边界
+        working-directory: scripts
+        run: python check_secret_masking.py
+      - name: 重策展 essence 比卡新的那条路 (D-096) · 挑选 / 时区 / 取数 / worker 映射 / 收敛前提
+        working-directory: scripts
+        run: python check_curate_stale.py
+      - name: prompt caching 降级要被数出来、/health 与 Done 行看得见 (审计 C-02)
+        working-directory: scripts
+        run: python check_prompt_cache_fallback.py
+      - name: direction_subtype 补标路 (审计 C-03) · fetch 判据 / count 同判据 / worker 映射 / workflow 接线
+        working-directory: scripts
+        run: python check_essence_subtype_backfill.py
       - name: sanshengliubu sync shape self-check (build_reference_sample ↔ preflight ↔ ssll v2 schema)
         working-directory: scripts
         run: |
@@ -4038,102 +4072,6 @@ jobs:
           print(f"  ✓ global cap round-robin: {rr_per_proj} (fair across projects)")
           print("\nper-project quota: 3/3 cases passed")
           PY
-      - name: Saturation report 渲染路径冒烟测试 (D-041 round-4)
-        working-directory: scripts
-        run: |
-          python - <<'PY'
-          # ⚠️ 这一步存在的理由:
-          # check_positive_saturation.py 在 daily-sync.yml:317 是 `|| true` 调用的。
-          # 2026-08-22 渲染循环里有过一个 `pool_n` 未赋值的 NameError —— 只要 view
-          # 返回任何一行就必崩, 而 `|| true` 把它整个吞掉, 于是 v1_8 专门修的那个
-          # 盲点会以另一种形式原样保留(脚本天天"跑过", 天天什么都没测)。
-          # 所以: 渲染路径必须在 CI 里被真正执行一次, 不能只靠 py_compile。
-          # report() 是纯函数、不碰网络, 就是为这个测试留的口子。
-          import io, contextlib
-          import check_positive_saturation as c
-
-          def run(rows, threshold=0.6):
-              buf = io.StringIO()
-              with contextlib.redirect_stdout(buf):
-                  rc = c.report(rows, threshold)
-              return rc, buf.getvalue()
-
-          def row(**kw):
-              base = {
-                  "aw_project_id": "11111111-1111-1111-1111-111111111111",
-                  "pool_user_id":  "22222222-2222-2222-2222-222222222222",
-                  "active_positive_count": 5,
-                  "lever_measurable_count": 5,
-                  "distinct_lever_count": 3,
-                  "top_lever_count": 2,
-                  "dominant_lever_ratio": 0.4,
-                  "lever_distribution": None,
-              }
-              base.update(kw)
-              return base
-
-          # A: 空池 → 0, 且不能再打老版本那句 "No active positive examples"
-          rc, out = run([])
-          assert rc == 0, rc
-          assert "external_source" in out, out
-          print("  ✓ 空结果 → exit 0, 且说明里点名了老盲点")
-
-          # B: 全部测全且健康 → 0。这一条就是当年 NameError 的触发条件:
-          #    只要 view 回了任何一行就会崩。
-          rc, out = run([row()])
-          assert rc == 0, (rc, out)
-          assert "All 1 pool(s) measured" in out, out
-          print("  ✓ 测全且健康 → exit 0 (渲染循环真的跑通了)")
-
-          # C: 饱和 → 1
-          rc, out = run([row(distinct_lever_count=1, top_lever_count=5,
-                             dominant_lever_ratio=1.0)])
-          assert rc == 1, (rc, out)
-          assert "SATURATED" in out, out
-          print("  ✓ 饱和 → exit 1")
-
-          # D: 一条都测不到(ratio NULL, 计数列全 NULL) → 2, 不能显示成 ok
-          rc, out = run([row(lever_measurable_count=None, distinct_lever_count=None,
-                             top_lever_count=0, dominant_lever_ratio=None)])
-          assert rc == 2, (rc, out)
-          assert "无法评估" in out and "ok" not in out.split("status")[1], out
-          assert "n/a" in out, out
-          print("  ✓ 全不可测 → exit 2, 且 NULL 计数列不炸 f-string")
-
-          # E: 【部分】可测 —— 5 条里 2 条能测、那 2 条恰好很分散。
-          #    ratio 好看, 但另外 3 条完全未知 ⇒ 必须 2 而不是 0。
-          #    这是 round-2 引入、round-4 才发现没落到循环里的那条判据。
-          rc, out = run([row(lever_measurable_count=2, distinct_lever_count=2,
-                             top_lever_count=1, dominant_lever_ratio=0.5)])
-          assert rc == 2, (rc, out)
-          assert "仅 2/5 条可测" in out, out
-          print("  ✓ 部分可测(2/5)且 ratio 好看 → 仍是 exit 2, 不许报健康")
-
-          # F: 饱和优先于没测全 —— 确实测出饱和了就得是 1(可行动) 而不是 2(没数据)
-          rc, out = run([row(lever_measurable_count=3, dominant_lever_ratio=1.0,
-                             distinct_lever_count=1, top_lever_count=3),
-                         row(aw_project_id="33333333-3333-3333-3333-333333333333",
-                             lever_measurable_count=1, dominant_lever_ratio=None)])
-          assert rc == 1, (rc, out)
-          print("  ✓ 同时饱和+没测全 → exit 1 优先(饱和是可行动的)")
-
-          # G: pool_user_id 为 NULL(历史无归属正例) 不能炸, 且要打 "(无归属)"
-          rc, out = run([row(pool_user_id=None)])
-          assert rc == 0 and "(无归属)" in out, (rc, out)
-          print("  ✓ pool_user_id NULL → 打 (无归属), 不炸")
-
-          # H: 行级判据必须和汇总判据一致 —— 任何一行标了"无法评估", 退出码
-          #    就不能是 0。round-4 那次错就错在两边判据不同步。
-          for kw in ({"dominant_lever_ratio": None},
-                     {"lever_measurable_count": 0},
-                     {"lever_measurable_count": 4},
-                     {"active_positive_count": 9}):
-              rc, out = run([row(**kw)])
-              assert ("无法评估" in out) == (rc == 2), (kw, rc, out)
-          print("  ✓ 行级 unmeasurable 与退出码 2 完全同步")
-
-          print("\ncheck_positive_saturation.report: 8/8 cases passed")
-          PY
       - name: 通道 2 借阅流量检查 · report 渲染 + 哨兵 + 夜跑接线 (D-063)
         working-directory: scripts
         run: |
@@ -4141,7 +4079,7 @@ jobs:
           # 2026-09-17 (D-063): 通道 2(pull/馆员)暗了三个月没人知道 —— 30 天 82 个 batch 只 8 个 brief,
           # 最重的三天 0 次。aw 侧 fail-open 静默返 []、TV 侧只印 →ssll, 两边都不红。
           # 本脚本在 daily-sync.yml 里是 set +e 调的, 崩了靠哨兵行判定 —— 所以 report() 必须离线
-          # 可测, main() 的哨兵/退出码必须钉死(同 check_positive_saturation)。
+          # 可测, main() 的哨兵/退出码必须钉死(同登记册里其它哨兵灯)。
           import io, os, sys, contextlib, types
           import check_librarian_traffic as c
 
@@ -5983,6 +5921,7 @@ jobs:
   sql:
     name: SQL apply (Postgres 16)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:16
@@ -7361,6 +7300,7 @@ jobs:
   yaml:
     name: Mapping yaml lint
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -6,7 +6,7 @@
 
   POST /annotate-essence  body={project, limit?, dry_run?, reannotate?}
   POST /annotate-features body={project, limit?, dry_run?, reannotate?, run_tag?, single?, code_only?, model?, note_ids?, done_by?}
-  POST /curate            body={project?, limit?, dry_run?}
+  POST /curate            body={project?, limit?, dry_run?, recurate?: "stale"|"all"}
   GET  /health            → {ok, service, auth{ok,required,mode}, config{...}, running[]}
 
 并发: 每个脚本同一时刻只跑一个(_script_lock)。抢不到锁 → **409** + detail 说明,
@@ -28,7 +28,7 @@
   healthcheck: /health
   env:  SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY /
         ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL(用【能跑通的那条通道】)/
-        ESSENCE_MODEL(可选,默认 claude-sonnet-4-6)/ WORKER_API_KEY(鉴权,建议设)/
+        ESSENCE_MODEL(可选,默认 claude-sonnet-5-5)/ WORKER_API_KEY(鉴权,建议设)/
         WORKER_RUN_TIMEOUT_S(可选,单次 subprocess 硬超时,默认 900)
 """
 
@@ -251,10 +251,14 @@ def health() -> dict:
             "anthropic_api_key": bool(os.environ.get("ANTHROPIC_API_KEY")),
             # 只回显 scheme://host[:port] —— 见 _safe_origin()。
             "anthropic_base_url_origin": _safe_origin(os.environ.get("ANTHROPIC_BASE_URL")),
-            "essence_model": os.environ.get("ESSENCE_MODEL") or "claude-sonnet-4-6 (default)",
+            "essence_model": os.environ.get("ESSENCE_MODEL") or "claude-sonnet-5-5 (default)",
             # 特征层 (docs/28, D-070): 没设就跟 essence 同一个模型。
             "feature_model": (os.environ.get("FEATURE_MODEL") or os.environ.get("ESSENCE_MODEL")
-                              or "claude-sonnet-4-6 (default)"),
+                              or "claude-sonnet-5-5 (default)"),
+            # /curate 的子进程读 FLYWHEEL_CURATOR_MODEL (curate_flywheel_lessons.py), 与上面两个
+            # 不是同一个变量; 之前 /health 不报它, 中转站不服务默认模型时 curate 整晚 systemic 红、
+            # 看 /health 却一切正常 (D-090)。
+            "curator_model": os.environ.get("FLYWHEEL_CURATOR_MODEL") or "claude-sonnet-5-5 (default)",
         },
         "running": _running_scripts(),
     }
@@ -275,6 +279,8 @@ async def annotate_essence(
         args.append("--dry-run")
     if body.get("reannotate"):
         args.append("--reannotate")
+    if body.get("only_missing_subtype"):      # 审计 C-03: 只补 direction_subtype 空的篇 (收敛, 可多轮)
+        args.append("--only-missing-subtype")
     # 线程池跑阻塞 subprocess,别堵事件循环(见 _run docstring)。
     res = await run_in_threadpool(_run, "annotate_essence_pass.py", args)
     res["action"] = "annotate-essence"
@@ -380,8 +386,18 @@ async def curate(
         args += ["--project", str(body["project"])]
     if body.get("dry_run"):
         args.append("--dry-run")
+    # recurate: "stale" = 只重策展 essence 比卡新的已有卡 (D-096, 审计 B-02); "all" / true = 全部重策展
+    # (注意 all 不收敛: 每次都从 rank 最高的 limit 张开始, 只给手工 / 测试用)。其它值 400。
+    rec = body.get("recurate")
+    if rec in (True, "all"):
+        args.append("--recurate")
+    elif rec == "stale":
+        args.append("--recurate-stale")
+    elif rec not in (None, False, ""):
+        raise HTTPException(status_code=400, detail='recurate must be "stale", "all" or omitted')
     # 线程池跑阻塞 subprocess,别堵事件循环(见 _run docstring)。
     res = await run_in_threadpool(_run, "curate_flywheel_lessons.py", args)
     res["action"] = "curate"
     res["project"] = body.get("project")
+    res["recurate"] = "all" if rec in (True, "all") else (rec or None)
     return res

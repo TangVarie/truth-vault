@@ -395,7 +395,7 @@ def _worker_patterns() -> dict[str, str]:
     return got
 
 
-MODEL_OK = ("claude-opus-4-6", "claude-sonnet-4-6", "us.anthropic.claude-3-5-sonnet-20241022-v2:0", "anthropic/claude-3.5")
+MODEL_OK = ("claude-sonnet-5-5", "claude-opus-4-6", "claude-sonnet-4-6", "us.anthropic.claude-3-5-sonnet-20241022-v2:0", "anthropic/claude-3.5")
 MODEL_TAGS = ("jev:1.13.0", "llm:claude-opus-4-6", "code:v1", "human:x", "JEV:1")
 
 

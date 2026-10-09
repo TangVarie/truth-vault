@@ -27,8 +27,8 @@
 
 ```python
 # config.py 或 .env
-ESSENCE_MODEL_PRIMARY = "claude-sonnet-4-6"     # 主标注（性价比最优）
-ESSENCE_MODEL_TIEBREAK = "claude-opus-4-7"      # 高分歧重标（贵 5x，更准）
+ESSENCE_MODEL_PRIMARY = "claude-sonnet-5-5"     # 主标注（性价比最优）
+ESSENCE_MODEL_TIEBREAK = "claude-opus-5-5"      # 高分歧重标（贵 2x，更准）
 # ⚠️ Anthropic 模型 ID 会随版本演化。上线前查
 # https://docs.anthropic.com/en/docs/about-claude/models 核实当前最新。
 ```

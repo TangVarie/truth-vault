@@ -19,7 +19,7 @@ Environment:
     SUPABASE_URL
     SUPABASE_SERVICE_ROLE_KEY
     ANTHROPIC_API_KEY               (skipped with --dry-run)
-    ESSENCE_MODEL                   (default: claude-sonnet-4-6)
+    ESSENCE_MODEL                   (default: claude-sonnet-5-5)
 
 Two-pass LLM flow (per note):
   Pass 1 · sub_direction classification (skipped if mapping has no
@@ -438,6 +438,11 @@ def build_retry_prompt(original_prompt: str, raw_first_attempt: str,
 # Anthropic call (deferred import so --dry-run works without the SDK)
 # ─────────────────────────────────────────────────────────────────────────
 
+# prompt caching 降级计数 (审计 C-02, 同 librarian/clients.py): 进 Done 行的 stats, 让 daily-sync 日志里看得见
+# "这一跑有多少次在多付 input token"。
+PROMPT_CACHE_FALLBACKS: dict = {"count": 0, "last_error": ""}
+
+
 def call_claude(prompt: str, model: str, *, cached_system: str | None = None,
                 max_attempts: int = 3) -> str:
     """Single Mode A call with exponential-backoff retry on transient errors.
@@ -520,14 +525,17 @@ def call_claude(prompt: str, model: str, *, cached_system: str | None = None,
     }]
     try:
         return _run(cached_block)
-    except Exception:
+    except Exception as exc:
         # cache_control 降级(同 librarian/clients.py call_anthropic): 很多中转站/转卖通道
         # 【不支持 Anthropic prompt caching】, 透传 cache_control 会 400/被通道吞 —— 去掉缓存块、
         # 用纯 system 再试一次。只损失缓存省钱, 不改内容/结果;真错误(余额/鉴权/模型不存在)纯
         # system 也会同样失败 → 仍抛出, 不被本降级掩盖。这避免"加了缓存反把能跑的网关跑挂"。
+        PROMPT_CACHE_FALLBACKS["count"] += 1
+        PROMPT_CACHE_FALLBACKS["last_error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
         logger.warning(
             "essence 带 cache_control 的调用失败, 去掉缓存块用纯 system 重试一次"
-            "(疑似该中转站通道不支持 prompt caching;只损失缓存、不影响标注)"
+            "(疑似该中转站通道不支持 prompt caching;只损失缓存、不影响标注; 本跑累计 %d 次)",
+            PROMPT_CACHE_FALLBACKS["count"],
         )
         return _run(cached_system)  # 纯字符串 system(无 cache_control)
     # Unreachable: the final attempt always either returns or raises.
@@ -552,7 +560,17 @@ def parse_claude_json(text: str) -> Optional[dict]:
 # Database I/O
 # ─────────────────────────────────────────────────────────────────────────
 
-def fetch_unannotated_notes(sb, project_id: str, reannotate: bool) -> list[dict]:
+def fetch_unannotated_notes(sb, project_id: str, reannotate: bool,
+                            only_missing_subtype: bool = False, mapping: Optional[dict] = None) -> list[dict]:
+    """默认: 还没标 essence 的。--reannotate: 全部 (不收敛: 每轮 --limit 都从 note_id 最小的开始重做)。
+    --only-missing-subtype (审计 C-03): 已标 essence、但 direction_subtype 空、且飞书给了方向原文
+    (raw_extra._direction_raw 非空) 的 —— NUC 10-08 实查 206 篇。以前只有 --reannotate 全重做能补,
+    从没跑过。这条路收敛: 标上 direction_subtype 之后下一轮就不再选中; 子方向持续判不出的那几篇
+    每轮还会被选到, 由 backfill-essence 的"两轮 remaining 没下降就停"兜住。
+    ⚠️ 给了 mapping 就再筛一道: 只留方向在 direction_decomposition 里**定义了 sub_directions** 的篇
+    (codex review on #169, P1)。单方向配置 (NUC 的 糖尿病相关 / 抗癌放化疗相关) 本来就没有子方向可判,
+    get_sub_directions_for_note 回 None、direction_subtype 永远空 —— 不筛的话这些篇每轮都被重标、
+    remaining 永远不到 0、backfill 最后判失败。count_unannotated_essence 走同一个函数, 两边判据一致。"""
     q = (
         sb.schema("truth_vault")
         .table("notes")
@@ -563,9 +581,21 @@ def fetch_unannotated_notes(sb, project_id: str, reannotate: bool) -> list[dict]
         )
         .eq("project_id", project_id)
     )
-    if not reannotate:
+    if only_missing_subtype:
+        q = (q.not_.is_("essence_annotated_at", None)
+              .is_("direction_subtype", None)
+              .not_.is_("raw_extra->_direction_raw", None))
+    elif not reannotate:
         q = q.is_("essence_annotated_at", None)
-    return fetch_all_pages(q, order_by="note_id")
+    notes = fetch_all_pages(q, order_by="note_id")
+    if only_missing_subtype and mapping is not None:
+        notes = [n for n in notes if get_sub_directions_for_note(mapping, n) is not None]
+    return notes
+
+
+def subtype_backfill_candidates(sb, project_id: str, mapping: dict) -> list[dict]:
+    """--only-missing-subtype 到底会碰哪些篇: 抽取和 count_unannotated_essence 都调这一个, 判据只有一处。"""
+    return fetch_unannotated_notes(sb, project_id, True, only_missing_subtype=True, mapping=mapping)
 
 
 def write_essence_back(
@@ -733,6 +763,8 @@ def main() -> int:
                         help="Process at most N rows")
     parser.add_argument("--reannotate", action="store_true",
                         help="Re-annotate rows that already have essence_annotated_at")
+    parser.add_argument("--only-missing-subtype", action="store_true",
+                        help="只重标「已标 essence 但 direction_subtype 空且飞书给了方向原文」的篇 (审计 C-03); 收敛, 可多轮")
     parser.add_argument("--qps", type=float, default=2.0,
                         help="Rate limit (default 2 req/sec, Anthropic free tier safe)")
     parser.add_argument("--failed-queue", default="failed_essence_queue.jsonl",
@@ -743,18 +775,19 @@ def main() -> int:
                              "input later to retry; for now operators review by hand.")
     args = parser.parse_args()
 
-    model = os.environ.get("ESSENCE_MODEL", "claude-sonnet-4-6")
+    model = os.environ.get("ESSENCE_MODEL", "claude-sonnet-5-5")
     if not args.dry_run and not os.environ.get("ANTHROPIC_API_KEY"):
         logger.error("ANTHROPIC_API_KEY must be set (or use --dry-run)")
         return 2
 
     mapping = load_mapping(args.project_id)  # loaded for direction_decomposition future use
     sb = get_supabase_client()
-    notes = fetch_unannotated_notes(sb, args.project_id, args.reannotate)
+    notes = fetch_unannotated_notes(sb, args.project_id, args.reannotate or args.only_missing_subtype,
+                                    only_missing_subtype=args.only_missing_subtype, mapping=mapping)
     if args.limit:
         notes = notes[: args.limit]
-    logger.info("Found %d notes to annotate for project %s (model=%s)",
-                len(notes), args.project_id, model)
+    logger.info("Found %d notes to annotate for project %s (model=%s, only_missing_subtype=%s)",
+                len(notes), args.project_id, model, args.only_missing_subtype)
 
     failed_queue_path = Path(args.failed_queue).resolve()
     stats = {"ok": 0, "ok_after_retry": 0, "failed_after_retry": 0,
@@ -863,6 +896,7 @@ def main() -> int:
             )
         time.sleep(sleep_s)
 
+    stats["prompt_cache_fallbacks"] = PROMPT_CACHE_FALLBACKS["count"]   # 审计 C-02: 降级次数进 Done 行
     logger.info("Done: %s", json.dumps(stats, ensure_ascii=False))
     if stats["failed_after_retry"] or stats["hygiene_failed"]:
         logger.info("Failed rows appended to %s — review then either fix the "

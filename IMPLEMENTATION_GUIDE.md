@@ -275,8 +275,8 @@ cp .env.example .env
 | `FEISHU_APP_SECRET` | ✅ | 同上 | `xxx` |
 | `AUTOWRITER_SYNC_USER_ID` | 可选 (兜底) | 2026-05-21 audit 后默认改用 `autowriter.projects.owner_id`; 这个 env 仅在 owner_id 异常缺失时作为兜底, 新部署可以不配 | `00000000-0000-0000-0000-000000000001` |
 | `ANTHROPIC_API_KEY` | annotation 才用 | console.anthropic.com → API Keys | `sk-ant-xxx` |
-| `ESSENCE_MODEL` | 可选 | 默认 `claude-sonnet-4-6` | `claude-sonnet-4-6` |
-| `COMMENT_THREADING_MODEL` | 可选 | 默认同上 | `claude-sonnet-4-6` |
+| `ESSENCE_MODEL` | 可选 | 默认 `claude-sonnet-5-5` | `claude-sonnet-5-5` |
+| `COMMENT_THREADING_MODEL` | 可选 | 默认同上 | `claude-sonnet-5-5` |
 | `AUTOWRITER_INJECTION_MAX_PER_PROJECT` | 可选 | 默认 5; 每个 autowriter 项目每轮上限 (2026-05-22 audit P1-2 防项目饥饿改成 per-project) | `5` |
 | `AUTOWRITER_INJECTION_GLOBAL_CAP` | 可选 | 默认 0=无限. 设 >0 做跨项目总硬上限 (round-robin 裁) | `0` |
 | ~~`AUTOWRITER_INJECTION_MAX_PER_RUN`~~ | DEPRECATED | 旧全局上限 env, 现作为 MAX_PER_PROJECT 的别名读取, 新部署用上面两个 | — |
@@ -462,7 +462,6 @@ SELECT id, name FROM autowriter.projects WHERE name LIKE '%NUC%';
 | 审 `example_label_proposal` 负例候选 | 每月一次 (或等触发) | 在 autowriter Memory Manager UI 里确认 (#8 实施完成后) |
 | 审 essence 标注质量 | 每月一次 | 抽 30 条人工核对, 调词表/prompt; 见 [`docs/06-essence-annotation.md`](docs/06-essence-annotation.md) § "质量保证流程" |
 | 看 `recommend_tier_thresholds.py` 报告 | 每季度一次 | drift > 50% 考虑改 yaml 的 tier_thresholds |
-| 看 `check_positive_saturation.py` 输出 | 每周一次 / cron 自动 | 哪个项目 dominant_lever_ratio ≥ 0.6 就要警惕 |
 
 ---
 
@@ -484,10 +483,9 @@ psql "$PGURI" -c "SELECT * FROM truth_vault.v_flywheel_sync_status;"
 
 # 数据健康度
 psql "$PGURI" -c "SELECT * FROM truth_vault.v_data_health;"
-
-# Positive pool 饱和度 (前提: 通道 2 已经在跑一段时间)
-python scripts/check_positive_saturation.py
 ```
+
+（正例池饱和度那盏灯 2026-10-08 退了，见 DECISIONS D-090；多样性现在由写作台的 `fingerprint.cap_by_shape` 保。）
 
 ### 5.3 每月看什么
 

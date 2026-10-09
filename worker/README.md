@@ -46,8 +46,9 @@ staging)**没有任何症状** —— 服务照常 200、日志照常干净。�
 2. 配 env:
    - `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY`(service_role,绕 RLS 读写 truth_vault)
    - `ANTHROPIC_API_KEY` + `ANTHROPIC_BASE_URL` ← **能跑通的那条通道**(同 librarian/onboarder,别用挂掉的组)
-   - `ESSENCE_MODEL`(可选,默认 `claude-sonnet-4-6`)
+   - `ESSENCE_MODEL`(可选,默认 `claude-sonnet-5-5`)
    - `FEATURE_MODEL`(可选, 特征层用的模型, 默认跟 `ESSENCE_MODEL`)
+   - `FLYWHEEL_CURATOR_MODEL`(可选, `/curate` 策展用的模型, 默认 `claude-sonnet-5-5`; **不**跟 `ESSENCE_MODEL`, `/health` 的 `config.curator_model` 回显它)
    - `WORKER_API_KEY`(自定口令,建议设 = GitHub `WORKER_API_KEY` secret)
    - `WORKER_RUN_TIMEOUT_S`(可选,单次 subprocess 硬超时,默认 900)
 3. GitHub repo secrets 加:`WORKER_URL`(Railway 域名)、`WORKER_API_KEY`(= Railway 那个)。
@@ -96,3 +97,9 @@ curl -s -X POST localhost:8000/annotate-essence "${AUTH[@]}" -H 'content-type: a
 curl -s -X POST localhost:8000/curate "${AUTH[@]}" -H 'content-type: application/json' \
   -d '{"project":"WTG_phase1","limit":5,"dry_run":true}' | jq
 ```
+
+## 互斥锁是进程内的；连崩三次服务会停着（审计 C-19，记在案）
+
+- `_script_lock` 是**本进程**的 `threading.Lock`：同一个脚本同一时刻只跑一个，抢不到锁 → 409。它挡不住"两个 worker 实例"——Railway 这个服务只配一个实例，别手滑开副本。
+- `worker/railway.json` 的 `restartPolicyType: ON_FAILURE` + `restartPolicyMaxRetries: 3`：进程连崩 3 次（OOM / 中转站把它拖死 / 启动即炸）之后 Railway **不再拉起**，服务就停在那里。那时 daily-sync / features-sync 的 curl 是连接级失败（curl_rc 6/7），退避三次仍失败 → 判 **systemic 红**。这是对的：它确实不是瞬时。
+- 修法：Railway → 这个服务 → Deployments → Redeploy（或推一次 commit）。先看最后一次崩溃日志，别只是拉起来等它再崩三次。`/health` 回不来 ≠ 脚本在跑：`running[]` 空 + 连不上 = 服务停了。
