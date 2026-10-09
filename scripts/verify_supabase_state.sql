@@ -436,6 +436,21 @@ SELECT '87', 'H · 跨 schema 孤儿',
     'TV 审计 B-06). 修法: 拿当时 /judge 回包里的 ledger_rows 重跑 (upsert 幂等). 也可能是同一 bank_version 中途改了题数——'
     '那种情况 subject 数会很大且集中在一天, 对照 banks/ 的 git log.'
 
+UNION ALL
+SELECT '88', 'H · 跨 schema 孤儿',
+    'TV notes.source_autowriter_version_id 指向【从 TV 补录进 aw 的副本】(batches.params.source = ingest) 的篇数 (血缘倒挂, 审计 A-02)',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(*)
+        FROM truth_vault.notes n
+        JOIN autowriter.versions v ON v.id = n.source_autowriter_version_id
+        JOIN autowriter.items i ON i.id = v.item_id
+        JOIN autowriter.batches b ON b.id = i.batch_id
+        WHERE COALESCE(b.params->>'source', '') = 'ingest'$q$
+    )::TEXT, 'N/A'),
+    '0',
+    '> 0 = 补录副本又进了对照索引 (aw store.versions_for_linking 该排除 is_ingest_batch; 2026-10-09 D-099 清过 31 篇, '
+    '备份在 truth_vault.backup_inverted_lineage_20261009). 修法: 先修 aw 再置空, 别反过来, 否则当晚 tv-sync 又填回来.'
+
 -- ── I · 数据一致性副作用 ──────────────────────────────────────────────
 UNION ALL
 SELECT '90', 'I · 数据一致性',
