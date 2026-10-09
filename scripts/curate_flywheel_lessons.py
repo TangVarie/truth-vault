@@ -26,7 +26,7 @@ Usage:
 Environment:
     SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY
     ANTHROPIC_API_KEY          (--dry-run 时不需要)
-    FLYWHEEL_CURATOR_MODEL     (default: claude-sonnet-4-6)
+    FLYWHEEL_CURATOR_MODEL     (default: claude-sonnet-5-5)
 
 前置: schemas/notes_v1_4_flywheel_lesson_cards.sql 必须已应用到目标库, 否则
       v_flywheel_lesson_cards / flywheel_lesson_annotations 不存在。
@@ -258,7 +258,7 @@ def main() -> int:
                         help="限速 (default 2 req/s)")
     args = parser.parse_args()
 
-    model = os.environ.get("FLYWHEEL_CURATOR_MODEL", "claude-sonnet-4-6")
+    model = os.environ.get("FLYWHEEL_CURATOR_MODEL", "claude-sonnet-5-5")
     if not args.dry_run and not os.environ.get("ANTHROPIC_API_KEY"):
         logger.error("ANTHROPIC_API_KEY must be set (or use --dry-run)")
         return 2

@@ -61,7 +61,7 @@ agent 干"梳理 + 闭集抽取 + 起草"，**判断权留给策略 lead**。
 |---|---|---|
 | **额度来源** | **复用中转站** | 跟 `librarian` 同一个池子（`ANTHROPIC_BASE_URL`），一本账。**不**用 Claude 订阅额度（见 §额度）。 |
 | **输入路径** | **飞书 API 自动拉** | 飞书 Bitable REST（镜像 `scripts` 的 `FeishuClient`）拉 fields + 样本行。凭证走 GitHub Secrets。 |
-| 模型 | `claude-sonnet-4-6`（中转站已有） | 与 librarian 同款；难分析可临时上 Opus。 |
+| 模型 | `claude-sonnet-5-5`（中转站已有） | 与 librarian 同款；难分析可临时上 Opus。 |
 | 触发 | GitHub Actions `workflow_dispatch` | 填 `project_id` + 飞书 `app_token` + `table_id`（拉新表两者都必需，缺一即配置错误，对齐 `sync_feishu_notes_to_truth_vault.py`）。 |
 | 审批 | agent 开 PR，人审 + merge | = 原则 1 的"人拍板"闸门。 |
 

@@ -37,7 +37,7 @@ jobs:
             "$base/v1/messages" \
             -H "x-api-key: $ANTHROPIC_API_KEY" -H "anthropic-version: 2023-06-01" \
             -H "content-type: application/json" \
-            -d '{"model":"claude-sonnet-4-6","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}' 2>/dev/null)
+            -d '{"model":"claude-sonnet-5-5","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}' 2>/dev/null)
           rc=$?
           echo "curl 退出码=$rc | $out"
           case $rc in

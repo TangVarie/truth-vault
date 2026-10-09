@@ -186,11 +186,11 @@ flywheel_block = build_flywheel_block(fetch_flywheel_cards(brief))
 
 | 服务 | 模型 env 变量名 | 默认 |
 |---|---|---|
-| worker | `ESSENCE_MODEL` | `claude-sonnet-4-6` |
-| **librarian** | **`FLYWHEEL_LIBRARIAN_MODEL`** | `claude-sonnet-4-6` |
-| autowriter | `CLAUDE_MODEL` | `claude-sonnet-4-6` |
+| worker | `ESSENCE_MODEL` | `claude-sonnet-5-5` |
+| **librarian** | **`FLYWHEEL_LIBRARIAN_MODEL`** | `claude-sonnet-5-5` |
+| autowriter | `CLAUDE_MODEL` | `claude-sonnet-5-5` |
 
-如果你的中转站通道**不 serve 默认的 `claude-sonnet-4-6`**(于是你给 worker/aw 设了别的能跑通的模型),
+如果你的中转站通道**不 serve 默认的 `claude-sonnet-5-5`**(于是你给 worker/aw 设了别的能跑通的模型),
 却**忘了给 librarian 设 `FLYWHEEL_LIBRARIAN_MODEL`** → 馆员每次 LLM 调用都失败、`except` 降级成 `[]`。
 从外面看是 `200 {"selected":[]}`(看不出错),`flywheel_librarian_cache` 也因没成功而留 **0**。
 

@@ -19,7 +19,7 @@ Environment:
     SUPABASE_URL
     SUPABASE_SERVICE_ROLE_KEY
     ANTHROPIC_API_KEY               (skipped with --dry-run)
-    ESSENCE_MODEL                   (default: claude-sonnet-4-6)
+    ESSENCE_MODEL                   (default: claude-sonnet-5-5)
 
 Two-pass LLM flow (per note):
   Pass 1 · sub_direction classification (skipped if mapping has no
@@ -775,7 +775,7 @@ def main() -> int:
                              "input later to retry; for now operators review by hand.")
     args = parser.parse_args()
 
-    model = os.environ.get("ESSENCE_MODEL", "claude-sonnet-4-6")
+    model = os.environ.get("ESSENCE_MODEL", "claude-sonnet-5-5")
     if not args.dry_run and not os.environ.get("ANTHROPIC_API_KEY"):
         logger.error("ANTHROPIC_API_KEY must be set (or use --dry-run)")
         return 2

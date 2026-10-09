@@ -46,9 +46,9 @@ staging)**没有任何症状** —— 服务照常 200、日志照常干净。�
 2. 配 env:
    - `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY`(service_role,绕 RLS 读写 truth_vault)
    - `ANTHROPIC_API_KEY` + `ANTHROPIC_BASE_URL` ← **能跑通的那条通道**(同 librarian/onboarder,别用挂掉的组)
-   - `ESSENCE_MODEL`(可选,默认 `claude-sonnet-4-6`)
+   - `ESSENCE_MODEL`(可选,默认 `claude-sonnet-5-5`)
    - `FEATURE_MODEL`(可选, 特征层用的模型, 默认跟 `ESSENCE_MODEL`)
-   - `FLYWHEEL_CURATOR_MODEL`(可选, `/curate` 策展用的模型, 默认 `claude-sonnet-4-6`; **不**跟 `ESSENCE_MODEL`, `/health` 的 `config.curator_model` 回显它)
+   - `FLYWHEEL_CURATOR_MODEL`(可选, `/curate` 策展用的模型, 默认 `claude-sonnet-5-5`; **不**跟 `ESSENCE_MODEL`, `/health` 的 `config.curator_model` 回显它)
    - `WORKER_API_KEY`(自定口令,建议设 = GitHub `WORKER_API_KEY` secret)
    - `WORKER_RUN_TIMEOUT_S`(可选,单次 subprocess 硬超时,默认 900)
 3. GitHub repo secrets 加:`WORKER_URL`(Railway 域名)、`WORKER_API_KEY`(= Railway 那个)。

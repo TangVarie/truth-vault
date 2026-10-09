@@ -5928,3 +5928,24 @@ python job 里 import 馆员的 8 步（TV-03 / TV-05 / TV-06 / 守卫 6 / put_c
 
 - 降级计数是进程内的：Railway 重启就清零；要历史趋势得落库，这次没落。
 - `--only-missing-subtype` 重做整篇 essence，会把那 206 篇的 essence 字段也重写一遍（词表版本若变了是好事，没变就是多花一次钱）。
+
+## D-098 · 模型默认值切到 Claude 5.5 系（新中转站命名 `claude-sonnet-5-5`）（2026-10-09）
+
+来源：owner 2026-10-09 换了中转站（New API 一类的网关），模型名是 `claude-sonnet-5-5` 这种**不带日期**的形态；旧站 10-08 11:00 UTC 起对所有调用回 403，backfill-features 37759472969 / features-sync 37828788957 都是它。
+
+### 定了什么
+
+1. **代码默认值全部改成 `claude-sonnet-5-5`**：TV 的 `ESSENCE_MODEL` / `FEATURE_MODEL`（跟 `ESSENCE_MODEL`）/ `FLYWHEEL_CURATOR_MODEL` / `FLYWHEEL_LIBRARIAN_MODEL` / `COMMENT_THREADING_MODEL` / `ONBOARDER_MODEL`，worker `/health` 回显的 `(default)` 文案，`gateway-probe.yml` 的 ping，`.env.example` / docs/19 / docs/16 / IMPLEMENTATION_GUIDE / 两份 prompt 的说明；autowriter `CLAUDE_MODEL` 同（那边另有 D 记在 aw PR #93）。**按阶段选型**：所有写进库的东西（essence / 特征层 20 题 / 策展 / 馆员选卡 / 评论线程）和写稿 = Sonnet 5.5（官方 $2/$10，比 Sonnet 4.6 的 $3/$15 便宜且更强）；Opus 5.5 不做任何默认（特征层是闭集判题，Sonnet 够；写稿面板上手动可选）；Haiku 5.5（$0.10/$0.50）**不进默认**——要上得先按 docs/28 §6.1 走闸一 shadow（`/annotate-features` 带 `model: claude-haiku-5-5, run_tag: gate1-haiku`），一致率过线再换，这次没跑。
+2. **特征层 extractor 标签随之从 `llm:claude-opus-4-6` 变成 `llm:claude-sonnet-5-5`**（它就是 `llm:<FEATURE_MODEL>`）。续跑判据 D-085 默认 `done_by = llm:%`，opus-4-6 答过的篇**不会**被重抽，昨晚起失败的那批会由新模型接着答；闸一 / 闸二都要显式钉抽取器（`gate1_agreement --tv-extractor`、`gate2_run --extractors code:v1,llm:claude-opus-4-6,llm:claude-sonnet-5-5`），同一篇同一题被两个 LLM 抽取器各答一次会撞 run_gate2 的"(笔记, 题) 唯一"拒跑，不会静默合并——到时按 D-090 的 `reannotate` 把旧 sha 那 361 篇连同混抽取器的篇统一重抽到一个抽取器下再跑闸二。
+3. **环境变量（代码外，owner 做）**：Railway 的 worker / librarian / onboarder 三个服务和 autowriter 的 `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY` 换成新站；GitHub TV 仓的同名 secret 只有 `gateway-probe.yml` 用（daily-sync 早已不带，见 D-038），换了之后手动触发一次 gateway-probe 看 http=200 即验证；Railway 上若**显式**设了 `FEATURE_MODEL=claude-opus-4-6` / `ESSENCE_MODEL=claude-sonnet-4-6` / `FLYWHEEL_*_MODEL=…` 旧名，代码默认值不生效，要改成新名或删掉（删掉即走默认）。三个服务的模型 env **名字各不相同**（docs/19 §踩坑），换站时一个都别漏。
+4. **没动的**：`gate2_run.py` / `gate1_agreement.py` 帮助文本里的 `llm:claude-opus-4-6` 例子（它们指的是账本里已经存在的抽取器，不是默认值）；ci.yml / `check_feature_orchestration.py` 里拿 4.x 名字当 fixture 的断言（只多放一个 `claude-sonnet-5-5` 进 `MODEL_OK`，证明 `_MODEL_RE` 放行新命名）；onboarder/clients.py 那段"实测那次日志里 model 就是 sonnet-4-6"的历史注释。
+
+### 验证
+
+- 23 处替换按文件逐个断言命中数（脚本里多一处少一处都停），替换后 `scripts/ librarian/ onboarder/ worker/ gateway-probe.yml` 里不再有 `claude-sonnet-4-6` 的默认值；`check_feature_orchestration.py` 过（`_MODEL_RE` 放行 `claude-sonnet-5-5`）；ci.yml 相关 heredoc 本地重放；`py_compile`；gateway-probe yaml 可 parse。
+- **没向新站发过一次真实请求**（本会话没有新 key）：`-thinking` 后缀新站认不认、`cache_control` 透不透传（看馆员 `/health` 的 `prompt_cache_fallbacks`，D-097）、倍率多少，都要 owner 换完 secret 之后看第一晚的 daily-sync 和 aw 的 telemetry。
+
+### 挡不住什么
+
+- 新站的价格倍率是沿用旧站的 1.8×（aw `config.RELAY_PRICE_MULTIPLIER`），账单核过之前成本面板只是估的。
+- 换站不解决"中转站单点"（审计 §4 的大项）：所有 LLM 调用仍走一个网关，它坏一天就是整条流水线停一天。

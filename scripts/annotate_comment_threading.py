@@ -40,7 +40,7 @@ Sprint 0 现状 (per CURRENT_STATE.md): sync_comments_from_raw_extra.py
     SUPABASE_URL
     SUPABASE_SERVICE_ROLE_KEY
     ANTHROPIC_API_KEY               (--dry-run 时不需要)
-    COMMENT_THREADING_MODEL         (默认 claude-sonnet-4-6)
+    COMMENT_THREADING_MODEL         (默认 claude-sonnet-5-5)
 """
 
 from __future__ import annotations
@@ -265,7 +265,7 @@ def main() -> int:
     parser.add_argument("--failed-queue", default="failed_threading_queue.jsonl")
     args = parser.parse_args()
 
-    model = os.environ.get("COMMENT_THREADING_MODEL", "claude-sonnet-4-6")
+    model = os.environ.get("COMMENT_THREADING_MODEL", "claude-sonnet-5-5")
     if not args.dry_run and not os.environ.get("ANTHROPIC_API_KEY"):
         logger.error("ANTHROPIC_API_KEY must be set (or use --dry-run)")
         return 2

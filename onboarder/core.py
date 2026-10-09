@@ -21,7 +21,7 @@ import yaml
 
 from . import clients, corpus, links, vocab
 
-DEFAULT_MODEL = os.environ.get("ONBOARDER_MODEL", "claude-sonnet-4-6")
+DEFAULT_MODEL = os.environ.get("ONBOARDER_MODEL", "claude-sonnet-5-5")
 DISTINCT_CAP = 40   # 不同值超过这个数的列视为自由文本,只报数量不铺开(控 prompt 体积)
 
 SYSTEM_PROMPT = f"""你是 Truth Vault 的接表管家。把一张飞书投放表【起草】成一份

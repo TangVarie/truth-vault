@@ -455,7 +455,7 @@ def librarian_select(brief: dict, *, model: Optional[str] = None,
     返回: dry_run → {_dry_run, prompt, ...} 诊断 dict; 否则 → list[选中卡]。
     空库 / LLM 失败 → []  (消费方据此降级到自有正例, 绝不阻塞写稿)。
     """
-    model = model or os.environ.get("FLYWHEEL_LIBRARIAN_MODEL", "claude-sonnet-4-6")
+    model = model or os.environ.get("FLYWHEEL_LIBRARIAN_MODEL", "claude-sonnet-5-5")
     sb = get_supabase()
 
     cards = fetch_candidates(sb)

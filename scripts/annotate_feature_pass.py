@@ -25,7 +25,7 @@ Usage:
 Environment:
     SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY
     ANTHROPIC_API_KEY（--dry-run / --code-only 不需要）
-    FEATURE_MODEL（默认取 ESSENCE_MODEL, 再默认 claude-sonnet-4-6）
+    FEATURE_MODEL（默认取 ESSENCE_MODEL, 再默认 claude-sonnet-5-5）
 
 Resumability:
     「答过」= 该 run_tag 下已有【标记题】那一行: 模型跑看 has_specific_time, --code-only 看
@@ -385,7 +385,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     if not _RUN_TAG_RE.match(args.run_tag):
         logger.error("run_tag 只能是字母数字 _ . -, ≤40 字: %r", args.run_tag)
         return 2
-    model = args.model or os.environ.get("FEATURE_MODEL") or os.environ.get("ESSENCE_MODEL", "claude-sonnet-4-6")
+    model = args.model or os.environ.get("FEATURE_MODEL") or os.environ.get("ESSENCE_MODEL", "claude-sonnet-5-5")
     if _EXTRACTOR_TAG_RE.match(model):
         # 本 pass 的 extractor 是 f"llm:{model}"。传 jev:1.13.0 会拼出 llm:jev:1.13.0 —— 与 judge 写的
         # jev:1.13.0 永远对不上, 续跑判据和闸一对照都会悄悄错位 (D-085)。

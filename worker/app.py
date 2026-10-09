@@ -28,7 +28,7 @@
   healthcheck: /health
   env:  SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY /
         ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL(用【能跑通的那条通道】)/
-        ESSENCE_MODEL(可选,默认 claude-sonnet-4-6)/ WORKER_API_KEY(鉴权,建议设)/
+        ESSENCE_MODEL(可选,默认 claude-sonnet-5-5)/ WORKER_API_KEY(鉴权,建议设)/
         WORKER_RUN_TIMEOUT_S(可选,单次 subprocess 硬超时,默认 900)
 """
 
@@ -251,14 +251,14 @@ def health() -> dict:
             "anthropic_api_key": bool(os.environ.get("ANTHROPIC_API_KEY")),
             # 只回显 scheme://host[:port] —— 见 _safe_origin()。
             "anthropic_base_url_origin": _safe_origin(os.environ.get("ANTHROPIC_BASE_URL")),
-            "essence_model": os.environ.get("ESSENCE_MODEL") or "claude-sonnet-4-6 (default)",
+            "essence_model": os.environ.get("ESSENCE_MODEL") or "claude-sonnet-5-5 (default)",
             # 特征层 (docs/28, D-070): 没设就跟 essence 同一个模型。
             "feature_model": (os.environ.get("FEATURE_MODEL") or os.environ.get("ESSENCE_MODEL")
-                              or "claude-sonnet-4-6 (default)"),
+                              or "claude-sonnet-5-5 (default)"),
             # /curate 的子进程读 FLYWHEEL_CURATOR_MODEL (curate_flywheel_lessons.py), 与上面两个
             # 不是同一个变量; 之前 /health 不报它, 中转站不服务默认模型时 curate 整晚 systemic 红、
             # 看 /health 却一切正常 (D-090)。
-            "curator_model": os.environ.get("FLYWHEEL_CURATOR_MODEL") or "claude-sonnet-4-6 (default)",
+            "curator_model": os.environ.get("FLYWHEEL_CURATOR_MODEL") or "claude-sonnet-5-5 (default)",
         },
         "running": _running_scripts(),
     }
