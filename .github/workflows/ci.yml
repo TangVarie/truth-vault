@@ -2256,7 +2256,8 @@ jobs:
           # ④ essence 那一步真的接上了这道闸 —— 只写工具不接线是这类护栏最常见的死法
           wf = yaml.safe_load(pathlib.Path("../.github/workflows/daily-sync.yml").read_text())
           steps = [s for s in wf["jobs"]["sync"]["steps"] if s.get("run")]
-          ess = [s for s in steps if "annotate-essence" in s["run"]]
+          # D-100: essence 直跑 (python annotate_essence_pass.py), 不再 curl worker; 按脚本名找那一步
+          ess = [s for s in steps if "python annotate_essence_pass.py" in s["run"]]
           assert ess, "找不到 essence 那一步"
           body = ess[0]["run"]
           # 同 ⑦ 的教训: 这一步的注释里也写着 skip_on_cron.py(D-051 那句反例), 用 `in body` /
@@ -2264,14 +2265,14 @@ jobs:
           gate = [l for l in body.splitlines()
                   if "skip_on_cron.py" in l and not l.strip().startswith("#")]
           assert gate, "essence 步骤没接 on_demand 闸(D-047 回归) —— 只有注释提到它不算接上"
-          assert body.index(gate[0]) < body.index("annotate-essence"), \
+          assert body.index(gate[0]) < body.index('python annotate_essence_pass.py "$p"'), \
               "闸必须在真正发起标注请求之前"
           print("  ✓ daily-sync 的 essence 步骤已接闸, 且在发请求之前")
 
           # ⑤ curate 是同一泄漏口的【第二张嘴】—— 它的候选视图 v_flywheel_lesson_cards
           #    不要求 essence(WHERE 只有 tier/tier_source/publish_time), 所以 essence
           #    那道闸挡不住它。只挡一张嘴比不挡更危险: 会让人以为已经挡住了。
-          cur = [s for s in steps if "/curate" in s["run"]]
+          cur = [s for s in steps if "python curate_flywheel_lessons.py" in s["run"]]
           assert cur, "找不到 curate 那一步"
           cbody = cur[0]["run"]
           cgate = [l for l in cbody.splitlines()
@@ -2279,13 +2280,13 @@ jobs:
           assert cgate, "curate 步骤没接 on_demand 闸(D-047 回归) —— 只有注释提到它不算接上"
           # 判据钉在【真正发请求那一行】上, 不是任何出现 "/curate" 的地方 ——
           # 注释里也会提到 /curate, 拿它比位置会把守卫变成在考注释怎么写。
-          POST = '-X POST "${WORKER_URL%/}/curate"'
-          assert POST in cbody, "找不到 curate 的 curl 请求行(改了写法就同步改这条守卫)"
+          POST = 'python curate_flywheel_lessons.py --project "$p"'
+          assert POST in cbody, "找不到 curate 的调用行(D-100 起直跑脚本, 不再 curl worker; 改了写法就同步改这条守卫)"
           assert cbody.index(cgate[0]) < cbody.index(POST), \
               "闸必须在真正发起 curate 请求之前"
           # 必须是【按项目循环】: 全局单次调用没法排除某些项目(/curate 只收单个 project)
           assert 'for f in ../mappings/*.yaml' in cbody, "curate 必须按项目循环, 否则闸无处可插"
-          assert '\\"project\\":\\"$p\\"' in cbody, "循环里必须把当前项目传给 /curate"
+          assert '--project "$p"' in cbody, "循环里必须把当前项目传给 curate_flywheel_lessons.py"
           # 预算必须【共享】而不是每项目各给一份 —— 加闸门不该顺手把账单乘以项目数
           assert "remaining=$CUR_LIMIT" in cbody, "curate 预算要全局共享(remaining), 不是每项目各 CUR_LIMIT"
           assert "remaining - n" in cbody or "remaining-n" in cbody, "预算没有随实际策展数递减"
@@ -5892,12 +5893,13 @@ jobs:
               for m in re.finditer(r"( *)worker_fail_kind\(\) \{.*?\n\1\}", yml, re.S):
                   defs.append((f, textwrap.dedent(m.group(0))))
           files = {f for f, _ in defs}
-          assert len(defs) >= 3, (
-              f"只找到 {len(defs)} 份 worker_fail_kind() —— 期望 daily-sync 的 essence + curate "
-              f"和 features-sync 各一份。少了就是有一步不再做失败分类了, 或正则失配, 两种都不能放过。"
-              f"(找到的文件: {sorted(files)})"
+          # D-100 之后 daily-sync 的 essence / curate 直连中转站, 不再经 worker, 也就没有这份分类器;
+          # 只剩 features-sync 一份。以后哪一步再接 worker, 就把它的文件加回下面的 want。
+          assert len(defs) >= 1, (
+              f"只找到 {len(defs)} 份 worker_fail_kind() —— 期望 features-sync 一份。"
+              f"少了就是特征层那步不再做失败分类了, 或正则失配, 两种都不能放过。(找到的文件: {sorted(files)})"
           )
-          for want in (".github/workflows/daily-sync.yml", ".github/workflows/features-sync.yml"):
+          for want in (".github/workflows/features-sync.yml",):
               assert want in files, f"{want} 里一份 worker_fail_kind() 都没有 —— 那一趟不再做失败分类了?"
           cases = {
               ("0", "409"): "transient",   # worker 忙 → 幂等下轮续

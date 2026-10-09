@@ -5977,3 +5977,28 @@ UPDATE truth_vault.notes n SET source_autowriter_version_id = b.source_autowrite
 
 - 这 31 篇若真有写作台原稿，今晚 14:00 UTC 的 tv-sync 会在排除补录副本的索引上重新对上并回填；没有的留 unmatched，TV 侧不再有来源。明天看 `autowriter.tv_note_links` 这 31 篇的 `match_kind` 分布即可。
 - 两张备份表没有自动清理；确认无误后（建议 30 天）手动 DROP，记在这。
+
+## D-100 · essence 与策展从 Railway worker 搬回 GitHub Actions 直跑（新中转站 runner 直连得上）；worker 只剩特征层（2026-10-09）
+
+来源：owner 2026-10-09「essence 和策展搬回 GitHub 你来做」。前提是当天 gateway-probe 实测 GitHub runner 对新站 http=200（D-098）——2026-06 把这两步搬去 Railway worker 的唯一理由（旧站 GitHub 连不上，docs/17 §7-D）已经不成立。
+
+### 定了什么
+
+1. **三个 workflow 直跑脚本**：daily-sync 的 essence / curate 两步、`backfill-essence.yml`、`recurate-lessons.yml` 改成 `python annotate_essence_pass.py` / `python curate_flywheel_lessons.py`（`working-directory: scripts`，`ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` 从 repo secret 来，和 gateway-probe 同两把）。worker 的 `/annotate-essence` 与 `/curate` 端点保留但没有调用方；worker 只剩 `/annotate-features`（features-sync / backfill-features 不动——特征层一篇 6 次调用、每晚 7 个项目 × 24 篇，先看一周直跑的 essence / curate 稳不稳再决定要不要也搬）。
+2. **为 Railway 边缘 5 min 超时存在的东西全部拆掉**：essence 的 `ESS_REQ_MAX=8` 分批循环、curate 的 `CUR_REQ_MAX=5` 分批（D-094 B-05）、`worker_fail_kind` 的瞬时 / 系统性分类、409 等锁、backfill 的 batch ≤15 / recurate 的 limit ≤8 上限。直跑后每项目**一次**调用，`--limit` 给整份预算（essence 每项目 `WORKER_LIMIT`，curate 共享 15 张随实际策展数递减）。失败语义收敛到脚本自己的退出码：零星单条失败脚本退 0 并告警、下轮幂等续作；全军覆没 / hygiene 漂移 / 参数错才退非零 → 该项目 `::error`、收尾判红，不带走其余项目（和以前一样）。
+3. **四条纪律不变，ci.yml 的 D-047 守卫改成按脚本名钉**：on_demand 闸（`skip_on_cron.py` 必须在 `python annotate_essence_pass.py "$p"` / `python curate_flywheel_lessons.py --project "$p"` 之前）、curate 按项目循环且把当前项目传给脚本、预算全局共享递减、推迟点名、逐项目隔离。`worker_fail_kind` 守卫改成只要求 features-sync 一份（以后哪一步再接 worker 就加回 want）。
+4. **跨 workflow 互斥没有了 worker 的每脚本锁**：daily-sync / backfill-essence / recurate-lessons 各自的 concurrency group 不变、互不排队。重叠时的代价只是同一批待办被两边各标一次（写入幂等、内容相同），上限是一个 `WORKER_LIMIT`（15 篇）的重复花费；没有用同一个 group 串起来，因为 GitHub 对同组只留一个 pending，手动 backfill 排队时可能把夜跑挤掉，那个比重复 15 篇贵。
+5. **模型变量改成 repo variable**：`ESSENCE_MODEL` / `FLYWHEEL_CURATOR_MODEL`，不设 = 代码默认 `claude-sonnet-5-5`（D-098）。GitHub 把没设的 variable 注成空串而 `os.environ.get(..., default)` 对空串不回默认，所以步骤开头空就 `unset`。
+6. **定时跑缺 `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` 直接红**（接 codex review on #169 那条，把 `WORKER_URL` 换成这两把）；手动触发仍允许只同步不跑 LLM（步骤 `if: env.ANTHROPIC_API_KEY != ''`）。
+7. **`backfill-essence.yml` 的 `mode=missing_subtype`**：remaining 与 pass 吃同一个 `$COUNT_FLAG`（`--only-missing-subtype`），守卫 `check_essence_subtype_backfill` §4 钉这一点。
+
+### 验证
+
+- 四个 step body 抽出来在假 `python`（按脚本名分发、读场景文件）下重放：essence —— 待标 / 已标完 / on_demand 跳过 / 一个项目退非零只红它 / dry-run 透传；curate —— 预算 15 按实际策展数递减到 0 / 吃满推迟点名 / 一个项目退非零其余照跑收尾红；backfill-essence —— 两轮灌完无 warning / pass 退非零两次 → error / 到顶还剩 → warning；recurate —— 3→2→0 收敛 / 第二轮炸 → error 且已做的不丢；Check secrets —— 定时缺 ANTHROPIC 红、手动缺不红、全配 0。
+- ci.yml 相关 38 步 heredoc 本地重放全绿（含 D-047 两道闸、bash -e 闸行形态、409 分类器、失败聚合）；`check_essence_subtype_backfill` / `check_curate_stale` / `check_system_map` 过；四个 workflow yaml 可 parse；G6 bytes 未超。
+- **没拿生产跑**：合并后第一晚的 daily-sync（essence + curate 直跑）和一次手动 `recurate-lessons` 就是验收；Railway worker 的 essence / curate 端点这周先留着，确认直跑稳了再从 worker 删（下一条 D 记）。
+
+### 挡不住什么
+
+- GitHub runner 到新站的连通性是 10-09 一次探测的结果；哪天新站也把 GitHub 的出口 IP 挡了，症状是 essence / curate 整步红（脚本退非零）而不是静默——那时再把 `WORKER_URL` 那条路加回来。
+- 特征层仍在 worker 上，还吃 Railway 边缘 5 min 超时和 worker 锁；要不要也搬是下一个决定。

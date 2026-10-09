@@ -10,7 +10,7 @@ NUC 10-08 实查 206 篇 essence_annotated_at 非空、direction_subtype 空、r
   §2 count_unannotated_essence.count_remaining(only_missing_subtype=True) 走 subtype_backfill_candidates —— 和抽取
      同一个函数 (两边不一致就不收敛); 默认 count 路径不变
   §3 worker /annotate-essence: only_missing_subtype → --only-missing-subtype
-  §4 backfill-essence.yml: mode 输入存在、missing_subtype 时 remaining 与请求体都切判据
+  §4 backfill-essence.yml: mode 输入存在、missing_subtype 时 remaining 与 pass 吃同一个 $COUNT_FLAG (D-100 直跑)
 """
 from __future__ import annotations
 
@@ -139,7 +139,8 @@ def main() -> int:
     if sorted(mode.get("options") or []) != ["missing_subtype", "pending"] or mode.get("default") != "pending":
         fails.append(f"§4 backfill-essence.yml 的 mode 输入形状不对: {mode}")
     runs = "\n".join(st.get("run") or "" for st in wf["jobs"]["backfill"]["steps"])
-    for needle in ('"only_missing_subtype":true', "count_unannotated_essence.py \"$PROJECT\" $COUNT_FLAG", '"missing_subtype" ]; then COUNT_FLAG="--only-missing-subtype"'):
+    # D-100 之后 pass 直跑 (不再 curl worker): remaining 与 pass 必须吃【同一个】$COUNT_FLAG, 否则两边判据不一致就不收敛
+    for needle in ("count_unannotated_essence.py \"$PROJECT\" $COUNT_FLAG", "annotate_essence_pass.py \"$PROJECT\" --limit \"$BATCH\" $COUNT_FLAG", '"missing_subtype" ]; then COUNT_FLAG="--only-missing-subtype"'):
         if needle not in runs:
             fails.append(f"§4 workflow 里缺: {needle}")
 

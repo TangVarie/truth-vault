@@ -186,7 +186,9 @@ flywheel_block = build_flywheel_block(fetch_flywheel_cards(brief))
 
 | 服务 | 模型 env 变量名 | 默认 |
 |---|---|---|
-| worker | `ESSENCE_MODEL` | `claude-sonnet-5-5` |
+| TV GitHub Actions (daily-sync / backfill-essence, D-100 起 essence 直跑) | repo **variable** `ESSENCE_MODEL`(不设 = 默认) | `claude-sonnet-5-5` |
+| TV GitHub Actions (daily-sync / recurate-lessons, 策展) | repo **variable** `FLYWHEEL_CURATOR_MODEL` | `claude-sonnet-5-5` |
+| worker (只剩特征层) | `FEATURE_MODEL`(跟 `ESSENCE_MODEL`) | `claude-sonnet-5-5` |
 | **librarian** | **`FLYWHEEL_LIBRARIAN_MODEL`** | `claude-sonnet-5-5` |
 | autowriter | `CLAUDE_MODEL` | `claude-sonnet-5-5` |
 
