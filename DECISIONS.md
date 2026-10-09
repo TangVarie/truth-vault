@@ -6002,3 +6002,26 @@ UPDATE truth_vault.notes n SET source_autowriter_version_id = b.source_autowrite
 
 - GitHub runner 到新站的连通性是 10-09 一次探测的结果；哪天新站也把 GitHub 的出口 IP 挡了，症状是 essence / curate 整步红（脚本退非零）而不是静默——那时再把 `WORKER_URL` 那条路加回来。
 - 特征层仍在 worker 上，还吃 Railway 边缘 5 min 超时和 worker 锁；要不要也搬是下一个决定。
+
+## D-101 · public 下 5 张 ssll 表开 RLS、收掉 anon 的读；18 个看板视图保持 SECURITY DEFINER 记为已接受例外；看板那把 service_role 由 owner 从 Vercel 删（2026-10-09）
+
+来源：审计 B-22 / B-12，owner 10-09 把决定交给我。只读盘点在前（catalog + advisor + 三仓 grep），`schemas/security_rls_public_ssll_tables.sql` 已对生产 apply。
+
+### 定了什么
+
+1. **真正的暴露面是 5 张 ssll 表，不是 18 个视图。** `public.projects / pipeline_runs / stage_logs / outputs / reference_samples` 没开 RLS 且 anon 有 SELECT：拿着 anon key（看板那把，公网可见）就能整表拉走 `reference_samples.post_body / cover_image_b64 / top_comments / ai_analysis`、`stage_logs.input_data / output_data`、`outputs.prompt_system`、`projects.brief`（约 1,512 行）。写 2026-08 已收，读今天收：5 张表 `ENABLE ROW LEVEL SECURITY`，`REVOKE SELECT, REFERENCES, TRIGGER ... FROM anon`。
+2. **authenticated 留一条只读 policy**（`ssll_authenticated_read`）：ssll 运行时用哪把 key 没查实（仓不在本会话，GitHub 搜索无结果；文档说 service_role，它 BYPASSRLS 不受影响）。若它其实走 Supabase Auth 登录会话，不留这条会静默读到 0 行。anon = 公网，一律收。
+3. **18 个 `v_dash_*` 不改 `security_invoker`**：它们是有意的 definer（`dashboard_views_v1.sql` 头部写明），全是不可更新的聚合视图，anon 只有 SELECT，底表 anon 既无 USAGE 也无 SELECT。改 invoker 看板直接全空（`getDashboardData` 的 catch 会吞错返回空数据、无报警）；给 anon 开 truth_vault 读权限等于把 6,300 篇 notes 原文暴露给公网，比现状差得多。advisor 的 18 条 `security_definer_view` 记为已接受例外。
+4. **默认权限隐患不动**：`pg_default_acl` 里 postgres 在 public 新建的表 anon 自动 `arwdDxtm`。public 是 ssll 的域，改默认值要 ssll 同意；这里只记一句，下次 ssll 建表记得 revoke。
+5. **B-12 看板那把 service_role**：代码 2026-06 起优先 anon（`dashboard/lib/supabase.ts:17`），README 10-08 已改教 anon；Vercel 的 env 列表 API 403 看不到，**owner 去 Vercel 项目 truth-vault 的 env 里把 `SUPABASE_SERVICE_ROLE_KEY` 删掉**（删了之后 `/health` 之外的一切不受影响，看板只走 anon）。
+
+### 验证
+
+- apply 后：5 张表 `relrowsecurity = t`、anon `has_table_privilege(select) = false`、authenticated 经 policy 可读；`SET ROLE anon` 读 `reference_samples` → 42501；`SET ROLE anon` 读 `v_dash_overview` → notes 6300、`v_dash_system_pulse` 1 行、`v_dash_top_hits` 8 行（看板路径没断）。
+- 没验证的：ssll 下一次跑 vibe_loop / 打开项目列表是否照常（它最后一次写库 08-28，仓最后 push 09-27）。若它读到 0 行 → 它用的不是 service_role，按 `security_rls_public_ssll_tables.sql` 末尾的回滚或改 key。
+
+### 挡不住什么
+
+- `/console` 的密码只挡 UI，不挡 REST：anon key 仍能读 18 个聚合视图（设计如此，视图里没有正文）。
+- ssll 新建 public 表会继承 anon 全权限（第 4 条）。
+
