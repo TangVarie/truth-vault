@@ -7242,7 +7242,8 @@ jobs:
           psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_21_vanished_notes.sql
       - name: Sanity-check v1.20 / v1.21 (human_via_agent 进 CHECK; 消失 = 戳落后于本项目最近一次 run, 没盖过戳不算)
         # 四篇: r2 最新 → 不算; r1 落后 → 消失 1; 没盖过戳 → 不算; 另一项目只有 NULL 戳 → 0 行 (不是消失, 是没经历过完整同步)。
-        # 反证 (2026-10-09 本地实跑): 判据改成 "3 天没见到" → CI_V21_never 也进来, 1 变 2, 红。
+        # 反证 (按视图判据推演, 本地没有 PG): 判据改成 "3 天没见到" → CI_V21_never 也进来, 1 变 2, 红。10-09 CI 第一次红在期望串的
+        # bool 形态 (f vs false), 视图本身只回了 r1 那篇 —— 判据对。
         run: |
           psql -v ON_ERROR_STOP=1 -tA -c "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='prepublish_evaluations_evaluator_type_check'" | grep -q human_via_agent || { echo "❌ v1.20: CHECK 里没有 human_via_agent"; exit 1; }
           psql -v ON_ERROR_STOP=1 <<'SQL'
@@ -7254,7 +7255,7 @@ jobs:
             ('CI_V21_od_never', 'CI_V21_OD', 'c', NULL, NULL);
           SQL
           GOT=$(psql -v ON_ERROR_STOP=1 -tA -c "SELECT string_agg(note_id || ':' || latest_run_id || ':' || has_lesson_card, ',' ORDER BY note_id) FROM truth_vault.v_notes_vanished WHERE project_id LIKE 'CI_V21%'")
-          WANT="CI_V21_vanished:r2:f"
+          WANT="CI_V21_vanished:r2:false"   # has_lesson_card 是 boolean, 拼进 text 是 false 不是 psql 单列输出的 f
           [ "$GOT" = "$WANT" ] || { echo "❌ v1.21 判据不对。期望 [$WANT] 实得 [$GOT]"; exit 1; }
           psql -v ON_ERROR_STOP=1 -c "DELETE FROM truth_vault.notes WHERE project_id LIKE 'CI_V21%'; DELETE FROM truth_vault.projects WHERE project_id LIKE 'CI_V21%';"
           echo "✓ v1.20 / v1.21: human_via_agent 进 CHECK; 消失只数 r1 那篇, 没盖过戳的两篇不算"
