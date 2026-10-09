@@ -474,7 +474,13 @@ def _detect_missing_core_columns(
             order_by="note_id",
         )
     except Exception as exc:
+        # 审计 C-18: 这道闸读库失败以前只有一行 warning 日志, 整轮照绿 —— "守卫静默关"。
+        # 它仍然不该把同步打死 (降级成不监控是对的), 但得让看 run 的人看见: Actions 的 annotation
+        # 会挂在 run 顶上, 日志里的一行 warning 不会。
         logger.warning("核心列消失检测: 读 notes 失败(%s) —— 本轮跳过该检测。", exc)
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            print(f"::warning title=核心列消失检测没跑 ({mapping['project_id']})::读 notes 失败 "
+                  f"({type(exc).__name__}), 本轮这道闸是关着的 —— 同一轮真有核心列被改名也不会报。", flush=True)
         return []
     ever_filled = set()
     for p in probes:
@@ -1686,6 +1692,8 @@ def main() -> int:
     # 所以照样挡住盖戳和对账(见下方 records_all_ok), 只是不进 errors、不把退出码变红。
     stats = {"total": 0, "upserted": 0, "quarantined": 0,
              "empty_placeholder": 0, "errors": 0, "known_backlog": 0,
+             # 审计 B-15: 隔离里多少是今晚新冒的、多少是老的又冒了 (只计需要人看的那两类, 空占位不计)
+             "quarantine_new": 0, "quarantine_seen_again": 0,
              "undeclared_absorbed": 0, "missing_core_columns": 0,
              # D-091: 未来发布时间夹掉 / 状态格清空写回默认 / 状态值没映上 / 整批翻转被挡
              "publish_time_future": 0, "tier_cleared": 0, "tier_unmapped": 0,
@@ -1756,16 +1764,24 @@ def main() -> int:
         logger.info("已知待办名单: %d 条隔离行人已认领(status=reviewed/rejected), 命中的不计错",
                     len(acked_quarantine))
 
-    def _count_quarantined(record_id: str, reason: str) -> None:
+    def _count_quarantined(record_id: str, reason: str, fresh: bool | None = None) -> None:
         """隔离一条: 认领过的进 known_backlog, 没认领过的进 errors。
 
         两边都算"这次没处理成" —— records_all_ok 用的是两者之和, 所以【盖戳和对账
         的严格程度一格没松】。这一点是本改动的要害: 隔离行没被 upsert, 也就没盖上
         本次 last_seen 戳; 要是让它进了对账, 会被报成"消失了"(COR-002/COR-011
         堵的就是这个洞)。红转黄只动退出码, 不动对账。
+
+        fresh (审计 B-15): quarantine_record 回的"是不是新行"。False = 这条隔离早就在表里、今晚
+        又冒了一次 —— 它要么是没人认领的老问题, 要么是人标了 resolved 又回来了。以前首见冻结之后
+        没人分得清 5,013 条 pending 里哪些还活着。只计数, 不改隔离表 (名单只能由人改, D-053)。
         """
         stats["quarantined"] += 1
         failed_record_ids.add(record_id)
+        if fresh is True:
+            stats["quarantine_new"] += 1
+        elif fresh is False:
+            stats["quarantine_seen_again"] += 1
         if (record_id, reason) in acked_quarantine:
             stats["known_backlog"] += 1
         else:
@@ -1792,10 +1808,11 @@ def main() -> int:
             if inh_reason:
                 logger.warning("record_id=%s 抖音行找不到可继承的上一行小红书文案(%s, 素人=%s) → quarantine",
                                feishu_record_id, inh_reason, raw_fields.get("素人编号"))
+                fresh = None
                 if not args.dry_run:
-                    quarantine_record(sb, mapping["project_id"], feishu_record_id,
-                                      raw_fields, [content_col], reason=inh_reason)
-                _count_quarantined(feishu_record_id, inh_reason)
+                    fresh = quarantine_record(sb, mapping["project_id"], feishu_record_id,
+                                              raw_fields, [content_col], reason=inh_reason)
+                _count_quarantined(feishu_record_id, inh_reason, fresh)
                 continue
         try:
             note, metric, undeclared = transform_row(mapping, feishu_record_id, raw_fields)
@@ -1835,8 +1852,9 @@ def main() -> int:
                     note.get(k) for k in _NOTE_DATA_SIGNALS
                 )
                 miss_reason = f"missing_required:{','.join(missing)}"
+                fresh = None
                 if not args.dry_run:
-                    quarantine_record(
+                    fresh = quarantine_record(
                         sb, mapping["project_id"], feishu_record_id,
                         raw_fields, missing, reason=miss_reason,
                     )
@@ -1851,7 +1869,7 @@ def main() -> int:
                     # COR-002: 这是一条本该是笔记、却缺正文的行 —— 它在飞书里还在,
                     # 只是这次没处理成。算进"没处理成"让 records_all_ok=False, 阻止对账
                     # 把它报成"消失了"。空占位行(父记录占位/评论碎片)是正常噪音, 不计。
-                    _count_quarantined(feishu_record_id, miss_reason)
+                    _count_quarantined(feishu_record_id, miss_reason, fresh)
                 continue
 
             # Collect for the batched write after the loop. Dedupe the account
@@ -2264,6 +2282,14 @@ def main() -> int:
         logger.warning(msg)
         if os.environ.get("GITHUB_ACTIONS") == "true":
             print(f"::warning title=已知待办隔离 ({mapping['project_id']})::{msg}", flush=True)
+    # 审计 B-15: 隔离表只写不读、首见冻结 —— "今晚又冒了一次"的老隔离以前和新隔离分不开。
+    # 这里只报数 (::notice, 不红): 老的又冒 = 没人认领也没修; 认领过的 (known_backlog) 另有上面那条。
+    seen_again = stats["quarantine_seen_again"] - min(stats["quarantine_seen_again"], stats["known_backlog"])
+    if seen_again > 0 and os.environ.get("GITHUB_ACTIONS") == "true":
+        print(f"::notice title=老隔离又冒了 ({mapping['project_id']})::{seen_again} 条隔离行不是今晚新出现的, "
+              f"也没人在隔离表认领 (status 还是 pending) —— 它们每晚都在, 去 undeclared_fields_quarantine 看 reason: "
+              f"要么补数据, 要么把 status 改成 reviewed/rejected 让它进已知待办。本轮新隔离 {stats['quarantine_new']} 条。",
+              flush=True)
     logger.info("Done: %s", json.dumps(stats, ensure_ascii=False))
     return 0 if stats["errors"] == 0 else 1
 

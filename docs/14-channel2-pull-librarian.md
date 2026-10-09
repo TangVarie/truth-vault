@@ -122,7 +122,8 @@ rank_score          ← 吸收 D-036：tier 权重 + recency + account_bao_rate
 - **缓存（必须，省 LLM 成本）** — ✅ 表已建：`schemas/notes_v1_5_librarian_cache.sql`。内容寻址缓存，一张 Supabase 表 `truth_vault.flywheel_librarian_cache`：
   - `cache_key = hash(consumer + project_id + brief_digest + library_version)`
   - 命中 → 直接返回上次精选，**跳过 LLM**；未命中 → 跑馆员 → 写回。
-  - **自动失效**：`library_version` = 经验卡 `max(updated_at)` / 计数器；新爆款入库 → 版本变 → 旧 key 不命中 → 重算。brief 改 → `brief_digest` 变 → 重算。
+  - **自动失效**：`library_version` = f(候选数, `max(curated_at)`, 月份桶, 候选 id 集合摘要[, gate2_run])（`librarian/core.py:library_version`；v1_5 头注释里写的 `max(updated_at)` 是最初设计，实际没用 `updated_at`——夜跑 upsert 让它天天变）；新爆款入库 / 重策展 → 版本变 → 旧 key 不命中 → 重算。brief 改 → `brief_digest` 变 → 重算。
+    ⚠️ **essence 重标不会让卡变**（审计 B-02）：卡内容冻结在第一次策展，essence pass 之后重标那篇笔记，卡不知道、`library_version` 也不变。补法是 `recurate-lessons.yml`（D-096）：worker `/curate` 带 `recurate=stale` 只重策展 `essence_annotated_at > curated_at` 的卡，重策展后 `curated_at` 变新 → 版本变 → 缓存自然失效。
   - 爆款稀少（库几乎不变）+ brief 稳定 → 命中率极高，绝大多数请求 **0 LLM**。底层调用再叠 Anthropic prompt caching 兜底。
 - **运行时机**: 消费方每次起 batch / 写稿请求时同步调一次（per-batch，不必 per-item）。
 - **鉴权**: 服务用 service_role 读 TV 策展库 + 缓存；对外（aw/ssll 调用）用一个内部 API key / JWT，别裸暴露公网。

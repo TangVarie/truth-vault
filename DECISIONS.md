@@ -5880,3 +5880,27 @@ python job 里 import 馆员的 8 步（TV-03 / TV-05 / TV-06 / 守卫 6 / put_c
 - 掩码挡不住 `print()` 和自建 handler；D-021 的 quarantine 路径里有 `print`，没改。
 - `_KNOWN_NOTE_COLUMNS` 是手抄的快照；生产加了列而这里没加，表现是 `load_mapping` 红（看得见），不是静默。
 - R-032 矩阵是手抄的，新消费者不会自动出现。
+
+## D-096 · 经验卡有了"essence 比卡新就重策展"的路；隔离行分得清新冒的和老的又冒；CI job 有超时；核心列闸没跑要看得见（2026-10-09）
+
+来源：`data-analysis/architecture-audit-2026-10-08.md` 的 B-02 / B-15 / C-15 / C-18 / C-19 / C-05。
+
+### 定了什么
+
+1. **重策展只做"陈旧"的（B-02）。** `curate_flywheel_lessons.py --recurate-stale`：取已策展的卡，按 150 个一组查 `notes.essence_annotated_at`（视图没导出这一列，不改视图，客户端拼），只留 `essence_annotated_at > curated_at` 的（10-08 实查 164/306）；缺时间 / 认不出 / 没 `curated_at` 一律不算陈旧（不乱花钱）。重策展写回 `curated_at = now()` → 下一轮自然轮到后面的卡 → 多轮 `--limit` 收敛；`library_version` 含 `max(curated_at)`，缓存自然失效。worker `/curate` 加 `recurate: "stale" | "all"`（`all` 不收敛：每次都从 rank 最高的 limit 张开始，只给手工 / 测试；别的值 400）。新 workflow `recurate-lessons.yml`（手动）：每轮 ≤8 张（同 CUR_REQ_MAX 的边缘约束），一轮回 0 张即收敛，撞 daily-sync 的锁 409 等 90 s 最多 5 次。**daily-sync 的 curate 行为一字不变**（守卫 §3 钉着默认路径仍只取 `is_curated=false`、不查 notes）。docs/14 §4.2 那句 `max(updated_at)` 改成实际的 `library_version` 定义并注明"essence 重标不会让卡变"。
+2. **隔离行报"新冒 / 老的又冒"（B-15 的轻版）。** `quarantine_record` 返回这一行是不是新插入的（`ignore_duplicates` 下 PostgREST 只回插入的行；假件 / 没回 data → None 不计）；sync 的 `_count_quarantined` 分 `quarantine_new` / `quarantine_seen_again`，收尾对"老的又冒且没人认领"打 `::notice`。**不改隔离表、不自动 resolved**：名单只能由人改（D-053 的规矩不动）。审计提的 `last_seen_at` 列 + 按 reason 判 resolved 没做——那要迁移和改语义，先用这个 0 迁移的版本看一周。
+3. **ci.yml 三个 job 加 `timeout-minutes`（C-15）：** python 45（实测 ~2 min）/ sql 20 / yaml 10。两个 backfill workflow 本来就是多轮长跑，留默认 360。
+4. **核心列消失检测读库失败要看得见（C-18）：** 仍降级成不监控（它不该把同步打死），但在 Actions 上打 `::warning` annotation，不再只是日志里一行。
+5. **worker README 记下（C-19）：** 互斥锁是进程内的；`restartPolicyMaxRetries: 3` 之后服务停着，sync 侧判 systemic 红是对的，修法是 Redeploy。
+6. **两处过期文案（C-05）：** `prompts/flywheel_librarian.md` block1 "跨项目共享" → "同项目内"（D-088 起按项目预筛）；aw runbook 的 `CANDIDATE_CAP=50` → 24（D-089）。
+
+### 验证
+
+- `check_curate_stale.py` 五节过（挑选 / 时区 / 取数 / worker 映射 / 收敛前提）；反证：`>` 写成 `>=` → §1 红；worker 把 `stale` 映成 `--recurate` → §4 红；默认路径也查 notes → §3 红。
+- ci.yml 里 30 步 import 入库引擎 / curate / worker / `_common` 的 heredoc 本地重放全绿（第一版把 `synthetic` 字面量拼进了别的串，TV-05 那步红，改回独立字面量后绿）。`check_secret_masking` / `check_ingest_guards` / `check_system_map`（G1 10 个 workflow）照过；两个 yaml 可 parse。
+- 没拿生产跑重策展（花钱的动作，owner 手动触发 `recurate-lessons.yml`；先 `limit=5 max_batches=1` 看一轮再放开）。
+
+### 挡不住什么
+
+- `recurate=all` 不收敛，所以没进 workflow；要全量重策展得先把它改成"按 curated_at 升序"——这次没做。
+- "老的又冒"只能数 pending 的；人标了 resolved 又冒出来的那种在 `known_backlog` 之外、`seen_again` 之内，分不出来。

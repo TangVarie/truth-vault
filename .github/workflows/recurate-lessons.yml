@@ -1,0 +1,101 @@
+# 把【essence 比卡新】的经验卡重新策展一遍 (D-096, 2026-10-08 审计 B-02)。
+#
+# 为什么要有它: 经验卡的内容冻结在第一次策展; 之后 essence pass 重标过那篇笔记 (情绪杠杆 / 受众
+# 变了), 卡不知道。10-08 实查 164/306 张卡的 essence_annotated_at 晚于 curated_at。daily-sync
+# 的 curate 只处理 is_curated=false, 永远不会碰它们。
+#
+# 怎么收敛: worker /curate 带 recurate=stale → 脚本只取 essence_annotated_at > curated_at 的卡,
+# 按 rank 取 limit 张重策展; 重策展后 curated_at 变新, 下一轮自然轮到后面的卡, 直到一轮回 0。
+# 每张 ≤2 次 LLM 调用; 164 张 ≈ 330 次调用, 中转站坏日 86 s/次 → 别指望一次跑完, 多触发几次幂等续作。
+#
+# 与 daily-sync 的 curate 共用 worker 的脚本锁: 撞上会 409, 这里等 90 s 再试, 最多 5 次。
+name: Recurate lessons (essence newer than card)
+
+on:
+  workflow_dispatch:
+    inputs:
+      project:
+        description: "只重策展某项目 (如 WTG_phase1); 留空 = 全部项目"
+        required: false
+        default: ""
+      limit:
+        description: "每轮几张。⚠️ 受 Railway 边缘 ~5min 超时约束, 一张 ≤2 次 LLM 调用: ≤5 稳 (同 daily-sync CUR_REQ_MAX); 别超 8"
+        required: false
+        default: "5"
+      max_batches:
+        description: "最多几轮 (一轮 = 一次 /curate 请求)。到顶没收敛会 ::warning, 再触发一次接着跑 (幂等)"
+        required: false
+        default: "20"
+
+concurrency:
+  group: recurate-lessons
+  cancel-in-progress: false
+
+jobs:
+  recurate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      WORKER_URL: ${{ secrets.WORKER_URL }}
+      WORKER_API_KEY: ${{ secrets.WORKER_API_KEY }}
+      PROJECT: ${{ github.event.inputs.project }}
+      LIMIT: ${{ github.event.inputs.limit }}
+      MAXB: ${{ github.event.inputs.max_batches }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Guard secrets + inputs
+        run: |
+          [ -n "$WORKER_URL" ] || { echo "::error::缺 secret WORKER_URL"; exit 1; }
+          [ -n "$WORKER_API_KEY" ] || { echo "::error::缺 secret WORKER_API_KEY"; exit 1; }
+          case "$LIMIT" in ''|*[!0-9]*) echo "::error::limit 必须是正整数, 收到 '$LIMIT'"; exit 1;; esac
+          case "$MAXB"  in ''|*[!0-9]*) echo "::error::max_batches 必须是正整数, 收到 '$MAXB'"; exit 1;; esac
+          [ "$LIMIT" -ge 1 ] && [ "$LIMIT" -le 8 ] || { echo "::error::limit 要在 1–8 (>8 撞 Railway 边缘 5min 超时)"; exit 1; }
+          [ "$MAXB" -ge 1 ] || { echo "::error::max_batches 必须 ≥1"; exit 1; }
+          if [ -n "$PROJECT" ] && [ ! -f "mappings/${PROJECT}.yaml" ]; then
+            echo "::error::未知项目 '${PROJECT}': mappings/${PROJECT}.yaml 不存在"; exit 1
+          fi
+          echo "✅ project='${PROJECT:-(all)}' limit=$LIMIT max_batches=$MAXB"
+
+      - name: Loop /curate recurate=stale until a round comes back empty
+        run: |
+          set +e
+          total=0
+          converged=0
+          for i in $(seq 1 "$MAXB"); do
+            if [ -n "$PROJECT" ]; then
+              BODY="{\"limit\":${LIMIT},\"recurate\":\"stale\",\"project\":\"$PROJECT\"}"
+            else
+              BODY="{\"limit\":${LIMIT},\"recurate\":\"stale\"}"
+            fi
+            code=000; ok=false
+            for attempt in 1 2 3 4 5; do
+              code=$(curl -sS -w '%{http_code}' -o /tmp/r.json --max-time 900 \
+                -X POST "${WORKER_URL%/}/curate" \
+                -H "X-Worker-Key: $WORKER_API_KEY" -H 'content-type: application/json' \
+                -d "$BODY") || code=000
+              ok=$(jq -r '.ok // false' /tmp/r.json 2>/dev/null || echo false)
+              if [ "$code" = "409" ]; then
+                echo "  ⏳ round $i: worker 的 curate 锁被占着 (多半是 daily-sync 在跑), 等 90s 再试 ($attempt/5)"
+                sleep 90; continue
+              fi
+              break
+            done
+            n=$(jq -r '.stdout_tail // ""' /tmp/r.json 2>/dev/null | grep -o '"ok": *[0-9][0-9]*' | tail -1 | grep -o '[0-9][0-9]*$' || true)
+            echo "── round $i/$MAXB · HTTP $code · ok=$ok · 重策展 ${n:-?} 张 ──"
+            jq -r '.stdout_tail // ""' /tmp/r.json 2>/dev/null | tail -4
+            if [ "$code" != "200" ] || [ "$ok" != "true" ]; then
+              jq -r '.stderr_tail // ""' /tmp/r.json 2>/dev/null | tail -8
+              echo "::error::round $i 失败 (HTTP $code ok=$ok) —— 已重策展的 $total 张不丢, 修好后再触发接着跑。"
+              exit 1
+            fi
+            [ -n "$n" ] && total=$((total + n))
+            # 这一轮一张都没有 = 没有更多陈旧卡了 (或 Done 行没取到: 也停, 别空转烧钱)
+            if [ -z "$n" ] || [ "$n" = "0" ]; then converged=1; break; fi
+          done
+          echo "── 结束 · 共重策展 $total 张 ──"
+          if [ "$converged" = "1" ]; then
+            echo "✅ 没有更多 essence 比卡新的经验卡了。"
+          else
+            echo "::warning::到达 max_batches=$MAXB 还没收敛 (本次 $total 张)。再触发一次本工作流接着跑 (幂等)。"
+          fi

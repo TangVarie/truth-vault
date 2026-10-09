@@ -97,3 +97,9 @@ curl -s -X POST localhost:8000/annotate-essence "${AUTH[@]}" -H 'content-type: a
 curl -s -X POST localhost:8000/curate "${AUTH[@]}" -H 'content-type: application/json' \
   -d '{"project":"WTG_phase1","limit":5,"dry_run":true}' | jq
 ```
+
+## 互斥锁是进程内的；连崩三次服务会停着（审计 C-19，记在案）
+
+- `_script_lock` 是**本进程**的 `threading.Lock`：同一个脚本同一时刻只跑一个，抢不到锁 → 409。它挡不住"两个 worker 实例"——Railway 这个服务只配一个实例，别手滑开副本。
+- `worker/railway.json` 的 `restartPolicyType: ON_FAILURE` + `restartPolicyMaxRetries: 3`：进程连崩 3 次（OOM / 中转站把它拖死 / 启动即炸）之后 Railway **不再拉起**，服务就停在那里。那时 daily-sync / features-sync 的 curl 是连接级失败（curl_rc 6/7），退避三次仍失败 → 判 **systemic 红**。这是对的：它确实不是瞬时。
+- 修法：Railway → 这个服务 → Deployments → Redeploy（或推一次 commit）。先看最后一次崩溃日志，别只是拉起来等它再崩三次。`/health` 回不来 ≠ 脚本在跑：`running[]` 空 + 连不上 = 服务停了。

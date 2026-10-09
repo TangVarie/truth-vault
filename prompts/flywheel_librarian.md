@@ -4,7 +4,7 @@
 值得参考】的"经验卡"(由策展 pass 产出,见 `prompts/flywheel_curator.md`),**推理挑选
 3-5 张最有借鉴价值的**,并说清每张【为什么相关】+【借它哪个部位】。由
 `librarian/core.py` 调用。运行时为 **prompt caching 分块结构**(`core.py`):`ROLE_TASK_INSTR`
-+ 候选卡 → 第 1 个 `cache_control: ephemeral` system 块(跨项目共享、同 library_version 内稳定);
++ 候选卡 → 第 1 个 `cache_control: ephemeral` system 块(**同项目内**、同 library_version 内稳定 —— D-088 起候选按项目预筛,不再跨项目共享;审计 C-05 改此句);
 项目 prompt 包 → 第 2 个缓存块(按项目);本次 delta → user message(每次变、不缓存)。
 改本文件时同步 `core.py` 的 `ROLE_TASK_INSTR`。
 

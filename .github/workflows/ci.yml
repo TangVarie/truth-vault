@@ -10,6 +10,7 @@ jobs:
   python:
     name: Python syntax + unit tests
     runs-on: ubuntu-latest
+    timeout-minutes: 45   # 实测 ~2 min; 默认 360 会让一个卡死的步骤占 6 小时 (审计 C-15)
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -64,6 +65,7 @@ jobs:
             scripts/check_gate2_run.py \
             scripts/check_external_corpus_fresh.py \
             scripts/check_secret_masking.py \
+            scripts/check_curate_stale.py \
             librarian/__init__.py \
             librarian/clients.py \
             librarian/core.py \
@@ -3667,6 +3669,9 @@ jobs:
       - name: secret 掩码挂在 logger 出口 (B-11, RISKS R-023 后记) · 消息 / %-参数 / traceback / 源码引用 / 边界
         working-directory: scripts
         run: python check_secret_masking.py
+      - name: 重策展 essence 比卡新的那条路 (D-096) · 挑选 / 时区 / 取数 / worker 映射 / 收敛前提
+        working-directory: scripts
+        run: python check_curate_stale.py
       - name: sanshengliubu sync shape self-check (build_reference_sample ↔ preflight ↔ ssll v2 schema)
         working-directory: scripts
         run: |
@@ -5908,6 +5913,7 @@ jobs:
   sql:
     name: SQL apply (Postgres 16)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:16
@@ -7286,6 +7292,7 @@ jobs:
   yaml:
     name: Mapping yaml lint
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -970,9 +970,14 @@ def quarantine_record(
     raw_row: dict[str, Any],
     undeclared_fields: list[str],
     reason: str = "undeclared_fields",
-) -> None:
+) -> Optional[bool]:
     """Write the entire raw row to truth_vault.undeclared_fields_quarantine
     instead of silently dropping new/unknown fields. See D-021.
+
+    返回这一行是不是**新**隔离 (2026-10-08 审计 B-15): True = 这次插进去的; False = 早就在表里
+    (ignore_duplicates 下 PostgREST 只回插入的行, 回空就是已存在); None = 判不了 (假件 / 没回 data)。
+    调用方用它数"pending 且今晚仍出现"的行 —— 5,013 条 pending 里哪些是还在天天冒的、哪些早没了,
+    以前没人分得清, 因为写进去之后首见就冻结。
 
     Idempotent on (project_id, feishu_record_id, reason) — repeated runs of
     sync_feishu on a row that still has undeclared fields don't pile up rows
@@ -985,7 +990,7 @@ def quarantine_record(
     preserves any reviewer state (status/review_decision/reviewed_by) an operator
     has already set on the first-seen quarantine row.
     """
-    (
+    res = (
         client.schema("truth_vault")
         .table("undeclared_fields_quarantine")
         .upsert(
@@ -1003,6 +1008,10 @@ def quarantine_record(
         )
         .execute()
     )
+    data = getattr(res, "data", None)
+    if not isinstance(data, list):
+        return None
+    return len(data) > 0
 
 
 # 「已知待办」= 人已经看过、决定先这么放着的隔离行(D-053, owner 2026-09-04)。

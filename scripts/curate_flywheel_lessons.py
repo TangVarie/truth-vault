@@ -40,6 +40,9 @@ import os
 import sys
 import time
 
+from datetime import datetime, timezone
+from typing import Optional
+
 from _common import fetch_all_pages, get_supabase_client, setup_logger, _iso_now
 # 复用 essence pass 的带重试 Anthropic 调用 + JSON 解析, 避免重复实现那套 retry。
 # (导入 annotate_essence_pass 仅触发其 def/常量定义, main 有 __name__ guard, 无副作用。)
@@ -140,8 +143,50 @@ def validate_lesson(data) -> list[str]:
     return errors
 
 
-def fetch_uncurated_cards(sb, project_id, recurate: bool) -> list[dict]:
-    """从策展库视图取合格爆款。默认只取 is_curated=false; --recurate 取全部。
+def _ts(v) -> Optional[datetime]:
+    """ISO 串 → naive UTC datetime (两列都是 TIMESTAMP WITHOUT TIME ZONE 的 UTC; 带偏移的也收)。"""
+    if not v:
+        return None
+    try:
+        d = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return d.astimezone(timezone.utc).replace(tzinfo=None) if d.tzinfo else d
+
+
+def stale_cards(cards: list[dict], essence_at: dict[str, Optional[str]]) -> list[dict]:
+    """已策展、但 essence 比卡新的 (notes.essence_annotated_at > curated_at) —— 这些卡的内容
+    冻结在第一次策展, 后来 essence 重标过它们却不知道 (2026-10-08 审计 B-02: 164/306)。
+    纯函数, 给 CI 守卫用。essence 时间缺失 / 认不出 / 卡没 curated_at → 不算陈旧 (不乱花钱)。"""
+    out = []
+    for c in cards:
+        cur = _ts(c.get("curated_at"))
+        ess = _ts(essence_at.get(c.get("source_note_id")))
+        if cur is not None and ess is not None and ess > cur:
+            out.append(c)
+    return out
+
+
+def fetch_essence_annotated_at(sb, note_ids: list[str]) -> dict[str, Optional[str]]:
+    """notes.essence_annotated_at, 按 150 个一组 in_ 查 (视图没导出这一列; 加列要改视图 —— 这里
+    客户端拼, 306 张卡两三个请求)。"""
+    out: dict[str, Optional[str]] = {}
+    ids = sorted(set(note_ids))
+    for i in range(0, len(ids), 150):
+        rows = (
+            sb.schema("truth_vault").table("notes")
+            .select("note_id, essence_annotated_at")
+            .in_("note_id", ids[i:i + 150])
+            .execute()
+        ).data or []
+        for r in rows:
+            out[r["note_id"]] = r.get("essence_annotated_at")
+    return out
+
+
+def fetch_uncurated_cards(sb, project_id, recurate: bool, stale_only: bool = False) -> list[dict]:
+    """从策展库视图取合格爆款。默认只取 is_curated=false; --recurate 取全部;
+    --recurate-stale 只取已策展且 essence 比卡新的 (见 stale_cards)。
 
     按 rank_score 降序取 —— 去掉发布时间硬切后(PR#58 回归 D-001 穿越周期), 全历史都合格;
     若不排序, daily-sync 每轮 ≤15 的策展预算可能花在任意老行上, 让高 rank 的新卡长期
@@ -152,6 +197,8 @@ def fetch_uncurated_cards(sb, project_id, recurate: bool) -> list[dict]:
         .select(
             "source_note_id, project_id, tier, brand, category, "
             "emotional_lever, target_audience, raw_excerpt, is_curated, rank_score, "
+            # curated_at: --recurate-stale 要拿它和 notes.essence_annotated_at 比 (D-096)
+            "curated_at, "
             # 2026-09-17 外部评测 TV-05: synthetic 此前没进 select, 策展模型因此
             # 看不见"这条的指标是不是运营判定的假数据"。馆员的 fetch_candidates 一直
             # 选了这一列, 只有策展这头漏了 —— 同一个证据边界必须两头一致。
@@ -160,12 +207,18 @@ def fetch_uncurated_cards(sb, project_id, recurate: bool) -> list[dict]:
     )
     if project_id:
         q = q.eq("project_id", project_id)
-    if not recurate:
+    if stale_only:
+        q = q.eq("is_curated", True)
+    elif not recurate:
         q = q.eq("is_curated", False)
     # rank_score 含 recency 项、随时间连续重排, 不能当唯一分页键 ——
     # 它作主排序, source_note_id 作次级键把跨页顺序钉死。
-    return fetch_all_pages(q.order("rank_score", desc=True),
-                           order_by="source_note_id")
+    cards = fetch_all_pages(q.order("rank_score", desc=True),
+                            order_by="source_note_id")
+    if stale_only:
+        ess = fetch_essence_annotated_at(sb, [c["source_note_id"] for c in cards])
+        cards = stale_cards(cards, ess)
+    return cards
 
 
 def write_lesson_back(sb, note_id: str, model: str, parsed: dict, dry_run: bool) -> None:
@@ -198,6 +251,9 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=0, help="最多处理 N 条")
     parser.add_argument("--recurate", action="store_true",
                         help="重策展已有卡 (默认只处理 is_curated=false)")
+    parser.add_argument("--recurate-stale", action="store_true",
+                        help="只重策展 essence 比卡新的已有卡 (notes.essence_annotated_at > curated_at); "
+                             "重策展后 curated_at 变新, 多轮 --limit 会自然收敛 (D-096)")
     parser.add_argument("--qps", type=float, default=2.0,
                         help="限速 (default 2 req/s)")
     args = parser.parse_args()
@@ -208,11 +264,12 @@ def main() -> int:
         return 2
 
     sb = get_supabase_client()
-    cards = fetch_uncurated_cards(sb, args.project, args.recurate)
+    cards = fetch_uncurated_cards(sb, args.project, args.recurate or args.recurate_stale,
+                                  stale_only=args.recurate_stale)
     if args.limit:
         cards = cards[: args.limit]
-    logger.info("Found %d card(s) to curate (model=%s, recurate=%s)",
-                len(cards), model, args.recurate)
+    logger.info("Found %d card(s) to curate (model=%s, recurate=%s, stale_only=%s)",
+                len(cards), model, args.recurate or args.recurate_stale, args.recurate_stale)
 
     stats = {"ok": 0, "ok_after_retry": 0, "failed": 0}
     sleep_s = 1.0 / args.qps if args.qps > 0 else 0
