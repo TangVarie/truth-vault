@@ -23,6 +23,12 @@ on:
         description: "最多循环几轮。一轮上限≈batch×max_batches 条,且受 GitHub 6h job 上限(batch=12 时一轮约能灌 ~1400 条)。更大的表灌不完会在末尾警告→再触发一次接着灌(幂等)。"
         required: false
         default: "120"
+      mode:
+        description: "pending = 标还没标过 essence 的(默认); missing_subtype = 只重标「已标 essence 但 direction_subtype 空且飞书给了方向原文」的篇(审计 C-03, NUC 10-08 实查 206 篇; 会重做整篇 essence, 每篇一次 LLM 调用)。"
+        required: false
+        default: "pending"
+        type: choice
+        options: [pending, missing_subtype]
 
 # 同一项目同时只允许一个 backfill 在跑 —— 否则两个 run 会各自快照同一批未标注笔记、
 # 重复烧 LLM 且非确定性地互相覆盖 essence(codex PR#43 review r3355530533)。
@@ -42,6 +48,7 @@ jobs:
       PROJECT: ${{ github.event.inputs.project }}
       BATCH: ${{ github.event.inputs.batch }}
       MAXB: ${{ github.event.inputs.max_batches }}
+      MODE: ${{ github.event.inputs.mode }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -82,7 +89,8 @@ jobs:
             for f in ../mappings/*.yaml; do b=$(basename "$f" .yaml); [ "$b" = "_template" ] || echo "  - $b"; done
             exit 1
           fi
-          echo "✅ inputs OK: project=$PROJECT batch=$BATCH max_batches=$MAXB"
+          case "${MODE:-pending}" in pending|missing_subtype) ;; *) echo "::error::mode 只能是 pending / missing_subtype, 收到 '$MODE'"; exit 1;; esac
+          echo "✅ inputs OK: project=$PROJECT batch=$BATCH max_batches=$MAXB mode=${MODE:-pending}"
 
       - name: Loop worker until project essence is fully annotated
         working-directory: scripts
@@ -91,9 +99,13 @@ jobs:
           # worker 重启吐空/坏响应时 `ok=$(jq …)` 解析失败会触发 errexit 直接杀掉整步、
           # 绕过重试循环(实测:整步 exit 5、连 [try 1] 都没打印 → 重试从没机会跑)。
           set +e
+          # mode=missing_subtype (审计 C-03): remaining 和请求体都切到"direction_subtype 空"那条判据,
+          # 两边同一判据才能收敛; 标上子方向的下一轮就不再选中, 判不出的靠下面"两轮没下降就停"。
+          COUNT_FLAG=""; EXTRA_BODY=""
+          if [ "${MODE:-pending}" = "missing_subtype" ]; then COUNT_FLAG="--only-missing-subtype"; EXTRA_BODY=',"only_missing_subtype":true'; fi
           prev=-1
           for i in $(seq 1 "$MAXB"); do
-            rem=$(python count_unannotated_essence.py "$PROJECT") || { echo "::error::查 remaining 失败"; exit 1; }
+            rem=$(python count_unannotated_essence.py "$PROJECT" $COUNT_FLAG) || { echo "::error::查 remaining 失败"; exit 1; }
             echo "── batch $i/$MAXB · project=$PROJECT · remaining(before)=$rem ──"
             if [ "$rem" = "0" ]; then
               echo "✅ $PROJECT essence 已全部标注完。"
@@ -117,7 +129,7 @@ jobs:
               code=$(curl -sS -w '%{http_code}' -o /tmp/b.json --max-time 900 \
                 -X POST "${WORKER_URL%/}/annotate-essence" \
                 -H "X-Worker-Key: $WORKER_API_KEY" -H 'content-type: application/json' \
-                -d "{\"project\":\"$PROJECT\",\"limit\":${BATCH}}") || code=000
+                -d "{\"project\":\"$PROJECT\",\"limit\":${BATCH}${EXTRA_BODY}}") || code=000
               ok=$(jq -r '.ok // false' /tmp/b.json 2>/dev/null)
               echo "   [try $attempt] HTTP $code · ok=$ok · returncode=$(jq -r '.returncode // "?"' /tmp/b.json 2>/dev/null)"
               jq -r '.stdout_tail // ""' /tmp/b.json 2>/dev/null | tail -4
@@ -131,8 +143,8 @@ jobs:
               exit 1
             fi
           done
-          rem=$(python count_unannotated_essence.py "$PROJECT" 2>/dev/null || echo "?")
-          echo "── 结束 · project=$PROJECT · remaining(final)=$rem ──"
+          rem=$(python count_unannotated_essence.py "$PROJECT" $COUNT_FLAG 2>/dev/null || echo "?")
+          echo "── 结束 · project=$PROJECT · mode=${MODE:-pending} · remaining(final)=$rem ──"
           if [ "$rem" != "0" ] && [ "$rem" != "?" ]; then
             echo "::warning::还剩 $rem 条未标注(到达 max_batches=$MAXB)。再触发一次本工作流接着灌,或调大 max_batches。"
           fi

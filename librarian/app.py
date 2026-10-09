@@ -72,10 +72,14 @@ def health() -> dict:
     ⚠️ ``ok`` 保持恒 True —— Railway 的 healthcheckPath 指着它, 配置不全不该让
        容器起不来(重启治不好配置, 只会变成重启风暴)。要看的是 ``auth.ok``。
     """
+    from . import clients as _clients   # 延迟 import: /health 不该因 SDK 缺失起不来
     return {
         "ok": True,
         "service": "flywheel-librarian",
         "auth": service_auth.auth_health("LIBRARIAN", header="X-Librarian-Key"),
+        # 审计 C-02: prompt caching 降级以前只在 stdout 里一行 warning。count > 0 且持续涨 =
+        # 这个中转站不支持 cache_control, 每次借阅都在多付 input token; select_ms 里也掺着这次重试。
+        "config": {"prompt_cache_fallbacks": dict(_clients.PROMPT_CACHE_FALLBACKS)},
     }
 
 

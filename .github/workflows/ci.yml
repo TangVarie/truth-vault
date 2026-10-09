@@ -66,6 +66,8 @@ jobs:
             scripts/check_external_corpus_fresh.py \
             scripts/check_secret_masking.py \
             scripts/check_curate_stale.py \
+            scripts/check_prompt_cache_fallback.py \
+            scripts/check_essence_subtype_backfill.py \
             librarian/__init__.py \
             librarian/clients.py \
             librarian/core.py \
@@ -3672,6 +3674,12 @@ jobs:
       - name: 重策展 essence 比卡新的那条路 (D-096) · 挑选 / 时区 / 取数 / worker 映射 / 收敛前提
         working-directory: scripts
         run: python check_curate_stale.py
+      - name: prompt caching 降级要被数出来、/health 与 Done 行看得见 (审计 C-02)
+        working-directory: scripts
+        run: python check_prompt_cache_fallback.py
+      - name: direction_subtype 补标路 (审计 C-03) · fetch 判据 / count 同判据 / worker 映射 / workflow 接线
+        working-directory: scripts
+        run: python check_essence_subtype_backfill.py
       - name: sanshengliubu sync shape self-check (build_reference_sample ↔ preflight ↔ ssll v2 schema)
         working-directory: scripts
         run: |

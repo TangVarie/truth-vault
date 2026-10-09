@@ -5904,3 +5904,27 @@ python job 里 import 馆员的 8 步（TV-03 / TV-05 / TV-06 / 守卫 6 / put_c
 
 - `recurate=all` 不收敛，所以没进 workflow；要全量重策展得先把它改成"按 curated_at 升序"——这次没做。
 - "老的又冒"只能数 pending 的；人标了 resolved 又冒出来的那种在 `known_backlog` 之外、`seen_again` 之内，分不出来。
+
+## D-097 · prompt caching 降级要被数出来；direction_subtype 补标有了收敛的路；闸一样本按 §6.1 抽（2026-10-09）
+
+来源：`data-analysis/architecture-audit-2026-10-08.md` 的 C-02 / C-03 / C-10 / C-01。
+
+### 定了什么
+
+1. **降级计数（C-02）。** `librarian/clients.py` 与 `annotate_essence_pass.py` 的 cache_control 降级以前只打一行 warning 进 Railway stdout；中转站不支持 prompt caching 的话每次调用都在多付一倍 input token，几个月没人知道。现在进程内计数：馆员 `/health` 回 `config.prompt_cache_fallbacks`（count / last_at / last_error；重启清零——它答的是"这个实例最近有没有在降级"），essence 的 Done 行 stats 带 `prompt_cache_fallbacks`。`select_ms` 掺着这次重试的问题没改口径（D-088 的基线按旧口径，改了对不上），只在 /health 注释里说清。
+2. **`--only-missing-subtype`（C-03）。** essence pass 新选择：已标 essence、`direction_subtype` 空、`raw_extra._direction_raw` 非空（NUC 10-08 实查 206 篇）。`--reannotate` 不收敛（每轮 `--limit` 都从 note_id 最小的开始重做），这条路收敛：标上子方向的下一轮不再选中；判不出的靠 backfill-essence "两轮 remaining 没下降就停"兜住。`count_unannotated_essence.py --only-missing-subtype` 用**同一判据**（守卫钉着两边一致，否则不收敛）；worker `/annotate-essence` 加 `only_missing_subtype`；`backfill-essence.yml` 加 `mode: pending | missing_subtype`。会重做整篇 essence（每篇一次 LLM 调用）——只做子方向那一步要拆循环，这次没拆。
+3. **闸一样本（C-10，Jev 仓）。** `fq_shadow.py --from-db --gate1-sample`：从 `v_l2_labels` 按 docs/28 §6.1 抽 5 个大项目 × (30 爆 + 30 趴)，固定 seed，排序后再抽（库返回顺序变了名单不变），名单写 `fq-gate1-sample.json` 存档；`v_l2_labels` / `notes` / 账本都翻页、按 150 个 id 一组查（以前 `order=note_id&limit=N` 既产不出样本又被钳到 1000）。
+4. **docs/14 写明 `rank_score` 实际只有 tier → recency 两项在排序（C-01）**：`tier_source` 项在书架上是常数，账号项 60/306 用默认且分母口径有问题；要让账号项起作用得先修 `personal_bao_rate`，这次没动。
+
+### 验证
+
+- `check_prompt_cache_fallback.py` 五节（假 anthropic 模块，不碰网络）；反证：馆员降级不计数 → 3 条红。
+- `check_essence_subtype_backfill.py` 四节；反证：count 判据与 fetch 不一致 → §2 红；worker 不映射 → §3 红。
+- ci.yml 里 38 步相关 heredoc 本地重放全绿；`check_system_map` 六条过；两个 yaml 可 parse。
+- Jev `tests/test_fq_shadow_sampling.py` 三条（30+30 且不足全取 / 同 seed 同名单且与返回顺序无关 / 翻页 + 分组查 + 名单存档与实取一致）；全套 86 passed。
+- 没拿生产跑 `mode=missing_subtype`（206 篇 × 一次 LLM 调用，owner 触发 `backfill-essence.yml` 选 NUC_phase1 + missing_subtype；先 `batch=12 max_batches=1` 看一轮）。
+
+### 挡不住什么
+
+- 降级计数是进程内的：Railway 重启就清零；要历史趋势得落库，这次没落。
+- `--only-missing-subtype` 重做整篇 essence，会把那 206 篇的 essence 字段也重写一遍（词表版本若变了是好事，没变就是多花一次钱）。

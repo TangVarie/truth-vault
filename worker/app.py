@@ -279,6 +279,8 @@ async def annotate_essence(
         args.append("--dry-run")
     if body.get("reannotate"):
         args.append("--reannotate")
+    if body.get("only_missing_subtype"):      # 审计 C-03: 只补 direction_subtype 空的篇 (收敛, 可多轮)
+        args.append("--only-missing-subtype")
     # 线程池跑阻塞 subprocess,别堵事件循环(见 _run docstring)。
     res = await run_in_threadpool(_run, "annotate_essence_pass.py", args)
     res["action"] = "annotate-essence"
