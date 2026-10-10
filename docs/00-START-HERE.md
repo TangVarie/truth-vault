@@ -100,6 +100,7 @@ flowchart TD
     FP --> NFA[(tv:note_feature_answers<br/>闭集问答 · 每篇 31 行)]
     FP --> NF[(tv:note_features<br/>码化特征)]
     NFA --> VFC[/tv:v_feature_contrast/]
+    NFA -->|wf:gate2-run.yml 手动 · 闸二 §6.2| G2[script:gate2_run.py] --> FV[(tv:feature_validation)]
 
     N -->|Railway worker /curate| CU[script:curate_flywheel_lessons.py]
     CU --> FLA[(tv:flywheel_lesson_annotations<br/>书架)]

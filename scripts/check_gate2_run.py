@@ -19,6 +19,7 @@
 """
 from __future__ import annotations
 
+import json
 import math
 import random
 from datetime import datetime, timedelta, timezone
@@ -270,6 +271,45 @@ def check_snapshot_uniqueness() -> None:
     print("  §5 快照: (笔记, 题) 重复拒跑; 快照外的行不进; sha 与题库文件对不上拒跑 ✓")
 
 
+# ── §5b 行摘要: 写进库的得是看过的那份 (codex review on #173, P1) ─────────────────
+def check_rows_digest() -> None:
+    import contextlib, io, tempfile
+    notes, answers, _ = _dataset()
+    _fill_bool(answers, notes, "title_is_question", p_pos=0.6, p_neg=0.3)
+    res = _run(notes, answers)
+    rows = G.validation_rows(res)
+    d = G.rows_digest(rows)
+    assert len(d) == 64
+    assert G.rows_digest(list(reversed(rows))) == d, "§5b 行序不该影响摘要"
+    assert G.rows_digest(G.validation_rows(_run(notes, answers))) == d, "§5b 同数据重算摘要必须相同"
+    changed = [dict(r) for r in rows]
+    changed[0]["status"] = "reversed" if changed[0]["status"] != "reversed" else "validated"
+    assert G.rows_digest(changed) != d, "§5b 状态变了摘要必须变"
+    assert G.rows_digest([dict(r, gate2_run="gate2-other") for r in rows]) != d, "§5b 换 run_tag 也是另一份"
+    # CLI: --write 不带摘要拒; 摘要对不上拒; 对上了才走到写库那一步 (--fixture 模式到那里才说不写库)
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as f:
+        json.dump({"notes": notes, "answers": answers}, f, ensure_ascii=False)
+        fx = f.name
+    base = ["--sha", SHA, "--extractors", ",".join(EXTRACTORS), "--fixture", fx, "--allow-draft", "--run-tag", "gate2-test"]
+    def _main(extra):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = G.main(base + extra)
+        return rc, out.getvalue(), err.getvalue()
+    rc, out, err = _main([])
+    assert rc == 0 and f"rows_sha256 {d}" in out, (rc, out[-200:], err[-200:])
+    assert "## 行摘要" in out and d[:12] in out, "§5b 报告末尾要带摘要"
+    rc, out, err = _main(["--write"])
+    assert rc == 2 and "--expect-rows-sha256" in err, (rc, err)
+    rc, out, err = _main(["--write", "--expect-rows-sha256", "0" * 12])
+    assert rc == 2 and "对不上" in err, (rc, err)
+    rc, out, err = _main(["--write", "--expect-rows-sha256", "abc"])
+    assert rc == 2 and "对不上" in err, "§5b 短于 12 位的摘要不算核对"
+    rc, out, err = _main(["--write", "--expect-rows-sha256", d[:12]])
+    assert rc == 2 and "--fixture 模式不写库" in err, (rc, err)
+    print("  §5b 行摘要: 行序无关、重算相同、状态 / run_tag 变了就变; --write 不带摘要 / 对不上 → 退出码 2 ✓")
+
+
 # ── §6 预注册: draft 不跑 ──────────────────────────────────────────────────────
 def check_frozen_required() -> None:
     notes, answers, _ = _dataset()
@@ -370,6 +410,28 @@ def check_analysis_filter_and_big_projects() -> None:
     print("  §7 取数条件与大项目 (正例 ≥ 20, 动态算) ✓")
 
 
+# ── §7b --projects 对不上取数 → 拒跑 (codex review on #173, P2) ─────────────────
+def check_projects_present() -> None:
+    notes, answers, _ = _dataset()
+    ds = {"notes": notes, "answers": answers}
+    G.assert_projects_present(ds, None)
+    G.assert_projects_present(ds, {"P0", "P1"})
+    for bad in ({"P9"}, {"P0", "p1"}):
+        try:
+            G.assert_projects_present(ds, bad)
+        except G.Gate2Refused as exc:
+            assert "一篇都没有" in str(exc), exc
+        else:
+            raise AssertionError(f"§7b --projects {sorted(bad)} 在取数里没有必须拒跑")
+    try:
+        G.assert_projects_present({"notes": [], "answers": []}, None)
+    except G.Gate2Refused as exc:
+        assert "0 篇" in str(exc), exc
+    else:
+        raise AssertionError("§7b 取数 0 篇必须拒跑")
+    print("  §7b --projects 拼错 / 没标签 → 拒跑; 取数 0 篇 → 拒跑 ✓")
+
+
 def main() -> int:
     check_single_stratum_is_woolf()
     check_bh()
@@ -377,11 +439,13 @@ def main() -> int:
     check_confounded_by_account_prior()
     check_placebo_alarm_refuses()
     check_snapshot_uniqueness()
+    check_rows_digest()
     check_frozen_required()
     check_frozen_but_edited_refused()
     check_gate1_status_from_bank()
     check_analysis_filter_and_big_projects()
-    print("\ncheck_gate2_run: 10 节全过")
+    check_projects_present()
+    print("\ncheck_gate2_run: 12 节全过")
     return 0
 
 
