@@ -24,7 +24,7 @@ numpy / statsmodels), 与 statsmodels 的核对靠闭式: 单层时 Robins–Bre
         --run-tag gate2-2026-10-15 --out ../data-analysis/feature-gate2-2026-10-15.md            # 试算, 不写库
     … --write                                                                                   # 写 feature_validation
     … --fixture some.json                                                                       # 离线 (CI 夹具)
-没做 (留第二步): B.3 组合对比 (留一项目 AUC + 配对自助) 与 B.4 置换反证 —— 那是「组合进不进 L2」的决定, 不是单个特征值的闸。
+B.3 组合对比 (留一项目 AUC + 配对自助) 与 B.4 置换反证在 gate2_combo.py (D-106) —— 那是「组合进不进 L2」的决定, 不是单个特征值的闸。
 """
 from __future__ import annotations
 
@@ -215,10 +215,8 @@ def bank_targets(bank: dict) -> list[dict]:
 
 # ── 主流程 (纯函数: dataset + bank + 参数 → 结果) ─────────────────────────────
 
-def run_gate2(dataset: dict, bank: dict, *, sha: str, extractors: list[str], run_tag: str,
-              q_max: float = 0.10, min_support: int = 30, min_big: int = 3, big_pos: int = 20,
-              confound_delta: float = 0.30, unreliable: Iterable[str] = (), allow_draft: bool = False,
-              ignore_placebo_alarm: bool = False) -> dict:
+def preregistration_check(bank: dict, sha: str, *, allow_draft: bool = False) -> str:
+    """预注册三道 (闸二单特征与组合对比共用): --sha 是题库文件 digest 的前缀; 题库 frozen; validate_bank 为空。回规范化的 sha。"""
     sha = sha.lower()
     if len(sha) < 8:
         raise Gate2Refused("--sha 至少 8 位十六进制前缀")
@@ -235,11 +233,12 @@ def run_gate2(dataset: dict, bank: dict, *, sha: str, extractors: list[str], run
     if errs:
         raise Gate2Refused("问题库没过 validate_bank: " + "; ".join(errs) +
                            " —— 冻结后改题要升 version、重新冻结并记 DECISIONS, 不能拿改后的 digest 当预注册快照。")
-    # 闸一裁决两处来源取并集: 题库里的 gate1_status: fail (机器可读, D-103) ∪ --unreliable 手传的题号 (试算 / 追加)
-    unreliable = set(unreliable) | gate1_unreliable(bank)
-    ext = set(extractors)
+    return sha
 
-    # 快照内的答案 + 唯一性 (B.3)
+
+def snapshot_answers(dataset: dict, sha: str, extractors: Iterable[str]) -> list[dict]:
+    """快照内的答案 (run_tag=primary, bank_sha256 前缀, 抽取器集合) + (笔记, 题) 唯一性 (docs/28 B.3)。"""
+    ext = set(extractors)
     answers = [a for a in dataset["answers"]
                if a.get("subject_type", "note") == "note" and a.get("run_tag", "primary") == "primary"
                and str(a.get("bank_sha256", "")).lower().startswith(sha) and a.get("extractor") in ext]
@@ -250,6 +249,20 @@ def run_gate2(dataset: dict, bank: dict, *, sha: str, extractors: list[str], run
     if dups:
         raise Gate2Refused(f"快照内 (笔记, 题) 不唯一: {len(dups)} 对, 如 {dups[:3]} —— 同一题被两个抽取器 / 两个版本答过, "
                            "先清快照再跑 (docs/28 B.3)")
+    return answers
+
+
+def run_gate2(dataset: dict, bank: dict, *, sha: str, extractors: list[str], run_tag: str,
+              q_max: float = 0.10, min_support: int = 30, min_big: int = 3, big_pos: int = 20,
+              confound_delta: float = 0.30, unreliable: Iterable[str] = (), allow_draft: bool = False,
+              ignore_placebo_alarm: bool = False) -> dict:
+    sha = preregistration_check(bank, sha, allow_draft=allow_draft)
+    # 闸一裁决两处来源取并集: 题库里的 gate1_status: fail (机器可读, D-103) ∪ --unreliable 手传的题号 (试算 / 追加)
+    unreliable = set(unreliable) | gate1_unreliable(bank)
+    ext = set(extractors)
+
+    answers = snapshot_answers(dataset, sha, ext)
+
     versions: dict[str, set[int]] = defaultdict(set)
     answered: dict[str, dict[str, str]] = defaultdict(dict)       # qid → note_id → answer (answer 非空)
     for a in answers:
@@ -440,7 +453,7 @@ def render_report(result: dict) -> str:
         plc = [r for r in result["rows"] if r["kind"] == "placebo"]
         lines += ["过: " + ("; ".join(f"`{r['question_id']}` {r['status']} (q={r['q_value']:.2f})" if r["q_value"] is not None
                                        else f"`{r['question_id']}` {r['status']}" for r in plc) or "快照里没有占位题")]
-    lines += ["", "## 没做", "", "- B.3 组合对比 (留一项目 AUC + 配对自助) 与 B.4 置换反证不在本脚本里: 那是「组合进不进 L2」的决定。",
+    lines += ["", "## 没做", "", "- B.3 组合对比 (留一项目 AUC + 配对自助) 与 B.4 置换反证在 `gate2_combo.py` (同一个 workflow 的下一步): 那是「组合进不进 L2」的决定。",
               "- `unreliable` = 题库里 `gate1_status: fail` 的题 ∪ `--unreliable` 传入的题号 (D-103); `kappa_undefined` 的题照常进统计, 按 support 判。"]
     return "\n".join(lines) + "\n"
 
