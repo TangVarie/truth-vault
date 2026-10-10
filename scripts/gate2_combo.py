@@ -18,9 +18,16 @@ gate2_combo.py
   四条全过 → enter_l2 = true。
 
 快照与 gate2_run 同一套 (preregistration_check / snapshot_answers): 题库 frozen、--sha 是 digest 前缀、快照内 (笔记, 题)
-唯一。评估集 = gate2_run 的分析集 (有 essence、正文 ≥ 50 字) ∩ 快照里【每个】抽取器都答过的篇 —— 混着"只有代码特征"
-的篇, q 打分器在不同笔记上用的是不同的特征集, AUC 没有意义 (D-106)。占位题不进特征; 闸一 fail 的题默认也不进
-(它们没过"测得准", --include-unreliable 只给对照用)。
+唯一。评估集 = gate2_run 的分析集 (有 essence、正文 ≥ 50 字) ∩ 快照里【每个】抽取器都把【该答的题全答了】的篇 (行在就算,
+answer 为 NULL 也算答过) —— 混着"只有代码特征"或"只写了一半"的篇, q 打分器在不同笔记上用的是不同的特征集, AUC 没有意义
+(D-106; codex review on #174)。占位题不进特征; 闸一 fail 的题与 --unreliable 传入的题默认也不进 (它们没过"测得准",
+--include-unreliable 只给对照用)。
+
+抽样加权 (codex review on #174): 附录 B.3 的打分器定义在【全量】分析集上, 但快照只覆盖一部分篇, 而且各项目、各标签的覆盖率
+差得很远 (D-106: 定向补数把 NUC / NRT 的正例几乎全补了, 负例只抽 100)。直接拿快照里的爆 / 趴数去算留一项目权重, 正例
+覆盖率高的项目的写法会被当成"爆的特征"。所以每篇带一个逆抽样权重 = 全量里 (项目, 标签) 的篇数 / 快照里同格的篇数, 权重
+的计数、最低 20% 都按它加权, 估的就是全量上那个打分器; 项目内 AUC 本身不随类内随机抽样变, 不加权; 项目的加权用全量正例数。
+全量里有、快照里一篇没有的格 (如某项目的正例一篇都没抽到) 补不回来, 报告里逐条列出。
 
     cd scripts && python gate2_combo.py --sha ba0f570c --extractors code:v1,llm:claude-sonnet-5-5 \
         --out ../data-analysis/feature-gate2-combo-<日期>.md --json-out combo.json
@@ -46,6 +53,8 @@ VARIANTS = ("tag", "q", "both")
 MIN_POS = 5
 AUC_GAIN = 0.02
 PERM_BAND = (0.47, 0.53)
+# 爆款集锦, 不是投放全量 (l2-feasibility §五②; l2-labels-v1-vs-v2 §4): 最低 20% 那一档的爆率不算它们 (codex review on #174)
+CURATED_PROJECTS = frozenset({"TGV_phase1", "TUGE_phase1"})
 
 
 # ── 特征 ─────────────────────────────────────────────────────────────────────
@@ -66,49 +75,77 @@ def tag_features(note: dict) -> set[str]:
     return out
 
 
+def expected_questions(bank: dict, extractor: str) -> set[str]:
+    """一个抽取器在这份题库下该答的题: llm:* 答模型题; code:* 答代码特征 + 占位题 (annotate_feature_pass 的分工)。"""
+    if extractor.startswith("llm:"):
+        return {q["id"] for q in fb.llm_questions(bank)}
+    if extractor.startswith("code:"):
+        return ({q["id"] for q in bank.get("code_features") or [] if not q.get("retired")}
+                | {q["id"] for q in bank.get("placebo") or []})
+    raise G.Gate2Refused(f"认不出抽取器 {extractor!r}: 只认 llm:* / code:*")
+
+
 def build_eval(dataset: dict, bank: dict, *, sha: str, extractors: list[str], include_unreliable: bool = False,
-               projects: Optional[set[str]] = None) -> tuple[list[dict], dict]:
-    """评估集 + 每篇三套特征。回 (notes, meta)。notes 每篇带 feats = {tag: set, q: set, both: set}。"""
+               unreliable: Iterable[str] = (), projects: Optional[set[str]] = None) -> tuple[list[dict], dict]:
+    """评估集 + 每篇三套特征 + 逆抽样权重。回 (notes, meta)。
+    notes 每篇带 feats = {tag: set, q: set, both: set} 与 wt = (趴的权重, 爆的权重) —— 按标签取, 置换后标签变了权重跟着变。"""
     answers = G.snapshot_answers(dataset, sha, extractors)
     placebo = {q["id"] for q in bank.get("placebo") or []}
-    excluded = set() if include_unreliable else G.gate1_unreliable(bank)
-    ext_of: dict[str, set[str]] = defaultdict(set)
+    excluded = set() if include_unreliable else (G.gate1_unreliable(bank) | set(unreliable))
+    expected = {e: expected_questions(bank, e) for e in extractors}
+    answered: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))   # note → extractor → 题
     qf: dict[str, set[str]] = defaultdict(set)
     for a in answers:
-        ext_of[a["subject_id"]].add(a["extractor"])
+        answered[a["subject_id"]][a["extractor"]].add(a["question_id"])
         if a.get("answer") is None or a["question_id"] in placebo or a["question_id"] in excluded:
             continue
         qf[a["subject_id"]].add(f"Q:{a['question_id']}={a['answer']}")
-    want = set(extractors)
-    notes = []
+    census: dict[str, list[int]] = defaultdict(lambda: [0, 0])     # project → [趴, 爆], 全量分析集
+    kept = []
     dropped_partial = 0
     for n in G.analysis_notes(dataset["notes"]):
         if projects is not None and n["project_id"] not in projects:
             continue
-        if ext_of.get(n["note_id"], set()) != want:
-            if ext_of.get(n["note_id"]):
-                dropped_partial += 1
+        census[n["project_id"]][int(n["y"])] += 1
+        got = answered.get(n["note_id"])
+        if not got:
+            continue
+        if any(not expected[e] <= got.get(e, set()) for e in extractors):
+            dropped_partial += 1
             continue
         t, q = tag_features(n), qf.get(n["note_id"], set())
         if not t or not q:
             continue
-        notes.append({"note_id": n["note_id"], "project_id": n["project_id"], "y": int(n["y"]),
-                      "feats": {"tag": t, "q": q, "both": t | q}})
+        kept.append({"note_id": n["note_id"], "project_id": n["project_id"], "y": int(n["y"]),
+                     "feats": {"tag": t, "q": q, "both": t | q}})
+    sampled: dict[str, list[int]] = defaultdict(lambda: [0, 0])
+    for n in kept:
+        sampled[n["project_id"]][n["y"]] += 1
+    for n in kept:
+        c, s = census[n["project_id"]], sampled[n["project_id"]]
+        n["wt"] = tuple(c[k] / s[k] if s[k] else 0.0 for k in (0, 1))
+    sampling = {p: {"census_neg": c[0], "census_pos": c[1], "eval_neg": sampled[p][0], "eval_pos": sampled[p][1]}
+                for p, c in sorted(census.items())}
+    unrepresented = [{"project_id": p, "label": "爆" if k else "趴", "census": census[p][k]}
+                     for p in sorted(census) for k in (1, 0) if census[p][k] and not sampled[p][k]]
     meta = {"n_answers": len(answers), "excluded_questions": sorted(excluded),
-            "dropped_partial_extractors": dropped_partial}
-    return notes, meta
+            "dropped_partial_extractors": dropped_partial, "sampling": sampling, "unrepresented": unrepresented,
+            "census_pos": {p: c[1] for p, c in census.items()}}
+    return kept, meta
 
 
 # ── 打分 + AUC ──────────────────────────────────────────────────────────────
 
 def lopo_scores(notes: list[dict], ys: list[int], variant: str) -> list[Optional[float]]:
-    """留一项目: 权重用其他项目的笔记算。ys 与 notes 对齐 (置换时传打乱的标签)。"""
-    tot = defaultdict(lambda: [0, 0])                                # feat → [爆, 趴]
-    per = defaultdict(lambda: defaultdict(lambda: [0, 0]))           # project → feat → [爆, 趴]
+    """留一项目: 权重用其他项目的笔记算。ys 与 notes 对齐 (置换时传打乱的标签)。
+    计数按逆抽样权重 wt[y] 加 (没有 wt 的篇记 1): 估的是全量分析集上那个打分器。"""
+    tot = defaultdict(lambda: [0.0, 0.0])                            # feat → [爆, 趴] (加权)
+    per = defaultdict(lambda: defaultdict(lambda: [0.0, 0.0]))       # project → feat → [爆, 趴]
     for n, y in zip(notes, ys):
+        w = n.get("wt", (1.0, 1.0))[1 if y else 0]
         for f in n["feats"][variant]:
-            tot[f][0 if y else 1] += 1
-            per[n["project_id"]][f][0 if y else 1] += 1
+            tot[f][0 if y else 1] += w
+            per[n["project_id"]][f][0 if y else 1] += w
     out: list[Optional[float]] = []
     for n in notes:
         mine = per[n["project_id"]]
@@ -116,7 +153,7 @@ def lopo_scores(notes: list[dict], ys: list[int], variant: str) -> list[Optional
         for f in n["feats"][variant]:
             pos = tot[f][0] - mine[f][0]
             neg = tot[f][1] - mine[f][1]
-            if pos + neg == 0:
+            if pos + neg <= 1e-9:
                 continue                                             # 这个特征只在本项目出现: 没有外部证据
             ws.append(math.log((pos + 1.0) / (neg + 1.0)))
         out.append(sum(ws) / len(ws) if ws else None)
@@ -144,51 +181,71 @@ def auc_midrank(scores: list[float], ys: list[int]) -> Optional[float]:
     return (rsum - n1 * (n1 + 1) / 2.0) / (n1 * n0)
 
 
-def weighted_auc(by_proj: dict[str, tuple[list[float], list[int]]]) -> tuple[Optional[float], dict]:
+def weighted_auc(by_proj: dict, eligible: Optional[dict[str, float]] = None) -> tuple[Optional[float], dict]:
+    """eligible = {项目: 加权}: 只算这些项目、按给定权重加, 只跳过退化的 (一类为空) —— 自助抽样里项目集合不随抽样变
+    (codex review on #174)。不给 = 当场按 正例 ≥ MIN_POS 选、按正例数加。"""
     num = den = 0.0
     per = {}
-    for p, (s, y) in by_proj.items():
-        pos = sum(y)
-        if pos < MIN_POS:
+    for p, t in by_proj.items():
+        s, y = t[0], t[1]
+        if eligible is None:
+            wgt = sum(y)
+            if wgt < MIN_POS:
+                continue
+        elif p in eligible:
+            wgt = eligible[p]
+        else:
             continue
         a = auc_midrank(s, y)
         if a is None:
             continue
-        per[p] = (a, pos)
-        num += a * pos
-        den += pos
+        per[p] = (a, wgt)
+        num += a * wgt
+        den += wgt
     return (num / den if den else None), per
 
 
 def _group(notes: list[dict], scores: dict[str, list[Optional[float]]], ys: list[int], idx: Iterable[int]):
-    """按项目分组, 只留三套分都有的篇 (配对比较)。回 {variant: {project: (scores, ys)}}。"""
-    g = {v: defaultdict(lambda: ([], [])) for v in VARIANTS}
+    """按项目分组, 只留三套分都有的篇 (配对比较)。回 {variant: {project: (scores, ys, 逆抽样权重)}}。"""
+    g = {v: defaultdict(lambda: ([], [], [])) for v in VARIANTS}
     for i in idx:
         if any(scores[v][i] is None for v in VARIANTS):
             continue
         p = notes[i]["project_id"]
+        w = notes[i].get("wt", (1.0, 1.0))[1 if ys[i] else 0]
         for v in VARIANTS:
             g[v][p][0].append(scores[v][i])
             g[v][p][1].append(ys[i])
+            g[v][p][2].append(w)
     return g
 
 
-def bottom_quintile_rate(by_proj: dict[str, tuple[list[float], list[int]]], frac: float = 0.2) -> dict:
-    """项目内按分升序, 取最低 frac (至少 1 篇; 并列按出现顺序), 各项目合起来算爆率; 其余合起来算一个。"""
-    lo_n = lo_pos = hi_n = hi_pos = 0
-    for s, y in by_proj.values():
-        k = max(1, round(frac * len(s)))
+def bottom_quintile_rate(by_proj: dict, frac: float = 0.2) -> dict:
+    """项目内按分升序, 取最低 frac (按权重累计: 一篇的权重中点落在 frac 以内就算进来, 至少 1 篇; 并列按出现顺序;
+    权重全是 1 时 = 取 round(frac × 篇数) 篇), 各项目合起来算加权爆率; 其余合起来算一个。值是 (分, 标签[, 权重])。"""
+    lo_n = hi_n = 0
+    lo_w = lo_pos = hi_w = hi_pos = 0.0
+    for t in by_proj.values():
+        s, y = t[0], t[1]
+        w = t[2] if len(t) > 2 else [1.0] * len(s)
         order = sorted(range(len(s)), key=lambda i: s[i])
-        low = set(order[:k])
+        target, cum, low = frac * sum(w), 0.0, set()
+        for i in order:
+            if low and cum + w[i] / 2.0 > target:
+                break
+            low.add(i)
+            cum += w[i]
         for i in range(len(s)):
             if i in low:
                 lo_n += 1
-                lo_pos += y[i]
+                lo_w += w[i]
+                lo_pos += w[i] * y[i]
             else:
                 hi_n += 1
-                hi_pos += y[i]
-    return {"bottom_n": lo_n, "bottom_rate": lo_pos / lo_n if lo_n else None,
-            "rest_n": hi_n, "rest_rate": hi_pos / hi_n if hi_n else None}
+                hi_w += w[i]
+                hi_pos += w[i] * y[i]
+    return {"bottom_n": lo_n, "bottom_rate": lo_pos / lo_w if lo_w else None,
+            "rest_n": hi_n, "rest_rate": hi_pos / hi_w if hi_w else None}
 
 
 def permute_within_project(notes: list[dict], seed: int) -> list[int]:
@@ -207,16 +264,30 @@ def permute_within_project(notes: list[dict], seed: int) -> list[int]:
     return out
 
 
-def run_combo(notes: list[dict], *, boot: int = 1000, perms: int = 20, seed: int = 20261010) -> dict:
+def eligible_projects(by_proj: dict, census_pos: Optional[dict[str, int]] = None) -> dict[str, float]:
+    """进加权 AUC 的项目与它的权重, 在【原始】配对样本上定一次, 自助 / 置换都沿用: 全量正例 ≥ MIN_POS 且评估集里
+    正例 ≥ MIN_POS (太少的估不出 AUC); 权重 = 全量正例数 (附录 B.3 在全量上按正例加权)。census_pos 不给 = 用评估集的。"""
+    out = {}
+    for p, t in by_proj.items():
+        got = sum(t[1])
+        full = got if census_pos is None else census_pos.get(p, got)
+        if got >= MIN_POS and full >= MIN_POS:
+            out[p] = float(full)
+    return out
+
+
+def run_combo(notes: list[dict], *, boot: int = 1000, perms: int = 20, seed: int = 20261010,
+              census_pos: Optional[dict[str, int]] = None) -> dict:
     if not notes:
-        raise G.Gate2Refused("评估集 0 篇: 快照里没有同时被每个抽取器答过、又有 essence 的篇")
+        raise G.Gate2Refused("评估集 0 篇: 快照里没有同时被每个抽取器答全、又有 essence 的篇")
     ys = [n["y"] for n in notes]
     scores = {v: lopo_scores(notes, ys, v) for v in VARIANTS}
     g = _group(notes, scores, ys, range(len(notes)))
+    elig = eligible_projects(g["tag"], census_pos)
     real = {}
     per_proj = {}
     for v in VARIANTS:
-        real[v], per_proj[v] = weighted_auc(g[v])
+        real[v], per_proj[v] = weighted_auc(g[v], elig)
     if real["tag"] is None or real["both"] is None:
         raise G.Gate2Refused(f"没有正例 ≥ {MIN_POS} 的项目, 加权 AUC 算不出")
     gain = real["both"] - real["tag"]
@@ -234,15 +305,15 @@ def run_combo(notes: list[dict], *, boot: int = 1000, perms: int = 20, seed: int
             ids = proj_idx[p]
             pick.extend(ids[rng.randrange(len(ids))] for _ in ids)
         gb = _group(notes, scores, ys, pick)
-        a_tag, _ = weighted_auc(gb["tag"])
-        a_both, _ = weighted_auc(gb["both"])
+        a_tag, _ = weighted_auc(gb["tag"], elig)
+        a_both, _ = weighted_auc(gb["both"], elig)
         if a_tag is not None and a_both is not None:
             diffs.append(a_both - a_tag)
     diffs.sort()
     ci = (diffs[int(0.025 * (len(diffs) - 1))], diffs[int(math.ceil(0.975 * (len(diffs) - 1)))]) if diffs else (None, None)
 
-    # ③ 最低 20%
-    bq = {v: bottom_quintile_rate(g[v]) for v in VARIANTS}
+    # ③ 最低 20% (爆款集锦不算, 按逆抽样权重)
+    bq = {v: bottom_quintile_rate({p: t for p, t in g[v].items() if p not in CURATED_PROJECTS}) for v in VARIANTS}
 
     # ④ 置换反证
     perm = {v: [] for v in VARIANTS}
@@ -251,7 +322,7 @@ def run_combo(notes: list[dict], *, boot: int = 1000, perms: int = 20, seed: int
         sk = {v: lopo_scores(notes, yk, v) for v in VARIANTS}
         gk = _group(notes, sk, yk, range(len(notes)))
         for v in VARIANTS:
-            a, _ = weighted_auc(gk[v])
+            a, _ = weighted_auc(gk[v], elig)
             perm[v].append(a)
     pb = [a for a in perm["both"] if a is not None]
     perm_mean = sum(pb) / len(pb) if pb else None
@@ -262,7 +333,7 @@ def run_combo(notes: list[dict], *, boot: int = 1000, perms: int = 20, seed: int
     c3 = (bq["both"]["bottom_rate"] is not None and bq["tag"]["bottom_rate"] is not None
           and bq["both"]["bottom_rate"] <= bq["tag"]["bottom_rate"])
     c4 = perm_mean is not None and PERM_BAND[0] <= perm_mean <= PERM_BAND[1] and perm_max < real["both"]
-    return {"n_notes": len(notes), "n_pos": sum(ys), "auc": real, "per_project": per_proj, "gain": gain,
+    return {"n_notes": len(notes), "n_pos": sum(ys), "auc": real, "per_project": per_proj, "gain": gain, "eligible": elig,
             "boot": {"n": len(diffs), "ci_low": ci[0], "ci_high": ci[1]}, "bottom": bq,
             "perm": {v: perm[v] for v in VARIANTS}, "perm_mean": perm_mean, "perm_max": perm_max,
             "criteria": {"auc_gain": c1, "boot_ci": c2, "bottom20": c3, "permutation": c4},
@@ -280,7 +351,8 @@ def render(res: dict, meta: dict, *, sha: str, extractors: list[str]) -> str:
     ok = lambda b: "过" if b else "**不过**"  # noqa: E731
     L = [f"# 闸二后半 · 组合进不进 L2 (docs/28 §6.2 + 附录 B.3 / B.4)", "",
          f"> 快照 `bank_sha256` 前缀 `{sha}` · 抽取器 {extractors} · 评估集 {res['n_notes']:,} 篇 (正例 {res['n_pos']:,}) · "
-         f"闸一 fail 不进特征: {meta.get('excluded_questions') or '无'} · 只有部分抽取器答过而剔掉的篇 {meta.get('dropped_partial_extractors', 0)}",
+         f"不进特征的题 (闸一 fail ∪ --unreliable): {meta.get('excluded_questions') or '无'} · "
+         f"有抽取器没答全而剔掉的篇 {meta.get('dropped_partial_extractors', 0)}",
          "", "| 打分器 | 加权 AUC | 置换 20 次 (均值 / 最大) |", "|---|---|---|"]
     for v, name in (("tag", "只 essence"), ("q", "只原子题"), ("both", "合并")):
         pv = [a for a in res["perm"][v] if a is not None]
@@ -293,13 +365,30 @@ def render(res: dict, meta: dict, *, sha: str, extractors: list[str]) -> str:
           f"| ③ 最低 20% 爆率 (合并 / 只 essence) | {_f(bb['bottom_rate'])} / {_f(bt['bottom_rate'])} | 合并 ≤ 只 essence | {ok(c['bottom20'])} |",
           f"| ④ 置换反证 (合并) | 均值 {_f(res['perm_mean'])}, 最大 {_f(res['perm_max'])} vs 真实 {_f(res['auc']['both'])} | 均值 ∈ [{PERM_BAND[0]}, {PERM_BAND[1]}] 且最大 < 真实 | {ok(c['permutation'])} |",
           "", f"**进不进 L2: {'进' if res['enter_l2'] else '不进'}**", "",
-          "## 逐项目 (正例 ≥ 5)", "", "| 项目 | 正例 | 只 essence | 只原子题 | 合并 |", "|---|---|---|---|---|"]
+          "## 逐项目 (全量正例 ≥ 5 且评估集正例 ≥ 5; 加权 = 全量正例数)", "",
+          "| 项目 | 加权 | 只 essence | 只原子题 | 合并 |", "|---|---|---|---|---|"]
     for p in sorted(res["per_project"]["tag"], key=lambda p: -res["per_project"]["tag"][p][1]):
         row = [res["per_project"][v].get(p) for v in VARIANTS]
-        L.append(f"| {p} | {row[0][1]} | " + " | ".join(_f(r[0]) if r else "—" for r in row) + " |")
+        L.append(f"| {p} | {row[0][1]:g} | " + " | ".join(_f(r[0]) if r else "—" for r in row) + " |")
+    samp = meta.get("sampling") or {}
+    if samp:
+        L += ["", "## 抽样与逆抽样权重 (全量分析集 vs 评估集)", "",
+              "| 项目 | 全量 爆 / 趴 | 评估集 爆 / 趴 | 权重 爆 / 趴 | 最低 20% |", "|---|---|---|---|---|"]
+        for p, c in samp.items():
+            wp = _f(c["census_pos"] / c["eval_pos"], 2) if c["eval_pos"] else "—"
+            wn = _f(c["census_neg"] / c["eval_neg"], 2) if c["eval_neg"] else "—"
+            L.append(f"| {p} | {c['census_pos']} / {c['census_neg']} | {c['eval_pos']} / {c['eval_neg']} | {wp} / {wn} | "
+                     f"{'不算 (爆款集锦)' if p in CURATED_PROJECTS else '算'} |")
+        miss = meta.get("unrepresented") or []
+        L += ["", "全量里有、评估集里一篇没有的格 (权重补不回来, 这些篇等于不在全量里): " +
+              ("; ".join(f"{m['project_id']} {m['label']} {m['census']} 篇" for m in miss) if miss else "无")]
     L += ["", "## 口径", "",
-          "- 打分器、留一项目、中位秩 AUC 与附录 B.3 的 SQL 同一套; 评估集只留快照里每个抽取器都答过的篇, 三套分都算得出的才进配对比较。",
-          "- 最低 20%: 项目内按分升序取最低 20% (至少 1 篇), 各项目合起来算爆率。",
+          "- 打分器、留一项目、中位秩 AUC 与附录 B.3 的 SQL 同一套; 评估集只留快照里每个抽取器都答全的篇, 三套分都算得出的才进配对比较。",
+          "- 逆抽样权重 = 全量 (项目, 标签) 篇数 / 评估集同格篇数: 留一项目的爆 / 趴计数与最低 20% 按它加权, 估的是全量上的打分器; "
+          "项目内 AUC 不加权 (类内随机抽样不改变它), 项目间按全量正例数加。",
+          "- 进加权 AUC 的项目在原始样本上定一次, 自助与置换沿用同一组、同一组权重 (只跳过某次抽样里一类为空的项目)。",
+          f"- 最低 20%: 项目内按分升序、按权重累计取最低 20% (至少 1 篇), 各项目合起来算加权爆率; "
+          f"{' / '.join(sorted(CURATED_PROJECTS))} 是爆款集锦, 不算。",
           f"- 置换: 项目内打乱标签, 特征不动, 种子固定; 判据只看合并打分器, 另两套列着对照。"]
     return "\n".join(L) + "\n"
 
@@ -325,7 +414,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--extractors", required=True, help="逗号分隔, 与 gate2_run 同一个快照, 如 code:v1,llm:claude-sonnet-5-5")
     ap.add_argument("--bank", default=str(fb.BANK_PATH))
     ap.add_argument("--projects", default="")
-    ap.add_argument("--include-unreliable", action="store_true", help="闸一 fail 的题也进特征 (只给对照用)")
+    ap.add_argument("--unreliable", default="", help="逗号分隔, 额外不进特征的题号 (与 gate2_run --unreliable 同一份; 闸一 fail 的自动算)")
+    ap.add_argument("--include-unreliable", action="store_true", help="闸一 fail / --unreliable 的题也进特征 (只给对照用)")
     ap.add_argument("--boot", type=int, default=1000)
     ap.add_argument("--perms", type=int, default=20)
     ap.add_argument("--seed", type=int, default=20261010)
@@ -336,6 +426,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = ap.parse_args(argv)
     extractors = [e.strip() for e in args.extractors.split(",") if e.strip()]
     projects = {p.strip() for p in args.projects.split(",") if p.strip()} or None
+    unreliable = {u.strip() for u in args.unreliable.split(",") if u.strip()}
     bank = fb.load_bank(args.bank)
     try:
         sha = G.preregistration_check(bank, args.sha, allow_draft=args.allow_draft)
@@ -345,9 +436,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             from _common import get_supabase_client
             dataset = fetch(get_supabase_client(), bank=bank, sha=sha, extractors=extractors, projects=projects)
         G.assert_projects_present(dataset, projects)
-        notes, meta = build_eval(dataset, bank, sha=sha, extractors=extractors,
-                                 include_unreliable=args.include_unreliable, projects=projects)
-        res = run_combo(notes, boot=args.boot, perms=args.perms, seed=args.seed)
+        notes, meta = build_eval(dataset, bank, sha=sha, extractors=extractors, include_unreliable=args.include_unreliable,
+                                 unreliable=unreliable, projects=projects)
+        res = run_combo(notes, boot=args.boot, perms=args.perms, seed=args.seed, census_pos=meta["census_pos"])
     except G.Gate2Refused as exc:
         print(f"组合对比没跑: {exc}", file=sys.stderr)
         return 2
@@ -358,7 +449,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(report)
     if args.json_out:
         slim = {k: v for k, v in res.items() if k != "per_project"}
-        slim["per_project"] = {v: {p: {"auc": a, "pos": n} for p, (a, n) in res["per_project"][v].items()} for v in VARIANTS}
+        slim["per_project"] = {v: {p: {"auc": a, "weight": n} for p, (a, n) in res["per_project"][v].items()} for v in VARIANTS}
         slim["meta"] = meta
         Path(args.json_out).write_text(json.dumps(slim, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"组合对比: 加权 AUC tag {_f(res['auc']['tag'])} / q {_f(res['auc']['q'])} / both {_f(res['auc']['both'])}; "

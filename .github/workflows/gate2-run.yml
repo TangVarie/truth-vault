@@ -139,14 +139,21 @@ jobs:
           else
             echo "::notice::已写库, 写的就是摘要 ${DIGEST:0:12}… 那份 (与 reviewed_rows_sha 核过)。"
           fi
+      # 占位题反证没过时 (ignore_placebo_alarm=true 只为排查) 不出"进不进 L2"的正式判定: 预注册说反证过了才看正式结果
+      # (docs/28 §6.2; codex review on #174)。
+      - name: 组合对比跳过 (占位题反证被忽略的排查跑)
+        if: success() && env.IN_IGNORE_PLACEBO == 'true'
+        run: echo "::notice::ignore_placebo_alarm=true 是排查跑, 不出组合进不进 L2 的判定 (反证没过的结果不作数)。"
       - name: 组合进不进 L2 (gate2_combo.py · 附录 B.3 留一项目 AUC + 自助 + B.4 置换; 只出报告)
-        if: success()
+        if: success() && env.IN_IGNORE_PLACEBO != 'true'
         working-directory: scripts
         run: |
           set +e
           COMBO="../data-analysis/feature-gate2-combo-${TAG}.md"
           FLAGS=()
           [ -n "$IN_PROJECTS" ] && FLAGS+=(--projects "$IN_PROJECTS")
+          # 与 gate2_run 同一份 unreliable: 单特征报告里判 unreliable 的题, 组合对比里也不许当特征用
+          [ -n "$IN_UNRELIABLE" ] && FLAGS+=(--unreliable "$IN_UNRELIABLE")
           python gate2_combo.py --sha "$IN_SHA" --extractors "$IN_EXTRACTORS" --out "$COMBO" --json-out "../data-analysis/feature-gate2-combo-${TAG}.json" "${FLAGS[@]}"
           rc=$?
           if [ "$rc" != "0" ]; then
