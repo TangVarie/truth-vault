@@ -63,6 +63,8 @@ jobs:
             scripts/check_comments_sync_cost.py \
             scripts/gate2_run.py \
             scripts/check_gate2_run.py \
+            scripts/gate2_combo.py \
+            scripts/check_gate2_combo.py \
             scripts/check_external_corpus_fresh.py \
             scripts/check_secret_masking.py \
             scripts/check_curate_stale.py \
@@ -3683,6 +3685,9 @@ jobs:
       - name: 闸二可执行版 —— MH/RGB 对 Woolf 闭式、BH、状态表逐条、账号先验分层、占位题 / 快照 / 冻结三条拒跑 (D-093)
         working-directory: scripts
         run: python check_gate2_run.py   # §1 统计闭式 · §2 BH · §3 状态表 · §3b confounded · §4 占位题拒跑 · §5 快照唯一 · §6 draft 拒跑 · §6c 闸一裁决 · §7 取数与大项目
+      - name: 闸二后半 · 组合进不进 L2 —— 留一项目 AUC、配对自助、最低 20%、项目内置换 (附录 B.3 / B.4, D-106)
+        working-directory: scripts
+        run: python check_gate2_combo.py   # §1 中位秩 · §2 留一不泄漏 · §3 真信号进 · §4 噪声不进 · §5 评估集 · §6 最低 20% / 置换 · §7 CLI
       - name: 外部语料新鲜度灯 · report() 五种形状 (D-094)
         working-directory: scripts
         run: python check_external_corpus_fresh.py --selftest
