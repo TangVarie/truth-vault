@@ -498,6 +498,18 @@ SELECT '93', 'I · 数据一致性',
     '0',
     '> 0 = 飞书里删了但 TV 还留着 (10-09 实查 HATHERINE 6 · TUGE 4, 全已标 essence、0 在 ssll、0 有经验卡). 新策展 / 通道 1 推送 / 闸二取数 10-09 起自动排除; 已推去 ssll 的样本和已有的经验卡不自动撤 —— 看视图里 synced_to_ssll_at / has_lesson_card 两列, owner 决定删 note 还是留档.'
 
+UNION ALL
+SELECT '94', 'H · 跨 schema 孤儿',
+    'autowriter.tv_note_links 指向不存在的 truth_vault.notes 的行数 (TV 删了笔记、aw 侧对照没跟着删; codex review on #172)',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(*) FROM autowriter.tv_note_links l
+        LEFT JOIN truth_vault.notes n ON n.note_id = l.note_id
+        WHERE n.note_id IS NULL$q$
+    )::TEXT, 'N/A'),
+    '0',
+    '> 0 = 删笔记那一步漏了 aw 侧的对照 (对照没有跨 schema 外键, #83 只盖答案侧, #93 的视图不盖已删的篇). '
+    '修法同 D-104: 先 CREATE TABLE autowriter.backup_tv_note_links_<原因>_<日期> AS SELECT 这些行, 再 DELETE FROM autowriter.tv_note_links WHERE note_id NOT IN (SELECT note_id FROM truth_vault.notes).'
+
 -- ── I · 数据一致性副作用 ──────────────────────────────────────────────
 UNION ALL
 SELECT '90', 'I · 数据一致性',

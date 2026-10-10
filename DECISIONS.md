@@ -6090,10 +6090,20 @@ UPDATE truth_vault.notes n SET source_autowriter_version_id = b.source_autowrite
 
 ### 定了什么
 
-1. **10 篇全删**，连同 310 行 `note_feature_answers`、10 行 aw `tv_note_links`；评论 / 指标快照 / `note_features` 随 `notes` 级联。删前快照：`truth_vault.backup_notes_vanished_20261009`（10）、`backup_nfa_vanished_20261009`（310）、`backup_comments_vanished_20261009`（3）、`backup_metric_snapshots_vanished_20261009`（1）、`autowriter.backup_tv_note_links_vanished_20261009`（10），11-09 后可 drop；notes 那张的 COMMENT 里有回滚方法。
-2. 删掉 aw 那 6 条 `ingested` 链接是故意的：14:00 UTC 的 tv-sync 会把那 6 个版本按标题重新对到运营的正式行上（`title_exact`），血缘从副本转到真发出去的那篇。
+1. **10 篇全删**，连同 310 行 `note_feature_answers`、10 行 aw `tv_note_links`；评论 / 指标快照 / `note_features` 随 `notes` 级联。删前快照：`truth_vault.backup_notes_vanished_20261009`（10）、`backup_nfa_vanished_20261009`（310）、`backup_comments_vanished_20261009`（3）、`backup_metric_snapshots_vanished_20261009`（1）、`autowriter.backup_tv_note_links_vanished_20261009`（10），11-09 后可 drop；notes 那张的 COMMENT 里有回滚顺序。
+   **漏了 `note_features`**（codex review on #172）：这 10 篇各有一行（`fq-v0.1/code:v1` 写的四个数 title_len / body_len / hashtag_count / mention_count + extracted_at + extractor_version；六个老列全库为空），随 notes 级联掉了、没有单独快照。四个数是备份里 `raw_content` 的确定函数，回滚时**重建**而不是找回（HATHERINE / TUGE 两个 mapping 的 `title_extraction` 都是 `markers`）：
+   ```python
+   from scripts import _common as c, feature_bank as fb, annotate_feature_pass as ap
+   sb = c.get_supabase_client(); bank = fb.load_bank()
+   for n in sb.schema("truth_vault").table("backup_notes_vanished_20261009").select("note_id,raw_content,title").execute().data:
+       spans = fb.build_spans(n["raw_content"] or "", mode="markers", title_col=n["title"])
+       ap.write_raw_counts(sb, n["note_id"], fb.raw_counts(spans), bank["bank_version"], dry_run=False)
+   ```
+   原 `extracted_at` 以 `backup_nfa_vanished_20261009` 里同一趟写的 `code:v1` 行为准（`annotate_feature_pass` 先写 note_features 再写答案）。回滚顺序：notes → 重建 note_features → nfa / comments / snapshots → aw 对照（第 2 条那 6 条要先还原）；闸二取数读 `note_features.body_len`，重建那步不能省。
+2. **原文写「删掉 6 条 `ingested` 链接后 14:00 UTC 的 tv-sync 会按标题重新对到正式行」，错了**（codex review on #172）：ingest 来源的版本不进对照索引、`ingested` 也不重对（D-064 §2 / D-099），删链接只会让 6 个副本版本变孤儿，正式行照旧 `unmatched`。10-10 03:00 UTC 回读证实：14:00 那趟之后对照表一行没动（`max(updated_at)` 仍是 10-09 05:34），6 条正式行 `unmatched`、6 个副本版本有指纹没链接、没有新建副本。处理：按 `raw_content` 的 md5 配对（6 对全部一字不差），把正式行的对照**直接指到原副本版本**（`match_kind='ingested'`，version_id / item_id 填原副本，`candidates` 写明来由），语义仍是 D-064 的「写作台里对应的版本」，指纹库不多一份；改前快照 `autowriter.backup_tv_note_links_twins_20261010`（6 行，COMMENT 里有回滚 SQL），10-10 03:07 UTC 改完回读 6 条全是 `ingested` + 原 version。下一趟 tv-sync（10-10 14:00 UTC）这 6 条应计入 `already_linked`。
+   TUGE 4 篇的写作台侧：3 条 `title_exact` 对上的是写手 9-10 在写作台写的真稿（batch source=deskcore，pending），留着当普通未发布稿；`recvsfuucYs1AW` 那条是 ingest 副本（版本 28b0ace3 / item 51fbf2ed / draft_fingerprints 1 行），原稿没发布过、TV 里也没了，删——快照 `autowriter.backup_orphan_ingest_tuge_20261010`（三行 jsonb，COMMENT 里有回滚），DELETE 由 owner 在 SQL editor 跑（指纹表对 versions 没有外键，要单独删）。
 3. 同一轮清掉了 D-103 清单里到期的两个：`truth_vault.idx_tv_evals_aw_item_evaluator_uniq_v111_dropme`（D-102 §5 的绕路）、`autowriter.versions_num_backup_20260826`。
-4. 验证（owner 跑完回读）：`v_notes_vanished` 0 行、索引 0、表 0。
+4. 验证：owner 跑完回读 `v_notes_vanished` 0 行、索引 0、表 0 —— 这三项盖不到两张**不级联**的子表（`note_feature_answers` 对 notes 没有外键，aw `tv_note_links` 跨 schema；codex review on #172），所以按备份里的 10 个 note_id 单独回读（10-09，10-10 03:00 UTC 再读一次）：`note_feature_answers` 0、`autowriter.tv_note_links` 0、`note_features` 0、`comments` 0、`metric_snapshots` 0、`notes` 0。verify 加 **#94**：aw 对照指向不存在的 TV 笔记数（对照那一步要是漏了就靠它亮；#83 只盖答案侧，#93 的视图不盖已删的篇）。
 
 ### 不变的
 
