@@ -29,6 +29,7 @@ numpy / statsmodels), 与 statsmodels 的核对靠闭式: 单层时 Robins–Bre
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -386,6 +387,29 @@ def validation_rows(result: dict) -> list[dict]:
     return out
 
 
+def rows_digest(rows: list[dict]) -> str:
+    """feature_validation 行的规范化摘要 (codex review on #173, P1): 只出报告那次和 --write 那次是两个进程, 中间夜跑 /
+    回填可能改了账本或 v_l2_labels, 写进库的必须是看过的那一份。行按 (题, 版本, 取值) 排序、键排序、JSON 紧凑序列化
+    再 sha256; 列就是 VALIDATION_COLUMNS (含 gate2_run —— 换 run_tag 也算另一份)。"""
+    canon = sorted(({k: r.get(k) for k in VALIDATION_COLUMNS} for r in rows),
+                   key=lambda r: (str(r["question_id"]), int(r["question_version"] or 0), str(r["answer"])))
+    blob = json.dumps(canon, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()
+
+
+def assert_projects_present(dataset: dict, projects: Optional[set[str]]) -> None:
+    """--projects 里每个项目在取数里都得有篇 (codex review on #173, P2): 拼错 / 该项目没有 v_l2_labels 时, 以前是
+    0 篇分析集照跑、全部 insufficient, 带 --write 还会顶掉同 tag 的正经结果。取数 0 篇同理。"""
+    seen = {n.get("project_id") for n in dataset.get("notes", [])}
+    if projects:
+        missing = sorted(p for p in projects if p not in seen)
+        if missing:
+            raise Gate2Refused(f"--projects 里 {missing} 在 v_l2_labels 里一篇都没有 (拼错了? 没有标签?); "
+                               f"取到的项目: {sorted(x for x in seen if x)}")
+    if not dataset.get("notes"):
+        raise Gate2Refused("取数 0 篇: 没有分析集就没有闸二")
+
+
 def render_report(result: dict) -> str:
     p = result["params"]
     lines = [f"# 闸二 · 单个特征值 · {result['run_tag']}", "",
@@ -479,7 +503,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--fixture", default="", help="离线: 从 json 读 {notes, answers}, 不连库")
     ap.add_argument("--out", default="", help="报告 markdown 路径")
     ap.add_argument("--rows-out", default="", help="feature_validation 行 json 路径")
-    ap.add_argument("--write", action="store_true", help="写 feature_validation (upsert, 主键含 gate2_run)")
+    ap.add_argument("--write", action="store_true", help="写 feature_validation (upsert, 主键含 gate2_run); 必须带 --expect-rows-sha256")
+    ap.add_argument("--expect-rows-sha256", default="",
+                    help="--write 必带: 这次算出的 feature_validation 行摘要必须以它开头 (≥12 位十六进制), 从看过报告的那次 "
+                         "(报告末尾 / stdout 的 rows_sha256) 抄 —— 写进库的就是看过的那份, 中间数据变了就拒 (codex review on #173)")
     args = ap.parse_args(argv)
     extractors = [e.strip() for e in args.extractors.split(",") if e.strip()]
     unreliable = [u.strip() for u in args.unreliable.split(",") if u.strip()]
@@ -493,6 +520,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             from _common import get_supabase_client
             sb = get_supabase_client()
             dataset = fetch_dataset(sb, bank=bank, sha=args.sha, extractors=extractors, projects=projects)
+        assert_projects_present(dataset, projects)
         result = run_gate2(dataset, bank, sha=args.sha, extractors=extractors, run_tag=args.run_tag, q_max=args.q_max,
                            min_support=args.min_support, min_big=args.min_big, big_pos=args.big_pos,
                            confound_delta=args.confound_delta, unreliable=unreliable, allow_draft=args.allow_draft,
@@ -502,6 +530,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 2
     report = render_report(result)
     rows = validation_rows(result)
+    digest = rows_digest(rows)
+    report += (f"\n## 行摘要\n\n`rows_sha256` = `{digest}` —— 写库那次带 `--expect-rows-sha256 {digest[:12]}` 核对, "
+               "摘要对不上就不写 (codex review on #173)。\n")
+    print(f"rows_sha256 {digest}")
     if args.out:
         Path(args.out).write_text(report, encoding="utf-8")
     else:
@@ -509,6 +541,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.rows_out:
         Path(args.rows_out).write_text(json.dumps(rows, ensure_ascii=False, indent=1), encoding="utf-8")
     if args.write:
+        want = args.expect_rows_sha256.strip().lower()
+        if not want:
+            print("--write 要带 --expect-rows-sha256 <看过的那次的 rows_sha256 前 ≥12 位>: 先不带 --write 跑一次、看报告、抄摘要, "
+                  "再写 (codex review on #173)", file=sys.stderr)
+            return 2
+        if len(want) < 12 or any(c not in "0123456789abcdef" for c in want) or not digest.startswith(want):
+            print(f"不写库: 这次算出的行摘要 {digest[:12]}… 与 --expect-rows-sha256 {want[:12]}… 对不上 —— 中间账本 / 标签变了, "
+                  "或抄错了; 重新出报告、重新看", file=sys.stderr)
+            return 2
         if args.ignore_placebo_alarm and result["placebo_alarm"]:
             print("反证没过, 不写库", file=sys.stderr)
             return 2

@@ -623,7 +623,7 @@ GROUP BY 1, 2, 3, 4, 5, 6;
 > **可执行版（2026-10-08，D-093）**：`scripts/gate2_run.py` 把 B.1 / B.2 + BH 校正 + 账号先验分层 + §6.2 的状态表落成纯 Python，
 > 写 `feature_validation` 行、出 `data-analysis/feature-gate2-<日期>.md`，跑之前先核快照唯一性（B.3 的那句）、题库是否冻结、
 > 占位题反证。守卫 `scripts/check_gate2_run.py`（单层 RGB = Woolf 闭式、状态表逐条、拒跑三条）。B.3 / B.4 不在里面。
-> **怎么正式跑（2026-10-10，D-105 ⑤）**：`.github/workflows/gate2-run.yml` 手动触发（输入 sha / extractors / run_tag / write），在有 service key 的 runner 上跑 `gate2_run.py`，报告打进 job log 与 step summary、连 `feature_validation` 行一起上传 artifact；默认不写库，看过报告、记完 DECISIONS 再用 `write=true` 跑一次。预注册拒跑（题库没冻结 / sha 对不上 / 占位题显著）退出码 2，一行不写。
+> **怎么正式跑（2026-10-10，D-105 ⑤）**：`.github/workflows/gate2-run.yml` 手动触发（输入 sha / extractors / run_tag / write），在有 service key 的 runner 上跑 `gate2_run.py`，报告打进 job log 与 step summary、连 `feature_validation` 行一起上传 artifact；默认不写库，看过报告、记完 DECISIONS 再用 `write=true` + `reviewed_rows_sha`（看过那次报告末尾的 `rows_sha256` 前 12 位）跑一次——写库那次重算，行摘要对不上（中间夜跑 / 回填改了账本或标签）就不写，写进库的永远是看过的那份；`projects` 拼错或在标签里一篇都没有也拒。预注册拒跑（题库没冻结 / sha 对不上 / 占位题显著）退出码 2，一行不写。
 > 下面的 SQL 保留作口径与对账用。
 
 ### B.1 单个特征值：项目分层合并优势比 + 95% 置信区间

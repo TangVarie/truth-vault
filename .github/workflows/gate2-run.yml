@@ -29,9 +29,13 @@ on:
         required: false
         default: ""
       write:
-        description: "true = 写 feature_validation (upsert, 主键含 gate2_run)。先跑一次 false 看报告"
+        description: "true = 写 feature_validation (upsert, 主键含 gate2_run)。先跑一次 false 看报告, 再带 reviewed_rows_sha 跑 true"
         required: false
         default: "false"
+      reviewed_rows_sha:
+        description: "write=true 时必填: 看过的那次 run 报告末尾 / 日志里的 rows_sha256 前 ≥12 位。这次重算的行摘要对不上就不写 (中间夜跑 / 回填改了数据), 写进库的永远是看过的那份"
+        required: false
+        default: ""
       ignore_placebo_alarm:
         description: "true = 占位题显著也出报告 (只为排查; 脚本不许同时 write)"
         required: false
@@ -55,6 +59,7 @@ jobs:
       IN_PROJECTS: ${{ github.event.inputs.projects }}
       IN_UNRELIABLE: ${{ github.event.inputs.unreliable }}
       IN_WRITE: ${{ github.event.inputs.write }}
+      IN_REVIEWED: ${{ github.event.inputs.reviewed_rows_sha }}
       IN_IGNORE_PLACEBO: ${{ github.event.inputs.ignore_placebo_alarm }}
     steps:
       - uses: actions/checkout@v4
@@ -82,6 +87,17 @@ jobs:
           if [ "$IN_WRITE" = "true" ] && [ "$IN_IGNORE_PLACEBO" = "true" ]; then
             echo "::error::ignore_placebo_alarm 与 write 不能同时 true (反证没过的结果不进库, 脚本也会拒)"; exit 1
           fi
+          if [ "$IN_WRITE" = "true" ]; then
+            echo "$IN_REVIEWED" | grep -Eq '^[0-9a-f]{12,64}$' || { echo "::error::write=true 要带 reviewed_rows_sha (看过的那次的 rows_sha256 前 ≥12 位十六进制), 收到 '$IN_REVIEWED'"; exit 1; }
+          fi
+          # --projects 里的项目先在 mappings/ 下核一遍 (拼错在这里就拦; 有 mapping 但没标签的项目脚本自己会拒)
+          if [ -n "$IN_PROJECTS" ]; then
+            IFS=',' read -ra PJS <<< "$IN_PROJECTS"
+            for p in "${PJS[@]}"; do
+              p="$(echo "$p" | xargs)"
+              [ -f "../mappings/${p}.yaml" ] || { echo "::error::projects 里的 '${p}' 不是项目: mappings/${p}.yaml 不存在"; exit 1; }
+            done
+          fi
           # 题库必须冻结、sha 必须是它的 frozen_sha256 前缀 —— 脚本自己也拒, 这里只是把原因说清楚
           python -c "import sys, feature_bank as fb; b = fb.load_bank(); errs = fb.validate_bank(b); st = b.get('status'); fs = b.get('frozen_sha256') or ''; sha = sys.argv[1]
           assert not errs, f'题库不合法: {errs}'
@@ -99,12 +115,12 @@ jobs:
           FLAGS=()
           [ -n "$IN_PROJECTS" ] && FLAGS+=(--projects "$IN_PROJECTS")
           [ -n "$IN_UNRELIABLE" ] && FLAGS+=(--unreliable "$IN_UNRELIABLE")
-          [ "$IN_WRITE" = "true" ] && FLAGS+=(--write)
+          [ "$IN_WRITE" = "true" ] && FLAGS+=(--write --expect-rows-sha256 "$IN_REVIEWED")
           [ "$IN_IGNORE_PLACEBO" = "true" ] && FLAGS+=(--ignore-placebo-alarm)
           python gate2_run.py --sha "$IN_SHA" --extractors "$IN_EXTRACTORS" --run-tag "$TAG" --out "$OUT" --rows-out "$ROWS" "${FLAGS[@]}"
           rc=$?
           if [ "$rc" = "2" ]; then
-            echo "::error::闸二没跑 —— 预注册拒跑 (题库没冻结 / sha 对不上 / 快照内 (笔记, 题) 不唯一 / 占位题显著), 原因在上面 stderr。一行没写。"
+            echo "::error::闸二没跑或没写 —— 预注册拒跑 (题库没冻结 / sha 对不上 / --projects 对不上取数 / 快照内 (笔记, 题) 不唯一 / 占位题显著) 或行摘要与 reviewed_rows_sha 对不上, 原因在上面 stderr。一行没写。"
             exit 2
           elif [ "$rc" != "0" ]; then
             echo "::error::gate2_run.py 退出码 $rc"
@@ -117,8 +133,11 @@ jobs:
             echo
             cat "$OUT"
           } >> "$GITHUB_STEP_SUMMARY"
+          DIGEST="$(grep -oE 'rows_sha256. = .[0-9a-f]{64}' "$OUT" | grep -oE '[0-9a-f]{64}' | tail -1)"
           if [ "$IN_WRITE" != "true" ]; then
-            echo "::notice::只出了报告, 没写库。看过报告、记完 DECISIONS 再用 write=true 跑一次 (同一个 run_tag 会 upsert)。"
+            echo "::notice::只出了报告, 没写库。rows_sha256=${DIGEST:-?}。看过报告、记完 DECISIONS 再用 write=true + reviewed_rows_sha=${DIGEST:0:12} 跑一次 (同一个 run_tag 会 upsert; 中间数据变了摘要就对不上, 会拒)。"
+          else
+            echo "::notice::已写库, 写的就是摘要 ${DIGEST:0:12}… 那份 (与 reviewed_rows_sha 核过)。"
           fi
       - name: Upload report + rows
         if: always()
