@@ -6077,3 +6077,82 @@ UPDATE truth_vault.notes n SET source_autowriter_version_id = b.source_autowrite
 - **C-13** 看板的 `AI_DIMS=14` / `ARCHETYPES=19` / `SHOWCASE_EXT_*` / 静态 `TICKER_EVENTS`：接受为展示常量；v1_19 两列不上 Vercel，owner 看 Actions 日志和 `verify`。
 - **C-20** `stale_in_ssll` / `gated` / 撤回摘要仍只打印：按 D-087 延后，`v_flywheel_sync_status.stale_in_ssll` 连续两周全 0（回收每晚干净）再把 `|| true` 拿掉。
 - **B-12** 看板那把 service_role：见 D-101 §5，owner 从 Vercel 删；RISKS 的 secret 矩阵就是轮换清单。
+
+## D-104 · 飞书已删的 10 篇从 TV 删掉（备份在库里）；一次性对象按 D-103 清单清掉（2026-10-09）
+
+来源：D-103 把「删不删」留给 owner，owner 10-09 把判断交给我，看完实查后定删，owner 在 SQL editor 跑的（MCP 的 DROP / DELETE 要人确认，两次都在那一步超时）。
+
+### 实查
+
+- **HATHERINE_phase1 6 篇**：全是写作台 ingest 进来的副本（`autowriter.tv_note_links.match_kind = 'ingested'`，09-17 建链），运营随后在飞书另录了**正文一字不差**的正式行（`reczz28Hc…` 那 6 条，照常同步），再把副本删了。留着就是同一篇算两次。
+- **TUGE_phase1 4 篇**：没有发布时间、没有 tier、没有任何指标，9 月 10～14 日之后飞书里就没有了——没发出去就撤掉的稿。
+- 下游：10 篇都只有 essence 标注和特征层答案（31 行 / 篇，`primary`），不在闸一样本里、没进 ssll、没有经验卡；评论 3 条、指标快照 1 条。
+
+### 定了什么
+
+1. **10 篇全删**，连同 310 行 `note_feature_answers`、10 行 aw `tv_note_links`；评论 / 指标快照 / `note_features` 随 `notes` 级联。删前快照：`truth_vault.backup_notes_vanished_20261009`（10）、`backup_nfa_vanished_20261009`（310）、`backup_comments_vanished_20261009`（3）、`backup_metric_snapshots_vanished_20261009`（1）、`autowriter.backup_tv_note_links_vanished_20261009`（10），11-09 后可 drop；notes 那张的 COMMENT 里有回滚顺序。
+   **漏了 `note_features`**（codex review on #172）：这 10 篇各有一行（`fq-v0.1/code:v1` 写的四个数 title_len / body_len / hashtag_count / mention_count + extracted_at + extractor_version；六个老列全库为空），随 notes 级联掉了、没有单独快照。四个数是备份里 `raw_content` 的确定函数，回滚时**重建**而不是找回（HATHERINE / TUGE 两个 mapping 的 `title_extraction` 都是 `markers`）：
+   ```python
+   from scripts import _common as c, feature_bank as fb, annotate_feature_pass as ap
+   sb = c.get_supabase_client(); bank = fb.load_bank()
+   for n in sb.schema("truth_vault").table("backup_notes_vanished_20261009").select("note_id,raw_content,title").execute().data:
+       spans = fb.build_spans(n["raw_content"] or "", mode="markers", title_col=n["title"])
+       ap.write_raw_counts(sb, n["note_id"], fb.raw_counts(spans), bank["bank_version"], dry_run=False)
+   ```
+   原 `extracted_at` 以 `backup_nfa_vanished_20261009` 里同一趟写的 `code:v1` 行为准（`annotate_feature_pass` 先写 note_features 再写答案）。回滚顺序：notes → 重建 note_features → nfa / comments / snapshots → aw 对照（第 2 条那 6 条要先还原）；闸二取数读 `note_features.body_len`，重建那步不能省。
+2. **原文写「删掉 6 条 `ingested` 链接后 14:00 UTC 的 tv-sync 会按标题重新对到正式行」，错了**（codex review on #172）：ingest 来源的版本不进对照索引、`ingested` 也不重对（D-064 §2 / D-099），删链接只会让 6 个副本版本变孤儿，正式行照旧 `unmatched`。10-10 03:00 UTC 回读证实：14:00 那趟之后对照表一行没动（`max(updated_at)` 仍是 10-09 05:34），6 条正式行 `unmatched`、6 个副本版本有指纹没链接、没有新建副本。处理：按 `raw_content` 的 md5 配对（6 对全部一字不差），把正式行的对照**直接指到原副本版本**（`match_kind='ingested'`，version_id / item_id 填原副本，`candidates` 写明来由），语义仍是 D-064 的「写作台里对应的版本」，指纹库不多一份；改前快照 `autowriter.backup_tv_note_links_twins_20261010`（6 行，COMMENT 里有回滚 SQL），10-10 03:07 UTC 改完回读 6 条全是 `ingested` + 原 version。下一趟 tv-sync（10-10 14:00 UTC）这 6 条应计入 `already_linked`。
+   TUGE 4 篇的写作台侧：3 条 `title_exact` 对上的是写手 9-10 在写作台写的真稿（batch source=deskcore，pending），留着当普通未发布稿；`recvsfuucYs1AW` 那条是 ingest 副本（版本 28b0ace3 / item 51fbf2ed / draft_fingerprints 1 行），原稿没发布过、TV 里也没了，删——快照 `autowriter.backup_orphan_ingest_tuge_20261010`（三行 jsonb，COMMENT 里有回滚），DELETE 由 owner 在 SQL editor 跑（指纹表对 versions 没有外键，要单独删）。
+3. 同一轮清掉了 D-103 清单里到期的两个：`truth_vault.idx_tv_evals_aw_item_evaluator_uniq_v111_dropme`（D-102 §5 的绕路）、`autowriter.versions_num_backup_20260826`。
+4. 验证：owner 跑完回读 `v_notes_vanished` 0 行、索引 0、表 0 —— 这三项盖不到两张**不级联**的子表（`note_feature_answers` 对 notes 没有外键，aw `tv_note_links` 跨 schema；codex review on #172），所以按备份里的 10 个 note_id 单独回读（10-09，10-10 03:00 UTC 再读一次）：`note_feature_answers` 0、`autowriter.tv_note_links` 0、`note_features` 0、`comments` 0、`metric_snapshots` 0、`notes` 0。verify 加 **#94**：aw 对照指向不存在的 TV 笔记数（对照那一步要是漏了就靠它亮；#83 只盖答案侧，#93 的视图不盖已删的篇）。
+
+### 不变的
+
+- B-21 的机制仍是**只报不删**：`v_notes_vanished` + verify #93 每晚报，删不删每次都看实查再定。这次能删是因为 10 篇全是副本或废稿；下次若是真发过的篇（有 tier / 指标 / 进过 ssll），先看 D-087 的回收路再说。
+
+## D-105 · 闸一裁决：Sonnet 5.5 / Haiku 5.5 两趟影子对 Jev 三张表 + owner 裁决；20 题 `gate1_status` 填好（过 10 / 不过 8 / κ 不可算 2）；抽取器留 Sonnet 5.5；题库冻结；361 篇旧 sha 重标已触发（2026-10-10）
+
+来源：D-103 定死的顺序 ①→②→③→④。① 10-09 07:57 UTC 起两趟影子（`backfill-features.yml` note_ids 模式，闸一 100 篇样本，batch 2，bank `ba0f570c`，project=gate1 排队跑）：run 37901944400 `gate1-sonnet55`（`llm:claude-sonnet-5-5`，42 min）、run 37901990997 `gate1-haiku55`（`llm:claude-haiku-5-5`，80 min），各 100 篇全答、3,100 行（20 道模型题 + 11 道 code:v1）。② 对照：Jev 三张表（run_tag `gate1-20260928`，bank `3d299a1e`，v1 题面，50 篇）按 D-079 §5.3 合并 + owner 09-23 裁的 95 格（`human:owner`，67 篇；D-082）。口径与 `gate1_agreement.py` 完全相同（合并规则、校验没过的格不算不一致、κ 任一边常数记不可算），这次 1,000 行 pivot 走 MCP 太大，直接在 SQL 里按同一口径算（查询在报告末尾）。报告：`data-analysis/gate1-sonnet55-haiku55-vs-jev-2026-10-10.md`。
+
+### 结果（Jev 合并 vs TV：n · 一致 · κ；通过线 ≥ 0.85 且 κ ≥ 0.60）
+
+| # | 题 | 版本 | Sonnet 5.5 | Haiku 5.5 | Opus 4.6（09-23） | owner 格 TV 对 · Jev 对 · n | `gate1_status` |
+|---|---|---|---|---|---|---|---|
+| 1 | 标题是问句 | v1 | 99 · 1.000 · 1.000 | 99 · 0.980 · 0.953 | 0.98 · 0.95 过 | — | pass |
+| 2 | 第一句类型 | v2 | 98 · 0.684 · 0.522 | 98 · 0.745 · 0.593 | 0.83 · 0.72 不过 | 16 · 5 · 19 | fail |
+| 3 | 具体时间 | v1 | 99 · 0.838 · 0.644 | 99 · 0.808 · 0.588 | 0.94 · 0.86 过 | — | fail |
+| 4 | 具体地点或场合 | v1 | 97 · 0.814 · 0.641 | 97 · 0.784 · 0.583 | 0.92 · 0.83 过 | — | fail |
+| 5 | 别人说的原话 | v1 | 99 · 0.970 · 0.936 | 99 · 0.949 · 0.890 | 0.97 · 0.93 过 | — | pass |
+| 6 | 具体身体感受 | v1 | 99 · 0.828 · 0.590 | 99 · 0.899 · 0.761 | 0.91 · 0.79 过 | — | fail |
+| 7 | 结尾问读者 | v1 | 98 · 0.969 · 0.939 | 98 · 0.969 · 0.939 | 0.97 · 0.94 过 | — | pass |
+| 8 | 请读者讲经历 | v1 | 100 · 0.930 · 0.496 | 100 · 0.940 · 0.592 | 0.93 · 0.50 不过 | — | fail |
+| 9 | 整篇在求助 | v1 | 99 · 0.889 · 0.780 | 97 · 0.887 · 0.776 | 0.89 · 0.78 过 | — | pass |
+| 10 | 故意不说名字 | v1 | 99 · 0.980 · −0.010 | 98 · 0.990 · 不可算 | 0.99 · 不可算 | — | kappa_undefined |
+| 11 | 会有人反对的判断 | v1 | 100 · 0.840 · 0.403 | 100 · 0.830 · 0.385 | 0.96 · 0.58 不过 | — | fail |
+| 12 | 产品角色 | v2 | 98 · 0.663 · 0.416 | 98 · 0.673 · 0.435 | 0.75 · 0.57 不过 | 15 · 3 · 20 | fail |
+| 13 | 效果承诺 | v1 | 100 · 0.960 · 不可算 | 100 · 0.970 · 不可算 | 0.99 · 不可算 | — | kappa_undefined |
+| 14 | 交代身份 | v2 | 100 · 0.680 · 0.342 | 100 · 0.700 · 0.384 | 0.81 · 0.62 不过 | 16 · 12 · 16 | pass（owner 锚） |
+| 15 | 亲身经历 | v1 | 97 · 0.969 · 0.885 | 99 · 0.960 · 0.858 | 0.87 · 0.61 过 | — | pass |
+| 16 | 拿别人对照 | v3 | 99 · 0.899 · 0.502 | 99 · 0.899 · 0.502 | 0.91 · 0.56 不过 | 10 · 1 · 10 | pass（owner 锚） |
+| 17 | 点名某类读者 | v1 | 100 · 0.920 · 0.669 | 100 · 0.930 · 0.733 | 0.90 · 0.64 过 | — | pass |
+| 18 | 前后转折 | v2 | 97 · 0.557 · 0.219 | 98 · 0.541 · 0.198 | 0.60 · 0.27 不过 | 27 · 3 · 29 | pass（owner 锚） |
+| 19 | 被人评价 | v1 | 95 · 0.947 · 0.875 | 98 · 0.939 · 0.859 | 0.86 · 0.60 过 | — | pass |
+| 20 | 已发生的坏结果 | v1 | 98 · 0.765 · 0.537 | 98 · 0.765 · 0.537 | 0.84 · 0.68 不过 | — | fail |
+
+owner 格一列两趟几乎相同（Haiku：第一句类型 18 · 5 · 19，拿别人对照 9 · 1 · 10，前后转折 26 · 3 · 29，其余同）。两趟各在 94 个两边都答了的裁决格上对 84 个（89%），Jev 对 24 个；Opus 09-23 在那 95 格上对 66 个。Sonnet 与 Haiku 互看：20 题一致率 0.83–1.00、κ 0.50–1.00（中位数 0.93 / 0.80）——两个模型彼此的一致远高于各自与 Jev 的一致。
+
+### 定了什么
+
+1. **抽取器留 Sonnet 5.5**（D-098 的默认不动）。Haiku 对 Jev 直接过线 8 题、Sonnet 7 题，差的那一道（具体身体感受 0.90 / 0.76 对 0.83 / 0.59）在 100 篇上是噪声量级；owner 格两边都对 84/94；互看 κ 中位数 0.80。D-098 写的「一致率过线再换」——Haiku 没有比 Sonnet 更过线，只是不更差。特征层一年的量在 Sonnet 上是几十美元级，不值得为省 20 倍把 10-09 以来 168 篇已落库的快照换成第三个抽取器。影子数据留在库里（`gate1-sonnet55` / `gate1-haiku55`），哪天成本成了问题这页表就是换的依据。
+2. **`gate1_status` 按 Sonnet 5.5 那一趟填**（上表最后一列）：
+   - `pass` 10：7 道直接过线 + 3 道**以 owner 裁决为锚**（拿别人对照、交代身份、前后转折）。后三道对 Jev 不过线，但 docs/28 §6.1 的线写的是「与**人工**一致率」，Jev 只是 D-081 的替身；owner 裁过的格子（都是 09-23 Opus 与 Jev 的分歧格，最难的那批）里 Sonnet 对 10/10、16/16、27/29，Jev 对 1/10、12/16、3/29——分歧来自 Jev 还在答 v1 题面（D-082 正因这些格把题面升到 v2 / v3）。有人裁过的格子上 TV ≥ 0.90，判过。
+   - `fail` 8：第一句类型（owner 格 16/19 = 0.84，没到 0.85）、具体时间、具体地点或场合、具体身体感受、请读者讲经历（一致 0.93 但 κ 0.50）、会有人反对的判断、产品角色（owner 格 15/20 = 0.75）、已发生的坏结果。其中具体时间 / 地点 / 身体感受三道 Opus 4.6 对 Jev 是过的（0.94 / 0.92 / 0.91），Sonnet 和 Haiku 都掉到 0.78–0.90——Jev 没变，变的是 TV 的模型；谁对没人看过，按线判不过。闸二这 8 道自动 `unreliable`（D-103 的机制）。
+   - `kappa_undefined` 2：效果承诺（Jev 100 格全「否」）、故意不说名字（Jev 99 格里 1 个「是」，κ 数值上 −0.01，一格决定的数不是测量；Haiku 那趟 Jev 侧恰好全「否」就是不可算）。闸二照常进统计、按 support 判。
+3. **冻结**：`status: frozen`，`frozen_sha256: ba0f570c47d594ca4dad571c5a9f5d06da51861b041ba364c3a915220b985ddd`。digest 不变（`gate1_status` / `status` / `frozen_sha256` 三种行都不进 hash），5,900+ 篇已落库的答案仍是当前快照。文件头那句「草案 · 供讨论，未冻结」**故意不改**：头注释进 digest，改一个字 = 全库旧 sha；以 `status:` 字段为准。两处原来假设「仓里的题库还是 draft、全是 pending」的自检跟着改：CI 守卫 1 ④ 的反证「frozen 但没记 frozen_sha256」先 pop 掉记的 sha 再造，④b 的冻结副本先剔掉已有的 `status` / `frozen_sha256` 行再补（不然重复键）；`check_gate2_run.py` 的夹具题库改成「真题库的中性副本」（draft、全 pass），§6 / §6c 的反证在副本上造——不然真裁决一填，状态表那节的 reversed 例子就被自动 unreliable 盖掉。
+4. **④ 361 篇旧 sha 重标已触发**（10-10 03:31 UTC，`backfill-features.yml` note_ids 模式，200 + 161 两趟，project=reannotate-oldsha 排队，batch 2，run_tag primary，`bank_sha=ba0f570c`，`reannotate=true`，模型走 worker 默认 Sonnet 5.5）：run 38020841874、38020843689。旧行是 `llm:claude-opus-4-6@3d299a1e`，抽取器不同不会被覆盖、原样留着（闸二按 (sha, extractor) 取快照，不进）。跑完闸二的快照是 `ba0f570c` × {code:v1, llm:claude-opus-4-6（1,860 篇）, llm:claude-sonnet-5-5（168 + 361 篇）}——两个抽取器混在一个快照里，D-098 换模型那天就接受了，闸二报告里要写明。
+5. **⑤ 闸二**：等 ④ 跑完（每篇 ~50–80 s，约 5 小时）再 `gate2_run.py --sha ba0f570c --extractors code:v1,llm:claude-opus-4-6,llm:claude-sonnet-5-5 --run-tag gate2-20261010`，fail 的 8 题自动 unreliable。本容器没有 `SUPABASE_*`，正式跑要在有 service key 的地方跑（D-093 当时也是这么写的）——给它一个 workflow_dispatch 另开 PR。
+
+### 老实写
+
+- 还是模型 vs 模型（D-081 的话）。3 道以 owner 为锚判过的，锚只有 10–29 格；8 道不过的里有 3 道是 Opus 过、Sonnet / Haiku 不过，差多少算真差 100 篇说不清。要把这三道救回来，最便宜的路是 owner 再裁 Sonnet 与 Jev 在这三题上的分歧格（每题 16–19 格，共约 50 格），对的那边说了算；`build_gate1_human_sheets.py` 能出表。没裁之前按线判不过，闸二少三道题。
+- Haiku 那趟 80 分钟、Sonnet 42 分钟——不是 Haiku 慢，是 batch 2 在 Railway 上每批的固定开销 + 排队；真要换 Haiku 也不省时间。
+- 没有重跑 Jev（D-084 ⑦：Jev 不重跑）。Jev 仍是 v1 题面，五道升版题对 Jev 的一致率天然偏低，报告里标了版本。
