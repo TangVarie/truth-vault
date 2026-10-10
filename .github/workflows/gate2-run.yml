@@ -1,0 +1,132 @@
+# 闸二 · 有区分度 (docs/28 §6.2, D-093): 手动触发, 在有 service key 的 runner 上跑 scripts/gate2_run.py。
+# 本仓的开发容器没有 SUPABASE_*, 正式跑只能在这里 (D-105 ⑤)。
+# 默认只出报告 (打进 job log + step summary + artifact), 看过报告再把 write 勾成 true 写 feature_validation。
+# 预注册在脚本里, 这里不放水: 题库必须 status: frozen 且 --sha 与 frozen_sha256 一致、占位题显著则整跑作废 (退出码 2);
+# gate1_status: fail 的题自动 unreliable (D-103 / D-105), 不用手传。
+name: Gate 2 run (feature discrimination · docs/28 §6.2)
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "bank_sha256 前缀 (≥8 位), 快照的一半; 必须是题库 frozen_sha256 的前缀 (D-105: ba0f570c)"
+        required: false
+        default: "ba0f570c"
+      extractors:
+        description: "逗号分隔, 快照的另一半 (D-105 ④ 之后 primary 在 ba0f570c 下是 opus-4-6 + sonnet-5-5 两个抽取器混着)"
+        required: false
+        default: "code:v1,llm:claude-opus-4-6,llm:claude-sonnet-5-5"
+      run_tag:
+        description: "feature_validation.gate2_run 标签 ([A-Za-z0-9][A-Za-z0-9_.-]{0,39}); 留空 = gate2-<今天 UTC>"
+        required: false
+        default: ""
+      projects:
+        description: "逗号分隔只看这些项目 (如 WTG_phase1,SPX_phase1); 留空 = 全部"
+        required: false
+        default: ""
+      unreliable:
+        description: "额外打 unreliable 的题号, 逗号分隔 (题库 gate1_status: fail 的自动算, 不用写)"
+        required: false
+        default: ""
+      write:
+        description: "true = 写 feature_validation (upsert, 主键含 gate2_run)。先跑一次 false 看报告"
+        required: false
+        default: "false"
+      ignore_placebo_alarm:
+        description: "true = 占位题显著也出报告 (只为排查; 脚本不许同时 write)"
+        required: false
+        default: "false"
+
+# 同时只允许一个闸二在跑: 同一个 run_tag 两个 run 互相覆盖 feature_validation 行。
+concurrency:
+  group: gate2-run
+  cancel-in-progress: false
+
+jobs:
+  gate2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      IN_SHA: ${{ github.event.inputs.sha }}
+      IN_EXTRACTORS: ${{ github.event.inputs.extractors }}
+      IN_RUN_TAG: ${{ github.event.inputs.run_tag }}
+      IN_PROJECTS: ${{ github.event.inputs.projects }}
+      IN_UNRELIABLE: ${{ github.event.inputs.unreliable }}
+      IN_WRITE: ${{ github.event.inputs.write }}
+      IN_IGNORE_PLACEBO: ${{ github.event.inputs.ignore_placebo_alarm }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps (lockfile)
+        run: |
+          if [ -f scripts/requirements.lock ]; then
+            pip install -r scripts/requirements.lock
+          else
+            pip install -r scripts/requirements.txt
+          fi
+      - name: Guard secrets + inputs
+        working-directory: scripts
+        run: |
+          [ -n "$SUPABASE_URL" ] || { echo "::error::缺 secret SUPABASE_URL"; exit 1; }
+          [ -n "$SUPABASE_SERVICE_ROLE_KEY" ] || { echo "::error::缺 secret SUPABASE_SERVICE_ROLE_KEY"; exit 1; }
+          echo "$IN_SHA" | grep -Eq '^[0-9a-f]{8,64}$' || { echo "::error::sha 要是 ≥8 位十六进制前缀, 收到 '$IN_SHA'"; exit 1; }
+          [ -n "$IN_EXTRACTORS" ] || { echo "::error::extractors 不能为空"; exit 1; }
+          TAG="${IN_RUN_TAG:-gate2-$(date -u +%Y-%m-%d)}"
+          echo "$TAG" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$' || { echo "::error::run_tag 不合法: '$TAG'"; exit 1; }
+          case "$IN_WRITE" in true|false) ;; *) echo "::error::write 只能是 true / false, 收到 '$IN_WRITE'"; exit 1;; esac
+          case "$IN_IGNORE_PLACEBO" in true|false) ;; *) echo "::error::ignore_placebo_alarm 只能是 true / false"; exit 1;; esac
+          if [ "$IN_WRITE" = "true" ] && [ "$IN_IGNORE_PLACEBO" = "true" ]; then
+            echo "::error::ignore_placebo_alarm 与 write 不能同时 true (反证没过的结果不进库, 脚本也会拒)"; exit 1
+          fi
+          # 题库必须冻结、sha 必须是它的 frozen_sha256 前缀 —— 脚本自己也拒, 这里只是把原因说清楚
+          python -c "import sys, feature_bank as fb; b = fb.load_bank(); errs = fb.validate_bank(b); st = b.get('status'); fs = b.get('frozen_sha256') or ''; sha = sys.argv[1]
+          assert not errs, f'题库不合法: {errs}'
+          assert st == 'frozen', f'题库 status={st!r}, 不是 frozen —— 闸二只跑冻结的题库 (预注册, docs/28 §6.2)'
+          assert fs.startswith(sha), f'sha {sha} 不是题库 frozen_sha256 {fs[:12]}… 的前缀 —— 别拿旧快照跑'
+          print(f'✅ 题库 {b[\"bank_version\"]} frozen, digest {fs[:12]}…; gate1 fail 自动 unreliable: ' + ', '.join(sorted(q[\"id\"] for q in fb.llm_questions(b) if q.get(\"gate1_status\") == \"fail\")))" "$IN_SHA"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "✅ sha=$IN_SHA extractors=$IN_EXTRACTORS run_tag=$TAG projects='${IN_PROJECTS:-(all)}' unreliable='${IN_UNRELIABLE:-(none)}' write=$IN_WRITE"
+      - name: Run gate2_run.py (报告 + feature_validation 行; write=true 才写库)
+        working-directory: scripts
+        run: |
+          set +e
+          OUT="../data-analysis/feature-gate2-${TAG}.md"
+          ROWS="../data-analysis/feature-gate2-${TAG}.rows.json"
+          FLAGS=()
+          [ -n "$IN_PROJECTS" ] && FLAGS+=(--projects "$IN_PROJECTS")
+          [ -n "$IN_UNRELIABLE" ] && FLAGS+=(--unreliable "$IN_UNRELIABLE")
+          [ "$IN_WRITE" = "true" ] && FLAGS+=(--write)
+          [ "$IN_IGNORE_PLACEBO" = "true" ] && FLAGS+=(--ignore-placebo-alarm)
+          python gate2_run.py --sha "$IN_SHA" --extractors "$IN_EXTRACTORS" --run-tag "$TAG" --out "$OUT" --rows-out "$ROWS" "${FLAGS[@]}"
+          rc=$?
+          if [ "$rc" = "2" ]; then
+            echo "::error::闸二没跑 —— 预注册拒跑 (题库没冻结 / sha 对不上 / 快照内 (笔记, 题) 不唯一 / 占位题显著), 原因在上面 stderr。一行没写。"
+            exit 2
+          elif [ "$rc" != "0" ]; then
+            echo "::error::gate2_run.py 退出码 $rc"
+            exit "$rc"
+          fi
+          echo "── 报告 $OUT ──"
+          cat "$OUT"
+          {
+            echo "## 闸二 · run_tag \`$TAG\` · sha \`$IN_SHA\` · extractors \`$IN_EXTRACTORS\` · write=$IN_WRITE"
+            echo
+            cat "$OUT"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$IN_WRITE" != "true" ]; then
+            echo "::notice::只出了报告, 没写库。看过报告、记完 DECISIONS 再用 write=true 跑一次 (同一个 run_tag 会 upsert)。"
+          fi
+      - name: Upload report + rows
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate2-${{ env.TAG }}
+          path: |
+            data-analysis/feature-gate2-${{ env.TAG }}.md
+            data-analysis/feature-gate2-${{ env.TAG }}.rows.json
+          if-no-files-found: warn
+          retention-days: 90
