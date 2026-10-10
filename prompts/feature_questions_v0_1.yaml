@@ -64,7 +64,8 @@
 # ════════════════════════════════════════════════════════════════════
 
 bank_version: fq-v0.1
-status: draft
+status: frozen
+frozen_sha256: ba0f570c47d594ca4dad571c5a9f5d06da51861b041ba364c3a915220b985ddd
 essence_vocab: v0.2
 label_view: truth_vault.v_l2_labels
 
@@ -135,7 +136,7 @@ questions:
 
   - id: title_is_question
     version: 1
-    gate1_status: pending   # 闸一裁决 (每道模型题都有): pending / pass / fail / kappa_undefined。是对题的评价不是题目内容, 这一行不进 bank_sha256 (同 status 行; feature_bank._GATE1_LINES); 闸二读它 (fail → unreliable); 冻结要求没有 pending —— 审计 B-17, D-103。字段说明没写进文件头: 改头部注释会换 digest, 5,900 篇答案全成旧 sha
+    gate1_status: pass   # 闸一裁决 (每道模型题都有): pending / pass / fail / kappa_undefined。是对题的评价不是题目内容, 这一行不进 bank_sha256 (同 status 行; feature_bank._GATE1_LINES); 闸二读它 (fail → unreliable); 冻结要求没有 pending —— 审计 B-17, D-103。字段说明没写进文件头: 改头部注释会换 digest, 5,900 篇答案全成旧 sha
     family: 开头
     group: G1_opening
     layer: surface
@@ -160,7 +161,7 @@ questions:
 
   - id: opening_type
     version: 2   # D-082 (2026-09-23): 闸一 19 个分歧格裁决 → 处境/习惯/慢性状态 = 身份自述; 情绪词只是语气; 反问梗 = 感叹; 引某人的话 = 具体事件
-    gate1_status: pending
+    gate1_status: fail
     family: 开头
     group: G1_opening
     layer: surface
@@ -208,7 +209,7 @@ questions:
 
   - id: has_specific_time
     version: 1
-    gate1_status: pending
+    gate1_status: fail
     family: 具体性
     group: G2_specificity
     layer: surface
@@ -236,7 +237,7 @@ questions:
 
   - id: has_specific_place
     version: 1
-    gate1_status: pending
+    gate1_status: fail
     family: 具体性
     group: G2_specificity
     layer: surface
@@ -263,7 +264,7 @@ questions:
 
   - id: has_direct_quote
     version: 1
-    gate1_status: pending
+    gate1_status: pass
     family: 具体性
     group: G2_specificity
     layer: surface
@@ -287,7 +288,7 @@ questions:
 
   - id: has_body_sensation
     version: 1
-    gate1_status: pending
+    gate1_status: fail
     family: 具体性
     group: G2_specificity
     layer: surface
@@ -315,7 +316,7 @@ questions:
 
   - id: ending_asks_reader
     version: 1
-    gate1_status: pending
+    gate1_status: pass
     family: 评论诱导
     group: G3_engagement
     layer: surface
@@ -341,7 +342,7 @@ questions:
 
   - id: invites_sharing
     version: 1
-    gate1_status: pending
+    gate1_status: fail
     family: 评论诱导
     group: G3_engagement
     layer: surface
@@ -366,7 +367,7 @@ questions:
 
   - id: asks_for_help
     version: 1
-    gate1_status: pending
+    gate1_status: pass
     family: 评论诱导
     group: G3_engagement
     layer: surface
@@ -391,7 +392,7 @@ questions:
 
   - id: withholds_product_name
     version: 1
-    gate1_status: pending
+    gate1_status: kappa_undefined
     family: 评论诱导
     group: G4_stance_product
     layer: surface
@@ -416,7 +417,7 @@ questions:
 
   - id: divisive_claim
     version: 1
-    gate1_status: pending
+    gate1_status: fail
     family: 评论诱导
     group: G4_stance_product
     layer: surface
@@ -442,7 +443,7 @@ questions:
 
   - id: product_role
     version: 2   # D-082 (2026-09-23): 闸一 20 个分歧格裁决 → 求推荐/用法提问/话题标签/日常食物/打比方 = 未出现; 特指某款不写名 = 只暗示(优先); 通篇测评 = 主角
-    gate1_status: pending
+    gate1_status: fail
     family: 产品露出
     group: G4_stance_product
     layer: surface
@@ -482,7 +483,7 @@ questions:
 
   - id: efficacy_promise
     version: 1
-    gate1_status: pending
+    gate1_status: kappa_undefined
     family: 产品露出
     group: G4_stance_product
     layer: surface
@@ -511,7 +512,7 @@ questions:
 
   - id: narrator_identity
     version: 2   # D-082 (2026-09-23): 闸一 16 个分歧格全判「是」→ 弱交代（称呼推出家庭角色、场景推出职场处境、运动资历、病情+处境）都算
-    gate1_status: pending
+    gate1_status: pass
     family: 身份代入
     group: G5_identity
     layer: surface
@@ -544,7 +545,7 @@ questions:
 
   - id: own_experience
     version: 1
-    gate1_status: pending
+    gate1_status: pass
     family: 身份代入
     group: G5_identity
     layer: surface
@@ -567,7 +568,7 @@ questions:
 
   - id: comparison_group
     version: 3   # D-082 (2026-09-23): 闸一 11 个分歧格裁决 → 必须「别人怎样 + 我怎样」两半都写出来; 自己比自己 / 别人比别人 / 泛论 / 引述 / 听说来源都不算
-    gate1_status: pending
+    gate1_status: pass
                  # v3 (同日, codex review on #154): 正例「别的妈妈都给孩子用这个」只有别人那一半, 和 yes_if 打架 → 补上「我」这一半。v2 的答案 (gate1-v2) 是补之前的题面
     family: 身份代入
     group: G5_identity
@@ -600,7 +601,7 @@ questions:
 
   - id: calls_out_reader_group
     version: 1
-    gate1_status: pending
+    gate1_status: pass
     family: 身份代入
     group: G5_identity
     layer: surface
@@ -628,7 +629,7 @@ questions:
 
   - id: turning_point
     version: 2   # D-082 (2026-09-23): 闸一 29 个分歧格 26 个判「否」→ 「之后」必须是已经发生的状态变化; 求助 / 想改 / 纠结 / 渐变 / 一句背景 / 同一天的事都不算
-    gate1_status: pending
+    gate1_status: pass
     family: 冲突转折
     group: G6_conflict
     layer: surface
@@ -661,7 +662,7 @@ questions:
 
   - id: judged_by_others
     version: 1
-    gate1_status: pending
+    gate1_status: pass
     family: 冲突转折
     group: G6_conflict
     layer: essence
@@ -684,7 +685,7 @@ questions:
 
   - id: negative_outcome_happened
     version: 1
-    gate1_status: pending
+    gate1_status: fail
     family: 冲突转折
     group: G6_conflict
     layer: essence

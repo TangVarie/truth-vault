@@ -884,16 +884,17 @@ jobs:
           # 反证 ④: 冻结后 sha 不符 → 红; 冻结没记 sha → 红
           b = copy.deepcopy(bank); b["status"] = "frozen"; b["frozen_sha256"] = "0" * 64
           assert any("frozen_sha256 不符" in e for e in fb.validate_bank(b))
-          b = copy.deepcopy(bank); b["status"] = "frozen"
+          b = copy.deepcopy(bank); b["status"] = "frozen"; b.pop("frozen_sha256", None)   # 题库 D-105 起真冻结了, 先摘掉记的 sha 再造这个反证
           assert any("没记 frozen_sha256" in e for e in fb.validate_bank(b))
           # ④b 冻结这一步必须【算得出来】(codex review on #141 P1): digest 剔掉 frozen_sha256 那一行再算,
           # 所以把算出来的值写回文件之后, 校验仍然通过。直接 hash 整个文件是自指的, 这段会红。
           import pathlib, tempfile
           raw = pathlib.Path(fb.BANK_PATH).read_bytes()
           digest = fb.bank_digest(raw)
-          # 冻结要求每题都有闸一裁决 (D-103): 把 pending 全换成 pass; 这些行不进 digest, 所以 ④c 照样成立
-          frozen = (raw.replace(b"status: draft", b"status: frozen", 1).replace(b"gate1_status: pending", b"gate1_status: pass")
-                    + f"frozen_sha256: {digest}\n".encode())
+          # 冻结要求每题都有闸一裁决 (D-103): 把 pending 全换成 pass; 这些行不进 digest, 所以 ④c 照样成立。
+          # 先剔掉文件里已有的 status / frozen_sha256 两行再补 (题库 D-105 起本来就是 frozen, 不剔会出重复键)
+          frozen = (fb._META_LINES.sub(b"", raw).replace(b"gate1_status: pending", b"gate1_status: pass")
+                    + b"status: frozen\n" + f"frozen_sha256: {digest}\n".encode())
           with tempfile.NamedTemporaryFile("wb", suffix=".yaml", delete=False) as f:
               f.write(frozen); tmp = f.name
           fb2 = fb.load_bank(tmp)
@@ -910,7 +911,7 @@ jobs:
           assert any("gate1_status 还是 pending" in e for e in fb.validate_bank(b)), "冻结带 pending 没被抓住"
           b = copy.deepcopy(bank); b["questions"][0]["gate1_status"] = "maybe"
           assert any("gate1_status=" in e for e in fb.validate_bank(b)), "gate1_status 不在闭集没被抓住"
-          assert fb.bank_digest(raw.replace(b"gate1_status: pending", b"gate1_status: fail")) == digest, "裁一道题不该换 digest"
+          assert fb.bank_digest(raw.replace(b"gate1_status: pending", b"gate1_status: fail").replace(b"gate1_status: pass", b"gate1_status: fail")) == digest, "裁一道题不该换 digest"
           # 反证 ⑥: choice 题的 aw_instruction_values 必须在选项里; bool 题不许有
           b = copy.deepcopy(bank); next(x for x in b["questions"] if x["id"] == "opening_type")["aw_instruction_values"] = ["不存在的选项"]
           assert any("不在选项里" in e for e in fb.validate_bank(b))

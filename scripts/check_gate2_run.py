@@ -26,7 +26,24 @@ from datetime import datetime, timedelta, timezone
 import feature_bank as fb
 import gate2_run as G
 
-BANK = fb.load_bank()
+REAL = fb.load_bank()
+
+
+def _neutral(bank: dict) -> dict:
+    """真题库 D-105 起已冻结、带着真裁决 (fail 的题闸二自动 unreliable)。自检的夹具用它的【中性副本】——
+    draft、没记 frozen_sha256、每道模型题 gate1_status=pass——状态表那节的 reversed / no_signal 例子才不会
+    被真裁决盖成 unreliable; §6 / §6b / §6c 的反证都在副本上造, 真题库另在 §6c 末尾验一次。"""
+    import copy
+    b = copy.deepcopy(bank)
+    b["status"] = "draft"
+    b.pop("frozen_sha256", None)
+    for q in b["questions"]:
+        if "gate1_status" in q:
+            q["gate1_status"] = "pass"
+    return b
+
+
+BANK = _neutral(REAL)
 SHA = BANK["_sha256"][:12]
 EXTRACTORS = ["code:v1", "llm:test"]
 T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -257,7 +274,7 @@ def check_snapshot_uniqueness() -> None:
 def check_frozen_required() -> None:
     notes, answers, _ = _dataset()
     _fill_bool(answers, notes, "title_is_question", p_pos=0.6, p_neg=0.3)
-    assert BANK.get("status") != "frozen", "本守卫假设仓里的题库还是 draft; 冻结之后把这条改成 monkeypatch"
+    assert BANK.get("status") == "draft" and "frozen_sha256" not in BANK, "夹具是真题库的中性副本 (draft), 见 _neutral"
     try:
         _run(notes, answers, allow_draft=False)
     except G.Gate2Refused as exc:
@@ -304,14 +321,14 @@ def check_gate1_status_from_bank() -> None:
         b = copy.deepcopy(BANK)
         next(q for q in b["questions"] if q["id"] == "title_is_question")["gate1_status"] = status
         return b
-    assert G.gate1_unreliable(BANK) == set(), "仓里的题库现在应该全是 pending (还没裁)"
+    assert G.gate1_unreliable(BANK) == set(), "中性副本全 pass, 不该有自动 unreliable 的题"
     res = _run(notes, answers, bank=_with("fail"))
     assert _row(res, "title_is_question")["status"] == "unreliable", "§6c gate1_status: fail 的题必须 unreliable"
     assert "title_is_question" in res["params"]["unreliable"], res["params"]["unreliable"]
     for ok in ("pass", "kappa_undefined"):
         res = _run(notes, answers, bank=_with(ok))
         assert _row(res, "title_is_question")["status"] == "validated", f"§6c gate1_status: {ok} 的题照常进统计"
-    frozen_pending = dict(BANK, status="frozen", frozen_sha256=BANK["_sha256"])
+    frozen_pending = dict(_with("pending"), status="frozen", frozen_sha256=BANK["_sha256"])   # 中性副本全 pass, 要造一道 pending
     try:
         _run(notes, answers, bank=frozen_pending, allow_draft=False)
     except G.Gate2Refused as exc:
@@ -324,7 +341,15 @@ def check_gate1_status_from_bank() -> None:
         assert "gate1_status" in str(exc), exc
     else:
         raise AssertionError("§6c gate1_status 不在闭集必须拒跑")
-    print("  §6c gate1_status: fail → unreliable; pass / kappa_undefined 照常; 冻结带 pending 拒跑; 取值闭集 ✓")
+    # 真题库 (D-105 起 frozen、20 题裁决填好): 不带 --allow-draft 能过预注册, fail 的题自动 unreliable、pass 的照常进统计
+    assert REAL.get("status") == "frozen", "仓里的题库 D-105 起应当是 frozen"
+    real_fail = G.gate1_unreliable(REAL)
+    assert real_fail, "真题库应当至少有一道 fail (D-105: 8 道)"
+    res = _run(notes, answers, bank=REAL, sha=REAL["_sha256"][:12], allow_draft=False)
+    assert set(res["params"]["unreliable"]) >= real_fail, (res["params"]["unreliable"], real_fail)
+    assert _row(res, "title_is_question")["status"] == "validated", "真题库里 pass 的题照常进统计"
+    print("  §6c gate1_status: fail → unreliable; pass / kappa_undefined 照常; 冻结带 pending 拒跑; 取值闭集; "
+          f"真题库 frozen、{len(real_fail)} 道 fail 自动 unreliable ✓")
 
 
 # ── §7 取数条件 / 大项目动态 ─────────────────────────────────────────────────────
