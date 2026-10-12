@@ -54,6 +54,19 @@ def parse_json(text: str):
 # 于是"这个中转站根本不支持 cache_control、每次都在多付一倍 input token"这件事可以持续几个月。
 # 进程内计数, /health 回显 (重启清零 —— 它答的是"这个实例最近有没有在降级", 不是历史总量)。
 PROMPT_CACHE_FALLBACKS: dict = {"count": 0, "last_at": None, "last_error": ""}
+# 实际缓存读写 (2026-10-12): 降级计数只抓得到"网关拒收 cache_control"; 网关静默丢掉标记、或轮转到不同上游
+# 账号时它恒为 0。按 usage 累加, /health 回显 (同进程、重启清零)。判读见 scripts/annotate_essence_pass.py。
+PROMPT_CACHE_USAGE: dict = {"calls": 0, "input": 0, "cache_write": 0, "cache_read": 0, "output": 0}
+
+
+def _record_usage(msg) -> None:
+    u = getattr(msg, "usage", None)
+    if u is None:
+        return
+    PROMPT_CACHE_USAGE["calls"] += 1
+    for key, attr in (("input", "input_tokens"), ("cache_write", "cache_creation_input_tokens"),
+                      ("cache_read", "cache_read_input_tokens"), ("output", "output_tokens")):
+        PROMPT_CACHE_USAGE[key] += int(getattr(u, attr, 0) or 0)
 
 
 def _note_cache_fallback(exc: BaseException) -> None:
@@ -108,6 +121,7 @@ def call_anthropic(prompt: str, model: str, *, system=None, max_tokens: int = 15
                 if sys_val is not None:   # str 或带 cache_control 的 block 列表 → prompt caching
                     create_kwargs["system"] = sys_val
                 msg = client.messages.create(**create_kwargs)
+                _record_usage(msg)
                 return "".join(
                     b.text for b in msg.content if getattr(b, "type", None) == "text"
                 )

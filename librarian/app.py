@@ -80,7 +80,9 @@ def health() -> dict:
         # 审计 C-02: prompt caching 降级以前只在 stdout 里一行 warning。count > 0 且持续涨 =
         # 这个中转站不支持 cache_control, 每次借阅都在多付 input token; select_ms 里也掺着这次重试。
         # last_error 只是异常类型名 (这个端点没鉴权, 异常文本可能带 URL / 凭据; codex review on #169)。
-        "config": {"prompt_cache_fallbacks": dict(_clients.PROMPT_CACHE_FALLBACKS)},
+        "config": {"prompt_cache_fallbacks": dict(_clients.PROMPT_CACHE_FALLBACKS),
+                   # 2026-10-12: 实际缓存读写 (cache_write / cache_read 都是 0 = 缓存标记没到上游)
+                   "prompt_cache_usage": dict(_clients.PROMPT_CACHE_USAGE)},
     }
 
 
