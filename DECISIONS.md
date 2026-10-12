@@ -6208,3 +6208,60 @@ owner 格一列两趟几乎相同（Haiku：第一句类型 18 · 5 · 19，拿�
 - 改快照是看过干跑之后定的。改的是「用哪个模型的答案」，不是判据，判据数字一个没动；干跑那一份的单题结果不拿来挑题。
 - Sonnet 重标的 498 篇里，正例那 201 篇正是闸二最在乎的样本。重标之后它们和负例出自同一个模型，这是这一轮比干跑更可信的唯一理由。
 - 「混抽取器」这个坑 D-105 第 4 条写了「闸二报告里要写明」，当时没意识到它会和标签混在一起。以后改抽取器的那天就要查一遍各项目正负例分别是谁答的。
+
+## D-107 · 闸二正式结果：10 个特征取值 validated；组合不进 L2（AUC 增益 −0.00105，区间跨零）；按审核摘要写验证账本（2026-10-12）
+
+来源：owner 本会话「把最后一批跑完」后授权「ok，跑吧」。沿用 D-106 的题库、抽取器、分析集定义、run_tag 和全部判据，没有用结果改线或挑项目。
+
+### 前置核验与运行证据
+
+- 三批重标输入来自 run [38198417012](https://github.com/TangVarie/truth-vault/actions/runs/38198417012)、[38198541254](https://github.com/TangVarie/truth-vault/actions/runs/38198541254)、[38209316795](https://github.com/TangVarie/truth-vault/actions/runs/38209316795)。实际输入是 **200 + 200 + 99 = 499 个不同 note_id**；D-106 的 498 是计划时的数量，不能当实跑清单。清单见 `data-analysis/gate2-reannotation-manifest-2026-10-12.json`。
+- 第三批显示失败，但核库时 98/99 篇已经完整，只有 `SPX_phase1_recvrQTXmyQfh3` 缺 Sonnet 的 20 道题。只补这一篇（batch=1、reannotate=true、primary），run [38233093886](https://github.com/TangVarie/truth-vault/actions/runs/38233093886) 成功，09:57 UTC 结束。没有重跑其余 98 篇。
+- 补跑后逐个核 **(note_id, extractor, question_id, question_version, bank_sha256, run_tag)**：499/499 完整，每篇 Sonnet 20 行 + code:v1 11 行，缺行 0。NULL 答案按 D-106 算有行；它不是模型答对的保证。
+- 闸二只读正式跑：[38234131740](https://github.com/TangVarie/truth-vault/actions/runs/38234131740)，main `58002fb5cba0e9acdb9e0f33a3be1cc88e6d5ffe`；`write=false`、`ignore_placebo_alarm=false`、全部项目、无额外 unreliable。
+- 快照保持 `primary` × `ba0f570c47d594ca4dad571c5a9f5d06da51861b041ba364c3a915220b985ddd` × {code:v1, llm:claude-sonnet-5-5}；验证标签仍为预注册的 `gate2-20261010`，实际运行日期是 10-12。
+- 产物 artifact `11739553672` 原样保存到 `data-analysis/feature-gate2-gate2-20261010.{md,rows.json}` 与 `data-analysis/feature-gate2-combo-gate2-20261010.{md,json}`。从 rows.json 独立重算摘要与报告一致：`c3dfab5dc85e9c31fdec9e44e43853fe158dc30b0d5e88400c2db535070c11c3`。
+
+### 单个特征值
+
+分析集 4,874 篇、正例 273；快照账本 69,263 行。大项目是 NUC（84 正例）、NRT_2（42）、NRT_3（41）、SPX（24）、OKMAN（20）。55 个题目取值：**validated 10、no_signal 25、reversed 1、confounded 0、unreliable 18、insufficient 1**。三个占位题都 no_signal，反证通过。
+
+| 题 / 取值 | OR（95% CI） | 预注册方向 | 后续边界 |
+|---|---|---|---|
+| asks_for_help / 是 | 2.31（1.68–3.17） | + | 已有方向；仍是观察关联 |
+| ending_asks_reader / 是 | 2.11（1.55–2.87） | + | 已有方向；仍是观察关联 |
+| brand_first_position / 前20% | 0.27（0.13–0.56） | − | 已有方向；代码特征不自动变写作指令 |
+| brand_in_title / 是 | 0.25（0.10–0.64） | − | 已有方向；代码特征不自动变写作指令 |
+| brand_first_position / 未出现 | 5.22（3.12–8.74） | ? | 新发现，下发前 owner 看过 |
+| brand_first_position / 中间 | 0.30（0.16–0.54） | ? | 新发现，下发前 owner 看过 |
+| body_question_marks / >=2 | 1.59（1.18–2.14） | ? | 新发现，下发前 owner 看过 |
+| emoji_bucket / 0 | 1.57（1.10–2.26） | ? | 新发现，下发前 owner 看过 |
+| emoji_bucket / 1-3 | 0.62（0.42–0.90） | ? | 新发现，下发前 owner 看过 |
+| efficacy_promise / 是 | 0.08（0.01–0.60） | ? | 合规观察项，`aw_instruction=never`，永不下发 |
+
+`turning_point / 是` 是唯一 reversed：OR 0.49（0.30–0.79），与预注册 + 相反，保留原方向和状态，不改写成 validated。闸一 fail 的 8 道题仍 unreliable，不因为这次统计显著而放行。
+
+### 组合进不进 L2
+
+评估集只留两个抽取器都答全的 1,457 篇（273 正例）；有部分抽取器答案的 1,092 篇被剔掉。留一项目、逆抽样权重、1,000 次配对自助、20 次项目内置换都沿用 D-106。
+
+| 判据 | 实测 | 结论 |
+|---|---|---|
+| 合并 − 只 essence 的加权 AUC ≥ 0.02 | 0.637470 − 0.638525 = **−0.001054**（只原子题 0.613883） | 不过 |
+| 提升的配对自助 95% 区间下界 > 0 | **[−0.041955, 0.038398]** | 不过 |
+| 最低20%爆率：合并 ≤ 只 essence | **2.147% ≤ 2.358%** | 过 |
+| 置换合并 AUC 均值 0.47–0.53，最大低于真实 | 均值 **0.490823**、最大 **0.528937 < 0.637470** | 过 |
+
+**决定：组合不进 L2。** 单项出现关联，不代表合并打分器有增量预测价值；P3 的「essence + 特征」第二轨本轮不启动，judge 继续 shadow，不据此自动标 revise 或改发牌权重。P3/P4 的其他工作继续在 OPEN-ITEMS 里保留，不因这次跑完就标完成。
+
+### 写库与后续
+
+- 按报告原摘要执行 `write=true`：run [38234730010](https://github.com/TangVarie/truth-vault/actions/runs/38234730010) 成功，写入 55 行 `feature_validation`。生产库回读这 55 行、按 `VALIDATION_COLUMNS` 独立重算摘要，**完整 64 位摘要与审核报告一致**（`c3dfab5dc85e9c31fdec9e44e43853fe158dc30b0d5e88400c2db535070c11c3`）；状态计数也是 10 / 25 / 1 / 0 / 18 / 1。账本接受 validated、reversed 和各失败状态，不把「没过」藏掉。
+- G-02：5 个可讨论的新发现等待 owner 审阅；第 6 个 `efficacy_promise` 即使审阅也不下发。当前没有自动下发这些新发现。
+- J-01/J-02 与 W-01/W-19 是下一轮工程：评论 HTTP / deskcore 工具及协议、评论回填、MCP 同步阻塞和跨项目污染防护。评论金标准 J-03 仍需两人独立标注，不能把 mock 测试当上线验收。
+
+### 局限
+
+- 这是历史观察数据上的项目内关联和留一项目评估，不是因果实验，也不是闸三前瞻验收。
+- HXZ_QD 的 140 篇负例、TXQ 的 97 篇负例在组合评估集没有代表，权重补不回来；完整抽样表和各项目结果见组合报告。
+- 核齐 499 篇只说明指定重标清单齐全，不表示 4,874 篇分析集已经全库用 Sonnet 回填。题库和本轮判据不在看结果后调整；下一轮要另行预注册，季度重跑保留为 G-12。
