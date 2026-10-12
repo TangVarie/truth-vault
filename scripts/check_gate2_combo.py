@@ -12,10 +12,12 @@ check_gate2_combo.py —— gate2_combo.py (闸二后半: 组合进不进 L2, do
   §8 逆抽样权重: 权重 = 全量 / 评估集 (按项目、标签); 加权计数 = 把篇按权重复制后的不加权计数; 一篇没抽到的格列出来
   §9 自助 / 置换沿用原始样本定下的项目集合与权重 (正例 5 篇的项目在某次抽样里不足 5 也不掉)
   §10 爆款集锦 (TGV / TUGE) 不进最低 20%
+  §11 缺整格的项目不进最低 20%; 全量本来没有正例的项目保留; CLI 传全量信息, 报告说明支持集
 
 反证 (每条都该让本脚本红): ① AUC 并列不取中位秩; ② 留一项目时把本项目也算进权重 (泄漏 → §2 红, §4 噪声也会"进");
 ③ 评估集不剔只有部分抽取器答过 / 没答全的篇; ④ 闸一 fail 的题进了特征; ⑤ 置换时打乱的是跨项目的标签;
-⑥ 留一项目计数不乘逆抽样权重; ⑦ 自助时项目集合按每次抽样重选; ⑧ 最低 20% 混进爆款集锦。
+⑥ 留一项目计数不乘逆抽样权重; ⑦ 自助时项目集合按每次抽样重选; ⑧ 最低 20% 混进爆款集锦;
+⑨ 最低 20% 混进缺整格的项目; ⑩ CLI 丢全量信息、把全量无正例的项目也排掉。
 
 跑法: cd scripts && python check_gate2_combo.py
 """
@@ -294,6 +296,38 @@ def check_curated_out_of_bottom() -> None:
     print("  §10 TUGE_phase1 不进最低 20%, 加权 AUC 照算 ✓")
 
 
+def check_missing_cells_out_of_bottom() -> None:
+    # P0 全量有负例但一个没抽到; P1 对称地缺正例; P4 全量本来就没有正例, 要保留。
+    ds = _dataset(0.65, projects=5, pos=10, neg=30, seed=23,
+                  keep=lambda p, y, i: (p != "P0" or y == 1) and (p != "P1" or y == 0))
+    ds["notes"] = [n for n in ds["notes"] if n["project_id"] != "P4" or not n["y"]]
+    notes, meta = C.build_eval(ds, REAL, sha=SHA, extractors=EXT)
+    res = C.run_combo(notes, boot=20, perms=2, census_pos=meta["census_pos"], sampling=meta["sampling"])
+    assert res["bottom_projects"] == ["P2", "P3", "P4"], f"§11 缺整格项目进了最低 20% 或合法零正例项目被排掉: {res['bottom_projects']}"
+    assert res["bottom_excluded"] == {"P0": "配对样本缺负例", "P1": "配对样本缺正例"}, res["bottom_excluded"]
+    for v in C.VARIANTS:
+        b = res["bottom"][v]
+        assert b["bottom_n"] + b["rest_n"] == 110, f"§11 {v}: 只应有 2×40 + 30 篇, 不能混进 P0/P1: {b}"
+    report = C.render(res, meta, sha=SHA, extractors=EXT)
+    assert "不算 (配对样本缺负例)" in report and "不算 (配对样本缺正例)" in report, report
+    assert "不代表全部分析集" in report, "§11 报告必须声明最低 20% 的支持范围"
+    # 以真正进入配对比较的样本为准: 初始评估集有两类, 某类全因分数不可用被丢掉, 同样无法补。
+    included, excluded = C.bottom_projects({"P": ([0.1], [0], [1.0])},
+                                          {"P": {"census_neg": 10, "census_pos": 10, "eval_neg": 10, "eval_pos": 10}})
+    assert included == set() and excluded == {"P": "配对样本缺正例"}, (included, excluded)
+    # 真走 CLI: 全量信息必须传到 run_combo, 否则 P4 会被保守兜底错误排掉。
+    with tempfile.TemporaryDirectory() as td:
+        fx, jf = td + "/fixture.json", td + "/result.json"
+        with open(fx, "w", encoding="utf-8") as f:
+            json.dump(ds, f, ensure_ascii=False)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            rc = C.main(["--sha", SHA, "--extractors", ",".join(EXT), "--fixture", fx,
+                         "--boot", "20", "--perms", "2", "--json-out", jf])
+        got = json.load(open(jf, encoding="utf-8"))
+        assert rc == 0 and got["bottom_projects"] == ["P2", "P3", "P4"], "§11 CLI 丢了全量标签信息"
+    print("  §11 缺正例/负例整格不进最低 20%; 全量无正例项目保留; 配对样本/CLI/报告范围都核过 ✓")
+
+
 def main() -> int:
     check_auc()
     check_lopo()
@@ -305,7 +339,8 @@ def main() -> int:
     check_sampling_weights()
     check_fixed_eligibility()
     check_curated_out_of_bottom()
-    print("\ncheck_gate2_combo: 10 节全过")
+    check_missing_cells_out_of_bottom()
+    print("\ncheck_gate2_combo: 11 节全过")
     return 0
 
 

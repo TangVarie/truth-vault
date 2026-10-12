@@ -27,7 +27,8 @@ answer 为 NULL 也算答过) —— 混着"只有代码特征"或"只写了一�
 差得很远 (D-106: 定向补数把 NUC / NRT 的正例几乎全补了, 负例只抽 100)。直接拿快照里的爆 / 趴数去算留一项目权重, 正例
 覆盖率高的项目的写法会被当成"爆的特征"。所以每篇带一个逆抽样权重 = 全量里 (项目, 标签) 的篇数 / 快照里同格的篇数, 权重
 的计数、最低 20% 都按它加权, 估的就是全量上那个打分器; 项目内 AUC 本身不随类内随机抽样变, 不加权; 项目的加权用全量正例数。
-全量里有、快照里一篇没有的格 (如某项目的正例一篇都没抽到) 补不回来, 报告里逐条列出。
+全量里有、快照里一篇没有的格 (如某项目的正例一篇都没抽到) 补不回来, 报告里逐条列出;
+这些项目不进最低 20% 比较, 那个比较只估有完整标签覆盖的项目, 不声称覆盖全部分析集。
 
     cd scripts && python gate2_combo.py --sha ba0f570c --extractors code:v1,llm:claude-sonnet-5-5 \
         --out ../data-analysis/feature-gate2-combo-<日期>.md --json-out combo.json
@@ -248,6 +249,31 @@ def bottom_quintile_rate(by_proj: dict, frac: float = 0.2) -> dict:
             "rest_n": hi_n, "rest_rate": hi_pos / hi_w if hi_w else None}
 
 
+def bottom_projects(by_proj: dict, sampling: Optional[dict[str, dict]] = None) -> tuple[set[str], dict[str, str]]:
+    """最低 20% 的支持集: 全量里存在的标签在配对评估样本里都要有代表。
+
+    一类完全没抽到时逆抽样权重补不回来。全量本来就没有正例的项目仍可纳入;
+    没给全量信息的离线调用保守地只纳入两类都有的项目。三套分沿用同一支持集。
+    """
+    included, excluded = set(), {}
+    for p in sorted(set(by_proj) | set(sampling or {})):
+        if p in CURATED_PROJECTS:
+            excluded[p] = "爆款集锦"
+            continue
+        ys = by_proj[p][1] if p in by_proj else []
+        counts = {"neg": len(ys) - sum(ys), "pos": sum(ys)}
+        full = (sampling or {}).get(p)
+        missing = [label for label in ("neg", "pos")
+                   if (full[f"census_{label}"] if full is not None else 1) > 0 and not counts[label]]
+        if missing:
+            excluded[p] = "配对样本缺" + "/".join("负例" if label == "neg" else "正例" for label in missing)
+        elif not ys:
+            excluded[p] = "无配对样本"
+        else:
+            included.add(p)
+    return included, excluded
+
+
 def permute_within_project(notes: list[dict], seed: int) -> list[int]:
     rng = random.Random(seed)
     by_p: dict[str, list[int]] = defaultdict(list)
@@ -277,7 +303,7 @@ def eligible_projects(by_proj: dict, census_pos: Optional[dict[str, int]] = None
 
 
 def run_combo(notes: list[dict], *, boot: int = 1000, perms: int = 20, seed: int = 20261010,
-              census_pos: Optional[dict[str, int]] = None) -> dict:
+              census_pos: Optional[dict[str, int]] = None, sampling: Optional[dict[str, dict]] = None) -> dict:
     if not notes:
         raise G.Gate2Refused("评估集 0 篇: 快照里没有同时被每个抽取器答全、又有 essence 的篇")
     ys = [n["y"] for n in notes]
@@ -312,8 +338,9 @@ def run_combo(notes: list[dict], *, boot: int = 1000, perms: int = 20, seed: int
     diffs.sort()
     ci = (diffs[int(0.025 * (len(diffs) - 1))], diffs[int(math.ceil(0.975 * (len(diffs) - 1)))]) if diffs else (None, None)
 
-    # ③ 最低 20% (爆款集锦不算, 按逆抽样权重)
-    bq = {v: bottom_quintile_rate({p: t for p, t in g[v].items() if p not in CURATED_PROJECTS}) for v in VARIANTS}
+    # ③ 最低 20%: 全量存在的标签必须在配对样本里有代表, 缺整格不能靠权重补回来 (#177)。
+    bottom_included, bottom_excluded = bottom_projects(g["tag"], sampling)
+    bq = {v: bottom_quintile_rate({p: t for p, t in g[v].items() if p in bottom_included}) for v in VARIANTS}
 
     # ④ 置换反证
     perm = {v: [] for v in VARIANTS}
@@ -335,6 +362,7 @@ def run_combo(notes: list[dict], *, boot: int = 1000, perms: int = 20, seed: int
     c4 = perm_mean is not None and PERM_BAND[0] <= perm_mean <= PERM_BAND[1] and perm_max < real["both"]
     return {"n_notes": len(notes), "n_pos": sum(ys), "auc": real, "per_project": per_proj, "gain": gain, "eligible": elig,
             "boot": {"n": len(diffs), "ci_low": ci[0], "ci_high": ci[1]}, "bottom": bq,
+            "bottom_projects": sorted(bottom_included), "bottom_excluded": bottom_excluded,
             "perm": {v: perm[v] for v in VARIANTS}, "perm_mean": perm_mean, "perm_max": perm_max,
             "criteria": {"auc_gain": c1, "boot_ci": c2, "bottom20": c3, "permutation": c4},
             "enter_l2": bool(c1 and c2 and c3 and c4)}
@@ -362,7 +390,7 @@ def render(res: dict, meta: dict, *, sha: str, extractors: list[str]) -> str:
     L += ["", "| 判据 | 实测 | 线 | 判 |", "|---|---|---|---|",
           f"| ① 合并 − 只 essence | {_f(res['gain'])} | ≥ {AUC_GAIN} | {ok(c['auc_gain'])} |",
           f"| ② 自助 {b['n']} 次 95% 区间 | [{_f(b['ci_low'])}, {_f(b['ci_high'])}] | 下界 > 0 | {ok(c['boot_ci'])} |",
-          f"| ③ 最低 20% 爆率 (合并 / 只 essence) | {_f(bb['bottom_rate'])} / {_f(bt['bottom_rate'])} | 合并 ≤ 只 essence | {ok(c['bottom20'])} |",
+          f"| ③ 最低 20% 爆率 (有完整标签覆盖的项目; 合并 / 只 essence) | {_f(bb['bottom_rate'])} / {_f(bt['bottom_rate'])} | 合并 ≤ 只 essence | {ok(c['bottom20'])} |",
           f"| ④ 置换反证 (合并) | 均值 {_f(res['perm_mean'])}, 最大 {_f(res['perm_max'])} vs 真实 {_f(res['auc']['both'])} | 均值 ∈ [{PERM_BAND[0]}, {PERM_BAND[1]}] 且最大 < 真实 | {ok(c['permutation'])} |",
           "", f"**进不进 L2: {'进' if res['enter_l2'] else '不进'}**", "",
           "## 逐项目 (全量正例 ≥ 5 且评估集正例 ≥ 5; 加权 = 全量正例数)", "",
@@ -378,7 +406,7 @@ def render(res: dict, meta: dict, *, sha: str, extractors: list[str]) -> str:
             wp = _f(c["census_pos"] / c["eval_pos"], 2) if c["eval_pos"] else "—"
             wn = _f(c["census_neg"] / c["eval_neg"], 2) if c["eval_neg"] else "—"
             L.append(f"| {p} | {c['census_pos']} / {c['census_neg']} | {c['eval_pos']} / {c['eval_neg']} | {wp} / {wn} | "
-                     f"{'不算 (爆款集锦)' if p in CURATED_PROJECTS else '算'} |")
+                     f"{'不算 (' + res['bottom_excluded'][p] + ')' if p in res['bottom_excluded'] else '算'} |")
         miss = meta.get("unrepresented") or []
         L += ["", "全量里有、评估集里一篇没有的格 (权重补不回来, 这些篇等于不在全量里): " +
               ("; ".join(f"{m['project_id']} {m['label']} {m['census']} 篇" for m in miss) if miss else "无")]
@@ -388,7 +416,9 @@ def render(res: dict, meta: dict, *, sha: str, extractors: list[str]) -> str:
           "项目内 AUC 不加权 (类内随机抽样不改变它), 项目间按全量正例数加。",
           "- 进加权 AUC 的项目在原始样本上定一次, 自助与置换沿用同一组、同一组权重 (只跳过某次抽样里一类为空的项目)。",
           f"- 最低 20%: 项目内按分升序、按权重累计取最低 20% (至少 1 篇), 各项目合起来算加权爆率; "
-          f"{' / '.join(sorted(CURATED_PROJECTS))} 是爆款集锦, 不算。",
+          f"{' / '.join(sorted(CURATED_PROJECTS))} 是爆款集锦, 不算; 全量存在的标签在配对样本里缺整格的项目也不算。",
+          "- 最低 20% 判据只估上述有完整标签覆盖的项目, 不代表全部分析集。排除项目及原因: " +
+          ("; ".join(f"{p}: {why}" for p, why in res["bottom_excluded"].items()) or "无") + "。",
           f"- 置换: 项目内打乱标签, 特征不动, 种子固定; 判据只看合并打分器, 另两套列着对照。"]
     return "\n".join(L) + "\n"
 
@@ -438,7 +468,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         G.assert_projects_present(dataset, projects)
         notes, meta = build_eval(dataset, bank, sha=sha, extractors=extractors, include_unreliable=args.include_unreliable,
                                  unreliable=unreliable, projects=projects)
-        res = run_combo(notes, boot=args.boot, perms=args.perms, seed=args.seed, census_pos=meta["census_pos"])
+        res = run_combo(notes, boot=args.boot, perms=args.perms, seed=args.seed, census_pos=meta["census_pos"],
+                        sampling=meta["sampling"])
     except G.Gate2Refused as exc:
         print(f"组合对比没跑: {exc}", file=sys.stderr)
         return 2
