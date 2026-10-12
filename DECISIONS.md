@@ -6311,3 +6311,5 @@ owner 格一列两趟几乎相同（Haiku：第一句类型 18 · 5 · 19，拿�
 **Evidence**：Jev全量131项通过；aw全量813项通过/1既有xfail，新增MCP SDK并发和HTTP冒烟通过；vendor摘要校验通过。工程实现/回填/标注与发布步骤见Jev `docs/comment-tools-rollout-2026-10-12.md`、aw `docs/comment-isolation-rollout-2026-10-12.md`；结构复评见 [G-11报告](data-analysis/structure-layer-reassessment-2026-10-12.md)。以上为本地验证，正式CI和部署结果另核，不冒充线上验收。
 
 工程PR：[Jev #9](https://github.com/TangVarie/JevforCoentent/pull/9)、[autowriter #96](https://github.com/TangVarie/autowriter/pull/96)。Jev正式CI已通过；aw旧CI假查询缺分页方法已补，等新提交CI复验。
+
+**10-12工程PR审阅复核**：Jev的slot角色统一、CSV公式转义、模型嵌套形状异常checkpoint、note上下文分页/缺失拒判、快照全量续跑均已修并回归（136项通过）；aw补身份失败指纹排除、评论needs_review严格合同、超时后共享线程额度、REST拒写400与HTTP阶段外层总截止（820项通过/1既有xfail）。G-11措辞已限定为未启用的题库元数据/未来先验，触发列改下一次季度闸二G-12；最新提交CI需复验。原始人工样本继续仅本地保留。

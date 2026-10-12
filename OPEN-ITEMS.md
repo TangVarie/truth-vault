@@ -42,7 +42,7 @@
 | G-08 | 退役 `v_l2_labels_v1` | 没做 | 工程 | 闸二第一轮对完账 | D-067 |
 | G-09 | 下一版题库：代码特征 choice 题按取值写方向；新增美妆 / 母婴等项目时复查五道 v2 题面的例子 | 等下一版 | 工程 | 题库升版 | D-106 #4；D-082 |
 | G-10 | 救闸一没过的三道（具体时间 / 地点 / 身体感受）：owner 裁约 50 格，`build_gate1_human_sheets.py` 出表 | 这一轮明确不救 | 你拍板 + 你动手（可选） | 想救时 | D-105；D-106 #3 |
-| G-11 | 结构类题的层级和半衰期（surface、30 个月）按闸二跨项目稳定性重估 | 工程复评完成：见 `data-analysis/structure-layer-reassessment-2026-10-12.md`；18道中3道含validated值、7道no_signal、7道unreliable、1道reversed；保留surface/30先验，30个月尚无时间估计，跨期验证留季度复跑 | 工程 | 下一轮工程，与 J-01/W-01 同轮排入；不等组合进 L2 | docs/28:475；D-107 |
+| G-11 | 结构类题的层级和半衰期（surface、30 个月）按闸二跨项目稳定性重估 | 工程复评完成：见 `data-analysis/structure-layer-reassessment-2026-10-12.md`；18道中3道含validated值、7道no_signal、7道unreliable、1道reversed；保留surface/30先验，30个月尚无时间估计，跨期验证留季度复跑 | 工程 | 下一次季度闸二（G-12），跨期窗口和支持量预注册后验证 | docs/28:475；D-107 |
 | G-12 | 闸二每季度重跑 | 没排期 | 工程 | 每季度 | docs/28:414 |
 | G-13 | 抽取器要不要换 Jev（审计 A-10）；换就要：features-sync / backfill 传 `done_by`、`code:v1` 走 `--code-only`、worker `/annotate-features` 改调 `/judge`、修 Jev docs/31 的自相矛盾 | D-105 定的是留 Sonnet 5.5；Jev 还在 v1 题面 | 你拍板 → 工程 | 闸二后 | 审计 A-10；D-085；D-105 |
 | G-14 | 抽取器换 Haiku 5.5（省约 20 倍） | 搁置，影子数据在库 | 你拍板 | 成本成问题时 | D-105 #1 |
