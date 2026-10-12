@@ -9,6 +9,9 @@ cache_control 的话每次调用都在多付一倍 input token, 持续几个月�
   §3 librarian /health 回显 config.prompt_cache_fallbacks (同进程计数)
   §4 essence 的 Done 行 stats 带 prompt_cache_fallbacks
   §5 真错误 (纯 system 也失败) 仍抛出 —— 降级不掩盖余额 / 鉴权 / 模型不存在
+  §6 实际缓存读写按 usage 累加 (2026-10-12): essence.call_claude 与 librarian.call_anthropic 各自记 calls /
+     input / cache_write / cache_read / output; read_share = cache_read / 总输入; 特征层与 essence 的 Done 行、
+     librarian /health 都带出去 —— 网关静默丢掉 cache_control 时降级计数恒 0, 只有这几个数看得出来
 用假的 anthropic 模块, 不碰网络。
 """
 from __future__ import annotations
@@ -25,8 +28,13 @@ sys.path.insert(0, str(HERE.parent))
 
 
 class _Msg:
-    def __init__(self, text):
+    def __init__(self, text, cached=False):
         self.content = [types.SimpleNamespace(type="text", text=text)]
+        # 带缓存块的那次: 假装读到 900 个缓存 token; 纯 system: 全算普通输入
+        self.usage = types.SimpleNamespace(input_tokens=100 if cached else 1000,
+                                           cache_creation_input_tokens=0,
+                                           cache_read_input_tokens=900 if cached else 0,
+                                           output_tokens=50)
 
 
 class _Messages:
@@ -35,6 +43,8 @@ class _Messages:
 
     def create(self, **kw):
         sysv = kw.get("system")
+        if isinstance(sysv, list) and _CACHE_OK["v"]:
+            return _Msg("ok:cached", cached=True)
         if isinstance(sysv, list):
             raise RuntimeError("400 bad request: cache_control not supported by this gateway")   # 非瞬时 → 不重试
         if self.fail_plain:
@@ -43,6 +53,7 @@ class _Messages:
 
 
 _FAIL_PLAIN = {"v": False}
+_CACHE_OK = {"v": False}
 
 
 class _Anthropic:
@@ -105,12 +116,39 @@ def main() -> int:
     finally:
         _FAIL_PLAIN["v"] = False
 
+    # §6
+    _CACHE_OK["v"] = True
+    try:
+        u0 = dict(E.PROMPT_CACHE_USAGE)
+        out6 = E.call_claude("p", "m", cached_system="S")
+        u1 = E.PROMPT_CACHE_USAGE
+        if out6 != "ok:cached" or u1["calls"] != u0["calls"] + 1 or u1["cache_read"] != u0["cache_read"] + 900 \
+                or u1["input"] != u0["input"] + 100 or u1["output"] != u0["output"] + 50:
+            fails.append(f"§6 essence 没按 usage 累加: {u0} → {dict(u1)}")
+        summ = E.prompt_cache_summary()
+        tot = summ["input"] + summ["cache_write"] + summ["cache_read"]
+        if summ.get("read_share") != (round(summ["cache_read"] / tot, 3) if tot else None) or "fallbacks" not in summ:
+            fails.append(f"§6 prompt_cache_summary 口径不对: {summ}")
+        l0 = C.PROMPT_CACHE_USAGE["cache_read"]
+        C.call_anthropic("p", "m", system=[{"type": "text", "text": "S", "cache_control": {"type": "ephemeral"}}])
+        if C.PROMPT_CACHE_USAGE["cache_read"] != l0 + 900:
+            fails.append(f"§6 librarian 没按 usage 累加: {C.PROMPT_CACHE_USAGE}")
+    finally:
+        _CACHE_OK["v"] = False
+    if '"prompt_cache"' not in inspect.getsource(E.main):
+        fails.append("§6 essence 的 Done 行没带 prompt_cache")
+    import annotate_feature_pass as F
+    if 'prompt_cache_summary()' not in inspect.getsource(F.main):
+        fails.append("§6 特征层的 Done 行没带 prompt_cache")
+    if 'PROMPT_CACHE_USAGE' not in Path(HERE.parent / "librarian" / "app.py").read_text(encoding="utf-8"):
+        fails.append("§6 librarian /health 没回显 prompt_cache_usage")
+
     for f in fails:
         print("  ❌", f)
     if fails:
         print(f"❌ prompt cache fallback: {len(fails)} 条不过")
         return 1
-    print("✅ prompt cache fallback: §1 馆员计数 · §2 essence 计数 · §3 /health · §4 Done 行 · §5 真错误仍抛 全过")
+    print("✅ prompt cache fallback: §1 馆员计数 · §2 essence 计数 · §3 /health · §4 Done 行 · §5 真错误仍抛 · §6 实际缓存读写 全过")
     return 0
 
 

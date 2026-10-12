@@ -441,6 +441,32 @@ def build_retry_prompt(original_prompt: str, raw_first_attempt: str,
 # prompt caching 降级计数 (审计 C-02, 同 librarian/clients.py): 进 Done 行的 stats, 让 daily-sync 日志里看得见
 # "这一跑有多少次在多付 input token"。
 PROMPT_CACHE_FALLBACKS: dict = {"count": 0, "last_error": ""}
+# prompt caching 实测 (2026-10-12, owner 在中转站后台看到缓存几乎没命中): 以前只数"带缓存块被拒、降级"的次数,
+# 不数每次调用真正读写了多少缓存 —— 网关【静默】丢掉 cache_control、或把请求轮转到不同上游账号 (缓存按账号隔离)
+# 时降级计数恒为 0, 从我们这边完全看不出来。这里按 Anthropic usage 的三项累加 (input_tokens 只是最后一个缓存
+# 断点之后的部分; 总输入 = input + cache_creation + cache_read), Done 行带出去:
+#   cache_write = 0 且 cache_read = 0 → 缓存标记没到上游 (网关剥掉 / 走了不支持缓存的通道 / 前缀不够长);
+#   cache_write > 0 而 cache_read ≈ 0  → 写进去了却读不到 (多上游账号轮转、或两次调用间隔超过 5 分钟)。
+PROMPT_CACHE_USAGE: dict = {"calls": 0, "input": 0, "cache_write": 0, "cache_read": 0, "output": 0}
+
+
+def _record_usage(msg) -> None:
+    u = getattr(msg, "usage", None)
+    if u is None:
+        return
+    PROMPT_CACHE_USAGE["calls"] += 1
+    for key, attr in (("input", "input_tokens"), ("cache_write", "cache_creation_input_tokens"),
+                      ("cache_read", "cache_read_input_tokens"), ("output", "output_tokens")):
+        PROMPT_CACHE_USAGE[key] += int(getattr(u, attr, 0) or 0)
+
+
+def prompt_cache_summary() -> dict:
+    """本进程累计: 调用数、四项 token、缓存读占总输入的比例、降级次数。进 essence / 特征层的 Done 行。"""
+    out = dict(PROMPT_CACHE_USAGE)
+    total_in = out["input"] + out["cache_write"] + out["cache_read"]
+    out["read_share"] = round(out["cache_read"] / total_in, 3) if total_in else None
+    out["fallbacks"] = PROMPT_CACHE_FALLBACKS["count"]
+    return out
 
 
 def call_claude(prompt: str, model: str, *, cached_system: str | None = None,
@@ -496,6 +522,7 @@ def call_claude(prompt: str, model: str, *, cached_system: str | None = None,
         for attempt in range(max_attempts):
             try:
                 msg = client.messages.create(**create_kwargs)
+                _record_usage(msg)
                 # Concatenate text blocks. Mode A responses are JSON, never tool calls.
                 parts = [b.text for b in msg.content if getattr(b, "type", None) == "text"]
                 return "".join(parts)
@@ -897,6 +924,7 @@ def main() -> int:
         time.sleep(sleep_s)
 
     stats["prompt_cache_fallbacks"] = PROMPT_CACHE_FALLBACKS["count"]   # 审计 C-02: 降级次数进 Done 行
+    stats["prompt_cache"] = prompt_cache_summary()   # 2026-10-12: 实际缓存读写进 Done 行
     logger.info("Done: %s", json.dumps(stats, ensure_ascii=False))
     if stats["failed_after_retry"] or stats["hygiene_failed"]:
         logger.info("Failed rows appended to %s — review then either fix the "

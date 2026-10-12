@@ -489,6 +489,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                         i + 1, len(notes), note["note_id"], stats["ok"], stats["failed"],
                         stats["answered"], stats["invalid"])
 
+    # 2026-10-12: 中转站后台看到缓存几乎没命中 —— 这里带出本进程实际的缓存读写 (判读见 annotate_essence_pass
+    # 里 PROMPT_CACHE_USAGE 的注释)。只在真调过模型时才有: dry-run / --code-only 不 import 那个模块。
+    _ess = sys.modules.get("annotate_essence_pass")
+    if _ess is not None:
+        stats["prompt_cache"] = _ess.prompt_cache_summary()
     logger.info("Done: %s", json.dumps(stats, ensure_ascii=False))
     code = _exit_code_for_stats(stats)
     if code:

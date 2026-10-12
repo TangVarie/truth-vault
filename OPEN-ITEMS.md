@@ -119,7 +119,7 @@
 | ID | 事 | 状态与证据 | 谁 | 触发 / 到期 | 来源 |
 |---|---|---|---|---|---|
 | F-01 | NUC `direction_subtype` 回填 | 做了一部分（核：10-09 跑过两次；NUC 有 essence 的 657 篇里还缺 126，D-097 时是 206） | 工程（触发 `backfill-essence.yml` mode=missing_subtype） | 随时 | D-097 |
-| F-02 | 新中转站上的 prompt caching：看 librarian `/health` 的 `prompt_cache_fallbacks` 和 essence Done 行计数；计数只在进程内，重启就丢 | 未核 | 工程 | 随时 | D-097；D-098 |
+| F-02 | 新中转站上的 prompt caching。10-12 owner 在中转站后台看到缓存几乎没命中。我们这边的请求写法没问题：题目说明放在 system 块、带 `cache_control`、同一组每次一样、1,160–2,004 字（Sonnet 5.5 门槛 512 token）。以前只数「缓存块被拒、降级」，网关静默丢标记时这个数恒为 0。10-12 起特征层 / essence 的 Done 行带 `prompt_cache`（calls / input / cache_write / cache_read / read_share），librarian `/health` 带 `prompt_cache_usage`。判读：write 和 read 都是 0 = 标记没到上游（通道不支持缓存或被剥掉）；write > 0 而 read ≈ 0 = 多上游账号轮转。计数只在进程内，重启就丢 | 计数已加，等第一批数据判读 | 工程 + 你（问中转站要支持缓存、不轮转账号的分组） | 下一次特征 / essence 跑完 | D-097；D-098 |
 | F-03 | D-088 预筛有没有用：跑 librarian-cold-baseline 里的对比 SQL，看 p50 / p95 / 超 60 秒条数对基线（49.5 秒 / 79 秒 / 24 条里 7 条）；p95 还 > 60 秒就决定换通道或 `FLYWHEEL_LIBRARIAN_MODEL`；确认 #167 后 Railway 重部署过 | 等样本 | 工程 + 你拍板 | ≈ 10-22 | D-088；D-090 #5 |
 | F-04 | aw 借卡：把借卡移出 `open_project` 同步路径（A-04，客户端只忍约 22 秒）；librarian `degraded` 变 `BORROW_ERROR`（B-04） | 未核（aw 侧没查到修复） | 工程（aw） | 和 W-01 一起看 | 审计 A-04、B-04 |
 | F-05 | `recurate=all` 不收敛，全量重策展前必须按 `curated_at` 升序 | 没做 | 工程 | 全量重策展前 | D-096 |
