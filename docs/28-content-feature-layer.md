@@ -167,7 +167,7 @@ essence 回答「这篇打动了人的什么」（情绪杠杆、人性原型）
 
 - 每题有 `version`，改题干或边界就 +1；旧版本答案保留、不覆盖，**分析时不混用版本**。
 - 整个文件有 `bank_version`（`fq-v0.1`）。闸二预注册那天把 `status` 改成 `frozen`、记下 `frozen_sha256`——那是**剔掉 `frozen_sha256:` 和 `status:` 两行之后**再算的规范化 sha256（`feature_bank.bank_digest`）。直接 hash 整个文件是自指的：把算出来的值写回去，文件字节就变了，冻结这一步根本算不出来（codex review on #141 的 P1）。剔掉的这两行都是冻结动作自己写的、不是题目内容，所以冻结前后 digest 不变，落进 `note_feature_answers.bank_sha256` 的值也不会因为「冻结」把答案劈成两批。之后改任何一题都要升 `version` 并记 DECISIONS。写作台要用就原样 vendor 本文件并记校验和，不手抄（D-041 对词表的纪律）。
-- 三层原则（README 原则 2）：每题声明 `layer`。**已定（D-065 续）**：18 道结构类题 `surface`、半衰期 30 个月（同「时代语言范式」档），不另设「结构」档、不改 README 原则 2；`judged_by_others`、`negative_outcome_happened` 直接对应 essence 词表的恐惧 / 羞耻撬动，标 `essence`、60 个月。闸二跑完看结构类题跨项目稳不稳定，再议要不要单开一档。
+- 三层原则（README 原则 2）：每题声明 `layer`。**已定（D-065 续）**：18 道结构类题 `surface`、半衰期 30 个月（同「时代语言范式」档），不另设「结构」档、不改 README 原则 2；`judged_by_others`、`negative_outcome_happened` 直接对应 essence 词表的恐惧 / 羞耻撬动，标 `essence`、60 个月。闸二跑完看结构类题跨项目稳不稳定，再议要不要单开一档。 2026-10-12 G-11工程复评：18道仅3道含validated取值，保留surface/30先验；横截面稳定性不能估计时间半衰期，见 [复评报告](../data-analysis/structure-layer-reassessment-2026-10-12.md)。
 
 ### 4.4 和 `note_features` 的分工（建议）
 

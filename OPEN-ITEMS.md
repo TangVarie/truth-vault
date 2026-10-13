@@ -42,7 +42,7 @@
 | G-08 | 退役 `v_l2_labels_v1` | 没做 | 工程 | 闸二第一轮对完账 | D-067 |
 | G-09 | 下一版题库：代码特征 choice 题按取值写方向；新增美妆 / 母婴等项目时复查五道 v2 题面的例子 | 等下一版 | 工程 | 题库升版 | D-106 #4；D-082 |
 | G-10 | 救闸一没过的三道（具体时间 / 地点 / 身体感受）：owner 裁约 50 格，`build_gate1_human_sheets.py` 出表 | 这一轮明确不救 | 你拍板 + 你动手（可选） | 想救时 | D-105；D-106 #3 |
-| G-11 | 结构类题的层级和半衰期（surface、30 个月）按闸二跨项目稳定性重估 | 已可开始：D-107/G-01 已完成；单项跨项目报告已有，30 个月仍是暂定值，尚未重估 | 工程 | 下一轮工程，与 J-01/W-01 同轮排入；不等组合进 L2 | docs/28:475；D-107 |
+| G-11 | 结构类题的层级和半衰期（surface、30 个月）按闸二跨项目稳定性重估 | 工程复评完成：见 `data-analysis/structure-layer-reassessment-2026-10-12.md`；18道中3道含validated值、7道no_signal、7道unreliable、1道reversed；保留surface/30先验，30个月尚无时间估计，跨期验证留季度复跑 | 工程 | 下一次季度闸二（G-12），跨期窗口和支持量预注册后验证 | docs/28:475；D-107 |
 | G-12 | 闸二每季度重跑 | 没排期 | 工程 | 每季度 | docs/28:414 |
 | G-13 | 抽取器要不要换 Jev（审计 A-10）；换就要：features-sync / backfill 传 `done_by`、`code:v1` 走 `--code-only`、worker `/annotate-features` 改调 `/judge`、修 Jev docs/31 的自相矛盾 | D-105 定的是留 Sonnet 5.5；Jev 还在 v1 题面 | 你拍板 → 工程 | 闸二后 | 审计 A-10；D-085；D-105 |
 | G-14 | 抽取器换 Haiku 5.5（省约 20 倍） | 搁置，影子数据在库 | 你拍板 | 成本成问题时 | D-105 #1 |
@@ -57,9 +57,9 @@
 
 | ID | 事 | 状态与证据 | 谁 | 触发 / 到期 | 来源 |
 |---|---|---|---|---|---|
-| J-01 | **写手的评论能力**：Jev 给评论开 HTTP 端点（判一条给修改单、判一整组评论区）→ deskcore 转发两个新工具 → 协议加「写评论怎么走」 | 没做（核）：`judge/comments.py` 回路和 mock 测试都有，但没有 HTTP 端点、deskcore 22 个工具里没有评论工具、aw:`protocol.md:187` 让写手写评论不做任何检查；回路从没联网跑过 | 工程 | D-107 收尾后下一件，与 W-01/W-19 同轮；J-03 是上线前置 | jev:docs/00 #12、docs/01 §4、§6；D-107 |
-| J-02 | 评论回填 ②：9,649 条评论跑运营侧（意图 / 像不像安排的 / 类型）+ 读者侧 7 题，进账本 `subject_type='comment'`，评论构成做闸二候选特征 | 没跑过（核：账本 0 行；comments 三列全空；Jev 仓没有它的 workflow）；估计约 1.5 美元 | 工程 | 和 J-01 一起 | docs/31 §4.1、§7.2 |
-| J-03 | 评论金标准扩到 100 条，大健康品类，两人各自对着定义标 | 没做，金标准只有途鸽一篇（求职留学） | 你动手（出两个人） | J-01 上线前 | jev:docs/00 #6、docs/01 §6 |
+| J-01 | **写手的评论能力**：Jev 给评论开 HTTP 端点（判一条给修改单、判一整组评论区）→ deskcore 转发两个新工具 → 协议加「写评论怎么走」 | 工程已实现待合：两个只读HTTP端点 + deskcore转发 + 评论协议；鉴权/处方药未发布限制/缺答/背书/歧义复核已测。Jev开关默认关闭，J-03验收后才能开；尚未部署核查 | 工程 | D-107 收尾后下一件，与 W-01/W-19 同轮；J-03 是上线前置 | jev:docs/00 #12、docs/01 §4、§6；D-107 |
+| J-02 | 评论回填 ②：9,649 条评论跑运营侧（意图 / 像不像安排的 / 类型）+ 读者侧 7 题，进账本 `subject_type='comment'`，评论构成做闸二候选特征 | CLI升cb-v0.4、短页续读/固定文本快照/完整答案续跑已备；新增手动shadow workflow，默认100条只出产物。尚未跑真实影子或正式全量；primary写库需J-03人工验收记录 | 工程 | 和 J-01 一起 | docs/31 §4.1、§7.2 |
+| J-03 | 评论金标准扩到 100 条，大健康品类，两人各自对着定义标 | 已出固定100条大健康样本（OTC35/保健35/处方30）及A/B独立空白标注包、逐条题面和抽样SQL；原始样本本地保留不上传GitHub，未收到人工答案，仍需两位独立标注、仲裁和模型误差评估 | 你动手（出两个人） | J-01 上线前 | jev:docs/00 #6、docs/01 §6 |
 | J-04 | 三省六部：二审 Jev 影子跑、采样正文落库再判、预埋评论过评论题库、persona 第三路 | 没接上（核：账本 `ssll_sample` 0 行）；那个仓本会话看不到代码 | 三省六部维护者 | 你决定什么时候推 | jev:docs/00 #5；docs/31 §6；jev:docs/02:226 |
 | J-05 | 外部语料每周定时跑真正成功一次 | 未确认：修复都在 main 上（UA、全文解析）；今天 03:07 UTC 那次 06:00 还没出现 | 工程（核）/ 你看灯 | 今天 | jev:`.github/workflows/external-corpus.yml` |
 | J-06 | 借卡接 Jev 影子跑 | 没做，借卡还是走 TV librarian | 工程 | 你决定 | docs/31 §3 ③ |
@@ -75,9 +75,9 @@
 
 | ID | 事 | 状态与证据 | 谁 | 触发 / 到期 | 来源 |
 |---|---|---|---|---|---|
-| W-01 | **MCP 工具在事件循环上同步跑**：一次 60 秒的 `borrow_lessons` 或 18 秒的 `judge_draft` 会卡住所有写手和 `/health`。修法：async 包一层 + `run_in_threadpool` | 未修（aw:`deskcore/app.py:714` 注册的是同步 wrapper；mcp 版本没钉） | 工程 | 写手回来前，最好和 J-01 同一个 PR | aw 审计 ROB-005 |
-| W-02 | 写手重新导入 skill（`protocol_version 768aa6021a0b`） | **先别群发**：J-01 会再改协议，等评论工具上线一起导一次；不导也不会写错（开场核版本会下发新正文） | 你动手 | J-01 上线后 | aw:SKILL.md:35 |
-| W-03 | 协议下次改版时一起带上：`review_drafts` 的 `user_words` / `human_via_agent` 说明（或决定不加）；`protocol.md:7`「Streamlit 已停用」与 README 矛盾 | 等下次改版 | 工程 | J-01 | aw:deskcore.md:375；aw:protocol.md:7 |
+| W-01 | **MCP 工具在事件循环上同步跑**：一次 60 秒的 `borrow_lessons` 或 18 秒的 `judge_draft` 会卡住所有写手和 `/health`。修法：async 包一层 + `run_in_threadpool` | 工程已修待合：async wrapper + run_in_threadpool，mcp钉1.30.0；真实SDK并发/身份测试及HTTP握手通过；不等于借卡已满足客户端截止（F-04） | 工程 | 写手回来前，最好和 J-01 同一个 PR | aw 审计 ROB-005 |
+| W-02 | 写手重新导入 skill（本轮 `protocol_version 3fdff2c0b985`） | **先别群发**：J-01 会再改协议，等评论工具上线一起导一次；不导也不会写错（开场核版本会下发新正文） | 你动手 | J-01 上线后 | aw:SKILL.md:35 |
+| W-03 | 协议下次改版时一起带上：`review_drafts` 的 `user_words` / `human_via_agent` 说明（或决定不加）；`protocol.md:7`「Streamlit 已停用」与 README 矛盾 | 本轮协议已补user_words/human_via_agent并纠正Streamlit停用说法；生成skill协议版本3fdff2c0b985，待合/部署 | 工程 | J-01 | aw:deskcore.md:375；aw:protocol.md:7 |
 | W-04 | 发牌按结果加权（留 15% 纯随机，只滤「写不出来」的角度） | `v_angle_outcomes` 有、只有 doctor 读；`draw_angles` 还是均匀洗牌 | 工程 | 闸二有 validated 特征、每维样本够 | aw:deskcore.md:342；aw:`core.py:441-478` |
 | W-05 | `store.recent_angle_keys` 不翻页，台账大了会静默截断、重复发已用角度 | 未修 | 工程 | 台账变大前 | aw:runbook:964；aw:`store.py:618` |
 | W-06 | 138 个发了没写的角度：当面问两位写手流程断在哪；「上一场没结清不许再发」硬闸、「交付必须走 `export_drafts`」 | 都搁置在观察提醒有没有用 | 你动手 + 你拍板 | 写手回来 | D-071 |
@@ -92,7 +92,7 @@
 | W-15 | Railway 健康检查用 `/health` 还是 `/ready` | 产品决定，没定 | 你拍板 | — | aw:`app.py:577` |
 | W-16 | 新中转站：1.8 倍价格系数没对过账单；`-thinking` 后缀、`cache_control` 透传没验证；单点 | 未核 | 你动手（对账单）/ 你拍板 | 随时 | D-098；aw:`config.py:56` |
 | W-17 | 远期产品决定：团队共享（`project_members`）；个人调校笔记升项目基线；正例补 essence 标签 | 第一期不做 | 你拍板 | — | aw:deskcore.md:115、818、821 |
-| W-19 | **跨项目串内容的防护**（10-12 事故：写手在同一个 WorkBuddy 对话里先写 Hatherine痘痘贴、再切西屋911gt，模型 gemini-3.1-pro-preview 把痘痘贴的规则抄进西屋的硬规则、出了 5 篇痘痘贴文案；deskcore 本身没串，`open_project` 只回本项目 + 全局规则）。要做：① 协议加一条「一个对话只写一个项目，换项目新开对话；`open_project` 拿到的项目名要在回复第一行复述」；② `record_rule` 入库前查内容里有没有同一写手其他项目的品牌名 / 专属词，有就拒并提示；③ `commit_drafts` 时用现成向量比稿子离本项目近还是离该写手的另一个项目近，离别的项目更近就标出来（影子期只记不拦） | 没做 | 工程 | 和 J-01 同一次协议改版 | 10-12 owner 报告；`autowriter.backup_memory_xiwu_contam_20261012` |
+| W-19 | **跨项目串内容的防护**（10-12 事故：写手在同一个 WorkBuddy 对话里先写 Hatherine痘痘贴、再切西屋911gt，模型 gemini-3.1-pro-preview 把痘痘贴的规则抄进西屋的硬规则、出了 5 篇痘痘贴文案；deskcore 本身没串，`open_project` 只回本项目 + 全局规则）。要做：① 协议加一条「一个对话只写一个项目，换项目新开对话；`open_project` 拿到的项目名要在回复第一行复述」；② `record_rule` 入库前查内容里有没有同一写手其他项目的品牌名 / 专属词，有就拒并提示；③ `commit_drafts` 时用现成向量比稿子离本项目近还是离该写手的另一个项目近，离别的项目更近就标出来（影子期只记不拦） | 工程已实现待合：协议隔离、owner内品牌/专属词写规则前拒绝、近期同模型标题向量+正文词影子提示，结果写batch_metrics；1.5秒预算不拦入库。现场专属词配置SQL已备未执行，尚未线上验收 | 工程 | 和 J-01 同一次协议改版 | 10-12 owner 报告；`autowriter.backup_memory_xiwu_contam_20261012` |
 | W-20 | WorkBuddy 里写手用的模型是 gemini-3.1-pro-preview（预览版）：协议按 Claude 调过，换模型后长对话里的上下文隔离、规则遵守没验证过 | 未评估 | 你拍板（要不要统一写手的模型） | — | 10-12 截图 |
 | W-18 | aw 文档过时：runbook §1.7「011 尚未执行 / judge 未配置」、「012 没跑」「八个迁移」、7c 飞书六列、#8 4000 行上限；deskcore.md Hatherine「不在 TV」 | 过时 | 工程 | 下次动 aw 时顺手 | aw:runbook:14、258、290、949、958 |
 
