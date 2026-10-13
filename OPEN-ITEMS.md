@@ -57,9 +57,9 @@
 
 | ID | 事 | 状态与证据 | 谁 | 触发 / 到期 | 来源 |
 |---|---|---|---|---|---|
-| J-01 | **写手的评论能力**：Jev 给评论开 HTTP 端点（判一条给修改单、判一整组评论区）→ deskcore 转发两个新工具 → 协议加「写评论怎么走」 | Jev#9/aw#96已合并并部署；Jev生产health确认comment_tools_enabled=false，writer key鉴权开启且非mock；24工具已在deskcore；J-03的700格最终参考已冻结，待真实模型评估与owner上线验收 | 工程 | J-03验收后再开开关并真接口核查 | jev:docs/00 #12、docs/01 §4、§6；D-107、D-110 |
-| J-02 | 评论回填 ②：9,649 条评论跑运营侧（意图 / 像不像安排的 / 类型）+ 读者侧 7 题，进账本 `subject_type='comment'`，评论构成做闸二候选特征 | shadow workflow已合入main，CLI与续跑已备；最终参考标签已冻结，尚未真实模型评估/shadow/primary；参考含owner采用的AI仲裁，指标不得称独立真人准确率；primary仍需owner验收记录且绑定当前题库摘要 | 工程 | 模型评估后小批shadow核查；owner验收记录后primary全量/回读 | docs/31 §4.1、§7.2；D-110 |
-| J-03 | 评论参考扩到100条，大健康品类，两人对定义标；与模型对照后验收 | 两条占位已替换并由原A/B补标；新版522格共识/178格仲裁均齐。仲裁人均AI，owner知情后明确采用最终裁决，700格参考已冻结并保留来源；输入核验通过，但真实评估缺运行环境TYPESAFE_API_KEY、模型请求0；不冒称真人准确率 | 工程评估；环境密钥配置；owner报告验收 | 绑定模型调用密钥后跑100条/700格逐题对照、歧义/危险漏报；owner对具体报告验收 | jev:docs/comment-reference-evaluation-2026-10-13.md；D-110 |
+| J-01 | **写手的评论能力**：Jev 给评论开 HTTP 端点（判一条给修改单、判一整组评论区）→ deskcore 转发两个新工具 → 协议加「写评论怎么走」 | Jev#9/aw#96已合并并部署；Jev生产health确认comment_tools_enabled=false，writer key鉴权开启且非mock；24工具已在deskcore；700格参考冻结、真实模型对照已完，待错漏复核与owner上线验收 | 工程 | J-03验收后再开开关并真接口核查 | jev:docs/00 #12、docs/01 §4、§6；D-107、D-110 |
+| J-02 | 评论回填 ②：9,649 条评论跑运营侧（意图 / 像不像安排的 / 类型）+ 读者侧 7 题，进账本 `subject_type='comment'`，评论构成做闸二候选特征 | shadow workflow已合入main，CLI与续跑已备；最终参考/真实模型对照已完成，尚未shadow/primary；197格不一致待复核，指标不称独立真人准确率；primary仍需owner验收记录且绑定当前题库摘要 | 工程 | 错漏复核/报告验收后小批shadow核查；owner验收记录后primary全量/回读 | docs/31 §4.1、§7.2；D-110 |
+| J-03 | 评论参考扩到100条，大健康品类，两人对定义标；与模型对照后验收 | 522格共识+owner采用的178格AI仲裁，700格已冻结；eval-v2完整live对照503/700一致、414/700无歧义一致、172格歧义、0缺答/无效；detail_level仅39/100、2条题库层背书漏报，开关仍关；不冒称独立真人准确率 | 工程错漏归因；owner报告验收 | 优先复核2条背书、detail_level定义边界和arranged歧义；owner验收具体报告后才接上线 | jev:docs/comment-reference-evaluation-2026-10-13.md；D-110 |
 | J-04 | 三省六部：二审 Jev 影子跑、采样正文落库再判、预埋评论过评论题库、persona 第三路 | 没接上（核：账本 `ssll_sample` 0 行）；那个仓本会话看不到代码 | 三省六部维护者 | 你决定什么时候推 | jev:docs/00 #5；docs/31 §6；jev:docs/02:226 |
 | J-05 | 外部语料每周定时跑真正成功一次 | 未确认：修复都在 main 上（UA、全文解析）；今天 03:07 UTC 那次 06:00 还没出现 | 工程（核）/ 你看灯 | 今天 | jev:`.github/workflows/external-corpus.yml` |
 | J-06 | 借卡接 Jev 影子跑 | 没做，借卡还是走 TV librarian | 工程 | 你决定 | docs/31 §3 ③ |
@@ -151,7 +151,7 @@
 
 | 条目 | 一句话 |
 |---|---|
-| J-03 | 700格参考已按你的最终裁决指示冻结；通过环境设置绑定TYPESAFE_API_KEY后由工程跑真实模型对照，再验收具体报告；本批不再重做A/B或安排真人重裁 |
+| J-03 | 最终参考与真实对照已完成，待2条背书/detail_level边界/arranged歧义复核和具体报告验收；本批不重做A/B或安排真人重裁 |
 | W-02 | skill 重新导入：**等 J-01 上线后**一起导，现在先不群发 |
 | W-09 | 问写手 WorkBuddy 里 deskcore 的 key 是怎么填的（头 / OAuth / 网址里 `?key=`） |
 | W-14 | 停 Streamlit 工作台 |
