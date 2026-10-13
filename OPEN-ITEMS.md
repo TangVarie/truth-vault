@@ -58,8 +58,8 @@
 | ID | 事 | 状态与证据 | 谁 | 触发 / 到期 | 来源 |
 |---|---|---|---|---|---|
 | J-01 | **写手的评论能力**：Jev 给评论开 HTTP 端点（判一条给修改单、判一整组评论区）→ deskcore 转发两个新工具 → 协议加「写评论怎么走」 | Jev#9/aw#96已合并并部署；Jev生产health确认comment_tools_enabled=false，writer key鉴权开启且非mock；24工具已在deskcore，待J-03仲裁/来源修复/模型评估与owner验收后开放 | 工程 | J-03验收后再开开关并真接口核查 | jev:docs/00 #12、docs/01 §4、§6；D-107 |
-| J-02 | 评论回填 ②：9,649 条评论跑运营侧（意图 / 像不像安排的 / 类型）+ 读者侧 7 题，进账本 `subject_type='comment'`，评论构成做闸二候选特征 | shadow workflow已合入main，CLI与续跑已备；尚未执行真实影子或primary回填，待人工金标准形成与模型评估；不把两人一致率当模型准确率 | 工程 | J-03完成后小批影子核查→正式全量/回读 | docs/31 §4.1、§7.2 |
-| J-03 | 评论金标准扩到 100 条，大健康品类，两人各自对着定义标 | 已收A/B各100条700格，ID/上下文与原样本一致；B表300格true/false已等价规范化。526格一致、174格分歧（90条），arranged一致率50%/κ0.183；2空占位单列复核。owner已安排第三位人员仲裁；未形成验收金标准 | 第三位人员仲裁 + 原A/B补标；工程评估 | 第三人完成174格仲裁；2空占位建议替换由A/B补标，再做模型评估 | jev:docs/00 #6、docs/01 §6 |
+| J-02 | 评论回填 ②：9,649 条评论跑运营侧（意图 / 像不像安排的 / 类型）+ 读者侧 7 题，进账本 `subject_type='comment'`，评论构成做闸二候选特征 | shadow workflow已合入main，CLI与续跑已备；尚未执行真实影子或primary回填，待人工金标准形成与模型评估；不把两人一致率当模型准确率；primary必须有owner人工验收记录且绑定当前题库摘要 | 工程 | 金标准/模型评估后小批shadow核查；owner验收记录后primary全量/回读 | docs/31 §4.1、§7.2 |
+| J-03 | 评论金标准扩到 100 条，大健康品类，两人各自对着定义标 | 已收A/B各100条700格，ID/上下文与原样本一致；B表300格true/false已等价规范化。526格一致、174格分歧（90条），arranged一致率50%/κ0.183；2空占位单列复核。owner已安排第三位人员仲裁；未形成验收金标准 | 第三位人员仲裁 + 原A/B补标；工程评估 | 第三人裁初始分歧；2空占位补标后按新版100条重新对账，新增分歧也全裁完，再做模型评估/owner验收 | jev:docs/00 #6、docs/01 §6 |
 | J-04 | 三省六部：二审 Jev 影子跑、采样正文落库再判、预埋评论过评论题库、persona 第三路 | 没接上（核：账本 `ssll_sample` 0 行）；那个仓本会话看不到代码 | 三省六部维护者 | 你决定什么时候推 | jev:docs/00 #5；docs/31 §6；jev:docs/02:226 |
 | J-05 | 外部语料每周定时跑真正成功一次 | 未确认：修复都在 main 上（UA、全文解析）；今天 03:07 UTC 那次 06:00 还没出现 | 工程（核）/ 你看灯 | 今天 | jev:`.github/workflows/external-corpus.yml` |
 | J-06 | 借卡接 Jev 影子跑 | 没做，借卡还是走 TV librarian | 工程 | 你决定 | docs/31 §3 ③ |
@@ -119,7 +119,7 @@
 | F-01 | NUC `direction_subtype` 回填 | 做了一部分（核：10-09 跑过两次；NUC 有 essence 的 657 篇里还缺 126，D-097 时是 206） | 工程（触发 `backfill-essence.yml` mode=missing_subtype） | 随时 | D-097 |
 | F-02 | 新中转站上的 prompt caching。10-12 owner 在中转站后台看到缓存几乎没命中。我们这边的请求写法没问题：题目说明放在 system 块、带 `cache_control`、同一组每次一样、1,160–2,004 字（Sonnet 5.5 门槛 512 token）。以前只数「缓存块被拒、降级」，网关静默丢标记时这个数恒为 0。10-12 起特征层 / essence 的 Done 行带 `prompt_cache`（calls / input / cache_write / cache_read / read_share），librarian `/health` 带 `prompt_cache_usage`。判读：write 和 read 都是 0 = 标记没到上游（通道不支持缓存或被剥掉）；write > 0 而 read ≈ 0 = 多上游账号轮转。计数只在进程内，重启就丢 | 计数已加，等第一批数据判读 | 工程 + 你（问中转站要支持缓存、不轮转账号的分组） | 下一次特征 / essence 跑完 | D-097；D-098 |
 | F-03 | D-088 预筛有没有用：跑 librarian-cold-baseline 里的对比 SQL，看 p50 / p95 / 超 60 秒条数对基线（49.5 秒 / 79 秒 / 24 条里 7 条）；p95 还 > 60 秒就决定换通道或 `FLYWHEEL_LIBRARIAN_MODEL`；确认 #167 后 Railway 重部署过 | 等样本 | 工程 + 你拍板 | ≈ 10-22 | D-088；D-090 #5 |
-| F-04 | aw 借卡：把借卡移出 `open_project` 同步路径（A-04，客户端只忍约 22 秒）；librarian `degraded` 变 `BORROW_ERROR`（B-04） | 未核（aw 侧没查到修复） | 工程（aw） | 和 W-01 一起看 | 审计 A-04、B-04 |
+| F-04 | aw 借卡：把借卡移出 `open_project` 同步路径（A-04，客户端只忍约 22 秒）；librarian `degraded` 变 `BORROW_ERROR`（B-04） | 未核（aw 侧没查到修复） | 工程（aw） | 写手恢复借卡首批前独立核查/修复并验约22秒截止；W-01已关，不等J-03 | 审计 A-04、B-04 |
 | F-05 | `recurate=all` 不收敛，全量重策展前必须按 `curated_at` 升序 | 没做 | 工程 | 全量重策展前 | D-096 |
 | F-06 | 32 条孤儿卡片标注（书架闸挡了但已标注）对账（A9） | 未核 | 工程 | 低 | ops-answers-2026-09-22.md:442 |
 | F-07 | 清理：推送时代残留（`preview_injection_candidates.py`、`v_autowriter_injection_candidates`、`v_flywheel_sync_status` 里的 aw 列、docs/09）；孤儿脚本 `annotate_comment_threading.py` 和两个 `migrate_*.py` | 没做 | 工程 | 低 | D-063；D-075 |
@@ -151,7 +151,7 @@
 
 | 条目 | 一句话 |
 |---|---|
-| J-03 | 出两个人标大健康评论金标准约 100 条（J-01 上线前） |
+| J-03 | 已收A/B完成表；安排第三人仲裁初始174格，2空占位建议替换由原A/B补标；新版100条重新对账，新增分歧全裁完后owner验收 |
 | W-02 | skill 重新导入：**等 J-01 上线后**一起导，现在先不群发 |
 | W-09 | 问写手 WorkBuddy 里 deskcore 的 key 是怎么填的（头 / OAuth / 网址里 `?key=`） |
 | W-14 | 停 Streamlit 工作台 |
