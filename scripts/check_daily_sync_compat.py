@@ -4,7 +4,7 @@ import json
 import sys
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import annotate_essence_pass as a
 import sync_feishu_notes_to_truth_vault as s
@@ -20,19 +20,31 @@ GOOD = {"essence": {
 
 def check_spx_metrics():
     mapping = load_mapping("SPX_phase1")
-    for value in (0, 605, "1,234"):
+    variants = [{"互动数": value} for value in (0, 605, "1,234")]
+    variants += [{"互动量": 17}, {"互动量": 17, "互动数": 0},
+                 {"互动量": 17, "互动数": 29}, {"互动量": 17, "互动数": None}]
+    for source in variants:
         note, metric, undeclared = s.transform_row(mapping, "synthetic-record", {
             "笔记内容": "【标题】合成测试【正文】仅用于离线字段映射测试。",
-            "互动数": value,
+            **source,
             "曝光量": 2000,
             "阅读量": 1500,
             "实时数据.评论数": 12,
         })
-        expected = int(str(value).replace(",", ""))
+        value = source["互动数"] if "互动数" in source else source["互动量"]
+        expected = int(str(value).replace(",", "")) if value is not None else None
         assert note["interactions"] == metric["interactions"] == expected
-        assert "互动数" not in undeclared
+        assert not {"互动数", "互动量"} & set(undeclared)
         assert note["comments_count"] == 12  # tier still uses comments, not interactions
     assert a.validate_essence(GOOD) == []
+    # Either spelling satisfies the existing grouped core-column probe;
+    # losing both must still report a missing source, rather than hide drift.
+    seen = set(mapping["field_mapping"])
+    for alias in ("互动量", "互动数"):
+        assert s._detect_missing_core_columns(None, mapping, seen - {alias}) == []
+    with patch.object(s, "fetch_all_pages", return_value=[{"note_id": "N", "interactions": 17}]):
+        missing = s._detect_missing_core_columns(MagicMock(), mapping, seen - {"互动量", "互动数"})
+        assert set(missing) == {"互动量", "互动数"}
 
 
 def check_invalid_shapes_retry():

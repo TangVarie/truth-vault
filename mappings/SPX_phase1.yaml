@@ -50,7 +50,8 @@ field_mapping:
   流量状态: _status_raw           # tier 源(B 家族;10 种取值含伪爆帖500等)
   曝光量: impressions
   阅读量: reads
-  互动数: interactions            # 2026-10-13 飞书把「互动量」改名；仍写标准指标和快照
+  互动量: interactions            # 兼容旧列名；引擎按同一目标列监控断源，任一源名返回即可
+  互动数: interactions            # 2026-10-13 新列名；两列同时出现时按映射顺序以新名为准（含0/空值）
   观众分析: _audience_raw          # → actual_audience_data(sync 确定性解析;93 行有值)
   随贴评论: _comment_text          # → comments 表(Phase2 LLM 解析)
   蓝词字段: hit_blue_keywords      # → notes.hit_blue_keywords(12 种取值,SPORTSIX/能量胶/Informed Sport认证)
