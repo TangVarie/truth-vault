@@ -1209,6 +1209,9 @@ jobs:
       - name: "闸一名单灰格往返 (多灰格 | 分隔) + prob 存所选答案的概率 (D-085)"
         working-directory: scripts
         run: python check_gate1_ingest.py
+      - name: Daily sync renamed metrics and malformed essence JSON regression
+        working-directory: scripts
+        run: python check_daily_sync_compat.py
       - name: Essence vocab validator self-check
         working-directory: scripts
         run: |

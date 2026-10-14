@@ -361,9 +361,21 @@ def apply_sub_direction_to_update(update: dict, sub_dirs: list[dict],
 # Validation
 # ─────────────────────────────────────────────────────────────────────────
 
-def validate_essence(data: dict) -> list[str]:
+def validate_essence(data: Any) -> list[str]:
+    # Valid JSON can still be an array/scalar. Treat malformed structure as
+    # a validation failure so the existing retry/failed_queue path handles it.
+    if not isinstance(data, dict):
+        return ["response must be a JSON object"]
+    e = data.get("essence")
+    if not isinstance(e, dict):
+        return ["essence must be a JSON object"]
+    scalar_fields = ("emotional_lever", "emotional_valence",
+                     "emotional_intensity", "content_format")
+    shape_errors = [f"{field} must be a string" for field in scalar_fields
+                    if not isinstance(e.get(field), str)]
+    if shape_errors:
+        return shape_errors
     errors: list[str] = []
-    e = data.get("essence") or {}
     if e.get("emotional_lever") not in EMOTIONAL_LEVERS:
         errors.append(f"emotional_lever {e.get('emotional_lever')!r} not in vocab")
     if e.get("emotional_valence") not in EMOTIONAL_VALENCE:
@@ -374,14 +386,16 @@ def validate_essence(data: dict) -> list[str]:
     if not isinstance(archetypes, list) or not (1 <= len(archetypes) <= 2):
         errors.append("human_truth_archetype must be a list of 1-2 values")
     else:
-        bad = [a for a in archetypes if a not in HUMAN_TRUTH_ARCHETYPES]
+        bad = [a for a in archetypes
+               if not isinstance(a, str) or a not in HUMAN_TRUTH_ARCHETYPES]
         if bad:
             errors.append(f"human_truth_archetype values not in vocab: {bad}")
     deps = e.get("trend_dependencies") or []
     if not isinstance(deps, list) or not deps:
         errors.append("trend_dependencies missing or not a list")
     else:
-        bad = [d for d in deps if d not in TREND_DEPENDENCIES]
+        bad = [d for d in deps
+               if not isinstance(d, str) or d not in TREND_DEPENDENCIES]
         if bad:
             errors.append(f"trend_dependencies values not in vocab: {bad}")
         if "通用" in deps and len(deps) > 1:
