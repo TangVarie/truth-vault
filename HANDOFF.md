@@ -1,6 +1,6 @@
 # 三库交接总览 · 2026-10-15
 
-本轮接管覆盖 **2026-10-12～15**。最新核对时间为 **2026-10-15 12:04（北京时间）**；所有生产数字都是有时间点的快照。本文汇总已做检查、实际改动、证据与下一步；日常待办仍维护在 [OPEN-ITEMS.md](OPEN-ITEMS.md)，决策原因见 [DECISIONS.md](DECISIONS.md) D-107～D-111。更早的设计与部署属于继承状态，不表示本轮重新验证或实施过。
+本轮接管覆盖 **2026-10-12～15**。同步/数据库/写作台生产快照截至 **2026-10-15 12:04（北京时间）**；本次评论返回与C3复验记录核对于 **2026-10-15 19:34（北京时间）**，不表示其他生产数字也在该时刻重新检查。本文汇总已做检查、实际改动、证据与下一步；日常待办仍维护在 [OPEN-ITEMS.md](OPEN-ITEMS.md)，决策原因见 [DECISIONS.md](DECISIONS.md) D-107～D-111。更早的设计与部署属于继承状态，不表示本轮重新验证或实施过。
 
 ## 接手先看这五件事
 
@@ -114,4 +114,4 @@ curl -fsS https://autowriter-production.up.railway.app/health
 
 本次环境的`gh run view --log/--log-failed`曾返回空内容；不能把空日志当没有错误。可用GitHub job日志API或连接器`github_fetch_workflow_job_logs`，并读取最终聚合步骤的真实outcome。`continue-on-error`会让中间步骤看似success，最终聚合才是整批结论。
 
-**10-15复核返回补记：** [Jev详细返回说明](https://github.com/TangVarie/JevforCoentent/blob/main/docs/comment-holdout-return-2026-10-15.md)。单人参考SHA-256 `953dc0975d58574045324d55b7f01b97a352b724c12e2c08ee8ff616045341d3`。冻结仅固定比较版本，`definition_conformance_accepted/human_gold_ready/release_accepted`均false；C3、旧700格、生产配置未改。
+**10-15 19:34（北京时间）复核返回与C3复验补记：** [Jev详细返回说明](https://github.com/TangVarie/JevforCoentent/blob/main/docs/comment-holdout-return-2026-10-15.md)。单人参考SHA-256 `953dc0975d58574045324d55b7f01b97a352b724c12e2c08ee8ff616045341d3`。冻结仅固定比较版本，`definition_conformance_accepted/human_gold_ready/release_accepted`均false；C3、旧700格、生产配置未改。
