@@ -115,3 +115,14 @@ curl -fsS https://autowriter-production.up.railway.app/health
 本次环境的`gh run view --log/--log-failed`曾返回空内容；不能把空日志当没有错误。可用GitHub job日志API或连接器`github_fetch_workflow_job_logs`，并读取最终聚合步骤的真实outcome。`continue-on-error`会让中间步骤看似success，最终聚合才是整批结论。
 
 **10-15 19:34（北京时间）复核返回与C3复验补记：** [Jev详细返回说明](https://github.com/TangVarie/JevforCoentent/blob/main/docs/comment-holdout-return-2026-10-15.md)。单人参考SHA-256 `953dc0975d58574045324d55b7f01b97a352b724c12e2c08ee8ff616045341d3`。冻结仅固定比较版本，`definition_conformance_accepted/human_gold_ready/release_accepted`均false；C3、旧700格、生产配置未改。
+
+
+## 评论线继续收尾 · 2026-10-15
+
+用户委托整条线完成后再交接。此前40条完整返回与C3结果的Jev #14、TV #185已合并；C3一次独立复验172/280一致、69歧义、0缺答，不推广，280格单人原判未改。
+
+[Jev #15](https://github.com/TangVarie/JevforCoentent/pull/15)固定C4七题的单选边界，保留模型/标签顺序/概率阈值/复核路由；专用诊断入口231项测试通过，20条完全虚构用例131/140一致、11歧义、0无效。20条不是生产真实效果验收。旧40条只作C4开发回归；另抽40条与旧100/40帖子及同项目同文零重叠，AI拟280格参考并在Jev调用前固定，不能称真人金标准。
+
+自动审批拒绝了C4真实批次出境，要求明确许可旧40+新40的80条评论/帖子上下文，不能从此前C3一次许可推定。本轮未绕过，真实批次receipt置未批准，输入预检0调用；具体确认已给owner。若取得许可，按固定单一C4执行一次并报告，无效/不达预注册阈值就保留不推广，不追加候选追分。
+
+J-01开关、J-02 shadow/primary、W-02仍须具体真实报告与验收；不伪造独立标注人/owner接受字段，不用工程测试或AI参考替代。更细说明在Jev #15的 `docs/comment-line-closeout-2026-10-15.md`；本地完整输入/参考/协议/预检/结果在 `/workspace/annotation-packets/J03-health-20261015-line-closeout/`，不进GitHub。
