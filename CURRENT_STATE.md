@@ -1,8 +1,10 @@
 # Truth Vault · 当前状态
 
-**最后更新**: 2026-06-09 (新增 TGV/RIO/HXZ_FB 接入 + 伪爆贴 DQ + dashboard 上线/内外分离 + 对外展示口径定稿)
-**当前阶段**: 飞轮已转起来 —— **8 项目入库 (3,407 篇 / 验证级爆款 200 / 书架 118 卡 / 累计曝光 37.3M)**, 通道1(ssll)+ 通道2(pull/馆员)都 live, 对外看板已上线 Vercel。**当前状态/待办权威 = [docs/archive/26-handover-2026-06-09.md](docs/archive/26-handover-2026-06-09.md);从零到现在的完整对齐 = [docs/00-START-HERE.md](docs/00-START-HERE.md)**。
-> ⚠️ 下方 Session #9~#17 记录是历史时间线快照(数字停在当时);**最新真实数字 + 06-07→09 变更见 docs/26**。
+> **2026-10-15当前状态见 [HANDOFF.md](HANDOFF.md)，待办见 [OPEN-ITEMS.md](OPEN-ITEMS.md)。** 闸二已完成但组合不进L2；评论仍关闭，新40条正在复核且未冻结；10-14两处同步故障已修复补跑，修复后首次全量schedule仍待观察。下面06-09及后续补记保留为历史快照，不代表最新库行数或验收结论。
+
+**以下历史快照日期**: 2026-06-09 (新增 TGV/RIO/HXZ_FB 接入 + 伪爆贴 DQ + dashboard 上线/内外分离 + 对外展示口径定稿)
+**2026-06-09阶段快照**: 飞轮已转起来 —— **8 项目入库 (3,407 篇 / 验证级爆款 200 / 书架 118 卡 / 累计曝光 37.3M)**, 通道1(ssll)+ 通道2(pull/馆员)都 live, 对外看板已上线 Vercel。**当时交接记录 = [docs/archive/26-handover-2026-06-09.md](docs/archive/26-handover-2026-06-09.md);从零到现在的完整对齐 = [docs/00-START-HERE.md](docs/00-START-HERE.md)**。
+> ⚠️ 下方 Session #9~#17 记录是历史时间线快照(数字停在当时);**当时数字 + 06-07→09 变更见历史docs/26；当前先读HANDOFF**。
 > ⚠️ **2026-09-17 更正**: 上一行「通道2(pull/馆员)都 live」不成立 —— 复核发现写作台在生产**基本没在调馆员**(30 天 82 batch 只 8 brief, 最重三天 0 次; 06-05 的拉通是一单实测)。TV 侧书架/馆员正常, 修在 autowriter 仓; 见 [docs/27](docs/27-autowriter-librarian-relink-2026-09-17.md) + D-063。夜跑自 D-063 起有「通道 2 借阅流量检查」, 暗着会 `::warning`。 **09-19 查完(D-069)**: 接线和 env 都在, 根因是 deskcore 协议把 `borrow_lessons` 设成可选(71 批成稿 / 3 次借阅); 修法是 `open_project` 随简报自动借, autowriter PR #85, 合并部署后按 docs/27 §4 验收。
 > ✅ **2026-09-18**: 写作台 ↔ TV 稿子对照落地 (aw 侧 `tv-sync --write-tv`, 每日 04:00 UTC): `notes.source_autowriter_*` 从全 NULL → **404 行** (body_exact 268 / title_exact 124 / fuzzy 12; 1466 条 `ingested` 副本不回填)。两列语义改为「写作台里对应的版本」(不是生成来源, 方向查 `autowriter.tv_note_links.lag_days`)。TV 不改代码。见 D-064 + docs/10 R-031。夜跑 cron 原声明 02:00 UTC 但实际起跑 ~07:00 UTC (GitHub 整点排队), 落在 aw 04:00 之后; owner 拍板 TV 改 → cron 挪到 `17 2 * * *` (非整点), 验收看接下来几天的起跑时间。
 > 🛠 **2026-09-20 (D-070)**: 内容特征层 P1 落地 —— 迁移 `notes_v1_13`(三表 + `v_feature_contrast`; **生产 09-20 已 apply**, Supabase 记录 `20260920054230`, 见 D-070 续), `scripts/annotate_feature_pass.py` + `feature_bank.py`, worker `/annotate-features`, daily-sync 增量步(每晚每项目 ≤ 12 篇) + `backfill-features.yml`, 17 张 mapping 加 `title_extraction`, 附录 E 七组 CI 守卫。下一步闸一(300 篇, 等运营 Q6 定人)。
