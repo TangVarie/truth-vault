@@ -115,3 +115,16 @@ curl -fsS https://autowriter-production.up.railway.app/health
 本次环境的`gh run view --log/--log-failed`曾返回空内容；不能把空日志当没有错误。可用GitHub job日志API或连接器`github_fetch_workflow_job_logs`，并读取最终聚合步骤的真实outcome。`continue-on-error`会让中间步骤看似success，最终聚合才是整批结论。
 
 **10-15 19:34（北京时间）复核返回与C3复验补记：** [Jev详细返回说明](https://github.com/TangVarie/JevforCoentent/blob/main/docs/comment-holdout-return-2026-10-15.md)。单人参考SHA-256 `953dc0975d58574045324d55b7f01b97a352b724c12e2c08ee8ff616045341d3`。冻结仅固定比较版本，`definition_conformance_accepted/human_gold_ready/release_accepted`均false；C3、旧700格、生产配置未改。
+
+
+## 评论线本轮收尾 · 2026-10-15 20:28（北京时间）
+
+用户委托整线完成后再交接。此前Jev #14与TV #185已合并；[Jev #15](https://github.com/TangVarie/JevforCoentent/pull/15)固定C4七题判法并保留模型/闭集顺序/阈值/路由，初次231项工程测试通过，审阅后242项通过。20条虚构合成131/140，另有本地HTTP联真实Jev的纯虚构单条/整组7次请求核查，均不冒充生产效果或鉴权端到端验收。
+
+自动审批最初拒绝C4真实出境；用户随后明确“允许本次C4共80条真实验证”，已完整执行旧40开发回归/新40 AI参考，各40/40有效、0缺答。旧40原判完全不改，一致187/280，较C3修复26/回退11；新40 AI参考一致225/280、无歧义一致193、歧义57。新40逐题36/39/32/32/29/30/27，相对AI参考背书漏报1/32、误报1/8；该漏报另有三题歧义，非已证HTTP漏放。
+
+**本轮不推广C4**：总80.4%低于85%，语气/安排低于每题75%，无歧义背书漏报1高于0。没有临时放宽标准、回改参考或追加候选追分。新参考明确AI来源，不称独立真人准确率；本40条既已分析，下一轮据此改题后须转开发用途。生产评论继续关闭，评论账本批次0，未shadow/primary、未群发重导skill；正式验收记录要求保留。
+
+本轮工程、固定验证和不发布结论已收尾，下一轮应先决定主观读感是否适合作原子题、主行为边界如何独立复核，再制定新参考/新样本与预算；不得重跑旧A/B或把已完成事项退回未开始。完整证据和后续边界见Jev #15的 `docs/comment-line-closeout-2026-10-15.md`，私有材料在 `/workspace/annotation-packets/J03-health-20261015-line-closeout/`；其他12:04生产快照本次未重查。
+
+**C4审阅补丁说明：** 当前评估器v2已补原判独立摘要、20/40/40范围、调用前阈值类型/范围和全选项概率检查。初次v1批次未保存完整概率向量，仅作为历史诊断，不能追认严格v2验收；无追加模型调用。三组v2零调用预检与242项工程回归通过，见Jev收尾报告。
