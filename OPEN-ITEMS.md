@@ -20,7 +20,8 @@
 
 | 时间 | 事 | 条目 |
 |---|---|---|
-| 10-15持续观察 | 修复后的首次Daily全量schedule及watchdog；截至12:04今日Daily尚未出现，最新watchdog仍指向修复前失败；10-14定向恢复已成功 | I-14；HANDOFF |
+| 10-15 已完成 | 修复后首次 Daily 全量定时跑成功（run 38698494948，07:24–08:00 UTC）；watchdog 明天按 26h 判据自然转绿 | 已关 I-14 |
+| **现在** | **通道 2 暗了两周：写作台 10-01 起 26 个 batch、馆员 0 次成功借阅；馆员服务活着、请求到了，但它调模型全报 `InternalServerError`** | L-05 |
 | 10-12 已完成 | 闸二报告和 55 行验证结果已写库并核对完整摘要；10 个取值 validated，组合不进 L2；下一轮接评论能力 | 已关 G-01；D-107；J-01 |
 | ≈ 10-16 | 特征层要不要也搬离 Railway worker；隔离表轻版观察一周后回看 | S-08、I-03 |
 | ≈ 10-19 | 节后写作台周产出有没有回到 9 月水平（没回到就查协议 / skill 导入） | O-03 |
@@ -112,7 +113,6 @@
 | I-11 | LNKT 20 个预声明占位列藏着 2 篇完整抖音笔记（留 / 撤声明、要不要入库）；BJS「蓝词字段」是数字，等运营定格式 | 未核后续 | 你拍板 / 运营 | — | D-053 |
 | I-12 | 品牌别名：NRT ×2、TGV 留空待问；力克雷的其他写法 | 待运营 | 运营 | — | ops-answers-2026-09-22.md:482 |
 | I-13 | 起量时间的飞书自动化没人知道谁维护，口径改了没处落 | 没人 | 运营 / 你 | — | signal-definitions.md:91；D-062 续 |
-| I-14 | Daily重复失败修复后的定时验收 | PR182已合并；SPX新旧互动字段兼容、HATHERINE错误JSON结构进重试/队列。10-14两次定向恢复成功，7指标匹配、剩余7篇清零，原275篇未改；首次修复后全量schedule仍待观察 | 工程 | 全量schedule成功并核聚合/指标/待标；watchdog按26h schedule判据自然恢复 | docs/daily-sync-recovery-2026-10-14.md；HANDOFF |
 
 
 ## 5. 飞轮、策展、librarian
@@ -120,7 +120,7 @@
 | ID | 事 | 状态与证据 | 谁 | 触发 / 到期 | 来源 |
 |---|---|---|---|---|---|
 | F-01 | NUC `direction_subtype` 回填 | 做了一部分（核：10-09 跑过两次；NUC 有 essence 的 657 篇里还缺 126，D-097 时是 206） | 工程（触发 `backfill-essence.yml` mode=missing_subtype） | 随时 | D-097 |
-| F-02 | 新中转站上的 prompt caching。10-12 owner 在中转站后台看到缓存几乎没命中。我们这边的请求写法没问题：题目说明放在 system 块、带 `cache_control`、同一组每次一样、1,160–2,004 字（Sonnet 5.5 门槛 512 token）。以前只数「缓存块被拒、降级」，网关静默丢标记时这个数恒为 0。10-12 起特征层 / essence 的 Done 行带 `prompt_cache`（calls / input / cache_write / cache_read / read_share），librarian `/health` 带 `prompt_cache_usage`。判读：write 和 read 都是 0 = 标记没到上游（通道不支持缓存或被剥掉）；write > 0 而 read ≈ 0 = 多上游账号轮转。计数只在进程内，重启就丢 | **核（10-15）：中转站按请求轮转上游账号，缓存基本白写。** 10-13 / 10-14 两次 features-sync 共 85 批、1,082 次调用：cache_write 1,657,401、cache_read 60,682，read_share 3.2%。每批 2 篇 12 次调用，几乎每次都在写缓存；第二篇的 system 和第一篇逐字相同（`feature_bank.render_call` 只由题组决定），本该全读。读到的只有两种：几秒内的校验重问（读 1,741–1,913，约一组），和 85 批里唯一一批第二篇把六组全读到（9,103 / 9,103）——说明标记到了上游、缓存也能用，就是连续请求落在不同账号。按官方计价（写 1.25 倍、读 0.1 倍）算输入侧：现在比完全不带 `cache_control` 贵 18.9%；中转站要是能让同一来源粘在一个账号上，输入侧降到现在的 59%。essence 这两天没有新篇进 Done 行，librarian 没取到。**决定**：代码不动，先问中转站；中转站给不了粘性分组、且 W-16 对账单显示缓存写确实按 1.25 倍收，再给特征层加开关去掉 `cache_control` | 你（问中转站要「同一来源固定上游账号 / 支持 prompt caching」的分组）+ 工程（后备开关） | ≈ 10-22 看中转站答复 | D-097；D-098 |
+| F-02 | 新中转站上的 prompt caching。10-12 owner 在中转站后台看到缓存几乎没命中。我们这边的请求写法没问题：题目说明放在 system 块、带 `cache_control`、同一组每次一样、1,160–2,004 字（Sonnet 5.5 门槛 512 token）。以前只数「缓存块被拒、降级」，网关静默丢标记时这个数恒为 0。10-12 起特征层 / essence 的 Done 行带 `prompt_cache`（calls / input / cache_write / cache_read / read_share），librarian `/health` 带 `prompt_cache_usage`。判读：write 和 read 都是 0 = 标记没到上游（通道不支持缓存或被剥掉）；write > 0 而 read ≈ 0 = 多上游账号轮转。计数只在进程内，重启就丢 | **核（10-15）：中转站按请求轮转上游账号，缓存基本白写。** 10-13 / 10-14 两次 features-sync 共 85 批、1,082 次调用：cache_write 1,657,401、cache_read 60,682，read_share 3.2%。每批 2 篇 12 次调用，几乎每次都在写缓存；第二篇的 system 和第一篇逐字相同（`feature_bank.render_call` 只由题组决定），本该全读。读到的只有两种：几秒内的校验重问（读 1,741–1,913，约一组），和 85 批里唯一一批第二篇把六组全读到（9,103 / 9,103）——说明标记到了上游、缓存也能用，就是连续请求落在不同账号。按官方计价（写 1.25 倍、读 0.1 倍）算输入侧：现在比完全不带 `cache_control` 贵 18.9%；中转站要是能让同一来源粘在一个账号上，输入侧降到现在的 59%。10-15 Daily 的 essence 同样：4 个项目 49 次调用，每个项目内连续调用 read_share 0–11%。librarian 本进程 0 次成功调用（见 L-05），取不到数。**决定**：代码不动，先问中转站；中转站给不了粘性分组、且 W-16 对账单显示缓存写确实按 1.25 倍收，再给特征层加开关去掉 `cache_control` | 你（问中转站要「同一来源固定上游账号 / 支持 prompt caching」的分组）+ 工程（后备开关） | ≈ 10-22 看中转站答复 | D-097；D-098 |
 | F-03 | D-088 预筛有没有用：跑 librarian-cold-baseline 里的对比 SQL，看 p50 / p95 / 超 60 秒条数对基线（49.5 秒 / 79 秒 / 24 条里 7 条）；p95 还 > 60 秒就决定换通道或 `FLYWHEEL_LIBRARIAN_MODEL`；确认 #167 后 Railway 重部署过 | 等样本 | 工程 + 你拍板 | ≈ 10-22 | D-088；D-090 #5 |
 | F-04 | aw 借卡：把借卡移出 `open_project` 同步路径（A-04，客户端只忍约 22 秒）；librarian `degraded` 变 `BORROW_ERROR`（B-04） | 未核（aw 侧没查到修复） | 工程（aw） | 写手恢复借卡首批前独立核查/修复并验约22秒截止；W-01已关，不等J-03 | 审计 A-04、B-04 |
 | F-05 | `recurate=all` 不收敛，全量重策展前必须按 `curated_at` 升序 | 没做 | 工程 | 全量重策展前 | D-096 |
@@ -135,6 +135,7 @@
 | L-02 | deskcore `/health` 的 `config.pipeline` 没人定期看 | 已知缺口 | 你拍板 | — | docs/29:42 |
 | L-03 | 每周看灯：`LIBRARIAN_TRAFFIC`、`ANGLE_LEDGER`、`EXTERNAL_CORPUS`、Jev `external-corpus.yml` | 例行 | 你动手（周一定时检查会代看一遍） | 每周 | docs/29:32-44 |
 | L-04 | 看板：docs/24 Phase 3–4（内部页 Supabase Auth、自定义域名）；docs/24:136 还让人配 service_role（文档漂移）；v1_19 两列没上 Vercel（已接受，C-13） | 未核 / 已接受 | 工程 / 你拍板 | — | docs/24 |
+| L-05 | **通道 2（TV 馆员 → 写作台经验卡）10-01 起暗着**。`flywheel_librarian_cache` 写作台最后一次命中 09-30；10-01 至 10-15 写作台 26 个 batch、0 次成功借阅（daily-sync「通道 2 借阅流量」灯 10-14、10-15 都亮）。10-15 实查：馆员服务 `truth-vault-production.up.railway.app/health` ok，写作台的请求确实到了（`prompt_cache_fallbacks` 计数 5，最近一次 10-15 08:40 UTC），但 `prompt_cache_usage.calls=0`——本进程启动后**没有一次模型调用成功**，带缓存块的报 `InternalServerError`，去掉缓存块重试也失败；馆员吞掉异常回 `[]`，写作台 fail-open 照常写，所以哪边都不红。同一中转站用 GitHub 的密钥今天 essence / 策展都成功，问题在 Railway 上馆员服务自己的配置（`ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY` / `FLYWHEEL_LIBRARIAN_MODEL`，D-098 #3 要 owner 换的那三项之一）。旧文档里的 `tv-librarian-production.up.railway.app` 已 404，不是这个服务 | 未修 | 你动手（Railway 看日志、核变量）→ 工程（改完回读 /health 的 calls>0、缓存表有新行、灯灭） | 现在 | D-063；D-098 #3；aw:`librarian_client.py:118` |
 
 ## 7. 运维、密钥、备份
 
@@ -158,6 +159,7 @@
 | W-02 | skill 重新导入：**等 J-01 上线后**一起导，现在先不群发 |
 | W-09 | 问写手 WorkBuddy 里 deskcore 的 key 是怎么填的（头 / OAuth / 网址里 `?key=`） |
 | W-14 | 停 Streamlit 工作台 |
+| **L-05** | **Railway → 馆员服务（域名 truth-vault-production）→ Logs 搜「馆员调用失败」看报错原文；Variables 里 `ANTHROPIC_BASE_URL`、`ANTHROPIC_API_KEY` 改成和 worker 服务一模一样，`FLYWHEEL_LIBRARIAN_MODEL` 删掉或填 `claude-sonnet-5-5`，保存重启后告诉我，我回读核** |
 | W-16 | 对一次中转站账单，看 1.8 倍系数对不对；顺便看缓存写是不是按 1.25 倍收 |
 | F-02 | 问中转站有没有「同一来源固定上游账号、支持 prompt caching」的分组（现在按请求轮转，缓存读到 3.2%） |
 | J-09 | 核对Railway上Jev超时环境变量；J-10的OKMAN既有放行不再重复申请 |
@@ -184,6 +186,7 @@
 
 | 日期 | 条目 | 证据 |
 |---|---|---|
+| 2026-10-15 | **I-14：#182 修复后首次 Daily 全量定时验收** | schedule run 38698494948（main 04ecb99）success，最终聚合步骤无失败步；飞书 10 个项目 errors 全 0，SPX 588 行 / 555 入库 / 27 条已认领隔离（与修复前一致）；essence 4 个项目 46/46 成功、0 失败；策展成功；用时 35/240 分钟。10-15 核 |
 | 2026-10-15核对 | **J-05：外部语料首次定时成功** | Jev run38237686717在10-12 schedule成功；日志apply_rows报告external_notes178行、note_feature_answers4272行。后续仍按周跑/账本新鲜度监控，不再列为“尚未成功一次” |
 | 2026-10-13 | **W-01/W-03：MCP线程池与本轮协议** | aw#96已合并，生产build.commit=487403b75fb0、协议3fdff2c0b985、24工具；CI通过。MCP真实并发/身份与REST适配器回归已测；借卡客户端截止仍跟F-04，skill重新导入仍待W-02/J-03 |
 | 2026-10-12 | **G-01：闸二正式跑、D-107、审核摘要写库** | 重标三批实际 499/499 篇完整（200 + 200 + 99）；单篇补跑 38233093886 成功；只读 run 38234131740、写库 run 38234730010 都成功；生产回读 55 行完整摘要 `c3dfab5dc85e9c31fdec9e44e43853fe158dc30b0d5e88400c2db535070c11c3` 与报告一致。10 个取值 validated；组合不进 L2（AUC 增益 −0.00105、95% 区间跨零），不是所有后续阶段都已过闸。G-02 新发现审阅、G-03 第一轨、G-04 下一轮组合、J-01 评论能力继续跟踪 |
