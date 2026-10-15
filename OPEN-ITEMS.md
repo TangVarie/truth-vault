@@ -21,7 +21,7 @@
 | 时间 | 事 | 条目 |
 |---|---|---|
 | 10-15 已完成 | 修复后首次 Daily 全量定时跑成功（run 38698494948，07:24–08:00 UTC）；watchdog 明天按 26h 判据自然转绿 | 已关 I-14 |
-| **现在** | **通道 2 暗了两周：写作台 10-01 起 26 个 batch、馆员 0 次成功借阅；馆员服务活着、请求到了，但它调模型全报 `InternalServerError`** | L-05 |
+| 10-15 已修 | 通道 2 恢复：owner 改了馆员服务的 Railway 变量，12:50 UTC 写作台借卡成功（RIO，5 张卡） | 已关 L-05 |
 | 10-12 已完成 | 闸二报告和 55 行验证结果已写库并核对完整摘要；10 个取值 validated，组合不进 L2；下一轮接评论能力 | 已关 G-01；D-107；J-01 |
 | ≈ 10-16 | 特征层要不要也搬离 Railway worker；隔离表轻版观察一周后回看 | S-08、I-03 |
 | ≈ 10-19 | 节后写作台周产出有没有回到 9 月水平（没回到就查协议 / skill 导入） | O-03 |
@@ -135,7 +135,6 @@
 | L-02 | deskcore `/health` 的 `config.pipeline` 没人定期看 | 已知缺口 | 你拍板 | — | docs/29:42 |
 | L-03 | 每周看灯：`LIBRARIAN_TRAFFIC`、`ANGLE_LEDGER`、`EXTERNAL_CORPUS`、Jev `external-corpus.yml` | 例行 | 你动手（周一定时检查会代看一遍） | 每周 | docs/29:32-44 |
 | L-04 | 看板：docs/24 Phase 3–4（内部页 Supabase Auth、自定义域名）；docs/24:136 还让人配 service_role（文档漂移）；v1_19 两列没上 Vercel（已接受，C-13） | 未核 / 已接受 | 工程 / 你拍板 | — | docs/24 |
-| L-05 | **通道 2（TV 馆员 → 写作台经验卡）10-01 起暗着**。`flywheel_librarian_cache` 写作台最后一次命中 09-30；10-01 至 10-15 写作台 26 个 batch、0 次成功借阅（daily-sync「通道 2 借阅流量」灯 10-14、10-15 都亮）。10-15 实查：馆员服务 `truth-vault-production.up.railway.app/health` ok，写作台的请求确实到了（`prompt_cache_fallbacks` 计数 5，最近一次 10-15 08:40 UTC），但 `prompt_cache_usage.calls=0`——本进程启动后**没有一次模型调用成功**，带缓存块的报 `InternalServerError`，去掉缓存块重试也失败；馆员吞掉异常回 `[]`，写作台 fail-open 照常写，所以哪边都不红。同一中转站用 GitHub 的密钥今天 essence / 策展都成功，问题在 Railway 上馆员服务自己的配置（`ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY` / `FLYWHEEL_LIBRARIAN_MODEL`，D-098 #3 要 owner 换的那三项之一）。旧文档里的 `tv-librarian-production.up.railway.app` 已 404，不是这个服务 | 未修 | 你动手（Railway 看日志、核变量）→ 工程（改完回读 /health 的 calls>0、缓存表有新行、灯灭） | 现在 | D-063；D-098 #3；aw:`librarian_client.py:118` |
 
 ## 7. 运维、密钥、备份
 
@@ -159,7 +158,6 @@
 | W-02 | skill 重新导入：**等 J-01 上线后**一起导，现在先不群发 |
 | W-09 | 问写手 WorkBuddy 里 deskcore 的 key 是怎么填的（头 / OAuth / 网址里 `?key=`） |
 | W-14 | 停 Streamlit 工作台 |
-| **L-05** | **Railway → 馆员服务（域名 truth-vault-production）→ Logs 搜「馆员调用失败」看报错原文；Variables 里 `ANTHROPIC_BASE_URL`、`ANTHROPIC_API_KEY` 改成和 worker 服务一模一样，`FLYWHEEL_LIBRARIAN_MODEL` 删掉或填 `claude-sonnet-5-5`，保存重启后告诉我，我回读核** |
 | W-16 | 对一次中转站账单，看 1.8 倍系数对不对；顺便看缓存写是不是按 1.25 倍收 |
 | F-02 | 问中转站有没有「同一来源固定上游账号、支持 prompt caching」的分组（现在按请求轮转，缓存读到 3.2%） |
 | J-09 | 核对Railway上Jev超时环境变量；J-10的OKMAN既有放行不再重复申请 |
@@ -186,6 +184,7 @@
 
 | 日期 | 条目 | 证据 |
 |---|---|---|
+| 2026-10-15 | **L-05：通道 2（馆员 → 写作台经验卡）10-01 起暗了两周** | 根因：馆员服务的 Railway 变量没跟上 10-09 换中转站（D-098 #3），模型调用全报 `InternalServerError`，馆员回 `[]`、写作台 fail-open，两边都不红。owner 10-15 改变量重启后：12:50:45 UTC `flywheel_librarian_cache` 新增 consumer=deskcore 一行（RIO 项目，选中 5 张，select_ms 16,182），馆员 `/health` 的 `prompt_cache_usage.calls=2`、fallback 0。冷借 16 秒超过 open_project 里 10 秒的借阅预算（D-074），所以冷借时简报先回 timeout，随后 `borrow_lessons` 命中缓存即回——这是既有设计，客户端截止仍归 F-04。次日 daily-sync 的「通道 2」灯应转绿。10-15 核 |
 | 2026-10-15 | **I-14：#182 修复后首次 Daily 全量定时验收** | schedule run 38698494948（main 04ecb99）success，最终聚合步骤无失败步；飞书 10 个项目 errors 全 0，SPX 588 行 / 555 入库 / 27 条已认领隔离（与修复前一致）；essence 4 个项目 46/46 成功、0 失败；策展成功；用时 35/240 分钟。10-15 核 |
 | 2026-10-15核对 | **J-05：外部语料首次定时成功** | Jev run38237686717在10-12 schedule成功；日志apply_rows报告external_notes178行、note_feature_answers4272行。后续仍按周跑/账本新鲜度监控，不再列为“尚未成功一次” |
 | 2026-10-13 | **W-01/W-03：MCP线程池与本轮协议** | aw#96已合并，生产build.commit=487403b75fb0、协议3fdff2c0b985、24工具；CI通过。MCP真实并发/身份与REST适配器回归已测；借卡客户端截止仍跟F-04，skill重新导入仍待W-02/J-03 |
