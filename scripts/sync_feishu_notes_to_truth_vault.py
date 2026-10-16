@@ -398,6 +398,80 @@ def inherit_content_from_previous_row(
             out[k] = prev_raw[k]
     return out, {"from": prev_id, "overrides": overrides}, None
 
+
+# 上一行乱了但这条以前已经继承成功过 → 沿用库里那份(2026-10-16, D-052 续)。
+# 只对这两种「上一行判不了」的情况放行; 其它理由照旧隔离。
+_REUSABLE_INHERIT_REASONS = ("inherit_prev_row_is_same_kind", "inherit_parent_not_found")
+
+
+def fetch_previous_inheritance(client, project_id: str) -> dict[str, dict]:
+    """本项目里【以前已经按 D-052 成功继承过正文】的行 → {feishu_record_id: 库里那份}。
+
+    10-16 SPX 实况: 运营给表加了 5 列「数据整理 / 整理状态 …」, 顺手动了行序, 18 条抖音行的
+    上一行不再是自己那条小红书 —— 按 owner 09-02 的口径(只看挨不挨着, 与素人编号无关)判不了,
+    全被隔离; 可这 18 条前一天刚按同一口径继承成功、note 在库里好好的。这里不重新推断谁的文案
+    是谁的(那正是 owner 不让做的), 只是**沿用当初已经判定过、入了库的那份**, 指标照常刷新。
+
+    读不到库 → 返回空(退回旧行为: 照常隔离)。这道闸是放宽, 放宽的前提查不到就不放宽。
+    """
+    try:
+        rows = fetch_all_pages(
+            client.schema("truth_vault").table("notes")
+            .select("note_id, raw_content, raw_extra")
+            .eq("project_id", project_id)
+            .not_.is_("raw_extra->>_content_inherited_from", "null"),
+            order_by="note_id",
+        )
+    except Exception as exc:
+        logger.warning("读取 %s 以前继承过的抖音行失败(%s) —— 本轮不沿用, 判不了的照常隔离。", project_id, exc)
+        return {}
+    prefix = f"{project_id}_"
+    out: dict[str, dict] = {}
+    for r in rows:
+        extra = r.get("raw_extra") or {}
+        nid = r.get("note_id") or ""
+        if not (r.get("raw_content") and extra.get("_content_inherited_from") and nid.startswith(prefix)):
+            continue
+        out[nid[len(prefix):]] = {"raw_content": r["raw_content"], "raw_extra": extra,
+                                  "from": extra["_content_inherited_from"]}
+    return out
+
+
+def inherit_restore_keys(spec: dict | None, field_mapping: dict) -> dict[str, str | None]:
+    """also_inherit 的每一列 → 它当初抄过来后落在 raw_extra 里的键(中间量, 如 方向 → _direction_raw)。
+    落成普通列的给 None —— 沿用时复原不了, 那条就不沿用(照常隔离)。"""
+    out: dict[str, str | None] = {}
+    for col in (spec or {}).get("also_inherit") or []:
+        tgt = field_mapping.get(col)
+        out[col] = tgt if isinstance(tgt, str) and tgt.startswith("_") else None
+    return out
+
+
+def reuse_previous_inheritance(
+    raw_fields: dict[str, Any], stored: dict | None, content_col: str,
+    restore: dict[str, str | None] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """库里有这条以前继承成功的那份 → 正文和 also_inherit 的列都复原成当初继承到的, meta 带原出处并标
+    reused; 没有 → (原样, None)。
+
+    also_inherit 的列要一并复原(codex review on #193): SPX 当初连「方向」一起从上一行抄过来,
+    content_format / target_audience / user_pain_point 都是从那个方向拆出来的。只复原正文的话, transform
+    拿这行自己的「抖音」去拆, 拆不出东西, 批量 upsert 会把库里那几列冲成 null。
+    复原后照常走 transform, 产出的就跟当初那次成功继承一模一样。任何一列复原不了 → 不沿用:
+    半套继承比隔离更糟。"""
+    if not stored or not stored.get("raw_content"):
+        return raw_fields, None
+    extra = stored.get("raw_extra") or {}
+    out = dict(raw_fields)
+    overrides: dict[str, Any] = {}
+    for col, key in (restore or {}).items():
+        if key is None or extra.get(key) in (None, "", []):
+            return raw_fields, None
+        overrides[col] = raw_fields.get(col)
+        out[col] = extra[key]
+    out[content_col] = stored["raw_content"]
+    return out, {"from": stored.get("from"), "overrides": overrides, "reused": True}
+
 # field_mapping 的值里, `_` 开头的是【中间量】(不是 notes 的列), 要换成它真正影响的列
 # 才查得到"以前填过没有"。查不到对应列的(评论走另一张表、笔记状态只用于检测)→ 不监控,
 # 宁可漏报也不误报: 这道闸的价值全在"红了就一定是真出事", 掺了噪音就没人看了。
@@ -1691,7 +1765,7 @@ def main() -> int:
     # known_backlog (D-053): 隔离行里【人已经认领过】的那些。它们仍然是"这次没处理成",
     # 所以照样挡住盖戳和对账(见下方 records_all_ok), 只是不进 errors、不把退出码变红。
     stats = {"total": 0, "upserted": 0, "quarantined": 0,
-             "empty_placeholder": 0, "errors": 0, "known_backlog": 0,
+             "empty_placeholder": 0, "errors": 0, "known_backlog": 0, "inherit_reused": 0,
              # 审计 B-15: 隔离里多少是今晚新冒的、多少是老的又冒了 (只计需要人看的那两类, 空占位不计)
              "quarantine_new": 0, "quarantine_seen_again": 0,
              "undeclared_absorbed": 0, "missing_core_columns": 0,
@@ -1789,6 +1863,12 @@ def main() -> int:
 
     inherit_spec = mapping.get("content_inherit_from_previous_row") or None
     content_col = next((k for k, v in mapping["field_mapping"].items() if v == "raw_content"), None)
+    # dry-run 不读库(同 acked_quarantine): 判不了的照常算隔离
+    prev_inherited: dict[str, dict] = (
+        fetch_previous_inheritance(sb, mapping["project_id"])
+        if (inherit_spec and content_col and not args.dry_run) else {}
+    )
+    inherit_restore = inherit_restore_keys(inherit_spec, mapping["field_mapping"])
     prev_raw: dict[str, Any] | None = None      # 【紧挨着】的上一条(不管是什么行)
     prev_id: str | None = None
     for item in _iter_all_records():
@@ -1805,6 +1885,14 @@ def main() -> int:
                 raw_fields, prev_raw, prev_id, inherit_spec, content_col)
             # prev 每一条都更新 —— 判据是【紧挨着】的上一条是什么, 抖音接抖音要能被看见(helper 里判)。
             prev_raw, prev_id = item.get("fields", {}), feishu_record_id
+            if inh_reason and inh_reason in _REUSABLE_INHERIT_REASONS:
+                reused_raw, reused_meta = reuse_previous_inheritance(
+                    raw_fields, prev_inherited.get(feishu_record_id), content_col, inherit_restore)
+                if reused_meta:
+                    raw_fields, inherited_meta, inh_reason = reused_raw, reused_meta, None
+                    stats["inherit_reused"] += 1
+                    logger.info("record_id=%s 上一行判不了(%s), 但以前已按 D-052 继承成功 → 沿用库里那份正文",
+                                feishu_record_id, reused_meta["from"])
             if inh_reason:
                 logger.warning("record_id=%s 抖音行找不到可继承的上一行小红书文案(%s, 素人=%s) → quarantine",
                                feishu_record_id, inh_reason, raw_fields.get("素人编号"))
@@ -1825,6 +1913,9 @@ def main() -> int:
                 note["data_quality_flags"] = flags
                 if inherit_spec.get("platform_override"):
                     note["platform"] = inherit_spec["platform_override"]
+                if inherited_meta.get("reused"):
+                    # 沿用的是库里那份; 方向已在 reuse 里复原, 形态/人群/痛点由 transform 照常拆出
+                    note["raw_extra"]["_content_inherit_reused"] = True
             if undeclared:
                 # D-055(owner 2026-09-11): 未声明列【不再隔离整行】。它们按定义都是非核心列
                 # (核心 = field_mapping 的键, 都已声明), transform_row 已经把值收进
