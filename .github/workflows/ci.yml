@@ -2156,11 +2156,12 @@ jobs:
           assert core.librarian_select_detailed({"_mode": "empty"})[1] == "no_match"
           assert core.librarian_select_detailed({"_mode": "degraded"})[1] == "degraded"
 
-          def det(brief):
+          def det(brief):                       # P4 起 app 走 librarian_select_full (多带 patterns)
               if brief.get("_mode") == "crash":
                   raise RuntimeError("boom")
-              return core.librarian_select_detailed(brief)
-          app_mod.librarian_select_detailed = det
+              sel, st = core.librarian_select_detailed(brief)
+              return {"selected": sel, "status": st, "patterns": []}
+          app_mod.librarian_select_full = det
 
           async def _run():
               tr = httpx.ASGITransport(app=app_mod.app)
@@ -2187,8 +2188,8 @@ jobs:
           def slow(brief):
               if brief.get("_mode") == "slow":
                   time.sleep(1.2)
-              return ([], "no_match")
-          app_mod.librarian_select_detailed = slow
+              return {"selected": [], "status": "no_match", "patterns": []}
+          app_mod.librarian_select_full = slow
 
           async def _conc():
               tr = httpx.ASGITransport(app=app_mod.app)
