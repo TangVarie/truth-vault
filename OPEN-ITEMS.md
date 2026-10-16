@@ -42,7 +42,7 @@
 |---|---|---|---|---|---|
 | G-03 | 闸三第一轨：冻结现有 essence 打分器，冻结日之后发布的笔记开始写 `content_scores` | **10-16 已冻结开工**（D-118）：打分器 `essence-v1-322f02c9465f`，冻结日 10-17，daily-sync 每晚给新笔记打分，灯 `GATE3_SCORE_CHECK_DONE` 拖红；要最低档 ≥212 / 其余 ≥847 篇落标签。近几周每周只落 30–50 篇，回到每周 200 篇约 11 月底出结论，否则要半年以上 | 工程 | 每周一报进度；12-15 复核速度 | D-118；docs/28 §6.3 |
 | G-04 | P3：冻结「essence + 特征」打分器作为闸三第二轨，写作台稿子影子打分（`aw_version`），每周看「落在历史最低 20% 的稿子占比」 | D-107 本轮组合未过（AUC 增益 −0.00105、95% 区间跨零），本轮不启动；G-03 的 essence 第一轨仍可独立推进 | 工程 | 另行预注册的新一轮组合评估过线后 | docs/28:371-373、:432；D-107 |
-| G-05 | P4 一组：卡片视图加 `validated_hits`；librarian「已验证规律」缓存块（`gate2_run` 进 `library_version()`）；`prepublish_evaluations` 写模型行 + 按版本回填 `actual_tier`；15% 批级随机探索臂（与 aw 一起）；`v_dash_feature_perf` 和结案报告特征表 | 下发清单已定（D-116：问号 / 结尾问读者 / 求助 / 品牌位置一句，emoji 和「不提品牌」不发）；指令放题库外的批准层 `prompts/desk_delivery_v1.yaml`。卡片、馆员、15% 对照臂 10-16 起做；`prepublish_evaluations` 等闸三 | 工程（+ aw） | 本周（卡片 / 馆员 / 对照臂）；闸三后（评估行） | docs/28:353-392、:433；D-116 |
+| G-05 | P4 一组：卡片视图加 `validated_hits`；librarian「已验证规律」缓存块（`gate2_run` 进 `library_version()`）；`prepublish_evaluations` 写模型行 + 按版本回填 `actual_tier`；15% 批级随机探索臂（与 aw 一起）；`v_dash_feature_perf` 和结案报告特征表 | 下发清单已定（D-116：问号 / 结尾问读者 / 求助 / 品牌位置一句，emoji 和「不提品牌」不发）；指令放题库外的批准层 `prompts/desk_delivery_v1.json`。卡片、馆员、15% 对照臂 10-16 起做；`prepublish_evaluations` 等闸三 | 工程（+ aw） | 本周（卡片 / 馆员 / 对照臂）；闸三后（评估行） | docs/28:353-392、:433；D-116 |
 | G-06 | `rank_score` 账号项改成收缩后的账号先验；先修 `personal_bao_rate`（分母含风控 / 删除、分子含数值推断）；改完把书架前 20 前后对比贴进 DECISIONS | 没做 | 工程 | P4 | docs/28:358、:479；D-097 #4 |
 | G-07 | 最低 20% 的 `revise` 标记怎么给挑稿的人看 | 没定 | 你拍板（+ aw 维护者） | P3 | D-065 续 #8；docs/28:465 |
 | G-08 | 退役 `v_l2_labels_v1` | 没做 | 工程 | 闸二第一轮对完账 | D-067 |
