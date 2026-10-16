@@ -78,6 +78,13 @@ def _note_cache_fallback(exc: BaseException) -> None:
     PROMPT_CACHE_FALLBACKS["last_error"] = type(exc).__name__
 
 
+def prompt_cache_enabled() -> bool:
+    """要不要把带 ``cache_control`` 的 system 块原样发出去。D-113 (2026-10-16) 起默认【不发】, 压成纯字符串。
+    理由同 scripts/annotate_essence_pass.prompt_cache_enabled: 中转站按请求轮转上游账号, 缓存写了读不回来,
+    按官方计价反而更贵。换了能粘住同一上游账号的通道再设 ``PROMPT_CACHE_ENABLED=1``。"""
+    return (os.environ.get("PROMPT_CACHE_ENABLED") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def call_anthropic(prompt: str, model: str, *, system=None, max_tokens: int = 1500,
                    max_attempts: int = 3) -> str:
     """One Anthropic call with exponential-backoff retry on transient errors.
@@ -142,6 +149,8 @@ def call_anthropic(prompt: str, model: str, *, system=None, max_tokens: int = 15
                 time.sleep(2 ** (attempt + 1))
         raise RuntimeError("call_anthropic exhausted retries without raising")
 
+    if isinstance(system, list) and not prompt_cache_enabled():
+        system = _flatten_system_blocks(system)   # D-113: 内容不变, 只去掉缓存标记
     try:
         return _run(system)
     except Exception as exc:

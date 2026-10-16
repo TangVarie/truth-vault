@@ -51,7 +51,6 @@
 | G-13 | 抽取器要不要换 Jev（审计 A-10）；换就要：features-sync / backfill 传 `done_by`、`code:v1` 走 `--code-only`、worker `/annotate-features` 改调 `/judge`、修 Jev docs/31 的自相矛盾 | D-105 定的是留 Sonnet 5.5；Jev 还在 v1 题面 | 你拍板 → 工程 | 闸二后 | 审计 A-10；D-085；D-105 |
 | G-14 | 抽取器换 Haiku 5.5（省约 20 倍） | 搁置，影子数据在库 | 你拍板 | 成本成问题时 | D-105 #1 |
 | G-15 | P5：「投流后增量」做第二标签 | 待定 | 你拍板 | 投流三列攒够数据 | docs/28:434 |
-| G-16 | 仓库变量 `FEATURE_LIMIT` 有没有覆盖 yaml 默认 24 | 未核（MCP 看不到仓库变量） | 你动手（GitHub Settings → Variables 看一眼） | 随时 | D-089 #1 |
 | G-17 | 最低20%爆率恢复覆盖原全量分析集：为 HXZ_QD/TXQ 的负例补足代表样本，再按新的预注册范围评估 | PR #177 复核发现两项目评估集缺负例整格；本次更正排除它们，只报告有完整标签覆盖项目的最低20%，不声称原全量判据通过 | 工程 | 下一轮需要原全量范围时；不挡本轮「组合不进L2」结论 | D-107 复核；PR #177 |
 
 ## 2. Jev（判定服务）
@@ -68,7 +67,6 @@
 | J-06 | 借卡接 Jev 影子跑 | 没做，借卡还是走 TV librarian | 工程 | 你决定 | docs/31 §3 ③ |
 | J-07 | judge 出影子期：最低 20% / 平台硬伤标 `revise`（不拦），修改单要不要随入库返回写手；需要新的 `decision_source` 值 + TV `_MACHINE_DECISION_SOURCES` | 硬编码 shadow；D-103 C-12 维持影子 | 你拍板 → 工程 | 闸二有 validated 特征 | aw:deskcore.md:540；D-103 |
 | J-08 | 用真实样本重调 `JUDGE_TIMEOUT_SEC`（看 `batch_metrics` 里 `mode=deskcore_commit`） | **10-16 已定**：10-12～10-15 有判定的 9 批 / 84 篇，判定段 p50 2.8 秒、最长 4.3 秒，单篇最长 3.4 秒，8 秒截止 0 次碰到 → **8 秒不动**。新发现入库段 10 篇一批已到 11～12 秒，判定拿满 8 秒 + 跨项目检查 1.5 秒 ≈ 21.8 秒，贴着客户端 ~22 秒 → aw#100：判定截止 = min(8, 20 − 入库已用 − 1.5)，不到 1 秒整批记 timeout 不发。合并部署后关；入库段为什么变慢另记 W-21 | 工程 | aw#100 合并部署后关 | aw:runbook:950；审计；aw#100 |
-| J-09 | judge-production 上设 `JEV_TIMEOUT_SEC=6 JEV_RETRIES=1`（审计 B-08，代码已支持） | 未核 env 是否已设 | 你动手（Railway） | 随时 | jev:`judge/jev_client.py:88-92` |
 | J-10 | 核对生产Rx策略与仓内既有许可是否一致 | 仓内10-08 PR5已把OKMAN/OKMAN_phase1加入rx_cleared，本轮未改；project_layer_cleared仍空。带鉴权现网policy回显本次未重测，其他未清出Rx仍403 | 工程 | 有合法鉴权的下一次实际请求核对，不重复索取已有合同许可 | jev:config/data_policy.yaml；HANDOFF |
 | J-11 | 「只判 `commit_drafts`、补录稿靠 TV 事后抽取」这条写进 TV DECISIONS；核 TV 抽取确实覆盖补录的项目 | 没记 | 工程 | 随时 | aw:runbook:951 |
 | J-12 | `tv_project_map` 完整性：没映射的项目一篇都不判 | **10-16 核**：近 7 天活跃的 5 个写作台项目里只有西屋911gt 没映射，其余 4 个都有。**写稿和借卡不受影响**（借卡不走这张表）；没映射期间只少两样：入库时的影子判定记录（10-14 那批 20 篇 `not_configured`），写手侧 `judge_draft` 判不了这个项目。映射本来就在项目建好飞书表、TV 里有了项目之后做；现有 `XIWU_phase1` 是西屋按摩椅 GT33（08-29 结束），不是同一产品 | 工程 | TV 里有了西屋 911GT 项目之后 `tv-map add` | aw:runbook:952 |
@@ -84,14 +82,13 @@
 | W-22 | 写作台 `/health` 的漏账灯只数 `commit_drafts` 销账：稿子直接进飞书、第二天由同步补指纹的项目（Hatherine）会让它一直红。改成飞书同步回来的稿子也算交付，只有稿子既没入库、飞书里也没出现时才红 | 未改 | 工程 | 10-16 下午 | W-06 |
 | W-07 | 借卡质量从没测过；D-088 预筛之后 0 次借卡 | 等样本，对 D-090 基线 | 工程 / 你 | 写手回来 | aw:runbook:945 |
 | W-08 | `LIBRARIAN_TIMEOUT_SEC=60` 按 p95 重调（实测 p95 79 秒 / 24 样本；客户端只忍约 22 秒） | 未定 | 工程 | 和 F-03 一起 | aw:`config.py:117-127` |
-| W-09 | WorkBuddy 到底用哪种方式传 key（自定义头 / OAuth / `?key=`）没人记过；如果是 `?key=`，key 在访问日志里，要轮换 | 未核 | 你动手（问写手或看 WorkBuddy 配置） | 随时 | aw:deskcore.md:713-721 |
+| W-09 | WorkBuddy 到底用哪种方式传 key（自定义头 / OAuth / `?key=`）没人记过；如果是 `?key=`，key 在访问日志里，要轮换 | 未核；不用问写手：deskcore 自己记下每次请求的 key 传法（只计数、不记 key），进 `/health` | 工程 | 10-16 下午 | aw:deskcore.md:713-721 |
 | W-10 | `ingest_target=false` 的映射（RIO ×5、hatherine-QNA）要不要入库目标；它们每晚重配、`tv-resolve` 会报错 | 未定 | 你拍板 | — | 审计 C-11 |
 | W-11 | 运营把补录副本重新录成飞书正式行时，tv-sync 关联不回去（10-10 手工修过一次，没有代码路径） | 未处理 | 工程 | 再出现时 | D-104 §2 |
 | W-12 | 模糊匹配要人用 `tv-resolve` 处理，没指定人 | 无人负责 | 你指定人 | — | aw:runbook:241 |
 | W-13 | 指纹 / 向量：一个 owner + 9 个休眠项目（718 篇老稿）没指纹；提交时的原子复查没覆盖标题语义；`semantic_degraded` 只打日志没有灯；项目名唯一约束没进库；一条全局规则没向量（跑 `reembed_my_rules`）；backfill 5000 行上限 | 都未做 | 工程 | 休眠项目激活时先 backfill；其余低优先 | aw:runbook:936、946、959、963、967 |
-| W-14 | 停掉 Streamlit 工作台（前提 09-20 已满足）；README「选定之前不要停」过时 | 没停 | 你动手 | 随时 | aw:runbook:944；D-072 |
 | W-15 | Railway 健康检查用 `/health` 还是 `/ready` | 产品决定，没定 | 你拍板 | — | aw:`app.py:577` |
-| W-16 | 新中转站：1.8 倍价格系数没对过账单；`-thinking` 后缀、`cache_control` 透传没验证；单点 | 未核 | 你动手（对账单）/ 你拍板 | 随时 | D-098；aw:`config.py:56` |
+| W-16 | 新中转站：1.8 倍价格系数没对过账单；`-thinking` 后缀没验证；单点 | 未核。`cache_control` 已按 D-113 默认关掉，不再依赖这次对账 | 你动手（对账单） | 随时 | D-098；D-113；aw:`config.py:56` |
 | W-17 | 远期产品决定：团队共享（`project_members`）；个人调校笔记升项目基线；正例补 essence 标签 | 第一期不做 | 你拍板 | — | aw:deskcore.md:115、818、821 |
 | W-19 | **跨项目串内容的防护**（10-12 事故：写手在同一个 WorkBuddy 对话里先写 Hatherine痘痘贴、再切西屋911gt，模型 gemini-3.1-pro-preview 把痘痘贴的规则抄进西屋的硬规则、出了 5 篇痘痘贴文案；deskcore 本身没串，`open_project` 只回本项目 + 全局规则）。要做：① 协议加一条「一个对话只写一个项目，换项目新开对话；`open_project` 拿到的项目名要在回复第一行复述」；② `record_rule` 入库前查内容里有没有同一写手其他项目的品牌名 / 专属词，有就拒并提示；③ `commit_drafts` 时用现成向量比稿子离本项目近还是离该写手的另一个项目近，离别的项目更近就标出来（影子期只记不拦） | aw#96已部署；现场5专属词已配置生产并回读，旧值本地备份；按生产回读配置跑本地已合代码，串词拒绝零写入、正常西屋规则可写（仅fake库）。影子提示已上线；带鉴权线上拒写尚未实测、误报/漏报待样本，不升硬闸 | 工程 | 上线后的影子样本与真实带鉴权调用复核 | 10-12 owner 报告；`autowriter.backup_memory_xiwu_contam_20261012` |
 | W-20 | WorkBuddy 里写手用的模型是 gemini-3.1-pro-preview（预览版）：协议按 Claude 调过，换模型后长对话里的上下文隔离、规则遵守没验证过 | 未评估 | 你拍板（要不要统一写手的模型） | — | 10-12 截图 |
@@ -121,7 +118,6 @@
 | ID | 事 | 状态与证据 | 谁 | 触发 / 到期 | 来源 |
 |---|---|---|---|---|---|
 | F-01 | NUC `direction_subtype` 回填 | 做了一部分（核：10-09 跑过两次；NUC 有 essence 的 657 篇里还缺 126，D-097 时是 206） | 工程（触发 `backfill-essence.yml` mode=missing_subtype） | 随时 | D-097 |
-| F-02 | 新中转站上的 prompt caching。10-12 owner 在中转站后台看到缓存几乎没命中。我们这边的请求写法没问题：题目说明放在 system 块、带 `cache_control`、同一组每次一样、1,160–2,004 字（Sonnet 5.5 门槛 512 token）。以前只数「缓存块被拒、降级」，网关静默丢标记时这个数恒为 0。10-12 起特征层 / essence 的 Done 行带 `prompt_cache`（calls / input / cache_write / cache_read / read_share），librarian `/health` 带 `prompt_cache_usage`。判读：write 和 read 都是 0 = 标记没到上游（通道不支持缓存或被剥掉）；write > 0 而 read ≈ 0 = 多上游账号轮转。计数只在进程内，重启就丢 | **核（10-15）：中转站按请求轮转上游账号，缓存基本白写。** 10-13 / 10-14 两次 features-sync 共 85 批、1,082 次调用：cache_write 1,657,401、cache_read 60,682，read_share 3.2%。每批 2 篇 12 次调用，几乎每次都在写缓存；第二篇的 system 和第一篇逐字相同（`feature_bank.render_call` 只由题组决定），本该全读。读到的只有两种：几秒内的校验重问（读 1,741–1,913，约一组），和 85 批里唯一一批第二篇把六组全读到（9,103 / 9,103）——说明标记到了上游、缓存也能用，就是连续请求落在不同账号。按官方计价（写 1.25 倍、读 0.1 倍）算输入侧：现在比完全不带 `cache_control` 贵 18.9%；中转站要是能让同一来源粘在一个账号上，输入侧降到现在的 59%。10-15 Daily 的 essence 同样：4 个项目 49 次调用，每个项目内连续调用 read_share 0–11%。librarian 本进程 0 次成功调用（见 L-05），取不到数。**决定**：代码不动，先问中转站；中转站给不了粘性分组、且 W-16 对账单显示缓存写确实按 1.25 倍收，再给特征层加开关去掉 `cache_control` | 你（问中转站要「同一来源固定上游账号 / 支持 prompt caching」的分组）+ 工程（后备开关） | ≈ 10-22 看中转站答复 | D-097；D-098 |
 | F-03 | D-088 预筛有没有用：跑 librarian-cold-baseline 里的对比 SQL，看 p50 / p95 / 超 60 秒条数对基线（49.5 秒 / 79 秒 / 24 条里 7 条）；p95 还 > 60 秒就决定换通道或 `FLYWHEEL_LIBRARIAN_MODEL`；确认 #167 后 Railway 重部署过 | 等样本 | 工程 + 你拍板 | ≈ 10-22 | D-088；D-090 #5 |
 | F-04 | aw 借卡：把借卡移出 `open_project` 同步路径（A-04，客户端只忍约 22 秒）；librarian `degraded` 变 `BORROW_ERROR`（B-04） | 未核（aw 侧没查到修复） | 工程（aw） | 写手恢复借卡首批前独立核查/修复并验约22秒截止；W-01已关，不等J-03 | 审计 A-04、B-04 |
 | F-05 | `recurate=all` 不收敛，全量重策展前必须按 `curated_at` 升序 | 没做 | 工程 | 全量重策展前 | D-096 |
@@ -143,8 +139,6 @@
 |---|---|---|---|---|---|
 | S-01 | 删 D-086 两张备份：`truth_vault.reference_samples_backup_tv_stale_20261008`、`truth_vault.notes_ssll_marker_backup_20261008`（先确认三省六部没反映参考池变薄） | 到期前 | 你动手（SQL editor） | ≈ 10-22 | D-086；D-103 |
 | S-02 | 删 10-09 / 10-10 备份：`truth_vault.backup_inverted_lineage_20261009`、`truth_vault.backup_{notes,nfa,comments,metric_snapshots}_vanished_20261009`、`autowriter.backup_tv_note_links_inverted_20261009`、`autowriter.backup_items_self_review_20261009`、`autowriter.backup_tv_note_links_vanished_20261009`、`autowriter.backup_tv_note_links_twins_20261010`、`autowriter.backup_orphan_ingest_tuge_20261010`、`autowriter.backup_memory_xiwu_contam_20261012`；`truth_vault.backup_notes_vanished_20261009` 的 COMMENT 里有回滚顺序；10-16 新增 `truth_vault.backup_quarantine_resolve_20261016`（I-03 的 2,477 行原状态；回滚 `update truth_vault.undeclared_fields_quarantine q set status=b.status, review_decision=b.review_decision, reviewed_by=b.reviewed_by, reviewed_at=b.reviewed_at from truth_vault.backup_quarantine_resolve_20261016 b where q.quarantine_id=b.quarantine_id`），11-16 之后可删 | 到期前（verify #92 也会提示） | 你动手 | 11-09 之后 | D-099；D-102；D-103；D-104 |
-| S-03 | 删 Vercel 项目 truth-vault 上的 `SUPABASE_SERVICE_ROLE_KEY` | 未核（10-12 用 Vercel 连接查环境变量被拒 403，只能你看） | 你动手 | 随时 | D-101 #5 |
-| S-04 | service_role key（2026-05 起一直在用）按 R-032 SOP 轮换 | 没做 | 你拍板 / 你动手 | — | RISKS.md:556-578 |
 | S-05 | docs/04 新服务清单加一条「更新 R-032 key → 持有者矩阵」 | 没写 | 工程 | 低 | RISKS.md:581 |
 | S-06 | 开 RLS 后三省六部还能不能读、它实际用哪把 key（读到 0 行就回滚或换 key）；三省六部下次在 `public` 建表时收回 anon 默认权限 | 未核 | 工程 / 你 | 三省六部下次跑 | D-101 |
 | S-07 | 改动后跑一遍 `verify_supabase_state.sql`，重点 #88 #89 #91 #92 #93 #94 | 部分核过（10-12：HATHERINE 6 条 twin 链接在 10-11 同步后仍是 `ingested`；TUGE 孤儿副本已删、回读 0） | 工程 | 每次大改后 | D-099；D-102；D-104 |
@@ -152,21 +146,18 @@
 
 ## 8. 你要做的（从上面挑出来，方便一次看完）
 
+> 只放要你本人账号或对外联系才能做的事。生产记录能核的、按流程后做的、能按授权判的，Claude 自己做，不放这里（owner 10-16）。
+
 | 条目 | 一句话 |
 |---|---|
-| J-03 | 这一次C1已试跑完，文本细节口径已按你的A/D判定确认；新40条已返回，依委托固定280格单人原判参考；C3获本次许可独立复验完成172/280一致，暂不推广，下一步边界复核；旧A/B不重填 |
-| W-02 | skill 重新导入：**等 J-01 上线后**一起导，现在先不群发 |
-| W-09 | 问写手 WorkBuddy 里 deskcore 的 key 是怎么填的（头 / OAuth / 网址里 `?key=`） |
-| W-14 | 停 Streamlit 工作台 |
-| W-16 | 对一次中转站账单，看 1.8 倍系数对不对；顺便看缓存写是不是按 1.25 倍收 |
-| F-02 | 问中转站有没有「同一来源固定上游账号、支持 prompt caching」的分组（现在按请求轮转，缓存读到 3.2%） |
-| J-09 | 核对Railway上Jev超时环境变量；J-10的OKMAN既有放行不再重复申请 |
-| S-01、S-02 | 到期删备份（10-22 / 11-09 之后） |
-| S-03、S-04 | Vercel 上删 service_role key；找时间轮换 service_role key |
-| G-16 | GitHub 仓库变量里看一眼有没有 `FEATURE_LIMIT` |
-| 拍板类 | G-02、G-07、G-13、I-06、I-09、I-11、W-10、W-15、W-17、J-04 何时推三省六部 |
+| J-03 | 复核人员交回 40 条答题表后转给 Claude |
+| W-02 | J-01 上线后通知写手重新导入 skill（现在先不群发） |
+| W-16 | 有空对一次中转站账单，核 1.8 倍系数（缓存已按 D-113 关掉，这条不再挡任何事） |
+| S-01、S-02 | 备份到期时 Claude 发删表 SQL，你在 SQL editor 跑（10-22 / 11-09 / 11-16） |
+| G-02 | 新发现的 validated 特征下发前看一眼（还没到这一步） |
 | O-01 | 运营：I-12 品牌别名、I-13 起量时间自动化归属、I-01 统一表 D1–D6 |
-| O-03 | ≈ 10-19 看节后写作台周产出有没有恢复 |
+
+其余标「你拍板」的条目：Claude 10-17 按授权逐条判，写进 DECISIONS，只把删数据、花钱、对外这类需要你一句话确认的回给你。
 
 ## 9. 文档与远期
 
@@ -184,6 +175,11 @@
 
 | 日期 | 条目 | 证据 |
 |---|---|---|
+| 2026-10-16 | **W-14：Streamlit 工作台停服** | owner 10-16 在 Railway 停掉；之后 deskcore（build 73117bd）、Jev、TV、tv-worker 四个 `/health` 都 200，没停错服务。仓库与 Supabase 不动（D-072）。aw README 状态随下一次 aw PR 改 |
+| 2026-10-16 | **J-09：Jev 超时环境变量** | owner 10-16 在 judge-production 设了 `JEV_TIMEOUT_SEC=6`、`JEV_RETRIES=1`（Jev `/health` 不回显这两个值，以 owner 确认为准） |
+| 2026-10-16 | **G-16：仓库变量 `FEATURE_LIMIT`** | 不用去 Settings 看：10-15 features-sync 定时 run 38776935038 的日志里 `FEATURE_LIMIT: 24`，就是 D-089 定的值 |
+| 2026-10-16 | **S-03 / S-04：Vercel 上的 service_role key、key 轮换** | owner 10-16：密钥自己管，不再在这里跟踪 |
+| 2026-10-16 | **F-02：中转站 prompt caching → 关掉（D-113）** | owner 10-16 问过中转站：没有固定上游账号的分组。按 F-02 实测（read_share 3.2%），带缓存标记按官方计价输入侧贵约 19%、不收溢价时关掉也只少省约 3%，所以不等对账单，特征层 / essence / 馆员默认改发纯字符串 system，`PROMPT_CACHE_ENABLED=1` 可恢复。CI `check_prompt_cache_fallback.py` §7 钉住默认关。部署后核：馆员 `/health` `prompt_cache_enabled=false`、下一次特征层 Done 行 `cache_write=0`。10-16 定 |
 | 2026-10-16 | **W-06：发牌到成稿「漏账」，不加硬闸** | 只读核生产（没改消费记录）：7 天发 179 / 销 103，缺口主要在 Hatherine痘痘贴（26/0）。同期飞书 → TV 同步回来 20 篇 Hatherine 已发笔记，写作台只入库 1 篇——稿子照常进了飞书，只是那几场对话里模型没在交付同时调 `commit_drafts`（同一个账号在 sportsix / 百健士 / 西屋 都照常入库）。实际影响很小：每日同步已给这 20 篇补上指纹，查重最多晚一天看到；Hatherine 自 09-02 起 261 个角度只重复过 2 个。其余缺口：西屋 10-12 那 20 张是 W-19 串内容那场作废的；sportsix 10-15 16:40 十张当时还在写。不加闸、不需要问写手；漏账灯口径另改（W-22）。10-16 核 |
 | 2026-10-16 | **S-08：特征层留在 Railway worker，不搬** | features-sync 自 10-09 起 7 晚连续 success；搬到 GitHub 直跑要重写 ci.yml 里一整组围绕 worker 的守卫（D-047 闸位置、409/502 分类、欠产判据），换来的只是大批回填时少一种「慢被报成失败」——那种情况以核库为准（L-05/S-08 证据已记）。worker 上闲置的 `/annotate-essence`、`/curate` 也先不删：要 key 才能调，CI 的鉴权测试拿它们当探针，删了要连带改测试，没有运行收益；等哪天 worker 整体退役一起删。复议条件：中转站挡 Railway 出口，或又要做千篇级回填。10-16 定 |
 | 2026-10-16 | **I-03：隔离表完整版不做，清掉已入库的旧隔离行** | 轻版（D-096 #2）观察一周：每晚新增隔离≈0，「老的又冒」只有 SPX 27 条已认领行；问题不是缺 `last_seen_at`，而是 5,195 条 pending 里大半早已入库。把 notes 里已有对应笔记的 2,477 条（10 个项目）标 `resolved`（`reviewed_by='claude (owner-delegated, I-03)'`，先备份到 `backup_quarantine_resolve_20261016`）；按 D-053 语义，它们若再被隔离会算新情况、照常红。剩 2,718 条 pending 是飞书里一直没正文的行，不动。10-16 核 |

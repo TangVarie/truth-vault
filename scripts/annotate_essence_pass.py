@@ -464,6 +464,17 @@ PROMPT_CACHE_FALLBACKS: dict = {"count": 0, "last_error": ""}
 PROMPT_CACHE_USAGE: dict = {"calls": 0, "input": 0, "cache_write": 0, "cache_read": 0, "output": 0}
 
 
+def prompt_cache_enabled() -> bool:
+    """要不要给 cached_system 打 ``cache_control``。D-113 (2026-10-16) 起默认【不打】。
+
+    中转站按请求轮转上游账号、没有固定账号的分组 (owner 10-16 问过), 缓存按账号隔离: 写进去的几乎读不回来
+    (F-02 实测 10-13/14 特征层 1,082 次调用 read_share 3.2%)。按官方计价 (写 1.25 倍、读 0.1 倍) 带着
+    cache_control 输入侧比不带还贵 ~19%; 中转站若不收写缓存的溢价, 关掉也只少省 ~3%。两头不对称, 默认关。
+    换了能粘住同一上游账号的通道再设 ``PROMPT_CACHE_ENABLED=1``。内容一字不变, 只差一个缓存标记。
+    """
+    return (os.environ.get("PROMPT_CACHE_ENABLED") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _record_usage(msg) -> None:
     u = getattr(msg, "usage", None)
     if u is None:
@@ -480,6 +491,7 @@ def prompt_cache_summary() -> dict:
     total_in = out["input"] + out["cache_write"] + out["cache_read"]
     out["read_share"] = round(out["cache_read"] / total_in, 3) if total_in else None
     out["fallbacks"] = PROMPT_CACHE_FALLBACKS["count"]
+    out["enabled"] = prompt_cache_enabled()
     return out
 
 
@@ -557,6 +569,8 @@ def call_claude(prompt: str, model: str, *, cached_system: str | None = None,
 
     if not cached_system:
         return _run(None)  # 老行为:无 system 块(curate / sub_direction / comment_threading)
+    if not prompt_cache_enabled():
+        return _run(cached_system)  # D-113: 默认纯字符串 system, 不打缓存标记(见 prompt_cache_enabled)
 
     # 稳定大块进 system + cache_control(prompt caching, 同 librarian build_system_blocks)。
     cached_block = [{
