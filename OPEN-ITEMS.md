@@ -23,7 +23,7 @@
 | 10-15 已完成 | 修复后首次 Daily 全量定时跑成功（run 38698494948，07:24–08:00 UTC）；watchdog 明天按 26h 判据自然转绿 | 已关 I-14 |
 | 10-15 已修 | 通道 2 恢复：owner 改了馆员服务的 Railway 变量，12:50 UTC 写作台借卡成功（RIO，5 张卡） | 已关 L-05 |
 | 10-12 已完成 | 闸二报告和 55 行验证结果已写库并核对完整摘要；10 个取值 validated，组合不进 L2；下一轮接评论能力 | 已关 G-01；D-107；J-01 |
-| ≈ 10-16 | 特征层要不要也搬离 Railway worker；隔离表轻版观察一周后回看 | S-08、I-03 |
+| 10-16 已定 | 特征层留在 Railway worker（S-08）；隔离表不做完整版，2,477 条已入库的旧隔离行标 resolved（I-03） | 已关 S-08、I-03 |
 | ≈ 10-19 | 节后写作台周产出有没有回到 9 月水平（没回到就查协议 / skill 导入） | O-03 |
 | ≈ 10-22 | 删 D-086 两张备份；librarian 延迟对比 D-090 基线；daily-sync 去掉 C-20 的 `|| true`（条件：`stale_in_ssll` 连续两周 0） | S-01、F-03、L-01 |
 | 写手回来两周后 | 用真实样本重调 `JUDGE_TIMEOUT_SEC` | J-08 |
@@ -102,7 +102,6 @@
 |---|---|---|---|---|---|
 | I-01 | **统一飞书表准备**：判档版本标记（B4，「第一张新表之前必须有」）、风控否决位（A2）、「观察中」规则（A3）、状态值没匹配的预检告警（A4）、新表族 `capabilities_absent`（A7）、TGV `tier_extraction` 重写（A8，`删除` 归哪你定）、新列 B1–B3 / B5、文档 C1–C6、运营问题 D1–D6、「状态 vs 流量状态」撞名 | 基本没做（grep 都没有） | 工程 + 运营 + 你拍板 | **第一张统一格式表接入之前** | unified-feishu-table-assessment-2026-09-22.md:341-444 |
 | I-02 | 全项目每周只读预检（B-16 后半） | 故意没做（怕第一天就红） | 工程 | — | D-095 #2 |
-| I-03 | 隔离表完整版（B-15）：`last_seen_at` 列、按原因关；5,013 行待处理，其中 375 行已修好仍挂着 | 轻版 10-09 上线观察一周 | 工程 + 人工复核 | ≈ 10-16 | D-096 #2 |
 | I-04 | 评论步骤按内容哈希跳过（A-07a） | 没做，只省 CPU | 工程 | 低 | D-092 |
 | I-05 | 两路来源都没有时 `synthetic` 没被显式清掉 | 没做 | 工程 | 低 | D-091 |
 | I-06 | 推送侧一晚推多少新爆款要不要封顶 | 没定 | 你拍板 | — | D-087 |
@@ -141,13 +140,12 @@
 | ID | 事 | 状态与证据 | 谁 | 触发 / 到期 | 来源 |
 |---|---|---|---|---|---|
 | S-01 | 删 D-086 两张备份：`truth_vault.reference_samples_backup_tv_stale_20261008`、`truth_vault.notes_ssll_marker_backup_20261008`（先确认三省六部没反映参考池变薄） | 到期前 | 你动手（SQL editor） | ≈ 10-22 | D-086；D-103 |
-| S-02 | 删 10-09 / 10-10 备份：`truth_vault.backup_inverted_lineage_20261009`、`truth_vault.backup_{notes,nfa,comments,metric_snapshots}_vanished_20261009`、`autowriter.backup_tv_note_links_inverted_20261009`、`autowriter.backup_items_self_review_20261009`、`autowriter.backup_tv_note_links_vanished_20261009`、`autowriter.backup_tv_note_links_twins_20261010`、`autowriter.backup_orphan_ingest_tuge_20261010`、`autowriter.backup_memory_xiwu_contam_20261012`；`truth_vault.backup_notes_vanished_20261009` 的 COMMENT 里有回滚顺序 | 到期前（verify #92 也会提示） | 你动手 | 11-09 之后 | D-099；D-102；D-103；D-104 |
+| S-02 | 删 10-09 / 10-10 备份：`truth_vault.backup_inverted_lineage_20261009`、`truth_vault.backup_{notes,nfa,comments,metric_snapshots}_vanished_20261009`、`autowriter.backup_tv_note_links_inverted_20261009`、`autowriter.backup_items_self_review_20261009`、`autowriter.backup_tv_note_links_vanished_20261009`、`autowriter.backup_tv_note_links_twins_20261010`、`autowriter.backup_orphan_ingest_tuge_20261010`、`autowriter.backup_memory_xiwu_contam_20261012`；`truth_vault.backup_notes_vanished_20261009` 的 COMMENT 里有回滚顺序；10-16 新增 `truth_vault.backup_quarantine_resolve_20261016`（I-03 的 2,477 行原状态；回滚 `update truth_vault.undeclared_fields_quarantine q set status=b.status, review_decision=b.review_decision, reviewed_by=b.reviewed_by, reviewed_at=b.reviewed_at from truth_vault.backup_quarantine_resolve_20261016 b where q.quarantine_id=b.quarantine_id`），11-16 之后可删 | 到期前（verify #92 也会提示） | 你动手 | 11-09 之后 | D-099；D-102；D-103；D-104 |
 | S-03 | 删 Vercel 项目 truth-vault 上的 `SUPABASE_SERVICE_ROLE_KEY` | 未核（10-12 用 Vercel 连接查环境变量被拒 403，只能你看） | 你动手 | 随时 | D-101 #5 |
 | S-04 | service_role key（2026-05 起一直在用）按 R-032 SOP 轮换 | 没做 | 你拍板 / 你动手 | — | RISKS.md:556-578 |
 | S-05 | docs/04 新服务清单加一条「更新 R-032 key → 持有者矩阵」 | 没写 | 工程 | 低 | RISKS.md:581 |
 | S-06 | 开 RLS 后三省六部还能不能读、它实际用哪把 key（读到 0 行就回滚或换 key）；三省六部下次在 `public` 建表时收回 anon 默认权限 | 未核 | 工程 / 你 | 三省六部下次跑 | D-101 |
 | S-07 | 改动后跑一遍 `verify_supabase_state.sql`，重点 #88 #89 #91 #92 #93 #94 | 部分核过（10-12：HATHERINE 6 条 twin 链接在 10-11 同步后仍是 `ingested`；TUGE 孤儿副本已删、回读 0） | 工程 | 每次大改后 | D-099；D-102；D-104 |
-| S-08 | 特征层要不要也搬离 Railway worker 改 GitHub 直跑；搬完删 worker 的 `/annotate-essence` 和 `/curate`（worker/app.py:267、:377 还在）并记新 D；D-077 的根修并进来 | 没定。新证据（10-12 重标第三批 run 38209316795）：5 批先吃 Railway 网关 502（慢批超过网关时限），worker 在后台照样跑完、一直占着锁，后面的重试全是 409，CI 判「5 批失败」，核库 99 篇里 98 篇其实已写齐——worker 这条路会把「慢」报成「失败」 | 工程 | 直跑稳定一周后（≈ 10-16） | D-100 |
 | S-09 | 小工程：迁移命名与 `dashboard_views_*` / `security_*` 部署清单（C-16）；密钥打码没盖住隔离路径的 `print()`；备份 RPO / RTO 没定义（R-015） | 没做 | 工程 / 你拍板 | 低 | 审计 C-16；D-095；RISKS.md:182 |
 
 ## 8. 你要做的（从上面挑出来，方便一次看完）
@@ -184,6 +182,8 @@
 
 | 日期 | 条目 | 证据 |
 |---|---|---|
+| 2026-10-16 | **S-08：特征层留在 Railway worker，不搬** | features-sync 自 10-09 起 7 晚连续 success；搬到 GitHub 直跑要重写 ci.yml 里一整组围绕 worker 的守卫（D-047 闸位置、409/502 分类、欠产判据），换来的只是大批回填时少一种「慢被报成失败」——那种情况以核库为准（L-05/S-08 证据已记）。worker 上闲置的 `/annotate-essence`、`/curate` 也先不删：要 key 才能调，CI 的鉴权测试拿它们当探针，删了要连带改测试，没有运行收益；等哪天 worker 整体退役一起删。复议条件：中转站挡 Railway 出口，或又要做千篇级回填。10-16 定 |
+| 2026-10-16 | **I-03：隔离表完整版不做，清掉已入库的旧隔离行** | 轻版（D-096 #2）观察一周：每晚新增隔离≈0，「老的又冒」只有 SPX 27 条已认领行；问题不是缺 `last_seen_at`，而是 5,195 条 pending 里大半早已入库。把 notes 里已有对应笔记的 2,477 条（10 个项目）标 `resolved`（`reviewed_by='claude (owner-delegated, I-03)'`，先备份到 `backup_quarantine_resolve_20261016`）；按 D-053 语义，它们若再被隔离会算新情况、照常红。剩 2,718 条 pending 是飞书里一直没正文的行，不动。10-16 核 |
 | 2026-10-15 | **L-05：通道 2（馆员 → 写作台经验卡）10-01 起暗了两周** | 根因：馆员服务的 Railway 变量没跟上 10-09 换中转站（D-098 #3），模型调用全报 `InternalServerError`，馆员回 `[]`、写作台 fail-open，两边都不红。owner 10-15 改变量重启后：12:50:45 UTC `flywheel_librarian_cache` 新增 consumer=deskcore 一行（RIO 项目，选中 5 张，select_ms 16,182），馆员 `/health` 的 `prompt_cache_usage.calls=2`、fallback 0。冷借 16 秒超过 open_project 里 10 秒的借阅预算（D-074），所以冷借时简报先回 timeout，随后 `borrow_lessons` 命中缓存即回——这是既有设计，客户端截止仍归 F-04。次日 daily-sync 的「通道 2」灯应转绿。10-15 核 |
 | 2026-10-15 | **I-14：#182 修复后首次 Daily 全量定时验收** | schedule run 38698494948（main 04ecb99）success，最终聚合步骤无失败步；飞书 10 个项目 errors 全 0，SPX 588 行 / 555 入库 / 27 条已认领隔离（与修复前一致）；essence 4 个项目 46/46 成功、0 失败；策展成功；用时 35/240 分钟。10-15 核 |
 | 2026-10-15核对 | **J-05：外部语料首次定时成功** | Jev run38237686717在10-12 schedule成功；日志apply_rows报告external_notes178行、note_feature_answers4272行。后续仍按周跑/账本新鲜度监控，不再列为“尚未成功一次” |
