@@ -30,6 +30,7 @@ POST  {LIBRARIAN_URL}/librarian
 
 - **空库 / 馆员内部出错 → `{"selected": []}`**(不是 500)。所以 aw 永远拿得到一个可用结构,`[]` 就当"这次没飞轮料"处理。
 - **P4 起（D-116，2026-10-16）**：响应多一个 `patterns`（这次下发的闸二已验证规律：id / label / instruction / evidence），选中的卡多一个 `validated_hits`。只有 brief 显式带 `explore` 才参与：`false` 是规律臂，`true` 是探索臂（写作台 15% 的对照批次），两样都是空的；不带这个键就和以前一样，不下发。不认这两个字段的老消费方不受影响。细节见 `prompts/flywheel_librarian.md` 末节。
+- **D-117 起（2026-10-16）**：显式带 `explore` 的请求，如果项目品牌在外部参考书架登记的品类里，候选里多几张别家同品类的「外部参考」卡，选中最多 2 张。选中的卡多一个 `external`（true = 外部参考卡，id 是 `ext:` 开头，没有品牌，只借结构不抄内容）。不带 `explore` 的老消费方不受影响。细节见 `prompts/flywheel_librarian.md`「外部参考书架」。
 - `GET {LIBRARIAN_URL}/health` → `{"ok":true}`(健康检查)。
 - 鉴权:没带对 `X-Librarian-Key` → 401。
 

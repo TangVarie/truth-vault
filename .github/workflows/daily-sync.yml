@@ -435,6 +435,26 @@ jobs:
             echo "::warning title=外部语料新鲜度判不了::external_notes 是空的或最新时间认不出 —— 外部语料可能从没写进过 TV, 去 Jev 仓看 external-corpus 有没有成功过一次。"
           fi
 
+      - name: 外部方向复核 · 下发的规律在别家帖子上方向还对不对 (每周一, advisory, 不 fail)
+        if: steps.check.outputs.skip != 'true' && always()
+        working-directory: scripts
+        run: |
+          # D-117 ③ (J-14 ①): 闸二只在我们自己的帖子上验过, 下发给写作台的规律 (prompts/desk_delivery_v1.json) 拿外部帖
+          # 再核一遍方向; 两侧各 ≥30 篇才判, 方向相反 rc=1。顺带报外部参考书架每个品类达标几张。外部语料周更,
+          # 每周一 (北京) 跑一次就够 —— 天天报同一盏黄灯等于没有灯 (D-053)。手动触发时照跑。只读; 崩了靠哨兵行判 (docs/29)。
+          if [ "$(TZ=Asia/Shanghai date +%u)" != "1" ] && [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+            echo "不是周一, 跳过"; exit 0
+          fi
+          set +e
+          python check_external_direction.py 2>&1 | tee /tmp/external_direction.log
+          set -e
+          if ! grep -q '^EXTERNAL_DIRECTION_CHECK_DONE rc=' /tmp/external_direction.log; then
+            echo "::warning title=外部方向复核崩了::脚本没跑到底(没有哨兵行), \
+          上面的 traceback 是真问题 —— advisory 不拖红, 但这盏灯现在是瞎的, 去修。"
+          elif grep -q '^EXTERNAL_DIRECTION_CHECK_DONE rc=1' /tmp/external_direction.log; then
+            echo "::warning title=有规律在外部帖上方向相反::见上面 🟡 那行: 这条可能只在我们自己的帖子上成立, 拿出来议 (修在 TV 仓批准层 + 新 D 号)。"
+          fi
+
       - name: 角度台账漏账检查 · 发了牌没走到成稿就告警 (advisory, 不 fail)
         if: steps.check.outputs.skip != 'true' && always()
         working-directory: scripts
