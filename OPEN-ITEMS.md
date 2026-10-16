@@ -26,8 +26,8 @@
 | 10-16 已定 | 特征层留在 Railway worker（S-08）；隔离表不做完整版，2,477 条已入库的旧隔离行标 resolved（I-03） | 已关 S-08、I-03 |
 | ≈ 10-19 | 节后写作台周产出有没有回到 9 月水平（没回到就查协议 / skill 导入） | O-03 |
 | ≈ 10-22 | 删 D-086 两张备份；librarian 延迟对比 D-090 基线；daily-sync 去掉 C-20 的 `|| true`（条件：`stale_in_ssll` 连续两周 0） | S-01、F-03、L-01 |
-| 10-16 已定 | 判定 8 秒截止不动（实测最长 4.3 秒）；入库段变慢到 12 秒，aw#100 让判定只拿整次回包 20 秒里剩下的 | J-08、W-21 |
-| 10-16 已过 | 评论线 D-112 门槛轮按预注册判据通过（门槛题 150/160），等 owner 验收后开 J-01 | J-03 → J-01 |
+| 10-16 已关 | 判定 8 秒截止不动（实测最长 4.3 秒）；入库段变慢到 12 秒，aw#100 让判定只拿整次回包 20 秒里剩下的（已部署，build 73117bd） | J-08（已关）、W-21 |
+| 10-16 已验收 | owner 验收 D-112。Jev#20 已部署：读者侧换 C4（`comment_reader_v0.6`），三道参考题和运营侧只提示。等你开 `JUDGE_COMMENT_TOOLS_ENABLED=1`，Claude 用写手 key 真调一次；J-02 小批 shadow 走 Jev#21 | J-01、J-02（J-03 已关） |
 | 10-16 已关 | 发牌「漏账」主要是 Hatherine 的稿子直接进了飞书、模型没同时调 `commit_drafts`；每日飞书 → TV 同步已补上指纹，角度重复 2/261，不加闸、不用问人 | W-06（已关）、W-22 |
 | 11-09 之后 | 删 10-09 / 10-10 两批备份表 | S-02 |
 | 闸二之后 | 评论能力（J-01 起）、写作台工具阻塞（W-01）、P3 / P4、抽取器与 judge 出影子期的决定 | §1、§2、§3 |
@@ -61,13 +61,11 @@
 
 | ID | 事 | 状态与证据 | 谁 | 触发 / 到期 | 来源 |
 |---|---|---|---|---|---|
-| J-01 | **写手的评论能力**：Jev 给评论开 HTTP 端点（判一条给修改单、判一整组评论区）→ deskcore 转发两个新工具 → 协议加「写评论怎么走」 | Jev#9/aw#96已合并并部署；Jev生产health确认comment_tools_enabled=false，writer key鉴权开启且非mock；24工具已在deskcore；700格参考冻结、真实模型对照已完，待错漏复核与owner上线验收 | 工程 | J-03验收后再开开关并真接口核查 | jev:docs/00 #12、docs/01 §4、§6；D-107、D-110 |
-| J-02 | 评论回填 ②：9,649 条评论跑运营侧（意图 / 像不像安排的 / 类型）+ 读者侧 7 题，进账本 `subject_type='comment'`，评论构成做闸二候选特征 | shadow workflow/续跑已备，尚未shadow/primary；候选1开发试跑553/700但24格回退，暂不推广；J-03新40条单人参考已固定，C3获本次许可完整复验172/280、69歧义，暂不推广；仍须边界复核/下一版和owner验收；primary还需当前题库摘要的验收记录 | 工程 | J-03独立新参考冻结/独立复验及owner报告验收后小批shadow核查；绑定题库的owner验收记录后primary全量/回读 | docs/31 §4.1、§7.2；D-111 |
-| J-03 | 评论参考扩到100条，大健康品类，两人对定义标；与模型对照后验收 | **10-16 D-112 门槛轮按预注册判据通过**：复核表 280/280 格、0 未决，参考冻结（Jev #18）后真跑一次（run 38862116728，40 次调用）：门槛题 150/160 = 93.8%，逐题最低 detail_level 34/40，歧义 12.5%，背书漏报 0；参考题（一致 / 歧义，各 /40）register 28 / 9、reader_value 32 / 3、arranged 33 / 14；参考 sha256 `01023661ff5c3b74f7cee66f59c20bf02903204746c6d8470a4606ee5980c98a`。结论在 Jev `docs/comment-gate-d112/`。历史 C1/C3 轮次见 D-111 | 你验收 → 工程（J-01） | owner 验收后 | jev:docs/comment-gate-d112；D-111；D-112 |
+| J-01 | **写手的评论能力**：Jev 给评论开 HTTP 端点（判一条给修改单、判一整组评论区）→ deskcore 转发两个新工具 → 协议加「写评论怎么走」 | **10-16 owner 验收 D-112，按第 7 条小范围开**：Jev#20 已合并部署（生产 `/health` 列出 `comment_reader_v0.6`）。读者侧用 C4 原样（digest `a0c04acf…`）；通过只看四道门槛题和背书复核；register / reader_value / arranged 和运营侧整套（comment_intent、is_scripted）只进 `hints`，漏答或歧义都不送复核。`comment_tools_enabled` 仍是 false，等开关。整组评论区题库 `comment_thread_v0.4` 不在 D-112 范围，照旧判定，下一轮另验。协议新版（`b8986a70d163`）在 aw#101，开关打开、真接口核过之后再合 | 你开开关 → 工程核查 | 你在 judge-production 设 `JUDGE_COMMENT_TOOLS_ENABLED=1` 并贴一个写手 key 后，Claude 真调 `/comment_repair_plan_for`、`/judge_thread`，再合 aw#101 | jev:docs/00 #12、docs/01 §4、§6；D-107、D-110 |
+| J-02 | 评论回填 ②：9,649 条评论跑运营侧（意图 / 像不像安排的 / 类型）+ 读者侧 7 题，进账本 `subject_type='comment'`，评论构成做闸二候选特征 | **10-16**：Jev#21 把读者侧换成 C4（v0.6）。续跑快照改成只存 id + md5，原来的 `inputs.json` 带评论原文，会作为 Actions 产物上传，D-112 不许原文进 GitHub。合并后先跑小批 shadow：`NUC_phase1` 100 条，`write_shadow=true`，只写 `shadow-comments-<run>`；回读行数、无效行、答案分布。账本里目前评论行 0。primary 全量还要绑定当前题库摘要的验收记录 | 工程 | Jev#21 合并后跑小批 shadow 并回读；primary 全量另等验收记录 | docs/31 §4.1、§7.2；D-111 |
 | J-04 | 三省六部：二审 Jev 影子跑、采样正文落库再判、预埋评论过评论题库、persona 第三路 | 没接上（核：账本 `ssll_sample` 0 行）；那个仓本会话看不到代码 | 三省六部维护者 | 你决定什么时候推 | jev:docs/00 #5；docs/31 §6；jev:docs/02:226 |
 | J-06 | 借卡接 Jev 影子跑 | 没做，借卡还是走 TV librarian | 工程 | 你决定 | docs/31 §3 ③ |
 | J-07 | judge 出影子期：最低 20% / 平台硬伤标 `revise`（不拦），修改单要不要随入库返回写手；需要新的 `decision_source` 值 + TV `_MACHINE_DECISION_SOURCES` | 硬编码 shadow；D-103 C-12 维持影子 | 你拍板 → 工程 | 闸二有 validated 特征 | aw:deskcore.md:540；D-103 |
-| J-08 | 用真实样本重调 `JUDGE_TIMEOUT_SEC`（看 `batch_metrics` 里 `mode=deskcore_commit`） | **10-16 已定**：10-12～10-15 有判定的 9 批 / 84 篇，判定段 p50 2.8 秒、最长 4.3 秒，单篇最长 3.4 秒，8 秒截止 0 次碰到 → **8 秒不动**。新发现入库段 10 篇一批已到 11～12 秒，判定拿满 8 秒 + 跨项目检查 1.5 秒 ≈ 21.8 秒，贴着客户端 ~22 秒 → aw#100：判定截止 = min(8, 20 − 入库已用 − 1.5)，不到 1 秒整批记 timeout 不发。合并部署后关；入库段为什么变慢另记 W-21 | 工程 | aw#100 合并部署后关 | aw:runbook:950；审计；aw#100 |
 | J-10 | 核对生产Rx策略与仓内既有许可是否一致 | 仓内10-08 PR5已把OKMAN/OKMAN_phase1加入rx_cleared，本轮未改；project_layer_cleared仍空。带鉴权现网policy回显本次未重测，其他未清出Rx仍403 | 工程 | 有合法鉴权的下一次实际请求核对，不重复索取已有合同许可 | jev:config/data_policy.yaml；HANDOFF |
 | J-11 | 「只判 `commit_drafts`、补录稿靠 TV 事后抽取」这条写进 TV DECISIONS；核 TV 抽取确实覆盖补录的项目 | 没记 | 工程 | 随时 | aw:runbook:951 |
 | J-12 | `tv_project_map` 完整性：没映射的项目一篇都不判 | **10-16 核**：近 7 天活跃的 5 个写作台项目里只有西屋911gt 没映射，其余 4 个都有。**写稿和借卡不受影响**（借卡不走这张表）；没映射期间只少两样：入库时的影子判定记录（10-14 那批 20 篇 `not_configured`），写手侧 `judge_draft` 判不了这个项目。映射本来就在项目建好飞书表、TV 里有了项目之后做；现有 `XIWU_phase1` 是西屋按摩椅 GT33（08-29 结束），不是同一产品 | 工程 | TV 里有了西屋 911GT 项目之后 `tv-map add` | aw:runbook:952 |
@@ -77,7 +75,7 @@
 
 | ID | 事 | 状态与证据 | 谁 | 触发 / 到期 | 来源 |
 |---|---|---|---|---|---|
-| W-02 | 写手重新导入 skill（本轮 `protocol_version 3fdff2c0b985`） | **先别群发**：J-01 会再改协议，等评论工具上线一起导一次；不导也不会写错（开场核版本会下发新正文） | 你动手 | J-01 上线后 | aw:SKILL.md:35 |
+| W-02 | 写手重新导入 skill（新协议 `b8986a70d163`，在 aw#101） | **先别群发**：等评论工具真开、aw#101 合并部署后一起导一次。不导也不会写错：开场会核版本并下发新正文 | 你动手 | aw#101 合并部署后 | aw:SKILL.md:35 |
 | W-04 | 发牌按结果加权（留 15% 纯随机，只滤「写不出来」的角度） | `v_angle_outcomes` 有、只有 doctor 读；`draw_angles` 还是均匀洗牌 | 工程 | 闸二有 validated 特征、每维样本够 | aw:deskcore.md:342；aw:`core.py:441-478` |
 | W-05 | `store.recent_angle_keys` 不翻页，台账大了会静默截断、重复发已用角度 | 未修 | 工程 | 台账变大前 | aw:runbook:964；aw:`store.py:618` |
 | W-22 | 写作台 `/health` 的漏账灯只数 `commit_drafts` 销账：稿子直接进飞书、第二天由同步补指纹的项目（Hatherine）会让它一直红。改成飞书同步回来的稿子也算交付，只有稿子既没入库、飞书里也没出现时才红 | 未改 | 工程 | 10-16 下午 | W-06 |
@@ -151,8 +149,8 @@
 
 | 条目 | 一句话 |
 |---|---|
-| J-03 | 评论门槛轮已过（门槛题 150/160 = 93.8%，背书漏报 0）：回一句「验收」，Claude 就按 D-112 第 7 条小范围开写手评论工具（J-01） |
-| W-02 | J-01 上线后通知写手重新导入 skill（现在先不群发） |
+| J-01 | 在 Railway 的 judge-production 服务（域名带 `-601c`）加环境变量 `JUDGE_COMMENT_TOOLS_ENABLED=1`，再在聊天里贴一个写手 key（写作台或 Jev 的都行）；Claude 真调一次后合 aw#101 |
+| W-02 | aw#101 合并部署后，通知写手重新导入一次 skill（Claude 会提醒你） |
 | W-16 | 有空对一次中转站账单，核 1.8 倍系数（缓存已按 D-113 关掉，这条不再挡任何事） |
 | S-01、S-02 | 备份到期时 Claude 发删表 SQL，你在 SQL editor 跑（10-22 / 11-09 / 11-16） |
 | G-02 | 新发现的 validated 特征下发前看一眼（还没到这一步） |
@@ -176,6 +174,8 @@
 
 | 日期 | 条目 | 证据 |
 |---|---|---|
+| 2026-10-16 | **J-03：评论参考与门槛轮验收** | D-112 门槛轮按预注册判据通过（门槛题 150/160，背书漏报 0；run 38862116728），owner 10-16 回「验收」。之后的上线跟 J-01，回填跟 J-02 |
+| 2026-10-16 | **J-08：判定截止按真实样本定** | 8 秒不动（9 批 / 84 篇，最长 4.3 秒）；aw#100 让判定只拿整次回包 20 秒里剩下的时间，不到 1 秒整批记 timeout 不发，已部署（deskcore build 73117bd）。入库段变慢另跟 W-21 |
 | 2026-10-16 | **W-14：Streamlit 工作台停服** | owner 10-16 在 Railway 停掉；之后 deskcore（build 73117bd）、Jev、TV、tv-worker 四个 `/health` 都 200，没停错服务。仓库与 Supabase 不动（D-072）。aw README 状态随下一次 aw PR 改 |
 | 2026-10-16 | **J-09：Jev 超时环境变量** | owner 10-16 在 judge-production 设了 `JEV_TIMEOUT_SEC=6`、`JEV_RETRIES=1`（Jev `/health` 不回显这两个值，以 owner 确认为准） |
 | 2026-10-16 | **G-16：仓库变量 `FEATURE_LIMIT`** | 不用去 Settings 看：10-15 features-sync 定时 run 38776935038 的日志里 `FEATURE_LIMIT: 24`，就是 D-089 定的值 |
