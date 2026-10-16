@@ -29,6 +29,7 @@ POST  {LIBRARIAN_URL}/librarian
 ```
 
 - **空库 / 馆员内部出错 → `{"selected": []}`**(不是 500)。所以 aw 永远拿得到一个可用结构,`[]` 就当"这次没飞轮料"处理。
+- **P4 起（D-116，2026-10-16）**：响应多一个 `patterns`（这次下发的闸二已验证规律：id / label / instruction / evidence），选中的卡多一个 `validated_hits`。只有 brief 显式带 `explore` 才参与：`false` 是规律臂，`true` 是探索臂（写作台 15% 的对照批次），两样都是空的；不带这个键就和以前一样，不下发。不认这两个字段的老消费方不受影响。细节见 `prompts/flywheel_librarian.md` 末节。
 - `GET {LIBRARIAN_URL}/health` → `{"ok":true}`(健康检查)。
 - 鉴权:没带对 `X-Librarian-Key` → 401。
 

@@ -32,7 +32,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 
 from starlette.concurrency import run_in_threadpool
 
-from .core import (STATUS_DEGRADED, librarian_select_detailed)
+from .core import (STATUS_DEGRADED, librarian_select_full)
 
 STATUS_ERROR = "error"   # 应用层崩溃(core 之外), 与 core 的 degraded 区分开
 
@@ -105,12 +105,15 @@ async def librarian(
     #   它会占住事件循环, 一次慢调用把同进程的其它请求一起拖住。挪进线程池。
     #   ② status 字段让调用方分得出"没有相关卡"和"服务出问题了" —— 之前两者都是
     #   HTTP 200 + 空 selected, 完全一样。selected 的形状不变, 老消费方不受影响。
+    # P4 (D-116): patterns = 这次下发的已验证规律 (探索臂 / 没有闸二结论 → [])。老消费方不认这个键也不受影响。
+    patterns: list = []
     try:
-        selected, status = await run_in_threadpool(librarian_select_detailed, brief)
+        res = await run_in_threadpool(librarian_select_full, brief)
+        selected, status, patterns = res["selected"], res["status"], res.get("patterns") or []
         if not isinstance(selected, list):
-            selected, status = [], STATUS_DEGRADED
+            selected, status, patterns = [], STATUS_DEGRADED, []
     except Exception:
         logger.exception("librarian_select crashed; returning [] for graceful fallback")
         selected, status = [], STATUS_ERROR
 
-    return {"selected": selected, "status": status}
+    return {"selected": selected, "status": status, "patterns": patterns}

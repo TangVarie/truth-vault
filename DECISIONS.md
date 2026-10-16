@@ -6539,11 +6539,11 @@ F-02 原定「中转站给不了粘性分组、且对账单显示写缓存按 1.
    - `emoji_bucket` / 0、1–3（owner ④⑤）。
    - `efficacy_promise`：`aw_instruction=never`，永不下发（docs/28 §4.2）。
 3. **指令放在冻结题库之外**：题库 `fq-v0.1` 已冻结（`ba0f570c…`），往里加 `aw_instruction` 会改掉摘要、把答案劈成两批。代码特征和「?」新发现的指令放进单独的人工批准层 `prompts/desk_delivery_v1.json`（馆员服务没装 pyyaml，用 JSON）：
-   - 每条绑定 `gate2_run`、`question_version`、`bank_sha256` 和批准来源（本条 D 号）；
+   - 每条绑定 `gate2_run`、`question_version`、`bank_sha256` 和批准来源（本条 D 号）；馆员下发前还要对一遍库里这一轮的行（同一个标签可以重跑覆盖），下发的取值不再是 validated、方向或题库版本变了就整份不下发（Codex 在 #195 指出）；
    - 「?」的取值只有在这一层里有批准才下发，`suppressed` 里的永不下发；
    - 闸二重跑（G-12）之后，这一层要按新一轮的结论重新过一遍，不自动沿用。
 4. 下发通道（P4，G-05）按 docs/28 §7.1 / §7.4 做：
-   - 卡片视图加 `validated_hits`；
+   - 卡片视图加 `validated_hits`；「品牌别硬插」只算品牌露出了的卡，`未出现` 的不算命中（`skip_if`），否则规律臂会偏着借不提品牌的卡，等于把 ② 从后门下发了（Codex 在 #195 指出）；
    - 馆员加「已验证规律」缓存块，`library_version()` 并入 `gate2_run`；
    - 写作台 15% 的 batch 随机不注入规律，作对照组，记进 batch 元数据。
 

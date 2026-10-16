@@ -27,6 +27,7 @@ import re
 import time
 from typing import Any, Optional
 
+from . import patterns as P
 from .clients import call_anthropic, get_supabase, iso_now, parse_json
 
 logger = logging.getLogger("flywheel_librarian")
@@ -116,7 +117,8 @@ def fetch_candidates(sb, limit: int = SHELF_FETCH_CAP) -> list[dict]:
     ).data or []
 
 
-def library_version(cards: list[dict], gate2_run: Optional[str] = None) -> str:
+def library_version(cards: list[dict], gate2_run: Optional[str] = None, *,
+                    delivery: Optional[str] = None, explore: bool = False) -> str:
     """f(候选数, max(curated_at), 月份桶, 候选 ID 集合摘要[, gate2_run]) —— 见模块 docstring。
 
     ── 2026-09-20 D-070 (docs/28 §7.1 第 2 条) ──────────────────────────────
@@ -152,7 +154,14 @@ def library_version(cards: list[dict], gate2_run: Optional[str] = None) -> str:
     ids = sorted(str(c.get("source_note_id") or "") for c in cards)
     id_digest = hashlib.sha256("\n".join(ids).encode("utf-8")).hexdigest()[:16]
     base = f"{len(cards)}:{max_curated or 'none'}:{month_bucket}:{id_digest}"
-    return f"{base}:{gate2_run}" if gate2_run else base
+    out = f"{base}:{gate2_run}" if gate2_run else base
+    # P4 (D-116): 下发的规律换了 (批准层改了一版) 缓存要失效; 探索臂和规律臂的选择不许共用一份缓存 ——
+    # 对照组要的是「没被规律影响过」的选卡。两样都不带时版本串与之前完全一样。
+    if delivery:
+        out += f":dl{delivery}"
+    if explore:
+        out += ":explore"
+    return out
 
 
 def _project_text(brief: dict) -> str:
@@ -334,18 +343,22 @@ def _render_cards(cards: list[dict]) -> str:
             aud = c.get("target_audience")
             aud = ", ".join(aud) if isinstance(aud, list) else (aud or "?")
             body = f"  (未策展) 情绪杠杆: {c.get('emotional_lever') or '?'} · 人群: {aud}"
+        if c.get("validated_hits"):
+            body += "\n  命中已验证规律: " + " · ".join(c["validated_hits"])
         excerpt = (c.get("raw_excerpt") or "").strip().replace("\n", " ")[:200]
         blocks.append(f"{head}\n{body}\n  摘要: {excerpt}")
     return "\n\n".join(blocks)
 
 
-def build_system_blocks(brief: dict, cards: list[dict]) -> list[dict]:
+def build_system_blocks(brief: dict, cards: list[dict], delivery: Optional[dict] = None) -> list[dict]:
     """两个带 cache_control 的 system 块(prompt caching):
       block1 = ROLE_TASK + 候选卡 (同 library_version 内、同项目内稳定 —— cards 是 shortlist() 按项目级字段挑的)
       block2 = 项目 prompt 包      (同项目内稳定)
     本次 delta 不在这里(进 user message)。"""
+    rules = f"{P.render_block(delivery)}\n\n" if delivery else ""   # 规律全局稳定, 放在卡前面 (缓存前缀越稳越靠前)
     cards_text = (
         f"{ROLE_TASK_INSTR}\n\n"
+        f"{rules}"
         f"═══ 候选经验卡 (按 rank_score 排序, 共 {len(cards)} 张) ═══\n"
         f"{_render_cards(cards)}"
     )
@@ -364,18 +377,18 @@ def build_user_message(brief: dict) -> str:
     )
 
 
-def build_prompt(brief: dict, cards: list[dict]) -> str:
+def build_prompt(brief: dict, cards: list[dict], delivery: Optional[dict] = None) -> str:
     """dry-run 展示用: 把缓存块 + user message 拼成可读串(实际调用走分块 system)。"""
-    sys_text = "\n\n".join(b["text"] for b in build_system_blocks(brief, cards))
+    sys_text = "\n\n".join(b["text"] for b in build_system_blocks(brief, cards, delivery))
     return f"{sys_text}\n\n──────── [user message] ────────\n{build_user_message(brief)}"
 
 
-def _select_via_llm(brief: dict, cards: list[dict], model: str) -> list[dict]:
+def _select_via_llm(brief: dict, cards: list[dict], model: str, delivery: Optional[dict] = None) -> list[dict]:
     """调 LLM 选取 → 解析 → 校验 id 在候选内 → 富集卡内容。失败抛异常给上层降级。
     用带 cache_control 的 system 块(候选卡 + 项目包)+ delta user message → prompt caching。"""
     raw = call_anthropic(
         build_user_message(brief), model,
-        system=build_system_blocks(brief, cards),
+        system=build_system_blocks(brief, cards, delivery),
         max_tokens=LIBRARIAN_MAX_TOKENS,   # D-088: 输出封顶, 冷路径的耗时大头就是这几百 token
     )
     parsed = parse_json(raw)
@@ -406,6 +419,7 @@ def _select_via_llm(brief: dict, cards: list[dict], model: str) -> list[dict]:
             "why_it_worked": card.get("why_it_worked"),
             "transferable_tactic": card.get("transferable_tactic"),
             "excerpt": card.get("raw_excerpt"),
+            "validated_hits": list(card.get("validated_hits") or []),   # P4: 这张卡命中了哪几条已验证规律
         })
     # 模型挑了东西, 但【一条都不在候选里】= 契约失败(编 id / 认错候选集), 不是
     # "库里没有相关卡"(codex review P2)。不抛的话它会被当成 no_match:
@@ -439,6 +453,46 @@ STATUS_NO_MATCH = "no_match"      # 跑通了, 但没有相关卡(含空库)
 STATUS_DEGRADED = "degraded"      # LLM / 内部失败, 已降级返回空
 
 
+# 新策展的卡要等 features-sync (12:47 UTC) 抽完特征才有答案, 而策展在 daily-sync (02:17 UTC) —— 中间这段, 卡上
+# 不标命中不是因为没命中, 是还没答。之后答案进库不改 library_version, 所以这种「还没答」的结果不能进缓存
+# (codex review on #195)。只看最近 48 小时策展的卡: 老卡没答案就是永远没有 (10-16 实查 310 张里 2 张), 不能因为
+# 它们让整份缓存失效。
+_ANSWER_GRACE_S = 48 * 3600
+
+
+def _recently_curated(card: dict, now: float) -> bool:
+    from datetime import datetime
+    try:
+        ts = datetime.fromisoformat(str(card.get("curated_at") or "").replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return False
+    return now - ts < _ANSWER_GRACE_S
+
+
+def _with_hits(sb, cards: list[dict], delivery: dict) -> tuple[list[dict], bool]:
+    """冷路径: 给进了 shortlist 的卡标上命中了哪几条规律 (标签名)。返回 (卡, 这份命中能不能进缓存)。
+    查库失败 → 不标, 不阻塞 (fail-open); 但调用方不许把这次的结果写缓存 —— 否则库恢复了, 同样的请求也一直
+    命中那份没标命中的选择 (codex review on #195)。新策展、还没抽特征的卡同理 (见 _ANSWER_GRACE_S)。"""
+    try:
+        answers = P.fetch_answers(sb, [c.get("source_note_id") for c in cards], delivery)
+    except Exception:  # noqa: BLE001
+        logger.warning("已验证规律命中查询失败, 这次卡上不标命中、结果不写缓存", exc_info=True)
+        return cards, False
+    hits = P.card_hits(answers, delivery)
+    names = P.labels(delivery)
+    now = time.time()
+    complete = not any(_recently_curated(c, now) and str(c.get("source_note_id")) not in answers for c in cards)
+    return [dict(c, validated_hits=[names[h] for h in hits.get(str(c.get("source_note_id")), [])]) for c in cards], complete
+
+
+def librarian_select_full(brief: dict, *, model: Optional[str] = None, **kw) -> dict:
+    """HTTP 用: {selected, status, patterns}。patterns = 这次下发给写作台的已验证规律 (探索臂 / 没有 → [])。"""
+    holder: dict = {}
+    out = librarian_select(brief, model=model, _status_out=holder, **kw)
+    return {"selected": out, "status": holder.get("status", STATUS_NO_MATCH if not out else STATUS_OK),
+            "patterns": holder.get("patterns", [])}
+
+
 def librarian_select_detailed(brief: dict, *, model: Optional[str] = None,
                               **kw) -> tuple[list, str]:
     """(selected, status) —— librarian_select 的可观测版本。见上方三个 STATUS_*。"""
@@ -458,24 +512,39 @@ def librarian_select(brief: dict, *, model: Optional[str] = None,
     model = model or os.environ.get("FLYWHEEL_LIBRARIAN_MODEL", "claude-sonnet-5-5")
     sb = get_supabase()
 
+    # 分臂 (docs/28 §7.4): 只有显式带了 explore 的消费方 (写作台, 按批次 15% 抽探索臂并记进批次元数据) 才参与;
+    # explore=false → 规律臂, true → 探索臂。不带这个键的老消费方 (通道 1 / 旧版写作台) 不下发规律、缓存键也不变 ——
+    # 否则 TV 先上线、写作台还没开始分臂的那段时间里, 所有借阅都成了规律臂, 对照组是空的。
+    # 规律在看书架之前就定: 书架空了 (no_match) 规律照样能用, 写作台不该因为没卡就连规律一起丢 (codex review on #195)。
+    arm = brief.get("explore")
+    explore = arm is True
+    g2 = latest_gate2_run(sb)
+    delivery = P.active_delivery(g2, explore=explore, sb=sb) if isinstance(arm, bool) else None
+    if _status_out is not None:
+        _status_out["patterns"] = P.public_patterns(delivery)
+
     cards = fetch_candidates(sb)
     if not cards:
         return {"_dry_run": True, "candidate_count": 0, "shelf_count": 0, "note": "空库 → 返回 []"} if dry_run else []
 
     # 版本串看【整架】(D-088): 预筛挑掉的那张换了也要换缓存键 —— TV-03 那课 (50 张换 1 张版本不变)
     # 的边界如今是整个书架, 不是喂给 LLM 的那 24 张。
-    lib_v = library_version(cards, gate2_run=latest_gate2_run(sb))
+    lib_v = library_version(cards, gate2_run=g2, explore=explore,
+                            delivery=P.delivery_digest(delivery) if delivery else None)
     key = cache_key(brief, lib_v)
     shown = shortlist(cards, brief)
 
     if dry_run:
+        if delivery:   # 诊断要看到生产冷路径真发出去的 prompt, 包括卡面的命中标记 (只读; codex review on #195)
+            shown, _ = _with_hits(sb, shown, delivery)
         return {
             "_dry_run": True,
             "candidate_count": len(shown),
             "shelf_count": len(cards),
             "library_version": lib_v,
             "cache_key": key,
-            "prompt": build_prompt(brief, shown),
+            "patterns": len(P.public_patterns(delivery)),
+            "prompt": build_prompt(brief, shown, delivery),
         }
 
     if use_cache:
@@ -485,9 +554,12 @@ def librarian_select(brief: dict, *, model: Optional[str] = None,
                 _status_out["status"] = STATUS_OK if cached else STATUS_NO_MATCH
             return cached
 
+    hits_ok = True
+    if delivery:
+        shown, hits_ok = _with_hits(sb, shown, delivery)
     t0 = time.monotonic()
     try:
-        selected = _select_via_llm(brief, shown, model)
+        selected = _select_via_llm(brief, shown, model, delivery)
     except Exception:
         # 降级: 绝不阻塞写稿。但必须记日志 —— 否则 schema 缺列 / 解析全错这类真 bug
         # 会被静默吞成 [],服务永远返回空、看不出问题(原审计标的"排障盲区")。
@@ -504,7 +576,7 @@ def librarian_select(brief: dict, *, model: Optional[str] = None,
     select_ms = int((time.monotonic() - t0) * 1000)
     if _status_out is not None:
         _status_out["select_ms"] = select_ms
-    if use_cache:
+    if use_cache and hits_ok:
         try:
             put_cache(sb, key, brief, lib_v, selected, select_ms=select_ms)
         except Exception:

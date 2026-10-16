@@ -208,6 +208,13 @@ jobs:
           echo "已答过的篇 pass 自己会跳过 (按 (extractor, run_tag) 幂等; 本次 run_tag=$RUN_TAG), 失败的批再触发一次接着跑。"
           [ "$bad_chunks" = "0" ] || { echo "::error::$bad_chunks 批连续 6 次都没成 —— 查 Railway worker 日志。"; exit 1; }
 
+      - name: 重抽过 primary 答案 → 清掉带规律命中的馆员缓存 (D-116)
+        # 规律命中按 primary 答案算; reannotate 改了答案却不改书架 / 批准层 / 闸二标签, 版本串不变, 旧缓存会一直回旧的
+        # 命中标记 (codex review on truth-vault#195)。中途失败也清: 失败前的批已经覆盖了一部分答案。
+        if: ${{ always() && github.event.inputs.note_ids != '' && github.event.inputs.reannotate == 'true' && (github.event.inputs.run_tag == '' || github.event.inputs.run_tag == 'primary') }}
+        working-directory: scripts
+        run: python prune_librarian_cache.py --delivery-only
+
       - name: Loop worker until project essence is fully annotated
         if: ${{ github.event.inputs.note_ids == '' }}
         working-directory: scripts

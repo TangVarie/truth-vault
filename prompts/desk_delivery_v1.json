@@ -1,0 +1,57 @@
+{
+  "_comment": [
+    "闸二结论 → 写作台的人工批准层（D-116）。不放进冻结题库 fq-v0.1：往题库里加字段会改掉冻结摘要，把答案劈成两批。",
+    "馆员（librarian/patterns.py）读它：gate2_run 和库里最新一轮闸二对不上时整份不下发（fail-closed）。",
+    "闸二重跑（G-12）后这份要按新一轮结论重过一遍、升 version，不自动沿用。",
+    "follow.any_of: 卡的源笔记有其中任一取值就算「命中」；follow.none_of: 一个都没有、且 requires 里的题都答过，才算命中（「别这么写」的规律）；",
+    "follow.skip_if: 有其中任一取值的卡不是这条规律的例子，不算命中（none_of 规律里 requires 题被压着的取值必须列在这里，免得从后门下发）。",
+    "CI（scripts/check_desk_delivery.py）核：每个取值在闸二产物里都是 validated、版本对得上；新发现（hypothesis ?）必须有 owner 批准；",
+    "闸二 validated 的取值要么在 patterns 里、要么在 suppressed 里，不许静默漏掉；题库原话来源的指令必须和题库逐字一致；aw_instruction=never 的永不出现。"
+  ],
+  "version": 1,
+  "gate2_run": "gate2-20261010",
+  "bank_version": "fq-v0.1",
+  "bank_sha256": "ba0f570c47d594ca4dad571c5a9f5d06da51861b041ba364c3a915220b985ddd",
+  "extractors": {"llm": "llm:claude-sonnet-5-5", "code": "code:v1"},
+  "patterns": [
+    {
+      "id": "ending_asks_reader",
+      "label": "结尾问读者",
+      "instruction": "结尾留一个读者能直接回答的问题。",
+      "evidence": "项目内爆的几率约 2.1 倍（OR 2.11，95% CI 1.55–2.87），5 个大项目 4 个同向",
+      "follow": {"any_of": [["ending_asks_reader", "是"]]},
+      "source": "bank"
+    },
+    {
+      "id": "asks_for_help",
+      "label": "真实求助",
+      "instruction": "用一个真实的求助问题组织全篇。",
+      "evidence": "项目内爆的几率约 2.3 倍（OR 2.31，95% CI 1.68–3.17），5 个大项目全部同向",
+      "follow": {"any_of": [["asks_for_help", "是"]]},
+      "source": "bank"
+    },
+    {
+      "id": "question_marks",
+      "label": "正文抛问题",
+      "instruction": "正文里抛两个以上读者能接住的问题。",
+      "evidence": "项目内爆的几率约 1.6 倍（OR 1.59，95% CI 1.18–2.14），5 个大项目全部同向；按产品角色分三层都成立，阅读量也更高",
+      "follow": {"any_of": [["body_question_marks", ">=2"]]},
+      "source": "owner 2026-10-16 G-02 ①（D-116）"
+    },
+    {
+      "id": "brand_placement",
+      "label": "品牌别硬插",
+      "instruction": "需要露出品牌时，别写进标题、别开头就点名、别在正文中段硬插，先把问题和经历讲清楚再带出来。",
+      "evidence": "品牌名进标题 OR 0.25、开头就出现 OR 0.27、正文中段才第一次出现 OR 0.30，都是项目内爆的几率明显更低",
+      "follow": {"none_of": [["brand_in_title", "是"], ["brand_first_position", "前20%"], ["brand_first_position", "中间"]],
+                 "requires": ["brand_first_position"], "skip_if": [["brand_first_position", "未出现"]]},
+      "source": "owner 2026-10-16 G-02 ③ 按 B + 预注册 −（D-116）"
+    }
+  ],
+  "suppressed": [
+    {"value": ["brand_first_position", "未出现"], "why": "owner 2026-10-16 G-02 ② 按 B：「不提品牌」和客户露出要求冲突，品牌词典漏别名也会抬高这一档"},
+    {"value": ["emoji_bucket", "0"], "why": "owner 2026-10-16 G-02 ④：分层后方向不稳，外部样本无差别"},
+    {"value": ["emoji_bucket", "1-3"], "why": "owner 2026-10-16 G-02 ⑤：同上"},
+    {"value": ["efficacy_promise", "是"], "why": "aw_instruction=never：合规观察项，永不下发（docs/28 §4.2）"}
+  ]
+}
