@@ -6419,6 +6419,27 @@ W-19现场5专属词配置已执行到生产：仅精确目标项目/owner/品�
 
 **结果（D-112 后续，10-16）**：复核表返回，只读核对 280/280 格都填、全在闭集内、0 未决，题面和上下文一格没改；参考只存 id + 标签（sha256 `01023661ff5c3b74f7cee66f59c20bf02903204746c6d8470a4606ee5980c98a`，Jev [#18](https://github.com/TangVarie/JevforCoentent/pull/18) 冻结；复核人员的文字备注不入库）。冻结后按授权跑了**一次**（Jev run 38862116728，`jev-1.13.0` × C4，live，40 次调用 0 重问，40/40 有效；单次授权用 git tag `comment-gate-d112-run-claimed` 原子占用）。**按预注册判据通过**：门槛题合计 150/160 = 93.8%（线 85%）；逐题 speech_act 38、names_brand 40、echoes_post 38、detail_level 34（/40，最低 85%，线 75%）；门槛题歧义 20/160 = 12.5%（线 25%）；无歧义背书漏报 0。参考题只报告（一致 / 模型标歧义，各 /40）：register 28 / 9、reader_value 32 / 3、arranged 33 / 14。结论文件只含 id、闭集答案、概率（Jev `docs/comment-gate-d112/`）。`release_accepted` 仍为 false：按第 7 条，下一步是 owner 验收，验收后才开 J-01 小范围评论工具。
 
+**验收与上线（10-16）**：owner 10-16 回「验收」。按第 7 条：
+
+- **写手评论工具：**
+  - Jev [#20](https://github.com/TangVarie/JevforCoentent/pull/20) 把 C4 原样发布为 `comment_reader_v0.6`，只多 `status: released`、`frozen_sha256` 两行元数据；按 TV 规范化摘要算仍是 `a0c04acf…`。
+  - `/comment_repair_plan_for` 和 `/judge_thread` 的读者侧改用这份题库。
+  - 通过与否只看四道门槛题和背书复核。
+  - 下面这些题不合评论位要求时只进 `hints`，漏答或标歧义也不送复核：三道参考题；运营侧整套（`comment_intent`、`is_scripted`，都没验收过）。
+  - 整组评论区题库 `comment_thread_v0.4` 不在本轮范围、没验收过：写手端点里它的四道模型题同样只提示，判定的只剩代码算的点名条数（Jev [#22](https://github.com/TangVarie/JevforCoentent/pull/22)）。要让整组题判通过与否得另起一轮。
+- **上线（10-16 已完成）：**
+  1. 07:15 UTC owner 在 Railway 打开 `JUDGE_COMMENT_TOOLS_ENABLED`。
+  2. 经写作台用真实写手 key 真调两个端点：单条通过；整组里的亲历背书送复核。
+  3. 核过后合并 aw#101，已部署（协议 `b8986a70d163`）。
+  4. 通知写手重导 skill（W-02）。
+  - 回滚：开关改回 0，两个端点立即 503，写作台如实回「没判成」。
+  - 这把写手 key 只在聊天里给过一次；本地副本用完即删，没有进任何仓库（密钥由 owner 自己管）。
+- **J-02（J-01 核过之后才跑）：**
+  - 回填的读者侧同步换成 v0.6。
+  - 续跑快照改为只存 id + md5（Jev [#21](https://github.com/TangVarie/JevforCoentent/pull/21)）。原来的快照带评论原文，会作为 Actions 产物上传，违反上面「原文不进 GitHub」。
+  - 小批 shadow：run 38866866270，`NUC_phase1` 100 条。回读 900 行（读者侧 700 + 运营侧 200），无效 0；产物里没有原文。
+  - 全量 shadow 要花钱（约 1.9 万次调用），等 owner 一句话。primary 另等绑定当前题库摘要的验收记录。
+
 ## D-113 · 关掉 prompt caching：中转站没有固定上游账号的分组，缓存写了读不回来（2026-10-16）
 
 来源：owner 10-16 问过中转站，「没有固定账号分组」。接 F-02（OPEN-ITEMS）。
