@@ -7,12 +7,14 @@ check_desk_delivery.py —— P4 已验证规律下发 (D-116; prompts/desk_deli
      validated 的取值要么下发要么在 suppressed (不许静默漏掉)
   §2 命中: any_of 有就算; none_of 要 requires 都答过且一个都没有; 没答过不算「做到了」; skip_if 的卡不算
      (没露品牌的卡不是「品牌别硬插」的例子 —— requires 题里被压着的取值必须进 skip_if, §1 核)
-  §3 下发开关: 探索臂 / 没闸二结论 / 批准层是旧一轮 → 不下发
+  §3 下发开关: 探索臂 / 没闸二结论 / 批准层是旧一轮 → 不下发; 库里那一轮的行变了 (同标签重跑: 不再 validated /
+     方向反了 / 题库版本变了 / 行没了) 或查不了 → 不下发; 对库结果进程内缓存 10 分钟
   §4 缓存版本: 规律版本、探索臂各自进版本串; 两样都没有时与以前完全一样
   §5 prompt: 规律段只在下发时出现、在卡前面; 卡面标命中
   §6 端到端 (打桩): 不带 explore 的老消费方不下发; 规律臂: 规律进 system、选中的卡带 validated_hits、响应带 patterns;
      探索臂什么都不带且缓存键不同;
-     命中查询挂了照样选卡 (fail-open), 但这次结果不写缓存
+     命中查询挂了照样选卡 (fail-open), 但这次结果不写缓存; 新策展还没抽特征的卡在 shortlist 里也不写缓存
+     (老卡没答案照写)
   §7 HTTP 响应带 patterns 键
 
 跑法: cd scripts && python check_desk_delivery.py
@@ -86,12 +88,60 @@ def s2_hits() -> None:
     print("  §2 命中: any_of / none_of / 没答过不算 / 没露品牌不算 ✓")
 
 
+class _FV:
+    """feature_validation 的假库: 只认 .schema().table().select().eq().limit().execute()。"""
+    def __init__(self, rows):
+        self.rows, self.calls = rows, 0
+
+    def schema(self, s):
+        return self
+
+    def table(self, t):
+        return self
+
+    def select(self, *a):
+        return self
+
+    def eq(self, *a):
+        return self
+
+    def limit(self, *a):
+        return self
+
+    def execute(self):
+        self.calls += 1
+        if isinstance(self.rows, Exception):
+            raise self.rows
+        return type("R", (), {"data": self.rows})()
+
+
 def s3_switch() -> None:
     assert P.active_delivery(D["gate2_run"], explore=True) is None
     assert P.active_delivery(None, explore=False) is None
     assert P.active_delivery("gate2-20990101", explore=False) is None
     assert P.active_delivery(D["gate2_run"], explore=False)["patterns"]
-    print("  §3 下发开关: 探索臂 / 无结论 / 旧一轮都不下发 ✓")
+
+    rows = [r for r in json.loads((ROOT / "data-analysis" / f"feature-gate2-{D['gate2_run']}.rows.json")
+                                  .read_text(encoding="utf-8")) if r["gate2_run"] == D["gate2_run"]]
+    assert P.matches_db(rows, D), "批准时的那份结果本身要过"
+    flip = lambda q, a, **kw: [dict(r, **kw) if (r["question_id"], r["answer"]) == (q, a) else r for r in rows]  # noqa: E731
+    assert not P.matches_db(flip("ending_asks_reader", "是", status="no_signal"), D), "同标签重跑后不再 validated"
+    assert not P.matches_db(flip("brand_in_title", "是", mh_odds_ratio=1.4), D), "「别这么写」那条方向反了"
+    assert not P.matches_db(flip("asks_for_help", "是", bank_version="fq-v0.2"), D)
+    assert not P.matches_db([r for r in rows if r["question_id"] != "body_question_marks"], D), "行没了"
+    assert P.matches_db(flip("emoji_bucket", "0", status="no_signal"), D), "没下发的取值变了不影响"
+
+    P._verified.clear()
+    sb = _FV(rows)
+    assert P.active_delivery(D["gate2_run"], explore=False, sb=sb)["patterns"]
+    sb.rows = flip("ending_asks_reader", "是", status="reversed")
+    assert P.active_delivery(D["gate2_run"], explore=False, sb=sb), "10 分钟内复用上一次的核对结果"
+    assert sb.calls == 1
+    assert not P.verified_against_db(sb, D, now=__import__("time").monotonic() + P.VERIFY_TTL_S + 1), "过期后重查"
+    P._verified.clear()
+    assert P.active_delivery(D["gate2_run"], explore=False, sb=_FV(RuntimeError("db down"))) is None, "查不了 → 不下发"
+    P._verified.clear()
+    print("  §3 下发开关: 探索臂 / 无结论 / 旧一轮 / 库里结果变了 / 查不了 都不下发 ✓")
 
 
 def s4_version() -> None:
@@ -126,6 +176,7 @@ def s6_end_to_end() -> None:
     seen: dict = {}
     writes: list = []
     core.get_supabase = lambda *a, **k: object()
+    P.verified_against_db = lambda sb, d, **kw: True        # 对库那一步 §3 单测过; 这里只看它有没有被接上 (见下)
     core.latest_gate2_run = lambda sb: D["gate2_run"]
     core.fetch_candidates = lambda sb, **kw: [dict(CARD), dict(CARD, source_note_id="n2", rank_score=0.5)]
     core.get_cache = lambda sb, key: None
@@ -162,6 +213,22 @@ def s6_end_to_end() -> None:
         "书架空了规律照样给 (codex review on #195)"
     core.fetch_candidates = shelf
 
+    P.verified_against_db = lambda sb, d, **kw: False
+    res = core.librarian_select_full({"consumer": "t", "project_id": "p5", "explore": False})
+    assert res["patterns"] == [] and "已验证规律" not in seen["system"], "馆员下发前要对库 (active_delivery 带 sb)"
+    P.verified_against_db = lambda sb, d, **kw: True
+
+    from datetime import datetime, timezone
+    fresh = datetime.now(timezone.utc).isoformat()
+    core.fetch_candidates = lambda sb, **kw: [dict(CARD), dict(CARD, source_note_id="n9", curated_at=fresh)]
+    n_writes = len(writes)
+    core.librarian_select_full({"consumer": "t", "project_id": "p6", "explore": False})
+    assert len(writes) == n_writes, "新策展、还没抽特征的卡在里面: 这份命中不完整, 不写缓存 (codex review on #195)"
+    core.fetch_candidates = lambda sb, **kw: [dict(CARD), dict(CARD, source_note_id="n9")]
+    core.librarian_select_full({"consumer": "t", "project_id": "p6", "explore": False})
+    assert len(writes) == n_writes + 1, "老卡没答案是永远没有, 照写缓存"
+    core.fetch_candidates = shelf
+
     def boom(sb, ids, d):
         raise RuntimeError("db down")
     P.fetch_answers = boom
@@ -169,7 +236,7 @@ def s6_end_to_end() -> None:
     res = core.librarian_select_full({"consumer": "t", "project_id": "p2", "explore": False})
     assert res["status"] == "ok" and res["selected"][0]["validated_hits"] == [] and res["patterns"]
     assert len(writes) == n_writes, "命中没查成的选择不许写缓存, 否则库恢复了也一直命中它 (codex review on #195)"
-    print("  §6 端到端: 老消费方不下发; 规律臂: 规律进 system、卡带命中、响应带 patterns; 探索臂全不带且另缓存; dry-run 带命中; 空书架照给规律; 命中查询挂了照样选、不写缓存 ✓")
+    print("  §6 端到端: 老消费方不下发; 规律臂: 规律进 system、卡带命中、响应带 patterns; 探索臂全不带且另缓存; dry-run 带命中; 空书架照给规律; 下发前对库; 新卡没答完 / 命中查询挂了照样选、不写缓存 ✓")
 
 
 def s7_http() -> None:

@@ -453,17 +453,36 @@ STATUS_NO_MATCH = "no_match"      # 跑通了, 但没有相关卡(含空库)
 STATUS_DEGRADED = "degraded"      # LLM / 内部失败, 已降级返回空
 
 
-def _with_hits(sb, cards: list[dict], delivery: dict) -> tuple[list[dict], bool]:
-    """冷路径: 给进了 shortlist 的卡标上命中了哪几条规律 (标签名)。返回 (卡, 查成了没有)。
-    查库失败 → 不标, 不阻塞 (fail-open); 但调用方不许把这次的结果写缓存 —— 否则库恢复了, 同样的请求也一直
-    命中那份没标命中的选择 (codex review on #195)。"""
+# 新策展的卡要等 features-sync (12:47 UTC) 抽完特征才有答案, 而策展在 daily-sync (02:17 UTC) —— 中间这段, 卡上
+# 不标命中不是因为没命中, 是还没答。之后答案进库不改 library_version, 所以这种「还没答」的结果不能进缓存
+# (codex review on #195)。只看最近 48 小时策展的卡: 老卡没答案就是永远没有 (10-16 实查 310 张里 2 张), 不能因为
+# 它们让整份缓存失效。
+_ANSWER_GRACE_S = 48 * 3600
+
+
+def _recently_curated(card: dict, now: float) -> bool:
+    from datetime import datetime
     try:
-        hits = P.card_hits(P.fetch_answers(sb, [c.get("source_note_id") for c in cards], delivery), delivery)
+        ts = datetime.fromisoformat(str(card.get("curated_at") or "").replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return False
+    return now - ts < _ANSWER_GRACE_S
+
+
+def _with_hits(sb, cards: list[dict], delivery: dict) -> tuple[list[dict], bool]:
+    """冷路径: 给进了 shortlist 的卡标上命中了哪几条规律 (标签名)。返回 (卡, 这份命中能不能进缓存)。
+    查库失败 → 不标, 不阻塞 (fail-open); 但调用方不许把这次的结果写缓存 —— 否则库恢复了, 同样的请求也一直
+    命中那份没标命中的选择 (codex review on #195)。新策展、还没抽特征的卡同理 (见 _ANSWER_GRACE_S)。"""
+    try:
+        answers = P.fetch_answers(sb, [c.get("source_note_id") for c in cards], delivery)
     except Exception:  # noqa: BLE001
         logger.warning("已验证规律命中查询失败, 这次卡上不标命中、结果不写缓存", exc_info=True)
         return cards, False
+    hits = P.card_hits(answers, delivery)
     names = P.labels(delivery)
-    return [dict(c, validated_hits=[names[h] for h in hits.get(str(c.get("source_note_id")), [])]) for c in cards], True
+    now = time.time()
+    complete = not any(_recently_curated(c, now) and str(c.get("source_note_id")) not in answers for c in cards)
+    return [dict(c, validated_hits=[names[h] for h in hits.get(str(c.get("source_note_id")), [])]) for c in cards], complete
 
 
 def librarian_select_full(brief: dict, *, model: Optional[str] = None, **kw) -> dict:
@@ -500,7 +519,7 @@ def librarian_select(brief: dict, *, model: Optional[str] = None,
     arm = brief.get("explore")
     explore = arm is True
     g2 = latest_gate2_run(sb)
-    delivery = P.active_delivery(g2, explore=explore) if isinstance(arm, bool) else None
+    delivery = P.active_delivery(g2, explore=explore, sb=sb) if isinstance(arm, bool) else None
     if _status_out is not None:
         _status_out["patterns"] = P.public_patterns(delivery)
 

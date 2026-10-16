@@ -9,7 +9,8 @@
 探索臂 (brief.explore = true; 写作台 15% 的批次, docs/28 §7.4): 三件都不做, 缓存键也分开 —— 对照组要的就是
 「没被规律影响过」的那部分。
 
-fail-closed: 文件读不了 / gate2_run 和库里最新一轮闸二对不上 → 整份不下发 (宁可少给, 不给过期的规律)。
+fail-closed: 文件读不了 / gate2_run 和库里最新一轮闸二对不上 / 库里那一轮的结果和批准时不一样了 (同一个标签重跑过,
+某个下发的取值不再是 validated、方向变了或题库版本变了; 查不了也算) → 整份不下发 (宁可少给, 不给过期的规律)。
 fail-open: 算命中时查库失败 → 这次卡上不标命中, 规律段照给, 不阻塞选卡。
 """
 
@@ -18,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -28,6 +30,8 @@ _PAGE = 1000
 _ID_CHUNK = 100
 
 _cache: dict = {}
+_verified: dict = {}          # gate2_run → (结果, 查的时刻); 每个请求都查一次库太浪费, 10 分钟内复用
+VERIFY_TTL_S = 600
 
 
 def load_delivery(path: Path = DELIVERY_PATH) -> Optional[dict]:
@@ -51,9 +55,54 @@ def delivery_digest(d: dict) -> str:
     return hashlib.sha256(json.dumps(core, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:10]
 
 
-def active_delivery(latest_gate2_run: Optional[str], *, explore: bool,
+def _signed_values(d: dict) -> list[tuple[str, str, int]]:
+    out = []
+    for p in d["patterns"]:
+        f = p.get("follow") or {}
+        out += [(q, a, +1) for q, a in f.get("any_of") or []] + [(q, a, -1) for q, a in f.get("none_of") or []]
+    return out
+
+
+def matches_db(rows: list[dict], d: dict) -> bool:
+    """纯函数: 库里这一轮闸二的行, 是否仍支持批准层里每个下发的取值 (validated、方向同、题库版本同)。"""
+    by = {(r.get("question_id"), r.get("answer")): r for r in rows}
+    for q, a, sign in _signed_values(d):
+        r = by.get((q, a))
+        if not r or r.get("status") != "validated" or r.get("bank_version") != d["bank_version"]:
+            return False
+        if (float(r.get("mh_odds_ratio") or 0) > 1) != (sign > 0):
+            return False
+    return True
+
+
+def verified_against_db(sb, d: dict, *, now: Optional[float] = None) -> bool:
+    """批准层只认 gate2_run 这个标签, 而闸二允许拿已有标签重跑 (upsert 覆盖, codex review on #195): 下发前对一遍库里
+    那一轮的行。查不了 → False (fail-closed)。结果在进程里缓存 VERIFY_TTL_S 秒。"""
+    now = time.monotonic() if now is None else now
+    hit = _verified.get(d["gate2_run"])
+    if hit and now - hit[1] < VERIFY_TTL_S:
+        return hit[0]
+    try:
+        rows = (
+            sb.schema("truth_vault").table("feature_validation")
+            .select("question_id, answer, status, mh_odds_ratio, bank_version")
+            .eq("gate2_run", d["gate2_run"]).limit(1000).execute()
+        ).data or []
+        ok = matches_db(rows, d)
+        if not ok:
+            logger.warning("库里 %s 的闸二结果和批准层对不上 (同一标签重跑过?) —— 规律不下发, 批准层要按库里的结果重过 (D-116)",
+                           d["gate2_run"])
+    except Exception:  # noqa: BLE001
+        logger.warning("闸二结果查不了, 这次规律不下发 (fail-closed)", exc_info=True)
+        ok = False
+    _verified[d["gate2_run"]] = (ok, now)
+    return ok
+
+
+def active_delivery(latest_gate2_run: Optional[str], *, explore: bool, sb=None,
                     path: Path = DELIVERY_PATH) -> Optional[dict]:
-    """这次请求要不要下发、下发哪份。探索臂 / 没有闸二结论 / 批准层是旧一轮的 → None。"""
+    """这次请求要不要下发、下发哪份。探索臂 / 没有闸二结论 / 批准层是旧一轮的 / 库里那一轮的结果变了 → None。
+    ``sb`` 给了才对库 (馆员总给; 离线检查不给)。"""
     if explore:
         return None
     d = load_delivery(path)
@@ -62,6 +111,8 @@ def active_delivery(latest_gate2_run: Optional[str], *, explore: bool,
     if d["gate2_run"] != latest_gate2_run:
         logger.warning("批准层是 %s 的, 库里最新一轮闸二是 %s —— 规律不下发, 等批准层按新一轮重过 (D-116)",
                        d["gate2_run"], latest_gate2_run)
+        return None
+    if sb is not None and not verified_against_db(sb, d):
         return None
     return d
 
