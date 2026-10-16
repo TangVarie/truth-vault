@@ -27,6 +27,7 @@ import re
 import time
 from typing import Any, Optional
 
+from . import external as X
 from . import patterns as P
 from .clients import call_anthropic, get_supabase, iso_now, parse_json
 
@@ -118,7 +119,8 @@ def fetch_candidates(sb, limit: int = SHELF_FETCH_CAP) -> list[dict]:
 
 
 def library_version(cards: list[dict], gate2_run: Optional[str] = None, *,
-                    delivery: Optional[str] = None, explore: bool = False) -> str:
+                    delivery: Optional[str] = None, explore: bool = False,
+                    external: Optional[str] = None) -> str:
     """f(候选数, max(curated_at), 月份桶, 候选 ID 集合摘要[, gate2_run]) —— 见模块 docstring。
 
     ── 2026-09-20 D-070 (docs/28 §7.1 第 2 条) ──────────────────────────────
@@ -161,6 +163,9 @@ def library_version(cards: list[dict], gate2_run: Optional[str] = None, *,
         out += f":dl{delivery}"
     if explore:
         out += ":explore"
+    # D-117: 外部参考书架换了一批 (Jev 周更) 缓存要失效; 没有外部卡时版本串不变。
+    if external:
+        out += f":ext{external}"
     return out
 
 
@@ -327,6 +332,11 @@ def _render_fields(brief: dict, fields) -> str:
 def _render_cards(cards: list[dict]) -> str:
     blocks = []
     for c in cards:
+        if X.is_external(c):   # D-117: 外部参考卡没有品牌、没策展, 卡头写明只借结构
+            excerpt = (c.get("raw_excerpt") or "").strip().replace("\n", " ")[:200]
+            blocks.append(f"[{c.get('source_note_id')}] 外部参考|{c.get('category')}｜别家同品类帖, 只借结构不抄内容, "
+                          f"别提它的品牌\n  评论 {c.get('comments')}\n  摘要: {excerpt}")
+            continue
         head = f"[{c.get('source_note_id')}] {c.get('tier')}|{c.get('brand')}|{c.get('category')}"
         if c.get("synthetic"):
             # 伪爆贴(指标造假): 凭人工内容判断进库(参考 tier), 提醒 LLM 别把指标当真,
@@ -356,9 +366,12 @@ def build_system_blocks(brief: dict, cards: list[dict], delivery: Optional[dict]
       block2 = 项目 prompt 包      (同项目内稳定)
     本次 delta 不在这里(进 user message)。"""
     rules = f"{P.render_block(delivery)}\n\n" if delivery else ""   # 规律全局稳定, 放在卡前面 (缓存前缀越稳越靠前)
+    n_ext = X.max_per_borrow()
+    ext_note = f"{X.PROMPT_NOTE.format(n=n_ext)}\n\n" if n_ext and any(X.is_external(c) for c in cards) else ""
     cards_text = (
         f"{ROLE_TASK_INSTR}\n\n"
         f"{rules}"
+        f"{ext_note}"
         f"═══ 候选经验卡 (按 rank_score 排序, 共 {len(cards)} 张) ═══\n"
         f"{_render_cards(cards)}"
     )
@@ -398,7 +411,11 @@ def _select_via_llm(brief: dict, cards: list[dict], model: str, delivery: Option
     by_id = {c.get("source_note_id"): c for c in cards}
     out = []
     dropped: list = []
-    for item in parsed["selected"][:DEFAULT_SELECT_MAX]:
+    ext_left = X.max_per_borrow()
+    # 不先切 [:5]: 超额的外部卡被跳过时不能占名额, 否则模型多挑几张外部卡就把后面合格的内部卡挤掉
+    for item in parsed["selected"]:
+        if len(out) >= DEFAULT_SELECT_MAX:
+            break
         if not isinstance(item, dict):
             dropped.append(item)
             continue
@@ -407,6 +424,10 @@ def _select_via_llm(brief: dict, cards: list[dict], model: str, delivery: Option
         if card is None:        # 丢弃编造的 / 不在候选里的 id
             dropped.append(nid)
             continue
+        if X.is_external(card):  # D-117: 外部卡每次最多占 max_per_borrow 张, 模型多挑了就截掉 (不算契约失败)
+            if ext_left <= 0:
+                continue
+            ext_left -= 1
         out.append({
             "source_note_id": nid,
             "why_relevant": (item.get("why_relevant") or "").strip(),
@@ -420,6 +441,7 @@ def _select_via_llm(brief: dict, cards: list[dict], model: str, delivery: Option
             "transferable_tactic": card.get("transferable_tactic"),
             "excerpt": card.get("raw_excerpt"),
             "validated_hits": list(card.get("validated_hits") or []),   # P4: 这张卡命中了哪几条已验证规律
+            "external": X.is_external(card),   # D-117: 外部参考卡 (别家同品类帖, 不是帆谷投的)
         })
     # 模型挑了东西, 但【一条都不在候选里】= 契约失败(编 id / 认错候选集), 不是
     # "库里没有相关卡"(codex review P2)。不抛的话它会被当成 no_match:
@@ -474,14 +496,16 @@ def _with_hits(sb, cards: list[dict], delivery: dict) -> tuple[list[dict], bool]
     查库失败 → 不标, 不阻塞 (fail-open); 但调用方不许把这次的结果写缓存 —— 否则库恢复了, 同样的请求也一直
     命中那份没标命中的选择 (codex review on #195)。新策展、还没抽特征的卡同理 (见 _ANSWER_GRACE_S)。"""
     try:
-        answers = P.fetch_answers(sb, [c.get("source_note_id") for c in cards], delivery)
+        ids = [c.get("source_note_id") for c in cards if not X.is_external(c)]   # 外部卡不在 note 答案里
+        answers = P.fetch_answers(sb, ids, delivery)
     except Exception:  # noqa: BLE001
         logger.warning("已验证规律命中查询失败, 这次卡上不标命中、结果不写缓存", exc_info=True)
         return cards, False
     hits = P.card_hits(answers, delivery)
     names = P.labels(delivery)
     now = time.time()
-    complete = not any(_recently_curated(c, now) and str(c.get("source_note_id")) not in answers for c in cards)
+    complete = not any(_recently_curated(c, now) and str(c.get("source_note_id")) not in answers
+                       for c in cards if not X.is_external(c))
     return [dict(c, validated_hits=[names[h] for h in hits.get(str(c.get("source_note_id")), [])]) for c in cards], complete
 
 
@@ -529,10 +553,13 @@ def librarian_select(brief: dict, *, model: Optional[str] = None,
 
     # 版本串看【整架】(D-088): 预筛挑掉的那张换了也要换缓存键 —— TV-03 那课 (50 张换 1 张版本不变)
     # 的边界如今是整个书架, 不是喂给 LLM 的那 24 张。
+    # D-117: 外部参考书架只给显式带 explore 的消费方 (两臂都给, 两臂只差规律), 且只给同品类项目。
+    ext = X.shelf_for(sb, brief) if isinstance(arm, bool) else []
     lib_v = library_version(cards, gate2_run=g2, explore=explore,
-                            delivery=P.delivery_digest(delivery) if delivery else None)
+                            delivery=P.delivery_digest(delivery) if delivery else None,
+                            external=X.digest(ext) if ext else None)
     key = cache_key(brief, lib_v)
-    shown = shortlist(cards, brief)
+    shown = shortlist(cards, brief) + ext
 
     if dry_run:
         if delivery:   # 诊断要看到生产冷路径真发出去的 prompt, 包括卡面的命中标记 (只读; codex review on #195)
@@ -544,12 +571,18 @@ def librarian_select(brief: dict, *, model: Optional[str] = None,
             "library_version": lib_v,
             "cache_key": key,
             "patterns": len(P.public_patterns(delivery)),
+            "external": len(ext),
             "prompt": build_prompt(brief, shown, delivery),
         }
 
     if use_cache:
         cached = get_cache(sb, key)
         if cached is not None:
+            # 部署前写的缓存行没有这两个键; 文档承诺选中的卡都带 (缺 = 没有命中 / 不是外部卡)
+            for c in cached if isinstance(cached, list) else []:
+                if isinstance(c, dict):
+                    c.setdefault("validated_hits", [])
+                    c.setdefault("external", False)
             if _status_out is not None:
                 _status_out["status"] = STATUS_OK if cached else STATUS_NO_MATCH
             return cached
