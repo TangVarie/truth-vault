@@ -70,7 +70,7 @@ def question_ids(d: dict) -> list[str]:
     qs: set[str] = set()
     for p in d["patterns"]:
         f = p.get("follow") or {}
-        for q, _ in (f.get("any_of") or []) + (f.get("none_of") or []):
+        for q, _ in (f.get("any_of") or []) + (f.get("none_of") or []) + (f.get("skip_if") or []):
             qs.add(q)
         qs.update(f.get("requires") or [])
     return sorted(qs)
@@ -78,12 +78,16 @@ def question_ids(d: dict) -> list[str]:
 
 def card_hits(answers: dict[str, dict[str, str]], d: dict) -> dict[str, list[str]]:
     """{note_id: {question_id: answer}} → {note_id: [命中的规律 id]}, 按批准层里的顺序。
-    any_of: 有其中任一取值就算; none_of: requires 的题都答过、且一个都没有才算 (requires 没答过不能当「做到了」)。"""
+    any_of: 有其中任一取值就算; none_of: requires 的题都答过、且一个都没有才算 (requires 没答过不能当「做到了」)。
+    skip_if: 有其中任一取值的卡不是这条规律的例子, 不算命中 —— 「品牌别硬插」不能落到根本没露品牌的卡上, 否则规律臂
+    会偏着借不提品牌的卡, 等于把 owner 压着的「未出现」从后门下发了 (codex review on #195)。"""
     out: dict[str, list[str]] = {}
     for nid, ans in answers.items():
         hit = []
         for p in d["patterns"]:
             f = p.get("follow") or {}
+            if any(ans.get(q) == a for q, a in f.get("skip_if") or []):
+                continue
             if f.get("any_of"):
                 ok = any(ans.get(q) == a for q, a in f["any_of"])
             else:

@@ -453,15 +453,17 @@ STATUS_NO_MATCH = "no_match"      # 跑通了, 但没有相关卡(含空库)
 STATUS_DEGRADED = "degraded"      # LLM / 内部失败, 已降级返回空
 
 
-def _with_hits(sb, cards: list[dict], delivery: dict) -> list[dict]:
-    """冷路径: 给进了 shortlist 的卡标上命中了哪几条规律 (标签名)。查库失败 → 不标, 不阻塞 (fail-open)。"""
+def _with_hits(sb, cards: list[dict], delivery: dict) -> tuple[list[dict], bool]:
+    """冷路径: 给进了 shortlist 的卡标上命中了哪几条规律 (标签名)。返回 (卡, 查成了没有)。
+    查库失败 → 不标, 不阻塞 (fail-open); 但调用方不许把这次的结果写缓存 —— 否则库恢复了, 同样的请求也一直
+    命中那份没标命中的选择 (codex review on #195)。"""
     try:
         hits = P.card_hits(P.fetch_answers(sb, [c.get("source_note_id") for c in cards], delivery), delivery)
     except Exception:  # noqa: BLE001
-        logger.warning("已验证规律命中查询失败, 这次卡上不标命中", exc_info=True)
-        return cards
+        logger.warning("已验证规律命中查询失败, 这次卡上不标命中、结果不写缓存", exc_info=True)
+        return cards, False
     names = P.labels(delivery)
-    return [dict(c, validated_hits=[names[h] for h in hits.get(str(c.get("source_note_id")), [])]) for c in cards]
+    return [dict(c, validated_hits=[names[h] for h in hits.get(str(c.get("source_note_id")), [])]) for c in cards], True
 
 
 def librarian_select_full(brief: dict, *, model: Optional[str] = None, **kw) -> dict:
@@ -515,7 +517,7 @@ def librarian_select(brief: dict, *, model: Optional[str] = None,
 
     if dry_run:
         if delivery:   # 诊断要看到生产冷路径真发出去的 prompt, 包括卡面的命中标记 (只读; codex review on #195)
-            shown = _with_hits(sb, shown, delivery)
+            shown, _ = _with_hits(sb, shown, delivery)
         return {
             "_dry_run": True,
             "candidate_count": len(shown),
@@ -533,8 +535,9 @@ def librarian_select(brief: dict, *, model: Optional[str] = None,
                 _status_out["status"] = STATUS_OK if cached else STATUS_NO_MATCH
             return cached
 
+    hits_ok = True
     if delivery:
-        shown = _with_hits(sb, shown, delivery)
+        shown, hits_ok = _with_hits(sb, shown, delivery)
     t0 = time.monotonic()
     try:
         selected = _select_via_llm(brief, shown, model, delivery)
@@ -554,7 +557,7 @@ def librarian_select(brief: dict, *, model: Optional[str] = None,
     select_ms = int((time.monotonic() - t0) * 1000)
     if _status_out is not None:
         _status_out["select_ms"] = select_ms
-    if use_cache:
+    if use_cache and hits_ok:
         try:
             put_cache(sb, key, brief, lib_v, selected, select_ms=select_ms)
         except Exception:

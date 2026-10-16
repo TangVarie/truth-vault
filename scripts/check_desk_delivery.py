@@ -5,13 +5,14 @@ check_desk_delivery.py —— P4 已验证规律下发 (D-116; prompts/desk_deli
   §1 批准层与闸二产物 / 冻结题库一致: 每个取值 validated、版本对得上、方向对 (any_of 是 OR>1、none_of 是 OR<1)、
      新发现 (hypothesis ?) 必须 owner 批准、题库原话来源逐字一致、aw_instruction=never 的永不下发、
      validated 的取值要么下发要么在 suppressed (不许静默漏掉)
-  §2 命中: any_of 有就算; none_of 要 requires 都答过且一个都没有; 没答过不算「做到了」
+  §2 命中: any_of 有就算; none_of 要 requires 都答过且一个都没有; 没答过不算「做到了」; skip_if 的卡不算
+     (没露品牌的卡不是「品牌别硬插」的例子 —— requires 题里被压着的取值必须进 skip_if, §1 核)
   §3 下发开关: 探索臂 / 没闸二结论 / 批准层是旧一轮 → 不下发
   §4 缓存版本: 规律版本、探索臂各自进版本串; 两样都没有时与以前完全一样
   §5 prompt: 规律段只在下发时出现、在卡前面; 卡面标命中
   §6 端到端 (打桩): 不带 explore 的老消费方不下发; 规律臂: 规律进 system、选中的卡带 validated_hits、响应带 patterns;
      探索臂什么都不带且缓存键不同;
-     命中查询挂了照样选卡 (fail-open)
+     命中查询挂了照样选卡 (fail-open), 但这次结果不写缓存
   §7 HTTP 响应带 patterns 键
 
 跑法: cd scripts && python check_desk_delivery.py
@@ -44,6 +45,11 @@ def s1_consistency() -> None:
         f = p["follow"]
         assert bool(f.get("any_of")) != bool(f.get("none_of")), f"{p['id']}: any_of / none_of 二选一"
         assert set(f.get("requires") or []) <= {q for q, _ in f.get("none_of") or []}, f"{p['id']}: requires 只给 none_of 用"
+        assert not f.get("skip_if") or f.get("none_of"), f"{p['id']}: skip_if 只给 none_of 用"
+        # 「别这么写」的规律, requires 题剩下的取值都会被当成「做到了」: 其中被压着的取值不排掉, 就等于从后门下发
+        # (品牌别硬插 × 未出现; codex review on #195)
+        backdoor = {tuple(s["value"]) for s in D["suppressed"] if s["value"][0] in (f.get("requires") or [])}
+        assert backdoor <= {tuple(v) for v in f.get("skip_if") or []}, f"{p['id']}: 压着的 {backdoor} 没进 skip_if"
         vals = [(tuple(v), +1) for v in f.get("any_of") or []] + [(tuple(v), -1) for v in f.get("none_of") or []]
         for (q, a), sign in vals:
             r = by.get((q, a))
@@ -71,11 +77,13 @@ def s2_hits() -> None:
         "a": {"ending_asks_reader": "是", "brand_first_position": "后20%", "brand_in_title": "否"},
         "b": {"body_question_marks": ">=2", "brand_first_position": "中间"},
         "c": {"brand_in_title": "否"},                                   # 位置没答过 → 品牌那条不算做到
-        "d": {"asks_for_help": "否", "brand_first_position": "未出现"},
+        "d": {"asks_for_help": "否", "brand_first_position": "未出现"},   # 没露品牌 → 不是品牌位置的例子
+        "e": {"brand_first_position": "后20%", "brand_in_title": "是"},
+        "f": {"brand_first_position": "后20%"},
     }
     h = P.card_hits(ans, D)
-    assert h == {"a": ["ending_asks_reader", "brand_placement"], "b": ["question_marks"], "d": ["brand_placement"]}, h
-    print("  §2 命中: any_of / none_of / 没答过不算 ✓")
+    assert h == {"a": ["ending_asks_reader", "brand_placement"], "b": ["question_marks"], "f": ["brand_placement"]}, h
+    print("  §2 命中: any_of / none_of / 没答过不算 / 没露品牌不算 ✓")
 
 
 def s3_switch() -> None:
@@ -157,9 +165,11 @@ def s6_end_to_end() -> None:
     def boom(sb, ids, d):
         raise RuntimeError("db down")
     P.fetch_answers = boom
+    n_writes = len(writes)
     res = core.librarian_select_full({"consumer": "t", "project_id": "p2", "explore": False})
     assert res["status"] == "ok" and res["selected"][0]["validated_hits"] == [] and res["patterns"]
-    print("  §6 端到端: 老消费方不下发; 规律臂: 规律进 system、卡带命中、响应带 patterns; 探索臂全不带且另缓存; dry-run 带命中; 空书架照给规律; 命中查询挂了照样选 ✓")
+    assert len(writes) == n_writes, "命中没查成的选择不许写缓存, 否则库恢复了也一直命中它 (codex review on #195)"
+    print("  §6 端到端: 老消费方不下发; 规律臂: 规律进 system、卡带命中、响应带 patterns; 探索臂全不带且另缓存; dry-run 带命中; 空书架照给规律; 命中查询挂了照样选、不写缓存 ✓")
 
 
 def s7_http() -> None:
