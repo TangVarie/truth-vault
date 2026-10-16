@@ -11,6 +11,11 @@ library_version 的 key 自然 miss、再也不会命中 —— 这些死行只�
 删掉 last_hit_at 超过 TTL 天的行(并防御性清掉极少数 last_hit_at 为 NULL、created_at 也老的行)。
 
   python prune_librarian_cache.py [--ttl-days 30] [--dry-run]
+  python prune_librarian_cache.py --delivery-only [--dry-run]
+
+--delivery-only (D-116): 不看 TTL, 删掉所有带已验证规律下发的缓存行 (library_version 里有 ":dl")。
+backfill-features 拿 run_tag=primary 重抽答案 (reannotate) 之后跑: 规律命中是按 primary 答案算的, 重抽改了答案却
+不改书架 / 批准层 / 闸二标签, 版本串不变, 旧缓存会一直回旧的命中标记 (codex review on #195)。
 """
 from __future__ import annotations
 
@@ -27,15 +32,35 @@ def _count(query) -> int:
     return res.count if res.count is not None else len(res.data or [])
 
 
+DELIVERY_MARK = "%:dl%"   # librarian/core.py library_version(): 有规律下发时版本串带 ":dl<批准层摘要>"
+
+
+def prune_delivery(sb, *, dry_run: bool = False) -> int:
+    def tbl():
+        return sb.schema("truth_vault").table("flywheel_librarian_cache")
+    n = _count(tbl().select("cache_key", count="exact").like("library_version", DELIVERY_MARK).limit(1))
+    if dry_run:
+        logger.info("[dry-run] 会清理 %d 行带规律下发的馆员缓存", n)
+        return 0
+    if n:
+        tbl().delete().like("library_version", DELIVERY_MARK).execute()
+    logger.info("已清理 %d 行带规律下发的馆员缓存 (primary 答案重抽过, 命中标记要重算)", n)
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--ttl-days", type=int, default=30,
                     help="删掉超过 N 天没命中的缓存行(默认 30)")
     ap.add_argument("--dry-run", action="store_true", help="只数不删")
+    ap.add_argument("--delivery-only", action="store_true",
+                    help="不看 TTL, 只删带已验证规律下发的行 (library_version 含 ':dl'); 重抽 primary 答案之后用")
     args = ap.parse_args()
     if args.ttl_days < 1:
         logger.error("--ttl-days 必须 >= 1")
         return 2
+    if args.delivery_only:
+        return prune_delivery(get_supabase_client(), dry_run=args.dry_run)
 
     # naive-UTC,匹配本仓 TIMESTAMP WITHOUT TIME ZONE 约定
     cutoff = (datetime.now(timezone.utc).replace(tzinfo=None)

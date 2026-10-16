@@ -30,8 +30,9 @@ _PAGE = 1000
 _ID_CHUNK = 100
 
 _cache: dict = {}
-_verified: dict = {}          # gate2_run → (结果, 查的时刻); 每个请求都查一次库太浪费, 10 分钟内复用
-VERIFY_TTL_S = 600
+_verified: dict = {}          # gate2_run → (结果, 查的时刻, 有效秒数); 每个请求都查一次库太浪费
+VERIFY_TTL_S = 600            # 查到了 (对得上 / 对不上): 10 分钟内复用
+VERIFY_RETRY_S = 30           # 查不了 (库 / 网络一时挂了): 30 秒后就重查, 别让一次抖动把规律关掉 10 分钟 (codex review on #195)
 
 
 def load_delivery(path: Path = DELIVERY_PATH) -> Optional[dict]:
@@ -77,11 +78,12 @@ def matches_db(rows: list[dict], d: dict) -> bool:
 
 def verified_against_db(sb, d: dict, *, now: Optional[float] = None) -> bool:
     """批准层只认 gate2_run 这个标签, 而闸二允许拿已有标签重跑 (upsert 覆盖, codex review on #195): 下发前对一遍库里
-    那一轮的行。查不了 → False (fail-closed)。结果在进程里缓存 VERIFY_TTL_S 秒。"""
+    那一轮的行。查不了 → False (fail-closed)。查到的结果在进程里缓存 VERIFY_TTL_S 秒, 查不了只记 VERIFY_RETRY_S 秒。"""
     now = time.monotonic() if now is None else now
     hit = _verified.get(d["gate2_run"])
-    if hit and now - hit[1] < VERIFY_TTL_S:
+    if hit and now - hit[1] < hit[2]:
         return hit[0]
+    ttl = VERIFY_TTL_S
     try:
         rows = (
             sb.schema("truth_vault").table("feature_validation")
@@ -93,9 +95,9 @@ def verified_against_db(sb, d: dict, *, now: Optional[float] = None) -> bool:
             logger.warning("库里 %s 的闸二结果和批准层对不上 (同一标签重跑过?) —— 规律不下发, 批准层要按库里的结果重过 (D-116)",
                            d["gate2_run"])
     except Exception:  # noqa: BLE001
-        logger.warning("闸二结果查不了, 这次规律不下发 (fail-closed)", exc_info=True)
-        ok = False
-    _verified[d["gate2_run"]] = (ok, now)
+        logger.warning("闸二结果查不了, 这次规律不下发 (fail-closed), %ds 后重查", VERIFY_RETRY_S, exc_info=True)
+        ok, ttl = False, VERIFY_RETRY_S
+    _verified[d["gate2_run"]] = (ok, now, ttl)
     return ok
 
 

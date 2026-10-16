@@ -8,14 +8,14 @@ check_desk_delivery.py —— P4 已验证规律下发 (D-116; prompts/desk_deli
   §2 命中: any_of 有就算; none_of 要 requires 都答过且一个都没有; 没答过不算「做到了」; skip_if 的卡不算
      (没露品牌的卡不是「品牌别硬插」的例子 —— requires 题里被压着的取值必须进 skip_if, §1 核)
   §3 下发开关: 探索臂 / 没闸二结论 / 批准层是旧一轮 → 不下发; 库里那一轮的行变了 (同标签重跑: 不再 validated /
-     方向反了 / 题库版本变了 / 行没了) 或查不了 → 不下发; 对库结果进程内缓存 10 分钟
+     方向反了 / 题库版本变了 / 行没了) 或查不了 → 不下发; 对库结果进程内缓存 10 分钟, 查不了只记 30 秒
   §4 缓存版本: 规律版本、探索臂各自进版本串; 两样都没有时与以前完全一样
   §5 prompt: 规律段只在下发时出现、在卡前面; 卡面标命中
   §6 端到端 (打桩): 不带 explore 的老消费方不下发; 规律臂: 规律进 system、选中的卡带 validated_hits、响应带 patterns;
      探索臂什么都不带且缓存键不同;
      命中查询挂了照样选卡 (fail-open), 但这次结果不写缓存; 新策展还没抽特征的卡在 shortlist 里也不写缓存
      (老卡没答案照写)
-  §7 HTTP 响应带 patterns 键
+  §7 HTTP 响应带 patterns 键; primary 答案重抽 (backfill-features reannotate) 之后清掉带规律的馆员缓存
 
 跑法: cd scripts && python check_desk_delivery.py
 """
@@ -139,7 +139,13 @@ def s3_switch() -> None:
     assert sb.calls == 1
     assert not P.verified_against_db(sb, D, now=__import__("time").monotonic() + P.VERIFY_TTL_S + 1), "过期后重查"
     P._verified.clear()
-    assert P.active_delivery(D["gate2_run"], explore=False, sb=_FV(RuntimeError("db down"))) is None, "查不了 → 不下发"
+    sb = _FV(RuntimeError("db down"))
+    t0 = __import__("time").monotonic()
+    assert P.verified_against_db(sb, D, now=t0) is False, "查不了 → 不下发"
+    sb.rows = rows
+    assert P.verified_against_db(sb, D, now=t0 + 10) is False and sb.calls == 1, "30 秒内不重查"
+    assert P.verified_against_db(sb, D, now=t0 + P.VERIFY_RETRY_S + 1) is True, \
+        "查不了只记 30 秒, 库一恢复就重新下发 —— 别让一次抖动把规律关掉 10 分钟 (codex review on #195)"
     P._verified.clear()
     print("  §3 下发开关: 探索臂 / 无结论 / 旧一轮 / 库里结果变了 / 查不了 都不下发 ✓")
 
@@ -239,11 +245,62 @@ def s6_end_to_end() -> None:
     print("  §6 端到端: 老消费方不下发; 规律臂: 规律进 system、卡带命中、响应带 patterns; 探索臂全不带且另缓存; dry-run 带命中; 空书架照给规律; 下发前对库; 新卡没答完 / 命中查询挂了照样选、不写缓存 ✓")
 
 
+class _Cache:
+    def __init__(self, rows):
+        self.rows, self.deleted = rows, []
+        self._like = None
+        self._del = False
+
+    def schema(self, s):
+        return self
+
+    def table(self, t):
+        self._like, self._del = None, False
+        return self
+
+    def select(self, *a, **k):
+        return self
+
+    def delete(self):
+        self._del = True
+        return self
+
+    def limit(self, *a):
+        return self
+
+    def like(self, col, pat):
+        import fnmatch
+        self._like = fnmatch.translate(pat.replace("%", "*"))
+        return self
+
+    def execute(self):
+        import re
+        hit = [r for r in self.rows if re.match(self._like, r["library_version"])]
+        if self._del:
+            self.deleted += hit
+            self.rows = [r for r in self.rows if r not in hit]
+        return type("R", (), {"data": hit, "count": len(hit)})()
+
+
 def s7_http() -> None:
     src = (ROOT / "librarian" / "app.py").read_text(encoding="utf-8")
     assert 'return {"selected": selected, "status": status, "patterns": patterns}' in src
     assert "librarian_select_full" in src
-    print("  §7 HTTP 响应带 patterns ✓")
+
+    import prune_librarian_cache as prune
+    cards = [{"source_note_id": "x", "curated_at": "2026-10-01"}]
+    with_dl = core.library_version(cards, gate2_run="g", delivery=P.delivery_digest(D))
+    plain = core.library_version(cards, gate2_run="g")
+    explore = core.library_version(cards, gate2_run="g", explore=True)
+    sb = _Cache([{"library_version": v} for v in (with_dl, plain, explore)])
+    prune.prune_delivery(sb)
+    assert [r["library_version"] for r in sb.deleted] == [with_dl], "只清带规律下发的那几行, 老消费方 / 探索臂的不动"
+    wf = (ROOT / ".github" / "workflows" / "backfill-features.yml").read_text(encoding="utf-8")
+    step = wf[wf.index("清掉带规律命中的馆员缓存"):]
+    step = step[:step.index("      - name:")]
+    assert "python prune_librarian_cache.py --delivery-only" in step and "always()" in step
+    assert "reannotate == 'true'" in step and "run_tag == 'primary'" in step
+    print("  §7 HTTP 响应带 patterns; primary 答案重抽后清掉带规律的馆员缓存 ✓")
 
 
 def main() -> int:
