@@ -412,7 +412,10 @@ def _select_via_llm(brief: dict, cards: list[dict], model: str, delivery: Option
     out = []
     dropped: list = []
     ext_left = X.max_per_borrow()
-    for item in parsed["selected"][:DEFAULT_SELECT_MAX]:
+    # 不先切 [:5]: 超额的外部卡被跳过时不能占名额, 否则模型多挑几张外部卡就把后面合格的内部卡挤掉
+    for item in parsed["selected"]:
+        if len(out) >= DEFAULT_SELECT_MAX:
+            break
         if not isinstance(item, dict):
             dropped.append(item)
             continue
@@ -575,6 +578,11 @@ def librarian_select(brief: dict, *, model: Optional[str] = None,
     if use_cache:
         cached = get_cache(sb, key)
         if cached is not None:
+            # 部署前写的缓存行没有这两个键; 文档承诺选中的卡都带 (缺 = 没有命中 / 不是外部卡)
+            for c in cached if isinstance(cached, list) else []:
+                if isinstance(c, dict):
+                    c.setdefault("validated_hits", [])
+                    c.setdefault("external", False)
             if _status_out is not None:
                 _status_out["status"] = STATUS_OK if cached else STATUS_NO_MATCH
             return cached

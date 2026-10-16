@@ -453,6 +453,8 @@ jobs:
           上面的 traceback 是真问题 —— advisory 不拖红, 但这盏灯现在是瞎的, 去修。"
           elif grep -q '^EXTERNAL_DIRECTION_CHECK_DONE rc=1' /tmp/external_direction.log; then
             echo "::warning title=有规律在外部帖上方向相反::见上面 🟡 那行: 这条可能只在我们自己的帖子上成立, 拿出来议 (修在 TV 仓批准层 + 新 D 号)。"
+          elif grep -q '^EXTERNAL_DIRECTION_CHECK_DONE rc=2' /tmp/external_direction.log; then
+            echo "::warning title=外部方向复核判不了::见上面 ⚠️ 那行: 外部表空 (看外部语料新鲜度那盏灯), 或某道题的外部答案不止一个 Jev 抽取器。"
           fi
 
       - name: 角度台账漏账检查 · 发了牌没走到成稿就告警 (advisory, 不 fail)

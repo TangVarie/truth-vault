@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -27,7 +28,9 @@ logger = logging.getLogger("flywheel_librarian")
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "prompts" / "external_shelf_v1.json"
 ID_PREFIX = "ext:"
-_FETCH_PER_CATEGORY = 200   # 达标判定有一半在 Python 里 (品牌名), 多取一些再筛; 一个品类每月最多进 160 篇 (Jev 配置)
+_FETCH_PER_CATEGORY = 200   # 品牌名那道筛在 Python 里, 多取一些再筛; 一个品类每月最多进 160 篇 (Jev 配置)
+SHELF_TTL_S = 600           # 外部表一周才进一次货; 每个请求 (包括命中缓存的) 都去拉 200 篇正文太浪费, 进程里留 10 分钟
+_shelf: dict = {}           # 品类 → (卡, 取的时刻)
 
 _cache: dict = {}
 
@@ -96,7 +99,7 @@ def fetch_shelf(sb, categories: list[str], cfg: dict) -> list[dict]:
             sb.schema("truth_vault").table("external_notes")
             .select("note_id, category, title, body, comments, has_product, ad_like")
             .eq("category", cat).gte("comments", int(cfg["min_comments"]))
-            .eq("has_product", False)
+            .eq("has_product", False).or_("ad_like.is.null,ad_like.eq.false")
             .order("comments", desc=True).order("note_id")
             .limit(_FETCH_PER_CATEGORY).execute()
         ).data or []
@@ -104,19 +107,30 @@ def fetch_shelf(sb, categories: list[str], cfg: dict) -> list[dict]:
     return out
 
 
-def shelf_for(sb, brief: dict, *, path: Path = CONFIG_PATH) -> list[dict]:
-    """这次请求给哪些外部卡。调用方只在显式带 explore 的请求上调。绝不抛。"""
+def shelf_for(sb, brief: dict, *, path: Path = CONFIG_PATH, now: Optional[float] = None) -> list[dict]:
+    """这次请求给哪些外部卡。调用方只在显式带 explore 的请求上调。绝不抛。
+    按品类在进程里缓存 SHELF_TTL_S 秒; 查库失败不缓存 (下个请求重查)。"""
     cfg = load_config(path)
     if not cfg:
         return []
     cats = categories_for(brief, cfg)
     if not cats:
         return []
-    try:
-        return fetch_shelf(sb, cats, cfg)
-    except Exception:  # noqa: BLE001
-        logger.warning("外部参考书架查询失败, 这次不给外部卡 (品类 %s)", cats, exc_info=True)
-        return []
+    now = time.monotonic() if now is None else now
+    out: list[dict] = []
+    for cat in cats:
+        hit = _shelf.get(cat)
+        if hit and now - hit[1] < SHELF_TTL_S:
+            out += hit[0]
+            continue
+        try:
+            cards = fetch_shelf(sb, [cat], cfg)
+        except Exception:  # noqa: BLE001
+            logger.warning("外部参考书架查询失败, 这次不给外部卡 (品类 %s)", cat, exc_info=True)
+            continue
+        _shelf[cat] = (cards, now)
+        out += cards
+    return out
 
 
 def digest(cards: list[dict]) -> str:

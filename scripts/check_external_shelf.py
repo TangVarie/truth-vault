@@ -7,8 +7,9 @@ check_external_shelf.py —— 外部参考书架 (D-117 ②; prompts/external_s
   §3 达标: 评论够 + Jev 判了没带产品 + 不像广告 + 没点到已知品牌名; 没判过的不收 (认不出品牌就不冒险)
   §4 卡面: id 带 ext: 前缀、没有品牌、卡头写明只借结构; 有外部卡时 prompt 才多那句用法
   §5 缓存版本: 外部卡进版本串; 没有外部卡时与以前完全一样
-  §6 端到端 (打桩): 老消费方不给; 两臂都给; 模型挑多了截到 2 张 (不算契约失败); 查库挂了照样选内部卡;
-     外部卡不去查 note 的规律答案
+  §6 端到端 (打桩): 老消费方不给; 两臂都给; 模型挑多了截到 2 张 (不算契约失败), 截掉的不占 5 张的名额;
+     查库挂了照样选内部卡; 外部卡不去查 note 的规律答案; 部署前的缓存行补上 external / validated_hits;
+     书架按品类在进程里缓存 10 分钟 (查库失败不缓存), 广告帖在查询里就筛掉
   §7 接线: 方向复核那盏灯报书架达标数, 用的是同一个 qualifies
 
 跑法: cd scripts && python check_external_shelf.py
@@ -162,10 +163,35 @@ def s6_end_to_end() -> None:
     assert dry["external"] == 4 and dry["library_version"].endswith(f":ext{want}"), "外部书架换一批, 缓存键要跟着换"
     assert asked and all(not str(i).startswith("ext:") for ids in asked for i in ids), "外部卡不查 note 的规律答案"
 
+    assert any(t == "or_" and a == ("ad_like.is.null,ad_like.eq.false",) for t, a in sb.log), "广告帖在查询里就筛掉"
+
+    def llm_many(prompt, model, *, system=None, **kw):
+        ids = [f"ext:e{i}" for i in range(4)] + ["ext:e0", "n1", "n2"]
+        return json.dumps({"selected": [{"source_note_id": i, "why_relevant": "r", "borrow_what": "b"} for i in ids]})
+    core.call_anthropic = llm_many
+    res = core.librarian_select_full(dict(brief, project_id="p7", explore=True))
+    assert [s["source_note_id"] for s in res["selected"]] == ["ext:e0", "ext:e1", "n1", "n2"], \
+        "截掉的外部卡不占名额: 模型多挑了外部卡, 后面合格的内部卡不能被挤掉"
+    core.call_anthropic = llm
+
+    calls = sum(1 for t, a in sb.log if t == "table" and a == ("external_notes",))
+    X.shelf_for(sb, brief)
+    assert sum(1 for t, a in sb.log if t == "table" and a == ("external_notes",)) == calls, "10 分钟内不再拉外部表"
+    X._shelf.clear()
     sb.rows = RuntimeError("db down")
     res = core.librarian_select_full(dict(brief, project_id="p2", explore=False))
     assert [s["source_note_id"] for s in res["selected"]] == ["n1"] and res["status"] == "ok", "外部表挂了照样选内部卡"
-    print("  §6 端到端: 老消费方不给; 两臂都给; 截到 2 张; 带产品不上架; 不查规律答案; 查库挂了照样选 ✓")
+    assert X._shelf == {}, "查库失败不缓存, 下个请求重查"
+    sb.rows = rows
+    assert X.shelf_for(sb, brief, now=10 ** 9), "库恢复了就有"
+
+    old = [{"source_note_id": "n1", "why_relevant": "r"}]
+    core.get_cache = lambda s, key: [dict(c) for c in old]
+    res = core.librarian_select_full(dict(brief, project_id="p8", explore=False))
+    assert res["selected"][0]["external"] is False and res["selected"][0]["validated_hits"] == [], \
+        "部署前的缓存行没有这两个键, 命中时补上 (文档承诺选中的卡都带)"
+    print("  §6 端到端: 老消费方不给; 两臂都给; 截到 2 张且不占名额; 带产品 / 广告不上架; 不查规律答案; "
+          "查库挂了照样选; 书架进程内缓存; 旧缓存行补键 ✓")
 
 
 def s7_wiring() -> None:
