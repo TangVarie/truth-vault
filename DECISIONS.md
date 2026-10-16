@@ -6426,16 +6426,19 @@ W-19现场5专属词配置已执行到生产：仅精确目标项目/owner/品�
   - `/comment_repair_plan_for` 和 `/judge_thread` 的读者侧改用这份题库。
   - 通过与否只看四道门槛题和背书复核。
   - 下面这些题不合评论位要求时只进 `hints`，漏答或标歧义也不送复核：三道参考题；运营侧整套（`comment_intent`、`is_scripted`，都没验收过）。
-  - 整组评论区题库 `comment_thread_v0.4` 不在本轮范围，照旧判定，要上线门槛得另起一轮。
-- **上线顺序：** 已部署，生产开关仍关。
-  1. owner 在 Railway 设 `JUDGE_COMMENT_TOOLS_ENABLED=1`；
-  2. 用写手 key 真调两个端点；
-  3. 核过后合 aw#101（协议 `b8986a70d163`）；
+  - 整组评论区题库 `comment_thread_v0.4` 不在本轮范围、没验收过：写手端点里它的四道模型题同样只提示，判定的只剩代码算的点名条数（Jev [#22](https://github.com/TangVarie/JevforCoentent/pull/22)）。要让整组题判通过与否得另起一轮。
+- **上线（10-16 已完成）：**
+  1. 07:15 UTC owner 在 Railway 打开 `JUDGE_COMMENT_TOOLS_ENABLED`。
+  2. 经写作台用真实写手 key 真调两个端点：单条通过；整组里的亲历背书送复核。
+  3. 核过后合并 aw#101，已部署（协议 `b8986a70d163`）。
   4. 通知写手重导 skill（W-02）。
-- **J-02：**
+  - 回滚：开关改回 0，两个端点立即 503，写作台如实回「没判成」。
+  - 这把写手 key 只在聊天里给过一次；本地副本用完即删，没有进任何仓库（密钥由 owner 自己管）。
+- **J-02（J-01 核过之后才跑）：**
   - 回填的读者侧同步换成 v0.6。
   - 续跑快照改为只存 id + md5（Jev [#21](https://github.com/TangVarie/JevforCoentent/pull/21)）。原来的快照带评论原文，会作为 Actions 产物上传，违反上面「原文不进 GitHub」。
-  - 先跑小批 shadow 并回读。
+  - 小批 shadow：run 38866866270，`NUC_phase1` 100 条。回读 900 行（读者侧 700 + 运营侧 200），无效 0；产物里没有原文。
+  - 全量 shadow 要花钱（约 1.9 万次调用），等 owner 一句话。primary 另等绑定当前题库摘要的验收记录。
 
 ## D-113 · 关掉 prompt caching：中转站没有固定上游账号的分组，缓存写了读不回来（2026-10-16）
 
