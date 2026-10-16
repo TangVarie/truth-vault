@@ -71,6 +71,8 @@ jobs:
             scripts/check_prompt_cache_fallback.py \
             scripts/check_essence_subtype_backfill.py \
             scripts/check_vanished_notes.py \
+            scripts/gate3_score.py \
+            scripts/check_gate3.py \
             librarian/__init__.py \
             librarian/clients.py \
             librarian/core.py \
@@ -3709,6 +3711,9 @@ jobs:
       - name: 飞书已删篇不再喂下游 (审计 B-21, D-103) · 视图判据 / 取 id / 新策展 / 通道 1 / 闸二取数 / verify 灯
         working-directory: scripts
         run: python check_vanished_notes.py
+      - name: 闸三第一轨 (D-118) · 冻结文件摘要 / token 同闸二 / 打分 / 分位 / 幂等 / 标注器对不上判红 / 判定线 / 接线
+        working-directory: scripts
+        run: python check_gate3.py
       - name: sanshengliubu sync shape self-check (build_reference_sample ↔ preflight ↔ ssll v2 schema)
         working-directory: scripts
         run: |

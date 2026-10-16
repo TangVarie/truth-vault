@@ -252,6 +252,28 @@ jobs:
             exit 1
           fi
 
+      - name: 闸三第一轨 · 冻结 essence 打分器给冻结日之后的新笔记打分 (D-118)
+        id: gate3_score
+        continue-on-error: true
+        if: steps.check.outputs.skip != 'true'
+        working-directory: scripts
+        run: |
+          # 只读冻结文件 data-analysis/gate3/scorer-essence-v1.json, 给冻结日 (2026-10-17) 之后发布、已有 essence 的笔记
+          # 打一次分写 content_scores (不重打), 再按 docs/28 附录 C 报进度。拖红: 闸三要攒一到几个月, 漏打 / essence
+          # 标注器被换都会让整轮作废, 不能等出结论那天才发现。崩了靠哨兵行判 (docs/29)。dry_run 只算不写。
+          DRY_FLAG=""; [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY_FLAG="--dry-run"
+          set +e
+          python gate3_score.py $DRY_FLAG 2>&1 | tee /tmp/gate3.log
+          set -e
+          if ! grep -q '^GATE3_SCORE_CHECK_DONE rc=' /tmp/gate3.log; then
+            echo "::error title=闸三打分崩了::脚本没跑到底(没有哨兵行), 上面的 traceback 是真问题 —— 闸三在漏数。"
+            exit 1
+          fi
+          if grep -q '^GATE3_SCORE_CHECK_DONE rc=1' /tmp/gate3.log; then
+            echo "::error title=闸三打分有缺口::见上面 🔴 那行: 写没写进 / essence 标注器被换。修在 TV 仓。"
+            exit 1
+          fi
+
       - name: 策展 flywheel 经验卡 (pull 馆员书架, D-038 / docs/14) · 直连中转站 (D-100)
         id: curate_sync
         continue-on-error: true
@@ -496,6 +518,7 @@ jobs:
           for kv in "feishu_sync:${{ steps.feishu_sync.outcome }}" \
                     "comments_sync:${{ steps.comments_sync.outcome }}" \
                     "essence_sync:${{ steps.essence_sync.outcome }}" \
+                    "gate3_score:${{ steps.gate3_score.outcome }}" \
                     "curate_sync:${{ steps.curate_sync.outcome }}" \
                     "ssll_sync:${{ steps.ssll_sync.outcome }}" \
                     "prepublish_sync:${{ steps.prepublish_sync.outcome }}"; do

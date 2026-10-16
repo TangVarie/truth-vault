@@ -32,6 +32,7 @@ D-053 定过一条：**天天红的 CI 等于没有 CI**。它有一条推论，
 | `LIBRARIAN_TRAFFIC_CHECK_DONE` | `scripts/check_librarian_traffic.py` | `daily-sync.yml` advisory | 写作台在出稿、馆员却零流量（通道 2 断了） | **owner · 每周一次** | **修在 autowriter 仓**（接线 / env）。TV 这边红了也改不好，所以它 advisory 不拖红 |
 | `ANGLE_LEDGER_CHECK_DONE` | `scripts/check_angle_ledger_leak.py` | `daily-sync.yml` advisory | 发出去的角度有没有走到成稿 | **owner · 每周一次** | **修在 autowriter 仓**（协议 / 使用习惯） |
 | `EXTERNAL_CORPUS_CHECK_DONE` | `scripts/check_external_corpus_fresh.py` | `daily-sync.yml` advisory | 外部语料这周有没有进 TV 账本（`external_notes` 最新 `fetched_at` 超过 8 天就红；表空 = 判不了） | **owner · 每周一次**，随夜跑结果一起扫 | **修在 Jev 仓**（TikHub 密钥 / UA / 详情解析 / 写库）。Jev 那边 10-08 起写库失败会让它自己的 job 红（Jev#6），这盏灯补的是"绿但空" |
+| `GATE3_SCORE_CHECK_DONE` | `scripts/gate3_score.py` | `daily-sync.yml` 闸三打分步（**拖红**，进失败聚合） | 冻结日之后的新笔记有没有都按冻结的 essence 打分器打上分；essence 标注器有没有在闸三期间被换掉（D-118） | **owner · 红了 GitHub 发邮件**（推送）；进度（离 212 / 847 还差多少）每周一 OPEN-ITEMS 例行检查时看一次 | **TV 侧**：写不进 content_scores 查库 / 权限；标注器被换要么换回去，要么另冻一版、写新 D 号、闸三重新计时。拖红的理由：闸三要攒一到几个月的数，漏打或换标注器会让整轮作废，等到出结论那天才发现就晚了（规矩 2 的「数据正确性」例外） |
 
 ### 不打哨兵行、但也是灯的
 
