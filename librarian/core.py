@@ -491,27 +491,31 @@ def librarian_select(brief: dict, *, model: Optional[str] = None,
     model = model or os.environ.get("FLYWHEEL_LIBRARIAN_MODEL", "claude-sonnet-5-5")
     sb = get_supabase()
 
+    # 分臂 (docs/28 §7.4): 只有显式带了 explore 的消费方 (写作台, 按批次 15% 抽探索臂并记进批次元数据) 才参与;
+    # explore=false → 规律臂, true → 探索臂。不带这个键的老消费方 (通道 1 / 旧版写作台) 不下发规律、缓存键也不变 ——
+    # 否则 TV 先上线、写作台还没开始分臂的那段时间里, 所有借阅都成了规律臂, 对照组是空的。
+    # 规律在看书架之前就定: 书架空了 (no_match) 规律照样能用, 写作台不该因为没卡就连规律一起丢 (codex review on #195)。
+    arm = brief.get("explore")
+    explore = arm is True
+    g2 = latest_gate2_run(sb)
+    delivery = P.active_delivery(g2, explore=explore) if isinstance(arm, bool) else None
+    if _status_out is not None:
+        _status_out["patterns"] = P.public_patterns(delivery)
+
     cards = fetch_candidates(sb)
     if not cards:
         return {"_dry_run": True, "candidate_count": 0, "shelf_count": 0, "note": "空库 → 返回 []"} if dry_run else []
 
     # 版本串看【整架】(D-088): 预筛挑掉的那张换了也要换缓存键 —— TV-03 那课 (50 张换 1 张版本不变)
     # 的边界如今是整个书架, 不是喂给 LLM 的那 24 张。
-    # 分臂 (docs/28 §7.4): 只有显式带了 explore 的消费方 (写作台, 按批次 15% 抽探索臂并记进批次元数据) 才参与;
-    # explore=false → 规律臂, true → 探索臂。不带这个键的老消费方 (通道 1 / 旧版写作台) 不下发规律、缓存键也不变 ——
-    # 否则 TV 先上线、写作台还没开始分臂的那段时间里, 所有借阅都成了规律臂, 对照组是空的。
-    arm = brief.get("explore")
-    explore = arm is True
-    g2 = latest_gate2_run(sb)
-    delivery = P.active_delivery(g2, explore=explore) if isinstance(arm, bool) else None
     lib_v = library_version(cards, gate2_run=g2, explore=explore,
                             delivery=P.delivery_digest(delivery) if delivery else None)
     key = cache_key(brief, lib_v)
     shown = shortlist(cards, brief)
-    if _status_out is not None:
-        _status_out["patterns"] = P.public_patterns(delivery)
 
     if dry_run:
+        if delivery:   # 诊断要看到生产冷路径真发出去的 prompt, 包括卡面的命中标记 (只读; codex review on #195)
+            shown = _with_hits(sb, shown, delivery)
         return {
             "_dry_run": True,
             "candidate_count": len(shown),

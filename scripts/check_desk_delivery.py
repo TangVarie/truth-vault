@@ -143,12 +143,23 @@ def s6_end_to_end() -> None:
     assert res["patterns"] == [] and "已验证规律" not in seen["system"]
     assert res["selected"][0]["validated_hits"] == [] and writes[-1][0] not in (k_rules, k_legacy), "探索臂要另一份缓存"
 
+    dry = core.librarian_select({"consumer": "t", "project_id": "p3", "explore": False}, dry_run=True)
+    assert dry["patterns"] == len(D["patterns"]) and "命中已验证规律: 结尾问读者" in dry["prompt"], \
+        "dry-run 要给出生产冷路径真发的 prompt, 包括命中标记 (codex review on #195)"
+
+    shelf = core.fetch_candidates
+    core.fetch_candidates = lambda sb, **kw: []
+    res = core.librarian_select_full({"consumer": "t", "project_id": "p4", "explore": False})
+    assert res["selected"] == [] and [p["id"] for p in res["patterns"]] == [p["id"] for p in D["patterns"]], \
+        "书架空了规律照样给 (codex review on #195)"
+    core.fetch_candidates = shelf
+
     def boom(sb, ids, d):
         raise RuntimeError("db down")
     P.fetch_answers = boom
     res = core.librarian_select_full({"consumer": "t", "project_id": "p2", "explore": False})
     assert res["status"] == "ok" and res["selected"][0]["validated_hits"] == [] and res["patterns"]
-    print("  §6 端到端: 老消费方不下发; 规律臂: 规律进 system、卡带命中、响应带 patterns; 探索臂全不带且另缓存; 命中查询挂了照样选 ✓")
+    print("  §6 端到端: 老消费方不下发; 规律臂: 规律进 system、卡带命中、响应带 patterns; 探索臂全不带且另缓存; dry-run 带命中; 空书架照给规律; 命中查询挂了照样选 ✓")
 
 
 def s7_http() -> None:
