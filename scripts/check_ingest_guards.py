@@ -266,15 +266,39 @@ class _Chain:
 
 
 def check_reuse_previous_inheritance() -> None:
-    stored = {"raw_content": "库里那份正文", "content_format": "干货", "from": "recPREV", "overrides": {"方向": "抖音"}}
-    out, meta = engine.reuse_previous_inheritance({"方向": "抖音", "笔记内容": ""}, stored, "笔记内容")
+    restore = {"方向": "_direction_raw"}
+    stored = {"raw_content": "库里那份正文", "from": "recPREV",
+              "raw_extra": {"_direction_raw": "提问贴", "_content_inherited_from": "recPREV"}}
+    out, meta = engine.reuse_previous_inheritance({"方向": "抖音", "笔记内容": ""}, stored, "笔记内容", restore)
     assert out["笔记内容"] == "库里那份正文" and meta["reused"] is True and meta["from"] == "recPREV", "§8 有库里那份就沿用"
-    assert meta["content_format"] == "干货", "§8 形态要用当初继承到的, 不用这行自己的「抖音」"
-    same, none = engine.reuse_previous_inheritance({"笔记内容": ""}, None, "笔记内容")
+    assert out["方向"] == "提问贴" and meta["overrides"] == {"方向": "抖音"}, \
+        "§8 also_inherit 的列复原成当初继承到的, 这行自己的「抖音」记进 overrides"
+    half = {"raw_content": "x", "from": "r", "raw_extra": {"_content_inherited_from": "r"}}
+    assert engine.reuse_previous_inheritance({"方向": "抖音"}, half, "笔记内容", restore)[1] is None, \
+        "§8 方向复原不了 → 不沿用(半套继承会把形态/人群/痛点冲成 null, codex review on #193)"
+    assert engine.reuse_previous_inheritance({}, stored, "笔记内容", {"方向": None})[1] is None, \
+        "§8 also_inherit 落普通列(复原不了)→ 不沿用"
+    same, none = engine.reuse_previous_inheritance({"笔记内容": ""}, None, "笔记内容", restore)
     assert none is None and same == {"笔记内容": ""}, "§8 库里没有就不沿用(照常隔离)"
     assert engine.reuse_previous_inheritance({}, {"raw_content": ""}, "笔记内容")[1] is None, "§8 库里正文为空不算"
     assert set(engine._REUSABLE_INHERIT_REASONS) == {"inherit_prev_row_is_same_kind", "inherit_parent_not_found"}, \
         "§8 只对「上一行判不了」放行, 其它理由照旧隔离"
+
+    # 端到端: 真 SPX mapping, 沿用后 transform 拆出来的跟一次成功继承的一样
+    spx = engine.load_mapping("SPX_phase1")
+    keys = engine.inherit_restore_keys(spx["content_inherit_from_previous_row"], spx["field_mapping"])
+    assert keys == {"方向": "_direction_raw"}, f"§8 SPX 的 also_inherit 应能复原: {keys}"
+    row = {"方向": "抖音", "笔记内容": "", "素人编号": "S1"}
+    parent = {"方向": "提问贴", "笔记内容": "【标题】跑完反胃？【正文】第三十公里那口胶", "素人编号": "S0"}
+    inherited, _m, why = engine.inherit_content_from_previous_row(
+        dict(row), parent, "recP", spx["content_inherit_from_previous_row"], "笔记内容")
+    assert why is None
+    first, _, _ = engine.transform_row(spx, "recD", inherited)
+    db = {"raw_content": first["raw_content"], "from": "recP", "raw_extra": first["raw_extra"]}
+    reused, _ = engine.reuse_previous_inheritance(dict(row), db, "笔记内容", keys)
+    again, _, _ = engine.transform_row(spx, "recD", reused)
+    for col in ("raw_content", "content_format", "target_audience", "user_pain_point"):
+        assert again.get(col) is not None and again.get(col) == first.get(col), f"§8 沿用后 {col} 要跟当初一样"
 
     saved = engine.fetch_all_pages
     try:
@@ -302,7 +326,8 @@ def check_reuse_previous_inheritance() -> None:
     i_quar = body.index("reason=inh_reason)")
     assert i_reuse < i_quar, "§8 先试沿用, 沿用不了才隔离"
     assert "if (inherit_spec and content_col and not args.dry_run) else {}" in body, "§8 dry-run 不读库"
-    print("  §8 抖音行: 以前继承成功的沿用库里那份(形态也沿用), 其它照旧隔离, 读不到库不放宽 ✓")
+    assert "content_col, inherit_restore)" in body, "§8 主循环沿用时要带上 also_inherit 的复原表"
+    print("  §8 抖音行: 以前继承成功的沿用库里那份(方向一并复原, 形态/人群/痛点不丢), 其它照旧隔离, 读不到库不放宽 ✓")
 
 
 def main() -> int:

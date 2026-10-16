@@ -6494,7 +6494,10 @@ F-02 原定「中转站给不了粘性分组、且对账单显示写缓存按 1.
 
 ### 定了什么
 
-1. 上一行判不了（`inherit_prev_row_is_same_kind` / `inherit_parent_not_found`），但库里这条 note 以前已经继承成功过（`raw_extra._content_inherited_from` 有值、正文非空）时，**沿用库里那份正文和形态**，只刷新指标。
+1. 上一行判不了（`inherit_prev_row_is_same_kind` / `inherit_parent_not_found`），但库里这条 note 以前已经继承成功过（`raw_extra._content_inherited_from` 有值、正文非空）时，**沿用库里那份正文**，只刷新指标。
+   - `also_inherit` 的列（SPX 是「方向」）一并复原成当初继承到的值（存在 `raw_extra._direction_raw`），再照常走 transform。形态、人群、痛点都从这个方向拆出来，结果和当初那次成功继承一样。
+   - 只复原正文不行：transform 会拿这行自己的「抖音」去拆，拆不出东西，批量 upsert 会把库里的形态、人群、痛点冲成 null（codex review on #193）。
+   - 任何一列复原不了就不沿用、照常隔离：半套继承比隔离更糟。
 2. **不重新推断谁的文案是谁的**：那正是 D-052 不让做的事。库里没有这条 note 的，照旧隔离。
 3. 读不到库就不沿用，照常隔离：这是放宽，放宽的前提查不到就不放宽。dry-run 不读库。
 4. 沿用的行在 `raw_extra._content_inherit_reused = true`，计数进 `inherit_reused`。

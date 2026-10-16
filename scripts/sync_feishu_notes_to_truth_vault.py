@@ -417,7 +417,7 @@ def fetch_previous_inheritance(client, project_id: str) -> dict[str, dict]:
     try:
         rows = fetch_all_pages(
             client.schema("truth_vault").table("notes")
-            .select("note_id, raw_content, content_format, raw_extra")
+            .select("note_id, raw_content, raw_extra")
             .eq("project_id", project_id)
             .not_.is_("raw_extra->>_content_inherited_from", "null"),
             order_by="note_id",
@@ -432,22 +432,45 @@ def fetch_previous_inheritance(client, project_id: str) -> dict[str, dict]:
         nid = r.get("note_id") or ""
         if not (r.get("raw_content") and extra.get("_content_inherited_from") and nid.startswith(prefix)):
             continue
-        out[nid[len(prefix):]] = {"raw_content": r["raw_content"], "content_format": r.get("content_format"),
-                                  "from": extra["_content_inherited_from"],
-                                  "overrides": extra.get("_inherited_overrides") or {}}
+        out[nid[len(prefix):]] = {"raw_content": r["raw_content"], "raw_extra": extra,
+                                  "from": extra["_content_inherited_from"]}
+    return out
+
+
+def inherit_restore_keys(spec: dict | None, field_mapping: dict) -> dict[str, str | None]:
+    """also_inherit 的每一列 → 它当初抄过来后落在 raw_extra 里的键(中间量, 如 方向 → _direction_raw)。
+    落成普通列的给 None —— 沿用时复原不了, 那条就不沿用(照常隔离)。"""
+    out: dict[str, str | None] = {}
+    for col in (spec or {}).get("also_inherit") or []:
+        tgt = field_mapping.get(col)
+        out[col] = tgt if isinstance(tgt, str) and tgt.startswith("_") else None
     return out
 
 
 def reuse_previous_inheritance(
     raw_fields: dict[str, Any], stored: dict | None, content_col: str,
+    restore: dict[str, str | None] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    """库里有这条以前继承成功的那份 → 用它的正文, meta 里带上原出处并标 reused; 没有 → (原样, None)。"""
+    """库里有这条以前继承成功的那份 → 正文和 also_inherit 的列都复原成当初继承到的, meta 带原出处并标
+    reused; 没有 → (原样, None)。
+
+    also_inherit 的列要一并复原(codex review on #193): SPX 当初连「方向」一起从上一行抄过来,
+    content_format / target_audience / user_pain_point 都是从那个方向拆出来的。只复原正文的话, transform
+    拿这行自己的「抖音」去拆, 拆不出东西, 批量 upsert 会把库里那几列冲成 null。
+    复原后照常走 transform, 产出的就跟当初那次成功继承一模一样。任何一列复原不了 → 不沿用:
+    半套继承比隔离更糟。"""
     if not stored or not stored.get("raw_content"):
         return raw_fields, None
+    extra = stored.get("raw_extra") or {}
     out = dict(raw_fields)
+    overrides: dict[str, Any] = {}
+    for col, key in (restore or {}).items():
+        if key is None or extra.get(key) in (None, "", []):
+            return raw_fields, None
+        overrides[col] = raw_fields.get(col)
+        out[col] = extra[key]
     out[content_col] = stored["raw_content"]
-    return out, {"from": stored.get("from"), "overrides": stored.get("overrides") or {},
-                 "reused": True, "content_format": stored.get("content_format")}
+    return out, {"from": stored.get("from"), "overrides": overrides, "reused": True}
 
 # field_mapping 的值里, `_` 开头的是【中间量】(不是 notes 的列), 要换成它真正影响的列
 # 才查得到"以前填过没有"。查不到对应列的(评论走另一张表、笔记状态只用于检测)→ 不监控,
@@ -1845,6 +1868,7 @@ def main() -> int:
         fetch_previous_inheritance(sb, mapping["project_id"])
         if (inherit_spec and content_col and not args.dry_run) else {}
     )
+    inherit_restore = inherit_restore_keys(inherit_spec, mapping["field_mapping"])
     prev_raw: dict[str, Any] | None = None      # 【紧挨着】的上一条(不管是什么行)
     prev_id: str | None = None
     for item in _iter_all_records():
@@ -1863,7 +1887,7 @@ def main() -> int:
             prev_raw, prev_id = item.get("fields", {}), feishu_record_id
             if inh_reason and inh_reason in _REUSABLE_INHERIT_REASONS:
                 reused_raw, reused_meta = reuse_previous_inheritance(
-                    raw_fields, prev_inherited.get(feishu_record_id), content_col)
+                    raw_fields, prev_inherited.get(feishu_record_id), content_col, inherit_restore)
                 if reused_meta:
                     raw_fields, inherited_meta, inh_reason = reused_raw, reused_meta, None
                     stats["inherit_reused"] += 1
@@ -1890,10 +1914,8 @@ def main() -> int:
                 if inherit_spec.get("platform_override"):
                     note["platform"] = inherit_spec["platform_override"]
                 if inherited_meta.get("reused"):
-                    # 沿用的是库里那份: 方向(→ content_format)也用当初继承到的, 不用这行自己的「抖音」
+                    # 沿用的是库里那份; 方向已在 reuse 里复原, 形态/人群/痛点由 transform 照常拆出
                     note["raw_extra"]["_content_inherit_reused"] = True
-                    if inherited_meta.get("content_format"):
-                        note["content_format"] = inherited_meta["content_format"]
             if undeclared:
                 # D-055(owner 2026-09-11): 未声明列【不再隔离整行】。它们按定义都是非核心列
                 # (核心 = field_mapping 的键, 都已声明), transform_row 已经把值收进
