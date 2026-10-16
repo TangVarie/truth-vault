@@ -9,6 +9,8 @@ cache_control 的话每次调用都在多付一倍 input token, 持续几个月�
   §3 librarian /health 回显 config.prompt_cache_fallbacks (同进程计数)
   §4 essence 的 Done 行 stats 带 prompt_cache_fallbacks
   §5 真错误 (纯 system 也失败) 仍抛出 —— 降级不掩盖余额 / 鉴权 / 模型不存在
+  §7 D-113 开关: 默认 (PROMPT_CACHE_ENABLED 没设) 两条路都发纯字符串 system、不打 cache_control、不计降级;
+     /health 与 Done 行都标出 enabled。§1–§6 在 PROMPT_CACHE_ENABLED=1 下跑 (测的是打开时的行为)
   §6 实际缓存读写按 usage 累加 (2026-10-12): essence.call_claude 与 librarian.call_anthropic 各自记 calls /
      input / cache_write / cache_read / output; read_share = cache_read / 总输入; 特征层与 essence 的 Done 行、
      librarian /health 都带出去 —— 网关静默丢掉 cache_control 时降级计数恒 0, 只有这几个数看得出来
@@ -66,6 +68,7 @@ def main() -> int:
     fake.Anthropic = _Anthropic
     sys.modules["anthropic"] = fake
     os.environ.setdefault("ANTHROPIC_API_KEY", "sk-test")
+    os.environ["PROMPT_CACHE_ENABLED"] = "1"   # §1–§6 测打开时的行为; §7 再关掉
     fails: list[str] = []
 
     from librarian import clients as C
@@ -143,12 +146,47 @@ def main() -> int:
     if 'PROMPT_CACHE_USAGE' not in Path(HERE.parent / "librarian" / "app.py").read_text(encoding="utf-8"):
         fails.append("§6 librarian /health 没回显 prompt_cache_usage")
 
+    # §7
+    os.environ.pop("PROMPT_CACHE_ENABLED", None)
+    if C.prompt_cache_enabled() or E.prompt_cache_enabled():
+        fails.append("§7 没设 PROMPT_CACHE_ENABLED 时默认应关 (D-113)")
+    sent: list = []
+    real_create = _Messages.create
+
+    def spy(self, **kw):
+        sent.append(kw.get("system"))
+        return real_create(self, **kw)
+    _Messages.create = spy
+    try:
+        fb_c, fb_e = C.PROMPT_CACHE_FALLBACKS["count"], E.PROMPT_CACHE_FALLBACKS["count"]
+        o1 = C.call_anthropic("p", "m", system=[{"type": "text", "text": "A", "cache_control": {"type": "ephemeral"}},
+                                                {"type": "text", "text": "B", "cache_control": {"type": "ephemeral"}}])
+        o2 = E.call_claude("p", "m", cached_system="S")
+        if o1 != "ok:sys" or o2 != "ok:sys":
+            fails.append(f"§7 关掉时应直接用纯 system 成功: {o1!r} {o2!r}")
+        if sent != ["A\n\nB", "S"]:
+            fails.append(f"§7 关掉时发出去的 system 应是纯字符串、内容不变: {sent!r}")
+        if C.PROMPT_CACHE_FALLBACKS["count"] != fb_c or E.PROMPT_CACHE_FALLBACKS["count"] != fb_e:
+            fails.append("§7 关掉时不该计降级")
+    finally:
+        _Messages.create = real_create
+    if E.prompt_cache_summary().get("enabled") is not False:
+        fails.append("§7 Done 行的 prompt_cache 要标 enabled=false")
+    try:
+        from fastapi.testclient import TestClient
+        from librarian import app as A
+        h = TestClient(A.app).get("/health").json()
+        if (h.get("config") or {}).get("prompt_cache_enabled") is not False:
+            fails.append(f"§7 /health 要回显 prompt_cache_enabled=false: {h.get('config')}")
+    except ImportError as exc:
+        print(f"  ⚠️ §7 /health 跳过 (import 失败: {exc})")
+
     for f in fails:
         print("  ❌", f)
     if fails:
         print(f"❌ prompt cache fallback: {len(fails)} 条不过")
         return 1
-    print("✅ prompt cache fallback: §1 馆员计数 · §2 essence 计数 · §3 /health · §4 Done 行 · §5 真错误仍抛 · §6 实际缓存读写 全过")
+    print("✅ prompt cache fallback: §1 馆员计数 · §2 essence 计数 · §3 /health · §4 Done 行 · §5 真错误仍抛 · §6 实际缓存读写 · §7 默认关 (D-113) 全过")
     return 0
 
 
