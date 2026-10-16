@@ -28,7 +28,7 @@
 | ≈ 10-22 | 删 D-086 两张备份；librarian 延迟对比 D-090 基线；daily-sync 去掉 C-20 的 `|| true`（条件：`stale_in_ssll` 连续两周 0） | S-01、F-03、L-01 |
 | 10-16 已关 | 判定 8 秒截止不动（实测最长 4.3 秒）；入库段变慢到 12 秒，aw#100 让判定只拿整次回包 20 秒里剩下的（已部署，build 73117bd） | J-08（已关）、W-21 |
 | 10-16 已上线 | owner 验收 D-112；07:15 UTC 生产开关打开，写作台用真实写手 key 核过两个评论工具；aw#101、aw#102 已部署（协议 `d59368a8f8ad`）；J-02 全量 shadow 9,766 条已写已回读 | J-01（已关）、J-02、W-02 |
-| 10-16 红 | daily-sync 两步红：essence 的中转站 key（GitHub secret）被拒，429 锁（S-10，你）；SPX 18 条抖音行因表格行序变了被隔离，本 PR 修（I-15） | S-10、I-15 |
+| 10-16 红→已修 | daily-sync 两步红：essence 的中转站 key（GitHub secret）被拒，429 锁（S-10，owner 10-16 换 key，gateway-probe 回 200）；SPX 18 条抖音行因表格行序变了被隔离，TV#193 修（I-15，10-17 夜跑后核） | S-10（已关）、I-15 |
 | 10-16 已关 | 发牌「漏账」主要是 Hatherine 的稿子直接进了飞书、模型没同时调 `commit_drafts`；每日飞书 → TV 同步已补上指纹，角度重复 2/261，不加闸、不用问人 | W-06（已关）、W-22 |
 | 10-16 已上线 | 漏账灯加原因标签：超线项目标「稿子进了飞书但没走 commit」/「飞书里也没有」/「查不到」，灯本身不因此变绿（aw#103，build `4833ad8`；线上 1 个项目超线、属于前一种）；`/health` 按 key 传法计数 | W-22（已关）、W-09 |
 | 11-09 之后 | 删 10-09 / 10-10 两批备份表 | S-02 |
@@ -143,7 +143,6 @@
 | S-06 | 开 RLS 后三省六部还能不能读、它实际用哪把 key（读到 0 行就回滚或换 key）；三省六部下次在 `public` 建表时收回 anon 默认权限 | 未核 | 工程 / 你 | 三省六部下次跑 | D-101 |
 | S-07 | 改动后跑一遍 `verify_supabase_state.sql`，重点 #88 #89 #91 #92 #93 #94 | 部分核过（10-12：HATHERINE 6 条 twin 链接在 10-11 同步后仍是 `ingested`；TUGE 孤儿副本已删、回读 0） | 工程 | 每次大改后 | D-099；D-102；D-104 |
 | S-09 | 小工程：迁移命名与 `dashboard_views_*` / `security_*` 部署清单（C-16）；密钥打码没盖住隔离路径的 `print()`；备份 RPO / RTO 没定义（R-015） | 没做 | 工程 / 你拍板 | 低 | 审计 C-16；D-095；RISKS.md:182 |
-| S-10 | TV 仓 GitHub secret 里的中转站 key 被拒：10-16 07:17 起 essence 每次调用都回 429「Too many failed attempts, please try again in 3600 seconds」，09:44 重跑仍是（2.5 小时后），10-15 07:56 还正常。Railway 上的 worker / 馆员 10-15 晚还正常 | 你：如果今天换过中转站 key，同步改 truth-vault 仓 Settings → Secrets 的 `ANTHROPIC_API_KEY`（essence / 策展 / 回填都用它）；没换过就是 key 被中转站停了 | 你 | 越快越好：每晚 essence 都会红，已标的不丢，改好后下一轮自动续标 | D-100；D-113 |
 
 ## 8. 你要做的（从上面挑出来，方便一次看完）
 
@@ -152,7 +151,6 @@
 | 条目 | 一句话 |
 |---|---|
 | W-02 | 通知写手重新导入一次 skill（协议 `d59368a8f8ad`，评论工具可以用了；以后改工具口径不用再重导） |
-| S-10 | truth-vault 仓 GitHub secret `ANTHROPIC_API_KEY`：今天换过中转站 key 就同步改；没换过就是中转站把这个 key 停了 |
 | W-16 | 有空对一次中转站账单，核 1.8 倍系数（缓存已按 D-113 关掉，这条不再挡任何事） |
 | S-01、S-02 | 备份到期时 Claude 发删表 SQL，你在 SQL editor 跑（10-22 / 11-09 / 11-16） |
 | G-02 | 回一句：「问号那条下不下发」「品牌那条下不下发」（emoji 两条 Claude 建议不下发） |
@@ -176,6 +174,7 @@
 
 | 日期 | 条目 | 证据 |
 |---|---|---|
+| 2026-10-16 | **S-10：TV 仓 GitHub secret 里的中转站 key** | owner 10-16 换了 secret；gateway-probe run 38887264544（1 token ping，`claude-sonnet-5-5`）回 http=200。今天漏掉的 essence 由今晚 daily-sync 补上，不单独重跑 |
 | 2026-10-16 | **W-22：漏账灯分清「没交」和「交了没走 commit」** | aw#103（build `4833ad8`，Codex 复审无问题）。没做成单独一档黄：两种情况坐标都没销账、都会被重抽，灯照旧红；改成给每个超线项目贴原因标签——同一窗口里飞书同步回来过补录副本 → `delivered_without_commit`，没有 → `not_delivered`，副本数读不到 → `unknown`（总数给 null，不给 0）。`/health` 只露总数 `projects_delivered_without_commit`，哪个项目是哪种在鉴权过的 `doctor` 里看。上线后 `/health`：7 天发 179 / 销 103，1 个项目超线，属于「交了没走 commit」 |
 | 2026-10-16 | **J-01：写手的评论能力** | 07:15 UTC 开关打开；写作台用真实写手 key 核过两个端点（单条通过、整组里的背书送复核）；aw#101 / aw#102 已部署（build 1abf3b5，协议 `d59368a8f8ad`）；Jev#22（0ce92ae）让整组题也只提示；回滚 = 开关改回 0 |
 | 2026-10-16 | **J-04：三省六部不接** | 它自己的运行记录 `public.pipeline_runs` 最后一次 2026-08-28（总共 23 次），之后没在用；owner 10-16「不管吧，我觉得没必要」。三省六部恢复使用时再议 |
