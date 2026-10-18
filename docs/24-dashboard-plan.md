@@ -99,7 +99,7 @@
 
 ## 5. 安全(必须做对)
 
-1. **Supabase service_role key 只在服务端**(Next.js Server Components / API routes),**绝不进浏览器**。公开页只渲染服务端算好的安全聚合数。
+1. **Supabase key 只在服务端**(Next.js Server Components / API routes),**绝不进浏览器**。用 anon key 读 `v_dash_*` 聚合视图,**不用 service_role**(D-101)。公开页只渲染服务端算好的安全聚合数。
 2. **公开 vs 内部分离**:公开页 = 安全聚合(项目数/燃料/活着信号);内部页(drill-down/原始计数/队列/失败)**走登录**——方案:Vercel 密码保护 或 共享口令 或 Supabase Auth(先用最简单的,后期升 Auth)。
 3. **客户数据隔离**:涉及具体投放/受众的细节归内部页;公开页不露单客户敏感数。
 
@@ -119,6 +119,8 @@
 ---
 
 ## 6. 分阶段落地
+
+> **2026-10-18 现状（D-119 L-04）**：Phase 0–2 已完成并在 Vercel 上线（18 个 `public.v_dash_*` 聚合视图，D-101）。**Phase 3、4 不做**：没人要。下表留作历史。
 
 | Phase | 目标 | 产出 | 你需要给 |
 |---|---|---|---|
@@ -140,6 +142,8 @@
 
 ## 8. 待你拍板的几个点(我已给默认,确认或改)
 
+> **2026-10-18 已定**：托管 Vercel、位置 `truth-vault/dashboard/`、公开页只露聚合；内部页用 `DASHBOARD_PASSWORD` 口令，不升 Supabase Auth（Phase 3 不做，D-119）。
+
 1. **托管 = Vercel**(默认,最契合"在线网站 + 自定义域名")—— ✅/换?
 2. **公开页露多少**:默认只露安全聚合(项目数/燃料/经验卡/活着信号),单客户细节归内部登录页 —— OK?
 3. **位置 = `truth-vault/dashboard/`**(默认)还是要**独立新仓**(需把 autowriter 之外的仓加进 scope / 新建仓)?
@@ -157,7 +161,7 @@
 - **数据路径已实测**:`SET ROLE anon → select v_dash_overview` = 项目 4 / 笔记 2478 / 真爆款 96 / 卡 97 / essence 1192;`npm run build` 绿。
 - **只差最后一步(必须在 Vercel 网站做)**:本执行环境**网络策略封了 vercel.com + 无 Vercel token**,无法代部署。
   你来:Vercel → Add New → Project → Import `TangVarie/truth-vault` → **Root Directory=`dashboard`** →
-  env 加 `SUPABASE_URL` + `SUPABASE_ANON_KEY` → Deploy(生产分支设为本分支,或先把本分支合进 main)。
+  env 加 `SUPABASE_URL` + `SUPABASE_ANON_KEY` + `DASHBOARD_PASSWORD`(`AUTH_SECRET` 可选;不配口令 `/console` 一律登录失败)→ Deploy(生产分支设为本分支,或先把本分支合进 main)。
 - ⚠️ **安全发现(待处理 · 见 §5)**:共享库 `public` schema(三生六部)当前 **RLS-off 且 anon 可读**
   (`reference_samples`/`projects`/`pipeline_runs`/`outputs`/`stage_logs`,Supabase 安全 linter **ERROR** 级)。
   故 anon key 仍属敏感:**只服务端用、勿提交进 git/勿发浏览器**。根治 = 给 ssll 的 public 表开 RLS
@@ -176,8 +180,10 @@
 
 **待拍板(见 §8,已给默认)**:① 托管 Vercel ② 公开页露多少 ③ 位置 `truth-vault/dashboard/` vs 独立仓 ④ 内部页 auth。
 
-**下一步三选一**:
-1. **部署上线 MVP**(最快见网址)→ 需:接入 Vercel 账号 + Supabase `SERVICE_ROLE_KEY`(配进 Vercel env)。有 Vercel MCP 可代部署。
+> **2026-10-18**：下面三条都已过时。1、2 已做完；3（Phase 3）不做（D-119）。env 以 §7 为准，**不要配 service_role**。
+
+**下一步三选一**(历史):
+1. **部署上线 MVP**(最快见网址)→ 需:接入 Vercel 账号 + `SUPABASE_ANON_KEY` 与 `DASHBOARD_PASSWORD`(配进 Vercel env)。有 Vercel MCP 可代部署。
 2. **写 Phase 2 聚合视图**(`truth-vault/schemas/dashboard_views_*.sql`:aw/ssll/通道真实数据)→ 部署后满屏数据。
 3. **Phase 3 装逼级动效**(飞轮流动动画 framer-motion + 活动 ticker + 实时卡接真数据)。
 
