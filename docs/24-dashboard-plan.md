@@ -133,7 +133,7 @@
 ## 7. 仓库位置 + 部署 + 域名
 
 - **位置**:放 `truth-vault/dashboard/`(TV 是数据基础设施 hub,看板是其上的"视图层";共用 Supabase 连接)。**Vercel 支持从子目录部署**(Root Directory 设 `dashboard`)。后期若要独立成站,可抽出单独仓。
-- **部署**:Vercel → New Project → 连 `TangVarie/truth-vault`、Root Directory=`dashboard` → 配 env(`SUPABASE_URL`、`SUPABASE_SERVICE_ROLE_KEY`)→ 自动构建上线。我有 Vercel MCP,可在你接入账号后代部署。
+- **部署**:Vercel → New Project → 连 `TangVarie/truth-vault`、Root Directory=`dashboard` → 配 env(`SUPABASE_URL`、`SUPABASE_ANON_KEY`、`DASHBOARD_PASSWORD`,`AUTH_SECRET` 可选、不配就用口令签会话;**不要配 service_role**——看板只读 `v_dash_*` 聚合视图,anon 就够,D-101)→ 自动构建上线。我有 Vercel MCP,可在你接入账号后代部署。
 - **域名**:Vercel 项目 Settings → Domains → 加域名 → 配 DNS。后期一键换。
 
 ---
