@@ -19,10 +19,22 @@ check_angle_ledger_leak.py
 D-064), 它们本来就没有 angle_key —— 不是发牌产出的, 没有坐标。把它们算进「没带
 坐标的稿子」, 未归因率永远是 97%+, 这盏灯就等于没有。真稿只有 39 条, 其中 22 条带坐标。
 
-判据(两条, 都故意设了下限, 免得天天红 —— D-053):
+判据(三条, 都故意设了下限, 免得天天红 —— D-053):
     A. 某项目窗口内发牌 >= MIN_DRAWN 个角度, 而真稿 == 0     → 抽完没写
     B. 某项目窗口内【发过牌】且真稿 >= MIN_DRAFTS, 而带坐标的 == 0 → 写了不带坐标
-两条都不成立才算通。一次发两三张牌、当场没写完是常态, 所以下限不能是 1。
+    C. 某 TV 项目窗口内补录副本 >= MIN_UNCAUGHT 篇、对上写作台存档的 <= MAX_CAUGHT 篇,
+       而它对应的写作台项目近 USED_WITHIN_DAYS 天用过写作台         → 发了帖、写作台没接住
+三条都不成立才算通。一次发两三张牌、当场没写完是常态, 所以下限不能是 1。
+
+C 是 2026-10-19 补的(TV OPEN-ITEMS O-04): 途鸽 9-16 之后写作台一次发牌、一篇存档都没收到, 10-12 那周
+发出去的 22 篇全是 tv-sync 补录的副本, 写手却一直以为在用写作台。A / B 都从【发牌】那一侧看, 一张牌
+都没发的项目在它们眼里是「没活」, 所以这件事一个月都没灯亮。C 从【发帖】那一侧看, 分两种报:
+    · 写作台窗口内没收到这个项目的一次发牌、一篇真稿 → 多半是写手那边的写作台没连上(模型照 skill
+      把流程走完了, 服务端什么都没收到; aw 协议 2d19228147b4 起没连上就不写);
+    · 写作台有动静, 但发出去的不是它存的稿                → 连上了、写完没存档。
+「近 USED_WITHIN_DAYS 天用过写作台」那一条是为了不对从来不走写作台的项目天天喊。
+数据: autowriter.tv_project_map(TV 项目 → 写作台项目)、autowriter.tv_note_links(matched_at 在窗口内,
+按 match_kind 分补录 / 对上)、autowriter.angle_ledger(USED_WITHIN_DAYS 天内发过牌的写作台项目)。
 
 数据来源(都在共享 Supabase 的 autowriter schema 里, TV 用 service_role 只读):
     发牌  = autowriter.angle_ledger(drawn_at 在窗口内; consumed_version_id 非 NULL = 销了账)
@@ -35,6 +47,7 @@ D-064), 它们本来就没有 angle_key —— 不是发牌产出的, 没有坐�
 用法:
     python check_angle_ledger_leak.py                 # 默认 7 天
     python check_angle_ledger_leak.py --window-days 14
+    python check_angle_ledger_leak.py --selftest      # CI: 判据 C 的纯函数 + 取数, 不连库
 
 退出码:
     0 = 窗口内没发牌(无从判定), 或两条判据都不成立
@@ -56,8 +69,15 @@ DEFAULT_WINDOW_DAYS = 7
 # 判据下限: 低于这两个数不喊。一次发牌 2-5 张、当场只写一两篇是正常节奏。
 MIN_DRAWN = 10
 MIN_DRAFTS = 5
+# 判据 C 的下限: 一周补录 >= 10 篇且对上 <= 2 篇才喊。10-12 那周 sportsix 补录 12 / 对上 18、
+# 百健士 15 / 19, 这种"一部分在外面写"的不喊; 途鸽 22 / 0、Hatherine 23 / 1 喊。
+MIN_UNCAUGHT = 10
+MAX_CAUGHT = 2
+USED_WITHIN_DAYS = 60
 # tv-sync 复制进写作台的副本: 不是发牌产出的, 没有坐标, 不能算进未归因。
 INGESTED_KIND = "ingested"
+# 对上写作台存档的几种(tv-sync 的 match_kind; ambiguous / unmatched 两边都不算)。
+CAUGHT_KINDS = frozenset({"body_exact", "title_exact", "fuzzy", "edited", "tv_lineage"})
 
 
 def verdicts(by_project: dict) -> list[dict]:
@@ -84,6 +104,63 @@ def verdicts(by_project: dict) -> list[dict]:
     return out
 
 
+def verdicts_publish(by_project: dict, pub: dict) -> list[dict]:
+    """判据 C: 哪些 TV 项目在发帖、写作台却没接住。纯函数 —— CI 直接喂假数测它。
+
+    ``by_project`` 是 gather() 的那份(写作台项目 → 窗口内发牌 / 真稿); ``pub`` 是 gather_publish() 的:
+    ``{"map": {tv: [写作台 project_id…]}, "links": {tv: {"ingested": n, "caught": n}},
+    "used": {近 USED_WITHIN_DAYS 天发过牌的写作台 project_id}}``。
+    """
+    out = []
+    used = pub.get("used") or set()
+    for tv, pids in sorted((pub.get("map") or {}).items()):
+        link = (pub.get("links") or {}).get(tv) or {}
+        ing, caught = link.get("ingested", 0), link.get("caught", 0)
+        if ing < MIN_UNCAUGHT or caught > MAX_CAUGHT:
+            continue
+        if not any(p in used for p in pids):
+            continue        # 近 USED_WITHIN_DAYS 天没用过写作台: 本来就不在写作台写, 不喊
+        drawn = sum((by_project.get(p) or {}).get("drawn", 0) for p in pids)
+        drafts = sum((by_project.get(p) or {}).get("drafts", 0) for p in pids)
+        if drawn == 0 and drafts == 0:
+            kind, why = "desk_silent", ("写作台这几天没收到它一次发牌、一篇存档 —— 多半是写手那边的写作台没连上, "
+                                        "模型照 skill 把流程走完了, 服务端什么都没收到")
+        else:
+            kind, why = "published_unsaved", (f"写作台这几天发牌 {drawn}、真稿 {drafts} —— 连上了, "
+                                              "但发出去的不是写作台存的稿(写完没存档)")
+        out.append({"project": tv, "kind": kind, "ingested": ing, "caught": caught,
+                    "drawn": drawn, "drafts": drafts,
+                    "detail": f"{ing} 篇发出去的帖是补录副本、对上写作台存档的 {caught} 篇; {why}"})
+    return out
+
+
+def _print_publish(pub: dict, by_project: dict, window_days: int) -> None:
+    links = pub.get("links") or {}
+    rows = [(tv, links[tv]) for tv in sorted(pub.get("map") or {})
+            if tv in links and (links[tv].get("ingested") or links[tv].get("caught"))]
+    if not rows:
+        return
+    print(f"  发帖对账 · 过去 {window_days} 天 tv-sync 新连上的笔记(判据 C)")
+    print(f"  {'TV 项目':<24}{'补录副本':>8}{'对上存档':>8}{'写作台发牌':>10}{'真稿':>6}")
+    for tv, l in rows:
+        pids = pub["map"][tv]
+        drawn = sum((by_project.get(p) or {}).get("drawn", 0) for p in pids)
+        drafts = sum((by_project.get(p) or {}).get("drafts", 0) for p in pids)
+        print(f"  {tv[:23]:<24}{l.get('ingested', 0):>8}{l.get('caught', 0):>8}{drawn:>10}{drafts:>6}")
+
+
+def _warn_publish(pub_hits: list[dict], window_days: int) -> None:
+    msg = (f"过去 {window_days} 天 {len(pub_hits)} 个 TV 项目在发帖、写作台却没接住: "
+           + "; ".join(f"{h['project']}({h['detail']})" for h in pub_hits)
+           + " —— 这些帖没有发牌查重, 也进不了改稿差异和参考分, 飞轮只能当外部稿补录。"
+             "没连上的: 让那位写手在 WorkBuddy 里查写作台连接(mcp.json 地址和 key)并重新导入 skill"
+             "(aw 协议 2d19228147b4 起没连上就不写); 连上了没存档的: 看 aw deskcore-runbook 的 score_drafts 存档。"
+             "修在写手那边和 autowriter 仓, TV 这边改不好。")
+    print(f"  ⚠ {msg}")
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print(f"::warning title=发了帖、写作台没接住::{msg}", flush=True)
+
+
 def report(stats: dict, window_days: int) -> int:
     """把 gather() 的统计渲染成报告并返回退出码。纯函数, 不碰网络。"""
     by_project = stats.get("by_project") or {}
@@ -106,14 +183,20 @@ def report(stats: dict, window_days: int) -> int:
             print(f"  {(s.get('name') or pid)[:23]:<24}{s['drawn']:>6}{s['consumed']:>6}"
                   f"{s['drafts']:>6}{s['with_key']:>8}")
 
+    pub = stats.get("publish") or {}
+    pub_hits = verdicts_publish(by_project, pub)
+    _print_publish(pub, by_project, window_days)
+    if pub_hits:
+        _warn_publish(pub_hits, window_days)
+
     if drawn == 0:
-        print("  · 窗口内没有发牌, 无从判定(不是健康, 是没活) —— ok")
-        return 0
+        print("  · 窗口内没有发牌, 角度台账无从判定(不是健康, 是没活)")
+        return 1 if pub_hits else 0
 
     hits = verdicts(by_project)
     if not hits:
-        print("  ✓ 没有项目命中判据 —— 发出去的角度都有稿子接住, 或量小到不值得喊")
-        return 0
+        print("  ✓ 没有项目命中判据 A / B —— 发出去的角度都有稿子接住, 或量小到不值得喊")
+        return 1 if pub_hits else 0
 
     unwritten = [h for h in hits if h["kind"] == "drawn_unwritten"]
     unattr = [h for h in hits if h["kind"] == "unattributed"]
@@ -125,7 +208,7 @@ def report(stats: dict, window_days: int) -> int:
     msg = (f"过去 {window_days} 天 {len(hits)} 个项目的角度没走到成稿。" + " | ".join(parts)
            + " —— 后果不是少写了几篇: 没销账的坐标一天后就不在避重集里, 同一个故事"
              "下一批会被再抽一次, 而「同题重写」指纹闸抓不到。"
-             "修在 autowriter 仓(commit_drafts 每条都要带 draw_angles 给的 angle_key;"
+             "修在 autowriter 仓(score_drafts 每条都要带 draw_angles 给的 angle_key;"
              "会话别停在发牌之后), 见 TV docs/27 与 aw deskcore-runbook。")
     print(f"  ⚠ {msg}")
     if os.environ.get("GITHUB_ACTIONS") == "true":
@@ -194,6 +277,39 @@ def gather(sb, since_iso: str) -> dict:
     return {"by_project": by_project, "ingested_skipped": len(ingested)}
 
 
+def gather_publish(sb, since_iso: str, used_since_iso: str) -> dict:
+    """判据 C 要的数: TV 项目 → 写作台项目、窗口内 tv-sync 新连上的笔记按 match_kind 分、近期用过写作台的项目。"""
+    from _common import fetch_all_pages  # 局部 import, 理由见文件头
+
+    # tv_project_map 是人工维护的几十行, 一页够; 笔记和台账会跨 1000 行的页边界, 按唯一键翻。
+    maps = (sb.schema("autowriter").table("tv_project_map")
+            .select("tv_project_id, project_id").execute()).data or []
+    # matched_at 是这条对照第一次写进去的时间(tv-sync 每晚只写新笔记, 已对上的跳过), 窗口按它切。
+    links = fetch_all_pages(
+        sb.schema("autowriter").table("tv_note_links")
+        .select("note_id, tv_project_id, match_kind, matched_at")
+        .gte("matched_at", since_iso),
+        order_by="note_id")
+    used = fetch_all_pages(
+        sb.schema("autowriter").table("angle_ledger")
+        .select("id, project_id")
+        .gte("drawn_at", used_since_iso),
+        order_by="id")
+
+    by_tv: dict[str, list] = {}
+    for m in maps:
+        by_tv.setdefault(m["tv_project_id"], []).append(m["project_id"])
+    counts: dict[str, dict] = {}
+    for l in links:
+        c = counts.setdefault(l.get("tv_project_id") or "?", {"ingested": 0, "caught": 0})
+        if l.get("match_kind") == INGESTED_KIND:
+            c["ingested"] += 1
+        elif l.get("match_kind") in CAUGHT_KINDS:
+            c["caught"] += 1
+    pids = {p for ps in by_tv.values() for p in ps}
+    return {"map": by_tv, "links": counts, "used": {u["project_id"] for u in used} & pids}
+
+
 def _project_names(sb, pids: set) -> dict:
     pids = [p for p in pids if p]
     out: dict[str, str] = {}
@@ -205,20 +321,141 @@ def _project_names(sb, pids: set) -> dict:
     return out
 
 
+def selftest() -> int:
+    """判据 C 的自检(判据 A / B 的在 ci.yml 那一步的 heredoc 里)。不连库; 反证靠改坏输入。"""
+    import contextlib
+    import io
+    import types
+
+    P = lambda drawn, drafts: {"name": "x", "drawn": drawn, "consumed": drafts,  # noqa: E731
+                               "drafts": drafts, "with_key": drafts}   # A / B 都不该响, 只看 C
+
+    def pub(links, used=("d1", "h1", "s1"), mp=None):
+        return {"map": mp or {"TUGE": ["d1", "d2"], "HATH": ["h1"], "SPX": ["s1"]},
+                "links": links, "used": set(used)}
+
+    # 10-12 那周的真实形状: 途鸽 22 / 0 写作台零动静、Hatherine 23 / 1 发牌 21 存 1、sportsix 12 / 18
+    week = pub({"TUGE": {"ingested": 22, "caught": 0}, "HATH": {"ingested": 23, "caught": 1},
+                "SPX": {"ingested": 12, "caught": 18}})
+    desk = {"h1": P(21, 1), "s1": P(33, 33)}
+    got = {h["project"]: h["kind"] for h in verdicts_publish(desk, week)}
+    assert got == {"TUGE": "desk_silent", "HATH": "published_unsaved"}, got
+    # 下限真的在起作用: 补录差一篇、或对上多一篇, 都不喊
+    edge = lambda ing, caught: verdicts_publish({}, pub({"TUGE": {"ingested": ing, "caught": caught}}))  # noqa: E731
+    assert [h["kind"] for h in edge(MIN_UNCAUGHT, MAX_CAUGHT)] == ["desk_silent"]
+    assert edge(MIN_UNCAUGHT - 1, 0) == [], "补录低于 MIN_UNCAUGHT 不该喊"
+    assert edge(MIN_UNCAUGHT, MAX_CAUGHT + 1) == [], "对上多于 MAX_CAUGHT 不该喊"
+    # 近 USED_WITHIN_DAYS 天没用过写作台的项目本来就不在写作台写: 不喊(否则天天红, D-053)
+    assert verdicts_publish({}, pub({"TUGE": {"ingested": 50, "caught": 0}}, used=())) == []
+    # 映射到多个写作台项目时, 用过 / 有动静按整组算: d2 发了牌就不是「没收到调用」
+    assert [h["kind"] for h in verdicts_publish({"d2": P(3, 0)}, week)
+            if h["project"] == "TUGE"] == ["published_unsaved"]
+
+    def run(stats):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = report(stats, 7)
+        return rc, buf.getvalue()
+
+    # 一张牌都没发的那一周: A / B 无从判定, C 照样要喊 —— 途鸽就是这么藏了一个月的
+    rc, out = run({"by_project": {}, "ingested_skipped": 0, "publish": week})
+    assert rc == 1 and "无从判定" in out and "TUGE" in out and "没接住" in out, out
+    assert "HATH" in out and "SPX" in out, "发帖对账表要列出所有有新笔记的 TV 项目"
+    rc, out = run({"by_project": {}, "ingested_skipped": 0})
+    assert rc == 0, "没有 publish 的老调用方式不变"
+    rc, out = run({"by_project": desk, "ingested_skipped": 0,
+                   "publish": pub({"SPX": {"ingested": 12, "caught": 18}})})
+    assert rc == 0 and "没接住" not in out, out
+
+    # ── gather_publish: 按 match_kind 分、翻页键唯一、只认映射里的项目 ──────────────
+    class _Q:
+        def __init__(self, rows): self.rows = rows
+        def select(self, *a, **k): return self
+        def gte(self, *a, **k): return self
+        def execute(self): return types.SimpleNamespace(data=self.rows)
+
+    T = "同一刻"                                       # matched_at / drawn_at 撞值: 翻页键选错就丢行
+    LINKS = ([{"note_id": f"t{i}", "tv_project_id": "TUGE", "match_kind": "ingested", "matched_at": T}
+              for i in range(22)]
+             + [{"note_id": "t-amb", "tv_project_id": "TUGE", "match_kind": "ambiguous", "matched_at": T},
+                {"note_id": "t-un", "tv_project_id": "TUGE", "match_kind": "unmatched", "matched_at": T},
+                {"note_id": "h1", "tv_project_id": "HATH", "match_kind": "fuzzy", "matched_at": T},
+                {"note_id": "h2", "tv_project_id": "HATH", "match_kind": "tv_lineage", "matched_at": T}])
+    LEDGER = [{"id": "a1", "project_id": "d1"}, {"id": "a2", "project_id": "d1"},
+              {"id": "a3", "project_id": "zz-unmapped"}]
+
+    class SB:
+        def schema(self, s): return self
+        def table(self, t):
+            return _Q({"tv_project_map": [{"tv_project_id": "TUGE", "project_id": "d1"},
+                                          {"tv_project_id": "TUGE", "project_id": "d2"},
+                                          {"tv_project_id": "HATH", "project_id": "h1"}],
+                       "tv_note_links": LINKS, "angle_ledger": LEDGER}[t])
+
+    def _pages(q, order_by=None):
+        rows, seen = [], set()                       # 照抄真 fetch_all_pages 的去重语义
+        for r in q.execute().data:
+            assert order_by in r, f"order_by={order_by!r} 不在 select 里"
+            if r[order_by] not in seen:
+                seen.add(r[order_by])
+                rows.append(r)
+        return rows
+
+    saved = sys.modules.get("_common")
+    fake = types.ModuleType("_common")
+    fake.fetch_all_pages = _pages
+    sys.modules["_common"] = fake
+    try:
+        g = gather_publish(SB(), "2026-10-12T00:00:00", "2026-08-20T00:00:00")
+        assert g["map"] == {"TUGE": ["d1", "d2"], "HATH": ["h1"]}, g["map"]
+        assert g["links"] == {"TUGE": {"ingested": 22, "caught": 0},
+                              "HATH": {"ingested": 0, "caught": 2}}, g["links"]
+        assert g["used"] == {"d1"}, "没映射的写作台项目不进 used"
+        assert [h["project"] for h in verdicts_publish({}, g)] == ["TUGE"]
+
+        # main 接线: 两份数都取、哨兵行在
+        fake.get_supabase_client = lambda: object()
+        real = globals()["gather"], globals()["gather_publish"]
+        globals()["gather"] = lambda sb, since: {"by_project": {}, "ingested_skipped": 0}
+        globals()["gather_publish"] = lambda sb, since, used: week
+        argv, sys.argv = sys.argv, ["check_angle_ledger_leak.py"]
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                rc = main()
+        finally:
+            sys.argv = argv
+            globals()["gather"], globals()["gather_publish"] = real
+        assert rc == 1 and "ANGLE_LEDGER_CHECK_DONE rc=1" in buf.getvalue(), buf.getvalue()
+    finally:
+        if saved is None:
+            sys.modules.pop("_common", None)
+        else:
+            sys.modules["_common"] = saved
+    print("  ✓ 判据 C: 途鸽 / Hatherine 两种形状分开报、下限在、没用过写作台的不喊、一张牌没发也照喊、取数翻页键唯一")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     parser.add_argument("--window-days", type=int, default=DEFAULT_WINDOW_DAYS,
                         help=f"看过去多少天的发牌与成稿(默认 {DEFAULT_WINDOW_DAYS})")
+    parser.add_argument("--selftest", action="store_true", help="CI: 判据 C 的自检, 不连库")
     args = parser.parse_args()
+    if args.selftest:
+        return selftest()
     if args.window_days < 1:
         print("--window-days 必须 >= 1")
         return 2
-    since = ((datetime.now(timezone.utc) - timedelta(days=args.window_days))
-             .replace(tzinfo=None).isoformat(timespec="seconds"))
+    now = datetime.now(timezone.utc)
+    since = (now - timedelta(days=args.window_days)).replace(tzinfo=None).isoformat(timespec="seconds")
+    used_since = ((now - timedelta(days=max(USED_WITHIN_DAYS, args.window_days)))
+                  .replace(tzinfo=None).isoformat(timespec="seconds"))
 
     from _common import get_supabase_client  # 局部 import, 理由见文件头
     sb = get_supabase_client()
     stats = gather(sb, since)
+    stats["publish"] = gather_publish(sb, since, used_since)
     rc = report(stats, args.window_days)
     # ⚠️ 哨兵行: daily-sync.yml 靠它区分"跑完了"和"崩了"(那边是 `|| true` 调的)。
     print(f"ANGLE_LEDGER_CHECK_DONE rc={rc}")
