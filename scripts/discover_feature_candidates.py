@@ -93,20 +93,27 @@ def _copied(example: str, corpus: str) -> bool:
     return any(s[i:i + COPY_RUN] in corpus for i in range(0, max(0, len(s) - COPY_RUN + 1)))
 
 
-def validate(raw: dict, *, existing_ids: set[str], corpus: str, project: str) -> tuple[list[dict], list[str]]:
-    """模型回的 JSON → (留下的候选, 丢掉的原因)。corpus 是去空白后的输入原文, 用来查例子有没有抄。"""
+def validate(raw: dict, *, existing_ids: set[str], corpus: str, project: str,
+             existing_asks: Optional[dict[str, str]] = None) -> tuple[list[dict], list[str]]:
+    """模型回的 JSON → (留下的候选, 丢掉的原因)。corpus 是去空白后的输入原文, 用来查例子有没有抄。
+    existing_asks: {去标点的现有题目: 现有 id}, 换个 id 原样重出的现有题不收。
+    丢掉的原因会进报告: 只写通过了 ID_RE 的 id 和固定的话, 不回显模型的原文(codex review on TV#202)。"""
     kept, dropped = [], []
     items = raw.get("candidates") if isinstance(raw, dict) else None
-    for c in (items if isinstance(items, list) else [])[:PER_PROJECT_CANDIDATES]:
+    for n, c in enumerate((items if isinstance(items, list) else [])[:PER_PROJECT_CANDIDATES], 1):
         if not isinstance(c, dict):
-            dropped.append("不是对象")
+            dropped.append(f"第 {n} 条: 不是对象")
             continue
         cid, ask = str(c.get("id") or "").strip(), str(c.get("ask") or "").strip()
         if not ID_RE.match(cid):
-            dropped.append(f"{cid or '(空 id)'}: id 不是小写下划线")
+            dropped.append(f"第 {n} 条: id 不是小写下划线 (原样不回显)")
             continue
         if cid in existing_ids:
             dropped.append(f"{cid}: 和现有题同名")
+            continue
+        dup = (existing_asks or {}).get(_norm_ask(ask)) if ask else None
+        if dup:
+            dropped.append(f"{cid}: 和现有题 {dup} 题目一样, 只是换了 id")
             continue
         if not ask or c.get("scope") not in fb.SPANS or c.get("hypothesis") not in ("+", "-"):
             dropped.append(f"{cid}: 缺题目 / scope 不在 {fb.SPANS} / hypothesis 不是 + -")
@@ -141,15 +148,22 @@ def _norm_ask(ask: str) -> str:
 
 
 def merge(per_project: list[list[dict]]) -> list[dict]:
-    """同 id 或同题目 (去标点) 的合成一条, 记下哪些项目都提了、各自说的方向; 多个项目都提的排前面。
+    """同题目 (去标点) 的合成一条, 记下哪些项目都提了、各自说的方向; 多个项目都提的排前面。
     方向不一致时 hypothesis 记 "?" 并列出两边 —— 不能让按字母先处理的那个项目替大家定方向(codex review on TV#202),
-    预注册方向本来就该在闸二之前由人定。"""
+    预注册方向本来就该在闸二之前由人定。
+    只是 id 撞了、题目不一样的**不合**: 后来的改名成 ``<id>_2`` 分开放, 记 ``id_collision`` —— 合了就是拿第一个项目
+    的题冒充跨项目都提过(codex review on TV#202)。"""
     by_key: dict[str, dict] = {}
     for cands in per_project:
         for c in cands:
-            key = next((k for k, v in by_key.items() if k == c["id"] or _norm_ask(v["ask"]) == _norm_ask(c["ask"])), None)
+            key = next((k for k, v in by_key.items() if _norm_ask(v["ask"]) == _norm_ask(c["ask"])), None)
             if key is None:
-                m = by_key[c["id"]] = dict(c)
+                nid, k = c["id"], 2
+                while nid in by_key:
+                    nid, k = f"{c['id']}_{k}", k + 1
+                m = by_key[nid] = dict(c, id=nid)
+                if nid != c["id"]:
+                    m["id_collision"] = c["id"]
                 m["directions"] = {c["hypothesis"]: list(c["projects"])}
                 continue
             m = by_key[key]
@@ -196,6 +210,7 @@ def run(*, labels: list[dict], fetch_notes: Callable[[list[str]], dict[str, dict
     """``call(system, user) -> text``; None = dry-run (只数样本)。"""
     existing = existing_questions(bank)
     existing_ids = {i for i, _ in existing}
+    existing_asks = {_norm_ask(a): i for i, a in existing if a}
     system = SYSTEM.format(k=PER_PROJECT_CANDIDATES, existing="\n".join(f"{i}: {a}" for i, a in existing))
     groups = sample(labels, since=since, per_group=per_group, until=until)
     report = {"since": since.date().isoformat(), "until": until.date().isoformat() if until else None,
@@ -223,7 +238,8 @@ def run(*, labels: list[dict], fetch_notes: Callable[[list[str]], dict[str, dict
             report["dropped"].append(f"{p}: 这次没拿到候选 ({type(exc).__name__}: {str(exc)[:120]})")
             continue
         report["answered"] += 1
-        kept, dropped = validate(raw, existing_ids=existing_ids, corpus=corpus, project=p)
+        kept, dropped = validate(raw, existing_ids=existing_ids, corpus=corpus, project=p,
+                                 existing_asks=existing_asks)
         report["dropped"] += [f"{p}: {d}" for d in dropped]
         per_project.append(kept)
     report["candidates"] = merge(per_project)[:MAX_CANDIDATES]
@@ -261,7 +277,8 @@ def render(report: dict, *, dry_run: bool) -> str:
             lines += [f"### `{c['id']}` · {c['ask']}",
                       f"- scope: {c['scope']} · 方向: {c['hypothesis']} · 提出的项目: {'、'.join(c['projects'])}"
                       + ("(方向不一致: " + "; ".join(f"{h} {'、'.join(ps)}" for h, ps in c["directions"].items())
-                         + ", 预注册前要人定)" if c.get("hypothesis") == "?" else ""),
+                         + ", 预注册前要人定)" if c.get("hypothesis") == "?" else "")
+                      + (f"(id 和另一道不同的题撞了, 原 id {c['id_collision']}, 改名分开放)" if c.get("id_collision") else ""),
                       f"- 判是: {c['yes_if']}" + (f" (例: {c['yes_example']})" if c.get("yes_example") else ""),
                       f"- 判否: {c['no_if']}" + (f" (例: {c['no_example']})" if c.get("no_example") else ""),
                       f"- 为什么: {c['why']}", ""]
@@ -332,6 +349,18 @@ def _selftest() -> None:
     m2 = merge([[dict(c, projects=["A"], hypothesis="+")], [dict(c, projects=["B"], hypothesis="-")]])
     assert m2[0]["hypothesis"] == "?" and m2[0]["directions"] == {"+": ["A"], "-": ["B"]}
     assert "方向不一致" in render({**rep, "candidates": m2}, dry_run=False)
+    # 被拒的 id 不回显原文; 换个 id 原样重出的现有题不收; 同 id 不同题不合
+    k, why = validate({"candidates": [
+        {"id": "标题是不是问句", "ask": "x？", "scope": "title", "yes_if": "是", "no_if": "否", "hypothesis": "+"},
+        {"id": "question_in_title", "ask": "标题是不是一个问句?", "scope": "title", "yes_if": "是", "no_if": "否",
+         "hypothesis": "+"}]}, existing_ids={"title_is_question"}, corpus="", project="P",
+        existing_asks={_norm_ask("标题是不是一个问句？"): "title_is_question"})
+    assert k == [] and "标题是不是问句" not in " ".join(why), why
+    assert "原样不回显" in why[0] and "title_is_question" in why[1] and "换了 id" in why[1], why
+    m3 = merge([[dict(c, projects=["A"])], [dict(c, ask="正文有没有写具体的使用时长？", projects=["B"])]])
+    assert [x["id"] for x in m3] == ["mentions_price", "mentions_price_2"] and m3[1]["id_collision"] == "mentions_price"
+    assert all(x["projects"] in (["A"], ["B"]) for x in m3), "撞名不合: 不能冒充两个项目都提了"
+    assert "改名分开放" in render({**rep, "candidates": m3}, dry_run=False)
     # 上一个自然季度: [起, 止), 跨年也对
     assert previous_quarter(datetime(2027, 1, 2, 3, 23, tzinfo=timezone.utc)) == (
         datetime(2026, 10, 1, tzinfo=timezone.utc), datetime(2027, 1, 1, tzinfo=timezone.utc))
@@ -381,7 +410,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     call = None
     if not args.dry_run:
         from annotate_essence_pass import call_claude
-        model = os.environ.get(MODEL_ENV, DEFAULT_MODEL)
+        model = (os.environ.get(MODEL_ENV) or "").strip() or DEFAULT_MODEL   # 变量没配时 workflow 给的是空串
         call = lambda system, user: call_claude(user, model, cached_system=system)  # noqa: E731
     scheduled = os.environ.get("TV_SCHEDULED_RUN") == "true" or os.environ.get("GITHUB_EVENT_NAME") == "schedule"
     if scheduled or args.previous_quarter:

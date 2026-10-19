@@ -155,10 +155,11 @@ assert "还没进默认分支" in out, f"⑪b 该走 404 那一支: {out}"
 # ⑫ 季度那趟【过了第一趟该跑的日子还从来没跑过】→ 红; 日子没到 → 只是说明。
 #    不钉这条, 季度 cron 一次都没触发时 ④ 那条"新上线放行"会一直放行(Codex on #202)。
 both_ok = {w: [mkrun(5, "success")] for w in BOTH}
-code, out = run_with({**both_ok, "feature-discovery.yml": []})
-assert code == 0 and "还没有过任何 schedule 跑" in out, f"⑫a 第一趟日子没到该放行: {code} {out}"
+# 两头都把日子改写掉, 不靠真钟: 不然 2027-01-04 之后 ⑫a 自己就红了(codex review on TV#202)
 due_src = src.replace('"2027-01-04"', '"2000-01-01"')
 assert due_src != src, "WATCHED 里季度那条的第一趟日子改了 —— 同步改这条守卫"
+code, out = run_with({**both_ok, "feature-discovery.yml": []}, code_src=src.replace('"2027-01-04"', '"2999-01-01"'))
+assert code == 0 and "还没有过任何 schedule 跑" in out, f"⑫a 第一趟日子没到该放行: {code} {out}"
 code, out = run_with({**both_ok, "feature-discovery.yml": []}, code_src=due_src)
 assert code == 1 and "该跑过第一趟了" in out, f"⑫b 过了日子还没跑过该红: {code} {out}"
 code, out = run_with({**both_ok, "feature-discovery.yml": [mkrun(24 * 30, "success")]},
