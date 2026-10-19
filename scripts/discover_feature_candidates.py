@@ -147,7 +147,18 @@ def _norm_ask(ask: str) -> str:
     return re.sub(r"[\s？?。,，、]", "", ask)
 
 
-def merge(per_project: list[list[dict]]) -> list[dict]:
+def _free_id(base: str, taken) -> str:
+    """撞名时给后来的那道题一个新 id: ``<base>_2``、``_3`` …, 截短 base 让结果仍过 ID_RE, 也不撞题库里现有的 id。"""
+    k = 2
+    while True:
+        suffix = f"_{k}"
+        nid = base[:48 - len(suffix)] + suffix
+        if nid not in taken:
+            return nid
+        k += 1
+
+
+def merge(per_project: list[list[dict]], existing_ids: Optional[set[str]] = None) -> list[dict]:
     """同题目 (去标点) 的合成一条, 记下哪些项目都提了、各自说的方向; 多个项目都提的排前面。
     方向不一致时 hypothesis 记 "?" 并列出两边 —— 不能让按字母先处理的那个项目替大家定方向(codex review on TV#202),
     预注册方向本来就该在闸二之前由人定。
@@ -158,9 +169,9 @@ def merge(per_project: list[list[dict]]) -> list[dict]:
         for c in cands:
             key = next((k for k, v in by_key.items() if _norm_ask(v["ask"]) == _norm_ask(c["ask"])), None)
             if key is None:
-                nid, k = c["id"], 2
-                while nid in by_key:
-                    nid, k = f"{c['id']}_{k}", k + 1
+                nid = c["id"]
+                if nid in by_key:
+                    nid = _free_id(c["id"], set(by_key) | set(existing_ids or ()))
                 m = by_key[nid] = dict(c, id=nid)
                 if nid != c["id"]:
                     m["id_collision"] = c["id"]
@@ -235,14 +246,18 @@ def run(*, labels: list[dict], fetch_notes: Callable[[list[str]], dict[str, dict
         try:
             raw = json.loads(_strip_fence(call(system, build_user_prompt(p, categories.get(p), a, b))))
         except Exception as exc:  # noqa: BLE001 — 一个项目失败不拖垮整季
-            report["dropped"].append(f"{p}: 这次没拿到候选 ({type(exc).__name__}: {str(exc)[:120]})")
+            # 只记异常类型和 HTTP 状态码: 中转站的内容过滤报错常把输入原文带回来, 而输入里就是笔记正文(报告会进
+            # GitHub 的 step summary / artifact)。细节进 stderr 的日志。
+            status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
+            report["dropped"].append(f"{p}: 这次没拿到候选 ({type(exc).__name__}" + (f", HTTP {status}" if status else "") + ")")
+            print(f"[discover] {p}: 模型调用失败: {type(exc).__name__}", file=sys.stderr)
             continue
         report["answered"] += 1
         kept, dropped = validate(raw, existing_ids=existing_ids, corpus=corpus, project=p,
                                  existing_asks=existing_asks)
         report["dropped"] += [f"{p}: {d}" for d in dropped]
         per_project.append(kept)
-    report["candidates"] = merge(per_project)[:MAX_CANDIDATES]
+    report["candidates"] = merge(per_project, existing_ids)[:MAX_CANDIDATES]
     return report
 
 
@@ -361,6 +376,15 @@ def _selftest() -> None:
     assert [x["id"] for x in m3] == ["mentions_price", "mentions_price_2"] and m3[1]["id_collision"] == "mentions_price"
     assert all(x["projects"] in (["A"], ["B"]) for x in m3), "撞名不合: 不能冒充两个项目都提了"
     assert "改名分开放" in render({**rep, "candidates": m3}, dry_run=False)
+    long_id = "a" * 48
+    m4 = merge([[dict(c, id=long_id, projects=["A"])], [dict(c, id=long_id, ask="另一道题？", projects=["B"])]],
+               existing_ids={long_id[:46] + "_2"})
+    renamed = next(x for x in m4 if x["projects"] == ["B"])
+    assert all(ID_RE.match(x["id"]) for x in m4) and renamed["id"] == long_id[:46] + "_3", m4
+    leak = run(labels=labels, fetch_notes=lambda nids: {i: notes[i] for i in nids}, categories={}, bank=bank,
+               call=lambda s, u: (_ for _ in ()).throw(RuntimeError("blocked: 第一段写了一个很具体的价格数字九十九元")),
+               since=now - timedelta(days=DEFAULT_DAYS), per_group=10)
+    assert "九十九元" not in " ".join(leak["dropped"]) and "RuntimeError" in leak["dropped"][0], "异常原文不进报告"
     # 上一个自然季度: [起, 止), 跨年也对
     assert previous_quarter(datetime(2027, 1, 2, 3, 23, tzinfo=timezone.utc)) == (
         datetime(2026, 10, 1, tzinfo=timezone.utc), datetime(2027, 1, 1, tzinfo=timezone.utc))
