@@ -29,8 +29,9 @@ D-064), 它们本来就没有 angle_key —— 不是发牌产出的, 没有坐�
 C 是 2026-10-19 补的(TV OPEN-ITEMS O-04): 途鸽 9-16 之后写作台一次发牌、一篇存档都没收到, 10-12 那周
 发出去的 22 篇全是 tv-sync 补录的副本, 写手却一直以为在用写作台。A / B 都从【发牌】那一侧看, 一张牌
 都没发的项目在它们眼里是「没活」, 所以这件事一个月都没灯亮。C 从【发帖】那一侧看, 分两种报:
-    · 写作台窗口内没收到这个项目的一次发牌、一篇真稿 → 多半是写手那边的写作台没连上(模型照 skill
-      把流程走完了, 服务端什么都没收到; aw 协议 8f1af72c912c 起没连上就不写);
+    · 写作台窗口内没收到这个项目的一次发牌、一篇真稿 → 写这个项目的那几场对话没走到写作台: 那个
+      WorkBuddy 项目没接写作台(mcp.json 按项目配), 或者对话里压根没开项目就写了。同一个写手别的项目
+      照常发牌也可能是这样 —— 途鸽就是(10-19 写手在另一场对话里列项目是通的);
     · 写作台有动静, 但发出去的不是它存的稿                → 连上了、写完没存档。
 「近 USED_WITHIN_DAYS 天用过写作台」那一条是为了不对从来不走写作台的项目天天喊。
 数据: autowriter.tv_project_map(TV 项目 → 写作台项目)、autowriter.tv_note_links(matched_at 在窗口内,
@@ -123,8 +124,8 @@ def verdicts_publish(by_project: dict, pub: dict) -> list[dict]:
         drawn = sum((by_project.get(p) or {}).get("drawn", 0) for p in pids)
         drafts = sum((by_project.get(p) or {}).get("drafts", 0) for p in pids)
         if drawn == 0 and drafts == 0:
-            kind, why = "desk_silent", ("写作台这几天没收到它一次发牌、一篇存档 —— 多半是写手那边的写作台没连上, "
-                                        "模型照 skill 把流程走完了, 服务端什么都没收到")
+            kind, why = "desk_silent", ("写作台这几天没收到它一次发牌、一篇存档 —— 写这个项目的对话没走到写作台"
+                                        "(那个 WorkBuddy 项目没接写作台, 或者没开项目就写了)")
         else:
             kind, why = "published_unsaved", (f"写作台这几天发牌 {drawn}、真稿 {drafts} —— 连上了, "
                                               "但发出去的不是写作台存的稿(写完没存档)")
@@ -153,8 +154,9 @@ def _warn_publish(pub_hits: list[dict], window_days: int) -> None:
     msg = (f"过去 {window_days} 天 {len(pub_hits)} 个 TV 项目在发帖、写作台却没接住: "
            + "; ".join(f"{h['project']}({h['detail']})" for h in pub_hits)
            + " —— 这些帖没有发牌查重, 也进不了改稿差异和参考分, 飞轮只能当外部稿补录。"
-             "没连上的: 让那位写手在 WorkBuddy 里查写作台连接(mcp.json 地址和 key)并重新导入 skill"
-             "(aw 协议 8f1af72c912c 起没连上就不写); 连上了没存档的: 看 aw deskcore-runbook 的 score_drafts 存档。"
+             "写作台零动静的: 让写这个项目的人打开上周写它的那场对话, 看有没有 open_project / draw_angles 的调用记录 ——"
+             "没有就是那场对话没接写作台或没走流程(aw 协议 8f1af72c912c 起没连上就不写); 连上了没存档的: 看 aw "
+             "deskcore-runbook 的 score_drafts 存档。"
              "修在写手那边和 autowriter 仓, TV 这边改不好。")
     print(f"  ⚠ {msg}")
     if os.environ.get("GITHUB_ACTIONS") == "true":
