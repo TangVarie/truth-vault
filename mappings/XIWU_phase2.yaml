@@ -48,9 +48,13 @@ field_mapping:
   方向: _direction_raw              # → direction_decomposition (流量贴 / 产品贴)
 
   # ── 数据回收(数字, parse_numeric 自动转) ──
-  曝光数: impressions               # 本表用「数」(A 家族 WTG 表用「量」; 本表用「数」, 同 RIO表2/docs/03 先例)
-  阅读数: reads
+  # Preflight 10-19(113 行 / 71 行有正文)校正: 本表用「曝光量 / 阅读量」(phase1 是「数」); 互动有两列
+  # 「互动数」「互动量」都在 —— 互动数沿用 phase1 / HATHERINE 的口径进 interactions, 互动量留 raw_extra,
+  # 第一次入库后对一下两列是不是同一个数, 不是再改。
+  曝光量: impressions
+  阅读量: reads
   互动数: interactions
+  实时数据.评论数: comments_count   # D-062: 判爆只看评论数(巡查机器人实时抓); phase1 表里没有这列
 
   # ── 蓝词(事后命中蓝词) ──
   蓝词字段: hit_blue_keywords       # → notes.hit_blue_keywords (82 行有值; 13 种选项已知)
@@ -67,7 +71,7 @@ field_mapping:
   # ── 笔记状态 → 检测伪爆贴 ──
   # 发布状态选项含「已发布/预备内容/待发布/定时发布/内容待定/待审稿/修改中」;
   # 30行样本全为「已发布」; 若出现「关注」等人工假数据信号 → synthetic flag
-  发布状态: _note_status_raw        # → 含"关注"则 data_quality_flags.synthetic=true
+  笔记状态: _note_status_raw        # 本表叫「笔记状态」(phase1 是「发布状态」); 含"关注"则 data_quality_flags.synthetic=true
 
 # ── intent ──
 # 本表【无】「发布笔记」intent 列 → 不做意图分类, notes.intent 留空(WTG/TXQ/OKMAN 金标准 intent=null)
@@ -101,6 +105,8 @@ tier_extraction:
       tier: 趴
     - match_contains: ["评估中"]
       tier: 评估中
+    - match_contains: ["观察中"]      # 冷启动窗口 → 未知(同 HATHERINE_phase1); Preflight 10-19: 观察中×6
+      tier: 未知
     - default: null
 
 # tier_thresholds 已废(D-062): 判爆只看评论数。
@@ -120,30 +126,37 @@ compliance:
 # 未列入此处且未在 field_mapping 声明的列 → 整行 quarantine (D-021)。
 # 下列列全部进 raw_extra 留痕, 不做二次处理。
 project_specific_fields_to_raw_extra:
-  # ── 图片/附件列(不处理) ──
-  - 图有问题                        # 2026-09-02(D-051): 运营 QA 勾选框(true/false), 留痕
+  # Preflight 10-19 对真表核过: phase1 那几列(各种副本 / 起量时间 / 父记录 / 图片列)这张表没有, 不带;
+  # 这张表多的是巡查机器人那一套(同 HATHERINE_phase1), 全部留痕不做二次处理。
   - 内容配图
   - 评论配图
   - 发布截图
   - 相关截图
-  - 蓝词图片
-  # ── 工作流状态列(非 tier 源) ──
-  - 评论状态                # 选项: 显示评论/改评显示/暂未显示/无需控评/没有显示; 本期 distinct=显示评论×190
-  - 爆帖置顶评论            # 选项(8): 待置顶/成功/待做评论等; 本期 distinct=0(全空); 保留为前向 allowlist
-  # ── A 家族巡查列(本期全空; 保留前向 allowlist, 同 OKMAN_phase1 先例) ──
+  - 评论状态
   - 是否巡查
   - 巡查状态
   - 已确认存活
   - 最近检查时间
-  # ── 数值副本列(int 副本, 主值已在 field_mapping 映射) ──
-  - 曝光副本
-  - 阅读副本
-  - 互动副本
-  # ── 其他业务列 ──
-  - 起量时间               # 仅 9 行有值; 时间戳, 记录开始起量的时间点; 非 publish_time
-  - 数据整理               # 自由文本运营备注(如「曝光量：383；阅读量：69；互动量：3」); 非 tier 源
-  - 备注                   # 本期 distinct=0; 保留前向 allowlist
-  - 父记录                 # 飞书内部关联字段(→ tbl82wlYwFOEeMBs)
+  - 下次检查时间
+  - 数据整理
+  - 平台                            # 冗余列
+  - 互动量                          # 和「互动数」并存, 见 field_mapping 注释
+  - 排队刷新
+  - 置顶状态
+  - 评论区快照
+  - 诊断信息
+  - 连续失败次数
+  - 上次评论数                      # 巡查机器人上一轮快照
+  - 评论关键词
+  - 负面状态
+  - 负面评论快照
+  - 负面词
+  - 整理时互动数
+  - 整理时评论数
+  - 整理状态
+  - 是否截图
+  - 已删除评论数
+  - 已删除评论留底
 
 # ════════════════════════════════════════════════════════════════════
 # Sync 配置
