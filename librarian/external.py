@@ -9,8 +9,10 @@
     不带这个键的老消费方 (通道 1 / 旧版写作台) 不给, 缓存键也不变;
   · 只给同品类的项目: brief 的品牌 / 项目名里出现 prompts/external_shelf_v1.json 里某品类登记的品牌名。
 
-卡长什么样: 不带外部的品牌名 —— 只收 Jev 分诊判了没带产品、不像广告的帖 (外部品牌认不全, 只能要本来就没提产品的);
-分诊漏网、正文里仍点了名的, 按配置的 exclude_terms + 所有登记品牌再挡一道。卡头写明「外部参考 · 只借结构不抄内容」。
+卡长什么样: 不带外部的品牌名 —— 只收 Jev 分诊判了没带产品、不像广告的帖 (外部品牌认不全, 只能要本来就没提产品的)。
+分诊漏网、正文里仍点了别家品牌的 (配置的 mask_terms), 2026-10-19 起 (D-120) 不再整篇不收, 而是把品牌名换成「某品牌」
+再上架 —— 帖子的结构和钩子本来就跟品牌名无关, 整篇丢掉是浪费。点到我们自己登记品牌的照旧不上架: 那多半是我们自己
+铺的帖, 不是"别家的自然流量"。卡头写明「外部参考 · 只借结构不抄内容」。
 
 fail-open: 配置读不了 / 查库失败 → 这次没有外部卡, 照常选内部卡。
 """
@@ -20,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Optional
@@ -57,21 +60,33 @@ def categories_for(brief: dict, cfg: dict) -> list[str]:
             if any(b and b.lower() in text for b in brands)]
 
 
-def _named_brands(cfg: dict) -> list[str]:
-    terms = list(cfg.get("exclude_terms") or []) + [b for bs in cfg["categories"].values() for b in bs]
-    return [t.lower() for t in terms if t]
+MASK = "某品牌"
+
+
+def _registered_brands(cfg: dict) -> list[str]:
+    return [b.lower() for bs in cfg["categories"].values() for b in bs if b]
+
+
+def mask_brands(text: str, cfg: Optional[dict]) -> str:
+    """别家品牌名 (mask_terms) → 「某品牌」, 不分大小写。长的先换: 「雅培安素」不会只换掉半截。"""
+    terms = sorted({t for t in ((cfg or {}).get("mask_terms") or []) if t}, key=len, reverse=True)
+    if not text or not terms:
+        return text or ""
+    return re.sub("|".join(re.escape(t) for t in terms), MASK, text, flags=re.I)
 
 
 def qualifies(row: dict, cfg: dict) -> bool:
     """达标: 评论够、没带产品、不像广告 (has_product / ad_like 没判过 = 不收: 认不出品牌就不冒险)、
-    标题正文里没点到已知品牌名 (exclude_terms + 登记品牌)。"""
+    标题正文里没点到【我们登记的】品牌 (那多半是我们自己铺的帖)。别家品牌名不再挡, 上架时换成「某品牌」(D-120)。"""
     text = f"{row.get('title') or ''}\n{row.get('body') or ''}".lower()
     return ((row.get("comments") or 0) >= int(cfg["min_comments"])
             and row.get("has_product") is False and row.get("ad_like") is not True
-            and not any(t in text for t in _named_brands(cfg)))
+            and not any(t in text for t in _registered_brands(cfg)))
 
 
-def to_card(row: dict) -> dict:
+def to_card(row: dict, cfg: Optional[dict] = None) -> dict:
+    """``cfg`` 给 mask_terms 用; 不给就读默认配置 (读不了就不换, 但那时整个书架本来就不出卡)。"""
+    cfg = cfg if cfg is not None else load_config()
     n = row.get("comments") or 0
     return {
         "source_note_id": f"{ID_PREFIX}{row['note_id']}",
@@ -87,7 +102,7 @@ def to_card(row: dict) -> dict:
         "structure": None,
         "why_it_worked": f"别家同品类的帖 (不是帆谷投的, 自然流量), 评论 {n}",
         "transferable_tactic": "只借结构 / 钩子, 不抄内容, 不提它的品牌",
-        "raw_excerpt": f"{row.get('title') or ''} {row.get('body') or ''}".strip(),
+        "raw_excerpt": mask_brands(f"{row.get('title') or ''} {row.get('body') or ''}".strip(), cfg),
     }
 
 
@@ -103,7 +118,7 @@ def fetch_shelf(sb, categories: list[str], cfg: dict) -> list[dict]:
             .order("comments", desc=True).order("note_id")
             .limit(_FETCH_PER_CATEGORY).execute()
         ).data or []
-        out += [to_card(r) for r in rows if qualifies(r, cfg)][:int(cfg["show_per_request"])]
+        out += [to_card(r, cfg) for r in rows if qualifies(r, cfg)][:int(cfg["show_per_request"])]
     return out
 
 

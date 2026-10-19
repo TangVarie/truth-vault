@@ -4,8 +4,8 @@ check_external_shelf.py —— 外部参考书架 (D-117 ②; prompts/external_s
 
   §1 配置: 评论门槛和判爆同一把尺子 (50)、每次最多 2 张 (D-117)、一个品牌不许挂两个品类
   §2 同品类: 只看 brief 的品牌 / 项目名 (项目定位里顺嘴提到「戒烟」不算), 大小写不敏感
-  §3 达标: 评论够 + Jev 判了没带产品 + 不像广告 + 没点到已知品牌名; 没判过的不收 (认不出品牌就不冒险)
-  §4 卡面: id 带 ext: 前缀、没有品牌、卡头写明只借结构; 有外部卡时 prompt 才多那句用法
+  §3 达标: 评论够 + Jev 判了没带产品 + 不像广告 + 没点到我们登记的品牌; 没判过的不收 (认不出品牌就不冒险)
+  §4 卡面: id 带 ext: 前缀、没有品牌、别家品牌名换成「某品牌」(D-120)、卡头写明只借结构; 有外部卡时 prompt 才多那句用法
   §5 缓存版本: 外部卡进版本串; 没有外部卡时与以前完全一样
   §6 端到端 (打桩): 老消费方不给; 两臂都给; 模型挑多了截到 2 张 (不算契约失败), 截掉的不占 5 张的名额;
      查库挂了照样选内部卡; 外部卡不去查 note 的规律答案; 部署前的缓存行补上 external / validated_hits;
@@ -61,10 +61,10 @@ def s3_qualifies() -> None:
     assert not X.qualifies(dict(ok, has_product=True), CFG)
     assert not X.qualifies(dict(ok, has_product=None), CFG), "没判过有没有产品的不收"
     assert not X.qualifies(dict(ok, ad_like=True), CFG)
-    assert not X.qualifies(dict(ok, body="后来换了辅舒良"), CFG), "分诊漏网点了别家品牌的不上架"
-    assert not X.qualifies(dict(ok, title="雷诺考特用了一周"), CFG), "点了登记品牌 (可能就是我们自己铺的) 也不上架"
-    assert not X.qualifies(dict(ok, body="试过 Maurten"), CFG), "大小写不敏感"
-    print("  §3 达标: 评论 / 没产品 / 不像广告 / 没点品牌名 ✓")
+    assert X.qualifies(dict(ok, body="后来换了辅舒良"), CFG), "D-120: 点了别家品牌的照收, 上架时换成「某品牌」"
+    assert not X.qualifies(dict(ok, title="雷诺考特用了一周"), CFG), "点了登记品牌 (可能就是我们自己铺的) 不上架"
+    assert not X.qualifies(dict(ok, body="试过 SPORTSIX 的胶"), CFG), "登记品牌大小写不敏感"
+    print("  §3 达标: 评论 / 没产品 / 不像广告 / 没点我们登记的品牌 ✓")
 
 
 ROW = {"note_id": "abc", "category": "鼻炎", "title": "换季鼻子又罢工了", "body": "求问大家都怎么熬过去的",
@@ -81,7 +81,13 @@ def s4_card() -> None:
     assert "[ext:abc] 外部参考|鼻炎｜别家同品类帖, 只借结构不抄内容" in txt and "评论 88" in txt
     assert "最多挑 2 张" in txt and txt.index("最多挑 2 张") < txt.index("候选经验卡")
     assert "最多挑 2 张" not in core.build_system_blocks({}, [CARD])[0]["text"], "没有外部卡时 prompt 不变"
-    print("  §4 卡面: ext: 前缀、无品牌、只借结构; 有外部卡才多那句用法 ✓")
+    # D-120: 别家品牌名换成「某品牌」, 不分大小写, 长的先换
+    m = X.to_card(dict(ROW, title="辅舒良和内舒拿我都试过", body="后来朋友推荐 MAURTEN 的胶"), CFG)["raw_excerpt"]
+    assert "辅舒良" not in m and "内舒拿" not in m and "maurten" not in m.lower(), m
+    assert m.count(X.MASK) == 3, m
+    assert X.mask_brands("雅培安素", {"mask_terms": ["雅培", "雅培安素"]}) == X.MASK, "长的先换, 不留半截"
+    assert X.mask_brands("没有品牌", None) == "没有品牌" and X.mask_brands("", CFG) == ""
+    print("  §4 卡面: ext: 前缀、无品牌、只借结构、别家品牌名换成「某品牌」; 有外部卡才多那句用法 ✓")
 
 
 def s5_version() -> None:

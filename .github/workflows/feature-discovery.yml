@@ -1,0 +1,75 @@
+# 季度找新特征 (D-120, 2026-10-19): 每季度拿上一季的笔记, 按项目对照 爆 / 趴, 让模型提出现有特征题库没覆盖的候选题。
+# 只出报告 (job log + step summary + artifact), 不改题库、不写库 —— 候选题要进题库照旧走出题六条规矩 → 草案 → 闸一 → 闸二,
+# 由人拍板。报告里没有原文 (例子是模型编的, 脚本查过不许和原文有连续 8 字一样)。
+# 节奏: 1 / 4 / 7 / 10 月的 2 号 03:23 UTC (错开整点; 季度第一天留给月度对账)。
+name: Feature discovery (quarterly · new feature candidates)
+
+on:
+  schedule:
+    - cron: "23 3 2 1,4,7,10 *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "true = 只数每个项目的样本, 不调模型"
+        required: false
+        default: "false"
+      days:
+        description: "看最近多少天发布的笔记 (默认一个季度 92 天)"
+        required: false
+        default: "92"
+      projects:
+        description: "逗号分隔只看这些项目; 留空 = 全部"
+        required: false
+        default: ""
+
+concurrency:
+  group: feature-discovery
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+      IN_DRY_RUN: ${{ github.event.inputs.dry_run }}
+      IN_DAYS: ${{ github.event.inputs.days }}
+      IN_PROJECTS: ${{ github.event.inputs.projects }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps (lockfile)
+        run: |
+          if [ -f scripts/requirements.lock ]; then
+            pip install -r scripts/requirements.lock
+          else
+            pip install -r scripts/requirements.txt
+          fi
+      - name: Guard secrets
+        run: |
+          [ -n "$SUPABASE_URL" ] || { echo "::error::缺 secret SUPABASE_URL"; exit 1; }
+          [ -n "$SUPABASE_SERVICE_ROLE_KEY" ] || { echo "::error::缺 secret SUPABASE_SERVICE_ROLE_KEY"; exit 1; }
+          if [ "$IN_DRY_RUN" != "true" ] && [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::error::缺 secret ANTHROPIC_API_KEY (dry_run=true 可以不要)"; exit 1
+          fi
+      - name: Discover candidates
+        working-directory: scripts
+        run: |
+          ARGS=(--days "${IN_DAYS:-92}" --out "../feature-candidates-$(date -u +%Y-%m-%d).md")
+          [ "$IN_DRY_RUN" = "true" ] && ARGS+=(--dry-run)
+          [ -n "$IN_PROJECTS" ] && ARGS+=(--projects "$IN_PROJECTS")
+          python discover_feature_candidates.py "${ARGS[@]}"
+          cat ../feature-candidates-*.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: feature-candidates
+          path: feature-candidates-*.*
+          if-no-files-found: ignore
+          retention-days: 120

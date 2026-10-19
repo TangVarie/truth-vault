@@ -81,6 +81,7 @@ jobs:
             librarian/external.py \
             scripts/check_external_shelf.py \
             scripts/check_external_direction.py \
+            scripts/discover_feature_candidates.py \
             librarian/cli.py \
             librarian/app.py \
             onboarder/__init__.py \
@@ -3688,6 +3689,9 @@ jobs:
       - name: 馆员冷路径预筛 —— 整架取回、按项目级字段挑 ≤24 张、rank 前 8 永远在、输出封顶 (D-088)
         working-directory: scripts
         run: python check_librarian_shortlist.py && python check_desk_delivery.py && python check_external_shelf.py && python check_external_direction.py --selftest   # §1 上限/直通 · §2 同品牌全进 · §3 跨主题保留 · §4 只看项目级 · §5 确定性 · §6 版本看整架 · §7 LLM 所见 + max_tokens
+      - name: 季度找新特征 —— 只用发现半 / 例子不许抄原文 / 不许用发布后的信息 / 一个项目失败不拖垮整季 (D-120)
+        working-directory: scripts
+        run: python discover_feature_candidates.py --selftest
       - name: 采集三道闸 —— 未来 publish_time 夹掉 / 状态格清空写回默认 + 没映上打旗 / 整批 tier 翻转 upsert 前挡住 (D-091)
         working-directory: scripts
         run: python check_ingest_guards.py   # §1 未来日期 · §2/§2b 清空与没映上 · §3 翻转计划 · §4 挡只剥翻转篇 · §5 读库分批 · §6/§7 接线
@@ -5895,7 +5899,7 @@ jobs:
           watched_node = next(n.value for n in ast.walk(tree)
                               if isinstance(n, ast.Assign)
                               and any(getattr(t, "id", None) == "WATCHED" for t in n.targets))
-          watched = {wf for wf, _human in ast.literal_eval(watched_node)}
+          watched = {entry[0] for entry in ast.literal_eval(watched_node)}   # (文件名, 人话名字[, 窗口小时数])
           scheduled = set()
           for f, doc in wfs.items():
               # PyYAML 会把裸 on: 解析成 True(YAML 1.1 的 y/n/on/off), 两种键都认

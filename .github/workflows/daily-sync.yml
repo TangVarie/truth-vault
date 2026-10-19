@@ -365,22 +365,10 @@ jobs:
       # aw 改为 write-time 主动 pull 馆员书架 (见上 curate_sync 步骤策展经验卡)。
       # 历史脚本 sync_truth_vault_baokuan_to_autowriter_items.py 保留在 repo 备查。
 
-      - name: autowriter 人工审稿决定 → truth_vault.prepublish_evaluations
-        id: prepublish_sync
-        continue-on-error: true
-        if: steps.check.outputs.skip != 'true'
-        working-directory: scripts
-        run: |
-          DRYRUN=""
-          [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRYRUN="--dry-run"
-          # 时间窗 = created_at OR updated_at (D-043, 2026-08-23)。
-          # updated_at 是 aw 仓 migrations/001_deskcore.sql 加的 —— 生产库已应用;
-          # 没有这列的库会降级回只按 created_at 并告警, 不会把这一步打死。
-          # 默认 365 天窗口足够日 cron 抓到迟到决策; 月度可以跑一次
-          # --since-days 0 全扫补漏 (在另一个 workflow / 手动 cron)。
-          # 本步在下方「Fail job on any sync failure」的聚合闸里, 真挂了会红+发邮件。
-          python sync_autowriter_decisions_to_prepublish.py $DRYRUN
-
+      # (2026-10-19 D-120 撤步: 「autowriter 人工审稿决定 → truth_vault.prepublish_evaluations」原来在这里。
+      #  写作台的 review_drafts 工具已经撤了(写手不再审稿 / 导出, 定稿贴飞书、发布后按内容对回), 这张表自 D-072
+      #  起就是 legacy-only, 末条 09-22。脚本 scripts/sync_autowriter_decisions_to_prepublish.py 和表都留着备查,
+      #  不再每晚跑; 要补一次就手动 python sync_autowriter_decisions_to_prepublish.py --dry-run 先看。)
 
       # (2026-10-08 D-090 退灯: 「positive pool 饱和度检查」原来在这里。它量的是 items.external_source_id
       #  那条路, 而那条路没人写(push 没跑过、deskcore 明说不碰), 所以从上线起每晚 rc=2 "无法评估"。
@@ -542,8 +530,7 @@ jobs:
                     "essence_sync:${{ steps.essence_sync.outcome }}" \
                     "gate3_score:${{ steps.gate3_score.outcome }}" \
                     "curate_sync:${{ steps.curate_sync.outcome }}" \
-                    "ssll_sync:${{ steps.ssll_sync.outcome }}" \
-                    "prepublish_sync:${{ steps.prepublish_sync.outcome }}"; do
+                    "ssll_sync:${{ steps.ssll_sync.outcome }}"; do
             name="${kv%%:*}"; outcome="${kv#*:}"
             case "$outcome" in
               failure)   failed_steps="$failed_steps $name" ;;

@@ -48,17 +48,18 @@ jobs:
           python - <<'PY'
           import datetime as dt, json, os, sys, urllib.request
 
-          # 要盯的几趟 —— 每条是 (workflow 文件名, 人话名字)。
+          # 要盯的几趟 —— 每条是 (workflow 文件名, 人话名字[, 窗口小时数])。不写窗口 = WINDOW_H。
           # 加新的定时 workflow 时【也要加到这儿】, ci.yml 有守卫钉这件事:
           # 它会把 .github/workflows 里所有带 schedule 的文件和本名单对拍, 漏了就判红。
           WATCHED = [
               ("daily-sync.yml",   "夜跑(飞书入库 / 评论 / essence / 策展 / 通道1)"),
               ("features-sync.yml", "内容特征层增量抽取"),
+              # 季度跑(D-120): 两趟最多隔 92 天, 窗口给 93 天 + 2h = 2234h(写成字面量: ci.yml 用 literal_eval 读这份名单)
+              ("feature-discovery.yml", "季度找新特征", 2234),
           ]
           WINDOW_H = 26   # 24h 的窗口 + 2h 余量: cron 起跑时刻本来就会漂(D-064)
 
           repo, token = os.environ["REPO"], os.environ["GH_TOKEN"]
-          since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=WINDOW_H)
 
           def api(path):
               req = urllib.request.Request(
@@ -69,7 +70,10 @@ jobs:
                   return json.load(r)
 
           problems, notes, verified = [], [], 0
-          for wf, human in WATCHED:
+          for entry in WATCHED:
+              wf, human = entry[0], entry[1]
+              window_h = entry[2] if len(entry) > 2 else WINDOW_H
+              since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=window_h)
               try:
                   runs = api(f"actions/workflows/{wf}/runs?event=schedule&per_page=20")["workflow_runs"]
               except Exception as e:
@@ -91,7 +95,7 @@ jobs:
               if not recent:
                   last = runs[0]
                   problems.append(
-                      f"· {human} ({wf}): 最近 {WINDOW_H}h 一趟 schedule 都没有 —— "
+                      f"· {human} ({wf}): 最近 {window_h}h 一趟 schedule 都没有 —— "
                       f"cron 没触发? 上一趟是 {last['run_started_at']} ({last['conclusion']})\n"
                       f"    {last['html_url']}")
                   continue
@@ -112,7 +116,7 @@ jobs:
               if done:
                   worst = done[0]
                   problems.append(
-                      f"· {human} ({wf}): 最近 {WINDOW_H}h 跑完了 {len(done)} 趟, "
+                      f"· {human} ({wf}): 最近 {window_h}h 跑完了 {len(done)} 趟, "
                       f"**没有一趟成功** (最近一趟: {worst['conclusion']})\n"
                       f"    {worst['html_url']}")
                   verified += 1
