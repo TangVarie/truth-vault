@@ -4232,7 +4232,7 @@ jobs:
       - name: "系统地图三闸 (D-075): 图里点名的东西还在不在 / ci.yml 内联棘轮 / 灯必须在册"
         working-directory: scripts
         run: python check_system_map.py
-      - name: "角度台账漏账灯自检 (D-071): 判据下限 / 排除 tv-sync 导入副本 / 翻页键唯一 / 重名项目不并格 / 哨兵行"
+      - name: "角度台账漏账灯自检 (D-071 + O-04): 判据下限 / 排除 tv-sync 导入副本 / 翻页键唯一 / 重名项目不并格 / 发了帖没接住 / 哨兵行"
         working-directory: scripts
         run: |
           python - <<'PY'
@@ -4363,6 +4363,7 @@ jobs:
           # ── main: 哨兵行必须打出来(daily-sync 靠它判崩溃, 不靠退出码) ──────────
           fake_common.get_supabase_client = lambda: object()
           chk.gather = lambda sb, since: {"by_project": {"p1": P(20, 0, 0, 0, name="甲")}, "ingested_skipped": 0}
+          chk.gather_publish = lambda sb, since, used: {}    # 判据 C 的取数另有 --selftest 测
           buf = io.StringIO()
           with contextlib.redirect_stdout(buf):
               rc = chk.main.__wrapped__() if hasattr(chk.main, "__wrapped__") else chk.main()
@@ -4375,6 +4376,7 @@ jobs:
           assert "--window-days" not in wf, "夜跑不该自己传窗口 —— 默认值由脚本钉着"
           print("  ✓ 角度台账灯: 两条判据各带下限, 导入副本被排除(反证会冒假警报), 哨兵行在")
           PY
+          python check_angle_ledger_leak.py --selftest   # 判据 C (O-04): 发了帖、写作台没接住
       - name: Autowriter dup-error detection self-check
         working-directory: scripts
         run: |
