@@ -22,8 +22,8 @@ D-064), 它们本来就没有 angle_key —— 不是发牌产出的, 没有坐�
 判据(三条, 都故意设了下限, 免得天天红 —— D-053):
     A. 某项目窗口内发牌 >= MIN_DRAWN 个角度, 而真稿 == 0     → 抽完没写
     B. 某项目窗口内【发过牌】且真稿 >= MIN_DRAFTS, 而带坐标的 == 0 → 写了不带坐标
-    C. 某 TV 项目窗口内补录副本 >= MIN_UNCAUGHT 篇、对上写作台存档的 <= MAX_CAUGHT 篇,
-       而它对应的写作台项目近 USED_WITHIN_DAYS 天用过写作台         → 发了帖、写作台没接住
+    C. 某 TV 项目窗口内【发出去】的帖里补录副本 >= MIN_UNCAUGHT 篇、对上写作台存档的 <= MAX_CAUGHT 篇
+       (两个下限按窗口长度等比放大, 每 7 天一份), 而它对应的写作台项目用过写作台 → 发了帖、写作台没接住
 三条都不成立才算通。一次发两三张牌、当场没写完是常态, 所以下限不能是 1。
 
 C 是 2026-10-19 补的(TV OPEN-ITEMS O-04): 途鸽 9-16 之后写作台一次发牌、一篇存档都没收到, 10-12 那周
@@ -33,10 +33,13 @@ C 是 2026-10-19 补的(TV OPEN-ITEMS O-04): 途鸽 9-16 之后写作台一次�
       调起来、没开项目就写了; WorkBuddy 的写作台连接是全局的, owner 10-19 确认)。同一个写手别的项目
       照常发牌也可能是这样 —— 途鸽就是(10-19 写手在另一场对话里列项目是通的);
     · 写作台有动静, 但发出去的不是它存的稿                → 连上了、写完没存档。
-「近 USED_WITHIN_DAYS 天用过写作台」那一条是为了不对从来不走写作台的项目天天喊。
+「用过写作台」(台账里有过它的牌, 不限时间)那一条是为了不对从来不走写作台的项目天天喊; 不设 60 天之类的期限 ——
+断得越久越该喊, 设了期限, 一个断了两个月的项目反而会自己转绿(codex review on TV#205)。
+「对上」只认写作台那版早于发布的(lag_days >= 0 或没记): 发出去之后才进写作台的那版是抄回去的, 不算接住
+(全库 440 条对上里 212 条是这种; DECISIONS 里对上本来就只是「对应版本」, 不是生成来源)。
 数据: autowriter.tv_project_map(TV 项目 → 写作台项目)、truth_vault.notes(publish_time 在窗口内) +
 autowriter.tv_note_links(
-按 match_kind 分补录 / 对上)、autowriter.angle_ledger(USED_WITHIN_DAYS 天内发过牌的写作台项目)。
+按 match_kind 分补录 / 对上, 对上只认 lag_days >= 0)、autowriter.angle_ledger(发过牌的写作台项目, 不限时间)。
 
 数据来源(都在共享 Supabase 的 autowriter schema 里, TV 用 service_role 只读):
     发牌  = autowriter.angle_ledger(drawn_at 在窗口内; consumed_version_id 非 NULL = 销了账)
@@ -75,7 +78,7 @@ MIN_DRAFTS = 5
 # 百健士 15 / 19, 这种"一部分在外面写"的不喊; 途鸽 22 / 0、Hatherine 23 / 1 喊。
 MIN_UNCAUGHT = 10
 MAX_CAUGHT = 2
-USED_WITHIN_DAYS = 60
+CHECK_C_BASE_DAYS = 7          # 上面两个下限是按 7 天定的; --window-days 14 就各乘 2(codex review on TV#205)
 # tv-sync 复制进写作台的副本: 不是发牌产出的, 没有坐标, 不能算进未归因。
 INGESTED_KIND = "ingested"
 # 对上写作台存档的几种(tv-sync 的 match_kind; ambiguous / unmatched 两边都不算)。
@@ -106,22 +109,24 @@ def verdicts(by_project: dict) -> list[dict]:
     return out
 
 
-def verdicts_publish(by_project: dict, pub: dict) -> list[dict]:
+def verdicts_publish(by_project: dict, pub: dict, window_days: int = CHECK_C_BASE_DAYS) -> list[dict]:
     """判据 C: 哪些 TV 项目在发帖、写作台却没接住。纯函数 —— CI 直接喂假数测它。
 
     ``by_project`` 是 gather() 的那份(写作台项目 → 窗口内发牌 / 真稿); ``pub`` 是 gather_publish() 的:
     ``{"map": {tv: [写作台 project_id…]}, "links": {tv: {"ingested": n, "caught": n}},
-    "used": {近 USED_WITHIN_DAYS 天发过牌的写作台 project_id}}``。
+    "used": {发过牌的写作台 project_id(不限时间)}}``。``window_days`` 把两个下限按 7 天一份等比放大。
     """
     out = []
     used = pub.get("used") or set()
+    scale = max(window_days, 1) / CHECK_C_BASE_DAYS
+    min_uncaught, max_caught = MIN_UNCAUGHT * scale, MAX_CAUGHT * scale
     for tv, pids in sorted((pub.get("map") or {}).items()):
         link = (pub.get("links") or {}).get(tv) or {}
         ing, caught = link.get("ingested", 0), link.get("caught", 0)
-        if ing < MIN_UNCAUGHT or caught > MAX_CAUGHT:
+        if ing < min_uncaught or caught > max_caught:
             continue
         if not any(p in used for p in pids):
-            continue        # 近 USED_WITHIN_DAYS 天没用过写作台: 本来就不在写作台写, 不喊
+            continue        # 从没在写作台里写过的项目: 本来就不在写作台写, 不喊
         drawn = sum((by_project.get(p) or {}).get("drawn", 0) for p in pids)
         drafts = sum((by_project.get(p) or {}).get("drafts", 0) for p in pids)
         if drawn == 0 and drafts == 0:
@@ -187,7 +192,7 @@ def report(stats: dict, window_days: int) -> int:
                   f"{s['drafts']:>6}{s['with_key']:>8}")
 
     pub = stats.get("publish") or {}
-    pub_hits = verdicts_publish(by_project, pub)
+    pub_hits = verdicts_publish(by_project, pub, window_days)
     _print_publish(pub, by_project, window_days)
     if pub_hits:
         _warn_publish(pub_hits, window_days)
@@ -280,8 +285,8 @@ def gather(sb, since_iso: str) -> dict:
     return {"by_project": by_project, "ingested_skipped": len(ingested)}
 
 
-def gather_publish(sb, since_iso: str, used_since_iso: str, until_iso: str | None = None) -> dict:
-    """判据 C 要的数: TV 项目 → 写作台项目、窗口内【发出去】的笔记按 match_kind 分、近期用过写作台的项目。"""
+def gather_publish(sb, since_iso: str, until_iso: str | None = None) -> dict:
+    """判据 C 要的数: TV 项目 → 写作台项目、窗口内【发出去】的笔记按 match_kind 分、用过写作台的项目。"""
     from _common import fetch_all_pages  # 局部 import, 理由见文件头
 
     # tv_project_map 是人工维护的几十行, 一页够; 笔记和台账会跨 1000 行的页边界, 按唯一键翻。
@@ -301,12 +306,12 @@ def gather_publish(sb, since_iso: str, used_since_iso: str, until_iso: str | Non
     links: list[dict] = []
     for i in range(0, len(note_ids), 200):
         links.extend((sb.schema("autowriter").table("tv_note_links")
-                      .select("note_id, tv_project_id, match_kind")
+                      .select("note_id, tv_project_id, match_kind, lag_days")
                       .in_("note_id", note_ids[i:i + 200]).execute()).data or [])
+    # 不限时间: 断得越久越该喊(见文件头)。台账全表千把行, id + project_id 两列, 夜跑拉一遍不贵。
     used = fetch_all_pages(
         sb.schema("autowriter").table("angle_ledger")
-        .select("id, project_id")
-        .gte("drawn_at", used_since_iso),
+        .select("id, project_id"),
         order_by="id")
 
     by_tv: dict[str, list] = {}
@@ -317,8 +322,8 @@ def gather_publish(sb, since_iso: str, used_since_iso: str, until_iso: str | Non
         c = counts.setdefault(l.get("tv_project_id") or "?", {"ingested": 0, "caught": 0})
         if l.get("match_kind") == INGESTED_KIND:
             c["ingested"] += 1
-        elif l.get("match_kind") in CAUGHT_KINDS:
-            c["caught"] += 1
+        elif l.get("match_kind") in CAUGHT_KINDS and (l.get("lag_days") is None or l["lag_days"] >= 0):
+            c["caught"] += 1            # 写作台那版晚于发布 = 发出去之后抄回去的, 不算接住
     pids = {p for ps in by_tv.values() for p in ps}
     return {"map": by_tv, "links": counts, "used": {u["project_id"] for u in used} & pids}
 
@@ -358,11 +363,15 @@ def selftest() -> int:
     assert [h["kind"] for h in edge(MIN_UNCAUGHT, MAX_CAUGHT)] == ["desk_silent"]
     assert edge(MIN_UNCAUGHT - 1, 0) == [], "补录低于 MIN_UNCAUGHT 不该喊"
     assert edge(MIN_UNCAUGHT, MAX_CAUGHT + 1) == [], "对上多于 MAX_CAUGHT 不该喊"
-    # 近 USED_WITHIN_DAYS 天没用过写作台的项目本来就不在写作台写: 不喊(否则天天红, D-053)
+    # 从没在写作台里写过的项目本来就不在写作台写: 不喊(否则天天红, D-053)
     assert verdicts_publish({}, pub({"TUGE": {"ingested": 50, "caught": 0}}, used=())) == []
     # 映射到多个写作台项目时, 用过 / 有动静按整组算: d2 发了牌就不是「没收到调用」
     assert [h["kind"] for h in verdicts_publish({"d2": P(3, 0)}, week)
             if h["project"] == "TUGE"] == ["published_unsaved"]
+    # --window-days 14: 两周各 10 / 2 合起来 20 / 4, 不能因为窗口拉长就把问题藏掉; 14 天里只有 10 篇补录也不该喊
+    two_weeks = lambda ing, caught: verdicts_publish({}, pub({"TUGE": {"ingested": ing, "caught": caught}}), 14)  # noqa: E731
+    assert [h["kind"] for h in two_weeks(20, 4)] == ["desk_silent"], "下限要按窗口放大"
+    assert two_weeks(19, 0) == [] and two_weeks(20, 5) == []
 
     def run(stats):
         buf = io.StringIO()
@@ -390,18 +399,20 @@ def selftest() -> int:
         def execute(self): return types.SimpleNamespace(data=[r for r in self.rows if all(f(r) for f in self.f)])
 
     INWIN, OLD, LATER = "2026-10-14T08:00:00", "2026-09-20T08:00:00", "2026-10-21T08:00:00"
-    note = lambda nid, tv, kind, pt: ({"note_id": nid, "project_id": tv, "publish_time": pt},  # noqa: E731
-                                      {"note_id": nid, "tv_project_id": tv, "match_kind": kind,
-                                       "matched_at": "2026-10-19T04:00:00"})   # 全都是刚连上的 —— 窗口不该按它切
+    note = lambda nid, tv, kind, pt, lag=None: ({"note_id": nid, "project_id": tv, "publish_time": pt},  # noqa: E731
+                                               {"note_id": nid, "tv_project_id": tv, "match_kind": kind, "lag_days": lag,
+                                                "matched_at": "2026-10-19T04:00:00"})   # 全都是刚连上的 —— 窗口不该按它切
     ROWS = ([note(f"t{i:02d}", "TUGE", "ingested", INWIN) for i in range(22)]
             + [note("t-amb", "TUGE", "ambiguous", INWIN), note("t-un", "TUGE", "unmatched", INWIN),
-               note("h1", "HATH", "fuzzy", INWIN), note("h2", "HATH", "tv_lineage", INWIN)]
+               note("h1", "HATH", "fuzzy", INWIN, 1), note("h2", "HATH", "tv_lineage", INWIN),
+               note("h3", "HATH", "body_exact", INWIN, -3)]                             # 发了之后才进写作台: 不算接住
             + [note(f"old{i:02d}", "TUGE", "ingested", OLD) for i in range(30)]       # 新接表 / 补跑
             + [note(f"sch{i}", "TUGE", "ingested", LATER) for i in range(5)]          # 排期还没发
             + [note("zz1", "NOT_MAPPED", "ingested", INWIN)])
     NOTES, LINKS = [n for n, _ in ROWS], [l for _, l in ROWS]
-    LEDGER = [{"id": "a1", "project_id": "d1", "drawn_at": "x"}, {"id": "a2", "project_id": "d1", "drawn_at": "x"},
-              {"id": "a3", "project_id": "zz-unmapped", "drawn_at": "x"}]
+    LEDGER = [{"id": "a1", "project_id": "d1", "drawn_at": "2026-05-01T00:00:00"},   # 半年前发过也算用过
+              {"id": "a2", "project_id": "d1", "drawn_at": "2026-09-16T06:59:00"},
+              {"id": "a3", "project_id": "zz-unmapped", "drawn_at": "2026-10-18T00:00:00"}]
 
     class SB:
         def __init__(self): self.s = None
@@ -426,14 +437,14 @@ def selftest() -> int:
     fake.fetch_all_pages = _pages
     sys.modules["_common"] = fake
     try:
-        g = gather_publish(SB(), "2026-10-12T00:00:00", "2026-08-20T00:00:00", until_iso="2026-10-19T08:00:00")
+        g = gather_publish(SB(), "2026-10-12T00:00:00", until_iso="2026-10-19T08:00:00")
         assert g["map"] == {"TUGE": ["d1", "d2"], "HATH": ["h1"]}, g["map"]
         assert g["links"] == {"TUGE": {"ingested": 22, "caught": 0},
-                              "HATH": {"ingested": 0, "caught": 2}}, g["links"]
+                              "HATH": {"ingested": 0, "caught": 2}}, g["links"]   # h3 (lag -3) 不算
         assert g["used"] == {"d1"}, "没映射的写作台项目不进 used"
         # 反证: 不传 until → 排期的 5 篇算进来; 窗口拉到 9 月 → 旧的 30 篇算进来 —— 窗口确实是 publish_time
-        assert gather_publish(SB(), "2026-10-12T00:00:00", "2026-08-20T00:00:00")["links"]["TUGE"]["ingested"] == 27
-        assert gather_publish(SB(), "2026-09-01T00:00:00", "2026-08-20T00:00:00",
+        assert gather_publish(SB(), "2026-10-12T00:00:00")["links"]["TUGE"]["ingested"] == 27
+        assert gather_publish(SB(), "2026-09-01T00:00:00",
                               until_iso="2026-10-19T08:00:00")["links"]["TUGE"]["ingested"] == 52
         assert [h["project"] for h in verdicts_publish({}, g)] == ["TUGE"]
 
@@ -441,7 +452,7 @@ def selftest() -> int:
         fake.get_supabase_client = lambda: object()
         real = globals()["gather"], globals()["gather_publish"]
         globals()["gather"] = lambda sb, since: {"by_project": {}, "ingested_skipped": 0}
-        globals()["gather_publish"] = lambda sb, since, used, **kw: week
+        globals()["gather_publish"] = lambda sb, since, **kw: week
         argv, sys.argv = sys.argv, ["check_angle_ledger_leak.py"]
         buf = io.StringIO()
         try:
@@ -473,13 +484,11 @@ def main() -> int:
         return 2
     now = datetime.now(timezone.utc)
     since = (now - timedelta(days=args.window_days)).replace(tzinfo=None).isoformat(timespec="seconds")
-    used_since = ((now - timedelta(days=max(USED_WITHIN_DAYS, args.window_days)))
-                  .replace(tzinfo=None).isoformat(timespec="seconds"))
 
     from _common import get_supabase_client  # 局部 import, 理由见文件头
     sb = get_supabase_client()
     stats = gather(sb, since)
-    stats["publish"] = gather_publish(sb, since, used_since,
+    stats["publish"] = gather_publish(sb, since,
                                       until_iso=now.replace(tzinfo=None).isoformat(timespec="seconds"))
     rc = report(stats, args.window_days)
     # ⚠️ 哨兵行: daily-sync.yml 靠它区分"跑完了"和"崩了"(那边是 `|| true` 调的)。
