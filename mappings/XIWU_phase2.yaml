@@ -5,20 +5,21 @@
 #   base P0YbbWpIUa6PsBsPi9pcApGknLf(和 XIWU_phase1 同一个 base)/ table tblcfQMfcUIh86NC / view vewHwaAcuq
 # 起草方法: 接表 agent 9-17 之后两次都没跑通, 这次不走 LLM 起草 —— 同一个 base、同一拨运营,
 # 先照 XIWU_phase1 的列结构起草, 再用 Preflight(只读飞书)对真表校正列名 / 方向 / tier 取值。
-# ⚠️ 产品不一定是按摩椅(写作台那边的稿子有「养宠家庭必看, 真的不粘毛?」), 所以 phase1 里
-#    按摩椅专属的方向口径、正文兜底规则、合规红线一条都没带过来, 等看了真实文案再写。
+# 10-19 首次入库(71 篇, 10-07 ~ 10-18 发布)后看了真实文案: 产品是西屋 911GT 按摩椅(15999 档),
+# 71 篇全部写按摩、绝大多数点名西屋 / 911GT, 主要拿来和另一家旗舰款比。下面的方向口径和合规按这个定。
 # ════════════════════════════════════════════════════════════════════
 
 version: 1.0
 
 project_id: XIWU_phase2
 brand: 西屋
-product: 911GT                      # [待确认] 品类细项(按摩椅 / 吸尘器 / …)看真实文案后补
+product: 按摩椅911GT
 brand_aliases:
   - 西屋911gt
   - 911gt
   - 911GT
-category: 家居家电                  # [待确认] 西屋在 TV 里的上一期是家居家电; 看文案后核
+  - 西屋911GT
+category: 家居家电                  # 同 phase1(策略 lead 8-28 定: 按摩椅算家居家电, 不按医疗器械)
 platform: xiaohongshu
 schema_family: A
 start_date: auto_from_publish_time_min
@@ -49,8 +50,8 @@ field_mapping:
 
   # ── 数据回收(数字, parse_numeric 自动转) ──
   # Preflight 10-19(113 行 / 71 行有正文)校正: 本表用「曝光量 / 阅读量」(phase1 是「数」); 互动有两列
-  # 「互动数」「互动量」都在 —— 互动数沿用 phase1 / HATHERINE 的口径进 interactions, 互动量留 raw_extra,
-  # 第一次入库后对一下两列是不是同一个数, 不是再改。
+  # 「互动数」「互动量」都在 —— 互动数沿用 phase1 / HATHERINE 的口径进 interactions, 互动量留 raw_extra。
+  # 10-19 首次入库后核过: 71 篇两列逐条相等。
   曝光量: impressions
   阅读量: reads
   互动数: interactions
@@ -77,17 +78,22 @@ field_mapping:
 # 本表【无】「发布笔记」intent 列 → 不做意图分类, notes.intent 留空(WTG/TXQ/OKMAN 金标准 intent=null)
 
 # ════════════════════════════════════════════════════════════════════
-# 方向拆解 —— [待确认] 先按 phase1 的两个方向名占位, Preflight 报出真实取值后再定
+# 方向拆解 —— 10-19 按首次入库的 71 篇定
 # ════════════════════════════════════════════════════════════════════
-# content_format / audience 不照抄 phase1(那是「替父母买按摩椅」的口径), 先给最保守的一档,
-# 看了真实文案再改。没有 direction_from_content(phase1 的规则是按 GT33 写的)。
+# 「方向」只有两种取值(流量贴 52 / 产品贴 19), 全单选。
+# 和 phase1 不一样的地方: phase1 九成是「替父母买」, 这一期人群是散的 —— 流量贴里写父母 / 公婆的 14 篇、
+# 写自己上班久坐 / 教书久站的 12 篇、写伴侣的 9 篇, 所以人群记「通用」, 不硬塞进伴侣家人。
+# 没有 direction_from_content(phase1 那套是给「方向列写坏」兜底的, 这张表方向列是好的)。
 direction_decomposition:
-  "流量贴":
-    content_format: 提问求助          # [待确认]
-    target_audience: ["通用"]        # [待确认]
-  "产品贴":
-    content_format: 场景植入          # [待确认]
-    target_audience: ["通用"]        # [待确认]
+  "流量贴":                         # 52 篇; 24 篇字面在问(求推荐 / 值不值 / 靠谱吗), 其余是选购纠结的场景
+    content_format: 提问求助
+    target_audience: ["通用"]
+    user_pain_point: 花一万多买按摩椅前拿不准(力度合不合身 / 一家几口能不能共用 / 进不进得了门 / 售后)
+
+  "产品贴":                         # 19 篇; 产品已经在生活里被用起来(笔记级 essence 会再细分)
+    content_format: 场景植入
+    target_audience: ["通用"]
+    user_pain_point: 按摩椅买回家之后值不值、用不用得起来
 
 # tier 抽取规则(流量状态 → tier) —— 照 phase1, Preflight 报出取值后核
 tier_extraction:
@@ -112,13 +118,15 @@ tier_extraction:
 # tier_thresholds 已废(D-062): 判爆只看评论数。
 
 # ════════════════════════════════════════════════════════════════════
-# 合规配置 —— 家居家电档的通用两条; 产品专属的红线看文案后补
+# 合规配置 —— 同 phase1(同一类产品, 文案里同样有腰痛 / 颈椎 / 老人使用的场景)
 # ════════════════════════════════════════════════════════════════════
 compliance:
   base_template: 家居家电
   custom_red_flags:
-    - "禁止宣称医疗功效"
+    - "家居家电/按摩椅: 禁止宣称医疗功效(治疗腰椎间盘突出/颈椎病等疾病)"
     - "禁止绝对化表述(最好用/唯一/根治)"
+    - "禁对有基础病或植入器械的人群(心脏支架/起搏器/骨质疏松/椎间盘突出/术后)给出能不能用的判断, 一律引导问医生"
+    - "涉及孕期/老人/儿童使用场景时, 只讲自身体验, 禁给使用时长与强度建议"
 
 # ════════════════════════════════════════════════════════════════════
 # 项目专属字段 → raw_extra (allowlist · 17 列)
@@ -166,12 +174,13 @@ onboarding_meta:
   onboarded_by: Claude(照 XIWU_phase1 结构起草 + Preflight 校正)
   notes: |
     写作台项目「西屋911gt」(autowriter projects.id 64366f9a-8a4a-4ccf-828a-3bfa351c8dcc)的 TV 侧。
-    入库验证 OK 之后: tv-map add(TV 项目 XIWU_phase2 → 写作台 西屋911gt, ingest_target), 再把
-    sync_interval 翻成 daily。W-25。
+    10-19: 首次实跑入库 71 篇(0 错误), tv_project_map 已加 XIWU_phase2 → 西屋911gt(ingest_target),
+    sync_interval 翻 daily。W-25。
 
 sync_config:
   source_type: feishu_api
   feishu_app_token: P0YbbWpIUa6PsBsPi9pcApGknLf   # 表标识(非密钥), owner 10-19 给的链接
   feishu_table_id: tblcfQMfcUIh86NC
   feishu_view_id: null
-  sync_interval: on_demand          # 新表一律先 on_demand(PR#67): 显式跑通、核过再翻 daily
+  # 10-19 显式实跑核过(入库 71 / 空占位 42 / 错误 0)后翻 daily: 进夜间 cron 的入库 / essence / 策展 / 通道 1
+  sync_interval: daily
