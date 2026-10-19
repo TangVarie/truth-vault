@@ -30,7 +30,7 @@ C 是 2026-10-19 补的(TV OPEN-ITEMS O-04): 途鸽 9-16 之后写作台一次�
 发出去的 22 篇全是 tv-sync 补录的副本, 写手却一直以为在用写作台。A / B 都从【发牌】那一侧看, 一张牌
 都没发的项目在它们眼里是「没活」, 所以这件事一个月都没灯亮。C 从【发帖】那一侧看, 分两种报:
     · 写作台窗口内没收到这个项目的一次发牌、一篇真稿 → 多半是写手那边的写作台没连上(模型照 skill
-      把流程走完了, 服务端什么都没收到; aw 协议 2d19228147b4 起没连上就不写);
+      把流程走完了, 服务端什么都没收到; aw 协议 8f1af72c912c 起没连上就不写);
     · 写作台有动静, 但发出去的不是它存的稿                → 连上了、写完没存档。
 「近 USED_WITHIN_DAYS 天用过写作台」那一条是为了不对从来不走写作台的项目天天喊。
 数据: autowriter.tv_project_map(TV 项目 → 写作台项目)、autowriter.tv_note_links(matched_at 在窗口内,
@@ -154,7 +154,7 @@ def _warn_publish(pub_hits: list[dict], window_days: int) -> None:
            + "; ".join(f"{h['project']}({h['detail']})" for h in pub_hits)
            + " —— 这些帖没有发牌查重, 也进不了改稿差异和参考分, 飞轮只能当外部稿补录。"
              "没连上的: 让那位写手在 WorkBuddy 里查写作台连接(mcp.json 地址和 key)并重新导入 skill"
-             "(aw 协议 2d19228147b4 起没连上就不写); 连上了没存档的: 看 aw deskcore-runbook 的 score_drafts 存档。"
+             "(aw 协议 8f1af72c912c 起没连上就不写); 连上了没存档的: 看 aw deskcore-runbook 的 score_drafts 存档。"
              "修在写手那边和 autowriter 仓, TV 这边改不好。")
     print(f"  ⚠ {msg}")
     if os.environ.get("GITHUB_ACTIONS") == "true":
