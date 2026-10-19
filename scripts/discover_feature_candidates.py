@@ -111,6 +111,14 @@ def validate(raw: dict, *, existing_ids: set[str], corpus: str, project: str) ->
         if not ask or c.get("scope") not in fb.SPANS or c.get("hypothesis") not in ("+", "-"):
             dropped.append(f"{cid}: 缺题目 / scope 不在 {fb.SPANS} / hypothesis 不是 + -")
             continue
+        if not str(c.get("yes_if") or "").strip() or not str(c.get("no_if") or "").strip():
+            dropped.append(f"{cid}: 判是 / 判否的边界缺一条 —— 出题规矩 5")
+            continue
+        copied = [k for k in ("ask", "yes_if", "no_if", "why") if _copied(str(c.get(k) or ""), corpus)]
+        if copied:
+            # 报告会进 GitHub 的 step summary / artifact: 任何一段和原文连续 8 字一样都不许出去(codex review on TV#202)
+            dropped.append(f"{cid}: {'、'.join(copied)} 和原文有连续 {COPY_RUN} 字一样, 整题不收")
+            continue
         text = " ".join(str(c.get(k) or "") for k in ("ask", "yes_if", "no_if", "why"))
         leak = [w for w in fb.PERFORMANCE_KEYWORDS if w.lower() in text.lower()]
         if leak:
@@ -133,19 +141,28 @@ def _norm_ask(ask: str) -> str:
 
 
 def merge(per_project: list[list[dict]]) -> list[dict]:
-    """同 id 或同题目 (去标点) 的合成一条, 记下哪些项目都提了; 多个项目都提的排前面。"""
+    """同 id 或同题目 (去标点) 的合成一条, 记下哪些项目都提了、各自说的方向; 多个项目都提的排前面。
+    方向不一致时 hypothesis 记 "?" 并列出两边 —— 不能让按字母先处理的那个项目替大家定方向(codex review on TV#202),
+    预注册方向本来就该在闸二之前由人定。"""
     by_key: dict[str, dict] = {}
     for cands in per_project:
         for c in cands:
             key = next((k for k, v in by_key.items() if k == c["id"] or _norm_ask(v["ask"]) == _norm_ask(c["ask"])), None)
             if key is None:
-                by_key[c["id"]] = dict(c)
-            else:
-                by_key[key]["projects"] = sorted(set(by_key[key]["projects"]) | set(c["projects"]))
+                m = by_key[c["id"]] = dict(c)
+                m["directions"] = {c["hypothesis"]: list(c["projects"])}
+                continue
+            m = by_key[key]
+            m["projects"] = sorted(set(m["projects"]) | set(c["projects"]))
+            d = m["directions"].setdefault(c["hypothesis"], [])
+            d.extend(p for p in c["projects"] if p not in d)
+            if len(m["directions"]) > 1:
+                m["hypothesis"] = "?"
     return sorted(by_key.values(), key=lambda c: (-len(c["projects"]), c["id"]))
 
 
-def sample(labels: list[dict], *, since: datetime, per_group: int) -> dict[str, dict[int, list[str]]]:
+def sample(labels: list[dict], *, since: datetime, per_group: int,
+           until: Optional[datetime] = None) -> dict[str, dict[int, list[str]]]:
     """项目 → {1: [爆的 note_id], 0: [趴的 note_id]}, 只取发现半、since 之后发布的, 每组按 note_id 稳定取前 per_group 篇
     (按哈希排, 不按时间: 避免全挤在季末)。"""
     groups: dict[str, dict[int, list[str]]] = defaultdict(lambda: {0: [], 1: []})
@@ -157,22 +174,32 @@ def sample(labels: list[dict], *, since: datetime, per_group: int) -> dict[str, 
             t = None
         if t is not None and t.tzinfo is None:
             t = t.replace(tzinfo=timezone.utc)
-        if t is None or t < since or not in_discovery_half(r["note_id"]):
+        if t is None or t < since or (until is not None and t >= until) or not in_discovery_half(r["note_id"]):
             continue
         groups[r["project_id"]][int(r["y"])].append(r["note_id"])
     rank = lambda nid: hashlib.sha256(f"order:{nid}".encode()).hexdigest()  # noqa: E731
     return {p: {y: sorted(ids, key=rank)[:per_group] for y, ids in g.items()} for p, g in groups.items()}
 
 
+def previous_quarter(now: datetime) -> tuple[datetime, datetime]:
+    """now 所在季度的上一个自然季度 [起, 止)。定时跑(每季第 2 天)用它, 季度之间不重叠也不漏天(codex review on TV#202)。"""
+    q_start_month = 3 * ((now.month - 1) // 3) + 1
+    end = datetime(now.year, q_start_month, 1, tzinfo=timezone.utc)
+    start = datetime(end.year - 1, 10, 1, tzinfo=timezone.utc) if end.month == 1 else \
+        datetime(end.year, end.month - 3, 1, tzinfo=timezone.utc)
+    return start, end
+
+
 def run(*, labels: list[dict], fetch_notes: Callable[[list[str]], dict[str, dict]], categories: dict[str, str],
         bank: dict, call: Optional[Callable[[str, str], str]], since: datetime, per_group: int = PER_GROUP,
-        projects: Optional[set[str]] = None) -> dict:
+        projects: Optional[set[str]] = None, until: Optional[datetime] = None) -> dict:
     """``call(system, user) -> text``; None = dry-run (只数样本)。"""
     existing = existing_questions(bank)
     existing_ids = {i for i, _ in existing}
     system = SYSTEM.format(k=PER_PROJECT_CANDIDATES, existing="\n".join(f"{i}: {a}" for i, a in existing))
-    groups = sample(labels, since=since, per_group=per_group)
-    report = {"since": since.date().isoformat(), "projects": [], "skipped": [], "dropped": [], "candidates": [],
+    groups = sample(labels, since=since, per_group=per_group, until=until)
+    report = {"since": since.date().isoformat(), "until": until.date().isoformat() if until else None,
+              "projects": [], "skipped": [], "dropped": [], "candidates": [], "answered": 0,
               "holdout_rule": "sha256(note_id) 首位十六进制为奇数的笔记没给模型看 —— 候选题的闸二只用这一半或下一季的新笔记",
               "bank_version": bank.get("bank_version"), "bank_sha256": bank.get("frozen_sha256")}
     per_project = []
@@ -195,6 +222,7 @@ def run(*, labels: list[dict], fetch_notes: Callable[[list[str]], dict[str, dict
         except Exception as exc:  # noqa: BLE001 — 一个项目失败不拖垮整季
             report["dropped"].append(f"{p}: 这次没拿到候选 ({type(exc).__name__}: {str(exc)[:120]})")
             continue
+        report["answered"] += 1
         kept, dropped = validate(raw, existing_ids=existing_ids, corpus=corpus, project=p)
         report["dropped"] += [f"{p}: {d}" for d in dropped]
         per_project.append(kept)
@@ -212,7 +240,8 @@ def _strip_fence(text: str) -> str:
 
 def render(report: dict, *, dry_run: bool) -> str:
     lines = [f"# 特征候选题 · {datetime.now(timezone.utc).date().isoformat()}", "",
-             f"- 看的是 {report['since']} 以来发布的笔记, 只用发现半; {report['holdout_rule']}",
+             f"- 看的是 {report['since']}" + (f" 到 {report['until']}(不含)" if report.get("until") else " 以来")
+             + f"发布的笔记, 只用发现半; {report['holdout_rule']}",
              f"- 现有题库: {report.get('bank_version')} (frozen {str(report.get('bank_sha256') or '')[:8]})",
              f"- 提了题的项目: {len(report['projects'])} 个; 对照太薄跳过: {len(report['skipped'])} 个"
              + (" —— **dry-run, 没调模型**" if dry_run else ""), ""]
@@ -230,7 +259,9 @@ def render(report: dict, *, dry_run: bool) -> str:
             lines.append("这一季没有留下来的候选。")
         for c in report["candidates"]:
             lines += [f"### `{c['id']}` · {c['ask']}",
-                      f"- scope: {c['scope']} · 方向: {c['hypothesis']} · 提出的项目: {'、'.join(c['projects'])}",
+                      f"- scope: {c['scope']} · 方向: {c['hypothesis']} · 提出的项目: {'、'.join(c['projects'])}"
+                      + ("(方向不一致: " + "; ".join(f"{h} {'、'.join(ps)}" for h, ps in c["directions"].items())
+                         + ", 预注册前要人定)" if c.get("hypothesis") == "?" else ""),
                       f"- 判是: {c['yes_if']}" + (f" (例: {c['yes_example']})" if c.get("yes_example") else ""),
                       f"- 判否: {c['no_if']}" + (f" (例: {c['no_example']})" if c.get("no_example") else ""),
                       f"- 为什么: {c['why']}", ""]
@@ -261,9 +292,9 @@ def _selftest() -> None:
             {"id": "mentions_price", "ask": "正文有没有写具体价格？", "scope": "body", "yes_if": "写了数字价格",
              "no_if": "没写", "yes_example": "这瓶我买的时候六十八", "no_example": "第一段写了一个很具体的价格",
              "hypothesis": "+", "why": "价格让读者能比较"},
-            {"id": "title_is_question", "ask": "x？", "scope": "title", "yes_if": "", "no_if": "", "hypothesis": "+"},
+            {"id": "title_is_question", "ask": "x？", "scope": "title", "yes_if": "是", "no_if": "否", "hypothesis": "+"},
             {"id": "BadId", "ask": "x？", "scope": "title", "hypothesis": "+"},
-            {"id": "mentions_likes", "ask": "有没有提点赞？", "scope": "body", "yes_if": "提了点赞", "no_if": "",
+            {"id": "mentions_likes", "ask": "有没有提点赞？", "scope": "body", "yes_if": "提了点赞", "no_if": "没提",
              "hypothesis": "+"},
         ]}, ensure_ascii=False)
 
@@ -291,12 +322,34 @@ def _selftest() -> None:
     bad = run(labels=labels, fetch_notes=lambda nids: {i: notes[i] for i in nids}, categories={}, bank=bank,
               call=lambda s, u: "不是 JSON", since=now - timedelta(days=DEFAULT_DAYS), per_group=10)
     assert bad["candidates"] == [] and "没拿到候选" in bad["dropped"][0], "一个项目失败不拖垮整季"
+    # 判是 / 判否缺一条不收; 题干抄了原文整题不收
+    k, why = validate({"candidates": [
+        {"id": "no_bounds", "ask": "有没有写价格？", "scope": "body", "yes_if": "写了", "no_if": "", "hypothesis": "+"},
+        {"id": "copied_ask", "ask": "第一段写了一个很具体的价格吗", "scope": "body", "yes_if": "是", "no_if": "否",
+         "hypothesis": "+"}]}, existing_ids=set(), corpus="第一段写了一个很具体的价格数字九十九元", project="P")
+    assert k == [] and "边界缺一条" in why[0] and "整题不收" in why[1], why
+    # 两个项目方向相反: 不按字母顺序替大家定, 记 "?"
+    m2 = merge([[dict(c, projects=["A"], hypothesis="+")], [dict(c, projects=["B"], hypothesis="-")]])
+    assert m2[0]["hypothesis"] == "?" and m2[0]["directions"] == {"+": ["A"], "-": ["B"]}
+    assert "方向不一致" in render({**rep, "candidates": m2}, dry_run=False)
+    # 上一个自然季度: [起, 止), 跨年也对
+    assert previous_quarter(datetime(2027, 1, 2, 3, 23, tzinfo=timezone.utc)) == (
+        datetime(2026, 10, 1, tzinfo=timezone.utc), datetime(2027, 1, 1, tzinfo=timezone.utc))
+    assert previous_quarter(datetime(2027, 4, 2, tzinfo=timezone.utc))[0] == datetime(2027, 1, 1, tzinfo=timezone.utc)
+    q = run(labels=labels + [{"note_id": n, "project_id": "P", "publish_time": "2026-10-02T00:00:00", "y": 1}
+                             for n in ("LATE_1",)],
+            fetch_notes=lambda nids: {}, categories={}, bank=bank, call=None,
+            since=datetime(2026, 7, 1, tzinfo=timezone.utc), until=datetime(2026, 10, 1, tzinfo=timezone.utc), per_group=10)
+    assert q["until"] == "2026-10-01"
+    # 模型全挂: answered 记 0, main 据它报红
+    assert bad["answered"] == 0 and rep["answered"] == 1
     print("discover_feature_candidates selftest: OK")
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--days", type=int, default=DEFAULT_DAYS)
+    ap.add_argument("--days", type=int, default=DEFAULT_DAYS, help="手动跑时看最近多少天(定时跑固定看上一个自然季度)")
+    ap.add_argument("--previous-quarter", action="store_true", help="手动跑也看上一个自然季度")
     ap.add_argument("--per-group", type=int, default=PER_GROUP)
     ap.add_argument("--projects", default="", help="逗号分隔只看这些项目; 留空 = 全部")
     ap.add_argument("--out", default="", help="报告写到这个 markdown 文件 (同名 .json 一并写)")
@@ -306,11 +359,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.selftest:
         _selftest()
         return 0
-    from _common import fetch_all_pages, get_supabase_client
+    from _common import fetch_all_pages, fetch_vanished_note_ids, get_supabase_client
     sb = get_supabase_client()
     bank = fb.load_bank()
     labels = fetch_all_pages(sb.schema("truth_vault").table("v_l2_labels")
                              .select("note_id, project_id, publish_time, y"), order_by="note_id")
+    # 飞书里已经删掉的篇不当样本(同闸二取数, gate2_run.fetch_dataset; codex review on TV#202)
+    vanished = fetch_vanished_note_ids(sb)
+    labels = [r for r in labels if r["note_id"] not in vanished]
     cats = {r["project_id"]: r.get("category") for r in fetch_all_pages(
         sb.schema("truth_vault").table("projects").select("project_id, category"), order_by="project_id")}
 
@@ -327,11 +383,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         from annotate_essence_pass import call_claude
         model = os.environ.get(MODEL_ENV, DEFAULT_MODEL)
         call = lambda system, user: call_claude(user, model, cached_system=system)  # noqa: E731
-    since = datetime.now(timezone.utc) - timedelta(days=args.days)
+    scheduled = os.environ.get("TV_SCHEDULED_RUN") == "true" or os.environ.get("GITHUB_EVENT_NAME") == "schedule"
+    if scheduled or args.previous_quarter:
+        since, until = previous_quarter(datetime.now(timezone.utc))
+    else:
+        since, until = datetime.now(timezone.utc) - timedelta(days=args.days), None
     projects = {p.strip() for p in args.projects.split(",") if p.strip()} or None
     # 定时跑时跳过 on_demand 的项目 (mapping 没经 preflight 拍板的表, 同 essence / curate 的闸, D-047); 判据只有一份:
     # _common.skip_on_demand_on_cron。mapping 读不出来的照跑 (同 skip_on_cron.py 的取向: 宁可吵不可静)。
-    if os.environ.get("TV_SCHEDULED_RUN") == "true" or os.environ.get("GITHUB_EVENT_NAME") == "schedule":
+    if scheduled:
         from _common import load_mapping, skip_on_demand_on_cron
         gated = set()
         for p in sorted({r["project_id"] for r in labels}):
@@ -345,7 +405,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         if gated:
             print(f"定时跑, 跳过 on_demand 项目: {'、'.join(sorted(gated))}")
     report = run(labels=labels, fetch_notes=fetch_notes, categories=cats, bank=bank, call=call, since=since,
-                 per_group=args.per_group, projects=projects)
+                 per_group=args.per_group, projects=projects, until=until)
     md = render(report, dry_run=args.dry_run)
     print(md)
     if args.out:
@@ -353,6 +413,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         Path(args.out).with_suffix(".json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     if not args.dry_run and not report["projects"]:
         print("::error::这一季没有一个项目的爆 / 趴够做对照 —— 标签视图可能空了, 去看 v_l2_labels")
+        return 1
+    if not args.dry_run and report["answered"] == 0:
+        # 每个项目的模型调用都失败(key 失效 / 模型没了 / 中转站挂了): 不能报绿, 否则要到下个季度才有人发现
+        # (codex review on TV#202)
+        print("::error::所有项目的模型调用都失败了, 这一季没有候选 —— 看上面 dropped 里的原因(key / 模型名 / 中转站)")
         return 1
     return 0
 

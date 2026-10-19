@@ -99,7 +99,11 @@ def s5_version() -> None:
     v1 = core.library_version(cards, gate2_run="g", external=X.digest([a]))
     v2 = core.library_version(cards, gate2_run="g", external=X.digest([a, b]))
     assert len({base, v1, v2}) == 3
-    print("  §5 缓存版本: 外部卡进版本串、没有时不变 ✓")
+    # mask_terms 补了一个品牌: id 没变, 卡面变了 → 版本必须变, 否则旧缓存里没换掉品牌名的摘录一直被命中
+    masked = X.to_card(dict(ROW, body="后来用了新牌子"), {**CFG, "mask_terms": CFG["mask_terms"] + ["新牌子"]})
+    plain = X.to_card(dict(ROW, body="后来用了新牌子"), CFG)
+    assert masked["source_note_id"] == plain["source_note_id"] and X.digest([masked]) != X.digest([plain])
+    print("  §5 缓存版本: 外部卡(连卡面)进版本串、没有时不变 ✓")
 
 
 class _Q:

@@ -14,7 +14,7 @@ on:
         required: false
         default: "false"
       days:
-        description: "看最近多少天发布的笔记 (默认一个季度 92 天)"
+        description: "手动跑时看最近多少天发布的笔记 (默认 92 天; 定时跑固定看上一个自然季度)"
         required: false
         default: "92"
       projects:

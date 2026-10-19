@@ -149,8 +149,12 @@ def shelf_for(sb, brief: dict, *, path: Path = CONFIG_PATH, now: Optional[float]
 
 
 def digest(cards: list[dict]) -> str:
-    ids = sorted(str(c.get("source_note_id")) for c in cards)
-    return hashlib.sha256("\n".join(ids).encode("utf-8")).hexdigest()[:10]
+    """进 library_version 的外部卡指纹: 卡的 id **和卡面摘录**。只认 id 的话, mask_terms 补了一个新品牌, 卡面变了
+    而版本没变, 旧缓存里没换掉品牌名的摘录会一直被命中(codex review on TV#202)。没有外部卡时与以前一样。"""
+    parts = sorted(f"{c.get('source_note_id')}\x00{c.get('raw_excerpt') or ''}" for c in cards)
+    if not parts:
+        return hashlib.sha256(b"").hexdigest()[:10]
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:10]
 
 
 def is_external(card: dict) -> bool:
