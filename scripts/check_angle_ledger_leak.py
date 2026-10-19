@@ -34,7 +34,8 @@ C 是 2026-10-19 补的(TV OPEN-ITEMS O-04): 途鸽 9-16 之后写作台一次�
       照常发牌也可能是这样 —— 途鸽就是(10-19 写手在另一场对话里列项目是通的);
     · 写作台有动静, 但发出去的不是它存的稿                → 连上了、写完没存档。
 「近 USED_WITHIN_DAYS 天用过写作台」那一条是为了不对从来不走写作台的项目天天喊。
-数据: autowriter.tv_project_map(TV 项目 → 写作台项目)、autowriter.tv_note_links(matched_at 在窗口内,
+数据: autowriter.tv_project_map(TV 项目 → 写作台项目)、truth_vault.notes(publish_time 在窗口内) +
+autowriter.tv_note_links(
 按 match_kind 分补录 / 对上)、autowriter.angle_ledger(USED_WITHIN_DAYS 天内发过牌的写作台项目)。
 
 数据来源(都在共享 Supabase 的 autowriter schema 里, TV 用 service_role 只读):
@@ -279,19 +280,29 @@ def gather(sb, since_iso: str) -> dict:
     return {"by_project": by_project, "ingested_skipped": len(ingested)}
 
 
-def gather_publish(sb, since_iso: str, used_since_iso: str) -> dict:
-    """判据 C 要的数: TV 项目 → 写作台项目、窗口内 tv-sync 新连上的笔记按 match_kind 分、近期用过写作台的项目。"""
+def gather_publish(sb, since_iso: str, used_since_iso: str, until_iso: str | None = None) -> dict:
+    """判据 C 要的数: TV 项目 → 写作台项目、窗口内【发出去】的笔记按 match_kind 分、近期用过写作台的项目。"""
     from _common import fetch_all_pages  # 局部 import, 理由见文件头
 
     # tv_project_map 是人工维护的几十行, 一页够; 笔记和台账会跨 1000 行的页边界, 按唯一键翻。
     maps = (sb.schema("autowriter").table("tv_project_map")
             .select("tv_project_id, project_id").execute()).data or []
-    # matched_at 是这条对照第一次写进去的时间(tv-sync 每晚只写新笔记, 已对上的跳过), 窗口按它切。
-    links = fetch_all_pages(
-        sb.schema("autowriter").table("tv_note_links")
-        .select("note_id, tv_project_id, match_kind, matched_at")
-        .gte("matched_at", since_iso),
-        order_by="note_id")
+    # 窗口按 truth_vault.notes.publish_time 切, 不按对照写进去的时间(matched_at): 新接一张表、或者 tv-sync 停了几天
+    # 再补, 一批旧笔记会同时拿到很新的 matched_at, 被当成"这周发的"(codex review on aw#109, 同一个坑)。
+    # until_iso: 排期还没发的(publish_time 在未来)不算。
+    q = (sb.schema("truth_vault").table("notes")
+         .select("note_id, project_id, publish_time")
+         .gte("publish_time", since_iso))
+    if until_iso:
+        q = q.lte("publish_time", until_iso)
+    notes = fetch_all_pages(q, order_by="note_id")
+    tv_ids = {m["tv_project_id"] for m in maps}
+    note_ids = [n["note_id"] for n in notes if n.get("project_id") in tv_ids]
+    links: list[dict] = []
+    for i in range(0, len(note_ids), 200):
+        links.extend((sb.schema("autowriter").table("tv_note_links")
+                      .select("note_id, tv_project_id, match_kind")
+                      .in_("note_id", note_ids[i:i + 200]).execute()).data or [])
     used = fetch_all_pages(
         sb.schema("autowriter").table("angle_ledger")
         .select("id, project_id")
@@ -371,28 +382,35 @@ def selftest() -> int:
 
     # ── gather_publish: 按 match_kind 分、翻页键唯一、只认映射里的项目 ──────────────
     class _Q:
-        def __init__(self, rows): self.rows = rows
+        def __init__(self, rows): self.rows, self.f = rows, []
         def select(self, *a, **k): return self
-        def gte(self, *a, **k): return self
-        def execute(self): return types.SimpleNamespace(data=self.rows)
+        def gte(self, k, v): self.f.append(lambda r: r[k] >= v); return self
+        def lte(self, k, v): self.f.append(lambda r: r[k] <= v); return self
+        def in_(self, k, vs): self.f.append(lambda r: r[k] in set(vs)); return self
+        def execute(self): return types.SimpleNamespace(data=[r for r in self.rows if all(f(r) for f in self.f)])
 
-    T = "同一刻"                                       # matched_at / drawn_at 撞值: 翻页键选错就丢行
-    LINKS = ([{"note_id": f"t{i}", "tv_project_id": "TUGE", "match_kind": "ingested", "matched_at": T}
-              for i in range(22)]
-             + [{"note_id": "t-amb", "tv_project_id": "TUGE", "match_kind": "ambiguous", "matched_at": T},
-                {"note_id": "t-un", "tv_project_id": "TUGE", "match_kind": "unmatched", "matched_at": T},
-                {"note_id": "h1", "tv_project_id": "HATH", "match_kind": "fuzzy", "matched_at": T},
-                {"note_id": "h2", "tv_project_id": "HATH", "match_kind": "tv_lineage", "matched_at": T}])
-    LEDGER = [{"id": "a1", "project_id": "d1"}, {"id": "a2", "project_id": "d1"},
-              {"id": "a3", "project_id": "zz-unmapped"}]
+    INWIN, OLD, LATER = "2026-10-14T08:00:00", "2026-09-20T08:00:00", "2026-10-21T08:00:00"
+    note = lambda nid, tv, kind, pt: ({"note_id": nid, "project_id": tv, "publish_time": pt},  # noqa: E731
+                                      {"note_id": nid, "tv_project_id": tv, "match_kind": kind,
+                                       "matched_at": "2026-10-19T04:00:00"})   # 全都是刚连上的 —— 窗口不该按它切
+    ROWS = ([note(f"t{i:02d}", "TUGE", "ingested", INWIN) for i in range(22)]
+            + [note("t-amb", "TUGE", "ambiguous", INWIN), note("t-un", "TUGE", "unmatched", INWIN),
+               note("h1", "HATH", "fuzzy", INWIN), note("h2", "HATH", "tv_lineage", INWIN)]
+            + [note(f"old{i:02d}", "TUGE", "ingested", OLD) for i in range(30)]       # 新接表 / 补跑
+            + [note(f"sch{i}", "TUGE", "ingested", LATER) for i in range(5)]          # 排期还没发
+            + [note("zz1", "NOT_MAPPED", "ingested", INWIN)])
+    NOTES, LINKS = [n for n, _ in ROWS], [l for _, l in ROWS]
+    LEDGER = [{"id": "a1", "project_id": "d1", "drawn_at": "x"}, {"id": "a2", "project_id": "d1", "drawn_at": "x"},
+              {"id": "a3", "project_id": "zz-unmapped", "drawn_at": "x"}]
 
     class SB:
-        def schema(self, s): return self
+        def __init__(self): self.s = None
+        def schema(self, s): self.s = s; return self
         def table(self, t):
             return _Q({"tv_project_map": [{"tv_project_id": "TUGE", "project_id": "d1"},
                                           {"tv_project_id": "TUGE", "project_id": "d2"},
                                           {"tv_project_id": "HATH", "project_id": "h1"}],
-                       "tv_note_links": LINKS, "angle_ledger": LEDGER}[t])
+                       "notes": NOTES, "tv_note_links": LINKS, "angle_ledger": LEDGER}[t])
 
     def _pages(q, order_by=None):
         rows, seen = [], set()                       # 照抄真 fetch_all_pages 的去重语义
@@ -408,18 +426,22 @@ def selftest() -> int:
     fake.fetch_all_pages = _pages
     sys.modules["_common"] = fake
     try:
-        g = gather_publish(SB(), "2026-10-12T00:00:00", "2026-08-20T00:00:00")
+        g = gather_publish(SB(), "2026-10-12T00:00:00", "2026-08-20T00:00:00", until_iso="2026-10-19T08:00:00")
         assert g["map"] == {"TUGE": ["d1", "d2"], "HATH": ["h1"]}, g["map"]
         assert g["links"] == {"TUGE": {"ingested": 22, "caught": 0},
                               "HATH": {"ingested": 0, "caught": 2}}, g["links"]
         assert g["used"] == {"d1"}, "没映射的写作台项目不进 used"
+        # 反证: 不传 until → 排期的 5 篇算进来; 窗口拉到 9 月 → 旧的 30 篇算进来 —— 窗口确实是 publish_time
+        assert gather_publish(SB(), "2026-10-12T00:00:00", "2026-08-20T00:00:00")["links"]["TUGE"]["ingested"] == 27
+        assert gather_publish(SB(), "2026-09-01T00:00:00", "2026-08-20T00:00:00",
+                              until_iso="2026-10-19T08:00:00")["links"]["TUGE"]["ingested"] == 52
         assert [h["project"] for h in verdicts_publish({}, g)] == ["TUGE"]
 
         # main 接线: 两份数都取、哨兵行在
         fake.get_supabase_client = lambda: object()
         real = globals()["gather"], globals()["gather_publish"]
         globals()["gather"] = lambda sb, since: {"by_project": {}, "ingested_skipped": 0}
-        globals()["gather_publish"] = lambda sb, since, used: week
+        globals()["gather_publish"] = lambda sb, since, used, **kw: week
         argv, sys.argv = sys.argv, ["check_angle_ledger_leak.py"]
         buf = io.StringIO()
         try:
@@ -457,7 +479,8 @@ def main() -> int:
     from _common import get_supabase_client  # 局部 import, 理由见文件头
     sb = get_supabase_client()
     stats = gather(sb, since)
-    stats["publish"] = gather_publish(sb, since, used_since)
+    stats["publish"] = gather_publish(sb, since, used_since,
+                                      until_iso=now.replace(tzinfo=None).isoformat(timespec="seconds"))
     rc = report(stats, args.window_days)
     # ⚠️ 哨兵行: daily-sync.yml 靠它区分"跑完了"和"崩了"(那边是 `|| true` 调的)。
     print(f"ANGLE_LEDGER_CHECK_DONE rc={rc}")

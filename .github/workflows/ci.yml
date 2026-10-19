@@ -4363,7 +4363,7 @@ jobs:
           # ── main: 哨兵行必须打出来(daily-sync 靠它判崩溃, 不靠退出码) ──────────
           fake_common.get_supabase_client = lambda: object()
           chk.gather = lambda sb, since: {"by_project": {"p1": P(20, 0, 0, 0, name="甲")}, "ingested_skipped": 0}
-          chk.gather_publish = lambda sb, since, used: {}    # 判据 C 的取数另有 --selftest 测
+          chk.gather_publish = lambda sb, since, used, **kw: {}    # 判据 C 的取数另有 --selftest 测
           buf = io.StringIO()
           with contextlib.redirect_stdout(buf):
               rc = chk.main.__wrapped__() if hasattr(chk.main, "__wrapped__") else chk.main()
