@@ -319,6 +319,7 @@ flowchart TD
 | `19-autowriter-librarian-quickstart` | autowriter 接馆员快速接入 + 自测 |
 | `27-autowriter-librarian-relink-2026-09-17` | ⚠️ 通道 2 在生产没在调(复核证据)+ 写作台重新接线说明 + 验收(D-063); §6 查完(D-069): 根因是协议把借阅设成可选, 修在 autowriter PR #85 |
 | **`28-content-feature-layer`** | 内容特征层(D-065 拍板 D-065 续, **P1 已实现 D-070**): 20 道闭集原子题进事实层, 过三道闸(测得准/有区分度/对新笔记成立)才进 L2/经验卡/写作台; 问题库 `prompts/feature_questions_v0_1.yaml`; 迁移 `notes_v1_13`, 抽取 `annotate_feature_pass.py`, worker `/annotate-features`; 下一步闸一 |
+| `32-desk-quality` | 写作台出稿质量(第二批设计, 10-20): 版式由代码拼 / 能数能比的规则由代码查 / 简报带最近稿子的结构分布 / 每周一的用上率灯 `check_desk_use_rate.py`; 规则编成 Jev 题等 owner 拍板数据政策, 分段判不做 |
 | `archive/17` `archive/18` `archive/20` `archive/21` `archive/22` `archive/25` `archive/26` | **已归档**:带日期的交接快照与一次全库审计。**只作历史,不要照着做决定** —— 见 `docs/archive/README.md` |
 | `99-rejected-ideas` | 否决过的想法(别重复提) |
 

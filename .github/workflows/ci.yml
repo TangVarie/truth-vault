@@ -47,6 +47,7 @@ jobs:
             scripts/curate_flywheel_lessons.py \
             scripts/count_unannotated_essence.py \
             scripts/check_angle_ledger_leak.py \
+            scripts/check_desk_use_rate.py \
             scripts/prune_librarian_cache.py \
             scripts/preflight_mapping.py \
             scripts/build_gate1_human_sheets.py \
@@ -4377,6 +4378,9 @@ jobs:
           print("  ✓ 角度台账灯: 两条判据各带下限, 导入副本被排除(反证会冒假警报), 哨兵行在")
           PY
           python check_angle_ledger_leak.py --selftest   # 判据 C (O-04): 发了帖、写作台没接住
+      - name: "写作台用上率灯自检 (docs/32 D): 接住只认发布前那版 / 未改动只认 diff_rev ≥2 / 下限与分母 / 判不了 rc=2 / 哨兵行 / 每周一接线"
+        working-directory: scripts
+        run: python check_desk_use_rate.py --selftest   # 判据、口径、取数、main 与 daily-sync 接线都在脚本里 (D-075: 不加内联块)
       - name: Autowriter dup-error detection self-check
         working-directory: scripts
         run: |
