@@ -1533,9 +1533,14 @@ _BATCH_CHUNK = 500
 #     现在整轮要么全带要么全不带, 放进来不会多拆请求, 防的是以后有人改成逐行盖。
 #
 # 【不在名单里的列照旧「镜像飞书」, 不按完整键集分组】: 飞书不返回空格子, 指标 / 蓝词 / 置顶评论 /
-# 发布时间 / 观众分析这些格子被运营清空时, 同批有别的行带着这一列 → 这一行写成 NULL, 跟飞书一致。
-# 这是有意保留的。代价照旧(改动前就是这样, 本次不动): 一批里没有任何一行带这一列时它不进
-# columns=, 库里的旧值留着。
+# 发布时间 / 观众分析这些格子被运营清空时, 这一轮有别的行带着这一列 → 这一行写成 NULL, 跟飞书一致。
+# 这是有意保留的。分组会把它悄悄削弱(格子被清空的行恰好分进一个没人带这一列的组 → columns= 里没有
+# 它 → 库里的旧值留着; 稀疏列 置顶评论 / 蓝词 尤其如此), 所以 upsert_notes_batch 在分组【之前】
+# 先算「这一轮所有行带过的、名单外的列」, 发出去的每一行没带的都显式补 None(_mirror_fill), 跟分不分组、
+# 落在哪一块都无关。范围是整轮(一次 upsert_notes_batch = 一个项目一轮), 比改动前的「同一个 500 行块」
+# 宽: 以前格子清空的行要和带这一列的行落在同一块才清, 现在只要这一轮有人带就清。
+# 代价照旧(改动前就是这样): 一整轮没有任何一行带这一列时它不进 columns=, 库里的旧值留着。
+# 逐行兜底(upsert_note)用的是没补 None 的原行, 和改动前一样: 一行坏键不会因为补齐而拖垮整组逐行写。
 # 判据: 名单里的列只能由「本脚本故意不写」或「别的写入方」决定库值, 所以飞书格子直接映进来的列
 # 不许进名单(check_batch_upsert_columns.py 查所有 mapping 的 field_mapping, 映了就红)。
 UPSERT_PROTECTED_COLS: tuple[str, ...] = (
@@ -1555,6 +1560,17 @@ def _group_by_protected_cols(notes: list[dict[str, Any]]) -> list[list[dict[str,
     for n in notes:
         groups.setdefault(frozenset(c for c in UPSERT_PROTECTED_COLS if c in n), []).append(n)
     return list(groups.values())
+
+
+def _mirror_cols(notes: list[dict[str, Any]]) -> frozenset[str]:
+    """这一轮所有行带过的、不在 UPSERT_PROTECTED_COLS 里的列 —— 没带的行要显式写 NULL(镜像飞书)。"""
+    return frozenset().union(*notes) - frozenset(UPSERT_PROTECTED_COLS)
+
+
+def _mirror_fill(note: dict[str, Any], mirror: frozenset[str]) -> dict[str, Any]:
+    """发出去的那一份: 名单外、这一轮有人带、这一行没带的列补 None。不改调用方的 dict(main 之后还要用)。"""
+    missing = mirror - note.keys()
+    return {**note, **dict.fromkeys(missing)} if missing else note
 
 
 def ensure_accounts_batch(
@@ -1617,12 +1633,14 @@ def upsert_notes_batch(
 
     ⚠️ 先按 UPSERT_PROTECTED_COLS 分组再分块(D-122): 同一个请求里, 名单里的列要么每行都带、要么
     每行都不带。不分组的话 postgrest-py 把没带的键补成 NULL 写进库, 冲掉 essence 写的 content_format、
-    翻转闸故意留下的 tier。日志里的 [i:j] 是分组后顺序里的位置。"""
+    翻转闸故意留下的 tier。名单外的列分组前按整轮补 None(_mirror_fill), 飞书里清空的格子照旧写成
+    NULL、不因分组漏掉。日志里的 [i:j] 是分组后顺序里的位置。"""
     if dry_run:
         for n in notes:
             logger.info("[dry-run] would upsert note_id=%s", n["note_id"])
         return {n["note_id"] for n in notes}
     written: set[str] = set()
+    mirror = _mirror_cols(notes)
     i = 0
     for group in _group_by_protected_cols(notes):
         for k in range(0, len(group), chunk_size):
@@ -1630,7 +1648,7 @@ def upsert_notes_batch(
             try:
                 (
                     client.schema("truth_vault").table("notes")
-                    .upsert(chunk, on_conflict="note_id").execute()
+                    .upsert([_mirror_fill(n, mirror) for n in chunk], on_conflict="note_id").execute()
                 )
                 written.update(n["note_id"] for n in chunk)
             except Exception as exc:

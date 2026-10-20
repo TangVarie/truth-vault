@@ -3700,7 +3700,7 @@ jobs:
         run: python check_ingest_guards.py   # §1 未来日期 · §2/§2b 清空与没映上 · §3 翻转计划 · §4 挡只剥翻转篇 · §5 读库分批 · §6/§7 接线
       - name: 批量 upsert 不许把没带的列冲成 NULL —— 同一请求里受保护列要么每行都带、要么都不带 (D-122, 10-20 夜跑冲掉 744 篇 content_format)
         working-directory: scripts
-        run: python check_batch_upsert_columns.py   # 真 postgrest-py 请求 + MockTransport · §1 真 mapping 混方向批 · §2 整批翻转被挡 · §3 状态列整轮消失 · §4 镜像口径保留 · §5 名单 · §6 反证 · §7 逐行兜底
+        run: python check_batch_upsert_columns.py   # 真 postgrest-py 请求 + MockTransport · §1 真 mapping 混方向批 · §2 整批翻转被挡 · §3 状态列整轮消失 · §4 镜像口径(名单外列整轮补 NULL, 稀疏格子) · §5 名单 · §6 反证 · §7 逐行兜底
       - name: 评论步 —— 每项目读一次已有评论 / 夜跑跳过 on_demand / 对账失败非零退出 (D-092)
         working-directory: scripts
         run: python check_comments_sync_cost.py   # §1 一次读零写 · §2 只写变化 · §3 on_demand 跳过 · §4 对账失败 rc=1 · §5 老调用形状不变

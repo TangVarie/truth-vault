@@ -10,25 +10,38 @@ transform_row 只给方向能直接抬的行写 content_format 等四列, 抬不
 request builder 发请求, httpx.MockTransport 收下来, 按 PostgREST 真看到的东西(URL 里的 columns=、
 请求体里每一行带了哪些键)判。行由真 mapping + 真 transform_row + main 里那几道闸生成。
 
-不变式: 每一个带 columns= 的请求里, 对 UPSERT_PROTECTED_COLS 里出现在 columns= 的每一列, 这个请求的
-每一行都带着这个键(值是 None 也算带 —— 那是故意清档)。
+不变式(两条, 每个用例的每个请求都查):
+  ① 受保护列: 每一个带 columns= 的请求里, 对 UPSERT_PROTECTED_COLS 里出现在 columns= 的每一列, 这个请求的
+     每一行在【调用方的原行】里都带着这个键(值是 None 也算带 —— 那是故意清档)。按原行判, 不按请求体:
+     请求体里补出来的 None 不算「带」。
+  ② 名单外的列(镜像飞书): 这一批有行带过、某行没带 → 这一行所在请求的 columns= 里有它、值是 None
+     (= 飞书清空的格子库里跟着清)。分组不许把它削弱。另外: 发出去的行只许多出名单外的 None, 原值一个不改;
+     调用方的行不许被改。
 
   §1 每张真 mapping 的混方向批 (抬得了 / 有子方向 / 方向没映上 / 没填方向 混在一批) —— 不变式 + 每篇正好写一次
   §2 整批 tier 翻转被挡 (apply_tier_flip_block 剥掉 tier/tier_source) —— 被挡的篇只进不带 tier 的请求
   §3 状态列整轮消失 (核心列消失那条路, 只有数值推断的篇带 tier) —— 不带 tier 的篇只进不带 tier 的请求;
      同一条路上只有少数篇判出旗子时, 没旗子的篇只进不带 data_quality_flags 的请求
-  §4 镜像口径没被顺手改掉: 不按完整键集分组, 指标格子没带的行照旧和带的行同批 (= 写成 NULL)
+  §4 镜像口径没被顺手改掉: 不按完整键集分组(请求数 = 按名单分的组数); 指标格子没带的行照旧写 NULL;
+     §4b 稀疏格子(置顶评论 / 蓝词)+ 抬得了 / 抬不了混批 —— 分组把格子被清空的行隔进「没人带这一列」的
+     请求, 这一列照样要在 columns= 里、值是 None
   §5 名单本身: 都是真列; 飞书格子不许直接映进名单里的列; essence / 写作台会写、本脚本也写的列都在名单里
-  §6 反证: 老写法 (一把 upsert 整批) 在 §1 的批上必须被判红; 名单清空后 upsert_notes_batch 必须被判红
-  §7 逐行兜底照旧: 批请求被拒 → 逐行写 (单行不带 columns=), 返回值 / 失败篇的处理不变; dry-run 不发请求
+  §6 反证: 老写法 (一把 upsert 整批) 在 §1 的批上必须被判红; 名单清空后 upsert_notes_batch 必须被判红;
+     只分组不补 None 在 §4b 的批上必须被判红
+  §7 逐行兜底照旧: 批请求被拒 → 逐行写 (单行不带 columns=、发原行不补 None), 返回值 / 失败篇的处理不变;
+     dry-run 不发请求
   §8 名单逐列: 有证据的 11 列一列都不许少 (要删先写 D 号再改这里); 每一列带 (哪怕是 None) / 不带都分开
 
-反证 (改坏之后必须变红; D-122 记了实跑结果):
-  ① 换回老实现 (整批按 500 一切)               → §1 / §2 / §3 红
-  ② 按完整键集分组                              → §4 红 (镜像飞书的口径被顺手改掉)
-  ③ 名单里删掉任一列 (11 列逐列试过)            → 删 essence 共写的四列 / lineage 两列 → §5 红;
-                                                  删 tier / tier_source / last_seen_* → §8 红; 删旗子 → §3 红
-  ④ 分组时把值为 None 的键当没带                → §8 红 (apply_cleared_status 故意写的 NULL 会丢)
+反证 (改坏之后必须变红; 临时替换引擎函数实跑, 不改文件; D-122 记了结果):
+  ① 换回老实现 (整批按 500 一切)               → §1 红
+  ② 按完整键集分组                              → §4 红 (白拆请求)
+  ③ 只分组不补 None (10-20 第一版修法)          → §1 红 (raw_extra 等名单外列被隔开); 单跑 §4b 也红
+  ④ 补 None 时连名单里的列一起补               → §1 红 (就是事故本身)
+  ⑤ 原地补 None (改了调用方的行)               → §1 红
+  ⑥ 分组时把值为 None 的键当没带                → §4 红 (apply_cleared_status 故意写的 NULL 会丢; §8 也查)
+  ⑦ 逐行兜底发补过 None 的行                   → §7 红
+  ⑧ 名单里删掉任一列 (11 列逐列试过)            → content_format → §1; 人群 / 痛点 / 产品焦点 / lineage 两列 → §5;
+                                                  tier / tier_source → §2; 旗子 → §3b; last_seen_* → §8
 
 跑法: cd scripts && python check_batch_upsert_columns.py
 """
@@ -91,18 +104,41 @@ class _Client:
         return SyncPostgrestClient(BASE, schema=name, http_client=http)
 
 
-def violations(requests: list[dict]) -> list[tuple[str, int, list[str]]]:
-    """[(列, 请求序号, 没带这一列的 note_id 前 3 个)] —— 空 = 不变式成立。"""
+def _by_id(pending: list[dict]) -> dict[str, dict]:
+    """调用方手里的原行(按 note_id), JSON 走一遍 —— 和请求体里解出来的同一种形状, 好逐值比。"""
+    return {n["note_id"]: json.loads(json.dumps(n)) for n in pending}
+
+
+def violations(requests: list[dict], originals: dict[str, dict]) -> list[tuple[str, int, list[str]]]:
+    """[(列, 请求序号, 没带这一列的 note_id 前 3 个)] —— 空 = 不变式成立。
+
+    「带没带」按调用方的【原行】判, 不按请求体: 名单外的列会被补成 None 再发(镜像飞书, §4),
+    哪天有人把名单里的列也一起补了, 请求体里每行都「带着」它(值是 None)—— 那正是事故本身, 不能因此判绿。"""
     bad = []
     for idx, r in enumerate(requests):
         if r["columns"] is None:          # 单行写: 没有 columns=, 没带的键不进 SET
             continue
         for c in engine.UPSERT_PROTECTED_COLS:
             if c in r["columns"]:
-                missing = [row.get("note_id") for row in r["rows"] if c not in row]
+                missing = [row.get("note_id") for row in r["rows"] if c not in originals[row["note_id"]]]
                 if missing:
                     bad.append((c, idx, missing[:3]))
     return bad
+
+
+def mirror_gaps(requests: list[dict], originals: dict[str, dict]) -> list[tuple[str, str]]:
+    """[(列, note_id)]: 名单外、这一批有行带过的列, 某行没带, 而这一行所在请求的 columns= 里没有它
+    (= 飞书清空的格子库里不清)。空 = 镜像口径成立。单行请求(逐行兜底)不算: 那条路改动前就不清。"""
+    mirror = set().union(*originals.values()) - set(engine.UPSERT_PROTECTED_COLS)
+    gaps = []
+    for r in requests:
+        if r["columns"] is None:
+            continue
+        for row in r["rows"]:
+            for c in sorted(mirror - originals[row["note_id"]].keys()):
+                if c not in r["columns"] or row.get(c, "missing") is not None:
+                    gaps.append((c, row["note_id"]))
+    return gaps
 
 
 # ── 用真 mapping 造一批 pending_notes (main 里 upsert 之前那几步原样走) ─────────────────
@@ -172,9 +208,20 @@ def _mapping_ids() -> list[str]:
 
 def _check_batch(pending: list[dict], chunk: int, label: str) -> _Recorder:
     rec = _Recorder()
+    originals = _by_id(pending)
     written = engine.upsert_notes_batch(_Client(rec), pending, chunk_size=chunk)
-    bad = violations(rec.requests)
+    assert _by_id(pending) == originals, f"{label}: upsert_notes_batch 改了调用方的行(main 写完还要用 pending_notes)"
+    bad = violations(rec.requests, originals)
     assert not bad, f"{label}: 同一请求里有行没带受保护列(会被写成 NULL): {bad[:5]}"
+    gaps = mirror_gaps(rec.requests, originals)
+    assert not gaps, f"{label}: 名单外的列这一批有人带、这几行没带, 却没写 NULL(飞书清空的格子库里不清): {gaps[:5]}"
+    for q in rec.requests:
+        for row in q["rows"]:
+            orig = originals[row["note_id"]]
+            assert all(row.get(k, "missing") == v for k, v in orig.items()), f"{label}: 发出去的行改了原值"
+            extra = set(row) - set(orig)
+            assert not (extra & set(engine.UPSERT_PROTECTED_COLS)) and all(row[k] is None for k in extra), \
+                f"{label}: 只许给名单外的列补 None, 补了 {sorted(extra & set(engine.UPSERT_PROTECTED_COLS))}"
     ids = [r["note_id"] for q in rec.requests for r in q["rows"]]
     assert sorted(ids) == sorted(n["note_id"] for n in pending), f"{label}: 每篇要正好写一次"
     assert written == {n["note_id"] for n in pending}, f"{label}: 返回值 = 写成的 note_id 集合"
@@ -316,20 +363,84 @@ def check_each_protected_col() -> None:
 
 
 # ── §4 镜像口径保留 ────────────────────────────────────────────────────────────
+SPARSE_MIRROR_COLS = ("pinned_comment", "hit_blue_keywords")   # 生产里一个项目只有少数篇带(SPX 蓝词 2 / 29)
+
+
+def _sparse_mirror_batch(m: dict, target: str) -> tuple[list[dict], set[str]] | None:
+    """6 行方向抬得了(其中 2 行带这个稀疏格) + 3 行抬不了(方向不在表里, 这个格子在飞书里被清空 → 不返回)。
+    分组会把抬不了的 3 行单独分进一个请求, 而那个请求里没有一行带这个格子 —— 镜像就是在这里被削弱的。"""
+    content, dircol, statcol = _src(m, "raw_content"), _src(m, "_direction_raw"), _status_col(m)
+    cell = _src(m, target)
+    dd = m.get("direction_decomposition") or {}
+    lift = next((k for k, v in dd.items() if "sub_directions" not in v), None)
+    if not (cell and dircol and lift):
+        return None
+    pos, _neg = _needles(m)
+    recs = []
+    for i in range(6):
+        f = {content: f"占位正文 L{i} " * 3, dircol: lift}
+        if statcol and pos:
+            f[statcol] = pos
+        if i < 2:
+            f[cell] = "置顶了" if target == "pinned_comment" else ["词"]
+        recs.append((f"recM{i:04d}", f))
+    for i in range(3):
+        f = {content: f"占位正文 U{i} " * 3, dircol: "〔表里没有的方向〕"}
+        if statcol and pos:
+            f[statcol] = pos
+        recs.append((f"recN{i:04d}", f))
+    pending = _pending(m, recs)
+    cleared = {n["note_id"] for n in pending if "recN" in n["note_id"]}
+    assert len(cleared) == 3 and sum(target in n for n in pending) == 2, f"§4 {m['project_id']} {target}: 用例没造出来"
+    return pending, cleared
+
+
+def _expected_groups(pending: list[dict]) -> list[set[str]]:
+    """自己按名单分一遍(note_id 集合), 不借 engine 的分组函数 —— 否则分组被改坏了, 期望也跟着坏、照样自洽。"""
+    groups: dict[frozenset, set[str]] = {}
+    for n in pending:
+        groups.setdefault(frozenset(c for c in engine.UPSERT_PROTECTED_COLS if c in n), set()).add(n["note_id"])
+    return list(groups.values())
+
+
 def check_mirror_kept(batches: dict[str, list[dict]]) -> None:
     mirrored = 0
     for pid, pending in batches.items():
         rec = _Recorder()
         engine.upsert_notes_batch(_Client(rec), pending, chunk_size=500)
-        groups = engine._group_by_protected_cols(pending)
-        assert len(rec.requests) == sum(math.ceil(len(g) / 500) for g in groups), \
-            f"§4 {pid}: 请求数要等于按受保护列分的组数 —— 多了说明按完整键集分了, 镜像飞书的口径被顺手改掉"
+        assert len(rec.requests) == sum(math.ceil(len(g) / 500) for g in _expected_groups(pending)), \
+            f"§4 {pid}: 请求数要等于按受保护列分的组数 —— 多了说明按完整键集分了, 白拆请求"
+        orig = _by_id(pending)
         for q in rec.requests:
-            if "impressions" in q["columns"] and any("impressions" not in r for r in q["rows"]):
+            if "impressions" in q["columns"] and any("impressions" not in orig[r["note_id"]] for r in q["rows"]):
                 mirrored += 1
     assert mirrored >= 5, f"§4 指标格子没带的行要照旧和带的行同批(= 写成 NULL, 跟飞书一致), 只见到 {mirrored} 个请求"
     assert "impressions" not in engine.UPSERT_PROTECTED_COLS
-    print(f"  §4 镜像口径: 不按完整键集分组, {mirrored} 个请求里曝光格子没带的行照旧同批写 NULL ✓")
+
+    # §4b 稀疏格子 + 抬得了 / 抬不了混批: 分组把格子被清空的行分进「没人带这一列」的请求, 照样要写 NULL
+    covered = []
+    for pid in _mapping_ids():
+        m = engine.load_mapping(pid)
+        for target in SPARSE_MIRROR_COLS:
+            built = _sparse_mirror_batch(m, target)
+            if built is None:
+                continue
+            pending, cleared = built
+            if cleared not in _expected_groups(pending):
+                # 分组没把这 3 行单独分出去(XIWU_phase1: 方向列查不到时按正文推断方向也能抬, D-049),
+                # 这一例测不到「被分组隔开」, 不算进 covered —— 下面要求够数的是真隔开了的
+                continue
+            rec = _check_batch(pending, 500, f"§4b {pid} {target}")
+            for q in rec.requests:
+                for r in q["rows"]:
+                    if r["note_id"] in cleared:
+                        assert target in q["columns"] and r[target] is None, \
+                            f"§4b {pid}: 飞书里清空了 {target} 的行没写 NULL(分组后它所在的请求没有这一列)"
+            covered.append(f"{pid}:{target}")
+    assert len(covered) >= 5, f"§4b 稀疏格子用例太少(mapping 改了?): {covered}"
+    assert not set(SPARSE_MIRROR_COLS) & set(engine.UPSERT_PROTECTED_COLS)
+    print(f"  §4 镜像口径: 不按完整键集分组, {mirrored} 个请求里曝光格子没带的行照旧写 NULL; "
+          f"稀疏格子(置顶评论 / 蓝词) {len(covered)} 例被分组隔开的行也写 NULL ✓")
 
 
 # ── §5 名单本身 ────────────────────────────────────────────────────────────────
@@ -390,7 +501,7 @@ def check_counterproof(batches: dict[str, list[dict]]) -> None:
     q = rec.requests[0]
     assert "resolution=merge-duplicates" in q["prefer"] and "content_format" in q["columns"], \
         "§6 机制: 老写法一个请求、columns= 里有 content_format、冲突即更新"
-    cols = {c for c, _i, _ids in violations(rec.requests)}
+    cols = {c for c, _i, _ids in violations(rec.requests, _by_id(nuc))}
     assert {"content_format", "target_audience"} <= cols, f"§6 老写法必须被判红(NUC 两列都会被冲掉): {cols}"
 
     saved = engine.UPSERT_PROTECTED_COLS
@@ -400,8 +511,22 @@ def check_counterproof(batches: dict[str, list[dict]]) -> None:
         engine.upsert_notes_batch(_Client(rec2), nuc)
     finally:
         engine.UPSERT_PROTECTED_COLS = saved
-    assert violations(rec2.requests), "§6 名单清空后 upsert_notes_batch 必须被判红(这道检查不是空转)"
-    print("  §6 反证: 老写法整批一把 upsert → 红(content_format / target_audience); 名单清空 → 红 ✓")
+    assert violations(rec2.requests, _by_id(nuc)), \
+        "§6 名单清空后 upsert_notes_batch 必须被判红(名单里的列被当成镜像列补了 None, 请求体里「带着」也不算)"
+
+    # 只分组、不补 None(10-20 第一版修法): 稀疏格子被清空的行分进没人带这一列的请求 → 必须被 §4b 的判据判红
+    sparse, _cleared = _sparse_mirror_batch(engine.load_mapping("NUC_phase1"), "pinned_comment")
+    fill = engine._mirror_fill
+    engine._mirror_fill = lambda note, _mirror: note
+    try:
+        rec3 = _Recorder()
+        engine.upsert_notes_batch(_Client(rec3), sparse)
+    finally:
+        engine._mirror_fill = fill
+    assert {c for c, _id in mirror_gaps(rec3.requests, _by_id(sparse))} == {"pinned_comment"}, \
+        "§6 只分组不补 None 必须被判红(置顶评论清空的行库里不清)"
+    print("  §6 反证: 老写法整批一把 upsert → 红(content_format / target_audience); 名单清空 → 红; "
+          "只分组不补 None → 红(置顶评论) ✓")
 
 
 # ── §7 逐行兜底 / dry-run 照旧 ────────────────────────────────────────────────
@@ -422,7 +547,10 @@ def check_fallback_unchanged(batches: dict[str, list[dict]]) -> None:
     singles = [q for q in rec.requests if q["columns"] is None]
     assert len(singles) == len(pending) and all(len(q["rows"]) == 1 for q in singles), \
         "§7 逐行兜底: 每篇一个单行请求, 不带 columns=(所以兜底路径本来就没这个问题)"
-    assert not violations(rec.requests)
+    orig = _by_id(pending)
+    assert not violations(rec.requests, orig)
+    assert all(q["rows"][0] == orig[q["rows"][0]["note_id"]] for q in singles), \
+        "§7 逐行兜底发的是原行(不补 None): 和改动前一样, 一行坏键不会因为补齐拖垮整组逐行写"
 
     assert ids == {n["note_id"] for n in pending} and not rec2.requests, "§7 dry-run 不发请求、返回全部 id"
     print("  §7 逐行兜底: 批被拒逐行补、单行不带 columns=、失败篇不进返回值; dry-run 不发请求 ✓")
