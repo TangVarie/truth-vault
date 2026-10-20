@@ -6,7 +6,9 @@ gate3_score.py
 闸三第一轨 (docs/28 §6.3, D-118): 用【冻结的】essence 打分器, 给冻结日之后发布的每条笔记打分, 写
 truth_vault.content_scores; 再按附录 C 报一次进度 (两档爆率、单侧两比例检验、离样本量还差多少)。
 
-冻结的东西全在 data-analysis/gate3/scorer-essence-v1.json, 由 freeze-essence-v1.sql 在生产只读算出 (D-118):
+冻结的东西全在 data-analysis/gate3/scorer-essence-v1-93035a562b2e.json (D-123), 由 freeze-essence-v1.sql 在生产只读算出
+(D-118 定的口径; 10-20 D-122 恢复了被夜跑冲掉的 F / U token 之后按同一 SQL 重冻, 冻结日不动, 10-17 起的分按新版重打。
+10-16 那份 scorer-essence-v1.json = essence-v1-322f02c9465f 留在目录里作历史, 不再读):
   · 权重: token (L/F/A/U, 与 gate2_combo.tag_features 同一套) → w = ln((爆+1)/(趴+1)), 冻结日前的全部训练集;
   · 切点: 每个项目冻结日前笔记分数的 101 个分位 (不足 50 篇的项目用全库);
   · essence 标注器: 词表 v0.2 + claude-sonnet-5-5 + prediction_feature。闸三期间换 essence 模型 / 词表,
@@ -39,7 +41,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 ROOT = Path(__file__).resolve().parent.parent
-SCORER_PATH = ROOT / "data-analysis" / "gate3" / "scorer-essence-v1.json"
+SCORER_PATH = ROOT / "data-analysis" / "gate3" / "scorer-essence-v1-93035a562b2e.json"   # 文件名 = scorer-<scorer_version>.json (D-123)
 CORE_KEYS = ("scorer", "freeze_publish_time", "token_scheme", "weights", "cutpoints", "frozen_annotator", "criteria")
 STALE_ESSENCE_HOURS = 72          # 入库超过这么久还没 essence 的, 单独报 (essence 每日有上限, 正常会排队一两天)
 NOTE_COLS = ("note_id, project_id, publish_time, created_at, emotional_lever, content_format, human_truth_archetype, "
@@ -201,7 +203,7 @@ def verdict(labeled: list[dict], sc: dict) -> dict:
 
 def report(res: dict, v: dict, sc: dict) -> int:
     c, cr = res["counts"], sc["criteria"]
-    print(f"闸三第一轨 · {sc['scorer_version']} · 冻结日 {sc['freeze_publish_time']} (D-118)")
+    print(f"闸三第一轨 · {sc['scorer_version']} · 冻结日 {sc['freeze_publish_time']} (D-118 / D-123)")
     print(f"  冻结后发布 {c['after_freeze']} 篇: 本轮新打 {len(res['rows'])}、以前打过 {c['already']}、"
           f"还没 essence {c['no_essence']} (其中入库超过 {STALE_ESSENCE_HOURS}h 的 {c['stale_essence']})、"
           f"标注器对不上 {c['annotator_mismatch']}、没有可用 token {c['unscorable']}")

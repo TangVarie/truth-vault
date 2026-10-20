@@ -2,7 +2,8 @@
 """
 check_gate3.py —— 闸三第一轨 (D-118, scripts/gate3_score.py) 的离线守卫, CI 跑, 不连库。
 
-  §1 冻结文件: 读得进、版本号和内容摘要对得上; 改一个权重就拒跑; 冻结 SQL 没被改过
+  §1 冻结文件: 读得进、版本号和内容摘要对得上; 改一个权重就拒跑; 冻结 SQL 没被改过;
+     文件名带版本号; 被替换的上一版留在目录里也读得进 (D-123 重冻: 同一 SQL、同一冻结日 / 判据 / 标注器, 只有数据变了)
   §2 token 与闸二 gate2_combo.tag_features 逐字同一套
   §3 打分 = 有权重的 token 的平均; 没见过的 token 跳过; 一个都没有 → 不打
   §4 分位: 低于最低 / 高于最高、并列段取中点、段内插值、单调
@@ -52,7 +53,20 @@ def s1_frozen_file() -> dict:
         tmp.unlink(missing_ok=True)
     sql = (ROOT / sc["meta"]["freeze_sql"]).read_bytes()
     assert hashlib.sha256(sql).hexdigest() == sc["meta"]["freeze_sql_sha256"], "§1 冻结 SQL 被改过, 和冻结文件对不上"
-    print("  §1 冻结文件: 版本摘要对得上、改权重拒跑、冻结 SQL 未改 ✓")
+    # D-123: 打分器重冻过一次 (D-122 恢复了被冲掉的 F / U token)。当前文件名带版本号; 上一版留在目录里作历史, 也不许手改。
+    assert G.SCORER_PATH.name == f"scorer-{sc['scorer_version']}.json", "§1 文件名要等于 scorer-<scorer_version>.json"
+    hist = {}
+    for f in sorted((ROOT / "data-analysis" / "gate3").glob("scorer-*.json")):
+        h = G.load_scorer(f)                                           # 历史文件被手改也拒
+        assert h["scorer_version"] not in hist, f"§1 两份冻结文件版本号相同: {h['scorer_version']}"
+        hist[h["scorer_version"]] = h
+    prev = hist.get(sc["meta"].get("supersedes"))
+    assert prev is not None and prev["scorer_version"] != sc["scorer_version"], "§1 被替换的上一版要留在目录里"
+    for k in ("scorer", "freeze_publish_time", "token_scheme", "frozen_annotator", "criteria"):
+        assert prev[k] == sc[k], f"§1 重冻只换数据, {k} 不许跟着变 (要变就是另一回事: 新 D 号、闸三重新计时)"
+    assert prev["meta"]["freeze_sql"] == sc["meta"]["freeze_sql"] and \
+        prev["meta"]["freeze_sql_sha256"] == sc["meta"]["freeze_sql_sha256"], "§1 重冻要用同一份冻结 SQL"
+    print("  §1 冻结文件: 版本摘要对得上、改权重拒跑、冻结 SQL 未改、上一版留档且只换了数据 ✓")
     return sc
 
 
@@ -172,6 +186,7 @@ def s9_wiring() -> None:
     assert ids.index("essence_sync") < ids.index("gate3_score") < ids.index("curate_sync"), "要在 essence 之后打分"
     sentinel = "GATE3_SCORE_CHECK_DONE" + " rc="          # 拼出来: 原文写在这里会被 check_system_map 当成又一盏灯
     assert sentinel in st["run"], "靠哨兵行判崩溃"
+    assert G.SCORER_PATH.name in st["run"], "daily-sync 那一步的说明要写当前冻结文件 (重冻之后别还指着旧的)"
     agg = [s for s in steps if s.get("name", "").startswith("Fail job on any sync failure")][0]["run"]
     assert "gate3_score:" in agg, "没进失败聚合"
     ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")

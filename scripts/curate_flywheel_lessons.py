@@ -22,6 +22,8 @@ Usage:
     python curate_flywheel_lessons.py --limit 20              # 真跑
     python curate_flywheel_lessons.py --project WTG_phase1     # 只策展某项目
     python curate_flywheel_lessons.py --recurate              # 重策展(覆盖已有卡)
+    python curate_flywheel_lessons.py --note-ids NUC_phase1_recA,NUC_phase1_recB --dry-run
+                                                              # 只重策展这几张 (逗号分隔或文件路径, D-122 / D-123)
 
 Environment:
     SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY
@@ -41,6 +43,7 @@ import sys
 import time
 
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from _common import fetch_all_pages, fetch_vanished_note_ids, get_supabase_client, setup_logger, _iso_now
@@ -184,37 +187,78 @@ def fetch_essence_annotated_at(sb, note_ids: list[str]) -> dict[str, Optional[st
     return out
 
 
-def fetch_uncurated_cards(sb, project_id, recurate: bool, stale_only: bool = False) -> list[dict]:
+NOTE_IDS_CHUNK = 150      # .in_ 走 URL (_common.fetch_all_pages 注释: 整个请求头 ~26 KB 撞线); 一个 note_id ~30 字节
+
+
+def read_note_ids(spec: str) -> list[str]:
+    """--note-ids 的值: 逗号分隔, 或一个文件路径 (一行一个或一行几个逗号分隔, # 开头的行跳过) ——
+    和 annotate_feature_pass --note-ids 同一约定 (路径存在就当文件读)。保序去重。
+    ⚠️ 判「是不是文件」要接住 OSError: 15 个 id 逗号连起来 ~400 字节, 超过文件名上限 255, Path.exists() 直接抛 ENAMETOOLONG。"""
+    p = Path(spec)
+    try:
+        is_file = p.is_file()
+    except OSError:
+        is_file = False
+    if is_file:
+        lines = [ln for ln in p.read_text(encoding="utf-8").splitlines() if not ln.strip().startswith("#")]
+        raw = ",".join(lines)
+    else:
+        raw = spec
+    out: list[str] = []
+    for x in raw.split(","):
+        x = x.strip()
+        if x and x not in out:
+            out.append(x)
+    return out
+
+
+def fetch_uncurated_cards(sb, project_id, recurate: bool, stale_only: bool = False,
+                          note_ids: Optional[list[str]] = None) -> list[dict]:
     """从策展库视图取合格爆款。默认只取 is_curated=false; --recurate 取全部;
-    --recurate-stale 只取已策展且 essence 比卡新的 (见 stale_cards)。
+    --recurate-stale 只取已策展且 essence 比卡新的 (见 stale_cards);
+    --note-ids 只取这几张 (已策展、没策展都取, 不看 is_curated; D-122 修复计划第 5 条: NUC 15 张卡策展时人群被冲掉,
+    essence_annotated_at 没变, --recurate-stale 永远挑不到它们)。飞书已删的照样跳过。
 
     按 rank_score 降序取 —— 去掉发布时间硬切后(PR#58 回归 D-001 穿越周期), 全历史都合格;
     若不排序, daily-sync 每轮 ≤15 的策展预算可能花在任意老行上, 让高 rank 的新卡长期
     is_curated=false、迟迟不上架(codex PR#58 review)。排序保证预算先策展最该上架的卡。"""
-    q = (
-        sb.schema("truth_vault")
-        .table("v_flywheel_lesson_cards")
-        .select(
-            "source_note_id, project_id, tier, brand, category, "
-            "emotional_lever, target_audience, raw_excerpt, is_curated, rank_score, "
-            # curated_at: --recurate-stale 要拿它和 notes.essence_annotated_at 比 (D-096)
-            "curated_at, "
-            # 2026-09-17 外部评测 TV-05: synthetic 此前没进 select, 策展模型因此
-            # 看不见"这条的指标是不是运营判定的假数据"。馆员的 fetch_candidates 一直
-            # 选了这一列, 只有策展这头漏了 —— 同一个证据边界必须两头一致。
-            "synthetic"
+    def _view():
+        return (
+            sb.schema("truth_vault")
+            .table("v_flywheel_lesson_cards")
+            .select(
+                "source_note_id, project_id, tier, brand, category, "
+                "emotional_lever, target_audience, raw_excerpt, is_curated, rank_score, "
+                # curated_at: --recurate-stale 要拿它和 notes.essence_annotated_at 比 (D-096)
+                "curated_at, "
+                # 2026-09-17 外部评测 TV-05: synthetic 此前没进 select, 策展模型因此
+                # 看不见"这条的指标是不是运营判定的假数据"。馆员的 fetch_candidates 一直
+                # 选了这一列, 只有策展这头漏了 —— 同一个证据边界必须两头一致。
+                "synthetic"
+            )
         )
-    )
-    if project_id:
-        q = q.eq("project_id", project_id)
-    if stale_only:
-        q = q.eq("is_curated", True)
-    elif not recurate:
-        q = q.eq("is_curated", False)
-    # rank_score 含 recency 项、随时间连续重排, 不能当唯一分页键 ——
-    # 它作主排序, source_note_id 作次级键把跨页顺序钉死。
-    cards = fetch_all_pages(q.order("rank_score", desc=True),
-                            order_by="source_note_id")
+    if note_ids is not None:
+        # 按 id 取: 分块 in_, 合起来再按 rank_score 降序 (同默认路的排序, --limit 截断时先策展最该上架的)
+        ids = list(dict.fromkeys(note_ids))
+        cards = []
+        for i in range(0, len(ids), NOTE_IDS_CHUNK):
+            q = _view().in_("source_note_id", ids[i:i + NOTE_IDS_CHUNK])
+            if project_id:
+                q = q.eq("project_id", project_id)
+            cards += fetch_all_pages(q.order("rank_score", desc=True), order_by="source_note_id")
+        cards.sort(key=lambda c: (-(c.get("rank_score") or 0), c["source_note_id"]))
+    else:
+        q = _view()
+        if project_id:
+            q = q.eq("project_id", project_id)
+        if stale_only:
+            q = q.eq("is_curated", True)
+        elif not recurate:
+            q = q.eq("is_curated", False)
+        # rank_score 含 recency 项、随时间连续重排, 不能当唯一分页键 ——
+        # 它作主排序, source_note_id 作次级键把跨页顺序钉死。
+        cards = fetch_all_pages(q.order("rank_score", desc=True),
+                                order_by="source_note_id")
     # 飞书里已删的篇不再策展 / 重策展 (审计 B-21, D-103): 卡是从删前快照生成的, 之后没人维护。已有的卡不动。
     vanished = fetch_vanished_note_ids(sb, project_id)
     if vanished:
@@ -250,7 +294,7 @@ def write_lesson_back(sb, note_id: str, model: str, parsed: dict, dry_run: bool)
     )
 
 
-def main() -> int:
+def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     parser.add_argument("--project", help="只策展某项目 (如 WTG_phase1)")
     parser.add_argument("--dry-run", action="store_true",
@@ -261,9 +305,23 @@ def main() -> int:
     parser.add_argument("--recurate-stale", action="store_true",
                         help="只重策展 essence 比卡新的已有卡 (notes.essence_annotated_at > curated_at); "
                              "重策展后 curated_at 变新, 多轮 --limit 会自然收敛 (D-096)")
+    parser.add_argument("--note-ids",
+                        help="只重策展这几张卡 (source_note_id; 逗号分隔或文件路径, 一行一个)。已策展的也重来, "
+                             "不和 --recurate / --recurate-stale 一起用; 有一个不在候选视图里 (不是合格爆款 / "
+                             "项目对不上 / 飞书已删 / 拼错) 就一张都不跑 (D-122 修复计划第 5 条)")
     parser.add_argument("--qps", type=float, default=2.0,
                         help="限速 (default 2 req/s)")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+
+    note_ids: Optional[list[str]] = None
+    if args.note_ids is not None:
+        if args.recurate or args.recurate_stale:
+            logger.error("--note-ids 不和 --recurate / --recurate-stale 一起用 (按 id 选卡本身就是重策展这几张)")
+            return 2
+        note_ids = read_note_ids(args.note_ids)
+        if not note_ids:
+            logger.error("--note-ids 是空的: %r", args.note_ids)
+            return 2
 
     model = os.environ.get("FLYWHEEL_CURATOR_MODEL", "claude-sonnet-5-5")
     if not args.dry_run and not os.environ.get("ANTHROPIC_API_KEY"):
@@ -272,13 +330,28 @@ def main() -> int:
 
     sb = get_supabase_client()
     cards = fetch_uncurated_cards(sb, args.project, args.recurate or args.recurate_stale,
-                                  stale_only=args.recurate_stale)
-    if args.limit:
+                                  stale_only=args.recurate_stale, note_ids=note_ids)
+    if note_ids is not None:
+        # 点名的卡少一张就一张都不跑: 静默跑一个子集, 日志看着像「点名的都重策展了」(和预算截断不静默同一个道理)。
+        got = {c["source_note_id"] for c in cards}
+        missing = [x for x in note_ids if x not in got]
+        if missing:
+            logger.error("--note-ids 里 %d/%d 个不在候选视图里 (不是合格爆款 / 项目对不上 / 飞书已删 / 拼错), "
+                         "一张都不跑: %s", len(missing), len(note_ids), ", ".join(missing))
+            return 2
+    if args.limit and len(cards) > args.limit:
+        if note_ids is not None:
+            logger.warning("预算截断: --limit %d < 点名的 %d 张, 这一轮推迟 (按 rank_score 排在后面的): %s",
+                           args.limit, len(cards), ", ".join(c["source_note_id"] for c in cards[args.limit:]))
         cards = cards[: args.limit]
-    logger.info("Found %d card(s) to curate (model=%s, recurate=%s, stale_only=%s)",
-                len(cards), model, args.recurate or args.recurate_stale, args.recurate_stale)
+    # dry_run 写进这一行 (小写 true / false, 和 workflow 输入同形): recurate-lessons.yml 从这里取「脚本实际是不是 dry-run」,
+    # 不回显输入 —— 参数传丢了, ✅ 行也不会照样写 dry_run=true (D-123 复审)
+    logger.info("Found %d card(s) to curate (model=%s, recurate=%s, stale_only=%s, note_ids=%s, dry_run=%s)",
+                len(cards), model, args.recurate or args.recurate_stale or note_ids is not None,
+                args.recurate_stale, "-" if note_ids is None else len(note_ids), str(args.dry_run).lower())
 
     stats = {"ok": 0, "ok_after_retry": 0, "failed": 0}
+    failed_ids: list[str] = []
     sleep_s = 1.0 / args.qps if args.qps > 0 else 0
     for i, card in enumerate(cards):
         note_id = card["source_note_id"]   # 视图导出列名是 source_note_id; 写回仍落 note_id PK
@@ -307,6 +380,7 @@ def main() -> int:
             logger.warning("curate validation failed for %s (try %d): %s", note_id, attempt, errors)
         if errors:
             stats["failed"] += 1
+            failed_ids.append(note_id)
             continue
         write_lesson_back(sb, note_id, model, parsed, dry_run=False)
         stats["ok"] += 1
@@ -316,6 +390,10 @@ def main() -> int:
         time.sleep(sleep_s)
 
     logger.info("Done: %s", json.dumps(stats, ensure_ascii=False))
+    if note_ids is not None and failed_ids:
+        # 点名模式的失败卡单独一行点名 (workflow 原样打出来): 逐卡的 validation failed 行会被过滤掉,
+        # 不写这一行, 跑的人只知道「失败 2 张」, 不知道该拿哪几张再触发 (D-123 复审)
+        logger.warning("note_ids 失败 %d 张: %s", len(failed_ids), ",".join(failed_ids))
     # 返回码策略:只有【全军覆没】(一张都没成功却有失败)才判失败 —— 那多半是系统性问题
     # (FLYWHEEL_CURATOR_MODEL 配错 / 中转站余额耗尽 / 限流),该红该告警。零星单卡失败(ok>0)
     # 容忍并返回 0:curate 幂等(失败卡 is_curated=false),下轮 daily-sync 自动重试,不该
@@ -325,8 +403,14 @@ def main() -> int:
                      stats["failed"])
         return 1
     if stats["failed"] > 0:
-        logger.warning("curate 有 %d 张失败(已各重试一次),ok=%d;失败卡下轮幂等重试,不拖红本次。",
-                       stats["failed"], stats["ok"])
+        if note_ids is not None:
+            # 点名的卡多半已策展 (is_curated=true): 夜跑只策展没策展过的, --recurate-stale 只挑 essence 比卡新的,
+            # 两条都挑不到它们 —— 这里不能说「下轮重试」, 要拿上面那行的 id 再触发一次 (D-123 复审)
+            logger.warning("curate 有 %d 张失败(已各重试一次),ok=%d;点名模式没有夜跑兜底,"
+                           "用上一行「note_ids 失败」的 id 再触发一次 --note-ids。", stats["failed"], stats["ok"])
+        else:
+            logger.warning("curate 有 %d 张失败(已各重试一次),ok=%d;失败卡下轮幂等重试,不拖红本次。",
+                           stats["failed"], stats["ok"])
     return 0
 
 

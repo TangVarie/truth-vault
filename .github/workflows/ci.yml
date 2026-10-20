@@ -70,6 +70,7 @@ jobs:
             scripts/check_external_corpus_fresh.py \
             scripts/check_secret_masking.py \
             scripts/check_curate_stale.py \
+            scripts/check_curate_note_ids.py \
             scripts/check_prompt_cache_fallback.py \
             scripts/check_essence_subtype_backfill.py \
             scripts/check_vanished_notes.py \
@@ -3719,6 +3720,9 @@ jobs:
       - name: 重策展 essence 比卡新的那条路 (D-096) · 挑选 / 时区 / 取数 / worker 映射 / 收敛前提
         working-directory: scripts
         run: python check_curate_stale.py
+      - name: 按 note_id 点名重策展 (D-122 修复计划第 5 条, D-123) · 读名单 / 只取点名的 / 少一张就不跑 / dry-run / 预算截断点名 / workflow 入参
+        working-directory: scripts
+        run: python check_curate_note_ids.py   # §1 读名单 · §2 取数(不看 is_curated、分块 in_) · §3 缺卡 rc=2 / 只写点名的 / 失败名单 · §4 默认路不变 · §5 recurate-lessons.yml (入参校验 + 点名步 / 循环步垫假 python 真跑)
       - name: prompt caching 降级要被数出来、/health 与 Done 行看得见 (审计 C-02)
         working-directory: scripts
         run: python check_prompt_cache_fallback.py
