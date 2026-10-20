@@ -330,7 +330,7 @@ def report(g: dict, window_days: int, delay_days: int) -> int:
               f"在用期内发出去的帖至少 {MIN_CAUGHT_SHARE:.0%} 是写作台的稿{blind_note}")
         return blind_rc
     _warn("写作台的稿没被用上",
-          f"{span} 发布的帖里, {len(hits)} 个项目在写作台发了牌、发出去的却大多不是写作台的稿: "
+          f"{span} 发布的帖里, {len(hits)} 个项目写作台在用(发过牌或有接住的帖)、在用期里发出去的却大多不是写作台的稿: "
           + "; ".join(f"{h['project']}({h['detail']})" for h in hits)
           + " —— 写作台在用、稿子没被用上: 要么写完没存档, 要么存了、在飞书里被整篇重写了(稿短、彼此像、版式不对)。"
             "光看链接分不清这两种, 看写作台这段时间存没存这几个项目的稿: 角度台账灯判据 C 那张表的「真稿」列"
@@ -531,6 +531,7 @@ def selftest() -> int:
     # 回看期内没发牌、却有接住的帖(翻更早的牌写): 接住证明在用, 照判(codex review on TV#208)
     rc, out = run(G(many, low, {}, {}))
     assert rc == 1 and "AAA(在用期" in out and "接住 2 篇(10%)" in out, out
+    assert "发了牌" not in out and "写作台在用(发过牌或有接住的帖)" in out, "只靠接住证明在用的不能说成发过牌(发牌 0)"
 
     # ── 一个项目的 tv-sync 坏了、别的照常: 合计对过账 > 0, 那个项目要点名报判不了(rc=2), 不能安静跳过 ──
     bbb = [N(f"b{i:02d}", "BBB") for i in range(20)]
