@@ -30,17 +30,18 @@ check_desk_use_rate.py
      更晚), 看最近几天会把「还没对上」读成「没接住」。窗口 14 天: 一周一个项目常常不到 15 篇, 判不了。
      两个数都能调(--window-days / --delay-days)。
 
-判据(rc=1, 🟡): 在写作台发过牌、在用期里发布的帖对过账 >= 15 篇(且占在用期里发布的八成以上)、其中接住率 < 20% 的
+判据(rc=1, 🟡): 写作台在用(回看期内发过牌, 或窗口里有接住的帖)、在用期里发布的帖对过账 >= 15 篇(且占在用期里发布的八成以上)、其中接住率 < 20% 的
   TV 项目。表里的发布 / 对过账两列照旧数整个窗口(tv-sync 对没对账和写作台用没用无关)。
   · 够不够格判只有一条规则(_judgeable): verdicts() 和「没有项目够格判」那句都调它, ✓ 那句照它写, 不各写一遍;
-  · 只看发过牌的: 一张牌都没发的项目本来就没在用写作台, 它的没接住归角度台账灯判据 C(写作台零动静),
-    这里不重复喊(D-053)。发过牌的项目两盏灯会同时亮: 判据 C 的「连上了、写完没存档」也算发过牌的项目。两边
+  · 只看在用的: 回看期内一张牌都没发、窗口里也没有一篇接住的项目本来就没在用写作台, 它的没接住归角度台账灯
+    判据 C(写作台零动静), 这里不重复喊(D-053)。没抽新牌、翻更早的牌写出接住的帖的也算在用(接住本身就是证据,
+    codex review on TV#208)。在用的项目两盏灯会同时亮: 判据 C 的「连上了、写完没存档」也算在用的项目。两边
     读的是同一批 tv_note_links, 光凭链接分不清「没存档」和「被重写」(两种都是补录副本), 分开它们要看写作台
     这段时间存没存这个项目的稿 —— 判据 C 那张表的「真稿」列。亮黄的报文里点明这一句;
   · 15 篇是比例能不能读的样本下限, 不随窗口放大(它管的是一个比例有几个分母, 不是一周该发多少);
   · 分母用对过账的, 不用发布数: 没对过账的不知道是不是写作台的稿, 当成没接住会在 tv-sync 某晚失败时冒假黄。
 rc=2: 判不了 —— 映射的 TV 项目窗口内一篇都没发, 或发了但一条链接都没有(tv-sync 没对过账); 或者【某一个】项目
-     整窗(或发过牌的项目在用期里)发布 >= 15 篇、对过账的不到八成(tv-sync 漏了这个项目: aw 的 tv-sync 一个项目出错
+     整窗(或在用的项目在用期里)发布 >= 15 篇、对过账的不到八成(tv-sync 漏了这个项目: aw 的 tv-sync 一个项目出错
      只记一行、接着跑别的, 别的项目照常对账, 全局合计看不出来; tv-sync 坏的那几天正好是在用的那几天时, 整窗合计还
      过八成)。这种项目点名报; 别的项目照常判, 有项目亮黄时 rc 仍是 1。
 
@@ -132,8 +133,8 @@ def tally(g: dict) -> dict:
     发布 / 对过账 / 接住 数整个窗口(unlinked() 的整窗那条和表里的发布、对过账两列用它); ``j_*`` 只数在用期里发布的
     —— 判据用它(codex review on TV#208)。在用期 = 这个 TV 项目(映射的几个写作台项目合起来)每个发牌日、每篇接住的帖的
     存稿日起 USE_TAIL_DAYS 天, 按日、可以断成几段: 首牌之前、末牌 7 天之后、中间停了一阵的帖不判; 首牌之前就有接住的帖
-    (翻旧牌写、没抽新牌; 早的牌在回看之外)那几天照判 —— 接住本身证明写作台在出稿。回看期内一张牌都没发的项目没有在用期
-    (D-053, 归角度台账灯判据 C)。``use_spans`` = 在用期落在窗口里的几段, 给报文用。窗口内一篇都没发的 TV 项目不出现。
+    (翻旧牌写、没抽新牌; 早的牌在回看之外)那几天照判 —— 接住本身证明写作台在出稿, 回看期内一张牌都没发也一样。
+    回看期内没发牌、窗口里也没有一篇接住的项目没有在用期(D-053, 归角度台账灯判据 C)。``use_spans`` = 在用期落在窗口里的几段, 给报文用。窗口内一篇都没发的 TV 项目不出现。
     """
     links, diffs = g.get("links") or {}, g.get("diffs") or {}
     drawn, drawn_days = g.get("drawn") or {}, g.get("drawn_days") or {}
@@ -152,9 +153,10 @@ def tally(g: dict) -> dict:
     lo, hi = _day(g.get("since")) or "0000", _day(g.get("until")) or "9999"
     use: dict[str, set] = {}
     for tv, r in rows.items():
-        # 一张牌都没发的不算在用(D-053): 接住的存稿日只给发过牌的项目补在用期
+        # 在用的证据有两种: 回看期内的发牌日, 和接住的帖的存稿日。回看期内没发牌、却有接住的帖(翻更早的牌写)照样在用
+        # —— 接住本身就证明写作台在出稿(codex review on TV#208); 两样都没有的才不算在用(D-053, 归判据 C)。
         use[tv] = {(date.fromisoformat(m) + timedelta(days=k)).isoformat()
-                   for m in marks[tv] if m for k in range(USE_TAIL_DAYS + 1)} if r["drawn"] else set()
+                   for m in marks[tv] if m for k in range(USE_TAIL_DAYS + 1)}
         r["use_spans"] = _spans(use[tv], lo, hi)
     for n in g.get("notes") or []:
         r = rows.get(n.get("project_id"))
@@ -182,11 +184,16 @@ def tally(g: dict) -> dict:
     return {tv: r for tv, r in rows.items() if r["published"]}
 
 
+def _active(r: dict) -> bool:
+    """写作台在这个项目上在用: 回看期内发过牌, 或者窗口里有接住的帖(翻更早的牌写也算, codex review on TV#208)。"""
+    return r["drawn"] > 0 or r["caught"] > 0
+
+
 def _judgeable(r: dict) -> bool:
     """这个项目够不够格判。verdicts() 和 report() 的「没有项目够格判」都只调这里 —— 以前两处各写一遍, report 漏了
     八成那条: 唯一在用的项目对过账 15/100 时 verdicts() 跳过它, report 却打绿 ✓(codex review on TV#208)。
     两条八成和 unlinked() 的两条一一对应: 对过账够样本、却因为对账不全不够格判的, unlinked() 一定点名。"""
-    return (r["drawn"] > 0
+    return (_active(r)
             and r["j_linked"] >= MIN_PUBLISHED                          # 在用期里对过账够样本下限
             and r["j_linked"] >= r["j_published"] * MIN_LINKED_SHARE    # 在用期里的也大多对过账, 不然接住率是偏的子集
             # 整窗对过账不到八成的归 unlinked()「判不了」: 不能再同时喊「没被用上」把人往出稿质量上引
@@ -217,7 +224,7 @@ def unlinked(rows: dict) -> list[dict]:
 
     全局「一条链接都没有」那道 rc=2 管不到这种: aw 的 tv-sync 逐个项目跑, 一个项目出错只记一行、接着跑别的,
     别的项目照常对账, 合计的对过账 > 0; 这个项目在 verdicts() 里因为对过账不到下限被安静地跳过。
-    两条任一条就点名: 整窗发布 >= 15 篇、对过账不到八成; 或者发过牌的项目在用期里发布 >= 15 篇、对过账不到八成 ——
+    两条任一条就点名: 整窗发布 >= 15 篇、对过账不到八成; 或者在用的项目在用期里发布 >= 15 篇、对过账不到八成 ——
     tv-sync 从某天起坏、这个项目又正好从某天起才用写作台, 没对上的扎堆在在用期里, 整窗合计还过八成; 只看整窗, 它会在
     _judgeable() 里被安静跳过、旁边别的项目照打 ✓(codex review on TV#208)。
     """
@@ -225,7 +232,7 @@ def unlinked(rows: dict) -> list[dict]:
     for tv, r in sorted(rows.items()):
         if r["published"] >= MIN_PUBLISHED and r["linked"] < r["published"] * MIN_LINKED_SHARE:
             detail = f"发布 {r['published']} 篇、对过账 {r['linked']} 篇"
-        elif (r["drawn"] > 0 and r["j_published"] >= MIN_PUBLISHED
+        elif (_active(r) and r["j_published"] >= MIN_PUBLISHED
               and r["j_linked"] < r["j_published"] * MIN_LINKED_SHARE):
             detail = (f"在用期 {_span_text(r)} 发布 {r['j_published']} 篇、对过账 {r['j_linked']} 篇; "
                       f"整窗 {r['linked']}/{r['published']}")
@@ -290,7 +297,7 @@ def report(g: dict, window_days: int, delay_days: int) -> int:
         print(f"  接住 = 对上写作台发布前存的那版; 未改动 = 接住且算过差异的里面原样发的(标题、正文一个字没动); "
               f"改标题 = 其中标题动过的。发牌数窗口起点前 {DRAW_LOOKBACK_DAYS} 天到终点(牌先发、帖后发); "
               f"在用天 = 窗口里算写作台在用的天数(每个发牌日、每篇接住的帖的存稿日起 {USE_TAIL_DAYS} 天); "
-              f"在用期内 = 这些天发布的 接住/对过账/发布。判据只看在用期内: 发过牌、在用期内对过账 >= {MIN_PUBLISHED} 篇"
+              f"在用期内 = 这些天发布的 接住/对过账/发布。判据只看在用期内: 写作台在用(发过牌或有接住)、在用期内对过账 >= {MIN_PUBLISHED} 篇"
               f"且占这些天发布八成以上、接住率 < {MIN_CAUGHT_SHARE:.0%}")
 
     if not pub:
@@ -314,12 +321,12 @@ def report(g: dict, window_days: int, delay_days: int) -> int:
     blind_note = "(上面判不了的项目不在内)" if blind else ""
 
     if not any(_judgeable(r) for r in rows.values()):     # 和 verdicts() 同一条规则, 不另写(codex review on TV#208)
-        print(f"  · 没有项目够格判: 在写作台发过牌、在用期内发布的帖对过账够 {MIN_PUBLISHED} 篇且八成以上对过账的项目"
+        print(f"  · 没有项目够格判: 写作台在用(发过牌或有接住)、在用期内发布的帖对过账够 {MIN_PUBLISHED} 篇且八成以上对过账的项目"
               f"一个都没有(不是健康, 是没活、量太小或对账不全; 发了帖、写作台零动静的看角度台账灯判据 C){blind_note}")
         return blind_rc
     hits = verdicts(rows)
     if not hits:
-        print(f"  ✓ 没有项目命中: 在写作台发过牌、在用期内对过账够 {MIN_PUBLISHED} 篇且八成以上对过账的项目, "
+        print(f"  ✓ 没有项目命中: 写作台在用(发过牌或有接住)、在用期内对过账够 {MIN_PUBLISHED} 篇且八成以上对过账的项目, "
               f"在用期内发出去的帖至少 {MIN_CAUGHT_SHARE:.0%} 是写作台的稿{blind_note}")
         return blind_rc
     _warn("写作台的稿没被用上",
@@ -518,16 +525,22 @@ def selftest() -> int:
     rc, out = run(G(many, ok, {}, {"d1": 1}))
     assert rc == 0 and "✓" in out and "没被用上" not in out and "待重算" in out, out   # 接住了、差异还没算
     assert "且八成以上对过账的项目, 在用期内发出去的帖至少 20%" in out, "✓ 那句要说全 _judgeable 的规则, 不能比它宽"
+    none = {f"n{i:02d}": L("unmatched") for i in range(20)}
+    rc, out = run(G(many, none, {}, {}))
+    assert rc == 0 and "没有项目够格判" in out and "没被用上" not in out, "没发牌、也一篇没接住: 没在用, 归判据 C"
+    # 回看期内没发牌、却有接住的帖(翻更早的牌写): 接住证明在用, 照判(codex review on TV#208)
     rc, out = run(G(many, low, {}, {}))
-    assert rc == 0 and "没有项目够格判" in out and "没被用上" not in out, "没发过牌的项目接住再低也不喊"
+    assert rc == 1 and "AAA(在用期" in out and "接住 2 篇(10%)" in out, out
 
     # ── 一个项目的 tv-sync 坏了、别的照常: 合计对过账 > 0, 那个项目要点名报判不了(rc=2), 不能安静跳过 ──
     bbb = [N(f"b{i:02d}", "BBB") for i in range(20)]
     rc, out = run(G(many + bbb, ok, {}, {"d1": 1, "d3": 5}))
     assert rc == 2 and "BBB(发布 20 篇、对过账 0 篇)" in out and "tv-sync 漏了" in out and "AAA(" not in out, out
     assert "✓" in out and "判不了的项目不在内" in out, "AAA 照常判"
-    rc, out = run(G(many + bbb, ok, {}, {"d3": 5}))
+    rc, out = run(G(many + bbb, none, {}, {"d3": 5}))      # AAA 没发牌也没接住(不在用), 只有 BBB 在用
     assert rc == 2 and "没有项目够格判" in out and "BBB(" in out, "BBB 发过牌但没对过账: 不能落进「没有项目够格判」rc=0"
+    rc, out = run(G(many + bbb, ok, {}, {"d3": 5}))        # AAA 没发牌、20 篇全接住: 接住证明在用, 照判
+    assert rc == 2 and "BBB(" in out and "✓" in out and "没有项目够格判" not in out, out
     part = dict(ok, **{f"b{i:02d}": L("ingested", None) for i in range(10)})     # 对过一半
     rc, out = run(G(many + bbb, part, {}, {"d1": 1, "d3": 5}))
     assert rc == 2 and "BBB(发布 20 篇、对过账 10 篇)" in out, out
