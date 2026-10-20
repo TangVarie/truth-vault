@@ -6845,3 +6845,95 @@ F-02 原定「中转站给不了粘性分组、且对账单显示写缓存按 1.
 - autowriter：第一批 aw#112；改稿差异只算发布前存的那版 aw#113、aw#114；第二批 A/B/C 另一个 PR。
 - Jev：通配放行、`/compile_rules`、Jev 格式题带 `scope`。
 - TV（本 PR）：`scripts/check_desk_use_rate.py` + daily-sync 每周一 + CI 自检、docs/29 登记、docs/32、OPEN-ITEMS（J-15、L-06、L-07、W-26、W-27）。
+
+## D-122 · 夜跑批量 upsert 把「没带的列」冲成 NULL：744 篇 content_format 被冲掉；按受保护列分组再写，合并后从 audit_log 恢复（2026-10-20）
+
+来源：10-20 例行扫描看到 744 篇 `emotional_lever` 有值、`content_format` 却是空的，只读核生产后确认是 `sync_feishu_notes_to_truth_vault.py` 的批量写。本 PR 只改代码和守卫；生产恢复等合并之后再跑（见下文「修复计划」）。
+
+### 发生了什么（10-20 生产只读，只数数）
+
+- `content_format` 被冲掉 744 篇：WTG 195、NUC 179、RIO 90、NRT_phase2 86、HATHERINE 83、LNKT 74、SPX 29、TUGE 6、BJS 2。
+- NUC 那 179 篇的 `target_audience` / `user_pain_point` 也一起没了（这两列是 essence 按子方向写的）。
+- HATHERINE 另有 17 篇的 `target_audience` / `user_pain_point` 被冲掉。这两列是以前按方向抬上来的值，运营后来把方向改成了表里没有的值。
+- 744 篇都是**先被 essence 标完、后被夜跑冲掉的**：每篇在 `audit_log` 里都有一条「非空 → NULL」的 UPDATE。
+  - 其中 729 篇被冲掉的正是 essence 写的值（写入那条 UPDATE 同时改了 `essence_annotated_at`）。
+  - 另外 15 篇（HATHERINE）被冲掉的是方向抬上来的值。
+- 时间分布：WTG / NUC / NRT_phase2 在 6 月 4～8 日（批量写 05-27 上线，essence 6 月初第一轮），RIO 9-03～9-09，LNKT 9-13～14，SPX / TUGE 9 月，BJS 10-13，HATHERINE 9-26 起到 10-20 还在发生。
+- 每篇只被冲一次：essence 只标 `essence_annotated_at IS NULL` 的篇，冲掉之后不会再补，所以缺口一直留着，也不会红。
+- 下游：看板按形态切片（`dashboard_views` 里 `content_format` 4 处）把这些篇算成「没有形态」。闸三打分器也拿 `content_format` / `target_audience` 做特征：受影响的篇里有 3 篇已经打了分，其中 2 篇是冲掉之后才打的。
+
+### 根因
+
+- postgrest-py 2.30.0 批量 upsert 时：
+  - 把 `columns=` 设成这一批所有行的键的**并集**；
+  - 某行没带的键，按 `default_to_null=True` 补成 NULL；
+  - 再加上 `Prefer: resolution=merge-duplicates`，数据库里执行的就是 `ON CONFLICT DO UPDATE SET col = EXCLUDED.col`，也就是 `= NULL`。
+- `transform_row` 只在方向能直接抬（单方向配置）时写 `content_format` / `target_audience` / `user_pain_point` / `product_focus`。抬不了的行（有子方向、方向没映上、没填方向）这几列归 essence。
+- 结果：同一批 500 行里，抬得了的行把抬不了的行的 essence 值冲掉了。
+- 逐行写的兜底 `upsert_note`（单个 dict，不带 `columns=`）没有这个问题。本文件好几处正是按「没带 = 保留库值」写的，例如 `apply_tier_flip_block`「upsert 保留库值」、`apply_cleared_status` 的列改名不动、synthetic 段的「upsert 漏列保留 DB 旧值」。05-27 改成批量写之后，这个前提在批量路径上就不成立了。
+- 同一个机制还会打穿两道闸，目前是潜在的（生产 `tier_flip_blocked` 0 篇）：
+  - 整批翻转被挡时，被剥掉 `tier` 的篇和没被挡的篇在同一批，库里的 `tier` 会被写成 NULL；
+  - 状态列整轮消失时，只有数值推断的篇带 `tier`，其余篇的 `tier` 会被刷成 NULL。
+
+### 定了什么
+
+1. **`upsert_notes_batch` 先按受保护列分组，再按 500 分块。** 同一个请求里，受保护列要么每行都带，要么每行都不带。值是 None 也算带，因为那是故意清档（`apply_cleared_status`）。逐行兜底、返回值、日志格式都不变。
+2. **受保护列的名单写在模块常量 `UPSERT_PROTECTED_COLS` 里，每列的证据写在常量上方的注释里：**
+   - `content_format` / `target_audience` / `user_pain_point` / `product_focus`：essence 也写这几列。
+   - `tier` / `tier_source`：翻转闸、状态列消失时故意不写。
+   - `data_quality_flags`：tier 的限定词。这一列只有本脚本写，生产里 12 种键全是同步产的，但 synthetic / `comment_maintained_routes` 决定进不进飞轮。状态列整轮消失时 `tier` 被留着，旗子却被冲掉，伪爆贴就会以真爆款的身份留在库里。
+   - `source_autowriter_item_id` / `source_autowriter_version_id`：写作台 `deskcore_tv_backfill_lineage` 只往 NULL 里填。生产 472 篇有值，0 篇来自飞书。
+   - `last_seen_at` / `last_seen_run_id`：部分同步不盖戳（COR-011）。现在整轮要么全带要么全不带，放进名单是防以后改成逐行盖。
+3. **名单外的列照旧「镜像飞书」，不按完整键集分组。** 指标、蓝词、置顶评论、发布时间、观众分析这些格子被运营清空时，同批有别的行带着这一列，这一行就跟着写成 NULL，这是对的。老代价不动：一批里没有任何一行带某列时，这列库里的旧值留着。
+4. **判据**：名单里的列，库值只能由「本脚本故意不写」或「别的写入方」决定。所以飞书格子直接映进来的列不许进名单，守卫会查全部 mapping。
+5. **已知取舍**：方向从抬得了改成表里没有的值时，以前抬上来的形态、人群、痛点会**留着**（同逐行写的老口径），不再被冲成 NULL。生产里这种情况一个月 17 篇（都在 HATHERINE）。数值推断出的 `tier` 在评论数掉回线下时也留着，「只向上推」本来就是 D-062 的口径。两路都判不出时 synthetic 不清，仍是 I-05。
+
+### 同类写法核了一遍（TV 仓里所有一次写多行的地方）
+
+| 写入 | 行的键是否一致 | 结论 |
+|---|---|---|
+| `upsert_metrics_batch` → `metric_snapshots` | 不一致（指标、`hours_since_publish` 有的有、有的没有） | 不改。只有本脚本写；同一 (note, 窗口, feishu_import) 的指标格子被清空就该跟着清；带默认值的 `source` / `window_label` 每行都带。在 docstring 里写明了 |
+| `ensure_accounts_batch` → `accounts` | 一致（四个键） | 无问题；`ignore_duplicates` 只插不改 |
+| `sync_comments_from_raw_extra` → `comments` insert | 一致（10 个键） | 无问题 |
+| `annotate_feature_pass` / `ingest_gate1_answers` → `note_feature_answers` | 一致（`_row` / 同一个 dict 字面量） | 无问题 |
+| `gate2_run.write_validation` → `feature_validation` | 一致（`VALIDATION_COLUMNS` 投影） | 无问题 |
+| `gate3_score.write` → `content_scores` | 一致；`ignore_duplicates` | 无问题 |
+| `migrate_autowriter_across_supabase` | 整行 `select *` 搬运；`ignore_duplicates` | 无问题（一次性脚本） |
+| essence 回写、`migrate_essence_vocab`、ssll / aw 标记、馆员缓存、策展卡、隔离表 | 单行 dict 或 `.update()` | 不带 `columns=`，没有这个问题 |
+| 外部语料（Jev 仓 `judge/external.py`，不在本 PR 改） | 一致（同一个推导式、固定列表） | 无问题 |
+
+### 守卫
+
+- 新增 `scripts/check_batch_upsert_columns.py`，接进 ci.yml 的「Python syntax + unit tests」，位置紧跟采集三道闸。
+- 用真的 postgrest-py request builder 发请求，在 `httpx.MockTransport` 上收，按 PostgREST 真正看到的 `columns=` 和请求体判。
+- 不变式：每个带 `columns=` 的请求里，受保护列只要出现在 `columns=` 里，这个请求的每一行都带着它。
+- 八节：
+  - §1：18 张真 mapping 的混方向批，有抬得了的、有子方向、方向没映上、没填方向，再加一行带写作台 lineage；
+  - §2：整批翻转被挡；
+  - §3：状态列整轮消失，含「只有 2 篇判出旗子」；
+  - §4：镜像口径没被顺手改掉；
+  - §5：名单都是真列、没有 mapping 直接映、essence 与同步共写的列都在；
+  - §6：反证；
+  - §7：逐行兜底和 dry-run 照旧；
+  - §8：有证据的 11 列一列不许少。
+- 反证实跑（临时替换引擎函数，不改文件）：
+  - 换回老实现 → §1 红；
+  - 按完整键集分组 → §4 红；
+  - 11 列逐列删：essence 共写的四列和 lineage 两列 → §5 红，`tier` / `tier_source` / `last_seen_*` → §8 红，`data_quality_flags` → §3 红；
+  - 把值为 None 当没带 → §8 红。
+  - 另外单独核过：老实现在 §2、§3 上也红。
+
+### 修复计划（合并之后跑，不在本 PR 里）
+
+1. **先合并，再恢复。** 修复上线前，HATHERINE 每晚还在被冲。恢复用的名单在跑的那一刻按 `audit_log` 现算，不用 10-20 这份数。
+2. **备份**：建 `truth_vault.backup_notes_essence_cols_<日期>`，存要动的每篇的 `note_id` 和四列当前值，COMMENT 里写回滚 SQL。11 月下旬以后可删，记进 S-02。
+3. **恢复规则**：对象是 `essence_annotated_at` 非空、该列现在是 NULL、`audit_log` 里有它「非空 → NULL」的 UPDATE 的篇。
+   - 优先用**最近一次 essence 写入的值**，也就是同一条 UPDATE 里 `essence_annotated_at` 也变了的那次。10-20 能这样恢复的：content_format 740 篇、NUC 人群 179 篇、痛点 179 篇。
+   - 有 4 篇 HATHERINE 的 content_format，essence 写入时值没变，所以 audit 里没有这一列，改用最后一次被冲掉前的值（`changed_cols->'content_format'->0`）。
+   - HATHERINE 那 17 篇人群、痛点**不恢复**：值是旧方向抬上来的，这两列没有 essence 来源，恢复等于把旧方向的人群、痛点安回去。
+4. **闸三**：恢复的篇里，冲掉之后才打分的（10-20 是 2 篇）先备份再删掉它们的 `content_scores` 行，下一晚按冻结打分器重打。打分器不变（D-118），只是输入修正了。冲掉之前打的不动。
+5. **回读**：
+   - `emotional_lever` 非空且 `content_format` 为空的篇数应该是 0；
+   - NUC 有子方向且人群或痛点为空的篇数应该是 0；
+   - 合并后第一晚的 `audit_log` 里，受保护列「非空 → NULL」的 UPDATE 应该是 0 条，`tier` 除外：`apply_cleared_status` 故意清档的那些篇带着 `tier_cleared` 旗子。
+   - 跟踪见 OPEN-ITEMS I-16。
