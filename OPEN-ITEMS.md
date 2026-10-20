@@ -73,7 +73,7 @@
 | J-10 | 核对生产Rx策略与仓内既有许可是否一致 | 仓内10-08 PR5已把OKMAN/OKMAN_phase1加入rx_cleared，本轮未改；project_layer_cleared 10-20 改成 `["*"]`（D-121，Rx 闸不变、`rx_cleared` 不认 `*`）。Jev 部署后用 `/health` 或带鉴权请求的 `policy` 回显核一次；其他未清出Rx仍403 | 工程 | 有合法鉴权的下一次实际请求核对，不重复索取已有合同许可 | jev:config/data_policy.yaml；HANDOFF |
 | J-11 | 「只判 `score_drafts`（原 `commit_drafts`）存档的稿、补录稿靠 TV 事后抽取」这条写进 TV DECISIONS；核 TV 抽取确实覆盖补录的项目 | 没记 | 工程 | 随时 | aw:runbook:951 |
 | J-12 | `tv_project_map` 完整性：没映射的项目一篇都不判 | **10-16 核**：近 7 天活跃的 5 个写作台项目里只有西屋911gt 没映射，其余 4 个都有。**写稿和借卡不受影响**（借卡不走这张表）；没映射期间只少两样：入库时的影子判定记录（10-14 那批 20 篇 `not_configured`），写手侧 `judge_draft` 判不了这个项目。映射本来就在项目建好飞书表、TV 里有了项目之后做；现有 `XIWU_phase1` 是西屋按摩椅 GT33（08-29 结束），不是同一产品 | 工程 | TV 里有了西屋 911GT 项目之后 `tv-map add` | aw:runbook:952 |
-| J-15 | 写作台第二批 E：自由文本规则编成 Jev 是非题，结果给写手看（只提示不拦），拿人改标定 | **owner 10-20 全部放行（D-121）**：Jev `project_layer_cleared` 改 `["*"]`（Rx 闸不变），规则原文可以发给 Jev 编题。Jev 侧：通配放行、`POST /compile_rules`（规则 → 是非题 + 能用代码查的规则给出代码检查）、Jev 格式题可带 `scope`（标题 / 正文 / 全文）。写作台侧：编好的题存规则行的 `rule_payload`（按内容哈希），新工具在打分之后查规则、硬规则记必须改、软规则记建议改；内联 `project_bank` 发、单独 run_tag。软规则从简报开头挪走仍等标定（`tv_edit_diffs` 发布前人改，`lag_days ≥ 0`、`diff_rev ≥ 2`） | 工程（Jev → aw） | Jev PR 合并部署后接 aw 侧；标定等 D 灯和改稿差异攒够（≥ 4 周） | docs/32 §3 E；D-121；jev:docs/00 #7；jev:config/data_policy.yaml |
+| J-15 | 写作台第二批 E：自由文本规则编成 Jev 是非题，结果给写手看（只提示不拦），拿人改标定 | **owner 10-20 全部放行（D-121）**：Jev `project_layer_cleared` 改 `["*"]`（Rx 闸不变），规则原文可以发给 Jev 编题。Jev 侧（Jev#23，10-20 合并部署 `dde0e4f`，`/compile_rules` 线上已在）：通配放行、`POST /compile_rules`（规则 → 是非题 + 能用代码查的规则给出代码检查；题号带规则原文 sha 和题目指纹）、Jev 格式题可带 `scope`（标题 / 正文 / 全文）。写作台侧：编好的题存规则行的 `rule_payload`（按内容哈希），新工具在打分之后查规则、硬规则记必须改、软规则记建议改；内联 `project_bank` 发、单独 run_tag。软规则从简报开头挪走仍等标定（`tv_edit_diffs` 发布前人改，`lag_days ≥ 0`、`diff_rev ≥ 2`） | 工程（aw） | aw 侧查规则工具在做（aw 第二批合并之后）；标定等 D 灯和改稿差异攒够（≥ 4 周） | docs/32 §3 E；D-121；jev:docs/00 #7；jev:config/data_policy.yaml |
 
 ## 3. 写作台（autowriter / deskcore）
 
@@ -131,7 +131,7 @@
 |---|---|---|---|---|---|
 | L-01 | 去掉 daily-sync.yml:438 stale / gated / retract 摘要上的 `|| true`（C-20） | 还在 | 工程 | `stale_in_ssll` 连续两周 0（≥ 10-22） | D-087；D-103 |
 | L-03 | 每周看灯：`LIBRARIAN_TRAFFIC`、`ANGLE_LEDGER`、`EXTERNAL_CORPUS`、`DESK_USE_RATE`（10-20 加，周一才跑）、Jev `external-corpus.yml` | 例行 | 你动手（周一定时检查会代看一遍） | 每周 | docs/29:32-45 |
-| L-06 | 写作台用上率灯（`DESK_USE_RATE_CHECK_DONE`，docs/32 D）第一次读数 | 10-20 加（TV，`scripts/check_desk_use_rate.py`，daily-sync 每周一北京时间跑，advisory）。10-26 第一次跑，看 10-05～10-19 发布的笔记。读的时候核三件事：① 未改动率是数还是「待重算」——10-20 写作台部署、当晚 tv-sync 重算之后应该有 `diff_rev` 2 的行，还是待重算就去看 tv-sync；② 哪些项目亮黄、是不是在用写作台的那几个；③ 有没有项目被点名「判不了 · tv-sync 漏了」（发布 ≥15 篇、对过账不到八成；表里对过账一列正常等于发布）；④ 和角度台账灯判据 C 同一周一起亮的项目，看判据 C 表里的「真稿」列分开「没存档」和「被重写」。数记进 docs/32 §4 那张表，之后每周一跟 L-03 一起看 | 工程（Claude 周检） | 10-27 | docs/32 §3 D、§4；docs/29 |
+| L-06 | 写作台用上率灯（`DESK_USE_RATE_CHECK_DONE`，docs/32 D）第一次读数 | 10-20 加（TV，`scripts/check_desk_use_rate.py`，daily-sync 每周一北京时间跑，advisory）。10-26 第一次跑，看 10-05～10-19 发布的笔记。读的时候核三件事：① 未改动率是数还是「待重算」——10-20 写作台部署、当晚 tv-sync 重算之后应该有 `diff_rev` 2 的行，还是待重算就去看 tv-sync；② 哪些项目亮黄、是不是在用写作台的那几个；③ 有没有项目被点名「判不了 · tv-sync 漏了」（整窗或在用期里发布 ≥15 篇、对过账不到八成；表里对过账一列正常等于发布）；④ 和角度台账灯判据 C 同一周一起亮的项目，看判据 C 表里的「真稿」列分开「没存档」和「被重写」。数记进 docs/32 §4 那张表，之后每周一跟 L-03 一起看 | 工程（Claude 周检） | 10-27 | docs/32 §3 D、§4；docs/29 |
 | L-07 | 写作台第二批 A–C 上线四周后判接住率走向 | A–C 在 aw 还没上线（10-20）。上线日 + 28 天，拿 D 灯连续四周的接住率、未改动率（docs/32 §4 那张表）判：不动 = 问题不在版式和规则，回头看内容本身（选题、角度、示例），另开条目；在动 = 继续按周看。单周起落不下结论 | 工程（Claude 周检）→ 你拍板下一步 | A–C 上线日 + 28 天（按 10-21 上线 ≈ 11-18） | docs/32 §4 |
 
 ## 7. 运维、密钥、备份
