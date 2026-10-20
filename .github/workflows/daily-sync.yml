@@ -463,6 +463,26 @@ jobs:
           上面的 traceback 是真问题 —— advisory 不拖红, 但这盏灯现在是瞎的, 去修。"
           fi
 
+      - name: 写作台用上率 · 发出去的帖有多少是写作台的稿、多少原样发了 (每周一, advisory, 不 fail)
+        if: steps.check.outputs.skip != 'true' && always()
+        working-directory: scripts
+        run: |
+          # docs/32 D (10-20): 写作台的稿短、彼此像, 大多在飞书里被整篇重写(写作台存的稿发出去的只有 23–45%)。
+          # 按 TV 项目看发布于 21~7 天前的笔记: 接住率(对上写作台发布前那版)、未改动率(接住里原样发的)。
+          # 在写作台发过牌、对过账 ≥15 篇、接住 <20% 亮 🟡 rc=1, 判不了 rc=2, 脚本自己打 ::warning。
+          # 修在 autowriter 仓(写作台出稿质量), advisory 不拖红。按周看的数, 每周一(北京)跑一次 ——
+          # 天天报同一盏灯等于没有灯(D-053); 手动触发时照跑。只读; 崩了靠哨兵行判(docs/29)。
+          if [ "$(TZ=Asia/Shanghai date +%u)" != "1" ] && [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+            echo "不是周一, 跳过"; exit 0
+          fi
+          set +e
+          python check_desk_use_rate.py 2>&1 | tee /tmp/desk_use_rate.log
+          set -e
+          if ! grep -q '^DESK_USE_RATE_CHECK_DONE rc=' /tmp/desk_use_rate.log; then
+            echo "::warning title=写作台用上率检查崩了::脚本没跑到底(没有哨兵行), \
+          上面的 traceback 是真问题 —— advisory 不拖红, 但这盏灯现在是瞎的, 去修。"
+          fi
+
       - name: Show flywheel status (truth_vault.v_flywheel_sync_status)
         if: steps.check.outputs.skip != 'true' && always()
         working-directory: scripts

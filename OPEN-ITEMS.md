@@ -26,6 +26,7 @@
 | 10-16 已定 | 特征层留在 Railway worker（S-08）；隔离表不做完整版，2,477 条已入库的旧隔离行标 resolved（I-03） | 已关 S-08、I-03 |
 | 10-19 已核 | 节后周产出：主写手回到 9 月下半月水平（10-12 周发牌 179、入库稿 104）；另一位写手 9-22 后没再用写作台，途鸽这周 22 篇写作台没接住（原因是 skill 没被调起来，已修，见已关 O-04）；西屋911gt 已接 TV | O-03、O-04、W-25（都已关） |
 | 10-26 周一 | 看角度台账灯判据 C：途鸽 / Hatherine / 西屋911gt 还亮不亮（aw#109 上线后第一周）。西屋911gt 是 10-20 新看到的同一形状：XIWU_phase2 近 7 天发出去 60 篇全是补录副本，写作台 10-14 那 20 篇稿子的标题和正文开头在 88 篇里一篇都找不到（只能说明发出去的不是这 20 篇） | O-04（已关，留验证） |
+| 10-27 | 读写作台用上率灯第一次输出（10-26 周一夜跑，看 10-05～10-19 发布的笔记）：各项目接住率、未改动率是数还是「待重算」、哪些项目亮黄，数记进 docs/32 §4 | L-06 |
 | ≈ 10-22 | 删 D-086 两张备份；librarian 延迟对比 D-090 基线；daily-sync 去掉 C-20 的 `|| true`（条件：`stale_in_ssll` 连续两周 0） | S-01、F-03、L-01 |
 | 10-16 已关 | 判定 8 秒截止不动（实测最长 4.3 秒）；入库段变慢到 12 秒，aw#100 让判定只拿整次回包 20 秒里剩下的（已部署，build 73117bd） | J-08（已关）、W-21 |
 | 10-16 已上线 | owner 验收 D-112；07:15 UTC 生产开关打开，写作台用真实写手 key 核过两个评论工具；aw#101、aw#102 已部署（协议 `d59368a8f8ad`）；J-02 全量 shadow 9,766 条已写已回读 | J-01（已关）、J-02、W-02 |
@@ -36,8 +37,9 @@
 | 10-18 已定 | 拍板类一次判完（D-119）：12 条关、6 条转工程、I-01 里「删除」归宿定了，W-20（写手用的模型）owner 定了维持 gemini。10-17 核：SPX 18 条沿用库里正文、不再隔离；闸三首批 6 篇已打分；D-113 生效 | I-15（已关）、G-03、W-20 |
 | 10-19 已上线 | 写作台改版（D-120）：写完自动存档 + Jev 参考分给写手看（不拦），撤掉人审 / 导出，评论按链接写；人改的稿也认（`edited`）、改动差异每周一份摘要（aw#107 已部署，build `4bc41c8`，协议 `af2e95ae314e`；迁移 013 04:45 UTC 已上生产）；夜跑撤掉人审同步、外部卡别家品牌名换「某品牌」、每季度找新特征（TV#202） | J-07、W-23、W-24、G-18、J-14 |
 | 10-20 已修 | 轮转复查三处：① 10-19 夜跑闸三红——2 篇 Hatherine 排期稿 9-30 入库当天用旧模型标了 essence、10-18 才发，不是闸三期间换标注器；备份后清掉标注时间、backfill 用冻结标注器重标完（10-19 11:03 UTC）。② 写作台跨项目检查 15~20 篇一批全超时、连品牌词标记一起丢（aw#110 已合并）。③ 改稿差异把稿子末尾的 #话题 行记成"人删了一句"（首晚 440 条里 125 条），摘要会教写手少提品牌；aw#111 + 迁移 014 已上，摘要在重算前不出 | G-03、W-19、W-23 |
-| 10-20 夜 | 核 tv-sync 把 440 条旧口径差异重算成 `diff_rev = 1`、"改过"数明显下降；核 10-20 夜跑闸三 rc=0 | W-23、G-03 |
+| 10-20 夜 | 核 tv-sync 按 `diff_rev = 2` 重算旧口径差异（aw#113 把口径从 1 升到 2）：首晚 440 条里约 228 条发布前那版的对子（加上当晚新对上的）变成 rev 2、"改过"数明显下降；212 条 `lag_days < 0`（发布后才存进写作台的那版）不重算、留在 rev 0，是设计如此（W-27、docs/32 §1），不是重算失败。核 10-20 夜跑闸三 rc=0 | W-23、G-03 |
 | 11-09 之后 | 删 10-09 / 10-10 两批备份表 | S-02 |
+| ≈ 11-18 | 写作台第二批 A–C 上线四周后判接住率走向（A–C 上线日 + 28 天，按 10-21 上线算）：不动就回头看内容本身 | L-07 |
 | 闸二之后 | 评论能力（J-01 起）、写作台工具阻塞（W-01）、P3 / P4、抽取器与 judge 出影子期的决定 | §1、§2、§3 |
 
 ---
@@ -68,15 +70,16 @@
 | J-02 | 评论回填 ②：9,649 条评论跑运营侧（意图 / 像不像安排的 / 类型）+ 读者侧 7 题，进账本 `subject_type='comment'`，评论构成做闸二候选特征 | **10-16 全量 shadow 已完成**：run 38868417905（07:37–07:55 UTC），run_tag `shadow-comments-38868417905`。9,766 条 = comments 表全部；读者侧 68,362 行、运营侧 19,532 行，无效 0、错误 0、没用续跑；产物逐文件扫过没有原文。构成：OTC药素人 5,227（背书 54%、点名 34%、像脚本 47%）；保健品素人 1,227（背书 84%、像脚本 83%）；处方药素人 1,172（接住帖子只有 33%）；美妆素人 307（背书 98%、像脚本 97%）。表里素人评论大多是铺评的样子，评论构成要按来路分开才能当特征。D-119：进闸二时要报一次「去掉运营从飞书删掉的那批评论」（OKMAN 768、LNKT 244 等）的敏感性结果 | 工程 | 先定来路区分口径，再做评论构成进闸二；primary 等绑定当前题库摘要的验收记录 | docs/31 §4.1、§7.2；D-111 |
 | J-14 | 外部语料用起来（378 篇，5 个品类，按评论 ≥50 只有 124 篇算爆） | D-117：不进主库、不当爆文。① 每周方向复核（`check_external_direction.py`，daily-sync 每周一，advisory）；10-16 三条规律外部都不到 30 篇，判「样本不够」。② 外部参考书架（`librarian/external.py`）：88 张上架，只给写作台、同品类、每次最多 2 张。10-16 TV#196 已合（Codex 额度用完，换独立评审两轮，5 处修完）。aw 工具说明补了 `external` 的意思（aw#105，只改工具说明、不用重导）。D-120：别家品牌名换成「某品牌」再上架，不再整篇不收（10-19 多上架 5 篇）；点了我们登记品牌的照旧不收。剩：方向复核攒够 30 篇后第一次出判定时看一眼 | 工程 | 每周一看灯 | D-117；jev:docs/00 #11 |
 | J-07 | 参考分的口径复核（原「judge 出影子期」） | **D-120（10-19）出影子期**：`score_drafts` 每篇回参考分 + 最多 3 条修改建议给写手看，仍不拦（aw#107）。10-19 生产只读：影子期 7 条硬伤 p 全在 0.54–0.69，所以分「有把握（p≥0.7）−25 / 拿不准 −8」两档。剩：有把握的硬伤攒够 30 篇时冻结样本、抽核准确率 ≥80%，不够就调 `SCORE_SURE_P` 或扣分；最低 20% 仍跟 G-04 走 | 工程 | 有把握的硬伤攒够 30 篇（`batch_metrics.meta.judge[].score`） | D-119 #7；D-120 |
-| J-10 | 核对生产Rx策略与仓内既有许可是否一致 | 仓内10-08 PR5已把OKMAN/OKMAN_phase1加入rx_cleared，本轮未改；project_layer_cleared仍空。带鉴权现网policy回显本次未重测，其他未清出Rx仍403 | 工程 | 有合法鉴权的下一次实际请求核对，不重复索取已有合同许可 | jev:config/data_policy.yaml；HANDOFF |
+| J-10 | 核对生产Rx策略与仓内既有许可是否一致 | 仓内10-08 PR5已把OKMAN/OKMAN_phase1加入rx_cleared，本轮未改；project_layer_cleared 10-20 改成 `["*"]`（D-121，Rx 闸不变、`rx_cleared` 不认 `*`）。Jev 部署后用 `/health` 或带鉴权请求的 `policy` 回显核一次；其他未清出Rx仍403 | 工程 | 有合法鉴权的下一次实际请求核对，不重复索取已有合同许可 | jev:config/data_policy.yaml；HANDOFF |
 | J-11 | 「只判 `score_drafts`（原 `commit_drafts`）存档的稿、补录稿靠 TV 事后抽取」这条写进 TV DECISIONS；核 TV 抽取确实覆盖补录的项目 | 没记 | 工程 | 随时 | aw:runbook:951 |
 | J-12 | `tv_project_map` 完整性：没映射的项目一篇都不判 | **10-16 核**：近 7 天活跃的 5 个写作台项目里只有西屋911gt 没映射，其余 4 个都有。**写稿和借卡不受影响**（借卡不走这张表）；没映射期间只少两样：入库时的影子判定记录（10-14 那批 20 篇 `not_configured`），写手侧 `judge_draft` 判不了这个项目。映射本来就在项目建好飞书表、TV 里有了项目之后做；现有 `XIWU_phase1` 是西屋按摩椅 GT33（08-29 结束），不是同一产品 | 工程 | TV 里有了西屋 911GT 项目之后 `tv-map add` | aw:runbook:952 |
+| J-15 | 写作台第二批 E：自由文本规则编成 Jev 是非题，结果给写手看（只提示不拦），拿人改标定 | **owner 10-20 全部放行（D-121）**：Jev `project_layer_cleared` 改 `["*"]`（Rx 闸不变），规则原文可以发给 Jev 编题。Jev 侧：通配放行、`POST /compile_rules`（规则 → 是非题 + 能用代码查的规则给出代码检查）、Jev 格式题可带 `scope`（标题 / 正文 / 全文）。写作台侧：编好的题存规则行的 `rule_payload`（按内容哈希），新工具在打分之后查规则、硬规则记必须改、软规则记建议改；内联 `project_bank` 发、单独 run_tag。软规则从简报开头挪走仍等标定（`tv_edit_diffs` 发布前人改，`lag_days ≥ 0`、`diff_rev ≥ 2`） | 工程（Jev → aw） | Jev PR 合并部署后接 aw 侧；标定等 D 灯和改稿差异攒够（≥ 4 周） | docs/32 §3 E；D-121；jev:docs/00 #7；jev:config/data_policy.yaml |
 
 ## 3. 写作台（autowriter / deskcore）
 
 | ID | 事 | 状态与证据 | 谁 | 触发 / 到期 | 来源 |
 |---|---|---|---|---|---|
-| W-23 | 匹配加固 + 人的改动回到飞轮（D-120 商榷 1）：包含度 0.30–0.60 且领先第二名 ≥0.15 认成 `edited`，领先不够进周检；每对记一条改动差异（`tv_edit_diffs`）；`open_project` 每周最多一次摘要，写手的模型归纳成规则建议、用户同意才 `record_rule` | aw#107 已合并部署（build `4bc41c8`），迁移 013 10-19 04:45 UTC 已上生产、表 / CHECK / 视图核过。差异里还记「还在但改了字」的句子对，摘要从上次看到的地方往后给。"标题相同还要正文重合"不做：低重合的 59 条是版本没存正文，不是错配。上线后看：第一晚补算的差异条数、`edited` / `ambiguous` 各几条、第一份摘要有没有被 ack。**10-20 核首晚**：440 条差异、362 条"改过"，其中 125 条只差写作台稿子末尾的 #话题 行（TV 正文读进来就剥了话题、稿子没剥；百健士正文完全相同的 165 条里 148 条被记成改过、品牌次数少一次）。aw#111 两边都剥话题，迁移 014 加 `diff_rev`，tv-sync 重算旧口径的行（不推水位），摘要只读当前口径——生产还没有任何 ack / 据此记的规则（aw#111 10-20 02:52 UTC 部署，build `31f6c63`）。10-19 22:03 按新定时跑了、中午那次不再写；当晚新对上 0（10-19 写的稿还没发）、补录 90（XIWU_phase2 88），`edited` / `ambiguous` 都是 0 | 工程（aw） | 10-20 夜 tv-sync 后核 `diff_rev` 全为 1、改过数下降；再看第一份摘要 | D-120 |
+| W-23 | 匹配加固 + 人的改动回到飞轮（D-120 商榷 1）：包含度 0.30–0.60 且领先第二名 ≥0.15 认成 `edited`，领先不够进周检；每对记一条改动差异（`tv_edit_diffs`）；`open_project` 每周最多一次摘要，写手的模型归纳成规则建议、用户同意才 `record_rule` | aw#107 已合并部署（build `4bc41c8`），迁移 013 10-19 04:45 UTC 已上生产、表 / CHECK / 视图核过。差异里还记「还在但改了字」的句子对，摘要从上次看到的地方往后给。"标题相同还要正文重合"不做：低重合的 59 条是版本没存正文，不是错配。上线后看：第一晚补算的差异条数、`edited` / `ambiguous` 各几条、第一份摘要有没有被 ack。**10-20 核首晚**：440 条差异、362 条"改过"，其中 125 条只差写作台稿子末尾的 #话题 行（TV 正文读进来就剥了话题、稿子没剥；百健士正文完全相同的 165 条里 148 条被记成改过、品牌次数少一次）。aw#111 两边都剥话题，迁移 014 加 `diff_rev`，tv-sync 重算旧口径的行（不推水位），摘要只读当前口径——生产还没有任何 ack / 据此记的规则（aw#111 10-20 02:52 UTC 部署，build `31f6c63`）。10-20 aw#113 口径升到 `diff_rev` 2：写作台那版晚于发布的（`lag_days < 0`，首晚 212 条）不再算差异、也不重算（W-27）。10-19 22:03 按新定时跑了、中午那次不再写；当晚新对上 0（10-19 写的稿还没发）、补录 90（XIWU_phase2 88），`edited` / `ambiguous` 都是 0 | 工程（aw） | 10-20 夜 tv-sync 后核：发布前那版的对子 `diff_rev` 全为 2（212 条 `lag_days < 0` 的留在 0，W-27）、改过数下降；再看第一份摘要 | D-120 |
 | W-24 | 写手升级 skill（D-120 协议变了） | 服务端探针会在工具返回里自动带升级提醒（aw#106 的机制），不用人去群发；部署后看 `/skill-versions` 里旧版的人数降下来 | 工程（看计数） | aw#107 部署后一周 | D-120；aw#106 |
 | W-04 | 发牌按结果加权（留 15% 纯随机，只滤「写不出来」的角度） | `v_angle_outcomes` 有、只有 doctor 读；`draw_angles` 还是均匀洗牌 | 工程 | 闸二有 validated 特征、每维样本够 | aw:deskcore.md:342；aw:`core.py:441-478` |
 | W-05 | `store.recent_angle_keys` 不翻页，台账大了会静默截断、重复发已用角度 | 未修 | 工程 | 台账变大前 | aw:runbook:964；aw:`store.py:618` |
@@ -91,6 +94,9 @@
 | W-19 | **跨项目串内容的防护**（10-12 事故：写手在同一个 WorkBuddy 对话里先写 Hatherine痘痘贴、再切西屋911gt，模型 gemini-3.1-pro-preview 把痘痘贴的规则抄进西屋的硬规则、出了 5 篇痘痘贴文案；deskcore 本身没串，`open_project` 只回本项目 + 全局规则）。要做：① 协议加一条「一个对话只写一个项目，换项目新开对话；`open_project` 拿到的项目名要在回复第一行复述」；② `record_rule` 入库前查内容里有没有同一写手其他项目的品牌名 / 专属词，有就拒并提示；③ `commit_drafts` 时用现成向量比稿子离本项目近还是离该写手的另一个项目近，离别的项目更近就标出来（影子期只记不拦） | aw#96已部署；现场5专属词已配置生产并回读，旧值本地备份；按生产回读配置跑本地已合代码，串词拒绝零写入、正常西屋规则可写（仅fake库）。影子提示已上线；带鉴权线上拒写尚未实测、误报/漏报待样本，不升硬闸。**10-20**：10-14 / 10-19 五批 15~20 篇的影子检查全部 1.5 秒超时，超时那条路连品牌词标记一起丢了；根因是标题向量逐对纯 Python 比（20 篇每项目约 115 毫秒），aw#110 改矩阵比（约 5 毫秒）、向量部分自守截止，品牌词标记外层超时也照报 | 工程 | 上线后的影子样本与真实带鉴权调用复核 | 10-12 owner 报告；`autowriter.backup_memory_xiwu_contam_20261012` |
 | W-21 | 写作台入库段变慢：10 篇一批的 `phase_ms.commit` 从 4～9 秒（10-12～10-14）涨到 11～12 秒（10-15 三批），原假设 1～3 秒；库侧两条 RPC（闸的历史比对、原子写指纹）平均都不到 0.5 秒，大头不在库；commit 里没有分段计时，拆不开 | 未定位；aw#100 已让判定让路，回包还在 22 秒内。10-19 核：10-12 周 11 批 commit 段 p50 6.5 秒、p95 12.3 秒，判定 0 次超时 | 工程 | commit 段 p95 超过 14 秒，或下一次改 aw 时顺手加分段计时 | J-08；`autowriter.batch_metrics` |
 | W-18 | aw 文档过时：runbook §1.7「011 尚未执行 / judge 未配置」、「012 没跑」「八个迁移」、7c 飞书六列、#8 4000 行上限；deskcore.md Hatherine「不在 TV」 | 本次补HANDOFF及runbook当前入口；旧段落逐段追平未全完成，不能把历史未配置当当前事实 | 工程 | 后续逐段核迁移/环境和文档 | aw:HANDOFF；aw:runbook |
+| W-26 | 写作台第二批 F：按段判稿、按段给修改建议 | 不做（10-20）：近 14 天稿子中位 163 字、中位 1 段，SPX 中位 95 字、98 篇里 10 篇有换行；Jev 按换行切段、逐段串行判，项目层题的证据只从正文挑 | 工程 | 多数在用项目的稿子变长、变成多段时再议（周一例行检查看一眼稿长中位） | docs/32 §3 F |
+| W-27 | `tv_note_links` 里 212 条对上的写作台版本是发布后 6～7 天才存进写作台的（全是 body_exact / title_exact，不是补录批次）：谁、为什么把发出去的帖存回了写作台 | 没查。影响已挡住：改稿差异 `diff_rev` 2 不再算它们，用上率灯和角度台账灯判据 C 不算接住；根因不在第二批里 | 工程（aw） | 低；再看到发布后才存的版本成批出现时 | docs/32 §1、§5 第 9 条 |
+| W-28 | 交付模板接管后撤各项目的交付格式规则（docs/32 §3 A；aw docs/deskcore.md §3.9「上线后要做的」） | 没做（A 在 aw 里还没上线）。每给一个项目设模板：互相打架的交付格式规则（HATHERINE 6 条以上、WTG 的话题顺序那条）先整行备份再 `retire`；**留一条和模板一致的短规则当退路**（只写【标题】/【正文】标记和话题行放哪）——`score_drafts` 出错、一篇没存进去、模板写坏时回包没有 `delivery`，协议让写手照规则自己排，`open_project` 的简报里也不带模板，全撤了版式就回到模型即兴排。aw 让简报带上模板（或一句话版式）之后，这条退路规则也可以撤 | 工程（aw + 数据操作） | 每个项目设模板时；A 上线后一周内核一遍哪些项目有模板、各还剩几条交付格式规则 | docs/32 §3 A、§4、§5 第 5 条 |
 
 ## 4. 入库与同步（TV）
 
@@ -124,14 +130,16 @@
 | ID | 事 | 状态与证据 | 谁 | 触发 / 到期 | 来源 |
 |---|---|---|---|---|---|
 | L-01 | 去掉 daily-sync.yml:438 stale / gated / retract 摘要上的 `|| true`（C-20） | 还在 | 工程 | `stale_in_ssll` 连续两周 0（≥ 10-22） | D-087；D-103 |
-| L-03 | 每周看灯：`LIBRARIAN_TRAFFIC`、`ANGLE_LEDGER`、`EXTERNAL_CORPUS`、Jev `external-corpus.yml` | 例行 | 你动手（周一定时检查会代看一遍） | 每周 | docs/29:32-44 |
+| L-03 | 每周看灯：`LIBRARIAN_TRAFFIC`、`ANGLE_LEDGER`、`EXTERNAL_CORPUS`、`DESK_USE_RATE`（10-20 加，周一才跑）、Jev `external-corpus.yml` | 例行 | 你动手（周一定时检查会代看一遍） | 每周 | docs/29:32-45 |
+| L-06 | 写作台用上率灯（`DESK_USE_RATE_CHECK_DONE`，docs/32 D）第一次读数 | 10-20 加（TV，`scripts/check_desk_use_rate.py`，daily-sync 每周一北京时间跑，advisory）。10-26 第一次跑，看 10-05～10-19 发布的笔记。读的时候核三件事：① 未改动率是数还是「待重算」——10-20 写作台部署、当晚 tv-sync 重算之后应该有 `diff_rev` 2 的行，还是待重算就去看 tv-sync；② 哪些项目亮黄、是不是在用写作台的那几个；③ 有没有项目被点名「判不了 · tv-sync 漏了」（发布 ≥15 篇、对过账不到八成；表里对过账一列正常等于发布）；④ 和角度台账灯判据 C 同一周一起亮的项目，看判据 C 表里的「真稿」列分开「没存档」和「被重写」。数记进 docs/32 §4 那张表，之后每周一跟 L-03 一起看 | 工程（Claude 周检） | 10-27 | docs/32 §3 D、§4；docs/29 |
+| L-07 | 写作台第二批 A–C 上线四周后判接住率走向 | A–C 在 aw 还没上线（10-20）。上线日 + 28 天，拿 D 灯连续四周的接住率、未改动率（docs/32 §4 那张表）判：不动 = 问题不在版式和规则，回头看内容本身（选题、角度、示例），另开条目；在动 = 继续按周看。单周起落不下结论 | 工程（Claude 周检）→ 你拍板下一步 | A–C 上线日 + 28 天（按 10-21 上线 ≈ 11-18） | docs/32 §4 |
 
 ## 7. 运维、密钥、备份
 
 | ID | 事 | 状态与证据 | 谁 | 触发 / 到期 | 来源 |
 |---|---|---|---|---|---|
 | S-01 | 删 D-086 两张备份：`truth_vault.reference_samples_backup_tv_stale_20261008`、`truth_vault.notes_ssll_marker_backup_20261008`（先确认三省六部没反映参考池变薄） | 到期前 | 你动手（SQL editor） | ≈ 10-22 | D-086；D-103 |
-| S-02 | 删 10-09 / 10-10 备份：`truth_vault.backup_inverted_lineage_20261009`、`truth_vault.backup_{notes,nfa,comments,metric_snapshots}_vanished_20261009`、`autowriter.backup_tv_note_links_inverted_20261009`、`autowriter.backup_items_self_review_20261009`、`autowriter.backup_tv_note_links_vanished_20261009`、`autowriter.backup_tv_note_links_twins_20261010`、`autowriter.backup_orphan_ingest_tuge_20261010`、`autowriter.backup_memory_xiwu_contam_20261012`；`truth_vault.backup_notes_vanished_20261009` 的 COMMENT 里有回滚顺序；10-16 新增 `truth_vault.backup_quarantine_resolve_20261016`（I-03 的 2,477 行原状态；回滚 `update truth_vault.undeclared_fields_quarantine q set status=b.status, review_decision=b.review_decision, reviewed_by=b.reviewed_by, reviewed_at=b.reviewed_at from truth_vault.backup_quarantine_resolve_20261016 b where q.quarantine_id=b.quarantine_id`），11-16 之后可删；10-19 新增 `truth_vault.backup_gate3_preannotated_20261019`（2 行，闸三重标前的整行原样），11-19 之后可删 | 到期前（verify #92 也会提示） | 你动手 | 11-09 之后 | D-099；D-102；D-103；D-104 |
+| S-02 | 删 10-09 / 10-10 备份：`truth_vault.backup_inverted_lineage_20261009`、`truth_vault.backup_{notes,nfa,comments,metric_snapshots}_vanished_20261009`、`autowriter.backup_tv_note_links_inverted_20261009`、`autowriter.backup_items_self_review_20261009`、`autowriter.backup_tv_note_links_vanished_20261009`、`autowriter.backup_tv_note_links_twins_20261010`、`autowriter.backup_orphan_ingest_tuge_20261010`、`autowriter.backup_memory_xiwu_contam_20261012`；`truth_vault.backup_notes_vanished_20261009` 的 COMMENT 里有回滚顺序；10-16 新增 `truth_vault.backup_quarantine_resolve_20261016`（I-03 的 2,477 行原状态；回滚 `update truth_vault.undeclared_fields_quarantine q set status=b.status, review_decision=b.review_decision, reviewed_by=b.reviewed_by, reviewed_at=b.reviewed_at from truth_vault.backup_quarantine_resolve_20261016 b where q.quarantine_id=b.quarantine_id`），11-16 之后可删；10-19 新增 `truth_vault.backup_gate3_preannotated_20261019`（2 行，闸三重标前的整行原样），11-19 之后可删；10-20 新增 `autowriter.backup_global_shorten_rules_20261020`（写作台第一批撤掉的 5 条全局写短规则，撤前整行原样，docs/32 §2），11-20 之后可删 | 到期前（verify #92 也会提示） | 你动手 | 11-09 之后 | D-099；D-102；D-103；D-104 |
 | S-05 | docs/04 新服务清单加一条「更新 R-032 key → 持有者矩阵」 | 没写 | 工程 | 低 | RISKS.md:581 |
 | S-06 | 开 RLS 后三省六部还能不能读、它实际用哪把 key（读到 0 行就回滚或换 key）；三省六部下次在 `public` 建表时收回 anon 默认权限 | 未核 | 工程 / 你 | 三省六部下次跑 | D-101 |
 | S-07 | 改动后跑一遍 `verify_supabase_state.sql`，重点 #88 #89 #91 #92 #93 #94 | 部分核过（10-12：HATHERINE 6 条 twin 链接在 10-11 同步后仍是 `ingested`；TUGE 孤儿副本已删、回读 0） | 工程 | 每次大改后 | D-099；D-102；D-104 |
@@ -144,7 +152,7 @@
 | 条目 | 一句话 |
 |---|---|
 | W-16 | 有空对一次中转站账单，核 1.8 倍系数（缓存已按 D-113 关掉，这条不再挡任何事） |
-| S-01、S-02 | 备份到期时 Claude 发删表 SQL，你在 SQL editor 跑（10-22 / 11-09 / 11-16） |
+| S-01、S-02 | 备份到期时 Claude 发删表 SQL，你在 SQL editor 跑（10-22 / 11-09 / 11-16 / 11-19 / 11-20） |
 | O-01 | 运营：I-12 品牌别名、I-13 起量时间口径（人工维护，owner 10-16）、I-01 统一表 D1–D6；问题清单 10-16 已交 owner 转运营，等回复 |
 
 其余标「你拍板」的条目 10-18 已按授权判完（D-119）；W-20 owner 10-18 定了维持现状。
