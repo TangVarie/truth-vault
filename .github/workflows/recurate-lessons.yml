@@ -3,6 +3,10 @@
 # 2026-10-09 D-100: 直跑 curate_flywheel_lessons.py --recurate-stale (直连中转站), 不再经 Railway worker 的 /curate。
 # daily-sync 的夜间策展行为不变 (它只策展没策展过的卡); 本 workflow 是唯一的重策展入口。
 # ⚠️ 花钱: 一张卡 ≤2 次 LLM 调用。先小 limit 看一轮再放大。
+# 2026-10-20 (D-122 修复计划第 5 条 / D-123): 加 note_ids —— 只重策展点名的几张 (curate_flywheel_lessons.py --note-ids)。
+#   NUC 15 张卡策展时人群被夜跑冲掉 (策展提示里写的是「未标」), 恢复不动 essence_annotated_at, 上面那条「essence 比卡新」
+#   的路永远挑不到它们; 全项目 --recurate 会白白换掉另外 70 张好卡。note_ids 模式只跑一轮, 不循环。
+#   dry_run: 只渲染提示词、不调模型不写库, 先确认点名的卡都在候选里 (少一张脚本就一张都不跑, rc=2)。
 name: Recurate lessons (essence newer than card)
 
 on:
@@ -20,6 +24,14 @@ on:
         description: "最多几轮。到顶没收敛会 ::warning, 再触发一次接着跑 (幂等)"
         required: false
         default: "20"
+      note_ids:
+        description: "只重策展这几张卡 (source_note_id, 逗号分隔, 1–50 个, 形如 NUC_phase1_recXXXX)。给了就只跑一轮 --note-ids, 不走「essence 比卡新」的循环、忽略 max_batches; limit 要 ≥ 张数 (预算写明, 不静默截断); project 给了就要和每个 id 的前缀一致。有一个不在候选视图里脚本就一张都不跑 (D-122 / D-123)"
+        required: false
+        default: ""
+      dry_run:
+        description: "只渲染提示词, 不调模型不写库 (不花钱)。note_ids 模式先跑一次这个; 循环模式下只跑一轮 (不写库就不会收敛)"
+        type: boolean
+        default: false
 
 # 同时只允许一个重策展在跑 (两个 run 会各自快照同一批陈旧卡、重复烧 LLM)。
 concurrency:
@@ -40,6 +52,8 @@ jobs:
       PROJECT: ${{ github.event.inputs.project }}
       LIMIT: ${{ github.event.inputs.limit }}
       MAXB: ${{ github.event.inputs.max_batches }}
+      NOTE_IDS: ${{ github.event.inputs.note_ids }}
+      DRY_RUN: ${{ github.event.inputs.dry_run }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -65,25 +79,87 @@ jobs:
           if [ -n "$PROJECT" ] && [ ! -f "mappings/${PROJECT}.yaml" ]; then
             echo "::error::未知项目 '${PROJECT}': mappings/${PROJECT}.yaml 不存在"; exit 1
           fi
-          echo "✅ project='${PROJECT:-(all)}' limit=$LIMIT max_batches=$MAXB"
+          case "$DRY_RUN" in true|false|'') ;; *) echo "::error::dry_run 只能是 true / false, 收到 '$DRY_RUN'"; exit 1;; esac
+          if [ -n "$NOTE_IDS" ]; then
+            # 点名模式: 每个 id 形如 <project>_rec<record>, 前缀要有 mapping; 给了 project 就要对得上 (同 backfill-features 的 note_ids)
+            n=0
+            for id in $(echo "$NOTE_IDS" | tr ',' ' '); do
+              n=$((n+1))
+              case "$id" in *_rec*) ;; *) echo "::error::note_id '$id' 不像 <project>_rec<record>"; exit 1;; esac
+              case "$id" in *[!A-Za-z0-9_-]*) echo "::error::note_id '$id' 含非法字符"; exit 1;; esac
+              proj="${id%_rec*}"
+              [ -f "mappings/${proj}.yaml" ] || { echo "::error::note_id '$id' 的项目 '$proj' 没有 mapping"; exit 1; }
+              [ -z "$PROJECT" ] || [ "$proj" = "$PROJECT" ] || { echo "::error::note_id '$id' 不属于 project=$PROJECT"; exit 1; }
+            done
+            [ "$n" -ge 1 ] && [ "$n" -le 50 ] || { echo "::error::note_ids 要 1–50 个, 收到 $n"; exit 1; }
+            [ "$n" -le "$LIMIT" ] || { echo "::error::note_ids 有 $n 个, 超过 limit=$LIMIT —— 预算要写明, 把 limit 调到 ≥ $n"; exit 1; }
+            echo "✅ note_ids 模式: $n 张 · limit=$LIMIT · project='${PROJECT:-(按 id 前缀)}' · dry_run=${DRY_RUN:-false}"
+            exit 0
+          fi
+          echo "✅ project='${PROJECT:-(all)}' limit=$LIMIT max_batches=$MAXB dry_run=${DRY_RUN:-false}"
+      - name: Recurate only the given note_ids (curate_flywheel_lessons.py --note-ids, 一轮, D-122 / D-123)
+        if: ${{ github.event.inputs.note_ids != '' }}
+        working-directory: scripts
+        run: |
+          set +e
+          [ -n "$FLYWHEEL_CURATOR_MODEL" ] || unset FLYWHEEL_CURATOR_MODEL
+          PROJ_FLAG=(); [ -n "$PROJECT" ] && PROJ_FLAG=(--project "$PROJECT")
+          DRY_FLAG=(); [ "$DRY_RUN" = "true" ] && DRY_FLAG=(--dry-run)
+          python curate_flywheel_lessons.py --note-ids "$NOTE_IDS" --limit "$LIMIT" "${PROJ_FLAG[@]}" "${DRY_FLAG[@]}" > /tmp/r.log 2>&1; rc=$?
+          # 不截尾: 点名最多 50 张, dry-run 每张一行 [dry-run] 是「这次确实没花钱」的证据; 失败名单单独一行 (D-123 复审)
+          grep -E 'Found|\[dry-run\]|Done:|不在候选视图|预算截断|全部失败|有 [0-9]+ 张失败|note_ids 失败|跳过' /tmp/r.log
+          if [ "$rc" != "0" ]; then
+            tail -n 8 /tmp/r.log
+            echo "::error::退出码 $rc —— 2 = 点名的卡有不在候选里的 / 参数错 (一张都没跑); 1 = 全军覆没 (模型名 · 中转站 · 余额)。"
+            exit 1
+          fi
+          # 下面的数都从脚本自己的日志取, 不回显输入: dry_run 传丢了的话 ✅ 行照样写 dry_run=true, 跑的人就信了 (D-123 复审)
+          ran_dry=$(grep -o 'dry_run=[a-z]*' /tmp/r.log | head -1 | cut -d= -f2)
+          named=$(grep -o 'note_ids=[0-9][0-9]*' /tmp/r.log | head -1 | cut -d= -f2)
+          n=$(grep -o '"ok": *[0-9][0-9]*' /tmp/r.log | tail -1 | grep -o '[0-9][0-9]*$' || true)
+          failed_ids=$(grep -o 'note_ids 失败 [0-9]* 张: .*' /tmp/r.log | tail -1 | sed 's/^[^:]*: //')
+          if [ "$ran_dry" != "${DRY_RUN:-false}" ]; then
+            echo "::error::输入 dry_run=${DRY_RUN:-false}, 脚本日志里是 dry_run=${ran_dry:-?} —— --dry-run 没按输入传下去, 查这一步的参数"
+            exit 1
+          fi
+          if [ "$ran_dry" = "true" ]; then
+            echo "ℹ️ dry_run: 点名 ${named:-?} 张, 渲染了 $(grep -c '\[dry-run\]' /tmp/r.log) 张提示词 (上面的 [dry-run] 行), 没调模型、没写库。"
+            exit 0
+          fi
+          if [ -z "$n" ] || [ -z "$named" ] || [ "$n" -lt "$named" ]; then
+            # 零星失败照旧不拖红 (rc=0), 但点名的卡多半已策展: 夜跑和 --recurate-stale 都不会再挑它们, 要手动再触发
+            echo "::warning::点名 ${named:-?} 张, 成功 ${n:-?} 张。失败的: ${failed_ids:-(见上面的日志)} —— 夜跑不会重试这几张, 用这几个 id 再触发一次 (limit ≥ 张数)。"
+            exit 0
+          fi
+          echo "✅ 点名重策展 $n/$named 张 (脚本日志 dry_run=$ran_dry)"
       - name: Loop curate_flywheel_lessons.py --recurate-stale until a round comes back empty (直连中转站, D-100)
+        if: ${{ github.event.inputs.note_ids == '' }}
         working-directory: scripts
         run: |
           set +e
           # GitHub 把没设的 variable 注成空串, os.environ.get(..., default) 对空串不回默认 —— 空就 unset (走代码默认 claude-sonnet-5-5, D-098)。
           [ -n "$FLYWHEEL_CURATOR_MODEL" ] || unset FLYWHEEL_CURATOR_MODEL
           PROJ_FLAG=(); [ -n "$PROJECT" ] && PROJ_FLAG=(--project "$PROJECT")
+          DRY_FLAG=(); [ "$DRY_RUN" = "true" ] && DRY_FLAG=(--dry-run)
+          # dry_run 不写库, 陈旧卡永远还是陈旧卡 —— 只跑一轮, 不然会把 max_batches 轮空转完
+          [ "$DRY_RUN" = "true" ] && MAXB=1
           total=0
           converged=0
           for i in $(seq 1 "$MAXB"); do
-            python curate_flywheel_lessons.py --recurate-stale --limit "$LIMIT" "${PROJ_FLAG[@]}" > /tmp/r.log 2>&1; rc=$?
+            python curate_flywheel_lessons.py --recurate-stale --limit "$LIMIT" "${PROJ_FLAG[@]}" "${DRY_FLAG[@]}" > /tmp/r.log 2>&1; rc=$?
             # 只认 Done 行里的 `"ok": <数字>` (至少一位数字, 否则 `"ok": true` 会匹配出空串)
             n=$(grep -o '"ok": *[0-9][0-9]*' /tmp/r.log | tail -1 | grep -o '[0-9][0-9]*$' || true)
             echo "── round $i/$MAXB · 退出码 $rc · 重策展 ${n:-?} 张 ──"
-            grep -E 'Done:|stale|全部失败|有 [0-9]+ 张失败' /tmp/r.log | tail -4
+            grep -E 'Found|Done:|stale|全部失败|有 [0-9]+ 张失败' /tmp/r.log | tail -5
             if [ "$rc" != "0" ]; then
               tail -n 8 /tmp/r.log
               echo "::error::round $i 退出码 $rc (全军覆没 / 配置: 模型名 · 中转站 · 余额) —— 已重策展的 $total 张不丢, 修好后再触发接着跑。"
+              exit 1
+            fi
+            # 脚本自己报的 dry_run 要和输入一致 (同点名那步, D-123 复审)
+            ran_dry=$(grep -o 'dry_run=[a-z]*' /tmp/r.log | head -1 | cut -d= -f2)
+            if [ "$ran_dry" != "${DRY_RUN:-false}" ]; then
+              echo "::error::输入 dry_run=${DRY_RUN:-false}, 脚本日志里是 dry_run=${ran_dry:-?} —— --dry-run 没按输入传下去, 查这一步的参数"
               exit 1
             fi
             [ -n "$n" ] && total=$((total + n))
@@ -91,7 +167,9 @@ jobs:
             if [ -z "$n" ] || [ "$n" = "0" ]; then converged=1; break; fi
           done
           echo "── 结束 · 共重策展 $total 张 ──"
-          if [ "$converged" = "1" ]; then
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "ℹ️ dry_run: 只渲染了一轮提示词 (本轮会挑 $total 张), 没调模型、没写库。"
+          elif [ "$converged" = "1" ]; then
             echo "✅ 没有更多 essence 比卡新的经验卡了。"
           else
             echo "::warning::到达 max_batches=$MAXB 还没收敛 (本次 $total 张)。再触发一次本工作流接着跑 (幂等)。"

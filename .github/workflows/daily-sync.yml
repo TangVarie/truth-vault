@@ -258,8 +258,9 @@ jobs:
         if: steps.check.outputs.skip != 'true'
         working-directory: scripts
         run: |
-          # 只读冻结文件 data-analysis/gate3/scorer-essence-v1.json, 给冻结日 (2026-10-17) 之后发布、已有 essence 的笔记
-          # 打一次分写 content_scores (不重打), 再按 docs/28 附录 C 报进度。拖红: 闸三要攒一到几个月, 漏打 / essence
+          # 只读冻结文件 data-analysis/gate3/scorer-essence-v1-93035a562b2e.json (D-123 重冻; 10-16 那版 scorer-essence-v1.json 留档不读),
+          # 给冻结日 (2026-10-17) 之后发布、已有 essence 的笔记打一次分写 content_scores (不重打; 新版本号下没有行的都算没打过),
+          # 再按 docs/28 附录 C 报进度。拖红: 闸三要攒一到几个月, 漏打 / essence
           # 标注器被换都会让整轮作废, 不能等出结论那天才发现。崩了靠哨兵行判 (docs/29)。dry_run 只算不写。
           DRY_FLAG=""; [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY_FLAG="--dry-run"
           set +e
