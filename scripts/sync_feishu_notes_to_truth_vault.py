@@ -1498,6 +1498,81 @@ def upsert_metric(client: Client, metric: dict[str, Any], dry_run: bool = False)
 _BATCH_CHUNK = 500
 
 
+# ── 批量 upsert 里「没带 = 保留库值」的列 (D-122, 2026-10-20 事故) ─────────────────────────
+#
+# postgrest-py(2.30.0)批量 upsert 时把 columns= 设成【这一批所有行的键的并集】, 某行没带的键按
+# default_to_null 补 NULL; 再配上 Prefer: resolution=merge-duplicates, 落到库里就是
+# ON CONFLICT DO UPDATE SET col = EXCLUDED.col = NULL。也就是说: 一批 500 行里只要有一行带了
+# content_format, 同批没带的行库里的 content_format 就被写成 NULL。逐行写(upsert_note, 单个 dict,
+# 不带 columns=)没有这个问题 —— 没带的键根本不进 SET。本文件好几处是按「没带 = 保留库值」写的,
+# 批量路径把它悄悄改成了「没带 = 冲成 NULL」。
+# 修法: upsert_notes_batch 先按「带了下面哪几列」分组, 再分块。同一个请求里, 名单里的每一列要么
+# 每行都带、要么每行都不带。换成 missing=default 也不够: 补的是列默认值, 这几列没有默认值, 照样是 NULL,
+# 而且冲突更新时照样 SET —— 不是「留库值」。
+#
+# 名单(每一列都要有证据; 加列先在这里写理由):
+#   · content_format / target_audience / user_pain_point / product_focus —— transform_row 只在方向
+#     能「直接抬」(单方向配置)时写; 抬不了的行(有子方向 / 方向没映上 / 没填方向)这四列归 essence:
+#     annotate_essence_pass.write_essence_back 每篇都写 content_format, 判出子方向时另写三列。
+#     10-20 生产: 744 篇 emotional_lever 有值、content_format 被夜跑冲成 NULL(WTG 195 / NUC 179 /
+#     RIO 90 / NRT_phase2 86 / HATHERINE 83 / LNKT 74 / SPX 29 / TUGE 6 / BJS 2), NUC 179 篇连
+#     target_audience / user_pain_point 一起没了。
+#   · tier / tier_source —— apply_tier_flip_block 故意 pop 掉(整批翻转被挡 → 留库里的 tier);
+#     apply_cleared_status 在「状态源列整轮一行都没返回」(改名 / 删列, 交给核心列消失闸)时故意不写。
+#     这两种时候同一轮总有别的行带着 tier(没被挡的篇、数值推断、excluded_directions), 混批就把
+#     没带的刷成 NULL —— 正好是这两道闸想挡的事。
+#   · data_quality_flags —— 只有本脚本写(10-20 生产里 12 种键全是 transform_row / main 产的), 但它是
+#     tier 的限定词: synthetic、comment_maintained_routes 决定一篇爆款进不进飞轮。「这一轮一个旗子都
+#     判不出来」恰好就是状态列整轮消失那条路 —— tier 按上一条留着, 旗子却被冲成 NULL, 一条运营判过的
+#     伪爆贴就以真爆款的身份留在库里。synthetic 段的注释(「upsert 漏列保留 DB 旧值」)就是按这条
+#     口径写的; 两路都判不出时不清 synthetic 见 OPEN-ITEMS I-05。
+#   · source_autowriter_item_id / source_autowriter_version_id —— 飞书带 lineage 列的行才写; 写作台的
+#     deskcore_tv_backfill_lineage(aw:migrations/009_tv_links.sql)只往 NULL 里填。10-20 生产 472 篇
+#     有值、0 篇来自飞书 —— 哪天哪张表开始带这一列, 混批就会把写作台回填的对照冲掉。
+#   · last_seen_at / last_seen_run_id —— 只有完整同步才盖戳, 部分同步一个都不盖、保留上次的(COR-011)。
+#     现在整轮要么全带要么全不带, 放进来不会多拆请求, 防的是以后有人改成逐行盖。
+#
+# 【不在名单里的列照旧「镜像飞书」, 不按完整键集分组】: 飞书不返回空格子, 指标 / 蓝词 / 置顶评论 /
+# 发布时间 / 观众分析这些格子被运营清空时, 这一轮有别的行带着这一列 → 这一行写成 NULL, 跟飞书一致。
+# 这是有意保留的。分组会把它悄悄削弱(格子被清空的行恰好分进一个没人带这一列的组 → columns= 里没有
+# 它 → 库里的旧值留着; 稀疏列 置顶评论 / 蓝词 尤其如此), 所以 upsert_notes_batch 在分组【之前】
+# 先算「这一轮所有行带过的、名单外的列」, 发出去的每一行没带的都显式补 None(_mirror_fill), 跟分不分组、
+# 落在哪一块都无关。范围是整轮(一次 upsert_notes_batch = 一个项目一轮), 比改动前的「同一个 500 行块」
+# 宽: 以前格子清空的行要和带这一列的行落在同一块才清, 现在只要这一轮有人带就清。
+# 代价照旧(改动前就是这样): 一整轮没有任何一行带这一列时它不进 columns=, 库里的旧值留着。
+# 逐行兜底(upsert_note)用的是没补 None 的原行, 和改动前一样: 一行坏键不会因为补齐而拖垮整组逐行写。
+# 判据: 名单里的列只能由「本脚本故意不写」或「别的写入方」决定库值, 所以飞书格子直接映进来的列
+# 不许进名单(check_batch_upsert_columns.py 查所有 mapping 的 field_mapping, 映了就红)。
+UPSERT_PROTECTED_COLS: tuple[str, ...] = (
+    "content_format", "target_audience", "user_pain_point", "product_focus",
+    "tier", "tier_source",
+    "data_quality_flags",
+    "source_autowriter_item_id", "source_autowriter_version_id",
+    "last_seen_at", "last_seen_run_id",
+)
+
+
+def _group_by_protected_cols(notes: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """按「带了 UPSERT_PROTECTED_COLS 里的哪几列」分组。组内保持原顺序, 组按第一次出现的先后排。
+
+    带了、值是 None 也算带(apply_cleared_status 就是故意写 NULL 清档)。"""
+    groups: dict[frozenset[str], list[dict[str, Any]]] = {}
+    for n in notes:
+        groups.setdefault(frozenset(c for c in UPSERT_PROTECTED_COLS if c in n), []).append(n)
+    return list(groups.values())
+
+
+def _mirror_cols(notes: list[dict[str, Any]]) -> frozenset[str]:
+    """这一轮所有行带过的、不在 UPSERT_PROTECTED_COLS 里的列 —— 没带的行要显式写 NULL(镜像飞书)。"""
+    return frozenset().union(*notes) - frozenset(UPSERT_PROTECTED_COLS)
+
+
+def _mirror_fill(note: dict[str, Any], mirror: frozenset[str]) -> dict[str, Any]:
+    """发出去的那一份: 名单外、这一轮有人带、这一行没带的列补 None。不改调用方的 dict(main 之后还要用)。"""
+    missing = mirror - note.keys()
+    return {**note, **dict.fromkeys(missing)} if missing else note
+
+
 def ensure_accounts_batch(
     client: Client, account_platforms: dict[str, str], *,
     dry_run: bool = False, chunk_size: int = _BATCH_CHUNK,
@@ -1554,29 +1629,38 @@ def upsert_notes_batch(
     Returning the written ids (not just a count) lets the caller skip metric
     rows whose note failed to land. Otherwise an orphan metric hits the
     metric_snapshots.note_id FK, fails the whole metrics chunk, degrades it to
-    a per-row retry, and every orphan re-fails — pure log noise + slowdown."""
+    a per-row retry, and every orphan re-fails — pure log noise + slowdown.
+
+    ⚠️ 先按 UPSERT_PROTECTED_COLS 分组再分块(D-122): 同一个请求里, 名单里的列要么每行都带、要么
+    每行都不带。不分组的话 postgrest-py 把没带的键补成 NULL 写进库, 冲掉 essence 写的 content_format、
+    翻转闸故意留下的 tier。名单外的列分组前按整轮补 None(_mirror_fill), 飞书里清空的格子照旧写成
+    NULL、不因分组漏掉。日志里的 [i:j] 是分组后顺序里的位置。"""
     if dry_run:
         for n in notes:
             logger.info("[dry-run] would upsert note_id=%s", n["note_id"])
         return {n["note_id"] for n in notes}
     written: set[str] = set()
-    for i in range(0, len(notes), chunk_size):
-        chunk = notes[i:i + chunk_size]
-        try:
-            (
-                client.schema("truth_vault").table("notes")
-                .upsert(chunk, on_conflict="note_id").execute()
-            )
-            written.update(n["note_id"] for n in chunk)
-        except Exception as exc:
-            logger.warning("notes batch [%d:%d] failed (%s); per-row fallback",
-                           i, i + len(chunk), exc)
-            for n in chunk:
-                try:
-                    upsert_note(client, n)
-                    written.add(n["note_id"])
-                except Exception:
-                    logger.exception("per-row note upsert failed note_id=%s", n.get("note_id"))
+    mirror = _mirror_cols(notes)
+    i = 0
+    for group in _group_by_protected_cols(notes):
+        for k in range(0, len(group), chunk_size):
+            chunk = group[k:k + chunk_size]
+            try:
+                (
+                    client.schema("truth_vault").table("notes")
+                    .upsert([_mirror_fill(n, mirror) for n in chunk], on_conflict="note_id").execute()
+                )
+                written.update(n["note_id"] for n in chunk)
+            except Exception as exc:
+                logger.warning("notes batch [%d:%d] failed (%s); per-row fallback",
+                               i, i + len(chunk), exc)
+                for n in chunk:
+                    try:
+                        upsert_note(client, n)
+                        written.add(n["note_id"])
+                    except Exception:
+                        logger.exception("per-row note upsert failed note_id=%s", n.get("note_id"))
+            i += len(chunk)
     return written
 
 
@@ -1603,7 +1687,12 @@ def upsert_metrics_batch(
     that note failed to upsert, so its metric would violate the
     metric_snapshots.note_id FK and sink the whole chunk into a per-row retry.
     这些被主动跳过的**不算**进 failed: 它们的 note 已经计过一次错了, 再算一次
-    就成了双重计数。"""
+    就成了双重计数。
+
+    同批混着带 / 不带某个指标的行, 没带的会被写成 NULL(postgrest-py 的 columns= 并集, 见
+    UPSERT_PROTECTED_COLS 的说明)。这里【不】分组, 是核过的(D-122): metric_snapshots 只有本脚本写,
+    同一 (note_id, window_label, source='feishu_import') 的指标格子被清空就该跟着清; 带默认值的
+    source / window_label 每行都带, snapshot_id 从不带。"""
     if written_note_ids is not None:
         orphaned = [m for m in metrics if m["note_id"] not in written_note_ids]
         if orphaned:
