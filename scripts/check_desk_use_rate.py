@@ -121,6 +121,10 @@ def verdicts(rows: dict) -> list[dict]:
     for tv, r in sorted(rows.items()):
         if r["drawn"] <= 0 or r["linked"] < MIN_PUBLISHED:
             continue
+        if r["linked"] < r["published"] * MIN_LINKED_SHARE:
+            # 对过账不到八成的归 unlinked()「判不了」: 只对上一小部分时, 接住率是偏的子集, 不能再同时喊「没被用上」
+            # 把人往出稿质量上引(codex review on TV#208)
+            continue
         share = r["caught"] / r["linked"]
         if share < MIN_CAUGHT_SHARE:
             out.append({"project": tv, "share": share, "linked": r["linked"], "caught": r["caught"],
@@ -347,6 +351,9 @@ def selftest() -> int:
     # 分母是对过账的、不是发布数: 发了 40 篇、tv-sync 只对过 10 篇, 不能因为没对账就判没接住
     half = {"P": dict(R(10, 0)["P"], published=40)}
     assert verdicts(half) == [], "没对过账的不当成没接住"
+    partial = {"P": dict(R(15, 0)["P"], published=100)}
+    assert verdicts(partial) == [] and [u["project"] for u in unlinked(partial)] == ["P"], \
+        "对过账 15/100: 只报判不了, 不拿偏的子集再喊没接住"
 
     def run(gg, w=14, d=7):
         buf = io.StringIO()
