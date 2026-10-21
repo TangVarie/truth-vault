@@ -1,6 +1,6 @@
 # 三库交接 · 2026-10-21（最新，先看这一节）
 
-快照时间 **2026-10-21 03:00 UTC**。10-15 那一版在下面，内容没过时的照旧有效。未完成清单仍以 [OPEN-ITEMS.md](OPEN-ITEMS.md) 为准，这一节只说「手上正在做到一半的」和「接手第一天要做的」。
+快照时间 **2026-10-21 03:30 UTC**。10-15 那一版在下面，内容没过时的照旧有效。未完成清单仍以 [OPEN-ITEMS.md](OPEN-ITEMS.md) 为准，这一节只说「手上正在做到一半的」和「接手第一天要做的」。
 
 ### 线上现在是什么版本
 
@@ -12,14 +12,15 @@
 
 ### 做到一半的，按顺序接
 
-1. **aw#115 写作台第二批 A–C**：TangVarie/autowriter#115，分支 `claude/zen-johnson-m2f14s`，当前 head 以 PR 页为准（10-21 03:10 是 `df76d1a`）。内容包括交付版式由代码拼、规则的代码检查、限时正则引擎、结构指纹。
-   - Codex 每轮的意见都已修。10-21：第 9 轮 1 条 P2（「必须带的话术」只管标题或正文时，那一处空着不报），第 10 轮 1 条 P2（模板不交付的话题 / 评论，查规则还拿原稿查），都已修推；10-21 约 03:10 UTC 请了第 11 轮。前 8 轮每轮推之前先跑独立复审；第 9、10 轮因为周额度没跑独立复审，只跑了全量测试（1667 passed）和 smoke。
+1. **aw#115 写作台第二批 A–C**：TangVarie/autowriter#115，分支 `claude/zen-johnson-m2f14s`，当前 head 以 PR 页为准（10-21 03:25 是 `c709793`）。内容包括交付版式由代码拼、规则的代码检查、限时正则引擎、结构指纹。
+   - Codex 每轮的意见都已修。10-21：第 9 轮 1 条 P2（「必须带的话术」只管标题或正文时，那一处空着不报），第 10 轮 1 条 P2（模板不交付的话题 / 评论，查规则还拿原稿查），第 11 轮 1 条 P2（`^广告$` 这种锚定的话题正则，话题多于一个就漏；现在整行和每个话题都查），都已修推；约 03:25 UTC 请了第 12 轮。前 8 轮每轮推之前先跑独立复审；第 9–11 轮因为周额度没跑独立复审，只跑了全量测试（`c709793` 上 1674 passed）和 smoke。
+   - **Codex 额度**：10-21 03:15 UTC Codex 在 TV#211 上回复「代码审查额度用完」，那一轮没审成（同一时间别的 PR 还审成了）。要是 Codex 一直审不了，按 owner 的规矩先别合，请 owner 去 Codex 设置里看额度。
    - **合并条件（owner 定的）**：`python scripts/codex_gate.py TangVarie/autowriter 115` 输出 PASS，CI 绿，没有未解决的 review thread。
    - Codex 有新意见就修、回 thread、推、再 `@codex review`。
    - 合并后：
      1. Railway 自动部署，核 `/health` 的 `build.commit` 是合并提交的前 12 位，协议变成 `895ed01874d6`。
      2. 写手重导 skill。服务端探针会在工具返回里提醒，计数看 `/skill-versions`。
-2. **aw#117（aw E：`check_rules` 工具 + Jev 编题）**：TangVarie/autowriter#117，draft，叠在 aw#115 上，head `69f6037`。状态和上线顺序见 PR 描述。10-21 CI 红过一次（计时用例、没装 fastapi 的用例），已修推 `69f6037`，本地全量 1772 passed、smoke 0 failed。
+2. **aw#117（aw E：`check_rules` 工具 + Jev 编题）**：TangVarie/autowriter#117，draft，叠在 aw#115 上，head `dde446a`。状态和上线顺序见 PR 描述。10-21 CI 红过一次（计时用例、没装 fastapi 的用例），已修推 `69f6037`，本地全量 1772 passed、smoke 0 failed；`dde446a` 又把 `tests/test_rule_compile.py` 加进 CI 装完 fastapi 那一步重跑（第一遍没装 fastapi，那条用例会跳过）。
    - aw#115 合并后先做三件事：rebase 到默认分支，base 改成 `claude/xhs-content-workstation-BSEuH`，确认 WIP 提交 `49a3684` 里 12 个回归测试在修复前确实失败。
    - 然后 Codex。
    - 上线前**先在生产跑 `migrations/015_rule_compiles.sql`**。
