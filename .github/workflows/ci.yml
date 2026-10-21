@@ -29,10 +29,14 @@ jobs:
           else
             pip install -r scripts/requirements.txt
           fi
+      - name: Review merge gate rejects unknown findings
+        run: python scripts/check_codex_gate.py
       - name: Compile all scripts
         run: |
           python -m py_compile \
             service_auth.py \
+            scripts/codex_gate.py \
+            scripts/check_codex_gate.py \
             scripts/_common.py \
             scripts/sync_feishu_notes_to_truth_vault.py \
             scripts/sync_comments_from_raw_extra.py \

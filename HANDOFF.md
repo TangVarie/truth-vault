@@ -2,7 +2,7 @@
 
 已接手核对三仓最新交接及 PR，详细证据见 [本轮接续记录](docs/continuation-2026-10-21.md)，当前待办仍在 [OPEN-ITEMS.md](OPEN-ITEMS.md)。下方 08:25 和更早各段保留为历史快照；与本节冲突时按本节。
 
-- aw#115 / #117 的本轮五条 / 七条审查意见均已修复、推送并重新进入远端审查。当前 head 分别 095d223 / 7d73278；CI 均绿。本地完整依赖验证分别 1704 / 1872 passed，均 6 个既有 xfailed、0 skipped。
+- aw#115 / #117 的本轮五条 / 七条审查意见均已修复、推送并重新进入远端审查。当时 head 分别 095d223 / 7d73278；CI 均绿。09:05 UTC 复核发现 #115 摘要意见状态为空，原门禁误判通过，已修为 WAIT；#117 又收到 unmute 激活路径意见，继续修复，均未合并。本地完整依赖验证分别 1704 / 1872 passed，均 6 个既有 xfailed、0 skipped。
 - 尚未合并部署这两项；生产仍为 f0044905bda1、协议 5ea3b14e1f37，迁移 015 未跑。#117 保持叠在 #115 之上。
 - I-16 首夜核查已过：恢复 1,102 格零漂移、受保护列无再次置空；11 个项目同步规模正常且 errors=0；闸三新版 106/106，原 80 篇均已重打。旧版 80 行与其备份清理尚未执行，I-16 ② / G-03 保留待办。
 - I-18 长 note_ids 崩溃已修并补入编排守卫，本 PR 合并、worker 部署后才生效。
@@ -60,7 +60,7 @@
 **3. aw#119**：TangVarie/autowriter#119，让 CI 真正跑到依赖 fastapi / mcp 的测试。owner 另开会话在做，不属于这份交接。
 
 **已合并的交接文档 PR**：TV#211、aw#118、Jev#25，08:08 UTC 合并。
-- owner 破例，没等 Codex 审最新提交，**只限这三个纯文档 PR**。这份 08:25 的更新也按同样的破例直接合。
+- 历史例外：owner 当时未等 Codex 审最新提交即合并这三项。**TV#211 还新增了可执行的清理 SQL 和 scripts/codex_gate.py，并非纯文档 PR。** 例外不等于这些程序经过审查；生产删除 SQL 使用前仍需单独核对并审阅，后续代码不沿用这个例外。
 - 改成 ready 时，Codex 在合并后自动审了 aw#118 和 Jev#25，交接时结果还没看。要是指出了真的文档错误，开一个小的文档 PR 改掉。
 
 ### aw#115 部署之后的数据操作（一步一步来，每步先备份）
@@ -92,7 +92,7 @@
 
 | 时间（UTC） | 做什么 | 结果写到 |
 |---|---|---|
-| 10-21 daily-sync 跑完之后（cron 02:17，实际常拖到 06–09 点起跑，约 10:15 之后） | 跑 `docs/d122-repair/05_after_nightly.sql`，三处都要过：<br>① 受保护列「非空 → NULL」的 unexpected 为 0；<br>② `emotional_lever` 有值而 `content_format` 为空的是 0，或者只是还没标 essence 的新笔记；<br>③ 恢复的格子还等于计划值。<br>有被冲掉的马上查原因 | OPEN-ITEMS I-16 ④ |
+| 10-21 daily-sync 跑完之后（cron 02:17，实际常拖到 06–09 点起跑，约 10:15 之后） | 跑 `docs/d122-repair/05_after_nightly.sql`，三处都要过：<br>① 受保护列「非空 → NULL」的 unexpected 为 0；<br>② `emotional_lever` 有值而 `content_format` 为空的是 0；任何非零结果都必须查原因，不能以新笔记豁免；<br>③ 恢复的格子还等于计划值。<br>有被冲掉的马上查原因 | OPEN-ITEMS I-16 ④ |
 | 10-21 14:40 | 核 aw#116 修复后第一次 14:00 tv-sync：<br>① 没有 23502，`tv_edit_diffs` 的 `max(computed_at)` 往前走了；<br>② BJS / SPX 能算差异的对子变成 `diff_rev = 2`。<br>SQL：`select d.tv_project_id, d.diff_rev, count(*) from autowriter.tv_edit_diffs d join autowriter.tv_note_links l using (note_id) where l.lag_days is null or l.lag_days >= 0 group by 1,2;` | OPEN-ITEMS W-23、「0. 按时间」10-20 夜那行 |
 | 10-22 | ① S-01：D-086 两张备份到期，核备份表和现表没有要回滚的差异，DROP SQL 给 owner 在 SQL editor 自己跑；<br>② F-03：librarian 借卡延迟对比 D-090 基线（`truth_vault.flywheel_librarian_cache.select_ms`、`/health` 的 `prompt_cache_usage`），连同 W-08 `LIBRARIAN_TIMEOUT_SEC` 要不要按 p95 重调一起下结论；<br>③ L-01：daily-sync 的 `stale_in_ssll` 连续两周是 0 的话，开 PR 去掉 C-20 的 `|| true` | OPEN-ITEMS S-01、F-03、L-01 |
 | 10-23 | G-05：10-16 14:00 UTC 起 `params.source='deskcore'` 的 batch，数四样：<br>① `params.flywheel_arm`，探索臂应约 15%；<br>② `params.flywheel_arm_source`，简报传回来的占多少；<br>③ 带 `flywheel_arm_mixed` 的条数，以及 `batch_metrics` 里 `meta.mode='deskcore_commit'` 的 `arm_mixed_unmarked_item_ids` 非空的条数；<br>④ `truth_vault.flywheel_librarian_cache` 里 `library_version` 带 `:dl`、`:explore` / `:ext` 的行。<br>偏离大的告诉 owner | OPEN-ITEMS G-05 |
@@ -102,7 +102,7 @@
 
 ### owner 定的规矩，接手照办
 
-- **合并**：合并前 Codex 必须审过当前 head、没有未解决的意见（`scripts/codex_gate.py`），CI 要绿。10-21 的破例只限三个纯文档交接 PR 和这次文档更新，代码 PR 照旧。
+- **合并**：合并前 Codex 必须审过当前 head、没有未解决的意见（`scripts/codex_gate.py`），CI 要绿。10-21 曾对交接 PR 破例，其中 TV#211 含可执行 SQL 和门禁脚本；不是纯文档审查豁免，后续代码照旧过门禁。
 - **Codex 额度**：10-21 03:15–08:05 UTC 左右，Codex 回「代码审查额度用完」，四个库都审不了，之后 owner 说已恢复。再碰到就先别合，告诉 owner。
 - **不进 GitHub 的内容**：原始评论、答卷、规则原文、稿子、笔记正文都不进 GitHub（代码、测试、文档、PR、评论都不行），只放合成例子和计数。
 - **写生产库**：先建备份表、再写。隔离表只有人能改（D-053）。不伪造独立标注或 `accepted_by`，不改审核员的标签。
