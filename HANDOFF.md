@@ -1,73 +1,100 @@
 # 三库交接 · 2026-10-21（最新，先看这一节）
 
-快照时间 **2026-10-21 03:30 UTC**。10-15 那一版在下面，内容没过时的照旧有效。未完成清单仍以 [OPEN-ITEMS.md](OPEN-ITEMS.md) 为准，这一节只说「手上正在做到一半的」和「接手第一天要做的」。
+快照时间 **2026-10-21 08:25 UTC**。上一位接手的 Claude 会话（`session_013CmhA1ySPmo4gLMqyHkhKZ`）到这里停手，owner 换人接手。停手前做了两件事：
 
-### 线上现在是什么版本
+- 不再监听 aw#115 / aw#117 的 PR 动态；
+- 撤掉了自己排的定时检查，要做的事都列在下面「接手要按时做的事」里。
+
+10-15 那一版在下面，内容没过时的照旧有效。未完成清单以 [OPEN-ITEMS.md](OPEN-ITEMS.md) 为准。这一节只写「做到一半的」和「接手要按时做的」。
+
+### 线上现在是什么版本（08:20 UTC 读的）
 
 | 服务 | 版本 | 怎么核 |
 |---|---|---|
-| 写作台 deskcore（aw） | build `f0044905bda1`（aw#116 热修），协议 `5ea3b14e1f37` | `https://autowriter-production.up.railway.app/health` 的 `build` |
-| Jev 判定服务 | main `a8285aa`（Jev#24：静态正则闸镜像 aw `892769b`）；编题 key 已配（`compile.key: true`，模型 `claude-sonnet-5-5`） | `https://judge-production-601c.up.railway.app/health` |
-| truth-vault | main `03cdcdf`（TV#210：D-123） | — |
+| 写作台 deskcore（aw） | build `f0044905bda1`（aw#116 热修），协议 `5ea3b14e1f37`。默认分支已到 `2b96b36`（aw#118 只改文档），Railway 重新部署后 build 会变，协议不变 | `https://autowriter-production.up.railway.app/health` 的 `build` |
+| Jev 判定服务 | main `c2183fe`（Jev#25：只改交接文档和一处测试）；`compile.key: true`，模型 `claude-sonnet-5-5`；`comment_tools_enabled: true` | `https://judge-production-601c.up.railway.app/health` |
+| truth-vault | main `e177bff`（TV#211：这份交接、D-122 收尾 SQL、`scripts/codex_gate.py`） | — |
 
-### 做到一半的，按顺序接
+### 正在进行的 PR，接手先看这里
 
-1. **aw#115 写作台第二批 A–C**：TangVarie/autowriter#115，分支 `claude/zen-johnson-m2f14s`，当前 head 以 PR 页为准（10-21 03:25 是 `c709793`）。内容包括交付版式由代码拼、规则的代码检查、限时正则引擎、结构指纹。
-   - Codex 每轮的意见都已修。10-21：第 9 轮 1 条 P2（「必须带的话术」只管标题或正文时，那一处空着不报），第 10 轮 1 条 P2（模板不交付的话题 / 评论，查规则还拿原稿查），第 11 轮 1 条 P2（`^广告$` 这种锚定的话题正则，话题多于一个就漏；现在整行和每个话题都查），都已修推；约 03:25 UTC 请了第 12 轮。前 8 轮每轮推之前先跑独立复审；第 9–11 轮因为周额度没跑独立复审，只跑了全量测试（`c709793` 上 1674 passed）和 smoke。
-   - **Codex 额度**：10-21 03:15 UTC Codex 在 TV#211 上回复「代码审查额度用完」，那一轮没审成（同一时间别的 PR 还审成了）。要是 Codex 一直审不了，按 owner 的规矩先别合，请 owner 去 Codex 设置里看额度。
-   - **合并条件（owner 定的）**：`python scripts/codex_gate.py TangVarie/autowriter 115` 输出 PASS，CI 绿，没有未解决的 review thread。
-   - Codex 有新意见就修、回 thread、推、再 `@codex review`。
-   - 合并后：
-     1. Railway 自动部署，核 `/health` 的 `build.commit` 是合并提交的前 12 位，协议变成 `895ed01874d6`。
-     2. 写手重导 skill。服务端探针会在工具返回里提醒，计数看 `/skill-versions`。
-2. **aw#117（aw E：`check_rules` 工具 + Jev 编题）**：TangVarie/autowriter#117，draft，叠在 aw#115 上，head `dde446a`。状态和上线顺序见 PR 描述。10-21 CI 红过一次（计时用例、没装 fastapi 的用例），已修推 `69f6037`，本地全量 1772 passed、smoke 0 failed；`dde446a` 又把 `tests/test_rule_compile.py` 加进 CI 装完 fastapi 那一步重跑（第一遍没装 fastapi，那条用例会跳过）。
-   - aw#115 合并后先做三件事：rebase 到默认分支，base 改成 `claude/xhs-content-workstation-BSEuH`，确认 WIP 提交 `49a3684` 里 12 个回归测试在修复前确实失败。
-   - 然后 Codex。
-   - 上线前**先在生产跑 `migrations/015_rule_compiles.sql`**。
-3. **数据操作，等 aw#115 部署之后、一步一步来，每步先备份**：
-   1. 4 个项目设交付模板：百健士、西屋911gt、Hatherine、途鸽。途鸽用「照规则原样」那版。
-   2. 看一批真实稿子。
-   3. W-28：插 3 条硬的退路规则，撤 6 条交付格式规则。
-   4. 只给规则 `ec0b9bd6` 加代码检查。
-   - Hatherine 的 `a6f0075c` / `b1f17f57` 要等 D1–D7 重录。
-   - 计划、SQL 和逐条规则的处理里有客户的规则原文，**不进 GitHub**。10-21 已作为文件包发给 owner，接手向 owner 要。
-4. **I-16 / D-123 收尾**，SQL 在 [docs/d122-repair/](docs/d122-repair/README.md)：
-   - **② 删 80 行旧版本闸三分**：`d123_gate3_rescore.sql`，还没跑。Supabase MCP 执行删除要在 app 里点确认，10-20 卡在这一步超时，什么都没写。可以在 SQL editor 跑。
-   - **③ NUC 15 张卡已重策展**：
-     - dry-run run 39467743743，渲染 15/15，没调模型；
-     - 真跑 run 39468049494，成功 15、失败 0；
-     - 回读：`curated_at` 晚于恢复的 15 张，还是旧的 0 张，NUC 其他卡没动（10-20 17:40–17:43 UTC）。
-   - **④ 第一晚核**：`05_after_nightly.sql`，10-21 夜跑之后跑。
-5. **10-21 14:40 UTC 核 tv-sync**：这是 aw#116 修复后第一次 14:00 跑。
-   - 看两件事：没有 23502；BJS / SPX 能算差异的对子变成 `diff_rev = 2`。
-   - SQL：`select d.tv_project_id, d.diff_rev, count(*) from autowriter.tv_edit_diffs d join autowriter.tv_note_links l using (note_id) where l.lag_days is null or l.lag_days >= 0 group by 1,2;`
-   - 结果记进 OPEN-ITEMS 的 W-23。
+**1. aw#115 写作台第二批 A–C**：TangVarie/autowriter#115。
+- **状态**：head `c709793`，CI 绿，没有冲突，已是 ready。
+- **Codex**：第 12 轮 08:09 UTC 开始审，交接时还没出结果。
+- **内容**：交付版式由代码拼、规则的代码检查、限时正则引擎、结构指纹，口径见 aw `docs/deskcore.md` §3.9、§3.10。
+- **10-21 这几轮**：
+  - 第 9 轮：「必须带的话术」只管标题或正文时，那一处空着不报。
+  - 第 10 轮：模板不交付的话题 / 评论，查规则还拿原稿查。
+  - 第 11 轮：`^广告$` 这种锚定的话题正则，话题多于一个就漏。
+  - 三轮的意见都已修推。前 8 轮每轮推之前都跑了独立复审；第 9–11 轮因为上一会话的子代理额度用完，只跑了全量测试（`c709793` 上 1674 passed）和 smoke，接手的人合并前可以补一次独立复审。
+- **下一步**：
+  1. 在 truth-vault 跑 `python scripts/codex_gate.py TangVarie/autowriter 115`。
+  2. 输出 FINDINGS：修、在 thread 上回、推、再 `@codex review`。
+  3. 输出 PASS、CI 绿、没有未解决的 thread：合并。
+  4. 合并后核 Railway 部署：`/health` 的 `build.commit` 是合并提交前 12 位，协议变成 `895ed01874d6`。
+  5. 写手重导 skill。服务端探针会在工具返回里提醒，计数看 `/skill-versions`。
 
-### 已排的定时检查
+**2. aw#117 aw E：`check_rules` 写手工具 + Jev 编题**：TangVarie/autowriter#117。
+- **状态**：head `52eca1b`，CI 绿，没有冲突。08:16 UTC 被改成 ready（owner 在页面上点的），Codex 自动开始审 `52eca1b`。
+- `52eca1b` 是把 aw#115 的 `c709793` 合进来的提交：冲突已解，协议重算为 `be4d668f5ab6`，本地全量 1827 passed。
+- ⚠️ **它的 base 还是 aw#115 的分支 `claude/zen-johnson-m2f14s`。aw#115 合并之前不要合它**，否则 aw E 的代码会混进 aw#115。
+- **aw#115 合并后按顺序做**：
+  1. base 改成默认分支 `claude/xhs-content-workstation-BSEuH`，把默认分支合进来。
+  2. 确认 WIP 提交 `49a3684` 里的 12 个回归测试在修复前确实失败。
+  3. 修完 PR 描述里剩下的复审意见（只有标题和严重程度，不含客户内容）。
+  4. 过 Codex。
+  5. 上线前**先在生产跑 `migrations/015_rule_compiles.sql`**。
 
-这些都触发进原会话 `session_013CmhA1ySPmo4gLMqyHkhKZ`，那个会话不在了就照内容手动做。
+**3. aw#119**：TangVarie/autowriter#119，让 CI 真正跑到依赖 fastapi / mcp 的测试。owner 另开会话在做，不属于这份交接。
 
-| 时间（UTC） | 查什么 |
-|---|---|
-| 10-21 10:15 | D-122 第一晚核（上面 4 ④） |
-| 10-21 14:40 | tv-sync 核（上面 5） |
-| 10-22 03:05 | S-01 备份到期、F-03 借卡延迟、L-01 去掉 `|| true` |
-| 10-23 02:12 | G-05 写作台对照臂分布 |
-| 每周一 01:47 | OPEN-ITEMS 周检（routine，起新会话） |
-| 11-09、11-16 | 备份表到期 |
+**已合并的交接文档 PR**：TV#211、aw#118、Jev#25，08:08 UTC 合并。
+- owner 破例，没等 Codex 审最新提交，**只限这三个纯文档 PR**。这份 08:25 的更新也按同样的破例直接合。
+- 改成 ready 时，Codex 在合并后自动审了 aw#118 和 Jev#25，交接时结果还没看。要是指出了真的文档错误，开一个小的文档 PR 改掉。
+
+### aw#115 部署之后的数据操作（一步一步来，每步先备份）
+
+1. 4 个项目设交付模板：百健士、西屋911gt、Hatherine、途鸽。途鸽用「照规则原样」那版。
+2. 看一批真实稿子。
+3. W-28：插 3 条硬的退路规则，撤 6 条交付格式规则。
+4. 只给规则 `ec0b9bd6` 加代码检查。
+
+另外两点：
+
+- Hatherine 的 `a6f0075c` / `b1f17f57` 要等 D1–D7 重录。
+- 计划、SQL 和逐条规则的处理里有客户的规则原文，**不进 GitHub**。10-21 已作为文件包 `ops-packets-2026-10-21.tar.gz` 发给 owner（发了两次），接手向 owner 要，照包里 `README.md` 的顺序做。
+
+### I-16 / D-123 收尾（SQL 在 [docs/d122-repair/](docs/d122-repair/README.md)）
+
+- **② 删 80 行旧版本闸三分**：`d123_gate3_rescore.sql`，还没跑。
+  - Supabase MCP 执行删除要在 app 里点确认，10-20 卡在这一步超时，什么都没写。在 SQL editor 跑。
+  - 要在没有 Daily TV sync 正在跑的时候跑，文件开头会先锁表。
+- **③ NUC 15 张卡已重策展**：
+  - dry-run run 39467743743，渲染 15/15，没调模型；
+  - 真跑 run 39468049494，成功 15、失败 0；
+  - 回读：`curated_at` 晚于恢复的 15 张，NUC 其他卡没动。
+- **④ 第一晚核**：`05_after_nightly.sql`，见下面「接手要按时做的事」。
+
+### 接手要按时做的事
+
+原来都排成了触发进上一会话的定时检查，交接时已撤。到点手动做：
+
+| 时间（UTC） | 做什么 | 结果写到 |
+|---|---|---|
+| 10-21 daily-sync 跑完之后（cron 02:17，实际常拖到 06–09 点起跑，约 10:15 之后） | 跑 `docs/d122-repair/05_after_nightly.sql`，三处都要过：<br>① 受保护列「非空 → NULL」的 unexpected 为 0；<br>② `emotional_lever` 有值而 `content_format` 为空的是 0，或者只是还没标 essence 的新笔记；<br>③ 恢复的格子还等于计划值。<br>有被冲掉的马上查原因 | OPEN-ITEMS I-16 ④ |
+| 10-21 14:40 | 核 aw#116 修复后第一次 14:00 tv-sync：<br>① 没有 23502，`tv_edit_diffs` 的 `max(computed_at)` 往前走了；<br>② BJS / SPX 能算差异的对子变成 `diff_rev = 2`。<br>SQL：`select d.tv_project_id, d.diff_rev, count(*) from autowriter.tv_edit_diffs d join autowriter.tv_note_links l using (note_id) where l.lag_days is null or l.lag_days >= 0 group by 1,2;` | OPEN-ITEMS W-23、「0. 按时间」10-20 夜那行 |
+| 10-22 | ① S-01：D-086 两张备份到期，核备份表和现表没有要回滚的差异，DROP SQL 给 owner 在 SQL editor 自己跑；<br>② F-03：librarian 借卡延迟对比 D-090 基线（`truth_vault.flywheel_librarian_cache.select_ms`、`/health` 的 `prompt_cache_usage`），连同 W-08 `LIBRARIAN_TIMEOUT_SEC` 要不要按 p95 重调一起下结论；<br>③ L-01：daily-sync 的 `stale_in_ssll` 连续两周是 0 的话，开 PR 去掉 C-20 的 `|| true` | OPEN-ITEMS S-01、F-03、L-01 |
+| 10-23 | G-05：10-16 14:00 UTC 起 `params.source='deskcore'` 的 batch，数四样：<br>① `params.flywheel_arm`，探索臂应约 15%；<br>② `params.flywheel_arm_source`，简报传回来的占多少；<br>③ 带 `flywheel_arm_mixed` 的条数，以及 `batch_metrics` 里 `meta.mode='deskcore_commit'` 的 `arm_mixed_unmarked_item_ids` 非空的条数；<br>④ `truth_vault.flywheel_librarian_cache` 里 `library_version` 带 `:dl`、`:explore` / `:ext` 的行。<br>偏离大的告诉 owner | OPEN-ITEMS G-05 |
+| 11-09 | S-02：10-09 / 10-10 两批备份表到期（名单以 OPEN-ITEMS S-02 为准），核过没有要回滚的，DROP SQL 给 owner 跑 | OPEN-ITEMS S-02 |
+| 11-16 | S-02：`truth_vault.backup_quarantine_resolve_20261016` 到期，同上 | OPEN-ITEMS S-02 |
+| 每周一 01:47 | OPEN-ITEMS 周检。这个 routine 每次起新会话，不依赖上一会话，**保留着** | 它自己开 PR |
 
 ### owner 定的规矩，接手照办
 
-- **合并**：合并前 Codex 必须审过当前 head、没有未解决的意见（`scripts/codex_gate.py`），CI 要绿。
+- **合并**：合并前 Codex 必须审过当前 head、没有未解决的意见（`scripts/codex_gate.py`），CI 要绿。10-21 的破例只限三个纯文档交接 PR 和这次文档更新，代码 PR 照旧。
+- **Codex 额度**：10-21 03:15–08:05 UTC 左右，Codex 回「代码审查额度用完」，四个库都审不了，之后 owner 说已恢复。再碰到就先别合，告诉 owner。
 - **不进 GitHub 的内容**：原始评论、答卷、规则原文、稿子、笔记正文都不进 GitHub（代码、测试、文档、PR、评论都不行），只放合成例子和计数。
 - **写生产库**：先建备份表、再写。隔离表只有人能改（D-053）。不伪造独立标注或 `accepted_by`，不改审核员的标签。
 - **密钥**：只在对话里给，不进仓库。
 - **提交和 PR**：不写模型标识。
-
-### 其他
-
-- **独立复审暂时跑不了**：10-21 子代理碰到周额度上限，10-22 03:00 UTC 重置。在那之前，多代理的独立复审跑不了。
-- **aw E 的第二轮复审**：12 条复审意见的标题和严重程度写在 aw#117 描述里，不含客户内容。
 
 ---
 
