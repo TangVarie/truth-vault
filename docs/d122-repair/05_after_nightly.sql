@@ -4,13 +4,18 @@
 --    期望: unexpected 全是 0。四个 essence 列 wipes 也应该是 0。
 --    tier / tier_source 有两种是代码故意写的 NULL(payload 里显式带着 None, 修复不挡、也不该挡), 不算 unexpected:
 --      · 状态格被清空 → apply_cleared_status 写默认档(规则没有 default 就是 NULL)、tier_source 置空, 旗子 tier_cleared;
---      · 状态格有值但规则一个都没命中 → transform_row 写 tier = NULL(tier_source 还是 状态字段), 旗子 tier_unmapped。
+--        tier 和 tier_source 都可以变 NULL;
+--      · 状态格有值但规则一个都没命中 → transform_row 写 tier = NULL(tier_source 还是 状态字段), 旗子 tier_unmapped;
+--        只有 tier 可以变 NULL —— 带着这个旗子 tier_source 被冲成 NULL 照样算 unexpected(codex review on TV#211)。
 --    旗子看这条 UPDATE 写进去的新值(两种都是当晚打的旗, 和 tier 同一条 UPDATE); 这条没改旗子才看库里现在的。
 SELECT c.col,
        count(*) AS wipes,
-       count(*) FILTER (WHERE c.col NOT IN ('tier', 'tier_source')
-                           OR NOT coalesce(coalesce(a.changed_cols -> 'data_quality_flags' -> 1, n.data_quality_flags)
-                                           ?| ARRAY['tier_cleared', 'tier_unmapped'], false)) AS unexpected
+       count(*) FILTER (WHERE NOT coalesce(CASE c.col
+             WHEN 'tier'        THEN coalesce(a.changed_cols -> 'data_quality_flags' -> 1, n.data_quality_flags)
+                                     ?| ARRAY['tier_cleared', 'tier_unmapped']
+             WHEN 'tier_source' THEN coalesce(a.changed_cols -> 'data_quality_flags' -> 1, n.data_quality_flags)
+                                     ? 'tier_cleared'
+             ELSE false END, false)) AS unexpected
 FROM truth_vault.audit_log a
 CROSS JOIN (VALUES ('content_format'), ('target_audience'), ('user_pain_point'), ('product_focus'),
                    ('tier'), ('tier_source'), ('data_quality_flags'),

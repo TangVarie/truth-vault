@@ -4,7 +4,9 @@
 -- 生产 kduysqedrclrfevrxiie, Supabase SQL editor 整份粘贴执行 (第 0 步只读, 第 1 步一个事务)。
 -- ═══════════════════════════════════════════════════════════════════════════════════════════════
 --
--- ⚠️ 什么时候跑: TV 仓重冻那个 PR 合并进 main 之后、下一次 daily-sync 之前。
+-- ⚠️ 什么时候跑: TV 仓重冻那个 PR(TV#210)合并进 main 之后, 而且**没有 Daily TV sync 正在跑**的时候(Actions 页看一眼)。
+--    合并之前就起跑的那一轮还是旧代码, 可能还在写 v1 行。第 1 步开头先锁表: 等正在写的事务提交、再挡住新写入直到 COMMIT,
+--    快照之后才落地的 v1 行不会漏备份(codex review on TV#211); 锁放开之后还有旧代码在跑的话, 第 4 步「v1_rows = 0」会露出来。
 --    合并之前跑的话, 当晚夜跑还是旧代码 (读 scorer-essence-v1.json): 新版本号下一行都没有 → 旧版本把这 80 篇按 v1 再打一遍,
 --    v1 行又回来了, 只能再删一次。合并之后跑: 旧版本不再有人写, 删掉就是删掉。
 --
@@ -35,6 +37,8 @@ ORDER BY 1, 2;
 
 -- ── 1. 备份 + 删除 (一个事务; 行数对不上就 RAISE, 建表和删除一起回滚) ────────────────────────────
 BEGIN;
+
+LOCK TABLE truth_vault.content_scores IN SHARE ROW EXCLUSIVE MODE;
 
 CREATE TABLE truth_vault.backup_content_scores_d122_20261020 AS
 SELECT c.*, now() AS backed_up_at
@@ -82,7 +86,7 @@ COMMIT;
 SELECT
   (SELECT count(*) FROM truth_vault.backup_content_scores_d122_20261020)                                  AS backup_rows,      -- 80
   (SELECT count(*) FROM truth_vault.content_scores WHERE scorer_version = 'essence-v1-322f02c9465f')       AS v1_rows_left,     -- 0
-  (SELECT count(*) FROM truth_vault.content_scores WHERE scorer_version = 'essence-v1-93035a562b2e')       AS new_rows;         -- 0 (夜跑前)
+  (SELECT count(*) FROM truth_vault.content_scores WHERE scorer_version = 'essence-v1-93035a562b2e')       AS new_rows;         -- 合并后第一次夜跑前 0; 之后跑就是新版本已打的篇数
 
 -- ── 3. 重打 ─────────────────────────────────────────────────────────────────────────────────────────
 -- 默认: 等下一次 daily-sync 定时跑 (cron 02:17 UTC, 实际 08:00 前后起跑), gate3_score 步把冻结日之后有 essence 的笔记全部按新版打一遍,

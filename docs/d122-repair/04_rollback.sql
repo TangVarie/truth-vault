@@ -30,7 +30,10 @@ FROM p
 GROUP BY 1;
 
 -- 4b 回滚: 只回滚「库值还等于修复写进去的那个、且恢复之后 essence 没再写过这一篇」的格子, 改回备份里的值(都是 NULL)
+--    别在 daily-sync / backfill-essence 正在跑的时候跑。LOCK 先等正在写 notes 的事务提交、再挡住新的写入直到 COMMIT
+--    (几秒): 不锁的话, 名单建好之后、UPDATE 之前 essence 又写了这一篇, 照样会被回滚成 NULL、卡死(codex review on TV#211)。
 BEGIN;
+LOCK TABLE truth_vault.notes IN SHARE ROW EXCLUSIVE MODE;
 CREATE TEMP TABLE rollback_skip_essence ON COMMIT DROP AS
 SELECT DISTINCT p.note_id
 FROM truth_vault.repair_notes_essence_cols_20261020 p
