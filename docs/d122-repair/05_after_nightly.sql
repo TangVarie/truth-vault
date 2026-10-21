@@ -1,4 +1,6 @@
--- 5a 恢复之后第一晚: 受保护列「非空 → NULL」的 UPDATE。时间换成那一晚 daily-sync 起跑时刻(UTC)
+-- 5a 修复合并之后: 受保护列「非空 → NULL」的 UPDATE。起点是 TV#209 合并时刻 2026-10-20 16:27 UTC, 不用改:
+--    合并之后的第一晚是 10-21 那次 daily-sync(cron 02:17 UTC, 实际常拖到 06–09 UTC 才起跑), 之后每一晚也都在范围里。
+--    恢复本身(10-20 约 16:35)只把 NULL 写回值, 不会算进来。
 --    期望: unexpected 全是 0。四个 essence 列 wipes 也应该是 0。
 --    tier / tier_source 有两种是代码故意写的 NULL(payload 里显式带着 None, 修复不挡、也不该挡), 不算 unexpected:
 --      · 状态格被清空 → apply_cleared_status 写默认档(规则没有 default 就是 NULL)、tier_source 置空, 旗子 tier_cleared;
@@ -16,7 +18,7 @@ CROSS JOIN (VALUES ('content_format'), ('target_audience'), ('user_pain_point'),
                    ('last_seen_at'), ('last_seen_run_id')) c(col)
 LEFT JOIN truth_vault.notes n ON n.note_id = a.row_id
 WHERE a.schema_name = 'truth_vault' AND a.table_name = 'notes' AND a.operation = 'UPDATE'
-  AND a.occurred_at > timestamp '2026-10-22 02:00'   -- ← 换成那一晚 daily-sync 起跑时刻(UTC)
+  AND a.occurred_at > timestamptz '2026-10-20 16:27:00+00'   -- TV#209 合并时刻; 包含 10-21 那一晚
   AND a.changed_cols -> c.col -> 0 <> 'null'::jsonb
   AND a.changed_cols -> c.col -> 1 = 'null'::jsonb
 GROUP BY 1 ORDER BY 1;
