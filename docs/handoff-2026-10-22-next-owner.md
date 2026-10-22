@@ -6,6 +6,8 @@
 
 先读本文件，再读各仓 HANDOFF 顶部及 [OPEN-ITEMS](../OPEN-ITEMS.md)。具体实现按需看：
 
+配套仓内入口：[aw交接PR #122](https://github.com/TangVarie/autowriter/pull/122)、[Jev交接PR #27](https://github.com/TangVarie/JevforCoentent/pull/27)。这些交接PR尚未合并时，直接读PR中的新接手卡，不要只读默认分支上的旧HANDOFF。
+
 - aw：docs/deskcore.md §3.9–3.11、docs/deskcore-runbook.md §1.11、docs/review-2026-10-21.md。后两份的编译能力完整版在 **#117 分支**，当前默认分支尚不包含 #117。
 - TV：[docs/32](32-desk-quality.md) 写作台质量回路说明；[10-21证据](continuation-2026-10-21.md)、[10-22证据](continuation-2026-10-22.md)、OPEN-ITEMS。
 - Jev：README 的 /compile_rules、judge/rules.py、tests/test_regex_parity.py、HANDOFF 顶部。旧评论验收资料只作历史，现行评论默认已是 comment_reader_v0.6。
