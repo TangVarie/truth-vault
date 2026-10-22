@@ -48,7 +48,6 @@
 | aw#115 Codex 过后 | 合并写作台第二批 A–C（aw#115，`python scripts/codex_gate.py TangVarie/autowriter 115` 输出 PASS、CI 绿、没有未解决的 thread），核 `/health` 协议变成 `895ed01874d6`，写手重导 skill。之后按顺序：4 个项目设交付模板 → 看一批真实稿子 → W-28 退路规则 → aw#117 rebase 过 Codex、先跑迁移 015 再上线 | L-07、W-28、J-15 |
 | 11-09 之后 | 删 10-09 / 10-10 两批备份表 | S-02 |
 | A–C 上线 + 28 天 | 写作台第二批 A–C 上线四周后判接住率走向（上线日以 aw#115 部署那天为准，10-21 还在等 Codex）：不动就回头看内容本身 | L-07 |
-| 10-22 现在 | Supabase 关掉 Auth 注册（旧 anon 可能随 Railway 泄露；没人在用登录） | S-13 |
 | 10-31 | 复查 Supabase 10-30 授权变更：public 的默认授权变了、现有 23 个对象（5 张 ssll 表 + 18 个看板视图）的授权没变、看板照常有数 | S-13 |
 | Railway 恢复部署时（等官方通知） | 按 [事件记录](docs/incident-railway-2026-10-22.md) §4.2：重连 GitHub、核变量没被改、各家换新密钥、内部钥匙两端一起换、按 judge → librarian → tv-worker → onboarder → deskcore（含 7ec8c48）→ tv-sync → linkcheck 部署、Vercel 看板重新部署并核对、停用 Supabase 旧版密钥、发写手新钥匙、删已停的 Streamlit；然后 W-23 补跑和交接执行书 A–D | S-12、W-23 |
 | 闸二之后 | 评论能力（J-01 起）、写作台工具阻塞（W-01）、P3 / P4、抽取器与 judge 出影子期的决定 | §1、§2、§3 |
@@ -159,7 +158,7 @@
 | S-07 | 改动后跑一遍 `verify_supabase_state.sql`，重点 #88 #89 #91 #92 #93 #94 | 部分核过（10-12：HATHERINE 6 条 twin 链接在 10-11 同步后仍是 `ingested`；TUGE 孤儿副本已删、回读 0） | 工程 | 每次大改后 | D-099；D-102；D-104 |
 | S-09 | 小工程：迁移命名与 `dashboard_views_*` / `security_*` 部署清单（C-16）；密钥打码没盖住隔离路径的 `print()` | 备份 RPO / RTO 已定（D-119）：人写的、不能从飞书重建的表靠每日备份，RPO 24 小时、RTO 一个工作日，不买 PITR。剩两件小工程没做 | 工程 | 低 | 审计 C-16；D-095；RISKS.md:182 |
 | S-12 | **Railway 环境变量泄露**（10-21 公告；部分变量被解密）。我们在 Railway 上的服务：aw deskcore / tv-sync / 已停的 Streamlit、TV tv-worker / librarian / onboarder、Jev judge、linkcheck cron / 面板，外加三省六部。要换的密钥和顺序见 [事件记录](docs/incident-railway-2026-10-22.md) | **owner 10-22：等 Railway 官方通知，暂停期间不改 Railway**。Supabase 用方案乙：旧版 service_role 先不停，每 3 小时巡检日志（基线 10-13 起全部来源对得上），有异常立刻停用旧版密钥；恢复时每组一把 `sb_secret_` 再停旧版。新密钥不在恢复前填进 Railway | 你（各家后台、GitHub Secrets、写手钥匙）+ 工程（Railway 侧，若给 project token） | Railway 恢复部署时；或 Railway 通知我们在受影响名单内时立刻 | Railway 公告 / status QH8L8B3E |
-| S-13 | **Supabase 警告分诊（10-22）**：① 现在就关掉 Auth 注册；② `ssll_authenticated_read` 那条 policy 去不去；③ 10-31 复查 10-30 授权变更；④ autowriter 两个没用的向量索引 | 详见 [Supabase 警告分诊](docs/supabase-advisors-2026-10-22.md)。18 条 ERROR（`v_dash_*` 定义者视图）维持 D-101 的已接受例外，理由已补正（D-101 补记）。任何登录用户都能读 public 下 5 张 ssll 表（含 `reference_samples` 330 行爆款正文）；旧 anon key 可能随已停的 Streamlit 在 Railway 泄露，注册开着就能拿它注册登录。auth.users 6 个、最新 05-21、最后登录 08-19，没人在用登录。日志巡检已加看注册 / 登录 | ① ② 你（Supabase 控制台 / SQL editor）；③ ④ 工程 | ① 现在；③ 10-31 | docs/supabase-advisors-2026-10-22.md |
+| S-13 | **Supabase 警告分诊（10-22）**：① 关掉 Auth 注册、② 去掉 `ssll_authenticated_read`：**owner 10-22 定：都不做，目前没有必要**；③ 10-31 复查 10-30 授权变更；④ autowriter 两个没用的向量索引 | 详见 [Supabase 警告分诊](docs/supabase-advisors-2026-10-22.md)。18 条 ERROR（`v_dash_*` 定义者视图）维持 D-101 的已接受例外，理由已补正（D-101 补记）。任何登录用户都能读 public 下 5 张 ssll 表（含 `reference_samples` 330 行爆款正文）；旧 anon key 可能随已停的 Streamlit 在 Railway 泄露，注册开着就能拿它注册登录。auth.users 6 个、最新 05-21、最后登录 08-19，没人在用登录。日志巡检已加看注册 / 登录 | ③ ④ 工程（① ② 不做；日志巡检照常盯注册 / 登录，有异常再报） | ③ 10-31 | docs/supabase-advisors-2026-10-22.md |
 
 ## 8. 你要做的（从上面挑出来，方便一次看完）
 
@@ -171,7 +170,6 @@
 | S-01、S-02 | 备份到期时 Claude 发删表 SQL，你在 SQL editor 跑（10-22 / 11-09 / 11-16 / 11-19 / 11-20） |
 | S-12 | Railway 泄露：等官方通知。恢复时按[事件记录](docs/incident-railway-2026-10-22.md) §4.2 换密钥（各家后台、GitHub Secrets、Vercel 由你，写手新钥匙由你发）；三省六部自己的 AI 密钥找它的维护者换；看一下 GitHub 组织里 Railway App 的权限和审计日志 |
 | O-05 | 转给运营两件事（[ops-answers-2026-10-22](data-analysis/ops-answers-2026-10-22.md)）：①「笔记状态」三条要求（§2：选项里不要有「关注」；要标假数据就固定一个选项、放笔记状态并先告诉我们；其余无要求）；② 要各项目竞品名清单，TV 入库时从蓝词里排除（§5）；③ ~~问清「起量时间」谁写~~ 已答（owner 10-22）：由 TangVarie/linkcheck 巡查机器人写，代码已核（ops-answers §8）；④ 再问运营一句：「评估中」新判据里正好涨 10 条算哪边（I-20）。O-01 那批问题 10-22 已答完 |
-| S-13 | Supabase：现在去 Authentication → Sign In / Providers 关掉「Allow new users to sign up」（可随时开回；没人在用登录）；`ssll_authenticated_read` 去不去你定，SQL 在[分诊文档](docs/supabase-advisors-2026-10-22.md) §2 |
 | I-16 | 不用动手（10-20 已授权代定：闸三 A、NUC 只重策展 15 张、HATHERINE 旧方向的值不恢复）；恢复已跑完，闸三已重冻（D-123），15 张已重策展。删 80 行旧分 10-22 你已在 SQL editor 跑完（回读通过）；备份表按 S-02 11-20 之后可删。要反过来再说（I-17 跟着关） |
 | W-28、J-15 | 4 个项目的交付模板和退路规则操作包（含客户规则原文，不进 GitHub）10-21 已发给你；接手的人向你要这份文件包 |
 

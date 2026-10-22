@@ -73,7 +73,7 @@
 
   anon 只来自 Vercel（AWS 香港，只 GET `v_dash_*`）。没有陌生来源，没有 DDL 异常，没有新角色或新用户。
 - 如果 Railway 来邮件说我们在受影响名单里，不等了，直接走方案甲。
-- **关掉 Supabase Auth 注册**（不依赖 Railway，现在就能做）：旧 anon 也在已停的 Streamlit 的变量里；注册开着的话，拿它注册一个账号就能读 public 下 5 张 ssll 表。没人在用登录（最后一次 08-19）。见 [Supabase 警告分诊](supabase-advisors-2026-10-22.md) §2。
+- **关掉 Supabase Auth 注册**（owner 10-22 定：目前不做；日志巡检盯注册 / 登录，有异常再报）：旧 anon 也在已停的 Streamlit 的变量里；注册开着的话，拿它注册一个账号就能读 public 下 5 张 ssll 表。没人在用登录（最后一次 08-19）。见 [Supabase 警告分诊](supabase-advisors-2026-10-22.md) §2。
 
 ### 4.2 Railway 恢复部署时，按这个顺序
 
