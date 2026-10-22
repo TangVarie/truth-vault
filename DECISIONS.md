@@ -6027,9 +6027,10 @@ UPDATE truth_vault.notes n SET source_autowriter_version_id = b.source_autowrite
 
 ### 2026-10-22 补记（S-13，[Supabase 警告分诊](docs/supabase-advisors-2026-10-22.md)）
 
-- **第 3 条的理由不完整**：视图里没有正文，但有项目代号、各项目真实曝光 / 篇数 / 爆款数、Top 8 精确互动数和真实总曝光；仓是公开的，`dashboard/config/showcase.ts` 写着代号到品牌名的对应。仍然维持例外：anon key 只在 Vercel 服务端；改 invoker 要把 truth_vault 6 张表和 `pipeline_runs` 开给 anon，更差。泄露的旧 anon（随已停的 Streamlit 在 Railway，S-12）在旧版密钥停用后作废。
+- **第 3 条的理由不完整**：视图里没有正文，但有项目代号、各项目真实曝光 / 篇数 / 爆款数、Top 8 精确互动数和真实总曝光；仓是公开的，`dashboard/config/showcase.ts` 写着代号到品牌名的对应。仍然维持例外：anon key 只在 Vercel 服务端；改 invoker 要把 truth_vault 6 张表、`v_flywheel_lesson_cards` 视图和 `pipeline_runs` 开给 anon，更差。泄露的旧 anon（随已停的 Streamlit 在 Railway，S-12）在旧版密钥停用后作废。
 - **第 2 条那条 authenticated policy 用不上了**：10-22 edge 日志里三省六部轮询带 service_role，24 小时没有一次 authenticated 请求。它留着的代价是：注册开着时，拿泄露的 anon 注册就能读 5 张 ssll 表。先关注册，policy 去留交 owner（S-13）。
-- **第 4 条**：Supabase 10-30 起 public 新建对象不再自动授权，这个隐患由平台收掉了。
+- **第 4 条**：Supabase 10-30 起 public 新建的表不再自动授权，这个隐患 10-30 起由平台收掉（10-31 复查，S-13）。
+- **第 1 条「看板那把，公网可见」不对**：看板只在 Vercel 服务端用 anon key（`dashboard/lib/supabase.ts:17`，不是 `NEXT_PUBLIC_`，没进过浏览器；10-22 edge 日志里 anon 请求全是 UA `node`、AWS 出口）。风险在泄露（旧 anon 可能随已停的 Streamlit 在 Railway 泄露，S-12），不在公开；第 2 条「anon = 公网，一律收」作为防御口径照旧。
 
 ## D-102 · 写作台「人审」里模型代记的决定改标 `human_via_agent`；真值只认 `human`（2026-10-09）
 
@@ -7161,3 +7162,7 @@ NUC_phase1_recv2jCgov51Yz,NUC_phase1_recv2lNktp6h13,NUC_phase1_recv2lNktpokW9,NU
 - 已推 ssll 的 3 行：tier 变风控后，通道 1 回收的 B 路（D-087，`ssll_eligibility_reason` 返回 `tier_demoted`）会撤回，不用另做。
 - 人工摘掉「风控中」后，格子里没有风控标，tier 自然回到机器判的档。表现为一次「风控 → 爆」的升档，这是对的。
 - 守卫：`scripts/check_tier_veto.py`（CI）。反证：去掉否决位后 §1 红（实跑：`OKMAN ['爆贴','风控中'] → 爆`）。
+
+### 2026-10-22 补记（读了 linkcheck）
+
+「风控中」不只是人填：巡查机器人 linkcheck 在链接确认失效、上游标违规时也会写，而且它写的、人写的都从不摘（[ops-answers-2026-10-22](data-analysis/ops-answers-2026-10-22.md) §8.2）。评估 §7.1「不覆盖已有的风控中」已证实；同条里「疑似限流恢复后自动摘」不成立，linkcheck 也从不摘疑似限流。否决位的结论不变。
