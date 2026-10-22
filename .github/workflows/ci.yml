@@ -78,6 +78,7 @@ jobs:
             scripts/check_prompt_cache_fallback.py \
             scripts/check_essence_subtype_backfill.py \
             scripts/check_vanished_notes.py \
+            scripts/check_tier_veto.py \
             scripts/gate3_score.py \
             scripts/check_gate3.py \
             librarian/__init__.py \
@@ -3700,6 +3701,9 @@ jobs:
       - name: 季度找新特征 —— 只用发现半 / 例子不许抄原文 / 不许用发布后的信息 / 一个项目失败不拖垮整季 (D-120)
         working-directory: scripts
         run: python discover_feature_candidates.py --selftest
+      - name: 风控否决位 —— 多选状态格里任一标判成风控就是风控, 不按等级取最高 (统一表评估 A2, D-124)
+        working-directory: scripts
+        run: python check_tier_veto.py   # §1 生产形状 · §2 transform_row 不被数值推断推回 · §3 全部 mapping · §4 单值长文本不归它管
       - name: 采集三道闸 —— 未来 publish_time 夹掉 / 状态格清空写回默认 + 没映上打旗 / 整批 tier 翻转 upsert 前挡住 (D-091)
         working-directory: scripts
         run: python check_ingest_guards.py   # §1 未来日期 · §2/§2b 清空与没映上 · §3 翻转计划 · §4 挡只剥翻转篇 · §5 读库分批 · §6/§7 接线

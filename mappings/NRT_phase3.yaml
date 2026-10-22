@@ -13,6 +13,25 @@ version: 1.0
 project_id: NRT_phase3
 brand: 力克雷
 product: NRT 系列戒烟产品（咀嚼胶/喷雾/戒烟贴）
+# 文案里【实际】会出现的写法(运营 2026-10-22 回填, I-12; 见 data-analysis/ops-answers-2026-10-22.md 第 1 条)。
+# 喂内容特征层的品牌词典(feature_bank.brand_dictionary), 匹配不分大小写。「力克雷」已是 brand 不重复列;
+# 运营原文「NRT烟碱替代疗法」列了两次, 去一份。替烟口香糖这类通用说法照录(两期都是自家帖)。
+brand_aliases:
+  - NRT疗法
+  - Nicorette
+  - NRT烟碱替代疗法
+  - NRT替代法
+  - NRT的力克雷
+  - nicorette口香糖
+  - Nicorette小黑喷
+  - 替烟口香糖
+  - NRT烟碱替代
+  - 12周NRT烟碱替代方案
+  - 尼古丁替烟口香糖
+  - Nicorette隐形贴片
+  - 不硬戒的烟碱过渡
+  - nicorette贴片
+  - 力克雷戒烟
 category: OTC药   # 2026-06-04 R-009 决议(策略 lead Ziao):力克雷 NRT 尼古丁贴片/咀嚼片国内按 OTC 销售
 platform: xiaohongshu
 schema_family: B
