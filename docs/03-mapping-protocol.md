@@ -84,6 +84,10 @@
 | `hit_blue_keywords` | 「蓝词字段」 | 「蓝词记录」 | — |
 | `data_quality_status` | 「数据回收情况」 | (推断) | "无数据" |
 
+> `hit_blue_keywords` 照抄「蓝词字段 / 蓝词记录」。统一格式表的「蓝词字段」由巡查机器写、**只加不减**（运营 2026-10-22），
+> 所以它是「截至这次同步累计命中过的蓝词」，不是当前值；某段时间新命中的词用 `metric_snapshots` 相邻两次之差。
+> 「评论关键词」是另一回事（查我们的评论有没有显示），不映进 `hit_blue_keywords` / `target_blue_keywords`，只进 raw_extra。
+
 ### Tier 标签（金标准）
 
 | 标准字段 | 家族 A | 家族 B | 家族 C |

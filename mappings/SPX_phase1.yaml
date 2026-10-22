@@ -208,6 +208,9 @@ project_specific_fields_to_raw_extra:
   - 关注情况                        # ⚠️ 不是"运营手记": 🍟 = 小红书薯条投流, 前面是投流日期
                                     #    (运营 2026-09-22)。与「维护情况」同源, 已纳入
                                     #    paid_promoted 判据(_PAID_COLS)。取值如 ["9/16🍟"](1 行)
+  - 起量时间                        # 10-16 新加, 此前落 _undeclared(10-22 生产 11 行)。巡查机器写:
+                                    #    首次「评论比上次涨≥50% 且多≥20」的时刻, 只写一次, 人工清空重判
+                                    #    (运营 2026-10-22, ops-answers-2026-10-22.md 第 3-5 条)。不作 tier 源
 
 data_supplement_needed:
   - field: account_followers

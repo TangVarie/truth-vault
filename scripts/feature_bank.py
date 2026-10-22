@@ -421,7 +421,7 @@ def _bucket(n: int, edges: list[tuple[int, str]], last: str) -> str:
 
 def brand_dictionary(project: dict, note: dict, mapping: Optional[dict] = None) -> list[str]:
     """品牌词 / 产品词词典: projects.brand + product + 笔记 target_blue_keywords + mapping.brand_aliases。
-    占位（(未填) / 待确认 / 内部代号 TGV 这种）交给运营 Q3 补 aliases, 这里只做形状过滤。"""
+    占位（(未填) / 待确认 这种）交给运营补 aliases(Q3 / I-12), 这里只做形状过滤。"""
     cands: list[str] = []
     for v in (project.get("brand"), project.get("product")):
         if isinstance(v, str):
