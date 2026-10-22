@@ -470,6 +470,13 @@ def _reject_shadowed_tier_rules(path, rules: list[dict]) -> None:
 #   所以 趴 仍高于 评估中; 而它比 未知 有信息, 高于 未知。其余相对顺序一个没动。
 _TIER_RANK = {"大爆": 8, "爆": 7, "预备": 6, "参考": 5, "风控": 4, "趴": 3, "评估中": 2, "未知": 1}
 
+# 风控否决位(统一表评估 A2, D-124): 多选格里任一标判成 风控 → 整格就是 风控, 不进 _TIER_RANK 择优。
+# 风控说的是"这条还能不能看", 和"它有多火"不是一个维度; 「风控中」是运营手填进「流量状态」的,
+# 机器不覆盖(运营 2026-10-22 第 9 条), 所以 ['爆贴','风控中'] 会一直挂着 —— 按 rank 取最高会判 爆,
+# 风控帖照样进书架 / L2 正例。人工摘掉「风控中」后格子里没有风控标, 自然回到机器判的档。
+# 只管多选 token: 单值 / C 家族「备注字段」长文本仍按规则列序取首个命中, 不在这里改语义。
+_VETO_TIER = "风控"
+
 
 def _status_tokens(raw_status: Any) -> list[str]:
     """飞书「状态/流量状态」cell → 各【独立状态标】列表。
@@ -516,6 +523,7 @@ def extract_tier(raw_status: Any, rules: list[dict]) -> Optional[str]:
     多选状态栏(list)同时挂多个状态时, 取【等级最高】的那个(_TIER_RANK):
       爆贴预备 + 爆贴  → 爆     (旧逻辑误判成 预备 —— 列序里 预备 在 爆 之前先命中)
       爆贴预备 + 大爆  → 大爆
+    例外是风控否决位(_VETO_TIER): 任一标判成 风控 → 风控, 爆贴 + 风控中 → 风控。
     单选 / 单值 cell 行为与旧版完全一致。None / 空 → default。
     """
     if raw_status is None:
@@ -526,6 +534,8 @@ def extract_tier(raw_status: Any, rules: list[dict]) -> Optional[str]:
     hits = [t for t in (_first_matching_tier(tok, rules) for tok in tokens) if t is not None]
     if not hits:
         return _default_tier(rules)
+    if _VETO_TIER in hits:
+        return _VETO_TIER
     return max(hits, key=lambda t: _TIER_RANK.get(t, 0))
 
 
