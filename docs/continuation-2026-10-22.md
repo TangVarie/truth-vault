@@ -2,7 +2,15 @@
 
 本记录只包含提交、计数和合成验证。客户原始规则、模板、操作 SQL 仍保存在仓库外。用户明确授权了先通过最终提交审查和 CI，再依次上线及执行有备份的数据变更；附件中的操作说明本身不追加授权。
 
-## 当前完成与剩余依赖
+## 03:50 UTC 执行进展（优先于下方较早快照）
+
+- aw#121 对与原#115完全相同的head875bfca得到明确completed / false、0未解决线程，CI39718161474通过；03:44 UTC合并为`7042cebc`，GitHub自动将#115标记merged。未把旧PR中的null当成false。
+- 合并提交7042cebc的push CI39718489765也已成功。03:47 UTC生产health仍为旧build f0044905bda1、旧协议5ea3b14e1f37，未见新Railway deployment记录；尚无日志解释原因，不能把合并称为部署验收。
+- #117已改base到默认分支，同步仅新增HANDOFF文档；最终head`fdeaa9f`复审completed / false、0未解决线程、CI39718629002成功。先确认#121部署、执行015并关闭服务自动补编，再合并#117；当前未提前合并。
+- 环境readiness仍无Railway或写作台身份，无法核Railway实际服务/cron版本、关闭自动补编或做真实鉴权验收。用户已选择通过环境配置补齐身份，上线授权持续有效；不应再次申请生产权限。
+- 四项目模板、规则的备份及写入尚未执行，迁移015尚未应用；私有SQL、带守卫回滚和官方CLI已准备。Railway目标项目与production环境已从历史部署链接确认，不必再向用户询问项目ID。
+
+## 较早快照：当前完成与剩余依赖
 
 - TV#213 最终 head `b0c4326` 的 Codex 摘要为 completed、has_unresolved_findings=false，未解决线程 0；[CI 39716368184](https://github.com/TangVarie/truth-vault/actions/runs/39716368184) success，合并提交 `24c6bc1`。修复未知审查结论误判 PASS、长 note_ids 参数和交接中的两处错误。
 - GitHub Production deployment 7242955296 显示 success，但目标是 Vercel；不能以此证明 Railway worker 已部署。I-18 保持待核，S-11 默认分支门禁修复已关。
