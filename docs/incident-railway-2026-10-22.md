@@ -84,10 +84,11 @@
 3. 第三方后台换新密钥（3.1 表），新值填进 Railway、GitHub Secrets、Vercel。Supabase 每组一把 `sb_secret_`，看板改用 `sb_publishable_`。
 4. 内部钥匙（3.2 表）生成新值，两端一起填。
 5. 依次部署：judge → librarian → tv-worker → onboarder → deskcore（顺带把 aw 的 7ec8c48 上线）→ tv-sync → linkcheck。每个服务部署后核对 `/health`（onboarder 看 `/health`，再手动跑一次 onboard-table 起草一张已接过的表，确认新的 `ONBOARDER_API_KEY`、飞书密钥和中转站 token 都生效）。
-6. Supabase 停用旧版 JWT 密钥。确认日志里不再有旧密钥的流量。
-7. 把新的 DESKCORE 钥匙发给 3 位写手，各自改 MCP 设置。
-8. 删掉 aw 已停用的 Streamlit 服务。
-9. 恢复后先确认 tv-sync 真的跑起来了（W-23 那 147 条补算），再按[接手执行书](handoff-2026-10-22-next-owner.md) A–D 推进 #117。
+6. Vercel 看板重新部署 production（Vercel 的变量也只对新部署生效，第 3 步改了 `SUPABASE_ANON_KEY` 不会影响正在跑的看板）。部署后打开看板，确认各页数据都出来了、日志里看板的请求带的是新的 `sb_publishable_`。
+7. Supabase 停用旧版 JWT 密钥。确认日志里不再有旧密钥的流量（包括看板的 anon 请求）。
+8. 把新的 DESKCORE 钥匙发给 3 位写手，各自改 MCP 设置。
+9. 删掉 aw 已停用的 Streamlit 服务。
+10. 恢复后先确认 tv-sync 真的跑起来了（W-23 那 147 条补算），再按[接手执行书](handoff-2026-10-22-next-owner.md) A–D 推进 #117。
 
 ### 4.3 不在我们仓库里、也要处理的
 
