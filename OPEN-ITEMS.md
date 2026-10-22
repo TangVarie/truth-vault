@@ -48,7 +48,7 @@
 | aw#115 Codex 过后 | 合并写作台第二批 A–C（aw#115，`python scripts/codex_gate.py TangVarie/autowriter 115` 输出 PASS、CI 绿、没有未解决的 thread），核 `/health` 协议变成 `895ed01874d6`，写手重导 skill。之后按顺序：4 个项目设交付模板 → 看一批真实稿子 → W-28 退路规则 → aw#117 rebase 过 Codex、先跑迁移 015 再上线 | L-07、W-28、J-15 |
 | 11-09 之后 | 删 10-09 / 10-10 两批备份表 | S-02 |
 | A–C 上线 + 28 天 | 写作台第二批 A–C 上线四周后判接住率走向（上线日以 aw#115 部署那天为准，10-21 还在等 Codex）：不动就回头看内容本身 | L-07 |
-| Railway 恢复部署时（等官方通知） | 按 [事件记录](docs/incident-railway-2026-10-22.md) §4.2：重连 GitHub、核变量没被改、各家换新密钥、内部钥匙两端一起换、按 judge → librarian → tv-worker → deskcore（含 7ec8c48）→ tv-sync → linkcheck 部署、停用 Supabase 旧版密钥、发写手新钥匙、删已停的 Streamlit；然后 W-23 补跑和交接执行书 A–D | S-12、W-23 |
+| Railway 恢复部署时（等官方通知） | 按 [事件记录](docs/incident-railway-2026-10-22.md) §4.2：重连 GitHub、核变量没被改、各家换新密钥、内部钥匙两端一起换、按 judge → librarian → tv-worker → onboarder → deskcore（含 7ec8c48）→ tv-sync → linkcheck 部署、停用 Supabase 旧版密钥、发写手新钥匙、删已停的 Streamlit；然后 W-23 补跑和交接执行书 A–D | S-12、W-23 |
 | 闸二之后 | 评论能力（J-01 起）、写作台工具阻塞（W-01）、P3 / P4、抽取器与 judge 出影子期的决定 | §1、§2、§3 |
 
 ---

@@ -38,7 +38,7 @@
 | Google Gemini key | aw deskcore | AI Studio / Google Cloud | 标题语义查重退回规则查重，不挡写作。恢复后要补 reembed |
 | TypeSafe key | Jev judge；Jev GitHub secret | TypeSafe 控制台 | 写手的 Jev 参考分和评论工具「没判成」，稿件照常存档 |
 | Moonshot key（judge 上若有） | Jev judge | platform.moonshot.cn | 只影响编规则 |
-| 飞书应用 App Secret（TV） | TV GitHub secret；onboarder | open.feishu.cn → 凭证 → 重置 | 只影响 onboarder。先比对 App ID 是否和 linkcheck 是同一个应用 |
+| 飞书应用 App Secret（TV） | TV GitHub secret（daily-sync、preflight 用）；onboarder | open.feishu.cn → 凭证 → 重置 | GitHub secret 换好之前，夜跑 daily-sync 的飞书入库和 preflight 都会失败：重置后几分钟内就更新 GitHub secret，并避开夜跑时段（约 07:30–08:30 UTC）。换好后只剩 onboarder 断。先比对 App ID 是否和 linkcheck 是同一个应用 |
 | 飞书应用 App Secret（linkcheck） | linkcheck cron 和面板；linkcheck GitHub secret | 同上 | 巡查停（表数据不受损） |
 | TikHub、SocialDataX | linkcheck cron 和面板；linkcheck GitHub secret；Jev GitHub secret `TIKHUB_API_KEY`（10-26 周一的外部语料任务要用）；三省六部（SocialDataX） | 各自后台 | 巡查停或改走更贵的通道 |
 | 飞书群机器人 webhook | 已停的 Streamlit | 群设置 → 机器人 → 重置 | 无 |
@@ -83,7 +83,7 @@
    - `DESKCORE_KEYS` 还是 3 把。
 3. 第三方后台换新密钥（3.1 表），新值填进 Railway、GitHub Secrets、Vercel。Supabase 每组一把 `sb_secret_`，看板改用 `sb_publishable_`。
 4. 内部钥匙（3.2 表）生成新值，两端一起填。
-5. 依次部署：judge → librarian → tv-worker → deskcore（顺带把 aw 的 7ec8c48 上线）→ tv-sync → linkcheck。每个服务部署后核对 `/health`。
+5. 依次部署：judge → librarian → tv-worker → onboarder → deskcore（顺带把 aw 的 7ec8c48 上线）→ tv-sync → linkcheck。每个服务部署后核对 `/health`（onboarder 看 `/health`，再手动跑一次 onboard-table 起草一张已接过的表，确认新的 `ONBOARDER_API_KEY`、飞书密钥和中转站 token 都生效）。
 6. Supabase 停用旧版 JWT 密钥。确认日志里不再有旧密钥的流量。
 7. 把新的 DESKCORE 钥匙发给 3 位写手，各自改 MCP 设置。
 8. 删掉 aw 已停用的 Streamlit 服务。
