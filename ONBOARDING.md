@@ -1,6 +1,6 @@
 # Truth Vault · 新人 ONBOARDING
 
-> 给第一次接手这个项目的工程师 / 分析师 / Claude session。**先看这个**，再看其它文档。
+> **当前接手先读 [HANDOFF.md](HANDOFF.md) 和 [OPEN-ITEMS.md](OPEN-ITEMS.md)。** 本文下方的 2026-05-22 清单保留为历史：生产已运行，不能按它重新建库、迁移或启用 cron。架构阅读路线见 [docs/00-START-HERE.md](docs/00-START-HERE.md)。
 
 ---
 

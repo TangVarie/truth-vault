@@ -56,6 +56,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import errno
 import re
 import sys
 import time
@@ -359,7 +360,14 @@ def _exit_code_for_stats(stats: dict) -> int:
 
 def _read_note_ids(spec: str) -> set[str]:
     p = Path(spec)
-    if p.exists():
+    try:
+        is_file = p.is_file()
+    except OSError as exc:
+        if exc.errno != errno.ENAMETOOLONG:
+            raise
+        # 逗号拼成的一批 id 可能超过文件名长度上限, 仍是合法的参数。
+        is_file = False
+    if is_file:
         return {ln.strip() for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()}
     return {x.strip() for x in spec.split(",") if x.strip()}
 

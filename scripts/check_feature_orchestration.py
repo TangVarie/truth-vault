@@ -28,10 +28,13 @@ check_orchestration() 是原块逐字搬过来的 (只把顶层 import 提到文
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 import re
 import sys
+import tempfile
+from unittest.mock import patch
 from pathlib import Path
 
 import feature_bank as fb
@@ -42,6 +45,27 @@ ROOT = Path(__file__).resolve().parent.parent
 # 下面各节会给 afp 的库 I/O 打桩; 真货先留一份
 _REAL_DONE = afp.fetch_done_ids
 _REAL_PAGES = afp.fetch_all_pages
+
+
+def check_note_ids() -> None:
+    # worker 最多拼 200 个 id; 参数超过文件名上限时也必须按名单读, 不先在 Path.stat 上崩掉。
+    for n in (8, 200):
+        ids = {f"recSyntheticFeatureNote{i:04d}" for i in range(n)}
+        assert afp._read_note_ids(",".join(sorted(ids))) == ids
+    assert afp._read_note_ids(" first, second, first, ") == {"first", "second"}
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "ids.txt"
+        p.write_text("first\n\n second \nfirst\n", encoding="utf-8")
+        assert afp._read_note_ids(str(p)) == {"first", "second"}
+    for code in (errno.EACCES, errno.EIO):
+        with patch.object(Path, "is_file", side_effect=OSError(code, "synthetic stat failure")):
+            try:
+                afp._read_note_ids("ids.txt")
+            except OSError as exc:
+                assert exc.errno == code
+            else:
+                raise AssertionError("stat failure must not silently become a note ID")
+    print("  ✓ --note-ids: 8 / 200 个 id 的长参数不当文件名; 文件、去重和空白口径不变")
 
 
 def check_orchestration() -> None:
@@ -463,6 +487,7 @@ def main(argv: list[str] | None = None) -> int:
     if a.worker:
         check_worker_endpoint()
         return 0
+    check_note_ids()
     check_orchestration()
     check_parse_done_by()
     check_fetch_done_ids()
