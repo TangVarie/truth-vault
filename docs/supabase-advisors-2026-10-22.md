@@ -7,7 +7,7 @@
 | 警告 | 数量 | 判断 | 动作 |
 |---|---|---|---|
 | `security_definer_view`（ERROR） | 18，全是 `public.v_dash_*` | 维持 D-101 的已接受例外，理由补正（见 §3） | 不改视图。旧 anon 随 S-12 停用后，泄露出去的那把就读不了 |
-| 登录用户能读 5 张 ssll 表（advisor 没报） | 5 | 真暴露面，见 §2 | **现在关掉 Auth 注册**；`ssll_authenticated_read` 去不去 owner 定 |
+| 登录用户能读 5 张 ssll 表（advisor 没报） | 5 | 真暴露面，见 §2 | owner 10-22 定：关注册、去 policy 都不做，目前没有必要；日志巡检盯注册 / 登录 |
 | 10-30 public 授权变更（邮件） | — | 我们不用改任何东西 | 10-31 复查一次（§4） |
 | `rls_enabled_no_policy`（INFO） | 32（9 autowriter + 23 truth_vault） | 有意设计：只给 service_role，anon / authenticated 没有任何表权限 | 不动 |
 | `unindexed_foreign_keys`（INFO） | 3 | 都不在热路径上 | 不动 |
@@ -32,7 +32,7 @@ autowriter 的 11 张表也给 authenticated 开着，但 policy 按 `auth.uid()
 
 风险在于：旧 anon key 在已停的 Streamlit 的 Railway 变量里，按 S-12 算已泄露。如果 Auth 注册开着，拿它注册一个账号就能读上面这些表。
 
-**建议**：
+**owner 10-22 定：下面两条都不做，目前没有必要。** 日志巡检（每 3 小时）照常看注册 / 登录事件和 authenticated 请求，有异常再报。以下留作以后要做时的参考。
 
 1. **现在**：Supabase 控制台 → Authentication → Sign In / Providers，关掉「Allow new users to sign up」。随时能开回来，现在没人用登录。
 2. **owner 定**：去掉 `ssll_authenticated_read`。去掉以后登录用户读这 5 张表得 0 行，三省六部走 service_role 不受影响。在 SQL editor 跑：
