@@ -6025,6 +6025,12 @@ UPDATE truth_vault.notes n SET source_autowriter_version_id = b.source_autowrite
 - `/console` 的密码只挡 UI，不挡 REST：anon key 仍能读 18 个聚合视图（设计如此，视图里没有正文）。
 - ssll 新建 public 表会继承 anon 全权限（第 4 条）。
 
+### 2026-10-22 补记（S-13，[Supabase 警告分诊](docs/supabase-advisors-2026-10-22.md)）
+
+- **第 3 条的理由不完整**：视图里没有正文，但有项目代号、各项目真实曝光 / 篇数 / 爆款数、Top 8 精确互动数和真实总曝光；仓是公开的，`dashboard/config/showcase.ts` 写着代号到品牌名的对应。仍然维持例外：anon key 只在 Vercel 服务端；改 invoker 要把 truth_vault 6 张表和 `pipeline_runs` 开给 anon，更差。泄露的旧 anon（随已停的 Streamlit 在 Railway，S-12）在旧版密钥停用后作废。
+- **第 2 条那条 authenticated policy 用不上了**：10-22 edge 日志里三省六部轮询带 service_role，24 小时没有一次 authenticated 请求。它留着的代价是：注册开着时，拿泄露的 anon 注册就能读 5 张 ssll 表。先关注册，policy 去留交 owner（S-13）。
+- **第 4 条**：Supabase 10-30 起 public 新建对象不再自动授权，这个隐患由平台收掉了。
+
 ## D-102 · 写作台「人审」里模型代记的决定改标 `human_via_agent`；真值只认 `human`（2026-10-09）
 
 来源：审计 A-01，owner 10-09 把决定交给我。证据在 `data-analysis/a01-review-drafts-timeline-2026-10-09.md`（Supabase edge logs 会过期，所以把时间线存了档）：`autowriter.items` 里 32 条 `decision_source='human'`，分 6 批，每批全部在模型自己的工具链里（check → commit → review → export），commit 后 10–38 s 整批通过，`reviewer_id` = 稿件作者本人，中间没有任何人能读完稿子的窗口。它们不是人审，是模型替用户记的。

@@ -17,6 +17,10 @@ Truth Vault 通道 1 集成 patch 包. 部署到 sanshengliubu 仓库 / Supabase
 R-018 (worker process 代码) 和 R-019 决策树详细方案见 truth-vault
 `docs/10-sister-repo-followups.md`.
 
+> **2026-10-30 起 Supabase 不再给 `public` 新建对象自动授权**（已有对象不变）。`004` 建 `public.jobs`、`005` 建
+> `public.workspaces` / `public.workspace_users`，两个文件都没有表级 GRANT，至今也没跑过。真要跑，先补 GRANT
+> （至少给 service_role；别给 anon），否则 PostgREST 读写会报 42501。见 TV `docs/supabase-advisors-2026-10-22.md` §4。
+
 ## 部署顺序
 
 1. **跑 001_add_source_tv_note_id.sql** (幂等, 重复执行不报错)
