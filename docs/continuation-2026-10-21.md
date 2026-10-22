@@ -38,7 +38,7 @@
 
 ## I-18：长 note_ids 参数
 
-修复前 200 个合成 id 拼接参数在 Path.exists 处复现 OSError errno 36。改为 is_file 并只捕获路径探测的 OSError，正常文件的读取错误仍上抛。8/200 个 id、文件、去重及空白场景已加入 check_feature_orchestration.py；编排和 worker 端点检查通过。该修复需本 PR 合并、worker 部署后生效，OPEN-ITEMS 保持待上线。
+修复前 200 个合成 id 拼接参数在 Path.exists 处复现 OSError errno 36。改为 is_file，并仅捕获 ENAMETOOLONG；权限、I/O 等其它路径错误及正常文件的读取错误仍上抛。8/200 个 id、文件、去重、空白及 EACCES/EIO 场景已加入 check_feature_orchestration.py；编排和 worker 端点检查通过。该修复需本 PR 合并、worker 部署后生效，OPEN-ITEMS 保持待上线。
 
 ## 接下来按依赖推进
 
@@ -52,3 +52,9 @@
 ## 合并前复核更正
 
 09:05 UTC：#115 摘要为当前 head、completed，但 has_unresolved_findings 为 null，且没有新的无意见回执。原 codex_gate.py 用真假判断将 null 当作 False，错误打印 PASS；合并前的独立复核拦住了它，未执行合并。本 PR 将未知字段、缺失字段和非布尔值都改为 WAIT，增加离线回归并接入 CI。#117 本轮复审新增 unmute 激活路径意见，也继续修复。#212 的两条意见一并修正：首夜 invariant 必须严格为零；#211 包含可执行 SQL 和门禁代码，不能称纯文档或视为已审查。用户已明确授权后续有备份的数据变更和上线；授权仍以最终 head 的有效审查与 CI 通过为前提。
+
+## 10-22 复审接续
+
+#115 复审新增四项、#117 新增 global 激活编译路径，均继续修复后再审，尚未合并。#213 的路径异常处理已收窄到 ENAMETOOLONG；新增 EACCES/EIO 反证，修复前能复现静默成功，修复后编排、worker 端点、19 个合并门禁场景及系统地图六条守卫全部通过。
+
+上文“未到 10-21 14:40”的表述为 10-21 当时快照，10-22 接续时该检查已经到期；需读取实际运行和数据库结果后更新 W-23，不能沿用旧快照作结论。生产授权持续有效，仍须最终提交审查和 CI 通过后按顺序执行。
