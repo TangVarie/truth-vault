@@ -1,6 +1,6 @@
 # Truth Vault · 当前状态
 
-> **当前接续状态（2026-10-21）见 [HANDOFF.md](HANDOFF.md)，待办见 [OPEN-ITEMS.md](OPEN-ITEMS.md)。** 评论服务已于 10-16 上线；写作台第二批 #115/#117 仍在审查，尚未部署。D-122 修复后的首夜数据只读核查通过，新版闸三 106 篇已打分；旧版 80 行清理仍待执行。下面各日期段保留为历史快照，不代表当前状态。
+> **当前接续状态（2026-10-22）见 [HANDOFF.md](HANDOFF.md) 与 [10-22 证据](docs/continuation-2026-10-22.md)。** TV#213 已合并，Railway worker 部署待核；aw#115 等有效审查、#117 当前 head 审查与 CI 已通过但依赖 #115。写作台新能力和数据变更尚未上线。下面各日期段是历史快照。
 
 **以下历史快照日期**: 2026-06-09 (新增 TGV/RIO/HXZ_FB 接入 + 伪爆贴 DQ + dashboard 上线/内外分离 + 对外展示口径定稿)
 **2026-06-09阶段快照**: 飞轮已转起来 —— **8 项目入库 (3,407 篇 / 验证级爆款 200 / 书架 118 卡 / 累计曝光 37.3M)**, 通道1(ssll)+ 通道2(pull/馆员)都 live, 对外看板已上线 Vercel。**当时交接记录 = [docs/archive/26-handover-2026-06-09.md](docs/archive/26-handover-2026-06-09.md);从零到现在的完整对齐 = [docs/00-START-HERE.md](docs/00-START-HERE.md)**。
