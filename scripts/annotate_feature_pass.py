@@ -280,10 +280,13 @@ def _api_failure(exc: Exception) -> tuple[str, str]:
     return fb.INVALID_API, "api_error"
 
 
-def _is_systemic(st: dict) -> bool:
+def _is_systemic(st: dict, reannotate: bool = False) -> bool:
     """这一篇按 systemic 处理 (整篇不落行、下轮重跑) 吗。任一组 api_error → 是。被中转站敏感词拦的组
     (D-125) 只是那几题记 NULL 落库; 但【模型题一组都没答成】(全被拦) 仍算 systemic —— 整篇只剩 NULL
-    落库就再也不会重抽, 中转站整体收紧拦截时会悄悄写一库空答案, 宁可红。"""
+    落库就再也不会重抽, 中转站整体收紧拦截时会悄悄写一库空答案, 宁可红。
+    reannotate (重抽已答过的篇) 时有一组被拦也算 systemic: 同 PK 覆盖会拿 NULL 盖掉原来答好的那几题。"""
+    if reannotate and st.get("filtered"):
+        return True
     return bool(st.get("systemic")) or (bool(st.get("filtered")) and not st.get("groups_ok"))
 
 
@@ -489,7 +492,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                         (res["spans"]["title"] or "")[:30], call_n, len(res["rows"]))
             stats["ok"] += 1
             continue
-        if _is_systemic(st):
+        if _is_systemic(st, args.reannotate):
             # 任何一组 api 失败就整篇不落行（哪怕别的组成功了）。落一半 = 标记题那行先落库,
             # 下轮 resume 跳过这篇, 失败的那几组永远补不回来 (codex review on #141)。
             stats["failed"] += 1

@@ -25,11 +25,15 @@ essence 只剩它一篇时 daily-sync 也判红。
 
 from __future__ import annotations
 
+import io
 import json
+import logging
+import os
 import pathlib
 import subprocess
 import sys
 import tempfile
+from unittest.mock import patch
 
 import _common
 import annotate_essence_pass as ess
@@ -134,6 +138,8 @@ def check_features(bank) -> None:
     assert res["stats"]["systemic"] == len(blocked_groups) and afp._is_systemic(res["stats"]), res["stats"]
     assert all(by[q]["invalid_reason"] == fb.INVALID_API for q in blocked)
     assert afp._is_systemic({"systemic": 1, "filtered": 1, "groups_ok": 4})
+    # reannotate 时有一组被拦也算 systemic: 同 PK 覆盖会拿 NULL 盖掉原来答好的题
+    assert not afp._is_systemic({"filtered": 1, "groups_ok": 5}) and afp._is_systemic({"filtered": 1, "groups_ok": 5}, reannotate=True)
 
     # E. 反证: 拿掉识别 → 被拦的组回到 api_error + systemic (以前的行为)
     saved = afp.is_gateway_filtered
@@ -144,7 +150,30 @@ def check_features(bank) -> None:
         assert res["stats"]["filtered"] == 0 and afp._is_systemic(res["stats"]), res["stats"]
     finally:
         afp.is_gateway_filtered = saved
-    print("  ✓ 特征层: 被拦的组 NULL + gateway_filtered、其余照常、整篇落库 (标记题被拦也落); 全被拦 / 普通 api 挂仍 systemic; 反证拿掉识别回到 systemic")
+    # F. main() 端到端 (假库): 部分被拦 → 落库、Done 行 gateway_filtered=1、退出 0; 同一篇 --reannotate → 一行不落 (不拿 NULL 盖旧答案)
+    def run_main(argv):
+        written = []
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "x"}), \
+                patch.object(afp, "get_supabase_client", return_value=object()), \
+                patch.object(afp, "load_mapping", return_value=mapping), \
+                patch.object(afp, "fetch_notes", return_value=[note]), \
+                patch.object(afp, "fetch_done_ids", return_value=set()), \
+                patch.object(afp, "write_answers", side_effect=lambda sb, rows, dry_run: written.extend(rows)), \
+                patch.object(afp, "write_raw_counts"), \
+                patch.object(afp, "_llm", make_llm(blocked)), \
+                tempfile.TemporaryDirectory() as td:
+            buf = io.StringIO(); h = logging.StreamHandler(buf); afp.logger.addHandler(h)
+            try:
+                rc = afp.main(argv + ["--qps", "0", "--failed-queue", f"{td}/fq.jsonl"])
+            finally:
+                afp.logger.removeHandler(h)
+        return rc, written, buf.getvalue()
+    rc, written, log = run_main(["T"])
+    assert rc == 0 and written and '"gateway_filtered": 1' in log and "gateway_filtered T_1:" in log, (rc, len(written))
+    rc, written, log = run_main(["T", "--reannotate"])
+    assert not written and "systemic T_1:" in log, (rc, len(written))
+    print("  ✓ 特征层: 被拦的组 NULL + gateway_filtered、其余照常、整篇落库 (标记题被拦也落); 全被拦 / 普通 api 挂仍 systemic;"
+          " reannotate 时被拦不覆盖旧答案; 反证拿掉识别回到 systemic")
 
 
 def check_essence() -> None:
@@ -197,6 +226,58 @@ def check_essence() -> None:
           " ≥3 篇全拦先探一次, 探针也被拦才红; 探针不带原笔记正文")
 
 
+def check_essence_main_canary() -> None:
+    """main() 真把探针接上: 3 篇被拦、一篇没成 → 多一次调用; 探针过 → 不红, 探针也被拦 → 红;
+    --dry-run 不调; 混着 systemic 不探、照红。"""
+    good = json.dumps({"essence": {"emotional_lever": "焦虑撬动", "emotional_valence": "negative",
+                                   "emotional_intensity": "high", "human_truth_archetype": ["健康焦虑"],
+                                   "trend_dependencies": ["通用"], "content_format": "情感叙事"}, "audience": {}})
+    bad = [f"原笔记被拦词BAD{i}" for i in range(3)]
+
+    def run(block, extra=(), other_err=False):
+        notes = [{"note_id": f"P_{i}", "project_id": "P", "title": f"t{i}", "body": b,
+                  "raw_content": f"【标题】t{i}\n【正文】{b}", "hashtags": [], "intent": "种草",
+                  "target_blue_keywords": ["推车"], "raw_extra": {"_direction_raw": "带娃出行"},
+                  "projects": {"brand": "某牌", "product": "推车"}} for i, b in enumerate(bad)]
+        if other_err:
+            notes.append(dict(notes[0], note_id="P_X", body="SYSTEMIC", raw_content="【正文】SYSTEMIC",
+                              projects={"brand": "某牌", "product": "推车"}))
+        calls = []
+
+        def call(prompt, model, *, cached_system=None):
+            calls.append(prompt)
+            if "SYSTEMIC" in prompt:
+                raise FakeInternalServerError("Error code: 500 - upstream error")
+            if block(prompt):
+                raise FakeInternalServerError(FILTERED_MSG)
+            return good
+        buf = io.StringIO(); h = logging.StreamHandler(buf); ess.logger.addHandler(h)
+        try:
+            with tempfile.TemporaryDirectory() as td, \
+                    patch.object(sys, "argv", ["x", "P", "--qps", "0", "--failed-queue", f"{td}/q.jsonl", *extra]), \
+                    patch.dict(os.environ, {"ANTHROPIC_API_KEY": "fake"}), \
+                    patch.object(ess, "load_mapping", return_value={}), \
+                    patch.object(ess, "get_supabase_client", return_value=object()), \
+                    patch.object(ess, "fetch_unannotated_notes", return_value=notes), \
+                    patch.object(ess, "get_sub_directions_for_note", return_value=None), \
+                    patch.object(ess, "write_essence_back"), \
+                    patch.object(ess, "call_claude", side_effect=call):
+                rc = ess.main()
+        finally:
+            ess.logger.removeHandler(h)
+        return rc, len(calls), buf.getvalue()
+
+    rc, n, log = run(lambda p: any(b in p for b in bad))
+    assert rc == 0 and n == 4 and '"gateway_filtered": 3' in log, (rc, n)          # 探针过了: 是各篇自己的, 不红
+    rc, n, _ = run(lambda p: True)
+    assert rc == 1 and n == 4, (rc, n)                                               # 探针也被拦: 红
+    rc, n, _ = run(lambda p: True, extra=["--dry-run"])
+    assert rc == 0 and n == 0, (rc, n)                                               # dry-run 不调
+    rc, n, _ = run(lambda p: any(b in p for b in bad), other_err=True)
+    assert rc == 1 and n == 4, (rc, n)                                               # 混着 systemic: 不探, 照红
+    print("  ✓ essence main(): 3 篇被拦 → 探一次; 探针过不红、被拦红; dry-run 不调; 混着 systemic 不探照红")
+
+
 def _gf_line(wf: str) -> str:
     lines = [ln.strip() for ln in wf.splitlines() if ln.rstrip().endswith("# D-125 gf")]
     assert lines, "workflow 里找不到 # D-125 gf 那行"
@@ -231,6 +312,12 @@ def check_workflows() -> None:
     # 跨批合计的红线在: features-sync 一处, backfill-features 两种模式各一处
     assert 'if [ "$gf_total" -ge 3 ]; then' in fs and fs.count("gf_total=$((gf_total + gf))") == 1
     assert bf.count('[ "$gf_total" -lt 3 ] ||') == 2 and bf.count("gf_total=$((gf_total + gf))") == 2
+    # 到 3 篇就停 (不是跑完才红): features-sync 在批循环里 break、项目循环里再 break; backfill 两种模式都在循环里 exit
+    i_gf, i_stop, i_proj, i_red = (fs.index("# D-125 gf"), fs.index('if [ "$gf_total" -ge 3 ]; then gf_stop=1; break; fi'),
+                                    fs.index('if [ "$gf_stop" = "1" ]'), fs.index('if [ "$gf_total" -ge 3 ]; then\n'))
+    assert i_gf < i_stop < i_proj < i_red, (i_gf, i_stop, i_proj, i_red)
+    for anchor in ("gf_total=$((gf_total + gf))\n              # 到 3 篇就停", "gf_total=$((gf_total + gf))\n            [ \"$gf_total\" -lt 3 ] ||"):
+        assert anchor in bf, anchor
     print("  ✓ workflow: # D-125 gf 那行从 Done 行取 gateway_filtered (没有 / 坏了按 0, pipefail 下不炸); ↳ 那行不吃单问日志; ≥3 篇的红线在")
 
 
@@ -238,6 +325,7 @@ def main() -> int:
     check_detect()
     check_features(fb.load_bank())
     check_essence()
+    check_essence_main_canary()
     check_workflows()
     print("✓ 中转站敏感词拦截 (D-125): 按单篇内容问题计, 不拖住队列、不误判红; 全拦 / 整体拦截仍红")
     return 0

@@ -170,6 +170,7 @@ jobs:
           ok_total=0
           edge502_total=0      # 边缘 502 的批: worker 多半在后台跑完了, 既不算成也不算欠
           gf_total=0           # D-125: 本轮有题被中转站敏感词拦、记 NULL 落库的篇数 (一个请求最多 2 篇, 只能在这里跨批合计)
+          gf_stop=0            # 到 3 篇就停掉本轮: 再跑下去只是多写一批 NULL
           for f in ../mappings/*.yaml; do
             p=$(basename "$f" .yaml)
             [ "$p" = "_template" ] && continue
@@ -239,6 +240,7 @@ jobs:
               ok_batches=$((ok_batches + 1))
               gf=$(jq -r '.stdout_tail // ""' /tmp/feat.json 2>/dev/null | grep -o 'Done: .*' | tail -1 | sed 's/^Done: //' | jq -r '.gateway_filtered // 0' 2>/dev/null || true); case "$gf" in ''|*[!0-9]*) gf=0;; esac   # D-125 gf
               if [ "$gf" -gt 0 ]; then gf_total=$((gf_total + gf)); echo "::warning::features $p 本批 $gf 篇有题被中转站敏感词拦截, 记 NULL 落库、不会再抽 (D-125)"; fi
+              if [ "$gf_total" -ge 3 ]; then gf_stop=1; break; fi
               budget=$((budget - batch))
             done
             if [ "$sent" = "1" ]; then
@@ -246,6 +248,7 @@ jobs:
               ok_total=$((ok_total + ok_batches))
               [ "$ok_batches" = "0" ] && starved_list="$starved_list $p"
             fi
+            if [ "$gf_stop" = "1" ]; then echo "  ⛔ 被中转站拦的已有 $gf_total 篇, 停掉本轮剩下的项目 (D-125)"; break; fi
           done
           # ── 慢性欠产 (D-094, 审计 B-18): 该成的批里成了不到一半 → 红 ──────────────────────
           # 下面那条 starved 只抓"过半项目一批都没成"; 每个项目都只成了 1 批、其余全是 warning 的夜晚

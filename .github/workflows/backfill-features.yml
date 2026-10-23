@@ -217,11 +217,12 @@ jobs:
               gf=$(jq -r '.stdout_tail // ""' /tmp/b.json 2>/dev/null | grep -o 'Done: .*' | tail -1 | sed 's/^Done: //' | jq -r '.gateway_filtered // 0' 2>/dev/null || true); case "$gf" in ''|*[!0-9]*) gf=0;; esac   # D-125 gf
               { [ "$code" = "200" ] && [ "$ok" = "true" ]; } || gf=0   # 失败的批不落行; /tmp/b.json 可能还是上一批的
               gf_total=$((gf_total + gf))
+              # 到 3 篇就停: 再跑下去只是多写 NULL (D-125)
+              [ "$gf_total" -lt 3 ] || { echo "::error::$gf_total 篇有题被中转站敏感词拦截、记 NULL 已落库 (D-125) —— 中转站还在拦, 停。找中转站。"; [ "$bad_chunks" = "0" ] || echo "::error::另有 $bad_chunks 批连续 6 次都没成 —— 查 Railway worker 日志。"; exit 1; }
             done
           done
           echo "── 结束 · $total 篇 · 成功 $ok_chunks 批 · 失败 $bad_chunks 批 ──"
           echo "已答过的篇 pass 自己会跳过 (按 (extractor, run_tag) 幂等; 本次 run_tag=$RUN_TAG), 失败的批再触发一次接着跑。"
-          [ "$gf_total" -lt 3 ] || { echo "::error::$gf_total 篇有题被中转站敏感词拦截、记 NULL 已落库 (D-125) —— 中转站还在拦, 找中转站。"; exit 1; }
           [ "$bad_chunks" = "0" ] || { echo "::error::$bad_chunks 批连续 6 次都没成 —— 查 Railway worker 日志。"; exit 1; }
 
       - name: 重抽过 primary 答案 → 清掉带规律命中的馆员缓存 (D-116)
@@ -283,10 +284,10 @@ jobs:
             fi
             gf=$(jq -r '.stdout_tail // ""' /tmp/b.json 2>/dev/null | grep -o 'Done: .*' | tail -1 | sed 's/^Done: //' | jq -r '.gateway_filtered // 0' 2>/dev/null || true); case "$gf" in ''|*[!0-9]*) gf=0;; esac   # D-125 gf
             gf_total=$((gf_total + gf))
+            [ "$gf_total" -lt 3 ] || { echo "::error::本次 $gf_total 篇有题被中转站敏感词拦截、记 NULL 已落库 (D-125) —— 像中转站整体在拦, 停。找中转站。"; exit 1; }
           done
           rem=$(python count_unannotated_features.py "$PROJECT" $CO_FLAG 2>/dev/null || echo "?")
           echo "── 结束 · project=$PROJECT · code_only=$CODE_ONLY · remaining(final)=$rem ──"
           if [ "$rem" != "0" ] && [ "$rem" != "?" ]; then
             echo "::warning::还剩 $rem 条未标注(到达 max_batches=$MAXB)。再触发一次本工作流接着灌,或调大 max_batches。"
           fi
-          [ "$gf_total" -lt 3 ] || { echo "::error::本次 $gf_total 篇有题被中转站敏感词拦截、记 NULL 已落库 (D-125) —— 像中转站整体在拦, 找中转站。"; exit 1; }
