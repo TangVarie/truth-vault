@@ -189,7 +189,7 @@ jobs:
           fi
 
           mapfile -t ids < <(echo "$NOTE_IDS" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -v '^$' | sort -u)
-          total=${#ids[@]}; sent=0; ok_chunks=0; bad_chunks=0
+          total=${#ids[@]}; sent=0; ok_chunks=0; bad_chunks=0; gf_total=0
           for proj in $(printf '%s\n' "${ids[@]}" | sed 's/_rec.*$//' | sort -u); do
             mapfile -t plist < <(printf '%s\n' "${ids[@]}" | grep "^${proj}_rec")
             for ((i=0; i<${#plist[@]}; i+=BATCH)); do
@@ -205,7 +205,7 @@ jobs:
                 ok=$(jq -r '.ok // false' /tmp/b.json 2>/dev/null)
                 nc=$(jq -r '.note_ids_count // empty' /tmp/b.json 2>/dev/null)
                 echo "   [try $attempt] HTTP $code · ok=$ok · note_ids_count=${nc:-?} · returncode=$(jq -r '.returncode // "?"' /tmp/b.json 2>/dev/null)"
-                jq -r '.stdout_tail // ""' /tmp/b.json 2>/dev/null | grep -E "Found|Done|ok=|failed|systemic " | tail -4
+                jq -r '.stdout_tail // ""' /tmp/b.json 2>/dev/null | grep -E "Found|Done|ok=|failed|· systemic |· gateway_filtered " | tail -4
                 { [ "$code" = "200" ] && [ "$ok" = "true" ] && [ -n "$nc" ]; } && break
                 # 409 = worker 正被别的调用占着(features-sync / 另一个 backfill): 等锁, 不算失败 (D-077)
                 echo "::warning::$proj 第 $((i/BATCH+1)) 批 try $attempt 失败 (HTTP $code, ok=$ok);等 60s 重试"
@@ -214,6 +214,11 @@ jobs:
               done
               sent=$((sent+${#chunk[@]}))
               if [ "$code" = "200" ] && [ "$ok" = "true" ] && [ -n "$nc" ]; then ok_chunks=$((ok_chunks+1)); else bad_chunks=$((bad_chunks+1)); fi
+              gf=$(jq -r '.stdout_tail // ""' /tmp/b.json 2>/dev/null | grep -o 'Done: .*' | tail -1 | sed 's/^Done: //' | jq -r '.gateway_filtered // 0' 2>/dev/null || true); case "$gf" in ''|*[!0-9]*) gf=0;; esac   # D-125 gf
+              { [ "$code" = "200" ] && [ "$ok" = "true" ]; } || gf=0   # 失败的批不落行; /tmp/b.json 可能还是上一批的
+              gf_total=$((gf_total + gf))
+              # 到 3 篇就停: 再跑下去只是多写 NULL (D-125)
+              [ "$gf_total" -lt 3 ] || { echo "::error::$gf_total 篇有题被中转站敏感词拦截、记 NULL 已落库 (D-125) —— 中转站还在拦, 停。找中转站。"; [ "$bad_chunks" = "0" ] || echo "::error::另有 $bad_chunks 批连续 6 次都没成 —— 查 Railway worker 日志。"; exit 1; }
             done
           done
           echo "── 结束 · $total 篇 · 成功 $ok_chunks 批 · 失败 $bad_chunks 批 ──"
@@ -235,7 +240,7 @@ jobs:
           # worker 重启吐空/坏响应时 `ok=$(jq …)` 解析失败会触发 errexit 直接杀掉整步、
           # 绕过重试循环(实测:整步 exit 5、连 [try 1] 都没打印 → 重试从没机会跑)。
           set +e
-          prev=-1
+          prev=-1; gf_total=0
           # code_only: 计数和 worker 都按代码题的「跑过」判据 (code:v1 的 body_len_bucket), 两边一个口径 (I-19)。
           CO_FLAG=""; CO_JSON=""
           if [ "$CODE_ONLY" = "true" ]; then CO_FLAG="--code-only"; CO_JSON=",\"code_only\":true"; fi
@@ -277,6 +282,9 @@ jobs:
               echo "::error::worker 调用连续 3 次失败 (HTTP $code, ok=$ok) —— 停止 backfill。已标的不丢,修好后重跑接着灌。"
               exit 1
             fi
+            gf=$(jq -r '.stdout_tail // ""' /tmp/b.json 2>/dev/null | grep -o 'Done: .*' | tail -1 | sed 's/^Done: //' | jq -r '.gateway_filtered // 0' 2>/dev/null || true); case "$gf" in ''|*[!0-9]*) gf=0;; esac   # D-125 gf
+            gf_total=$((gf_total + gf))
+            [ "$gf_total" -lt 3 ] || { echo "::error::本次 $gf_total 篇有题被中转站敏感词拦截、记 NULL 已落库 (D-125) —— 像中转站整体在拦, 停。找中转站。"; exit 1; }
           done
           rem=$(python count_unannotated_features.py "$PROJECT" $CO_FLAG 2>/dev/null || echo "?")
           echo "── 结束 · project=$PROJECT · code_only=$CODE_ONLY · remaining(final)=$rem ──"

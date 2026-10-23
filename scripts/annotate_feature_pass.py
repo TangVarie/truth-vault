@@ -63,7 +63,8 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from _common import fetch_all_pages, get_supabase_client, load_mapping, setup_logger, _iso_now
+from _common import (fetch_all_pages, get_supabase_client, is_gateway_filtered, load_mapping,
+                     setup_logger, _iso_now)
 import feature_bank as fb
 
 logger = setup_logger("annotate_features")
@@ -215,8 +216,9 @@ def ask_group(bank: dict, call: dict, spans: dict, model: str, *, llm=_llm
     try:
         raw = llm(call["system"], call["user"], model)
     except Exception as exc:  # noqa: BLE001
-        return ({q: {"answer": None, "evidence": None, "invalid_reason": fb.INVALID_API} for q in qids},
-                False, [f"api_error: {exc!r}"], 0)
+        reason, tag = _api_failure(exc)
+        return ({q: {"answer": None, "evidence": None, "invalid_reason": reason} for q in qids},
+                False, [f"{tag}: {exc!r}"], 0)
     parsed = fb.parse_answers(raw)
     results = _validate_or_parse_failed(bank, qids, parsed, spans, raw, "first")
     bad = fb.retryable(results)
@@ -233,9 +235,10 @@ def ask_group(bank: dict, call: dict, spans: dict, model: str, *, llm=_llm
     try:
         raw2 = llm(call["system"], retry_user, model)
     except Exception as exc:  # noqa: BLE001
+        reason, tag = _api_failure(exc)
         for q in bad:
-            results[q] = {"answer": None, "evidence": None, "invalid_reason": fb.INVALID_API}
-        return results, True, [f"retry_api_error: {exc!r}"], 0
+            results[q] = {"answer": None, "evidence": None, "invalid_reason": reason}
+        return results, True, [f"retry_{tag}: {exc!r}"], 0
     parsed2 = fb.parse_answers(raw2)
     results2 = _validate_or_parse_failed(bank, qids, parsed2, spans, raw2, "retry")
     for q in bad:
@@ -254,9 +257,10 @@ def ask_group(bank: dict, call: dict, spans: dict, model: str, *, llm=_llm
             # 单问也挂在 api 上: 记 api_error (不是"没答"), 让调用方按 systemic 处理 —— 这篇不落行,
             # 下轮幂等重跑。悄悄保留 json_parse_failed 会把一个 api 故障写成"模型没答", 且标记题
             # 一落库这篇就永远不会再来 (自审 on #156; 同 codex review on #141 的洞)。
-            logger.warning("single_api_error q=%s: %r", q, exc)
-            errs.append(f"single_api_error {q}: {exc!r}")
-            results[q] = {"answer": None, "evidence": None, "invalid_reason": fb.INVALID_API}
+            reason, tag = _api_failure(exc)
+            logger.warning("single_%s q=%s: %r", tag, q, exc)
+            errs.append(f"single_{tag} {q}: {exc!r}")
+            results[q] = {"answer": None, "evidence": None, "invalid_reason": reason}
             continue
         r3 = _validate_or_parse_failed(bank, [q], fb.parse_answers(raw3), spans, raw3, f"single:{q}")[q]
         # 单问的结果替换原来的: 答出来最好; 没答出来也换成单问看到的原因 (json_parse_failed → missing
@@ -266,6 +270,24 @@ def ask_group(bank: dict, call: dict, spans: dict, model: str, *, llm=_llm
 
 
 _UNANSWERED = (fb.INVALID_MISSING, fb.INVALID_JSON)
+
+
+def _api_failure(exc: Exception) -> tuple[str, str]:
+    """调用挂了记什么: 中转站敏感词拦截 (D-125) → gateway_filtered (这一组的内容问题, 这几题记 NULL,
+    不算 systemic); 其余一律 api_error (基础设施, 整篇不落行、下轮重跑)。"""
+    if is_gateway_filtered(exc):
+        return fb.INVALID_FILTERED, "gateway_filtered"
+    return fb.INVALID_API, "api_error"
+
+
+def _is_systemic(st: dict, reannotate: bool = False) -> bool:
+    """这一篇按 systemic 处理 (整篇不落行、下轮重跑) 吗。任一组 api_error → 是。被中转站敏感词拦的组
+    (D-125) 只是那几题记 NULL 落库; 但【模型题一组都没答成】(全被拦) 仍算 systemic —— 整篇只剩 NULL
+    落库就再也不会重抽, 中转站整体收紧拦截时会悄悄写一库空答案, 宁可红。
+    reannotate (重抽已答过的篇) 时有一组被拦也算 systemic: 同 PK 覆盖会拿 NULL 盖掉原来答好的那几题。"""
+    if reannotate and st.get("filtered"):
+        return True
+    return bool(st.get("systemic")) or (bool(st.get("filtered")) and not st.get("groups_ok"))
 
 
 def _validate_or_parse_failed(bank: dict, qids: list[str], parsed, spans: dict, raw: str, stage: str
@@ -302,7 +324,7 @@ def annotate_note(bank: dict, note: dict, mapping: dict, *, model: str, extracto
     spans = fb.build_spans(note.get("raw_content") or "", mode=mode, title_col=note.get("title"))
     brand_words = fb.brand_dictionary(project, note, mapping)
     rows = code_rows(bank, note, spans, brand_words, run_tag)
-    stats = {"groups_ok": 0, "groups_retry": 0, "singles": 0, "systemic": 0, "invalid": 0, "answered": 0,
+    stats = {"groups_ok": 0, "groups_retry": 0, "singles": 0, "systemic": 0, "filtered": 0, "invalid": 0, "answered": 0,
              "title_how": spans["_title_how"], "truncated": bool(spans["_truncated"])}
     if code_only:
         return {"rows": rows, "raw_counts": fb.raw_counts(spans), "stats": stats, "spans": spans}
@@ -326,6 +348,8 @@ def annotate_note(bank: dict, note: dict, mapping: dict, *, model: str, extracto
         # (codex review on #141 说的洞, 自审 on #156 又找到一条路)。
         if any(r.get("invalid_reason") == fb.INVALID_API for r in results.values()):
             stats["systemic"] += 1
+        elif any(r.get("invalid_reason") == fb.INVALID_FILTERED for r in results.values()):
+            stats["filtered"] += 1   # D-125: 被中转站拦的组, 这几题 NULL 落库, 不拖累整篇
         else:
             stats["groups_ok"] += 1
         if retried:
@@ -444,7 +468,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         notes = notes[: args.limit]
     logger.info("Found %d notes to annotate for project %s", len(notes), args.project_id)
 
-    stats = {"ok": 0, "failed": 0, "systemic_failed": 0, "hygiene_failed": 0,
+    stats = {"ok": 0, "failed": 0, "systemic_failed": 0, "hygiene_failed": 0, "gateway_filtered": 0,
              "groups_ok": 0, "groups_retry": 0, "singles": 0, "answered": 0, "invalid": 0,
              "title_how": {}, "truncated": 0}
     sleep_s = 1.0 / args.qps if args.qps > 0 else 0
@@ -468,7 +492,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                         (res["spans"]["title"] or "")[:30], call_n, len(res["rows"]))
             stats["ok"] += 1
             continue
-        if st.get("systemic"):
+        if _is_systemic(st, args.reannotate):
             # 任何一组 api 失败就整篇不落行（哪怕别的组成功了）。落一半 = 标记题那行先落库,
             # 下轮 resume 跳过这篇, 失败的那几组永远补不回来 (codex review on #141)。
             stats["failed"] += 1
@@ -491,6 +515,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             _append_failed(fq, note, args.project_id, [f"write_rejected: {exc}"])
             continue
         stats["ok"] += 1
+        if st.get("filtered"):
+            stats["gateway_filtered"] += 1
+            logger.warning("gateway_filtered %s: %d 组被中转站敏感词拦截, 这几题记 NULL 落库; 中转站关了拦截后用 "
+                           "backfill-features reannotate 重抽 (D-125)", note["note_id"], st["filtered"])
         if st.get("errors"):
             # 落了行但过程里有非致命错误 (比如单问阶段的 api 抖动被后面的成功盖过): 也记一笔, 只做线索
             _append_failed(fq, note, args.project_id, ["partial: " + e for e in st["errors"]])

@@ -27,6 +27,7 @@
 | 时间 | 事 | 条目 |
 |---|---|---|
 | 下次途鸽 / 百健士成人藻油交付 | W-29 已查清：写作台没掉线，是写手那边的 AI 查完重没调存档。10-23 加了提醒和留痕（aw + TV 两个修复），看下一轮有没有存上；夜跑灯会逐轮点名没存档的 | W-29 |
+| 10-24 07:29 UTC daily-sync | 看 XIWU_phase2 的 essence 那行：被中转站拦的那一篇记 `gateway_filtered`、daily-sync 不因它判红；17:30 features-sync 里 XIWU_phase2 每批两篇都成、那篇被拦的几题记 NULL 落库 | I-23 |
 | 下周 | 成人藻油单独一张飞书表、接成新 TV 项目；在那之前 BJS_phase1 的补录暂停（10-23 owner 定） | I-22 |
 | 10-23 已验证 | onboarder 改成后台作业 + 轮询（TV#228）：XIWU_phase2-keytest 起草 6 分 21 秒，拿到草稿（以前 5 分钟就断） | 已关 I-21 |
 | 11-20 | 写作台第二批 A–C 上线（10-23）满四周，判接住率走向 | L-07 |
@@ -130,6 +131,7 @@
 | I-18 | 特征层 --note-ids 长名单被当文件名 | **TV#213 已合并，worker 部署待核**：只捕获 ENAMETOOLONG，其它权限/I/O错误继续上抛；长名单、文件、EACCES/EIO及worker端点守卫通过 | 工程 | 核 Railway worker 部署最终合并提交后关 | [10-22记录](docs/continuation-2026-10-22.md) |
 | I-20 | **linkcheck 补两件事**（写「流量状态」「起量时间」「蓝词字段」的就是它）：① 运营第 7 条「评估中」新判据（48h→72h 涨 <10 → 无水花，之后每个 24h 窗口同理），要让「评估中 → 无水花」绕过它现在的只升不降；② 竞品名排除：linkcheck#50（10-22 合并）写明竞品词原样保留，在 linkcheck 排除要先和改它的人对齐，否则只在 TV 入库时排除 | 10-22 只读核对 linkcheck 2eb9cc7：新判据**没实现**。89 行眼下不会翻，linkcheck 改了也大多碰不到：它帖龄满 30 天就归档不再巡查（68 行已过线，其余 21 行最晚 11-14 过线），只存两个评论数、补不出已过 72h 的 48h→72h。SPX / XIWU_phase2 的 `hit_blue_keywords` 里已有 康比特 / 迈胜 / 奥佳华 / 荣康 等竞品名，会跟着书架卡进写作台。详见 ops-answers 第 3 节更正注、§8 | **owner 10-22：linkcheck 的改动转给别人，TV 这边不碰**；运营（竞品名单、正好涨 10 条落哪边）；TV 侧等对方上线后做入库排除和 B5。10-23 交接复核称 linkcheck#51 已合并、有部署记录（本仓不核 linkcheck 的实现）；TV 侧要确认的只有：飞书补列后 TV 映射认不认、竞品名单到了没有 | 竞品名单到了做 TV 入库排除；B5 等 linkcheck 那边写进飞书 | [ops-answers-2026-10-22](data-analysis/ops-answers-2026-10-22.md) §8 |
 | I-22 | **百健士成人藻油接 TV**：成人藻油（写作台项目 `89d3e7aa`，10-21 建）和儿童藻油发在同一张飞书表 `BJS_phase1`，TV 分不出是哪个产品；BJS_phase1 的补录目标是儿童的「百健士-藻油」，10-22 那批成人帖（10-23 07:30 同步进来 14 篇）会被当成对不上、补录进儿童项目 | **10-23 owner 定：成人藻油单独一张飞书表，接成新 TV 项目（下周）**。在那之前 BJS_phase1 的补录暂停：owner 10-23 在 SQL Editor 把 `tv_project_map`（BJS_phase1 → 百健士-藻油）的 `ingest_target` 改成 false，备注里写了原因和恢复办法。暂停期间 BJS_phase1 对不上的帖子（含儿童藻油的新帖）记成 unmatched、不是终态，恢复补录目标后下一晚自动补。**10-23 14:02 UTC tv-sync 核过暂停生效**：那 14 篇都记成 unmatched，「百健士-藻油」这一轮没有新增版本 | 运营：把成人藻油的帖子挪到新表 → 工程：接表 agent 接新表、新 TV 项目映射到成人藻油并设为补录目标、配交付模板 → 确认 BJS_phase1 里那 14 篇已经不在了，再把儿童藻油的 `ingest_target` 改回 true（顺序不能反，否则那 14 篇会补录进儿童项目） | 下周 | W-29 |
+| I-23 | **中转站敏感词拦截**：中转站判请求含敏感词就回 `500 · sensitive_words_detected`。10-23 XIWU_phase2 一篇（正文里有个词在中转站词表里）特征层和 essence 都次次被拦；以前按系统性失败算，特征层每批占一个名额、项目只剩它时夜跑判红，essence 只剩它时 daily-sync 判红 | **10-23 改了算法（D-125）**：被拦算这一篇的内容问题。特征层被拦的几题记 NULL（`gateway_filtered`）、整篇落库；全被拦仍红；features-sync / backfill 一轮到 3 篇被拦就停并判红；reannotate 时被拦不覆盖旧答案。essence 被拦不判红，下轮再试；一轮 ≥3 篇全拦时先用无害假笔记探一次，探针也被拦才红。日志会打 `gateway_filtered <note_id>` 一行。目前全库只有这一篇 | 你：要不要请中转站对我们的 key 关掉敏感词拦截（关了以后被拦的篇才答得全）→ 工程：关了之后 backfill-features `reannotate` 重抽记了 `gateway_filtered` 的篇 | 中转站答复后 | D-125；TV#232 |
 
 
 ## 5. 飞轮、策展、librarian

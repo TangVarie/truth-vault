@@ -52,6 +52,7 @@ INVALID_SPAN_TRUNCATED = "span_truncated"
 INVALID_NO_BRAND_DICT = "no_brand_dict"
 INVALID_JSON = "json_parse_failed"
 INVALID_API = "api_error"
+INVALID_FILTERED = "gateway_filtered"   # 中转站敏感词拦截 (D-125): 这组题记 NULL, 不算 systemic
 
 # ── Mode A 防泄漏（照搬 annotate_essence_pass.build_mode_a_prompt 的两道, D-028）──
 PERFORMANCE_KEYWORDS = (
