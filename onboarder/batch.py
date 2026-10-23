@@ -27,6 +27,7 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import sys
@@ -46,6 +47,10 @@ DEFAULT_TIMEOUT = 1200
 POLL_INTERVAL = 5.0
 POLL_REQUEST_TIMEOUT = 30
 POLL_MAX_ERRORS = 6
+# 提交作业那一下的超时。新服务端毫秒级回包; 给长一点是为了**还没重部署的旧服务端**:
+# 它的 /onboard 在事件循环里同步起草, 上一张宽表被边缘 502 之后它还会接着跑一两分钟,
+# 这期间新请求排在后面没人理。等到它腾出手就会回 404, 客户端才能退回同步 /onboard。
+SUBMIT_TIMEOUT = 300
 
 STATUS_ICON = {"ok": "✅", "needs_fix": "⚠️", "failed": "❌", "skipped": "⏭️"}
 
@@ -105,10 +110,10 @@ def _call(base_url: str, api_key: str | None, method: str, path: str,
         raise _HTTPStatus(exc.code, body or str(exc.reason)) from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"连不上 {base_url}: {exc.reason}") from exc
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, http.client.HTTPException) as exc:
         # urlopen 只把【发请求】那一段的错包成 URLError; 等响应 / 读响应体时的超时、
-        # 断连是裸 OSError, 回包不是 JSON 是 ValueError。统一成 RuntimeError, 轮询那边
-        # 才能一律当瞬时失败数。
+        # 断连是裸 OSError, 回包被提前截断是 http.client.IncompleteRead (它不是 OSError),
+        # 回包不是 JSON 是 ValueError。统一成 RuntimeError, 轮询那边才能一律当瞬时失败数。
         raise RuntimeError(f"{method} {path}: {type(exc).__name__}: {exc}") from exc
 
 
@@ -126,7 +131,9 @@ def _post_onboard(base_url: str, api_key: str | None, payload: dict, timeout: in
         raise RuntimeError(f"--remote 只接受 http(s):// 地址,收到 {base_url!r}")
     deadline = time.monotonic() + timeout
     try:
-        job = _call(base_url, api_key, "POST", "/onboard/jobs", payload, POLL_REQUEST_TIMEOUT)
+        # 只提交一次, 不重试: 提交失败重试可能在服务端留下两个同样的作业。
+        job = _call(base_url, api_key, "POST", "/onboard/jobs", payload,
+                    min(timeout, SUBMIT_TIMEOUT))
     except _HTTPStatus as exc:
         if exc.code not in (404, 405):
             raise
@@ -141,7 +148,7 @@ def _post_onboard(base_url: str, api_key: str | None, payload: dict, timeout: in
     while True:
         if time.monotonic() >= deadline:
             raise RuntimeError(f"等了 {timeout}s 还没起草完(作业 {job_id[:6]}…, 服务端可能还在跑);"
-                               "加大 --timeout 重跑这张")
+                               "重跑这张(本地跑可加大 --timeout)")
         time.sleep(POLL_INTERVAL)
         try:
             st = _call(base_url, api_key, "GET", f"/onboard/jobs/{job_id}", None,

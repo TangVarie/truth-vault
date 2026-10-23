@@ -5561,7 +5561,9 @@ jobs:
           assert (out / "SLOW_p1.yaml").exists(), f"起草比边缘的单请求上限长就拿不到结果了:\n{log}"
           assert (out / "OK3_p1.yaml").exists() and not (out / "BAD_p1.yaml").exists(), log
           assert "退回同步" not in log, "新服务端有 jobs 端点却走了同步 /onboard"
-          assert "HTTP 400" in log and "tbl1" in log, f"作业里的输入错误没按 400 + 原文报出来:\n{log}"
+          # 断言服务端那句原文 —— "tbl1" 在 SLOW_p1 的链接里本来就有, 不能拿它当证据
+          assert "HTTP 400: LinkError: 这个 base 有多张表" in log, \
+              f"作业里的输入错误没按 400 + 原文报出来:\n{log}"
           assert rc == 1, rc
           print("  ✓ 同步 /onboard 穿过边缘会 502 (复现 10-23) · 走作业就拿得到结果"
                 " · 作业里的 400 原样报出 · 一张失败不带走整批")
@@ -5597,6 +5599,53 @@ jobs:
                   _codes.append(_e.code)
           assert _codes == [202] * OA2.MAX_RUNNING_JOBS + [429], _codes
           print("  ✓ 总等待到点 → 失败并提示 --timeout · 作业丢了 → 404 · 同时在跑有上限 (429)")
+          # 轮询这一侧的两种异常 —— 客户端自己的分支, 上面那台真服务端造不出来:
+          #   · 回包被截断 (边缘/中间盒提前关了连接, 抛 IncompleteRead, 它不是 OSError)
+          #     → 算一次瞬时失败, 下一轮照常拿到结果, 不能把这张判死
+          #   · 作业中途没了 (onboarder 重启/重部署) → 404 → 这张马上失败,
+          #     不能一直轮询到 --timeout (默认 20 分钟)
+          SCRIPT = {"TRUNC_p1": ["running", "truncated", "running"],
+                    "GONE_p1": ["running", "gone"]}
+          class Jobs(BaseHTTPRequestHandler):
+              def log_message(self, *a): pass
+              def _send(self, code, obj, truncate=False):
+                  raw = json.dumps(obj, ensure_ascii=False).encode()   # 和 FastAPI 一样回 UTF-8
+                  self.send_response(code)
+                  # 截断: 声明的长度比实际多, 写完就关连接
+                  self.send_header("Content-Length", str(len(raw) + (64 if truncate else 0)))
+                  self.end_headers()
+                  self.wfile.write(raw)
+                  self.close_connection = True
+              def do_POST(self):
+                  n = int(self.headers.get("Content-Length") or 0)
+                  self._send(202, {"job_id": json.loads(self.rfile.read(n))["project_id"]})
+              def do_GET(self):
+                  jid = self.path.rsplit("/", 1)[-1]
+                  step = SCRIPT[jid].pop(0) if SCRIPT[jid] else "done"
+                  if step == "gone":
+                      SCRIPT[jid] = ["gone"]           # 没了就一直没了
+                      self._send(404, {"detail": "没有这个作业: 过期了, 或 onboarder 重启/重部署过"})
+                  elif step in ("running", "truncated"):
+                      self._send(200, {"status": "running", "elapsed_s": 1}, truncate=step == "truncated")
+                  else:
+                      self._send(200, {"status": "done", "result": {
+                          "mapping_yaml": f"project_id: {jid}\nfield_mapping: {{}}\n",
+                          "review_brief": "b", "errors": [], "uncovered": [], "pending": [],
+                          "is_error": False}})
+          _js = HTTPServer(("127.0.0.1", 0), Jobs)
+          threading.Thread(target=_js.serve_forever, daemon=True).start()
+          shutil.rmtree(out, ignore_errors=True); out.mkdir(parents=True)
+          _t0 = _t.monotonic()
+          rc, log = run(["--spec", "TRUNC_p1 | https://x.feishu.cn/base/App?table=tbl1\n"
+                                   "GONE_p1  | https://x.feishu.cn/base/App?table=tbl2",
+                         "--remote", f"http://127.0.0.1:{_js.server_address[1]}", "--api-key", "k",
+                         "--out-dir", str(out), "--timeout", "30"])
+          _el = _t.monotonic() - _t0
+          assert (out / "TRUNC_p1.yaml").exists(), f"一次被截断的轮询回包就把这张判死了:\n{log}"
+          assert not (out / "GONE_p1.yaml").exists() and "HTTP 404" in log and "重启" in log, log
+          assert rc == 1 and _el < 10, f"作业没了还在轮询 ({_el:.0f}s, rc={rc}):\n{log}"
+          _js.shutdown()
+          print("  ✓ 轮询回包被截断 → 下一轮照常拿结果 · 作业中途没了 → 马上失败, 不等到 --timeout")
           _edge.shutdown()
           _srv.should_exit = True
           core.draft = _orig_draft
