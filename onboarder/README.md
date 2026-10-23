@@ -32,10 +32,17 @@
 (librarian 就在上面)。所以:**Railway 跑 LLM,GitHub 只做 git**。
 
 ```
-GitHub「Run workflow」填表 ──HTTP──▶ Railway /onboard(连网关+飞书,出草稿)
-                                          │ 返回 {mapping_yaml, review_brief, ...}
+GitHub「Run workflow」填表 ──HTTP──▶ Railway /onboard/jobs(后台起草:连网关+飞书)
+                                          │ 马上回 {job_id};GH 每 5 秒 GET /onboard/jobs/<id>
+                                          │ 跑完返回 {mapping_yaml, review_brief, ...}
    GH Action 写文件 + 推 onboarder/draft-<id> 分支 ◀──┘ → 打印开 PR 链接 → 人审
 ```
+
+> **为什么是作业 + 轮询(I-21,2026-10-23)**:宽表(52 / 48 列)起草一次就超过 5 分钟,
+> 调用方和 Railway 边缘都在 ~5 分钟断开 —— 服务端跑完、回了 200,结果却丢了。现在
+> 单个请求都是秒级的,一张表最多等 `--timeout`(默认 1200 秒)。作业在 onboarder
+> 进程内存里:重部署会丢正在跑的那张,重跑它即可。同步的 `POST /onboard` 还在,
+> 服务端还没部署这一版时客户端会自动退回去(日志里有「退回同步」)。
 
 **① Railway:新建一个 service**(与 librarian 并存,同一 repo):
 - root = repo 根;build `pip install -r onboarder/requirements.txt`;
