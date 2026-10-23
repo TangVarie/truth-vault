@@ -83,14 +83,20 @@ from datetime import datetime, timedelta, timezone
 
 DEFAULT_WINDOW_DAYS = 7
 # 判据 A 的两道门(W-29, 按每一轮发牌判):
-#   MIN_DRAW_CARDS —— 一轮至少几张才判。主写手真交付的一轮是 10–24 张(10-20..10-22: 途鸽 10/15/16/16/16、
-#     百健士成人藻油 16 / 24); 一轮一两张、三四张是试抽或只写一篇的零碎发牌, 没存档的代价只是占了一天避重
-#     (占位 1 天自然过期), 不值得点名(D-053)。取 5 = 最小一轮真交付(10 张)的一半: 砍半的一轮照样点名, 零碎试抽不喊。
+#   MIN_DRAW_CARDS —— 一轮至少几张才单独点名。主写手一轮常见 5–24 张(10-12 / 10-14 有不少 5 张一轮的真交付;
+#     10-20..10-22: 途鸽 10/15/16/16/16、百健士成人藻油 16 / 24)。不到 5 张的一轮单独没存档, 代价只是占了一天避重
+#     (占位 1 天自然过期), 不值得一轮一行地点名(D-053); 过去 30 天里不到 5 张的 3 轮其实都存了档。但零碎轮次
+#     不能整个放过: 同一人在同一项目上不到 5 张的轮次合起来 >= SMALL_DRAWS_TOTAL 张、而他在这个项目上一轮都没
+#     存档, 照样点名(见 _small_unsettled) —— 改成按轮判之前, 按项目的旧判据抓得到这种形状, 不能改丢。
 #   DRAW_GRACE_HOURS —— 发出多久之后才判。存档顺利的轮次在最后一次 check_drafts 之后 25–80 秒就存了, 10-21 那次
 #     假警报的一轮晚了 17 分钟; 夜跑实际 08–09 时(UTC)起跑, 12 小时让临近夜跑才发的牌留到下一晚判, 不会因为
 #     "还在写"被点名, 而前一晚之前发的每一轮都判得到(最晚隔一晚, 远在 7 天窗口之内)。
 MIN_DRAW_CARDS = 5
 DRAW_GRACE_HOURS = 12
+# 零碎轮次(每轮 < MIN_DRAW_CARDS 张)合起来到这个数才判 —— 沿用旧判据「一周发牌 >= 10 张、一篇没写」的门。
+SMALL_DRAWS_TOTAL = 10
+# 「也可能是存了档但没带 angle_key」那句提示的窗口: 这一轮发牌后多久之内, 同项目有不带坐标的真稿才算数。
+NOKEY_AFTER_HOURS = 24
 # 判据 B 的下限: 低于它不喊。一次发牌 2-5 张、当场只写一两篇是正常节奏。
 MIN_DRAFTS = 5
 # 判据 C 的下限: 一周补录 >= 10 篇且对上 <= 2 篇才喊。10-12 那周 sportsix 补录 12 / 对上 18、
@@ -110,6 +116,14 @@ def _utc(ts: str) -> datetime:
     return (t if t.tzinfo else t.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
 
 
+def _utc_or_none(ts) -> datetime | None:
+    """同 _utc, 解析不了(空、或不是时刻文本)就回 None。只给提示 / 兜底那几处用: 夜跑不能因为一个怪值整个崩掉。"""
+    try:
+        return _utc(ts) if ts else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _unsettled_draws(draws: list[dict], now: datetime) -> tuple[list[dict], list[dict]]:
     """够张数、一张没销账的轮次, 分成 (满宽限期的, 还在宽限期里的)。"""
     cutoff = now - timedelta(hours=DRAW_GRACE_HOURS)
@@ -119,6 +133,28 @@ def _unsettled_draws(draws: list[dict], now: datetime) -> tuple[list[dict], list
             continue
         (due if _utc(d["drawn_at"]) <= cutoff else pending).append(d)
     return due, pending
+
+
+def _small_unsettled(draws: list[dict], now: datetime) -> list[dict]:
+    """零碎轮次的兜底: 同一人、同一项目, 每轮 < MIN_DRAW_CARDS 张、发出满宽限期、一张没销账的轮次合起来
+    >= SMALL_DRAWS_TOTAL 张, 而且这个人在这个项目上窗口内一轮都没销过账。返回每组一格。"""
+    cutoff = now - timedelta(hours=DRAW_GRACE_HOURS)
+    settled, groups = set(), {}
+    for d in draws:
+        key = (d.get("drawn_by"), d["project_id"])
+        if d["consumed"] > 0:
+            settled.add(key)
+            continue
+        at = _utc_or_none(d.get("drawn_at"))
+        if d["cards"] >= MIN_DRAW_CARDS or at is None or at > cutoff:
+            continue
+        g = groups.setdefault(key, {"project_id": d["project_id"], "name": d.get("name"),
+                                    "drawn_by": d.get("drawn_by"), "rounds": 0, "cards": 0,
+                                    "first": at, "last": at})
+        g["rounds"] += 1
+        g["cards"] += d["cards"]
+        g["first"], g["last"] = min(g["first"], at), max(g["last"], at)
+    return [g for k, g in groups.items() if k not in settled and g["cards"] >= SMALL_DRAWS_TOTAL]
 
 
 def verdicts_draws(draws: list[dict], now: datetime) -> list[dict]:
@@ -133,7 +169,14 @@ def verdicts_draws(draws: list[dict], now: datetime) -> list[dict]:
         at = _utc(d["drawn_at"])
         out.append({"project": d.get("name") or d["project_id"], "project_id": d["project_id"],
                     "kind": "drawn_unwritten", "drawn": d["cards"], "drawn_by": d.get("drawn_by"),
+                    "rounds": 1, "nokey_drafts": d.get("nokey_drafts", 0),
                     "at": at, "detail": f"{at:%m-%d %H:%M} UTC 发牌 {d['cards']}、销账 0"})
+    for g in _small_unsettled(draws, now):
+        out.append({"project": g.get("name") or g["project_id"], "project_id": g["project_id"],
+                    "kind": "drawn_unwritten_small", "drawn": g["cards"], "drawn_by": g.get("drawn_by"),
+                    "rounds": g["rounds"], "nokey_drafts": 0, "at": g["first"],
+                    "detail": (f"{g['first']:%m-%d %H:%M}–{g['last']:%m-%d %H:%M} UTC 零碎发牌 {g['rounds']} 轮"
+                               f"(每轮不到 {MIN_DRAW_CARDS} 张)共 {g['cards']} 张、销账 0")})
     return sorted(out, key=lambda h: (h["project"], h["at"]))
 
 
@@ -266,12 +309,14 @@ def report(stats: dict, window_days: int, now: datetime | None = None) -> int:
     if unwritten:
         # 一轮一行, 夜跑日志里直接读得出「哪个项目、哪一刻发的、几张、销了几张」。
         print(f"  抽完没写 · 判据 A(每一轮: >= {MIN_DRAW_CARDS} 张、发出满 {DRAW_GRACE_HOURS} 小时、一张没销账):")
-        b_pids = {h["project_id"] for h in unattr}
         for h in unwritten:
-            also = (" —— 这个项目也命中判据 B, 也可能是存了档但没带 angle_key"
-                    if h["project_id"] in b_pids else "")
+            # 按这一轮判, 不按整个项目是否命中 B(review on W-29): 项目别处有带坐标的稿子时 B 不响, 但这一轮
+            # 之后确实有不带坐标的真稿(D-071 Hatherine-D2 那种: 存了档、没带 angle_key) —— 不提一句就会让人去
+            # 找一个其实发生过的 score_drafts。反过来项目命中 B、这一轮之后却没有无坐标的稿, 也不该带这句。
+            also = (f" —— 发牌后 {NOKEY_AFTER_HOURS} 小时内这个项目有 {h['nokey_drafts']} 篇真稿没带 angle_key, "
+                    "也可能是存了档但没带坐标" if h.get("nokey_drafts") else "")
             print(f"    · {h['project']} {h['detail']}{also}")
-        parts.append(f"抽完没写 {len(unwritten)} 轮: "
+        parts.append(f"抽完没写 {sum(h.get('rounds', 1) for h in unwritten)} 轮: "
                      + "; ".join(f"{h['project']} {h['detail']}" for h in unwritten))
     if unattr:
         parts.append("写了不带坐标: " + "; ".join(f"{h['project']}({h['detail']})" for h in unattr))
@@ -348,6 +393,7 @@ def gather(sb, since_iso: str) -> dict:
         if a.get("consumed_version_id"):
             s["consumed"] += 1
             d["consumed"] += 1
+    nokey: dict[str, list[datetime]] = {}            # 项目 → 不带坐标的真稿的入库时刻(给每轮那句提示用)
     for f in fps:
         if f.get("version_id") in ingested:
             continue
@@ -355,6 +401,13 @@ def gather(sb, since_iso: str) -> dict:
         s["drafts"] += 1
         if f.get("angle_key"):
             s["with_key"] += 1
+        elif (t := _utc_or_none(f.get("created_at"))) is not None:
+            nokey.setdefault(f["project_id"], []).append(t)
+    for d in draws.values():
+        start = _utc_or_none(d.get("drawn_at"))
+        d["nokey_drafts"] = 0 if start is None else sum(
+            1 for t in nokey.get(d["project_id"], ())
+            if start <= t <= start + timedelta(hours=NOKEY_AFTER_HOURS))
     return {"by_project": by_project, "ingested_skipped": len(ingested), "draws": list(draws.values())}
 
 
@@ -456,10 +509,34 @@ def selftest() -> int:
     rc, out = run({"by_project": fp_proj, "ingested_skipped": 0, "draws": [D(fp_at, 16)]}, now=fp_run)
     assert rc == 0 and "1 轮发牌" in out and "下一晚再判" in out and "抽完没写" not in out, out
     assert A(D(fp_at, 16, consumed=16), now=fp_run + timedelta(days=1)) == []
-    # 同一个项目判据 B 也命中时, 那一轮的行要点明「也可能是存了档但没带 angle_key」, 别把病因说死
-    rc, out = run({"by_project": {"x": {"name": "X", "drawn": 16, "consumed": 0, "drafts": MIN_DRAFTS, "with_key": 0}},
-                   "ingested_skipped": 0, "draws": [D(ago(30), 16, pid="x", name="X")]}, now=NOW)
-    assert rc == 1 and "· X " in out and "也命中判据 B" in out and "写了不带坐标" in out, out
+    # 「也可能是存了档但没带 angle_key」按这一轮判, 不按项目是否命中 B(review on W-29):
+    #   项目别处有带坐标的稿(B 不响), 但这一轮之后有不带坐标的真稿 → 带这句(Hatherine-D2 那种, D-071)
+    keyed = {"x": {"name": "X", "drawn": 16, "consumed": 0, "drafts": 12, "with_key": 9}}
+    rc, out = run({"by_project": keyed, "ingested_skipped": 0,
+                   "draws": [dict(D(ago(30), 16, pid="x", name="X"), nokey_drafts=3)]}, now=NOW)
+    assert rc == 1 and "· X " in out and "有 3 篇真稿没带 angle_key" in out and "写了不带坐标" not in out, out
+    #   项目命中 B, 但这一轮之后没有无坐标的稿 → 不带这句, 别把病因说成"没带坐标"
+    nokeyp = {"x": {"name": "X", "drawn": 16, "consumed": 0, "drafts": MIN_DRAFTS, "with_key": 0}}
+    rc, out = run({"by_project": nokeyp, "ingested_skipped": 0,
+                   "draws": [dict(D(ago(30), 16, pid="x", name="X"), nokey_drafts=0)]}, now=NOW)
+    assert rc == 1 and "· X " in out and "写了不带坐标" in out and "真稿没带 angle_key" not in out, out
+
+    # 零碎轮次的兜底: 同一人同一项目 4 轮 × 3 张 = 12 张、一轮都没存 → 点名; 合起来 9 张 / 这个人在这个项目上
+    # 存过一轮 / 还在宽限期里的, 都不点名(改成按轮判之前, 按项目的旧判据抓得到这种, 不能改丢)
+    S3 = lambda h, by="w1", consumed=0: dict(D(ago(h), 3, consumed=consumed, pid="h1", name="Hatherine"),  # noqa: E731
+                                             drawn_by=by)
+    small = [S3(30), S3(40), S3(50), S3(60)]
+    got = verdicts_draws(small, NOW)
+    assert [(h["project"], h["drawn"], h["rounds"]) for h in got] == [("Hatherine", 12, 4)], got
+    assert "零碎发牌 4 轮" in got[0]["detail"] and "共 12 张" in got[0]["detail"], got
+    assert verdicts_draws(small[:3], NOW) == [], "合起来 9 张不到 SMALL_DRAWS_TOTAL, 不该喊"
+    assert verdicts_draws(small + [S3(20, consumed=3)], NOW) == [], "同一人在这个项目上存过一轮, 零碎的不喊"
+    assert verdicts_draws(small[:3] + [S3(1)], NOW) == [], "宽限期里的零碎轮次不算进去"
+    assert verdicts_draws([S3(30), S3(40), S3(50, by="w2"), S3(60, by="w2")], NOW) == [], "两个人各 6 张, 不并"
+    rc, out = run({"by_project": {"h1": {"name": "Hatherine", "drawn": 12, "consumed": 0, "drafts": 0,
+                                         "with_key": 0}}, "ingested_skipped": 0, "draws": small}, now=NOW, gha=True)
+    warn = [ln for ln in out.splitlines() if ln.startswith("::warning")]
+    assert rc == 1 and "零碎发牌 4 轮" in out and len(warn) == 1 and "抽完没写 4 轮" in warn[0], out
 
     P = lambda drawn, drafts: {"name": "x", "drawn": drawn, "consumed": drafts,  # noqa: E731
                                "drafts": drafts, "with_key": drafts}   # A / B 都不该响, 只看 C
@@ -575,7 +652,7 @@ def selftest() -> int:
                     + cards("h1", "2026-10-20T09:00:00.000+00:00", 3)                    # 零碎试抽, 两个人
                     + cards("h1", "2026-10-20T09:00:00.000+00:00", 3, by="w2"))          # 同一刻: 是两轮, 不是一轮 6 张
         FPS_A = ([{"id": "fp-manual", "project_id": "d1", "angle_key": None, "version_id": "v-manual",
-                   "created_at": "2026-10-21T10:00:00+00:00"}]                            # 途鸽那条手工入库的稿
+                   "created_at": "2026-10-20T05:49:50+00:00"}]                            # 途鸽那条手工入库的稿(真实时刻: 第一轮之前)
                  + [{"id": f"fp-ing{i}", "project_id": "d1", "angle_key": None, "version_id": f"v-ing{i}",
                      "created_at": "2026-10-22T04:00:00+00:00"} for i in range(18)]       # tv-sync 补录的 18 条
                  + [{"id": f"fp-b{i}", "project_id": "b1", "angle_key": f"k{i}", "version_id": f"v-b{i}",
@@ -600,6 +677,22 @@ def selftest() -> int:
         assert got == [("百健士成人藻油", "10-22 06:57", 24),
                        ("途鸽", "10-20 07:05", 10), ("途鸽", "10-21 02:54", 15), ("途鸽", "10-21 07:38", 16),
                        ("途鸽", "10-22 05:21", 16), ("途鸽", "10-22 06:32", 16)], got
+        # 每轮那句提示的取数: 只数这一轮发牌后 NOKEY_AFTER_HOURS 小时内、同项目、不是 tv-sync 副本、不带坐标的真稿。
+        # 途鸽那条手工入库在第一轮之前 → 五轮都是 0; 18 条补录副本不算 → 也是 0。
+        assert {d["drawn_at"][:16]: d["nokey_drafts"] for d in st["draws"] if d["project_id"] == "d1"
+                and d["drawn_at"] >= "2026-10-20"} == {at[:16]: 0 for at, _ in TUGE}, st["draws"]
+        FPS_A.append({"id": "fp-nokey", "project_id": "d1", "angle_key": None, "version_id": "v-nokey",
+                      "created_at": "2026-10-21T07:20:00+00:00"})                        # 10-21 02:54 那轮之后 4.5 小时
+        try:
+            st2 = gather(SBA(), (NOW - timedelta(days=DEFAULT_WINDOW_DAYS)).isoformat())
+        finally:
+            FPS_A.pop()
+        nk = {d["drawn_at"][:16]: d["nokey_drafts"] for d in st2["draws"] if d["project_id"] == "d1"
+              and d["drawn_at"] >= "2026-10-20"}
+        assert nk["2026-10-21T02:54"] == 1, nk
+        assert nk["2026-10-20T07:05"] == 0, f"发牌满 {NOKEY_AFTER_HOURS} 小时之后才入库的不算: {nk}"
+        assert nk["2026-10-21T07:38"] == 0 and nk["2026-10-22T05:21"] == 0, f"发牌之前入库的不算: {nk}"
+
         # 反证: 分组键漏了 drawn_by → Hatherine 两个人同一刻的 3 + 3 并成一轮 6 张, 越过下限冒出假警报
         merged = [dict(d, cards=6) for d in st["draws"] if d["project_id"] == "h1"][:1]
         assert [h["project"] for h in verdicts_draws(merged, NOW)] == ["Hatherine"], "反证前提不成立"
@@ -634,7 +727,8 @@ def selftest() -> int:
         else:
             sys.modules["_common"] = saved
     print("  ✓ 判据 A: 按每一轮发牌判 —— 途鸽五轮不被一条手工入库盖住、24 / 0 那轮不被同项目存了档的一轮盖住、"
-          "17 分钟后存档的不喊、部分销账不喊、零碎试抽不喊、同一刻两个人是两轮")
+          "17 分钟后存档的不喊、部分销账不喊、零碎试抽单独不喊但合起来够数照喊、同一刻两个人是两轮、"
+          "「没带坐标」的提示按这一轮判")
     print("  ✓ 判据 C: 途鸽 / Hatherine 两种形状分开报、下限在、没用过写作台的不喊、一张牌没发也照喊、取数翻页键唯一")
     return 0
 
