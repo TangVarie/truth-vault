@@ -1,3 +1,5 @@
+> **10-23 更新（先读这条）：** Railway 已恢复，钥匙已换完；交接执行书 A、B、C 已完成（#121、模板 + 迁移 015、#117 `e3bc3fb`）。下面 10-22 这一节里「暂停期间不改 Railway」「等恢复」都已过时，现状看 [OPEN-ITEMS](OPEN-ITEMS.md) 顶部。
+
 # ⚠️ Railway 泄露 · 2026-10-22（先读这条）
 
 Railway 10-21 公告：环境变量被未授权访问，部分被解密；全平台暂停构建 / 部署，非 Enterprise 还没恢复。**owner 10-22：等 Railway 官方通知，暂停期间不改 Railway。** 交接执行书里所有要在 Railway 上做的步骤（A–D、W-23 补跑）都等恢复后再做。恢复时先按 [事件记录](docs/incident-railway-2026-10-22.md) §4.2 换密钥、按顺序部署。Supabase 旧版 service_role 暂不停用，每 3 小时巡检日志，有异常立刻停用。

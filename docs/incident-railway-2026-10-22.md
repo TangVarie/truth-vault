@@ -105,7 +105,7 @@
 - 和计划不同的地方：已停的 Streamlit 服务和旧 Supabase 项目 `vnbcytilakkxojhgzeqr` 都已经不在了，不用处理；没跑 curl 冒烟，改为各服务上线后看日志全部 200 来确认；`preflight` 原来用的 NRT_phase3 飞书表已经不存在，改用 XIWU_phase2 跑绿。
 - Railway 审计日志只能查到 10-22 06:41 UTC（北京 14:41）以后，之前的变量改动只能按当前值核：地址类变量都对，4.2 第 2 步列的禁用类变量一个都没有。
 - owner 决定保留不换的少数几把旧钥匙、各服务具体换上了哪一把，记在 owner 的私人交接文档里。本仓是公开仓，这里不写。
-- 剩下的复查：10-23 14:00 UTC tv-sync、当夜 features-sync 与次日 daily-sync 的 Actions、10-26 周一 Jev 外部语料首跑（新 TikHub key）。复查发现漏换的持有者会以 401 出现：先给它换新钥匙；来不及时可在 Supabase → API Keys → Legacy 临时重新启用旧钥匙，修好后再停用。
+- 剩下的复查：10-23 14:00 UTC tv-sync、当夜 features-sync 与次日 daily-sync 的 Actions、10-26 周一 Jev 外部语料首跑（新 TikHub key）。复查发现漏换的持有者会以 401 出现：在 Supabase → API Keys 给它新建一把 `sb_secret_`（一分钟），填进去、重新部署。**不要重新启用旧版 JWT 钥匙**：旧 service_role / anon 按已泄露处理，重新启用等于把泄露的口子重新打开，而且一启用就是全部持有者都能用。
 
 ## 5. 这份清单挡不住什么
 
