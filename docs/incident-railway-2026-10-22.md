@@ -9,7 +9,7 @@
   - 作废全部 Railway API token（10-22 04:17 UTC）；
   - 作废 GitHub 连接 token（要重新连接 GitHub，否则不能从 GitHub 部署）；
   - 轮换 bucket 凭据（我们没用 bucket）。
-- 构建 / 部署全平台暂停。10-22 03:32 UTC 起只恢复了 Enterprise，其他档位没有 ETA。
+- 构建 / 部署全平台暂停。10-22 03:32 UTC 起只恢复了 Enterprise。**之后陆续恢复**：Pro 10-22 07:11 UTC，Hobby 21:59 UTC，22:41 UTC 起 Hobby / Pro / Enterprise 正常，23:22 UTC 连 Free / Trial 也恢复；10-23 02:19 UTC status 页仍是「Identified」，事故报告还没出，受影响的客户在逐个发邮件通知。暂停期间 cron 照常在跑（tv-sync 10-22 14:01、linkcheck 巡查都有记录），停的只是构建和部署。
 - **变量要重新部署才会生效**，所以在恢复之前，Railway 上的服务改了变量也用不上新值。
 - Railway 说攻击者的目标是 AI 推理服务的 key，并已通知上游服务商主动作废。没有列出是哪几家，不能假定我们的 key 已经被作废。
 - **owner 10-22 决定**：等 Railway 官方通知，暂停期间不改 Railway 上的任何东西。
