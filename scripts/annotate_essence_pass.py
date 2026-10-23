@@ -52,6 +52,7 @@ from typing import Any, Optional
 from _common import (
     fetch_all_pages,
     get_supabase_client,
+    is_gateway_filtered,
     load_mapping,
     setup_logger,
     _direction_key,
@@ -787,6 +788,15 @@ def _annotate_with_retry(prompt: str, model: str, cached_system: str | None = No
     return parsed2, [], raw2, True
 
 
+def _classify_api_failure(errors: list) -> Optional[str]:
+    """_annotate_with_retry 失败时的 errors → "systemic"(api 挂了) / "gateway_filtered"(api 挂的
+    全是中转站敏感词拦截, D-125: 这一篇的内容问题, 按单篇计) / None(纯校验类)。"""
+    api_errs = [e for e in errors if str(e).startswith(("api_error", "retry_api_error"))]
+    if not api_errs:
+        return None
+    return "gateway_filtered" if all(is_gateway_filtered(e) for e in api_errs) else "systemic"
+
+
 def _exit_code_for_stats(stats: dict) -> int:
     """essence pass 退出码(对齐 curate #56「仅全军覆没才判失败」)。
 
@@ -800,11 +810,16 @@ def _exit_code_for_stats(stats: dict) -> int:
     - 仅【纯校验类】失败(坏 JSON / 越界词表 = 单条 LLM 内容抽风)是【幂等】的(下轮续标), 即便
       ok==0 也【不判失败】—— 否则近乎标完的项目只剩 1 条卡壳笔记(批 ok=0)被误判"全军覆没"每晚
       拖红(#55 实测 HXZ_QD/TXQ 各剩 1 条)。【只】豁免它, 其余一律计 systemic(fail-safe)。
+    - 中转站敏感词拦截(gateway_filtered, D-125)= 这一篇的内容被中转站拦, 和纯校验类一样按单篇算、
+      幂等续标, 不计 systemic。但一轮里 ≥3 篇被拦且一篇没成 → 判红: 那更像中转站整体开了/收紧了拦截,
+      不是哪一篇的事。
     - 其余(含 no-op 空跑)→ 0。
     """
     if stats.get("hygiene_failed"):
         return 1
     if stats.get("systemic_failed", 0) > 0 and stats.get("ok", 0) == 0:
+        return 1
+    if stats.get("gateway_filtered", 0) >= 3 and stats.get("ok", 0) == 0:
         return 1
     return 0
 
@@ -846,7 +861,7 @@ def main() -> int:
 
     failed_queue_path = Path(args.failed_queue).resolve()
     stats = {"ok": 0, "ok_after_retry": 0, "failed_after_retry": 0,
-             "systemic_failed": 0,
+             "systemic_failed": 0, "gateway_filtered": 0,
              "hygiene_failed": 0,
              "sub_dir_ok": 0, "sub_dir_failed": 0, "sub_dir_not_applicable": 0}
     sleep_s = 1.0 / args.qps if args.qps > 0 else 0
@@ -911,7 +926,12 @@ def main() -> int:
             # 失败归类(见 _exit_code_for_stats):只豁免【纯校验类】(json_parse / 越界词表 =
             # 单条 LLM 内容抽风, 幂等);api_error/连通(余额/限流/鉴权/连不上)= 基础设施 → 计 systemic。
             # _annotate_with_retry 返回闭集(api_error/retry_api_error 或 json/vocab), 故"非 api 即校验类"。
-            if any(str(e).startswith(("api_error", "retry_api_error")) for e in errors):
+            kind = _classify_api_failure(errors)
+            if kind == "gateway_filtered":
+                stats["gateway_filtered"] += 1
+                logger.warning("gateway_filtered %s: 中转站敏感词拦截, 本篇跳过, 下轮再试 (D-125)",
+                               note["note_id"])
+            elif kind == "systemic":
                 stats["systemic_failed"] += 1
             _append_failed_queue(
                 failed_queue_path, note, args.project_id, errors, last_raw
@@ -967,6 +987,9 @@ def main() -> int:
         if stats["hygiene_failed"]:
             logger.error("essence 卫生断言失败 %d 条 —— prompt/project context 漂移"
                          "(label-leakage 风险), 需排查。", stats["hygiene_failed"])
+        elif not stats["systemic_failed"]:
+            logger.error("essence 全部失败, 其中 %d 篇被中转站敏感词拦截 —— 像是中转站整体开了/收紧了"
+                         "拦截, 找中转站 (D-125)。", stats["gateway_filtered"])
         else:
             logger.error("essence 全部失败 (%d 条) —— 多半系统性(模型 env / 余额 / 限流), 需排查。",
                          stats["failed_after_retry"])

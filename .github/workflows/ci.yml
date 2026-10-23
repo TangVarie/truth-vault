@@ -60,6 +60,7 @@ jobs:
             scripts/gate1_labels.py \
             scripts/check_feature_parse.py \
             scripts/check_feature_orchestration.py \
+            scripts/check_gateway_filter.py \
             scripts/check_onboarder_jobs.py \
             scripts/check_comment_parser.py \
             scripts/check_gate1_ingest.py \
@@ -1222,6 +1223,9 @@ jobs:
       - name: "特征层守卫 8 · 回复容错解析 + 没答的单题兜底 (D-083)"
         working-directory: scripts
         run: python check_feature_parse.py
+      - name: "中转站敏感词拦截按单篇内容问题计: 特征层那几题 NULL 落库、essence 不误判红; 全拦仍红 (D-125)"
+        working-directory: scripts
+        run: python check_gateway_filter.py
       - name: "特征层编排自检 · 假模型 + 假库端到端: 31 行/篇、6 组 + 重问、任一组挂整篇不落行、写序 raw→answers、resume 判据、code-only"
         working-directory: scripts
         run: python check_feature_orchestration.py   # D-085 起含 --done-by 判据; 原内联块逐字搬进去 (D-075)

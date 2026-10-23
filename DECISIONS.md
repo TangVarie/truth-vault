@@ -7166,3 +7166,31 @@ NUC_phase1_recv2jCgov51Yz,NUC_phase1_recv2lNktp6h13,NUC_phase1_recv2lNktpokW9,NU
 ### 2026-10-22 补记（读了 linkcheck）
 
 「风控中」不只是人填：巡查机器人 linkcheck 在链接确认失效、上游标违规时也会写，而且它写的、人写的都从不摘（[ops-answers-2026-10-22](data-analysis/ops-answers-2026-10-22.md) §8.2）。评估 §7.1「不覆盖已有的风控中」已证实；同条里「疑似限流恢复后自动摘」不成立，linkcheck 也从不摘疑似限流。否决位的结论不变。
+
+## D-125 · 中转站敏感词拦截按「这一篇的内容问题」计，不算系统性失败（2026-10-23，I-23）
+
+来源：10-23 夜跑 features-sync 里 XIWU_phase2 最后 3 批各有 1 篇 systemic。单篇重放 6 次都一样，TV#232 把原因打进日志后看到是中转站回的 `500 · sensitive_words_detected`。那篇正文里有个词在中转站词表里。正文本身发得过去（只给正文的组照常答了），被拦的是要引原句做证据的几组，所以拦的多半是模型的回复。同一篇在 daily-sync 的 essence 里也每天失败。
+
+以前它按 api_error 记 systemic，有三个后果：
+
+- 特征层整篇不落行；按 note_id 排第一，每批两个名额占一个，XIWU_phase2 当晚只跑了一半。
+- 项目只剩它一篇时 features-sync 判红（大约 4 晚后）。
+- essence 里 XIWU_phase2 已经只剩它一篇，第二天的 daily-sync 会判红（同 #55 那种「只剩 1 条卡壳就每晚拖红」）。
+
+定：
+
+- 特征层：被拦的组那几题记 NULL、`invalid_reason = 'gateway_filtered'`，其余组照常，整篇落库（标记题被拦也落，行在就算跑过）。
+  - 模型题全被拦仍按 systemic，整篇不落行。整篇只剩 NULL 落库就再也不会重抽，中转站整体收紧拦截时会悄悄写一库空答案，宁可红。
+- essence：失败全是被拦就记 `gateway_filtered`，不计 systemic，下轮照常再试。只剩这一篇时不判红。
+  - 一轮里 ≥3 篇被拦且一篇没成仍判红：那更像中转站整体开了拦截。
+- 识别：`_common.is_gateway_filtered` 认 `sensitive_words_detected`。重试次数不改：被拦看的像是回复，重发偶尔能过。
+- 日志：被拦的篇打一行 `gateway_filtered <note_id>`，features-sync / backfill-features / daily-sync 的输出都带出来。
+
+不做：不改写原文、不替换敏感词。证据要原样引用，改了原文证据硬闸就对不上。
+
+后续（I-23）：
+
+- 要不要请中转站对我们的 key 关掉敏感词拦截，由 owner 定。
+- 关了之后用 backfill-features `reannotate` 重抽记了 `gateway_filtered` 的篇，essence 那篇下一轮自然补上。
+
+守卫：`scripts/check_gateway_filter.py`（CI）。反证：拿掉识别后被拦的组回到 api_error + systemic；去掉「全被拦仍 systemic」或「≥3 篇全拦判红」各自都会红。

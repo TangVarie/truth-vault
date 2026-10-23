@@ -1420,6 +1420,18 @@ def fetch_vanished_note_ids(sb, project_id: Optional[str] = None) -> set[str]:
     return {r["note_id"] for r in fetch_all_pages(q, order_by="note_id")}
 
 
+# 中转站 (new-api) 的敏感词拦截: 回 HTTP 500, message 里是 "sensitive_words_detected"。这是【这一篇
+# 内容】的问题, 不是连通 / 余额 / 鉴权: 同一篇重发多半还被拦, 别的篇照常 (10-23 XIWU_phase2 一篇,
+# 正文里有个词在中转站词表里, 要引原句做证据的几组次次被拦)。标注 pass 用它把这类失败和真正的系统性失败分开计 (D-125)。
+GATEWAY_FILTER_MARKERS = ("sensitive_words_detected",)
+
+
+def is_gateway_filtered(err) -> bool:
+    """异常对象或错误串里带中转站敏感词拦截的标记。"""
+    s = f"{err!r} {err}" if isinstance(err, BaseException) else str(err)
+    return any(m in s for m in GATEWAY_FILTER_MARKERS)
+
+
 def setup_logger(name: str, level: str = "INFO") -> logging.Logger:
     logger = logging.getLogger(name)
     if logger.handlers:
