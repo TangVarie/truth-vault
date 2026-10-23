@@ -488,11 +488,17 @@ jobs:
         if: steps.check.outputs.skip != 'true' && always()
         working-directory: scripts
         run: |
-          python - <<'PY' || true
+          # C-20 (L-01, 10-23): 原来整段 `|| true`、只打印不断言 —— D-087 定「stale 连续两周全 0 再拿掉」。
+          # 10-09 ~ 10-22 十四晚每个项目都是 stale 0、这一段没崩过一次, 所以现在:
+          # stale_in_ssll > 0 (推过三省六部、现在不合格、回收没清掉) → 红; 读不到视图或没有这一列 → 红。
+          # gated 照旧只打印: 被闸挡住本来就是对的, 不是故障。
+          python - <<'PY'
+          import sys
           from _common import get_supabase_client
           sb = get_supabase_client()
           res = sb.schema("truth_vault").table("v_flywheel_sync_status").select("*").execute()
-          for r in (res.data or []):
+          rows = res.data or []
+          for r in rows:
               print(
                 f"  {r['project_id']:<16} "
                 f"baokuan={r['total_baokuan']:>3} | "
@@ -503,6 +509,20 @@ jobs:
                 f"ref={r['total_reference']:>3}(→ssll {r['synced_reference_to_ssll']}/{r['pending_reference_ssll']}) | "
                 f"last_ssll={r['last_baokuan_sync_to_ssll_at']}"
               )
+          if not rows:
+              print("::error title=飞轮同步状态读不到::v_flywheel_sync_status 一行都没有 —— 视图坏了或库连不上")
+              sys.exit(1)
+          missing = [r["project_id"] for r in rows if "stale_in_ssll" not in r]
+          if missing:
+              print("::error title=飞轮同步状态缺列::v_flywheel_sync_status 没有 stale_in_ssll(v1_19 被覆盖了?), "
+                    "推出去后不合格的样本看不见了")
+              sys.exit(1)
+          stale = {r["project_id"]: r["stale_in_ssll"] for r in rows if (r["stale_in_ssll"] or 0) > 0}
+          if stale:
+              print("::error title=三省六部里有不合格的样本没撤掉::"
+                    + ", ".join(f"{p} {n}" for p, n in sorted(stale.items()))
+                    + " —— 标着已推、现在不合格(D-087), 回收应当每晚清掉。先看上面同步三省六部那一步的回收日志")
+              sys.exit(1)
           PY
 
       - name: "夜跑用时离超时还有多远 (advisory, 不 fail · D-073)"
