@@ -473,7 +473,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             # 下轮 resume 跳过这篇, 失败的那几组永远补不回来 (codex review on #141)。
             stats["failed"] += 1
             stats["systemic_failed"] += 1
-            _append_failed(fq, note, args.project_id, st.get("errors") or ["systemic"])
+            errs = st.get("errors") or ["systemic"]
+            # 原因也打一行日志(每条截 300 字, 只有异常文本、没有正文): failed_queue 是 worker 本地文件,
+            # 调用方只看得到 stdout_tail。10-23 XIWU_phase2 一篇每次都 InternalServerError, 原因没处看。
+            logger.warning("systemic %s: %s", note["note_id"], " | ".join(e[:300] for e in errs[-3:]))
+            _append_failed(fq, note, args.project_id, errs)
             continue   # 下轮幂等重跑整篇
         try:
             # ⚠️ 写序: 数值原值在前, 带标记题的答案在后。反过来的话 note_features 那一写

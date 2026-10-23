@@ -205,7 +205,7 @@ jobs:
                 ok=$(jq -r '.ok // false' /tmp/b.json 2>/dev/null)
                 nc=$(jq -r '.note_ids_count // empty' /tmp/b.json 2>/dev/null)
                 echo "   [try $attempt] HTTP $code · ok=$ok · note_ids_count=${nc:-?} · returncode=$(jq -r '.returncode // "?"' /tmp/b.json 2>/dev/null)"
-                jq -r '.stdout_tail // ""' /tmp/b.json 2>/dev/null | grep -E "Found|Done|ok=|failed" | tail -3
+                jq -r '.stdout_tail // ""' /tmp/b.json 2>/dev/null | grep -E "Found|Done|ok=|failed|systemic " | tail -4
                 { [ "$code" = "200" ] && [ "$ok" = "true" ] && [ -n "$nc" ]; } && break
                 # 409 = worker 正被别的调用占着(features-sync / 另一个 backfill): 等锁, 不算失败 (D-077)
                 echo "::warning::$proj 第 $((i/BATCH+1)) 批 try $attempt 失败 (HTTP $code, ok=$ok);等 60s 重试"
