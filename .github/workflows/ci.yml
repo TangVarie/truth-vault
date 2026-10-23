@@ -4250,7 +4250,7 @@ jobs:
       - name: "系统地图三闸 (D-075): 图里点名的东西还在不在 / ci.yml 内联棘轮 / 灯必须在册"
         working-directory: scripts
         run: python check_system_map.py
-      - name: "角度台账漏账灯自检 (D-071 + O-04): 判据下限 / 排除 tv-sync 导入副本 / 翻页键唯一 / 重名项目不并格 / 发了帖没接住 / 哨兵行"
+      - name: "角度台账漏账灯自检 (D-071 + O-04 + W-29): 判据下限 / 排除 tv-sync 导入副本 / 翻页键唯一 / 重名项目不并格 / 发了帖没接住 / 哨兵行"
         working-directory: scripts
         run: |
           python - <<'PY'
@@ -4261,9 +4261,8 @@ jobs:
           P = lambda drawn, consumed, drafts, with_key, name="x": {
               "name": name, "drawn": drawn, "consumed": consumed, "drafts": drafts, "with_key": with_key}
 
-          # 判据 A: 发牌够多但一篇真稿都没有 → 命中; 差一个就不喊(下限真的在起作用)
-          assert [h["kind"] for h in chk.verdicts({"甲": P(10, 0, 0, 0)})] == ["drawn_unwritten"]
-          assert chk.verdicts({"甲": P(9, 0, 0, 0)}) == [], "低于 MIN_DRAWN 不该喊"
+          # 判据 A 10-23 起按每一轮发牌判(W-29), 测在 --selftest; 按项目合计不再喊 A
+          assert chk.verdicts({"甲": P(10, 0, 0, 0)}) == []
           # 判据 B: 真稿够多但一条坐标都没有 → 命中; 只要有一条带坐标就不喊
           assert [h["kind"] for h in chk.verdicts({"乙": P(6, 0, 5, 0)})] == ["unattributed"]
           # 压根没走 draw_angles 的项目: 稿子本来就没坐标, 台账里也没有行可销 —— 报它漏账是判错病因
@@ -4283,8 +4282,6 @@ jobs:
           assert rc == 0 and "无从判定" in out, out          # 没发牌 = 不评价, 不是健康
           rc, out = run({"by_project": {"p9": P(12, 8, 12, 12, name="途鸽")}, "ingested_skipped": 99})
           assert rc == 0 and "99 条" in out, out            # 排除掉的副本数要说出来
-          rc, out = run({"by_project": {"p8": P(60, 0, 0, 0, name="sportsix")}, "ingested_skipped": 0})
-          assert rc == 1 and "抽完没写" in out and "sportsix" in out, out
           rc, out = run({"by_project": {"p7": P(20, 0, 10, 0, name="D2")}, "ingested_skipped": 0})
           assert rc == 1 and "写了不带坐标" in out, out
 
@@ -4358,7 +4355,7 @@ jobs:
           assert st["by_project"]["p1"] == P(12, 0, 0, 0, name="甲项目"), st["by_project"]
           assert st["by_project"]["p2"] == P(6, 0, 6, 0, name="乙项目"), st["by_project"]
           kinds = {h["project"]: h["kind"] for h in chk.verdicts(st["by_project"])}
-          assert kinds == {"甲项目": "drawn_unwritten", "乙项目": "unattributed"}, kinds
+          assert kinds == {"乙项目": "unattributed"}, kinds   # 甲(抽完没写)按轮判, 见 --selftest
 
           # 反证: 不排除导入副本 → 甲被诊断成"写了 8 篇都不带坐标", 而它其实一篇没写。
           # 判错病因比不报警更坏: 去催人"提交时带上 angle_key", 而真正的问题是会话停在发牌之后。
@@ -4380,7 +4377,7 @@ jobs:
 
           # ── main: 哨兵行必须打出来(daily-sync 靠它判崩溃, 不靠退出码) ──────────
           fake_common.get_supabase_client = lambda: object()
-          chk.gather = lambda sb, since: {"by_project": {"p1": P(20, 0, 0, 0, name="甲")}, "ingested_skipped": 0}
+          chk.gather = lambda sb, since: {"by_project": {"p1": P(20, 0, 5, 0, name="甲")}, "ingested_skipped": 0}
           chk.gather_publish = lambda sb, since, **kw: {}    # 判据 C 的取数另有 --selftest 测
           buf = io.StringIO()
           with contextlib.redirect_stdout(buf):
@@ -4392,9 +4389,9 @@ jobs:
           assert "python check_angle_ledger_leak.py" in wf, "夜跑没接这道检查"
           assert "ANGLE_LEDGER_CHECK_DONE rc=" in wf, "daily-sync 的哨兵 grep 和脚本不一致"
           assert "--window-days" not in wf, "夜跑不该自己传窗口 —— 默认值由脚本钉着"
-          print("  ✓ 角度台账灯: 两条判据各带下限, 导入副本被排除(反证会冒假警报), 哨兵行在")
+          print("  ✓ 角度台账灯: 判据 B 带下限, 导入副本被排除(反证会冒假警报), 哨兵行在")
           PY
-          python check_angle_ledger_leak.py --selftest   # 判据 C (O-04): 发了帖、写作台没接住
+          python check_angle_ledger_leak.py --selftest   # 判据 A (W-29, 按每一轮发牌) + C (O-04)
       - name: "写作台用上率灯自检 (docs/32 D): 接住只认发布前那版 / 未改动只认 diff_rev ≥2 / 下限与分母 / 判不了 rc=2 / 哨兵行 / 每周一接线"
         working-directory: scripts
         run: python check_desk_use_rate.py --selftest   # 判据、口径、取数、main 与 daily-sync 接线都在脚本里 (D-075: 不加内联块)

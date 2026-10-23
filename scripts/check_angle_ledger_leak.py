@@ -20,11 +20,22 @@ D-064), 它们本来就没有 angle_key —— 不是发牌产出的, 没有坐�
 坐标的稿子」, 未归因率永远是 97%+, 这盏灯就等于没有。真稿只有 39 条, 其中 22 条带坐标。
 
 判据(三条, 都故意设了下限, 免得天天红 —— D-053):
-    A. 某项目窗口内发牌 >= MIN_DRAWN 个角度, 而真稿 == 0     → 抽完没写
+    A. 窗口内某【一轮】发牌(同一人、同项目、同一个 drawn_at)>= MIN_DRAW_CARDS 张、发出已满
+       DRAW_GRACE_HOURS 小时, 而这一轮一张都没销账                                  → 抽完没写(没存档)
     B. 某项目窗口内【发过牌】且真稿 >= MIN_DRAFTS, 而带坐标的 == 0 → 写了不带坐标
     C. 某 TV 项目窗口内【发出去】的帖里补录副本 >= MIN_UNCAUGHT 篇、对上写作台存档的 <= MAX_CAUGHT 篇
        (两个下限按窗口长度等比放大, 每 7 天一份), 而它对应的写作台项目用过写作台 → 发了帖、写作台没接住
 三条都不成立才算通。一次发两三张牌、当场没写完是常态, 所以下限不能是 1。
+
+A 在 2026-10-23 从「按项目合计」改成「按每一轮发牌」(TV OPEN-ITEMS W-29)。10-20..10-22 主写手在途鸽发了
+五轮 73 张(10/15/16/16/16)、百健士成人藻油 10-22 06:57 一轮 24 张, 一轮都没存档, 而旧 A 两处都没喊:
+    · 旧 A 要「项目窗口内发牌 >= 10 且真稿 == 0」—— 途鸽窗口里有一条手工入库的稿, 真稿 = 1, 73 张全被它盖住;
+      百健士成人藻油同窗口里 10-21 那轮 16 张存了档, 项目合计有稿, 24 / 0 那一轮也被盖住;
+    · 反过来, 10-21 08:12 夜跑时百健士成人藻油刚发的一轮还没存(08:29 才存), 项目窗口内真稿 0 → 旧 A 报了假警报。
+一轮 = 一次 deskcore_reserve_angles 调用: 它在一个事务里把整轮插进台账, drawn_at 全是那个事务的 now()
+(RPC 缺席时的降级路径 aw store.record_draw 也是一条 insert、显式写同一个 drawn_at), 所以按
+(drawn_by, project_id, drawn_at) 分组就是一轮; 台账没有批次列, 这是唯一的轮次键。销账 = 存档提交时
+写 consumed_version_id / consumed_at(两列同一条 UPDATE 写)。一轮里销了哪怕一张就算接住了 —— 发 16 张写 3 篇是正常节奏。
 
 C 是 2026-10-19 补的(TV OPEN-ITEMS O-04): 途鸽 9-16 之后写作台一次发牌、一篇存档都没收到, 10-12 那周
 发出去的 22 篇全是 tv-sync 补录的副本, 写手却一直以为在用写作台。A / B 都从【发牌】那一侧看, 一张牌
@@ -42,7 +53,7 @@ autowriter.tv_note_links(
 按 match_kind 分补录 / 对上, 对上只认 lag_days >= 0)、autowriter.angle_ledger(发过牌的写作台项目, 不限时间)。
 
 数据来源(都在共享 Supabase 的 autowriter schema 里, TV 用 service_role 只读):
-    发牌  = autowriter.angle_ledger(drawn_at 在窗口内; consumed_version_id 非 NULL = 销了账)
+    发牌  = autowriter.angle_ledger(drawn_at 在窗口内; drawn_by = 谁发的; consumed_version_id 非 NULL = 销了账)
     成稿  = autowriter.draft_fingerprints(created_at 在窗口内)
     排除  = autowriter.tv_note_links 里 match_kind='ingested' 的 version_id
 
@@ -52,11 +63,11 @@ autowriter.tv_note_links(
 用法:
     python check_angle_ledger_leak.py                 # 默认 7 天
     python check_angle_ledger_leak.py --window-days 14
-    python check_angle_ledger_leak.py --selftest      # CI: 判据 C 的纯函数 + 取数, 不连库
+    python check_angle_ledger_leak.py --selftest      # CI: 判据 A / C 的纯函数 + 取数, 不连库
 
 退出码:
-    0 = 窗口内没发牌(无从判定), 或两条判据都不成立
-    1 = 至少一个项目命中判据 —— 修在 autowriter 仓(协议/使用习惯), TV 这边红了也改不好
+    0 = 窗口内没发牌(无从判定), 或三条判据都不成立
+    1 = 至少一轮发牌命中 A、或一个项目命中 B / C —— 修在 autowriter 仓(协议/使用习惯), TV 这边红了也改不好
 ⚠️ 同 check_librarian_traffic.py 的约定: 正常跑完末尾必打一行
 `ANGLE_LEDGER_CHECK_DONE rc=<码>`; daily-sync.yml 靠有没有这一行判定崩溃, 不靠退出码。
 """
@@ -71,8 +82,22 @@ from datetime import datetime, timedelta, timezone
 # CI 在裸环境里直接 import 本模块测它 —— 同 check_librarian_traffic.py 的理由。
 
 DEFAULT_WINDOW_DAYS = 7
-# 判据下限: 低于这两个数不喊。一次发牌 2-5 张、当场只写一两篇是正常节奏。
-MIN_DRAWN = 10
+# 判据 A 的两道门(W-29, 按每一轮发牌判):
+#   MIN_DRAW_CARDS —— 一轮至少几张才单独点名。主写手一轮常见 5–24 张(10-12 / 10-14 有不少 5 张一轮的真交付;
+#     10-20..10-22: 途鸽 10/15/16/16/16、百健士成人藻油 16 / 24)。不到 5 张的一轮单独没存档, 代价只是占了一天避重
+#     (占位 1 天自然过期), 不值得一轮一行地点名(D-053); 过去 30 天里不到 5 张的 3 轮其实都存了档。但零碎轮次
+#     不能整个放过: 同一人在同一项目上不到 5 张的轮次合起来 >= SMALL_DRAWS_TOTAL 张、而他在这个项目上一轮都没
+#     存档, 照样点名(见 _small_unsettled) —— 改成按轮判之前, 按项目的旧判据抓得到这种形状, 不能改丢。
+#   DRAW_GRACE_HOURS —— 发出多久之后才判。存档顺利的轮次在最后一次 check_drafts 之后 25–80 秒就存了, 10-21 那次
+#     假警报的一轮晚了 17 分钟; 夜跑实际 08–09 时(UTC)起跑, 12 小时让临近夜跑才发的牌留到下一晚判, 不会因为
+#     "还在写"被点名, 而前一晚之前发的每一轮都判得到(最晚隔一晚, 远在 7 天窗口之内)。
+MIN_DRAW_CARDS = 5
+DRAW_GRACE_HOURS = 12
+# 零碎轮次(每轮 < MIN_DRAW_CARDS 张)合起来到这个数才判 —— 沿用旧判据「一周发牌 >= 10 张、一篇没写」的门。
+SMALL_DRAWS_TOTAL = 10
+# 「也可能是存了档但没带 angle_key」那句提示的窗口: 这一轮发牌后多久之内, 同项目有不带坐标的真稿才算数。
+NOKEY_AFTER_HOURS = 24
+# 判据 B 的下限: 低于它不喊。一次发牌 2-5 张、当场只写一两篇是正常节奏。
 MIN_DRAFTS = 5
 # 判据 C 的下限: 一周补录 >= 10 篇且对上 <= 2 篇才喊。10-12 那周 sportsix 补录 12 / 对上 18、
 # 百健士 15 / 19, 这种"一部分在外面写"的不喊; 途鸽 22 / 0、Hatherine 23 / 1 喊。
@@ -85,20 +110,87 @@ INGESTED_KIND = "ingested"
 CAUGHT_KINDS = frozenset({"body_exact", "title_exact", "fuzzy", "edited", "tv_lineage"})
 
 
-def verdicts(by_project: dict) -> list[dict]:
-    """哪些项目命中了判据。纯函数 —— CI 直接喂假 stats 测它。
+def _utc(ts: str) -> datetime:
+    """PostgREST 的 timestamptz 文本 → aware UTC。没带时区的按 UTC(本脚本的窗口起点就是这么写的)。"""
+    t = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    return (t if t.tzinfo else t.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
 
-    ``by_project`` 按 project_id 索引, 每格带一个 ``name`` 作显示。
+
+def _utc_or_none(ts) -> datetime | None:
+    """同 _utc, 解析不了(空、或不是时刻文本)就回 None。只给提示 / 兜底那几处用: 夜跑不能因为一个怪值整个崩掉。"""
+    try:
+        return _utc(ts) if ts else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _unsettled_draws(draws: list[dict], now: datetime) -> tuple[list[dict], list[dict]]:
+    """够张数、一张没销账的轮次, 分成 (满宽限期的, 还在宽限期里的)。"""
+    cutoff = now - timedelta(hours=DRAW_GRACE_HOURS)
+    due, pending = [], []
+    for d in draws:
+        if d["cards"] < MIN_DRAW_CARDS or d["consumed"] > 0:
+            continue
+        (due if _utc(d["drawn_at"]) <= cutoff else pending).append(d)
+    return due, pending
+
+
+def _small_unsettled(draws: list[dict], now: datetime) -> list[dict]:
+    """零碎轮次的兜底: 同一人、同一项目, 每轮 < MIN_DRAW_CARDS 张、发出满宽限期、一张没销账的轮次合起来
+    >= SMALL_DRAWS_TOTAL 张, 而且这个人在这个项目上窗口内一轮都没销过账。返回每组一格。"""
+    cutoff = now - timedelta(hours=DRAW_GRACE_HOURS)
+    settled, groups = set(), {}
+    for d in draws:
+        key = (d.get("drawn_by"), d["project_id"])
+        if d["consumed"] > 0:
+            settled.add(key)
+            continue
+        at = _utc_or_none(d.get("drawn_at"))
+        if d["cards"] >= MIN_DRAW_CARDS or at is None or at > cutoff:
+            continue
+        g = groups.setdefault(key, {"project_id": d["project_id"], "name": d.get("name"),
+                                    "drawn_by": d.get("drawn_by"), "rounds": 0, "cards": 0,
+                                    "first": at, "last": at})
+        g["rounds"] += 1
+        g["cards"] += d["cards"]
+        g["first"], g["last"] = min(g["first"], at), max(g["last"], at)
+    return [g for k, g in groups.items() if k not in settled and g["cards"] >= SMALL_DRAWS_TOTAL]
+
+
+def verdicts_draws(draws: list[dict], now: datetime) -> list[dict]:
+    """判据 A: 哪几轮发牌一张都没存档。纯函数 —— selftest 直接喂假轮次测它。
+
+    ``draws`` 是 gather() 的那份, 每轮一格 ``{project_id, name, drawn_by, drawn_at, cards, consumed}``;
+    一轮 = 同一人、同项目、同一个 drawn_at(理由见文件头)。窗口由 gather() 的 drawn_at >= since 管,
+    这里只管下限和宽限期。返回按项目、发牌时刻排好。
+    """
+    out = []
+    for d in _unsettled_draws(draws, now)[0]:
+        at = _utc(d["drawn_at"])
+        out.append({"project": d.get("name") or d["project_id"], "project_id": d["project_id"],
+                    "kind": "drawn_unwritten", "drawn": d["cards"], "drawn_by": d.get("drawn_by"),
+                    "rounds": 1, "nokey_drafts": d.get("nokey_drafts", 0),
+                    "at": at, "detail": f"{at:%m-%d %H:%M} UTC 发牌 {d['cards']}、销账 0"})
+    for g in _small_unsettled(draws, now):
+        out.append({"project": g.get("name") or g["project_id"], "project_id": g["project_id"],
+                    "kind": "drawn_unwritten_small", "drawn": g["cards"], "drawn_by": g.get("drawn_by"),
+                    "rounds": g["rounds"], "nokey_drafts": 0, "at": g["first"],
+                    "detail": (f"{g['first']:%m-%d %H:%M}–{g['last']:%m-%d %H:%M} UTC 零碎发牌 {g['rounds']} 轮"
+                               f"(每轮不到 {MIN_DRAW_CARDS} 张)共 {g['cards']} 张、销账 0")})
+    return sorted(out, key=lambda h: (h["project"], h["at"]))
+
+
+def verdicts(by_project: dict) -> list[dict]:
+    """判据 B: 哪些项目写了稿不带坐标。纯函数 —— CI 直接喂假 stats 测它。
+
+    ``by_project`` 按 project_id 索引, 每格带一个 ``name`` 作显示。判据 A 不在这里:
+    10-23 起按每一轮发牌判(W-29), 见 verdicts_draws()。
     """
     out = []
     for pid, s in sorted(by_project.items()):
         name = s.get("name") or pid
         drawn, drafts, with_key = s["drawn"], s["drafts"], s["with_key"]
-        if drawn >= MIN_DRAWN and drafts == 0:
-            out.append({"project": name, "project_id": pid, "kind": "drawn_unwritten",
-                        "drawn": drawn,
-                        "detail": f"发了 {drawn} 个角度, 窗口内一篇真稿都没入库"})
-        elif drawn > 0 and drafts >= MIN_DRAFTS and with_key == 0:
+        if drawn > 0 and drafts >= MIN_DRAFTS and with_key == 0:
             # ⚠️ `drawn > 0` 这一条不能省(codex review on #143): 压根没走 draw_angles
             # 的项目, 它的稿子本来就没有坐标, 台账里也没有行可销 —— 报它"漏账"是
             # 判错病因, 而且只要别的项目发过一次牌, 全局那道 drawn == 0 的闸就拦不住。
@@ -169,8 +261,9 @@ def _warn_publish(pub_hits: list[dict], window_days: int) -> None:
         print(f"::warning title=发了帖、写作台没接住::{msg}", flush=True)
 
 
-def report(stats: dict, window_days: int) -> int:
-    """把 gather() 的统计渲染成报告并返回退出码。纯函数, 不碰网络。"""
+def report(stats: dict, window_days: int, now: datetime | None = None) -> int:
+    """把 gather() 的统计渲染成报告并返回退出码。纯函数, 不碰网络。``now`` 只给判据 A 的宽限期用。"""
+    now = now or datetime.now(timezone.utc)
     by_project = stats.get("by_project") or {}
     drawn = sum(s["drawn"] for s in by_project.values())
     consumed = sum(s["consumed"] for s in by_project.values())
@@ -201,23 +294,39 @@ def report(stats: dict, window_days: int) -> int:
         print("  · 窗口内没有发牌, 角度台账无从判定(不是健康, 是没活)")
         return 1 if pub_hits else 0
 
-    hits = verdicts(by_project)
-    if not hits:
-        print("  ✓ 没有项目命中判据 A / B —— 发出去的角度都有稿子接住, 或量小到不值得喊")
+    draws = stats.get("draws") or []
+    unwritten = verdicts_draws(draws, now)
+    pending = _unsettled_draws(draws, now)[1]
+    if pending:
+        print(f"  · {len(pending)} 轮发牌(>= {MIN_DRAW_CARDS} 张)发出不满 {DRAW_GRACE_HOURS} 小时、还没销账 —— "
+              "存档可能还在路上, 下一晚再判")
+    unattr = verdicts(by_project)
+    if not unwritten and not unattr:
+        print("  ✓ 没有一轮发牌命中判据 A、没有项目命中判据 B —— 发出去的角度都有稿子接住, 或量小到不值得喊")
         return 1 if pub_hits else 0
 
-    unwritten = [h for h in hits if h["kind"] == "drawn_unwritten"]
-    unattr = [h for h in hits if h["kind"] == "unattributed"]
     parts = []
     if unwritten:
-        parts.append("抽完没写: " + "; ".join(f"{h['project']}({h['detail']})" for h in unwritten))
+        # 一轮一行, 夜跑日志里直接读得出「哪个项目、哪一刻发的、几张、销了几张」。
+        print(f"  抽完没写 · 判据 A(每一轮: >= {MIN_DRAW_CARDS} 张、发出满 {DRAW_GRACE_HOURS} 小时、一张没销账):")
+        for h in unwritten:
+            # 按这一轮判, 不按整个项目是否命中 B(review on W-29): 项目别处有带坐标的稿子时 B 不响, 但这一轮
+            # 之后确实有不带坐标的真稿(D-071 Hatherine-D2 那种: 存了档、没带 angle_key) —— 不提一句就会让人去
+            # 找一个其实发生过的 score_drafts。反过来项目命中 B、这一轮之后却没有无坐标的稿, 也不该带这句。
+            also = (f" —— 发牌后 {NOKEY_AFTER_HOURS} 小时内这个项目有 {h['nokey_drafts']} 篇真稿没带 angle_key, "
+                    "也可能是存了档但没带坐标" if h.get("nokey_drafts") else "")
+            print(f"    · {h['project']} {h['detail']}{also}")
+        parts.append(f"抽完没写 {sum(h.get('rounds', 1) for h in unwritten)} 轮: "
+                     + "; ".join(f"{h['project']} {h['detail']}" for h in unwritten))
     if unattr:
         parts.append("写了不带坐标: " + "; ".join(f"{h['project']}({h['detail']})" for h in unattr))
-    msg = (f"过去 {window_days} 天 {len(hits)} 个项目的角度没走到成稿。" + " | ".join(parts)
+    n_proj = len({h["project_id"] for h in unwritten + unattr})
+    msg = (f"过去 {window_days} 天 {n_proj} 个项目的角度没走到成稿。" + " | ".join(parts)
            + " —— 后果不是少写了几篇: 没销账的坐标一天后就不在避重集里, 同一个故事"
              "下一批会被再抽一次, 而「同题重写」指纹闸抓不到。"
              "修在 autowriter 仓(score_drafts 每条都要带 draw_angles 给的 angle_key;"
-             "会话别停在发牌之后), 见 TV docs/27 与 aw deskcore-runbook。")
+             "会话别停在发牌之后; 抽完没写的那几轮, 去写手那场对话看最后一次 check_drafts 之后"
+             "有没有 score_drafts 调用、有没有报错 —— W-29), 见 TV docs/27 与 aw deskcore-runbook。")
     print(f"  ⚠ {msg}")
     if os.environ.get("GITHUB_ACTIONS") == "true":
         print(f"::warning title=角度台账漏账(发了牌没走到成稿)::{msg}", flush=True)
@@ -235,7 +344,7 @@ def gather(sb, since_iso: str) -> dict:
     # 本窗口 7 天就有 1,507 条指纹, 早就跨过 1000 行的页边界(codex review on #143)。
     angles = fetch_all_pages(
         sb.schema("autowriter").table("angle_ledger")
-        .select("id, project_id, consumed_version_id, drawn_at")
+        .select("id, project_id, drawn_by, consumed_version_id, drawn_at")
         .gte("drawn_at", since_iso),
         order_by="id")
     fps = fetch_all_pages(
@@ -270,11 +379,21 @@ def gather(sb, since_iso: str) -> dict:
             key, {"name": names.get(pid) or key, "drawn": 0, "consumed": 0,
                   "drafts": 0, "with_key": 0})
 
+    # 判据 A 的轮次: (drawn_by, project_id, drawn_at) 一组 = 一次 reserve 调用(理由见文件头)。
+    # drawn_at 按 PostgREST 给的原文本分组, 不先解析 —— 同一事务写的同一个值, 文本也一字不差。
+    draws: dict[tuple, dict] = {}
     for a in angles:
         s = slot(a["project_id"])
         s["drawn"] += 1
+        d = draws.setdefault(
+            (a.get("drawn_by"), a["project_id"], a.get("drawn_at")),
+            {"project_id": a["project_id"], "name": s["name"], "drawn_by": a.get("drawn_by"),
+             "drawn_at": a.get("drawn_at"), "cards": 0, "consumed": 0})
+        d["cards"] += 1
         if a.get("consumed_version_id"):
             s["consumed"] += 1
+            d["consumed"] += 1
+    nokey: dict[str, list[datetime]] = {}            # 项目 → 不带坐标的真稿的入库时刻(给每轮那句提示用)
     for f in fps:
         if f.get("version_id") in ingested:
             continue
@@ -282,7 +401,14 @@ def gather(sb, since_iso: str) -> dict:
         s["drafts"] += 1
         if f.get("angle_key"):
             s["with_key"] += 1
-    return {"by_project": by_project, "ingested_skipped": len(ingested)}
+        elif (t := _utc_or_none(f.get("created_at"))) is not None:
+            nokey.setdefault(f["project_id"], []).append(t)
+    for d in draws.values():
+        start = _utc_or_none(d.get("drawn_at"))
+        d["nokey_drafts"] = 0 if start is None else sum(
+            1 for t in nokey.get(d["project_id"], ())
+            if start <= t <= start + timedelta(hours=NOKEY_AFTER_HOURS))
+    return {"by_project": by_project, "ingested_skipped": len(ingested), "draws": list(draws.values())}
 
 
 def gather_publish(sb, since_iso: str, until_iso: str | None = None) -> dict:
@@ -340,10 +466,77 @@ def _project_names(sb, pids: set) -> dict:
 
 
 def selftest() -> int:
-    """判据 C 的自检(判据 A / B 的在 ci.yml 那一步的 heredoc 里)。不连库; 反证靠改坏输入。"""
+    """判据 A(按每一轮发牌, W-29)与判据 C 的自检(判据 B 的在 ci.yml 那一步的 heredoc 里)。不连库; 反证靠改坏输入。"""
     import contextlib
     import io
     import types
+
+    def run(stats, now=None, gha=False):
+        buf = io.StringIO()
+        saved_env = os.environ.get("GITHUB_ACTIONS")
+        os.environ["GITHUB_ACTIONS"] = "true" if gha else "false"      # gha=True 时连 ::warning 那行一起断
+        try:
+            with contextlib.redirect_stdout(buf):
+                rc = report(stats, 7, now)
+        finally:
+            if saved_env is None:
+                os.environ.pop("GITHUB_ACTIONS", None)
+            else:
+                os.environ["GITHUB_ACTIONS"] = saved_env
+        return rc, buf.getvalue()
+
+    # ── 判据 A(W-29): 按每一轮发牌判 —— 纯函数的几道门 ─────────────────────────────
+    NOW = datetime(2026, 10, 23, 8, 12, tzinfo=timezone.utc)           # 夜跑大约这个点起跑
+    ago = lambda h: (NOW - timedelta(hours=h)).isoformat()             # noqa: E731
+    D = lambda at, cards, consumed=0, pid="b1", name="百健士成人藻油": {   # noqa: E731
+        "project_id": pid, "name": name, "drawn_by": "w1", "drawn_at": at, "cards": cards, "consumed": consumed}
+    A = lambda *ds, now=NOW: [(h["project"], h["drawn"]) for h in verdicts_draws(list(ds), now)]  # noqa: E731
+    # 张数下限: 差一张不喊, 够了就喊
+    assert A(D(ago(30), MIN_DRAW_CARDS - 1)) == [], "低于 MIN_DRAW_CARDS 的零碎发牌不该喊"
+    assert A(D(ago(30), MIN_DRAW_CARDS)) == [("百健士成人藻油", MIN_DRAW_CARDS)]
+    # 一轮里销了哪怕一张就算接住: 发 16 写 1 是正常节奏, 不喊
+    assert A(D(ago(30), 16, consumed=1)) == [], "部分销账的一轮不该喊"
+    # 宽限期: 差一分钟不喊, 过一分钟就喊(宽限期不是无限宽)
+    assert A(D(ago(DRAW_GRACE_HOURS - 1 / 60), 16)) == [], "宽限期里的不该喊"
+    assert A(D(ago(DRAW_GRACE_HOURS + 1 / 60), 16)) == [("百健士成人藻油", 16)]
+    # PostgREST 的几种时刻写法都认(带毫秒 / Z / 不带时区)
+    assert len(verdicts_draws([D("2026-10-22T06:57:12.88Z", 24), D("2026-10-22T06:57:12", 24)], NOW)) == 2
+
+    # 10-21 那次假警报: 08:12:03 发的 16 张, 08:12:40 夜跑时还没存(08:29 才存)。旧 A 按项目合计
+    # (发牌 16 >= 10、真稿 0)喊了; 现在它在宽限期里 → 不喊, 只记一行「下一晚再判」; 下一晚它销了账 → 也不喊。
+    fp_at, fp_run = "2026-10-21T08:12:03.204+00:00", datetime(2026, 10, 21, 8, 12, 40, tzinfo=timezone.utc)
+    fp_proj = {"b1": {"name": "百健士成人藻油", "drawn": 16, "consumed": 0, "drafts": 0, "with_key": 0}}
+    rc, out = run({"by_project": fp_proj, "ingested_skipped": 0, "draws": [D(fp_at, 16)]}, now=fp_run)
+    assert rc == 0 and "1 轮发牌" in out and "下一晚再判" in out and "抽完没写" not in out, out
+    assert A(D(fp_at, 16, consumed=16), now=fp_run + timedelta(days=1)) == []
+    # 「也可能是存了档但没带 angle_key」按这一轮判, 不按项目是否命中 B(review on W-29):
+    #   项目别处有带坐标的稿(B 不响), 但这一轮之后有不带坐标的真稿 → 带这句(Hatherine-D2 那种, D-071)
+    keyed = {"x": {"name": "X", "drawn": 16, "consumed": 0, "drafts": 12, "with_key": 9}}
+    rc, out = run({"by_project": keyed, "ingested_skipped": 0,
+                   "draws": [dict(D(ago(30), 16, pid="x", name="X"), nokey_drafts=3)]}, now=NOW)
+    assert rc == 1 and "· X " in out and "有 3 篇真稿没带 angle_key" in out and "写了不带坐标" not in out, out
+    #   项目命中 B, 但这一轮之后没有无坐标的稿 → 不带这句, 别把病因说成"没带坐标"
+    nokeyp = {"x": {"name": "X", "drawn": 16, "consumed": 0, "drafts": MIN_DRAFTS, "with_key": 0}}
+    rc, out = run({"by_project": nokeyp, "ingested_skipped": 0,
+                   "draws": [dict(D(ago(30), 16, pid="x", name="X"), nokey_drafts=0)]}, now=NOW)
+    assert rc == 1 and "· X " in out and "写了不带坐标" in out and "真稿没带 angle_key" not in out, out
+
+    # 零碎轮次的兜底: 同一人同一项目 4 轮 × 3 张 = 12 张、一轮都没存 → 点名; 合起来 9 张 / 这个人在这个项目上
+    # 存过一轮 / 还在宽限期里的, 都不点名(改成按轮判之前, 按项目的旧判据抓得到这种, 不能改丢)
+    S3 = lambda h, by="w1", consumed=0: dict(D(ago(h), 3, consumed=consumed, pid="h1", name="Hatherine"),  # noqa: E731
+                                             drawn_by=by)
+    small = [S3(30), S3(40), S3(50), S3(60)]
+    got = verdicts_draws(small, NOW)
+    assert [(h["project"], h["drawn"], h["rounds"]) for h in got] == [("Hatherine", 12, 4)], got
+    assert "零碎发牌 4 轮" in got[0]["detail"] and "共 12 张" in got[0]["detail"], got
+    assert verdicts_draws(small[:3], NOW) == [], "合起来 9 张不到 SMALL_DRAWS_TOTAL, 不该喊"
+    assert verdicts_draws(small + [S3(20, consumed=3)], NOW) == [], "同一人在这个项目上存过一轮, 零碎的不喊"
+    assert verdicts_draws(small[:3] + [S3(1)], NOW) == [], "宽限期里的零碎轮次不算进去"
+    assert verdicts_draws([S3(30), S3(40), S3(50, by="w2"), S3(60, by="w2")], NOW) == [], "两个人各 6 张, 不并"
+    rc, out = run({"by_project": {"h1": {"name": "Hatherine", "drawn": 12, "consumed": 0, "drafts": 0,
+                                         "with_key": 0}}, "ingested_skipped": 0, "draws": small}, now=NOW, gha=True)
+    warn = [ln for ln in out.splitlines() if ln.startswith("::warning")]
+    assert rc == 1 and "零碎发牌 4 轮" in out and len(warn) == 1 and "抽完没写 4 轮" in warn[0], out
 
     P = lambda drawn, drafts: {"name": "x", "drawn": drawn, "consumed": drafts,  # noqa: E731
                                "drafts": drafts, "with_key": drafts}   # A / B 都不该响, 只看 C
@@ -373,12 +566,6 @@ def selftest() -> int:
     assert [h["kind"] for h in two_weeks(20, 4)] == ["desk_silent"], "下限要按窗口放大"
     assert two_weeks(19, 0) == [] and two_weeks(20, 5) == []
 
-    def run(stats):
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            rc = report(stats, 7)
-        return rc, buf.getvalue()
-
     # 一张牌都没发的那一周: A / B 无从判定, C 照样要喊 —— 途鸽就是这么藏了一个月的
     rc, out = run({"by_project": {}, "ingested_skipped": 0, "publish": week})
     assert rc == 1 and "无从判定" in out and "TUGE" in out and "没接住" in out, out
@@ -393,6 +580,7 @@ def selftest() -> int:
     class _Q:
         def __init__(self, rows): self.rows, self.f = rows, []
         def select(self, *a, **k): return self
+        def eq(self, k, v): self.f.append(lambda r: r.get(k) == v); return self
         def gte(self, k, v): self.f.append(lambda r: r[k] >= v); return self
         def lte(self, k, v): self.f.append(lambda r: r[k] <= v); return self
         def in_(self, k, vs): self.f.append(lambda r: r[k] in set(vs)); return self
@@ -448,6 +636,77 @@ def selftest() -> int:
                               until_iso="2026-10-19T08:00:00")["links"]["TUGE"]["ingested"] == 52
         assert [h["project"] for h in verdicts_publish({}, g)] == ["TUGE"]
 
+        # ── 判据 A 取数 + 报告: 10-20..10-22 的真形状(张数是真的; 时刻除 10-21 02:54 / 10-22 06:57 外只取形状) ──
+        def cards(pid, at, n, consumed=0, by="w1"):
+            return [{"id": f"{pid}|{by}|{at}|{i}", "project_id": pid, "drawn_by": by, "drawn_at": at,
+                     "consumed_version_id": f"v|{pid}|{at}|{i}" if i < consumed else None} for i in range(n)]
+        TUGE = [("2026-10-20T07:05:41.120+00:00", 10), ("2026-10-21T02:54:08.517+00:00", 15),
+                ("2026-10-21T07:38:20.004+00:00", 16), ("2026-10-22T05:21:55.390+00:00", 16),
+                ("2026-10-22T06:32:32.685+00:00", 16)]
+        LEDGER_A = ([r for at, n in TUGE for r in cards("d1", at, n)]                     # 途鸽五轮 73 张, 0 销账
+                    + cards("d1", "2026-10-10T03:00:00+00:00", 16)                       # 窗口(7 天)外: 不判
+                    + cards("b1", "2026-10-21T08:12:03.204+00:00", 16, consumed=16)      # 17 分钟后存了档
+                    + cards("b1", "2026-10-22T06:57:12.880+00:00", 24)                   # 24 / 0
+                    + cards("b1", "2026-10-23T07:40:00.000+00:00", 16)                   # 32 分钟前发的: 宽限期里
+                    + cards("s1", "2026-10-21T03:00:00.000+00:00", 16, consumed=3)       # 部分销账
+                    + cards("h1", "2026-10-20T09:00:00.000+00:00", 3)                    # 零碎试抽, 两个人
+                    + cards("h1", "2026-10-20T09:00:00.000+00:00", 3, by="w2"))          # 同一刻: 是两轮, 不是一轮 6 张
+        FPS_A = ([{"id": "fp-manual", "project_id": "d1", "angle_key": None, "version_id": "v-manual",
+                   "created_at": "2026-10-20T05:49:50+00:00"}]                            # 途鸽那条手工入库的稿(真实时刻: 第一轮之前)
+                 + [{"id": f"fp-ing{i}", "project_id": "d1", "angle_key": None, "version_id": f"v-ing{i}",
+                     "created_at": "2026-10-22T04:00:00+00:00"} for i in range(18)]       # tv-sync 补录的 18 条
+                 + [{"id": f"fp-b{i}", "project_id": "b1", "angle_key": f"k{i}", "version_id": f"v-b{i}",
+                     "created_at": "2026-10-21T08:29:10+00:00"} for i in range(16)]
+                 + [{"id": f"fp-s{i}", "project_id": "s1", "angle_key": f"k{i}", "version_id": f"v-s{i}",
+                     "created_at": "2026-10-21T03:30:00+00:00"} for i in range(3)])
+        TABLES_A = {"angle_ledger": LEDGER_A, "draft_fingerprints": FPS_A,
+                    "tv_note_links": [{"version_id": f"v-ing{i}", "match_kind": INGESTED_KIND} for i in range(18)],
+                    "projects": [{"id": "d1", "name": "途鸽"}, {"id": "b1", "name": "百健士成人藻油"},
+                                 {"id": "s1", "name": "sportsix"}, {"id": "h1", "name": "Hatherine"}]}
+
+        class SBA(SB):
+            def table(self, t): return _Q(TABLES_A[t])
+
+        st = gather(SBA(), (NOW - timedelta(days=DEFAULT_WINDOW_DAYS)).isoformat())
+        tg = st["by_project"]["d1"]
+        # 旧 A 为什么没喊: 按项目合计, 途鸽 73 张、真稿被那条手工入库的撑成 1(补录的 18 条照旧排除) —— 「真稿 == 0」不成立
+        assert (tg["drawn"], tg["consumed"], tg["drafts"], tg["with_key"]) == (73, 0, 1, 0), tg
+        assert st["ingested_skipped"] == 18, st["ingested_skipped"]
+        assert len(st["draws"]) == 5 + 3 + 1 + 2, sorted((d["name"], d["drawn_at"]) for d in st["draws"])
+        got = [(h["project"], f"{h['at']:%m-%d %H:%M}", h["drawn"]) for h in verdicts_draws(st["draws"], NOW)]
+        assert got == [("百健士成人藻油", "10-22 06:57", 24),
+                       ("途鸽", "10-20 07:05", 10), ("途鸽", "10-21 02:54", 15), ("途鸽", "10-21 07:38", 16),
+                       ("途鸽", "10-22 05:21", 16), ("途鸽", "10-22 06:32", 16)], got
+        # 每轮那句提示的取数: 只数这一轮发牌后 NOKEY_AFTER_HOURS 小时内、同项目、不是 tv-sync 副本、不带坐标的真稿。
+        # 途鸽那条手工入库在第一轮之前 → 五轮都是 0; 18 条补录副本不算 → 也是 0。
+        assert {d["drawn_at"][:16]: d["nokey_drafts"] for d in st["draws"] if d["project_id"] == "d1"
+                and d["drawn_at"] >= "2026-10-20"} == {at[:16]: 0 for at, _ in TUGE}, st["draws"]
+        FPS_A.append({"id": "fp-nokey", "project_id": "d1", "angle_key": None, "version_id": "v-nokey",
+                      "created_at": "2026-10-21T07:20:00+00:00"})                        # 10-21 02:54 那轮之后 4.5 小时
+        try:
+            st2 = gather(SBA(), (NOW - timedelta(days=DEFAULT_WINDOW_DAYS)).isoformat())
+        finally:
+            FPS_A.pop()
+        nk = {d["drawn_at"][:16]: d["nokey_drafts"] for d in st2["draws"] if d["project_id"] == "d1"
+              and d["drawn_at"] >= "2026-10-20"}
+        assert nk["2026-10-21T02:54"] == 1, nk
+        assert nk["2026-10-20T07:05"] == 0, f"发牌满 {NOKEY_AFTER_HOURS} 小时之后才入库的不算: {nk}"
+        assert nk["2026-10-21T07:38"] == 0 and nk["2026-10-22T05:21"] == 0, f"发牌之前入库的不算: {nk}"
+
+        # 反证: 分组键漏了 drawn_by → Hatherine 两个人同一刻的 3 + 3 并成一轮 6 张, 越过下限冒出假警报
+        merged = [dict(d, cards=6) for d in st["draws"] if d["project_id"] == "h1"][:1]
+        assert [h["project"] for h in verdicts_draws(merged, NOW)] == ["Hatherine"], "反证前提不成立"
+
+        rc, out = run(st, now=NOW, gha=True)
+        lines = [ln.strip() for ln in out.splitlines() if ln.startswith("    · ")]
+        assert rc == 1 and len(lines) == 6, out
+        assert "· 途鸽 10-21 02:54 UTC 发牌 15、销账 0" in lines, lines
+        assert "· 百健士成人藻油 10-22 06:57 UTC 发牌 24、销账 0" in lines, lines
+        assert not any(k in ln for ln in lines for k in ("10-21 08:12", "sportsix", "Hatherine")), lines
+        assert "1 轮发牌" in out and "下一晚再判" in out, out                              # 07:40 那轮还在宽限期
+        warn = [ln for ln in out.splitlines() if ln.startswith("::warning title=角度台账漏账")]
+        assert len(warn) == 1 and "抽完没写 6 轮" in warn[0] and "途鸽 10-21 02:54 UTC 发牌 15、销账 0" in warn[0], warn
+
         # main 接线: 两份数都取、哨兵行在
         fake.get_supabase_client = lambda: object()
         real = globals()["gather"], globals()["gather_publish"]
@@ -467,6 +726,9 @@ def selftest() -> int:
             sys.modules.pop("_common", None)
         else:
             sys.modules["_common"] = saved
+    print("  ✓ 判据 A: 按每一轮发牌判 —— 途鸽五轮不被一条手工入库盖住、24 / 0 那轮不被同项目存了档的一轮盖住、"
+          "17 分钟后存档的不喊、部分销账不喊、零碎试抽单独不喊但合起来够数照喊、同一刻两个人是两轮、"
+          "「没带坐标」的提示按这一轮判")
     print("  ✓ 判据 C: 途鸽 / Hatherine 两种形状分开报、下限在、没用过写作台的不喊、一张牌没发也照喊、取数翻页键唯一")
     return 0
 
@@ -475,7 +737,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     parser.add_argument("--window-days", type=int, default=DEFAULT_WINDOW_DAYS,
                         help=f"看过去多少天的发牌与成稿(默认 {DEFAULT_WINDOW_DAYS})")
-    parser.add_argument("--selftest", action="store_true", help="CI: 判据 C 的自检, 不连库")
+    parser.add_argument("--selftest", action="store_true", help="CI: 判据 A / C 的自检, 不连库")
     args = parser.parse_args()
     if args.selftest:
         return selftest()
@@ -490,7 +752,7 @@ def main() -> int:
     stats = gather(sb, since)
     stats["publish"] = gather_publish(sb, since,
                                       until_iso=now.replace(tzinfo=None).isoformat(timespec="seconds"))
-    rc = report(stats, args.window_days)
+    rc = report(stats, args.window_days, now)
     # ⚠️ 哨兵行: daily-sync.yml 靠它区分"跑完了"和"崩了"(那边是 `|| true` 调的)。
     print(f"ANGLE_LEDGER_CHECK_DONE rc={rc}")
     return rc
