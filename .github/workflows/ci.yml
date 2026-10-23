@@ -60,6 +60,7 @@ jobs:
             scripts/gate1_labels.py \
             scripts/check_feature_parse.py \
             scripts/check_feature_orchestration.py \
+            scripts/check_onboarder_jobs.py \
             scripts/check_comment_parser.py \
             scripts/check_gate1_ingest.py \
             scripts/check_ssll_retract.py \
@@ -5077,6 +5078,19 @@ jobs:
 
           print("三个服务的鉴权闸口径一致")
 
+          # onboarder 的后台作业端点 (I-21) 守同一道闸: 提交要钥匙, 查结果也要 ——
+          # 结果里是整份 mapping 草稿和飞书样本摘要。
+          for v in ("ONBOARDER_API_KEY", "ONBOARDER_ALLOW_ANONYMOUS"):
+              os.environ.pop(v, None)
+          _oc = TestClient(O.app)
+          assert _oc.post("/onboard/jobs", json={}).status_code == 401
+          assert _oc.get("/onboard/jobs/anything").status_code == 401
+          os.environ["ONBOARDER_API_KEY"] = "s3cret-o"
+          assert _oc.get("/onboard/jobs/anything", headers={"X-Onboarder-Key": "wrong"}).status_code == 401
+          assert _oc.get("/onboard/jobs/anything", headers={"X-Onboarder-Key": "s3cret-o"}).status_code == 404
+          del os.environ["ONBOARDER_API_KEY"]
+          print("  ✓ onboarder /onboard/jobs 提交和查询都过鉴权闸")
+
           # ── 比对必须是恒定时间的 ──────────────────────────────────────
           #
           # 裸 `provided != expected` 在**第一个不同的字节**处短路, 耗时因此泄露
@@ -5391,10 +5405,15 @@ jobs:
           print("  ✓ 清单里的重名 / 缺列 / 坏 project_id 一次全报(不是报第一条就抛)")
 
           # ── ④ 端到端:逐表隔离 + 覆盖闸 + 退出码 ──────────────────────
+          # 这台假服务端是**旧部署**: 没有 /onboard/jobs (I-21 之前)。客户端要退回同步
+          # /onboard, 下面这一整段断言因此同时钉住了那条回退路径。
           class H(BaseHTTPRequestHandler):
               def log_message(self, *a): pass
               def do_POST(self):
                   body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                  if self.path != "/onboard":
+                      self.send_response(404); self.end_headers()
+                      self.wfile.write(b'{"detail":"Not Found"}'); return
                   HITS.append(body["project_id"])
                   pid = body["project_id"]
                   if pid == "BOOM_p1":
@@ -5492,6 +5511,12 @@ jobs:
           print("  ✓ 草稿的顶层 project_id 被钉成文件名(缩进块里的同名键不动)")
           print("批量接表自检通过")
           PY
+
+      - name: "onboarder 后台作业 + 轮询 (I-21) · 假边缘 1 秒断开复现 10-23 · 作业 400 原文 · --timeout · 丢作业 404 · 429 上限 · 截断回包 · 中途丢作业"
+        working-directory: scripts
+        run: |
+          pip install -q fastapi 'httpx<0.28' 'starlette' uvicorn >/dev/null
+          python check_onboarder_jobs.py   # D-075: 新块直接写成脚本, ci.yml 只留这一行
 
       - name: 网关超时不许空转重试, 且报错要自解释 (2026-08-28 实测 524)
         run: |

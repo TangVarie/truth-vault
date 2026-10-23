@@ -13,6 +13,11 @@
   ③ 逐表独立请求天然做到"一张挂了不拖垮整批", 且**不新增鉴权面**(SUP-001 那条
      跨服务守卫的用例表不用动)。
 
+单表也会超时 (I-21, 2026-10-23): 宽表 (52 / 48 列) 起草一次就超过 5 分钟, 调用方
+和 Railway 边缘都在 ~5 分钟断开, 服务端跑完了结果却丢了。所以每张表现在是**服务端
+一个后台作业**: POST /onboard/jobs 马上拿到 job_id, 再隔几秒 GET 一次直到出结果
+(见 _post_onboard)。批量编排仍在这里 —— 作业只管一张表, 丢了 (重启) 就是这一张失败。
+
 两种跑法, 同一套编排:
   · --remote <url> : 打 Railway 的 /onboard(GH Actions 走这条 —— 它连得上 Railway,
                      连不上中转站)。**只用标准库**, runner 上不需要装任何依赖。
@@ -22,9 +27,11 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -32,9 +39,18 @@ from typing import Any
 
 from . import links
 
-# 逐表的 HTTP 超时(秒)。单表 = 全表 distinct 扫描 + 一次 16k 输出的 LLM 调用;
-# 现有单表 workflow 给 220s, 大表偏紧 —— 批量这边放宽到 300s 并可 --timeout 调。
-DEFAULT_TIMEOUT = 300
+# 一张表最多等多久(秒)。单表 = 全表 distinct 扫描 + 一次 16k 输出的 LLM 调用。
+# 起草走后台作业 + 轮询 (I-21), 单个 HTTP 请求都是秒级的, 这个数只管"总共等多久":
+# 10-23 的 52 / 48 列宽表一次就超过了 5 分钟。可 --timeout 调。
+DEFAULT_TIMEOUT = 1200
+# 轮询间隔、单次轮询请求的超时、连续失败几次算挂(Railway 重部署那几十秒会 502)。
+POLL_INTERVAL = 5.0
+POLL_REQUEST_TIMEOUT = 30
+POLL_MAX_ERRORS = 6
+# 提交作业那一下的超时。新服务端毫秒级回包; 给长一点是为了**还没重部署的旧服务端**:
+# 它的 /onboard 在事件循环里同步起草, 上一张宽表被边缘 502 之后它还会接着跑一两分钟,
+# 这期间新请求排在后面没人理。等到它腾出手就会回 404, 客户端才能退回同步 /onboard。
+SUBMIT_TIMEOUT = 300
 
 STATUS_ICON = {"ok": "✅", "needs_fix": "⚠️", "failed": "❌", "skipped": "⏭️"}
 
@@ -64,19 +80,23 @@ def count_pending(res: dict) -> int:
 
 # ── 逐表起草 ────────────────────────────────────────────────────────────────
 
-def _post_onboard(base_url: str, api_key: str | None, payload: dict, timeout: int) -> dict:
-    """POST <base>/onboard。只用标准库 —— runner 上不装依赖(见模块头 ②)。"""
-    # urlopen 认 file:// / ftp:// 这些 —— 一个配错(或被改)的 ONBOARDER_URL 就会变成
-    # 读本地文件。这个值来自 GitHub secret(运维控制), 风险不高, 但 urlopen 配非 http
-    # scheme 本就该显式收窄。
-    if not base_url.startswith(("http://", "https://")):
-        raise RuntimeError(f"--remote 只接受 http(s):// 地址,收到 {base_url!r}")
+class _HTTPStatus(RuntimeError):
+    """服务端回了非 2xx。保留状态码, 好分"旧部署没有这个端点"和真失败。"""
+
+    def __init__(self, code: int, body: str):
+        super().__init__(f"HTTP {code}: {body}")
+        self.code = code
+
+
+def _call(base_url: str, api_key: str | None, method: str, path: str,
+          payload: dict | None, timeout: float) -> dict:
+    """一次 HTTP 请求 → JSON。只用标准库 —— runner 上不装依赖(见模块头 ②)。"""
     req = urllib.request.Request(
-        base_url.rstrip("/") + "/onboard",
-        data=json.dumps(payload).encode("utf-8"),
+        base_url.rstrip("/") + path,
+        data=None if payload is None else json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json",
                  **({"X-Onboarder-Key": api_key} if api_key else {})},
-        method="POST",
+        method=method,
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -87,9 +107,71 @@ def _post_onboard(base_url: str, api_key: str | None, payload: dict, timeout: in
             body = exc.read().decode("utf-8", "replace")[:800]
         except Exception:  # noqa: BLE001  —— 读不出响应体不该盖掉原始状态码
             pass
-        raise RuntimeError(f"HTTP {exc.code}: {body or exc.reason}") from exc
+        raise _HTTPStatus(exc.code, body or str(exc.reason)) from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"连不上 {base_url}: {exc.reason}") from exc
+    except (OSError, ValueError, http.client.HTTPException) as exc:
+        # urlopen 只把【发请求】那一段的错包成 URLError; 等响应 / 读响应体时的超时、
+        # 断连是裸 OSError, 回包被提前截断是 http.client.IncompleteRead (它不是 OSError),
+        # 回包不是 JSON 是 ValueError。统一成 RuntimeError, 轮询那边才能一律当瞬时失败数。
+        raise RuntimeError(f"{method} {path}: {type(exc).__name__}: {exc}") from exc
+
+
+def _post_onboard(base_url: str, api_key: str | None, payload: dict, timeout: int) -> dict:
+    """起草一张表: 提交后台作业, 轮询到出结果 (I-21)。
+
+    服务端还没有 /onboard/jobs (Railway 还跑着旧代码) 就退回同步的 /onboard ——
+    和以前一样, 宽表会撞 ~5 分钟上限。失败一律抛 RuntimeError, 文案保持
+    "HTTP <code>: <detail>", 汇总表和重跑清单照旧。
+    """
+    # urlopen 认 file:// / ftp:// 这些 —— 一个配错(或被改)的 ONBOARDER_URL 就会变成
+    # 读本地文件。这个值来自 GitHub secret(运维控制), 风险不高, 但 urlopen 配非 http
+    # scheme 本就该显式收窄。
+    if not base_url.startswith(("http://", "https://")):
+        raise RuntimeError(f"--remote 只接受 http(s):// 地址,收到 {base_url!r}")
+    deadline = time.monotonic() + timeout
+    try:
+        # 只提交一次, 不重试: 提交失败重试可能在服务端留下两个同样的作业。
+        job = _call(base_url, api_key, "POST", "/onboard/jobs", payload,
+                    min(timeout, SUBMIT_TIMEOUT))
+    except _HTTPStatus as exc:
+        if exc.code not in (404, 405):
+            raise
+        print("  · onboarder 还没有 /onboard/jobs(旧部署)—— 退回同步 /onboard,"
+              "宽表可能撞 Railway 的 5 分钟上限")
+        return _call(base_url, api_key, "POST", "/onboard", payload, timeout)
+    job_id = job.get("job_id")
+    if not job_id:
+        raise RuntimeError(f"/onboard/jobs 没回 job_id: {str(job)[:200]}")
+
+    errors, last_note = 0, time.monotonic()
+    while True:
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"等了 {timeout}s 还没起草完(作业 {job_id[:6]}…, 服务端可能还在跑);"
+                               "重跑这张(本地跑可加大 --timeout)")
+        time.sleep(POLL_INTERVAL)
+        try:
+            st = _call(base_url, api_key, "GET", f"/onboard/jobs/{job_id}", None,
+                       POLL_REQUEST_TIMEOUT)
+        except _HTTPStatus as exc:
+            # 404 = 作业没了(onboarder 重启/重部署过); 401 = 钥匙不对 —— 都不会自己好。
+            if exc.code in (401, 403, 404):
+                raise
+            errors += 1
+        except RuntimeError:
+            errors += 1                        # 连不上 —— 重部署那几十秒
+        else:
+            errors = 0
+            if st.get("status") == "done":
+                return st["result"]
+            if st.get("status") == "error":
+                raise _HTTPStatus(int(st.get("status_code") or 500), str(st.get("detail") or ""))
+            if time.monotonic() - last_note >= 60:
+                print(f"  · 起草中 {st.get('elapsed_s', '?')}s …")
+                last_note = time.monotonic()
+            continue
+        if errors >= POLL_MAX_ERRORS:
+            raise RuntimeError(f"轮询作业 {job_id[:6]}… 连续 {errors} 次失败, 放弃这张")
 
 
 def build_payload(entry: dict, *, sample_n: int, model: str | None = None) -> dict[str, Any]:
@@ -359,7 +441,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out-dir", default="mappings", help="草稿输出目录")
     p.add_argument("--sample-n", type=int, default=30, help="每张表拉多少行文案样本")
     p.add_argument("--model", default="", help="覆盖模型(默认服务端 ONBOARDER_MODEL)")
-    p.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT, help="逐表 HTTP 超时(秒)")
+    p.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT,
+                   help="一张表最多等多久(秒); 起草在服务端后台跑, 这里轮询")
     p.add_argument("--overwrite", action="store_true",
                    help="允许覆盖已存在的 mappings/<id>.yaml(默认跳过 —— 那里面有人审过的判断项)")
     p.add_argument("--summary-file", default="", help="把 markdown 汇总另存一份(PR 描述用)")

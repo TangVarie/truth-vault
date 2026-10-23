@@ -94,6 +94,8 @@ jobs:
       - name: 批量起草(逐表调 Railway onboarder)
         id: batch
         env:
+          # 一张宽表要等好几分钟 (I-21): 不关缓冲的话进度行要等进程退出才一起出来。
+          PYTHONUNBUFFERED: "1"
           ONBOARDER_URL: ${{ secrets.ONBOARDER_URL }}
           ONBOARDER_API_KEY: ${{ secrets.ONBOARDER_API_KEY }}
           SAMPLE_N: ${{ inputs.sample_n }}

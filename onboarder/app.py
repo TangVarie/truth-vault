@@ -3,10 +3,24 @@
 为什么在 Railway:它连得上中转站 + 飞书(实测 GitHub Actions 连不上中转站)。
 分工:本服务只【产草稿】,不碰 git;git/PR 由 GitHub Action(onboard-table.yml)做。
 
-  POST /onboard  body={project_id, (url | app_token+table_id), sample_n?, model?}
-                 → {mapping_yaml, review_brief, errors, uncovered, pending, is_error,
-                    app_token, table_id}
-  GET  /health   → {"ok": true}
+  POST /onboard       body={project_id, (url | app_token+table_id), sample_n?, model?}
+                      → {mapping_yaml, review_brief, errors, uncovered, pending, is_error,
+                         app_token, table_id}
+  POST /onboard/jobs  同一个 body → 202 {job_id}: 后台起草, 马上回包 (I-21)
+  GET  /onboard/jobs/<job_id>
+                      → {status: running} | {status: done, result: <同 /onboard 的回包>}
+                        | {status: error, status_code, detail}
+  GET  /health        → {"ok": true}
+
+为什么有 jobs 这一对 (I-21, 2026-10-23): 宽表 (XIWU 52 列、百健士 48 列) 一次起草
+就超过 5 分钟, 而调用方和 Railway 边缘都在 ~5 分钟断开。日志里服务端三次都跑完、
+`/onboard` 回了 200, 回包到的时候连接已经没了 —— 钥匙、飞书、中转站全是好的, 结果
+丢了。先回包、后台跑、调用方轮询, 单个请求就都是秒级的。`/onboard` 同步那条留着,
+给本地调试和还没升级的调用方。
+
+作业放在进程内存里: 只在 Railway 单实例下成立 (railway.json 的 startCommand 是单个
+uvicorn 进程)。重启/重部署会丢正在跑的作业, 调用方轮询拿到 404 就当这张失败 ——
+和以前超时一样, 不更坏。
 
 批量(多张表)**不在这里** —— 见 `onboarder/batch.py`:它在调用方(GH runner / 本地)
 逐表打这个端点。故意不做服务端批量端点,理由三条:① 单表就已逼近网关/代理的请求
@@ -29,8 +43,13 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
+import threading
+import time
 
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import JSONResponse
 
 from . import core
 
@@ -77,17 +96,8 @@ def health() -> dict:
     }
 
 
-@app.post("/onboard")
-async def onboard(
-    request: Request,
-    x_onboarder_key: str | None = Header(default=None),
-) -> dict:
-    _check_auth(x_onboarder_key)
-
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="body must be JSON")
+def _parse_body(body) -> dict:
+    """请求体校验。不合法 → 400, 在起草 (和后台作业) 之前就拒。"""
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="body must be a JSON object")
     if not body.get("project_id"):
@@ -99,7 +109,11 @@ async def onboard(
             status_code=400,
             detail="missing table ref: 给 url(飞书链接)或 app_token + table_id",
         )
+    return body
 
+
+def _draft(body: dict) -> dict:
+    """起草一张表; 失败按原因抛 HTTPException (400 / 500 / 502)。同步, 会跑好几分钟。"""
     try:
         res = core.draft(
             project_id=body["project_id"],
@@ -122,3 +136,100 @@ async def onboard(
         # 模型没产出可解析的 mapping —— 让调用方看到失败(非 200)
         raise HTTPException(status_code=502, detail=res.get("reason", "draft failed"))
     return res
+
+
+async def _read_body(request: Request) -> dict:
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="body must be JSON")
+    return _parse_body(body)
+
+
+@app.post("/onboard")
+async def onboard(
+    request: Request,
+    x_onboarder_key: str | None = Header(default=None),
+) -> dict:
+    _check_auth(x_onboarder_key)
+    body = await _read_body(request)
+    # 放线程池里跑: 起草要好几分钟, 直接在 async 端点里调会把事件循环卡住,
+    # 期间 /health 和作业轮询都回不了。
+    return await run_in_threadpool(_draft, body)
+
+
+# ── 后台作业 (I-21) ─────────────────────────────────────────────────────────
+
+# 同时在跑的作业上限。接表是串行的 (batch.py), 正常最多 1 个; 留点余量给两个
+# workflow 撞在一起, 再多就是有人在刷 —— 每个作业都是一次全表扫描 + 一次 16k 输出。
+MAX_RUNNING_JOBS = 3
+# 跑完的作业留多久给调用方来取。调用方几秒一轮询, 1 小时足够; 过期就清掉。
+JOB_TTL_S = 3600
+
+_JOBS: dict[str, dict] = {}
+_JOBS_LOCK = threading.Lock()
+
+
+def _prune_jobs(now: float) -> None:
+    """清掉过期的已完成作业。调用方持锁。"""
+    for jid in [j for j, v in _JOBS.items()
+                if v["status"] != "running" and now - v["finished_at"] > JOB_TTL_S]:
+        del _JOBS[jid]
+
+
+def _run_job(job_id: str, body: dict) -> None:
+    try:
+        out = {"status": "done", "result": _draft(body)}
+    except HTTPException as exc:
+        out = {"status": "error", "status_code": exc.status_code, "detail": exc.detail}
+    except Exception as exc:  # noqa: BLE001 —— 作业线程里的异常没人接, 必须落进状态
+        logger.exception("job %s crashed", job_id)
+        out = {"status": "error", "status_code": 500, "detail": f"{type(exc).__name__}: {exc}"}
+    with _JOBS_LOCK:
+        _JOBS[job_id].update(out, finished_at=time.time())
+    logger.info("job %s %s (%s)", job_id, out["status"], body.get("project_id"))
+
+
+@app.post("/onboard/jobs", status_code=202)
+async def onboard_job_create(
+    request: Request,
+    x_onboarder_key: str | None = Header(default=None),
+):
+    _check_auth(x_onboarder_key)
+    body = await _read_body(request)
+    now = time.time()
+    with _JOBS_LOCK:
+        _prune_jobs(now)
+        running = sum(1 for v in _JOBS.values() if v["status"] == "running")
+        if running >= MAX_RUNNING_JOBS:
+            raise HTTPException(status_code=429,
+                                detail=f"已有 {running} 张表在起草, 等一张跑完再提交")
+        job_id = secrets.token_urlsafe(16)
+        _JOBS[job_id] = {"status": "running", "project_id": body["project_id"],
+                         "started_at": now}
+    threading.Thread(target=_run_job, args=(job_id, body), daemon=True,
+                     name=f"onboard-{job_id[:6]}").start()
+    logger.info("job %s started (%s)", job_id, body["project_id"])
+    return JSONResponse(status_code=202, content={"job_id": job_id})
+
+
+@app.get("/onboard/jobs/{job_id}")
+def onboard_job_get(
+    job_id: str,
+    x_onboarder_key: str | None = Header(default=None),
+) -> dict:
+    _check_auth(x_onboarder_key)
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if job is None:
+            raise HTTPException(
+                status_code=404,
+                detail="没有这个作业: 过期了, 或 onboarder 重启/重部署过 (作业在内存里)")
+        job = dict(job)
+    out = {"status": job["status"], "project_id": job["project_id"],
+           "elapsed_s": round((job.get("finished_at") or time.time()) - job["started_at"])}
+    if job["status"] == "done":
+        out["result"] = job["result"]
+    elif job["status"] == "error":
+        out["status_code"], out["detail"] = job["status_code"], job["detail"]
+    return out
