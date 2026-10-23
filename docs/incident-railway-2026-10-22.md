@@ -97,6 +97,16 @@
 - **GitHub 组织**：检查 Railway GitHub App 能访问哪些仓库、有什么权限，翻一遍组织的审计日志。
 - **旧 Supabase 项目 `vnbcytilakkxojhgzeqr`**：如果还开着就暂停。已停的 Streamlit 里可能存着它的 key。
 
+## 4.4 结果（10-23）
+
+- owner 10-23 按 4.2 换完：本仓相关的 Railway 服务、三省六部、TV 与 Jev 的 GitHub Actions secrets、Vercel 看板都换了新钥匙，每个服务上线后单独核过（`/health`、一次真实任务或页面）。
+- Supabase：每组一把 `sb_secret_`，看板用 `sb_publishable_`；旧版 JWT 钥匙约 06:46 UTC 停用。停用之后日志里没有一条 401/403；当天 daily-sync（07:29 UTC 起）用新钥匙，全部 200/201。复查旧钥匙流量的查法：`edge_logs` 里 `request.sb.jwt.apikey.payload.algorithm` 为 HS256 的是旧版 JWT（`supabase_admin` 是控制台自己的请求，忽略），为空的是新的 `sb_` 钥匙。
+- 换下来的第三方旧 key（中转站令牌、Google、TypeSafe、TikHub 等）已在各自后台删除；飞书应用 App Secret 已重置。
+- 和计划不同的地方：已停的 Streamlit 服务和旧 Supabase 项目 `vnbcytilakkxojhgzeqr` 都已经不在了，不用处理；没跑 curl 冒烟，改为各服务上线后看日志全部 200 来确认；`preflight` 原来用的 NRT_phase3 飞书表已经不存在，改用 XIWU_phase2 跑绿。
+- Railway 审计日志只能查到 10-22 06:41 UTC（北京 14:41）以后，之前的变量改动只能按当前值核：地址类变量都对，4.2 第 2 步列的禁用类变量一个都没有。
+- owner 决定保留不换的少数几把旧钥匙、各服务具体换上了哪一把，记在 owner 的私人交接文档里。本仓是公开仓，这里不写。
+- 剩下的复查：10-23 14:00 UTC tv-sync、当夜 features-sync 与次日 daily-sync 的 Actions、10-26 周一 Jev 外部语料首跑（新 TikHub key）。复查发现漏换的持有者会以 401 出现：先给它换新钥匙；来不及时可在 Supabase → API Keys → Legacy 临时重新启用旧钥匙，修好后再停用。
+
 ## 5. 这份清单挡不住什么
 
 - **日志干净不等于密钥没被拿走。** 它在作废前一直有效。
