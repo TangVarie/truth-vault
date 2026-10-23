@@ -169,6 +169,7 @@ jobs:
           planned_total=0      # D-094 (审计 B-18): 按每个项目的待办与上限算出"本轮该成几批", 收尾和实际成的比
           ok_total=0
           edge502_total=0      # 边缘 502 的批: worker 多半在后台跑完了, 既不算成也不算欠
+          gf_total=0           # D-125: 本轮有题被中转站敏感词拦、记 NULL 落库的篇数 (一个请求最多 2 篇, 只能在这里跨批合计)
           for f in ../mappings/*.yaml; do
             p=$(basename "$f" .yaml)
             [ "$p" = "_template" ] && continue
@@ -207,7 +208,7 @@ jobs:
               fi
               ok=$(jq -r '.ok // false' /tmp/feat.json 2>/dev/null || echo false)
               echo "  HTTP $code · ok=$ok · $(jq -r '.stdout_tail // ""' /tmp/feat.json 2>/dev/null | grep -o 'Done:.*' | tail -1)"
-              jq -r '.stdout_tail // ""' /tmp/feat.json 2>/dev/null | grep -oE '(systemic|gateway_filtered) [^ ]*: .*' | tail -2 | sed 's/^/    ↳ /' || true
+              jq -r '.stdout_tail // ""' /tmp/feat.json 2>/dev/null | grep -oE '· (systemic|gateway_filtered) [^ ]*: .*' | tail -2 | sed 's/^· /    ↳ /' || true
               if [ "$code" = "409" ] && [ "$waits" -lt "$WAIT_409_MAX" ]; then
                 waits=$((waits + 1))
                 echo "  ⏳ $p 409: worker 锁被上一个请求占着, 等 ${WAIT_409_SEC}s 再试 ($waits/$WAIT_409_MAX)"
@@ -236,6 +237,8 @@ jobs:
                 break
               fi
               ok_batches=$((ok_batches + 1))
+              gf=$(jq -r '.stdout_tail // ""' /tmp/feat.json 2>/dev/null | grep -o 'Done: .*' | tail -1 | sed 's/^Done: //' | jq -r '.gateway_filtered // 0' 2>/dev/null || true); case "$gf" in ''|*[!0-9]*) gf=0;; esac   # D-125 gf
+              if [ "$gf" -gt 0 ]; then gf_total=$((gf_total + gf)); echo "::warning::features $p 本批 $gf 篇有题被中转站敏感词拦截, 记 NULL 落库、不会再抽 (D-125)"; fi
               budget=$((budget - batch))
             done
             if [ "$sent" = "1" ]; then
@@ -265,6 +268,11 @@ jobs:
           echo "  本轮: 发过请求的项目 $attempted 个, 一批都没成 $n_starved 个${starved_list:+ (}${starved_list# }${starved_list:+)}"
           if [ "$attempted" -gt 0 ] && [ $((n_starved * 2)) -gt "$attempted" ]; then
             echo "::error::features 本轮 $attempted 个项目里 $n_starved 个一批都没成 ——${starved_list} —— 这不是瞬时, 是这一步整体没跑起来。"
+            fail_count=$((fail_count + 1))
+          fi
+          # D-125: 单篇被拦是那一篇的内容; 一轮 ≥3 篇 = 像中转站整体开了/收紧了拦截, 这些 NULL 已落库、不会再抽 —— 红。
+          if [ "$gf_total" -ge 3 ]; then
+            echo "::error::features 本轮 $gf_total 篇有题被中转站敏感词拦截、记 NULL 已落库且不会再抽 —— 像是中转站整体开了/收紧了拦截 (D-125)。找中转站, 关了之后用 backfill-features reannotate 重抽这些篇。"
             fail_count=$((fail_count + 1))
           fi
           if [ $fail_count -gt 0 ]; then

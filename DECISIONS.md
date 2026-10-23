@@ -7180,11 +7180,12 @@ NUC_phase1_recv2jCgov51Yz,NUC_phase1_recv2lNktp6h13,NUC_phase1_recv2lNktpokW9,NU
 定：
 
 - 特征层：被拦的组那几题记 NULL、`invalid_reason = 'gateway_filtered'`，其余组照常，整篇落库（标记题被拦也落，行在就算跑过）。
-  - 模型题全被拦仍按 systemic，整篇不落行。整篇只剩 NULL 落库就再也不会重抽，中转站整体收紧拦截时会悄悄写一库空答案，宁可红。
+  - 模型题全被拦仍按 systemic，整篇不落行。
+  - 单篇规则拦不住中转站整体收紧：G1 只送标题和第一句，几乎总能过，其余组全被拦也会落库。所以 features-sync / backfill-features 跨批合计 Done 行里的 `gateway_filtered`：每批有就打 warning，一轮 ≥3 篇判红（一个请求最多 2 篇，只能在 workflow 里合计）。这些 NULL 已落库、不会再抽，红了要找中转站、再 reannotate。
 - essence：失败全是被拦就记 `gateway_filtered`，不计 systemic，下轮照常再试。只剩这一篇时不判红。
-  - 一轮里 ≥3 篇被拦且一篇没成仍判红：那更像中转站整体开了拦截。
+  - 被拦的篇不落库、夜夜回来，一个项目攒到 3 篇、又赶上没有新篇的晚上，就会凑成「≥3 篇被拦、一篇没成」。所以这时先拿一条无害假笔记探一次（项目上下文照旧，正文换掉）：探针也被拦 / 挂了才判红（中转站整体在拦），探针过了只打 warning。
 - 识别：`_common.is_gateway_filtered` 认 `sensitive_words_detected`。重试次数不改：被拦看的像是回复，重发偶尔能过。
-- 日志：被拦的篇打一行 `gateway_filtered <note_id>`，features-sync / backfill-features / daily-sync 的输出都带出来。
+- 日志：被拦的篇打一行 `gateway_filtered <note_id>`，features-sync / backfill-features / daily-sync 的输出都带出来（按日志分隔符认，不吃单问那几行）。
 
 不做：不改写原文、不替换敏感词。证据要原样引用，改了原文证据硬闸就对不上。
 
@@ -7193,4 +7194,4 @@ NUC_phase1_recv2jCgov51Yz,NUC_phase1_recv2lNktp6h13,NUC_phase1_recv2lNktpokW9,NU
 - 要不要请中转站对我们的 key 关掉敏感词拦截，由 owner 定。
 - 关了之后用 backfill-features `reannotate` 重抽记了 `gateway_filtered` 的篇，essence 那篇下一轮自然补上。
 
-守卫：`scripts/check_gateway_filter.py`（CI）。反证：拿掉识别后被拦的组回到 api_error + systemic；去掉「全被拦仍 systemic」或「≥3 篇全拦判红」各自都会红。
+守卫：`scripts/check_gateway_filter.py`（CI）。workflow 里取数那行（`# D-125 gf`）和 ↳ 那行原样抠出来跑。反证：拿掉识别后被拦的组回到 api_error + systemic；去掉「全被拦仍 systemic」、跨批红线、探针门槛、取数行的 `|| true`、↳ 那行的分隔符锚点，各自都会红。合并前另做了一轮四个视角的对抗审查，四条确认的问题都已修（单篇规则被 G1 绕过、essence 攒篇误红、grep 吃单问日志）。

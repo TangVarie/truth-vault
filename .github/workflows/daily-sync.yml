@@ -238,7 +238,7 @@ jobs:
             [ "$rem" = "0" ] && { echo "  ✅ $p essence 已全部标完"; continue; }
             echo "─── essence annotate (直连) · project=$p · 待标=$rem · 每日上限=$WORKER_LIMIT ───"
             rc=0; python annotate_essence_pass.py "$p" --limit "$WORKER_LIMIT" $DRY_FLAG > /tmp/ess.log 2>&1 || rc=$?
-            grep -E 'Found [0-9]+ notes|Done:|全部失败|卫生断言|有 [0-9]+ 条失败|gateway_filtered ' /tmp/ess.log | tail -5 || true
+            grep -E 'Found [0-9]+ notes|Done:|全部失败|卫生断言|有 [0-9]+ 条失败|· gateway_filtered[ :]' /tmp/ess.log | tail -5 || true
             if [ "$rc" != "0" ]; then
               tail -n 12 /tmp/ess.log
               # 脚本退非零 = 全军覆没 / hygiene 漂移 / 参数错 —— 多半是模型名 · 中转站 · 余额这类系统性问题, 判红排查。

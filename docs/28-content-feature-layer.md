@@ -209,7 +209,7 @@ truth_vault.note_feature_answers（Layer 1 事实）
 
 **回复解析不出 / 缺题**（D-083）：整个回复解析不出 JSON 记 `json_parse_failed`（不冒充 `missing`）；解析走三层容错（去围栏、允许字符串里原样换行、按 `id/answer/evidence` 三元组正则捞），捞出来的仍过下面的证据硬闸。重问一次之后仍「没答」（`missing` / `json_parse_failed`）的题按单题再问一次；单问只在失败时发生，一组最多 4 次。2026-09-23 闸一 100 篇里 59 格 `missing` 全是整组一起没的，是原文里的英文双引号 / 换行被原样抄进 evidence 把 JSON 弄断，不是模型漏题。
 
-**中转站敏感词拦截**（D-125）：中转站判一次请求含敏感词就回 HTTP 500（message 是 `sensitive_words_detected`）。这是那一篇内容的问题，不是连通或余额：被拦的组那几题记 NULL、`invalid_reason = 'gateway_filtered'`，其余组照常，整篇落库，不再每批排第一个重跑。模型题一组都没答成（全被拦）仍按 systemic 整篇不落行，免得中转站整体收紧拦截时悄悄写一库空答案。中转站关了拦截之后，用 `backfill-features` 的 `reannotate` 重抽这几篇。
+**中转站敏感词拦截**（D-125）：中转站判一次请求含敏感词就回 HTTP 500（message 是 `sensitive_words_detected`）。这是那一篇内容的问题，不是连通或余额：被拦的组那几题记 NULL、`invalid_reason = 'gateway_filtered'`，其余组照常，整篇落库，不再每批排第一个重跑。模型题一组都没答成（全被拦）仍按 systemic 整篇不落行。G1 只送标题和第一句、几乎总能过，所以中转站整体收紧时单篇规则拦不住；features-sync / backfill-features 跨批合计被拦的篇数，一轮 ≥3 篇判红。中转站关了拦截之后，用 `backfill-features` 的 `reannotate` 重抽这几篇。
 
 **证据片段硬闸**：答「是」（choice 题选了实质选项）必须附上原文里的原样片段，不超过 30 字。代码去掉空白后做子串校验，对不上就重问一次，仍对不上记 NULL、`invalid_reason = 'evidence_not_found'`。这一步不靠模型自觉，**专门防「凭印象答是」**，人工抽查时也一眼能核。
 

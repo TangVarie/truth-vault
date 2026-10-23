@@ -811,17 +811,41 @@ def _exit_code_for_stats(stats: dict) -> int:
       ok==0 也【不判失败】—— 否则近乎标完的项目只剩 1 条卡壳笔记(批 ok=0)被误判"全军覆没"每晚
       拖红(#55 实测 HXZ_QD/TXQ 各剩 1 条)。【只】豁免它, 其余一律计 systemic(fail-safe)。
     - 中转站敏感词拦截(gateway_filtered, D-125)= 这一篇的内容被中转站拦, 和纯校验类一样按单篇算、
-      幂等续标, 不计 systemic。但一轮里 ≥3 篇被拦且一篇没成 → 判红: 那更像中转站整体开了/收紧了拦截,
-      不是哪一篇的事。
+      幂等续标, 不计 systemic。但一轮里 ≥3 篇被拦且一篇没成 → 先拿无害假笔记探一次(_gateway_canary):
+      探针也过不去 = 中转站整体开了/收紧了拦截 → 判红; 探针过了 = 是这几篇各自的内容(被拦的篇夜夜回来,
+      一个项目攒到 3 篇、又赶上没有新篇的晚上就会凑成这种轮次)→ 不判红。没探(gateway_canary_ok 缺省)按红。
     - 其余(含 no-op 空跑)→ 0。
     """
     if stats.get("hygiene_failed"):
         return 1
     if stats.get("systemic_failed", 0) > 0 and stats.get("ok", 0) == 0:
         return 1
-    if stats.get("gateway_filtered", 0) >= 3 and stats.get("ok", 0) == 0:
+    if (stats.get("gateway_filtered", 0) >= 3 and stats.get("ok", 0) == 0
+            and not stats.get("gateway_canary_ok")):
         return 1
     return 0
+
+
+_CANARY_TEXT = ("周末带娃去哪儿", "上周六早上九点去了公园，孩子玩得很开心，回家路上就睡着了。")
+
+
+def _gateway_canary(model: str, project_info: dict, note_like: dict) -> bool:
+    """一轮里 ≥3 篇被中转站拦、一篇没成时探一次: 项目上下文照旧 (品牌 / 蓝词 / 意图 / 方向), 正文换成无害的
+    假笔记, 走同一条 call_claude 路径。过了 = 中转站没有整体拦, 是那几篇各自的内容; 被拦 / 挂了 = 整体问题。
+    只看调用通不通, 不看回复对不对。"""
+    title, body = _CANARY_TEXT
+    fake = {"note_id": "canary", "title": title, "body": body,
+            "raw_content": f"【标题】{title}\n【正文】{body}", "hashtags": [],
+            "intent": note_like.get("intent"),
+            "target_blue_keywords": note_like.get("target_blue_keywords") or [],
+            "raw_extra": {"_direction_raw": (note_like.get("raw_extra") or {}).get("_direction_raw")}}
+    try:
+        system_prompt, user_prompt = build_mode_a_prompt(project_info, fake)
+        call_claude(user_prompt, model, cached_system=system_prompt)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.error("gateway canary failed: %r", exc)
+        return False
 
 
 def main() -> int:
@@ -865,6 +889,7 @@ def main() -> int:
              "hygiene_failed": 0,
              "sub_dir_ok": 0, "sub_dir_failed": 0, "sub_dir_not_applicable": 0}
     sleep_s = 1.0 / args.qps if args.qps > 0 else 0
+    filtered_ctx: Optional[tuple[dict, dict]] = None   # D-125: 最后一篇被中转站拦的 (项目信息, 笔记), 探针借它的项目上下文
     for i, note in enumerate(notes):
         # Inject project info one level up so prompt builder can read it
         project_info = note.pop("projects", {}) or {}
@@ -929,6 +954,7 @@ def main() -> int:
             kind = _classify_api_failure(errors)
             if kind == "gateway_filtered":
                 stats["gateway_filtered"] += 1
+                filtered_ctx = (project_info, note)
                 logger.warning("gateway_filtered %s: 中转站敏感词拦截, 本篇跳过, 下轮再试 (D-125)",
                                note["note_id"])
             elif kind == "systemic":
@@ -982,6 +1008,12 @@ def main() -> int:
     # 返回码: 零星单条 essence 抽风(failed_after_retry, 幂等下轮续标)不该把整条 daily-sync
     # 拖红(NUC_1 首跑 45 条里 1 条抽风就让整 workflow 红 + 发邮件, 即此症)。只有全军覆没 /
     # hygiene 漂移才红。判定收敛到 _exit_code_for_stats(可单测)。
+    if (stats["gateway_filtered"] >= 3 and stats["ok"] == 0 and not stats["systemic_failed"]
+            and not stats["hygiene_failed"] and filtered_ctx is not None and not args.dry_run):
+        stats["gateway_canary_ok"] = _gateway_canary(model, *filtered_ctx)
+        if stats["gateway_canary_ok"]:
+            logger.warning("gateway_filtered: %d 篇被中转站拦, 但无害探针能过 —— 是这几篇各自的内容问题, 不判红 (D-125)",
+                           stats["gateway_filtered"])
     code = _exit_code_for_stats(stats)
     if code != 0:
         if stats["hygiene_failed"]:

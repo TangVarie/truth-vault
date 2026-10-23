@@ -12,8 +12,11 @@ essence 只剩它一篇时 daily-sync 也判红。
   · is_gateway_filtered: 认异常对象和 "api_error: InternalServerError(...)" 这种错误串; 别的 500 / 429 不认。
   · 特征层: 被拦的组那几题记 NULL + gateway_filtered, 其余组照常, 整篇落库 (标记题那行在) —— 不算 systemic;
     模型题全被拦 → 仍 systemic (整篇不落行), 不悄悄写一篇空答案; 普通 api 挂照旧 systemic。
+  · 特征层只有 G1 (标题 + 第一句) 答成、其余全被拦也落库 —— 单篇规则拦不住中转站整体收紧, 靠 features-sync /
+    backfill-features 跨批合计: 本轮 ≥3 篇被拦 → 红。这里把 workflow 里那几行 (# D-125 gf、↳ 那行) 原样抠出来跑。
   · essence: api 失败全是被拦 → gateway_filtered (不计 systemic, 只剩这一篇时不判红); 混着别的 api 错 →
-    systemic; 纯校验类 → None。一轮 ≥3 篇被拦且一篇没成 → 判红 (中转站整体开了拦截)。
+    systemic; 纯校验类 → None。一轮 ≥3 篇被拦且一篇没成 → 先拿无害假笔记探一次: 探针也被拦才判红 (被拦的篇
+    夜夜回来, 一个项目攒到 3 篇不该天天红); 探针不带原笔记的正文。
   · 反证: 拿掉识别 (is_gateway_filtered 恒 False) → 被拦的组回到 api_error + systemic。
 挡不住什么:
   · 中转站换了报错文案 (不再带 sensitive_words_detected) —— 那就回到 api_error, 表现和以前一样 (红, 不丢数)。
@@ -23,7 +26,10 @@ essence 只剩它一篇时 daily-sync 也判红。
 from __future__ import annotations
 
 import json
+import pathlib
+import subprocess
 import sys
+import tempfile
 
 import _common
 import annotate_essence_pass as ess
@@ -111,6 +117,12 @@ def check_features(bank) -> None:
                             single=False, code_only=False, dry_run=False, llm=make_llm(every))
     assert res["stats"]["groups_ok"] == 0 and res["stats"]["filtered"] == len(groups) and afp._is_systemic(res["stats"]), res["stats"]
 
+    # C2. 只有 G1 (标题 + 第一句) 答成、其余全被拦: 单篇规则放行 (落库), 中转站整体收紧靠 workflow 跨批合计 (见 check_workflows)
+    rest = {q for i, g in enumerate(groups) if i != 0 for q in g}
+    res = afp.annotate_note(bank, note, mapping, model="m", extractor="llm:m", run_tag="primary",
+                            single=False, code_only=False, dry_run=False, llm=make_llm(rest))
+    assert res["stats"]["groups_ok"] == 1 and res["stats"]["filtered"] == len(groups) - 1 and not afp._is_systemic(res["stats"]), res["stats"]
+
     # D. 普通 api 挂 (不是被拦) 照旧 systemic; 被拦 + api 挂混在一篇里 → systemic
     def boom(system, user, model):
         if any(q in blocked for q in _ids(system)):
@@ -156,16 +168,77 @@ def check_essence() -> None:
     f = ess._exit_code_for_stats
     assert f({"ok": 0, "failed_after_retry": 1, "gateway_filtered": 1}) == 0     # 只剩被拦的那一篇: 不红
     assert f({"ok": 0, "failed_after_retry": 2, "gateway_filtered": 2}) == 0
-    assert f({"ok": 0, "failed_after_retry": 3, "gateway_filtered": 3}) == 1     # 一轮 ≥3 篇被拦、一篇没成: 红
+    assert f({"ok": 0, "failed_after_retry": 3, "gateway_filtered": 3}) == 1     # ≥3 篇被拦、一篇没成、没探: 红
+    assert f({"ok": 0, "failed_after_retry": 3, "gateway_filtered": 3, "gateway_canary_ok": False}) == 1
+    assert f({"ok": 0, "failed_after_retry": 3, "gateway_filtered": 3, "gateway_canary_ok": True}) == 0   # 探针过了: 是各篇自己的
     assert f({"ok": 1, "failed_after_retry": 5, "gateway_filtered": 5}) == 0
     assert f({"ok": 0, "systemic_failed": 1}) == 1 and f({"ok": 0, "hygiene_failed": 1}) == 1   # 原有两条不变
-    print("  ✓ essence: 全是被拦 → gateway_filtered、混别的 api 错 → systemic、校验类 → None; 只剩被拦的篇不红, ≥3 篇全拦才红")
+
+    # 探针: 项目上下文照旧, 正文换成无害假笔记 (原笔记的标题 / 正文 / 话题一个字都不带); 被拦 → False
+    secret = "原笔记里的词XYZ"
+    note = {"note_id": "P_1", "title": secret, "body": secret, "raw_content": secret, "hashtags": [secret],
+            "intent": "种草", "target_blue_keywords": ["推车"], "raw_extra": {"_direction_raw": "带娃出行", "x": secret}}
+    seen = []
+    def ok_call(prompt, model, cached_system=None):
+        seen.append((prompt, cached_system or "")); return "{}"
+    def blocked_call(prompt, model, cached_system=None):
+        raise FakeInternalServerError(FILTERED_MSG)
+    saved = ess.call_claude
+    try:
+        ess.call_claude = ok_call
+        assert ess._gateway_canary("m", {"brand": "某牌", "product": "推车"}, note) is True
+        assert seen and all(secret not in u and secret not in s for u, s in seen), seen
+        assert "推车" in seen[0][0] and "带娃出行" in seen[0][0], seen[0][0][:300]   # 项目上下文还在
+        ess.call_claude = blocked_call
+        assert ess._gateway_canary("m", {"brand": "某牌"}, note) is False
+    finally:
+        ess.call_claude = saved
+    print("  ✓ essence: 全是被拦 → gateway_filtered、混别的 api 错 → systemic、校验类 → None; 只剩被拦的篇不红;"
+          " ≥3 篇全拦先探一次, 探针也被拦才红; 探针不带原笔记正文")
+
+
+def _gf_line(wf: str) -> str:
+    lines = [ln.strip() for ln in wf.splitlines() if ln.rstrip().endswith("# D-125 gf")]
+    assert lines, "workflow 里找不到 # D-125 gf 那行"
+    return lines[0]
+
+
+def _bash(script: str) -> str:
+    return subprocess.run(["bash", "-eo", "pipefail", "-c", script], capture_output=True, text=True, check=True).stdout
+
+
+def check_workflows() -> None:
+    root = pathlib.Path(__file__).resolve().parent.parent / ".github" / "workflows"
+    fs = (root / "features-sync.yml").read_text(encoding="utf-8")
+    bf = (root / "backfill-features.yml").read_text(encoding="utf-8")
+    done = 'Done: {"ok": 2, "failed": 0, "systemic_failed": 0, "gateway_filtered": 2, "groups_ok": 9}'
+    with tempfile.TemporaryDirectory() as td:
+        j = pathlib.Path(td) / "r.json"
+        for wf, path in ((fs, "/tmp/feat.json"), (bf, "/tmp/b.json")):
+            line = _gf_line(wf).replace(path, str(j))
+            for tail, want in (("x · " + done + "\n", "2"), ("没有 Done 行\n", "0"), ("Done: {坏 json\n", "0"), (None, "0")):
+                j.write_text(json.dumps({"stdout_tail": tail}) if tail is not None else "{}", encoding="utf-8")
+                got = _bash(line + '\necho "$gf"').strip()
+                assert got == want, (path, tail, got)
+        # ↳ 那行: 只认 logger 分隔符后面的 systemic / gateway_filtered, 不吃单问的 single_gateway_filtered q=...
+        arrow = next(ln.strip() for ln in fs.splitlines() if "↳" in ln).replace("/tmp/feat.json", str(j))
+        tail = ("2026 [WARNING] annotate_features · systemic A_1: api_error: boom\n"
+                "2026 [WARNING] annotate_features · single_gateway_filtered q=opening_type: InternalServerError(x)\n"
+                "2026 [WARNING] annotate_features · gateway_filtered B_2: 2 组被中转站敏感词拦截\n")
+        j.write_text(json.dumps({"stdout_tail": tail}), encoding="utf-8")
+        out = _bash(arrow)
+        assert "↳ systemic A_1:" in out and "↳ gateway_filtered B_2:" in out and "q=" not in out, out
+    # 跨批合计的红线在: features-sync 一处, backfill-features 两种模式各一处
+    assert 'if [ "$gf_total" -ge 3 ]; then' in fs and fs.count("gf_total=$((gf_total + gf))") == 1
+    assert bf.count('[ "$gf_total" -lt 3 ] ||') == 2 and bf.count("gf_total=$((gf_total + gf))") == 2
+    print("  ✓ workflow: # D-125 gf 那行从 Done 行取 gateway_filtered (没有 / 坏了按 0, pipefail 下不炸); ↳ 那行不吃单问日志; ≥3 篇的红线在")
 
 
 def main() -> int:
     check_detect()
     check_features(fb.load_bank())
     check_essence()
+    check_workflows()
     print("✓ 中转站敏感词拦截 (D-125): 按单篇内容问题计, 不拖住队列、不误判红; 全拦 / 整体拦截仍红")
     return 0
 
