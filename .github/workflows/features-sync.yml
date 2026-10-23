@@ -207,6 +207,7 @@ jobs:
               fi
               ok=$(jq -r '.ok // false' /tmp/feat.json 2>/dev/null || echo false)
               echo "  HTTP $code · ok=$ok · $(jq -r '.stdout_tail // ""' /tmp/feat.json 2>/dev/null | grep -o 'Done:.*' | tail -1)"
+              jq -r '.stdout_tail // ""' /tmp/feat.json 2>/dev/null | grep -o 'systemic [^ ]*: .*' | tail -2 | sed 's/^/    ↳ /' || true
               if [ "$code" = "409" ] && [ "$waits" -lt "$WAIT_409_MAX" ]; then
                 waits=$((waits + 1))
                 echo "  ⏳ $p 409: worker 锁被上一个请求占着, 等 ${WAIT_409_SEC}s 再试 ($waits/$WAIT_409_MAX)"
