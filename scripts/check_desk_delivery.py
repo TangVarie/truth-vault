@@ -250,12 +250,22 @@ class _Cache:
         self.rows, self.deleted = rows, []
         self._like = None
         self._del = False
+        self._upd = None
+        self._not_null = None
 
     def schema(self, s):
         return self
 
     def table(self, t):
-        self._like, self._del = None, False
+        self._like, self._del, self._upd, self._not_null = None, False, None, None
+        return self
+
+    @property
+    def not_(self):
+        return _Not(self)
+
+    def update(self, vals):
+        self._upd = vals
         return self
 
     def select(self, *a, **k):
@@ -275,11 +285,25 @@ class _Cache:
 
     def execute(self):
         import re
-        hit = [r for r in self.rows if re.match(self._like, r["library_version"])]
+        hit = [r for r in self.rows if re.match(self._like, r["library_version"])
+               and (self._not_null is None or r.get(self._not_null) is not None)]
         if self._del:
             self.deleted += hit
             self.rows = [r for r in self.rows if r not in hit]
+        if self._upd is not None:
+            for r in hit:
+                r.update(self._upd)
         return type("R", (), {"data": hit, "count": len(hit)})()
+
+
+class _Not:
+    def __init__(self, q):
+        self.q = q
+
+    def is_(self, col, val):
+        assert val == "null"
+        self.q._not_null = col
+        return self.q
 
 
 def s7_http() -> None:
@@ -292,15 +316,22 @@ def s7_http() -> None:
     with_dl = core.library_version(cards, gate2_run="g", delivery=P.delivery_digest(D))
     plain = core.library_version(cards, gate2_run="g")
     explore = core.library_version(cards, gate2_run="g", explore=True)
-    sb = _Cache([{"library_version": v} for v in (with_dl, plain, explore)])
+    sb = _Cache([{"library_version": v, "selected": [{"source_note_id": "x"}],
+                  "last_hit_at": "2026-10-22T08:05:21"} for v in (with_dl, plain, explore)])
     prune.prune_delivery(sb)
-    assert [r["library_version"] for r in sb.deleted] == [with_dl], "只清带规律下发的那几行, 老消费方 / 探索臂的不动"
+    by = {r["library_version"]: r for r in sb.rows}
+    assert not sb.deleted and len(sb.rows) == 3, "D-126: 只作废不删行 —— 借阅流量灯靠这张表的 last_hit_at 数借阅"
+    assert by[with_dl]["selected"] is None and by[with_dl]["last_hit_at"], "带规律下发的那行: selected 清空, 借阅时间留着"
+    assert by[plain]["selected"] and by[explore]["selected"], "只作废带规律下发的那几行, 老消费方 / 探索臂的不动"
+    lib_src = (ROOT / "librarian" / "core.py").read_text(encoding="utf-8")
+    assert 'return res[0].get("selected")' in lib_src and "if cached is not None:" in lib_src, \
+        "馆员要把 selected 为 NULL 的行当没命中 (重挑后按 cache_key 覆盖), 作废才等于删"
     wf = (ROOT / ".github" / "workflows" / "backfill-features.yml").read_text(encoding="utf-8")
     step = wf[wf.index("清掉带规律命中的馆员缓存"):]
     step = step[:step.index("      - name:")]
     assert "python prune_librarian_cache.py --delivery-only" in step and "always()" in step
     assert "reannotate == 'true'" in step and "run_tag == 'primary'" in step
-    print("  §7 HTTP 响应带 patterns; primary 答案重抽后清掉带规律的馆员缓存 ✓")
+    print("  §7 HTTP 响应带 patterns; primary 答案重抽后作废带规律的馆员缓存 (selected 清空、行留着) ✓")
 
 
 def main() -> int:

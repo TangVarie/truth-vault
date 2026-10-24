@@ -7197,3 +7197,19 @@ NUC_phase1_recv2jCgov51Yz,NUC_phase1_recv2lNktp6h13,NUC_phase1_recv2lNktpokW9,NU
 - 关了之后用 backfill-features `reannotate` 重抽记了 `gateway_filtered` 的篇，essence 那篇下一轮自然补上。
 
 守卫：`scripts/check_gateway_filter.py`（CI）。workflow 里取数那行（`# D-125 gf`）和 ↳ 那行原样抠出来跑。反证：拿掉识别后被拦的组回到 api_error + systemic；去掉「全被拦仍 systemic」、跨批红线、到线即停、探针门槛、main() 里探针的接线、reannotate 不覆盖、取数行的 `|| true`、↳ 那行的分隔符锚点，各自都会红。合并前做了两轮对抗审查（四个视角 + 修复复审），确认的问题除上面「不做」那条都已修：单篇规则被 G1 绕过、到线不停、reannotate 拿 NULL 盖旧答案、essence 攒篇误红、grep 吃单问日志、红线顺序盖住「6 次都没成」。
+
+## D-126 · 通道 2 借阅流量灯：不算补录批；重抽后的缓存清理只作废、不删行（2026-10-24）
+
+来源：10-24 daily-sync 的通道 2 灯报「写作台过去 48h 生成了 9 个 batch，馆员一次都没被调过」。核下来是误报，两处计数都不对：
+
+- 9 个 batch 里 5 个是 tv-sync 每天 14:00 UTC 写的补录批（`params.source = ingest`），不是写作台在生成，也不借卡。写作台真生成的 4 批都在 10-22。
+- 那 4 批其实借了：Supabase 日志里馆员 10-22 08:05 / 08:10 / 08:24 各写了一行缓存。但 10-23 08:18 I-19 的重抽（`backfill-features` reannotate）收尾跑 `prune_librarian_cache --delivery-only`，把带规律下发标记（`:dl`）的缓存行整行删了，这 3 次借阅的记录一起没了。灯只看这张表，就成了 0。
+
+定：
+
+- 灯数写作台生成量时减掉补录批（`params->>source = ingest`；没有 source 的老批照算写作台的）。
+- `--delivery-only` 不再删行，改成把 `selected` 清成 NULL：馆员 `get_cache` 拿到 NULL 当没命中，重挑后按 cache_key 覆盖，效果同删；行和 `last_hit_at` 留着给灯数。过期行照旧由 30 天 TTL 清理删。
+
+不改：判据仍是「零 vs 非零」（D-063）。10-23 换钥匙之后写作台还没生成过，通道 2 在新钥匙下通不通要等下一次写作；馆员 `/health` 正常、鉴权开着。
+
+守卫：`check_desk_delivery.py` §7（只作废不删、馆员把 NULL 当没命中）、ci.yml 通道 2 那一步（补录批不算）。反证：改回删行 / 改回把补录批算进去，各自都会红。

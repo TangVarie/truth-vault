@@ -4194,16 +4194,21 @@ jobs:
           CACHE = [{"consumer": "autowriter",   "created_at": _iso(2),   "last_hit_at": _iso(2)},
                    {"consumer": "sanshengliubu", "created_at": _iso(1),   "last_hit_at": _iso(1)},
                    {"consumer": "deskcore",     "created_at": _iso(120), "last_hit_at": _iso(120)}]
-          BATCHES = [{"created_at": _iso(3)}, {"created_at": _iso(30)}, {"created_at": _iso(100)}]
+          BATCHES = [{"created_at": _iso(3)}, {"created_at": _iso(30)}, {"created_at": _iso(100)},
+                     {"created_at": _iso(4), "params": {"source": "ingest"}}]   # D-126: tv-sync 补录批不算写作台生成
           class _Q:
               def __init__(q, rows): q.rows, q.f = rows, {}
               def schema(q, *a): return q
               def select(q, *a, **k): return q
               def gte(q, col, v): q.f["gte"] = (col, v); return q
               def in_(q, col, vals): q.f["in"] = (col, list(vals)); return q
+              def eq(q, col, v): q.f["eq"] = (col, v); return q
               def execute(q):
                   rows = q.rows
                   if "in" in q.f: col, vals = q.f["in"]; rows = [r for r in rows if r.get(col) in vals]
+                  if "eq" in q.f:
+                      col, v = q.f["eq"]; a, b = col.split("->>")
+                      rows = [r for r in rows if (r.get(a) or {}).get(b) == v]
                   if "gte" in q.f: col, v = q.f["gte"]; rows = [r for r in rows if (r.get(col) or "") >= v]
                   return types.SimpleNamespace(data=rows, count=len(rows))
           class SBF:
