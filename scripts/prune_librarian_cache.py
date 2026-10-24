@@ -58,7 +58,7 @@ def main() -> int:
                     help="删掉超过 N 天没命中的缓存行(默认 30)")
     ap.add_argument("--dry-run", action="store_true", help="只数不删")
     ap.add_argument("--delivery-only", action="store_true",
-                    help="不看 TTL, 只删带已验证规律下发的行 (library_version 含 ':dl'); 重抽 primary 答案之后用")
+                    help="不看 TTL, 作废带已验证规律下发的行 (library_version 含 ':dl'): selected 清成 NULL、行和 last_hit_at 留着 (D-126); 重抽 primary 答案之后用")
     args = ap.parse_args()
     if args.ttl_days < 1:
         logger.error("--ttl-days 必须 >= 1")

@@ -4220,6 +4220,15 @@ jobs:
           assert st["lib_hits"] == 1, f"窗内只有 autowriter 那 1 次算写作台, ssll 不算: {st}"
           assert st["lib_hits_7d"] == 2, f"7 天参考也只数写作台(autowriter + deskcore), ssll 不算: {st}"
           assert st["lib_by_consumer"] == {"autowriter": 1, "sanshengliubu": 1}, f"别的消费方要照印: {st}"
+          # D-126: 两次计数之间来了补录批 (补录数 > 总数) → 兜底 0, 不报负数、不误报暗着
+          class _QRace(_Q):
+              def execute(q):
+                  r = _Q.execute(q)
+                  return types.SimpleNamespace(data=r.data, count=r.count + 5) if "eq" in q.f else r
+          class SBRace(SBF):
+              def table(s, name):
+                  return _QRace({"batches": BATCHES, "versions": []}.get(name, []) if s._s == "autowriter" else CACHE)
+          assert c.gather(SBRace(), _iso(48), _iso(24 * 7))["aw_batches"] == 0
 
           # ⑨ 窗口必须比每日 cron 长(重叠), 不然夜跑晚点/漏跑一天就留空档(codex review on #133 P2)
           assert c.DEFAULT_WINDOW_HOURS > 24, f"默认窗口 {c.DEFAULT_WINDOW_HOURS}h 没和每日 cron 重叠"

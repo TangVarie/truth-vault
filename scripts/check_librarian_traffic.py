@@ -71,7 +71,7 @@ def report(stats: dict, window_hours: int) -> int:
 
     print()
     print("=" * 84)
-    print(f"  通道 2 借阅流量 · 过去 {window_hours}h · 写作台 batch={b} (版本 {v}) · "
+    print(f"  通道 2 借阅流量 · 过去 {window_hours}h · 写作台 batch={b} (全部版本 {v}, 含补录批) · "
           f"馆员流量={hits} (其中新 brief {new})")
     print("=" * 84)
     if by_consumer:
@@ -107,13 +107,15 @@ def gather(sb, since_iso: str, since7_iso: str) -> dict:
         return int(res.count or 0)
 
     def _desk_batches(since: str) -> int:
-        # 减掉 tv-sync 的补录批 (D-126); 只用 eq 过滤 JSON 路径 —— params 没有 source 的老批照算写作台的
+        # 减掉 tv-sync 的补录批 (D-126); 只用 eq 过滤 JSON 路径 —— params 没有 source 的老批照算写作台的。
+        # 两次计数之间新进来的补录批只会让结果偏小 (先数总数、后数补录), 再兜底不低于 0: 宁可少报不误报。
+        total = _count("autowriter", "batches", "created_at", since)
         ingest = (sb.schema("autowriter").table("batches")
                   .select("*", count="exact", head=True)
                   .gte("created_at", since)
                   .eq("params->>source", "ingest")
                   .execute())
-        return _count("autowriter", "batches", "created_at", since) - int(ingest.count or 0)
+        return max(0, total - int(ingest.count or 0))
 
     rows = (sb.schema("truth_vault").table("flywheel_librarian_cache")
             .select("consumer, created_at, last_hit_at")
