@@ -18,12 +18,15 @@ LIBRARIAN_URL / LIBRARIAN_API_KEY 没配), TV 这边夜跑的飞轮状态只印 
 
 数据来源:
     写作台生成量 = autowriter.batches(created_at 在窗口内), versions 只作参考
+                   ⚠️ 不算 tv-sync 的补录批 (params.source = ingest, 每天 14:00 UTC 照常写): 那不是写作台在生成,
+                   不借卡。以前算进去, 写作台两天没人用时 (只有补录批) 这盏灯就报「暗着」(D-126)。
     馆员流量     = truth_vault.flywheel_librarian_cache(last_hit_at 在窗口内; 新 brief 的
                    last_hit_at = created_at, 重复命中只刷 last_hit_at)
                    ⚠️ 只数写作台的两个 consumer(autowriter / deskcore, 见 _DESK_CONSUMERS)。
                    馆员是共享服务: ssll(R-033 可选升级)、docs/19 的诊断 curl 也会打它, 那些流量
                    不能替写作台"证明通着"(codex review on #133)。别的 consumer 照印, 不计。
-    ⚠️ 缓存表由 prune_librarian_cache.py 按 30 天 TTL 清理, 本脚本窗口远在其内。
+    ⚠️ 缓存表由 prune_librarian_cache.py 按 30 天 TTL 清理, 本脚本窗口远在其内; 重抽 primary 答案后的
+       --delivery-only 只把 selected 清空、不删行 (D-126), 借阅记录还在。
 
 窗口: 默认 48 小时, 故意比每日 cron 长一倍 —— 夜跑 02:00 若被排队/漏跑一天, 24h 窗口会留下
     没人评估过的空档(codex review on #133); 48h 让每个 batch 至少被看两次, 漏一天也补得上。
@@ -68,7 +71,7 @@ def report(stats: dict, window_hours: int) -> int:
 
     print()
     print("=" * 84)
-    print(f"  通道 2 借阅流量 · 过去 {window_hours}h · 写作台 batch={b} (版本 {v}) · "
+    print(f"  通道 2 借阅流量 · 过去 {window_hours}h · 写作台 batch={b} (全部版本 {v}, 含补录批) · "
           f"馆员流量={hits} (其中新 brief {new})")
     print("=" * 84)
     if by_consumer:
@@ -103,6 +106,17 @@ def gather(sb, since_iso: str, since7_iso: str) -> dict:
                .execute())
         return int(res.count or 0)
 
+    def _desk_batches(since: str) -> int:
+        # 减掉 tv-sync 的补录批 (D-126); 只用 eq 过滤 JSON 路径 —— params 没有 source 的老批照算写作台的。
+        # 两次计数之间新进来的补录批只会让结果偏小 (先数总数、后数补录), 再兜底不低于 0: 宁可少报不误报。
+        total = _count("autowriter", "batches", "created_at", since)
+        ingest = (sb.schema("autowriter").table("batches")
+                  .select("*", count="exact", head=True)
+                  .gte("created_at", since)
+                  .eq("params->>source", "ingest")
+                  .execute())
+        return max(0, total - int(ingest.count or 0))
+
     rows = (sb.schema("truth_vault").table("flywheel_librarian_cache")
             .select("consumer, created_at, last_hit_at")
             .gte("last_hit_at", since_iso)
@@ -118,12 +132,12 @@ def gather(sb, since_iso: str, since7_iso: str) -> dict:
             .in_("consumer", list(_DESK_CONSUMERS))
             .execute())
     return {
-        "aw_batches": _count("autowriter", "batches", "created_at", since_iso),
+        "aw_batches": _desk_batches(since_iso),
         "aw_versions": _count("autowriter", "versions", "created_at", since_iso),
         "lib_hits": len(desk),
         "lib_new_briefs": sum(1 for r in desk if (r.get("created_at") or "") >= since_iso),
         "lib_by_consumer": by_consumer,
-        "aw_batches_7d": _count("autowriter", "batches", "created_at", since7_iso),
+        "aw_batches_7d": _desk_batches(since7_iso),
         "lib_hits_7d": int(res7.count or 0),
     }
 

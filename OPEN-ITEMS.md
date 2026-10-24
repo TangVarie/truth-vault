@@ -27,7 +27,7 @@
 | 时间 | 事 | 条目 |
 |---|---|---|
 | 下次途鸽 / 百健士成人藻油交付 | W-29 已查清：写作台没掉线，是写手那边的 AI 查完重没调存档。10-23 加了提醒和留痕（aw + TV 两个修复），看下一轮有没有存上；夜跑灯会逐轮点名没存档的 | W-29 |
-| 10-24 07:29 UTC daily-sync | 看 XIWU_phase2 的 essence 那行：被中转站拦的那一篇记 `gateway_filtered`、daily-sync 不因它判红；17:30 features-sync 里 XIWU_phase2 每批两篇都成、那篇被拦的几题记 NULL 落库 | I-23 |
+| 10-24 已核一半 | 07:29 daily-sync 绿：XIWU_phase2 essence 那篇记 `gateway_filtered`、不判红（D-125 生效）；那篇的特征 10-23 20:48 已落库（4 组被拦记 NULL）。剩 17:30 features-sync：XIWU_phase2 每批两篇都成、没有 systemic | I-23 |
 | 下周 | 成人藻油单独一张飞书表、接成新 TV 项目；在那之前 BJS_phase1 的补录暂停（10-23 owner 定） | I-22 |
 | 10-23 已验证 | onboarder 改成后台作业 + 轮询（TV#228）：XIWU_phase2-keytest 起草 6 分 21 秒，拿到草稿（以前 5 分钟就断） | 已关 I-21 |
 | 11-20 | 写作台第二批 A–C 上线（10-23）满四周，判接住率走向 | L-07 |

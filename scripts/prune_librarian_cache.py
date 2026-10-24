@@ -13,9 +13,12 @@ library_version 的 key 自然 miss、再也不会命中 —— 这些死行只�
   python prune_librarian_cache.py [--ttl-days 30] [--dry-run]
   python prune_librarian_cache.py --delivery-only [--dry-run]
 
---delivery-only (D-116): 不看 TTL, 删掉所有带已验证规律下发的缓存行 (library_version 里有 ":dl")。
+--delivery-only (D-116): 不看 TTL, 作废所有带已验证规律下发的缓存行 (library_version 里有 ":dl")。
 backfill-features 拿 run_tag=primary 重抽答案 (reannotate) 之后跑: 规律命中是按 primary 答案算的, 重抽改了答案却
 不改书架 / 批准层 / 闸二标签, 版本串不变, 旧缓存会一直回旧的命中标记 (codex review on #195)。
+作废 = 把 selected 清成 NULL、行留着 (D-126): 馆员 get_cache 拿到 NULL 当没命中、重挑后按 cache_key 覆盖; 行留着是因为
+通道 2 借阅流量灯 (check_librarian_traffic) 靠这张表的 last_hit_at 数写作台来借过几次 —— 以前整行删掉, 10-23 一次
+重抽把 10-22 写作台的 3 次借阅一起删了, 第二天那盏灯就报「通道 2 暗着」。过期行照旧由 TTL 清理删。
 """
 from __future__ import annotations
 
@@ -38,13 +41,14 @@ DELIVERY_MARK = "%:dl%"   # librarian/core.py library_version(): 有规律下发
 def prune_delivery(sb, *, dry_run: bool = False) -> int:
     def tbl():
         return sb.schema("truth_vault").table("flywheel_librarian_cache")
-    n = _count(tbl().select("cache_key", count="exact").like("library_version", DELIVERY_MARK).limit(1))
+    n = _count(tbl().select("cache_key", count="exact").like("library_version", DELIVERY_MARK)
+               .not_.is_("selected", "null").limit(1))
     if dry_run:
-        logger.info("[dry-run] 会清理 %d 行带规律下发的馆员缓存", n)
+        logger.info("[dry-run] 会作废 %d 行带规律下发的馆员缓存", n)
         return 0
     if n:
-        tbl().delete().like("library_version", DELIVERY_MARK).execute()
-    logger.info("已清理 %d 行带规律下发的馆员缓存 (primary 答案重抽过, 命中标记要重算)", n)
+        tbl().update({"selected": None}).like("library_version", DELIVERY_MARK).not_.is_("selected", "null").execute()
+    logger.info("已作废 %d 行带规律下发的馆员缓存 (primary 答案重抽过, 命中标记要重算; selected 清空、行留着给借阅流量灯数)", n)
     return 0
 
 
@@ -54,7 +58,7 @@ def main() -> int:
                     help="删掉超过 N 天没命中的缓存行(默认 30)")
     ap.add_argument("--dry-run", action="store_true", help="只数不删")
     ap.add_argument("--delivery-only", action="store_true",
-                    help="不看 TTL, 只删带已验证规律下发的行 (library_version 含 ':dl'); 重抽 primary 答案之后用")
+                    help="不看 TTL, 作废带已验证规律下发的行 (library_version 含 ':dl'): selected 清成 NULL、行和 last_hit_at 留着 (D-126); 重抽 primary 答案之后用")
     args = ap.parse_args()
     if args.ttl_days < 1:
         logger.error("--ttl-days 必须 >= 1")
