@@ -11,6 +11,8 @@
   · 分组提示词: 一次调用只问一组、同组 ≤ 4 题（守卫 4）; Mode A 防泄漏（守卫 2）
   · 答案校验: 闭集 + 证据是原文子串 + 截断片段的「否」不算数（守卫 3）
   · 下发给写作台的规律列表: aw_instruction=never 的永不出现（守卫 7）
+  · 副题库 (D-128): BANKS 闭集 / validate_secondary 跨库校验 / load_bank_pair / check_run_tag / done_marker;
+    主题库没写那些键, 走的还是原来的路（scripts/check_secondary_bank.py）
 """
 
 from __future__ import annotations
@@ -24,6 +26,10 @@ from typing import Any, Optional
 import yaml
 
 BANK_PATH = Path(__file__).resolve().parent.parent / "prompts" / "feature_questions_v0_1.yaml"
+# 副题库 (D-128): 读者提问方式两道候选题, 和冻结的主题库 fq-v0.1 并排放, 主题库一个字节不动。
+# 抽取 / worker / workflow 只认这张表里的【键】(closed set), 不收任意路径 —— 走 HTTP 的永远是 "primary" / "reader"。
+READER_BANK_PATH = BANK_PATH.parent / "feature_questions_v0_2_cand_reader.yaml"
+BANKS = {"primary": BANK_PATH, "reader": READER_BANK_PATH}
 
 MAX_GROUP_SIZE = 4          # docs/28 §5.3: 同组最多 4 题
 BODY_CAP = 1500             # 与 essence 同一截断
@@ -40,6 +46,26 @@ CODE_EXTRACTOR = "code:v1"
 # kappa_undefined = 样本里答案近乎常数, κ 算不出来 (不算没过, 闸二按 support 自己判)。fail 的题闸二一律打 unreliable。
 GATE1_STATUSES = ("pending", "pass", "fail", "kappa_undefined")
 GATE1_DEFAULT = "pending"
+
+# ── 副题库 (D-128) ── 下面这些只在 yaml 写了对应键时才生效; 主题库一个都没写, 它的行为不变。
+ROLE_SECONDARY = "secondary"
+PRIMARY_DONE_MARKER = "has_specific_time"     # 主题库「这篇跑过」的标记题 (= annotate_feature_pass.DONE_MARKER_QUESTION)
+GATE2_HALVES = ("holdout", "discovery", "all")
+GATE2_PLACEBO = ("from_primary", "in_bank")
+# 键白名单: 主题库今天用到的键 + 副题库新增的键。写错一个键 (conditonal_on) 不再被 yaml 静默吞掉 ——
+# 它进了 digest, 却没有任何代码读它, 预注册等于没写。
+TOP_LEVEL_KEYS = frozenset({
+    "bank_version", "status", "frozen_sha256", "essence_vocab", "label_view", "spans", "families",
+    "call_groups", "questions", "code_features", "placebo",
+    "role", "primary_bank", "run_tag_prefix", "done_marker", "gate2"})
+QUESTION_KEYS = frozenset({
+    "id", "version", "gate1_status", "family", "group", "layer", "halflife_months", "type", "scope", "ask",
+    "yes_if", "yes_examples", "no_if", "no_examples", "options", "evidence", "hypothesis", "why",
+    "aw_instruction", "aw_instruction_values", "cross_check", "notes", "retired",
+    "conditional_on", "contrast_base_excludes", "null_if_truncated"})
+GATE2_KEYS = frozenset({"half", "condition_snapshot", "merged_contrasts", "confirmation_family", "placebo"})
+_HEX64 = re.compile(r"[0-9a-f]{64}")
+_RUN_TAG_PREFIX = re.compile(r"[a-z][a-z0-9]*-")
 
 # invalid_reason 闭集（docs/28 §5.1 / 问题库答题契约）
 INVALID_EVIDENCE_NOT_FOUND = "evidence_not_found"
@@ -225,7 +251,255 @@ def validate_bank(bank: dict) -> list[str]:
         elif bank.get("_sha256") and want != bank["_sha256"]:
             errs.append("status=frozen 但问题库规范化 sha256 与 frozen_sha256 不符 —— 冻结后改题要升 version 并记 DECISIONS "
                         f"(现在是 {bank['_sha256']})")
+    errs += _validate_extensions(bank)
     return errs
+
+
+def _options(q: dict) -> list:
+    return [o.get("value") if isinstance(o, dict) else o for o in q.get("options") or []]
+
+
+def _str_list(v) -> bool:
+    """非空、元素都是非空字符串、不重复的列表。"""
+    return isinstance(v, list) and bool(v) and all(isinstance(x, str) and x for x in v) and len(set(v)) == len(v)
+
+
+def _validate_extensions(bank: dict) -> list[str]:
+    """validate_bank 的追加检查 (D-128): 键白名单 + 副题库那几个新键。只拦主题库今天没用到的写法, 所以主题库照样返回 []。
+
+    不查跨库的事 (conditional_on 是不是主题库的题、同 id 版本高不高) —— 那要两份题库一起看, 在 validate_secondary。
+    """
+    errs: list[str] = []
+    qs = llm_questions(bank)
+    idx = {q.get("id"): q for q in qs}
+    ids = list(idx)
+    code_ids = [c.get("id") for c in (bank.get("code_features") or []) if isinstance(c, dict)]
+    plc_ids = [p.get("id") for p in (bank.get("placebo") or []) if isinstance(p, dict)]
+    own = set(ids) | set(code_ids) | set(plc_ids)
+
+    stray = sorted(str(k) for k in bank if not str(k).startswith("_") and k not in TOP_LEVEL_KEYS)
+    if stray:
+        errs.append(f"题库顶层有不认识的键 {stray} (白名单 TOP_LEVEL_KEYS; 写错的键进 digest 却没人读)")
+    for q in bank.get("questions") or []:
+        bad = sorted(str(k) for k in q if k not in QUESTION_KEYS)
+        if bad:
+            errs.append(f"{q.get('id') or '<无 id>'}: 不认识的键 {bad} (白名单 QUESTION_KEYS)")
+    for qid, q in idx.items():
+        cond = q.get("conditional_on")
+        if cond is not None:
+            if not _str_list(cond):
+                errs.append(f"{qid}: conditional_on 必须是不重复的非空 id 列表")
+            elif own & set(cond):
+                errs.append(f"{qid}: conditional_on {sorted(own & set(cond))} 是本题库自己的题 —— 分层用的是主题库已有答案")
+        exc = q.get("contrast_base_excludes")
+        if exc is not None:
+            opts = _options(q)
+            if q.get("type") != "choice":
+                errs.append(f"{qid}: contrast_base_excludes 只用于 choice 题")
+            elif not _str_list(exc):
+                errs.append(f"{qid}: contrast_base_excludes 必须是不重复的非空列表")
+            elif any(v not in opts for v in exc):
+                errs.append(f"{qid}: contrast_base_excludes {exc} 里有不在选项里的值")
+            elif len(opts) - len(exc) < 2:
+                errs.append(f"{qid}: contrast_base_excludes 剔完只剩 {len(opts) - len(exc)} 个取值, 至少要 2 个才比得起来")
+        nit = q.get("null_if_truncated")
+        if nit is not None:
+            vocab = BOOL_VALUES if q.get("type") == "bool" else tuple(_options(q))
+            if not _str_list(nit):
+                errs.append(f"{qid}: null_if_truncated 必须是不重复的非空列表")
+            elif any(v not in vocab for v in nit):
+                errs.append(f"{qid}: null_if_truncated {nit} 里有不在闭集里的值")
+            elif q.get("scope") not in TRUNCATABLE_SPANS:
+                errs.append(f"{qid}: null_if_truncated 只对 scope 为 {TRUNCATABLE_SPANS} 的题有意义 (别的段不截断)")
+
+    role = bank.get("role")
+    if role is not None and role != ROLE_SECONDARY:
+        errs.append(f"role={role!r} 只能不写 (主题库) 或 {ROLE_SECONDARY!r}")
+    marker = bank.get("done_marker")
+    if marker is not None and marker not in ids:
+        errs.append(f"done_marker={marker!r} 不是本题库的模型题 (断点续跑靠它判「这篇跑过」)")
+    if role == ROLE_SECONDARY:
+        pb = bank.get("primary_bank")
+        if not isinstance(pb, dict) or not isinstance(pb.get("sha256"), str) or not _HEX64.fullmatch(pb["sha256"]) \
+                or not pb.get("bank_version"):
+            errs.append("副题库要写 primary_bank: {bank_version, sha256 (64 位小写十六进制)}")
+        prefix = bank.get("run_tag_prefix")
+        if not isinstance(prefix, str) or not _RUN_TAG_PREFIX.fullmatch(prefix):
+            errs.append(f"副题库要写 run_tag_prefix (小写字母开头、以 - 结尾, 如 fqr-), 实得 {prefix!r}")
+        if marker is None:
+            errs.append("副题库要写 done_marker (本库的一道模型题), 不能借主题库的 has_specific_time")
+        if bank.get("gate2") is None:
+            errs.append("副题库要写 gate2 块 (闸二的比法跑之前写死, D-128)")
+    unimpl = [c for c in code_ids if c not in CODE_FEATURE_IMPL]
+    if unimpl:
+        errs.append(f"code_features {unimpl} 没有实现 (CODE_FEATURE_IMPL) —— 写进题库却永远不出行")
+    g2 = bank.get("gate2")
+    if any(q.get("conditional_on") for q in qs) and not (isinstance(g2, dict) and isinstance(g2.get("condition_snapshot"), dict)):
+        errs.append("有题写了 conditional_on, gate2.condition_snapshot 必须写明分层答案取自哪份快照")
+
+    if g2 is None:
+        return errs
+    if not isinstance(g2, dict):
+        return errs + ["gate2 必须是映射"]
+    bad = sorted(str(k) for k in g2 if k not in GATE2_KEYS)
+    if bad:
+        errs.append(f"gate2 有不认识的键 {bad} (白名单 GATE2_KEYS)")
+    if g2.get("half") not in GATE2_HALVES:
+        errs.append(f"gate2.half={g2.get('half')!r} 不在 {GATE2_HALVES}")
+    snap = g2.get("condition_snapshot")
+    if snap is not None:
+        ex = snap.get("extractors") if isinstance(snap, dict) else None
+        if not isinstance(snap, dict) or not isinstance(snap.get("bank_sha256"), str) \
+                or not _HEX64.fullmatch(snap["bank_sha256"]) or not snap.get("run_tag") \
+                or not isinstance(ex, list) or not ex or not all(isinstance(e, str) and e.startswith("llm:") for e in ex):
+            errs.append("gate2.condition_snapshot 要写 {bank_sha256 (64 位), extractors (非空, llm:…), run_tag}")
+    merged_labels: dict[str, set] = {}
+    mcs = g2.get("merged_contrasts") or []
+    if not isinstance(mcs, list):
+        errs.append("gate2.merged_contrasts 必须是列表")
+        mcs = []
+    for m in mcs:
+        mq = idx.get(m.get("question_id")) if isinstance(m, dict) else None
+        if mq is None or mq.get("type") != "choice":
+            errs.append(f"gate2.merged_contrasts {m!r}: question_id 必须是本库的 choice 模型题")
+            continue
+        opts, vals, label = _options(mq), m.get("values"), m.get("label")
+        exc = set(mq.get("contrast_base_excludes") or [])
+        if not _str_list(vals) or len(vals) < 2 or any(v not in opts for v in vals):
+            errs.append(f"gate2.merged_contrasts {mq['id']}: values {vals} 要 ≥2 个、不重复、都在选项里")
+        elif exc & set(vals):
+            errs.append(f"gate2.merged_contrasts {mq['id']}: values 和 contrast_base_excludes 撞了 {sorted(exc & set(vals))}")
+        elif len(opts) - len(exc) - len(vals) < 1:
+            errs.append(f"gate2.merged_contrasts {mq['id']}: 合并后对照组一个取值都不剩")
+        if not isinstance(label, str) or not label or label in opts:
+            errs.append(f"gate2.merged_contrasts {mq['id']}: label 必须是非空、且不和选项重名")
+        if m.get("hypothesis") not in HYPOTHESES:
+            errs.append(f"gate2.merged_contrasts {mq['id']}: hypothesis={m.get('hypothesis')!r} 不在 {HYPOTHESES}")
+        if isinstance(label, str):
+            merged_labels.setdefault(mq["id"], set()).add(label)
+    fam = g2.get("confirmation_family")
+    if not isinstance(fam, list) or len(fam) != 2:
+        errs.append("gate2.confirmation_family 必须正好 2 行 (D-128: BH 只在这两行里做)")
+        fam = fam if isinstance(fam, list) else []
+    seen = set()
+    for row in fam:
+        if not isinstance(row, list) or len(row) != 2:
+            errs.append(f"gate2.confirmation_family 的行 {row!r} 必须是 [question_id, 取值]")
+            continue
+        qid, val = row
+        q = idx.get(qid) if isinstance(qid, str) else None
+        if q is None:
+            errs.append(f"gate2.confirmation_family {row}: {qid!r} 不是本库的模型题 (代码特征 / 占位题不进确认族)")
+            continue
+        if q.get("type") == "bool":
+            ok = val == "是"
+        else:
+            ok = (val in _options(q) and val not in (q.get("contrast_base_excludes") or [])) \
+                or val in merged_labels.get(qid, set())
+        if not ok:
+            errs.append(f"gate2.confirmation_family {row}: 取值不成立 (bool 只认「是」; choice 认选项或 merged_contrasts 的 label, "
+                        "不能是 contrast_base_excludes)")
+        if (qid, str(val)) in seen:
+            errs.append(f"gate2.confirmation_family {row} 重复")
+        seen.add((qid, str(val)))
+    plc = g2.get("placebo")
+    if plc not in GATE2_PLACEBO:
+        errs.append(f"gate2.placebo={plc!r} 不在 {GATE2_PLACEBO}")
+    elif plc == "in_bank" and not plc_ids:
+        errs.append("gate2.placebo=in_bank 但本库没有占位题")
+    elif plc == "from_primary" and role != ROLE_SECONDARY:
+        errs.append("gate2.placebo=from_primary 只用于副题库")
+    return errs
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 副题库 (D-128): 跨库校验 / 读两份 / run_tag / 续跑标记
+# ═══════════════════════════════════════════════════════════════════════
+
+def _all_ids(bank: dict) -> set:
+    return ({q.get("id") for q in llm_questions(bank)}
+            | {c.get("id") for c in (bank.get("code_features") or []) if isinstance(c, dict)}
+            | {p.get("id") for p in (bank.get("placebo") or []) if isinstance(p, dict)})
+
+
+def validate_secondary(bank: dict, primary: dict) -> list[str]:
+    """副题库对主题库的跨库校验。返回错误列表, 空 = 合法。
+
+    · 主题库必须 frozen, 且 _sha256 == frozen_sha256 == 副题库 primary_bank.sha256 (gate2.condition_snapshot 同);
+    · conditional_on 的每道题都是主题库的模型题, 且闸一 pass (拿闸一没过的题分层 = 拿噪声分层);
+    · 组名不和主题库撞; 同 id 的题版本必须更高 ((question_id, question_version) 跨库唯一, invites_sharing 2 > 1);
+    · done_marker 和代码特征 id 都不是主题库的 id (否则续跑会把主题库的行当成本库跑过);
+    · bank_version 和主题库不同。
+    """
+    errs: list[str] = []
+    if bank.get("role") != ROLE_SECONDARY:
+        return [f"不是副题库 (role={bank.get('role')!r})"]
+    psha = primary.get("_sha256")
+    if primary.get("status") != "frozen":
+        errs.append("主题库没冻结, 副题库不能钉在它上面")
+    if not psha or primary.get("frozen_sha256") != psha:
+        errs.append(f"主题库 frozen_sha256 与规范化 digest 不符 ({str(primary.get('frozen_sha256'))[:12]} vs {str(psha)[:12]})")
+    pb = bank.get("primary_bank") if isinstance(bank.get("primary_bank"), dict) else {}
+    if pb.get("sha256") != psha:
+        errs.append(f"primary_bank.sha256 {str(pb.get('sha256'))[:12]} 不是当前主题库 {str(psha)[:12]}")
+    if pb.get("bank_version") != primary.get("bank_version"):
+        errs.append(f"primary_bank.bank_version {pb.get('bank_version')!r} 不是当前主题库 {primary.get('bank_version')!r}")
+    g2 = bank.get("gate2") if isinstance(bank.get("gate2"), dict) else {}
+    snap = g2.get("condition_snapshot")
+    if isinstance(snap, dict) and snap.get("bank_sha256") != psha:
+        errs.append(f"gate2.condition_snapshot.bank_sha256 {str(snap.get('bank_sha256'))[:12]} 不是主题库 {str(psha)[:12]}")
+    pidx = question_index(primary)
+    for q in llm_questions(bank):
+        for c in q.get("conditional_on") or []:
+            if c not in pidx:
+                errs.append(f"{q.get('id')}: conditional_on 的 {c!r} 不是主题库的模型题")
+            elif pidx[c].get("gate1_status") != "pass":
+                errs.append(f"{q.get('id')}: conditional_on 的 {c!r} 闸一不是 pass ({pidx[c].get('gate1_status')!r})")
+        pq = pidx.get(q.get("id"))
+        if pq is not None and not (isinstance(q.get("version"), int) and q["version"] > int(pq.get("version") or 0)):
+            errs.append(f"{q.get('id')}: 和主题库同 id, version 必须 > 主题库的 {pq.get('version')} (实得 {q.get('version')})")
+    clash = sorted(set(bank.get("call_groups") or {}) & set(primary.get("call_groups") or {}))
+    if clash:
+        errs.append(f"组名和主题库撞了: {clash}")
+    pids = _all_ids(primary)
+    if bank.get("done_marker") in pids:
+        errs.append(f"done_marker={bank.get('done_marker')!r} 是主题库的 id —— 续跑会把主题库的行当成本库跑过")
+    shared_code = sorted({c.get("id") for c in (bank.get("code_features") or []) if isinstance(c, dict)} & pids)
+    if shared_code:
+        errs.append(f"代码特征 {shared_code} 是主题库的 id —— 副题库只写自己声明的新特征, 不碰主题库的行")
+    if bank.get("bank_version") == primary.get("bank_version"):
+        errs.append(f"bank_version 和主题库一样 ({bank.get('bank_version')!r})")
+    return errs
+
+
+def load_bank_pair(path: Path | str) -> tuple[dict, dict]:
+    """读副题库 + 主题库, 两道校验 (validate_bank 各自 + validate_secondary) 有一条不过就 raise ValueError。"""
+    bank = load_bank(path)
+    primary = load_bank(BANK_PATH)
+    errs = ([f"主题库: {e}" for e in validate_bank(primary)] + validate_bank(bank)
+            + validate_secondary(bank, primary))
+    if errs:
+        raise ValueError(f"副题库 {path} 不合法: " + "; ".join(errs))
+    return bank, primary
+
+
+def check_run_tag(bank: dict, run_tag: Optional[str]) -> Optional[str]:
+    """副题库只许写在自己的 run_tag 前缀下 (fqr-*)。返回错误信息, None = 可以。主题库不管 (照旧)。
+
+    为什么要拦: note_feature_answers 的主键不含 bank_sha256, 副题库用 run_tag=primary 跑会按同一主键盖掉主题库的行。"""
+    if bank.get("role") != ROLE_SECONDARY:
+        return None
+    prefix = bank.get("run_tag_prefix") or ""
+    if not run_tag or run_tag == "primary":
+        return f"副题库 {bank.get('bank_version')} 不能用 run_tag={run_tag!r} (主题库的行会被同主键覆盖)"
+    if not prefix or not run_tag.startswith(prefix) or run_tag == prefix:
+        return f"副题库 {bank.get('bank_version')} 的 run_tag 必须以 {prefix!r} 开头且后面还有字, 实得 {run_tag!r}"
+    return None
+
+
+def done_marker(bank: dict) -> str:
+    """断点续跑判「这篇跑过」用哪道题: 题库写了 done_marker 就用它, 没写 (主题库) 照旧 has_specific_time。"""
+    return bank.get("done_marker") or PRIMARY_DONE_MARKER
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -454,8 +728,46 @@ def _find_brand(text: str, words: list[str]) -> int:
     return best
 
 
-def code_features(spans: dict, brand_words: list[str]) -> dict[str, tuple[Optional[str], Optional[str]]]:
-    """8 个代码特征 → {id: (answer, invalid_reason)}。分档固定, 不按项目分位（docs/28 §4.4）。"""
+# 主题库 fq-v0.1 的 8 个代码特征 (默认就算这 8 个, 一个不多: 多一行就改了冻结题库的产出, 31/22 行的计数会红)。
+CODE_FEATURE_IDS_V1 = ("body_len_bucket", "title_len_bucket", "title_has_digit", "body_question_marks",
+                       "emoji_bucket", "hashtag_bucket", "brand_in_title", "brand_first_position")
+# 实现了的全部代码特征: 题库 code_features 里写的 id 必须在这里 (validate_bank)。新的只在 only= 点名时才算。
+CODE_FEATURE_IMPL = CODE_FEATURE_IDS_V1 + ("last_para_has_qmark",)
+
+
+def code_features(spans: dict, brand_words: list[str], only: Optional[list[str]] = None
+                  ) -> dict[str, tuple[Optional[str], Optional[str]]]:
+    """代码特征 → {id: (answer, invalid_reason)}。分档固定, 不按项目分位（docs/28 §4.4）。
+
+    only=None (主题库, 所有现有调用方): 原样回那 8 个, 与 D-128 之前逐字节一致。
+    only=[ids] (副题库): 只回点名的那几个, 顺序照 only; 点了没实现的 id → ValueError。
+    """
+    if only is None:
+        return _code_features_v1(spans, brand_words)
+    unknown = [i for i in only if i not in CODE_FEATURE_IMPL]
+    if unknown:
+        raise ValueError(f"代码特征 {unknown} 没有实现 (CODE_FEATURE_IMPL)")
+    v1 = _code_features_v1(spans, brand_words) if any(i in CODE_FEATURE_IDS_V1 for i in only) else {}
+    out: dict[str, tuple[Optional[str], Optional[str]]] = {}
+    for i in only:
+        out[i] = last_para_has_qmark(spans) if i == "last_para_has_qmark" else v1[i]
+    return out
+
+
+def last_para_has_qmark(spans: dict) -> tuple[Optional[str], Optional[str]]:
+    """正文最后一段 (同 last_para 切法: 去掉末尾话题标签和 @) 里有没有 ？ 或 ?。副题库 D-128 的探索特征, 不进确认族。
+
+    spans 里没有 last_para (check_external_direction 传的那种只有正文的 spans) 就从没截断的正文现切; 段落为空 → text_too_short。"""
+    lp = spans.get("last_para")
+    if lp is None:
+        lp = last_paragraph(spans.get("_body_untruncated") or "")
+    if visible_len(lp) == 0:
+        return None, INVALID_TEXT_TOO_SHORT
+    return ("是" if ("？" in lp or "?" in lp) else "否"), None
+
+
+def _code_features_v1(spans: dict, brand_words: list[str]) -> dict[str, tuple[Optional[str], Optional[str]]]:
+    """主题库的 8 个代码特征 (D-128 之前的 code_features 原文, 只改了名字)。"""
     body = spans["_body_untruncated"]
     title = spans["title"]
     tags, body_wo_tags = extract_hashtags(body)
@@ -741,7 +1053,8 @@ def validate_answers(bank: dict, question_ids: list[str], parsed: Any, spans: di
 
     · 答案不在闭集 → out_of_vocab
     · 需要证据而证据不是 scope 那段的原样子串（去空白比）→ evidence_not_found; 超 30 字 → evidence_too_long
-    · 片段被截断且 scope 为 body/full 且答「否」→ span_truncated（「否」不能来自没看全的片段）
+    · 片段被截断且 scope 为 body/full 且答「否」→ span_truncated（「否」不能来自没看全的片段）;
+      题目写了 null_if_truncated 的, 那几个取值同样处理（副题库 reader_ask_form 的「没问读者」: 结尾被截掉了就说不准, D-128）
     · 缺题 → missing
     """
     idx = question_index(bank)
@@ -770,7 +1083,8 @@ def validate_answers(bank: dict, question_ids: list[str], parsed: Any, spans: di
             if len(nev) > EVIDENCE_MAX_CHARS:
                 out[qid] = {"answer": None, "evidence": ev, "invalid_reason": INVALID_EVIDENCE_TOO_LONG}
                 continue
-        if spans.get("_truncated") and q["scope"] in TRUNCATABLE_SPANS and ans == "否":
+        if spans.get("_truncated") and q["scope"] in TRUNCATABLE_SPANS and (
+                ans == "否" or ans in (q.get("null_if_truncated") or ())):
             out[qid] = {"answer": None, "evidence": None, "invalid_reason": INVALID_SPAN_TRUNCATED}
             continue
         out[qid] = {"answer": ans, "evidence": ev or None, "invalid_reason": None}

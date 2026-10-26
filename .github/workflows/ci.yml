@@ -60,6 +60,7 @@ jobs:
             scripts/gate1_labels.py \
             scripts/check_feature_parse.py \
             scripts/check_feature_orchestration.py \
+            scripts/check_secondary_bank.py \
             scripts/check_gateway_filter.py \
             scripts/check_onboarder_jobs.py \
             scripts/check_comment_parser.py \
@@ -1229,6 +1230,9 @@ jobs:
       - name: "特征层编排自检 · 假模型 + 假库端到端: 31 行/篇、6 组 + 重问、任一组挂整篇不落行、写序 raw→answers、resume 判据、code-only"
         working-directory: scripts
         run: python check_feature_orchestration.py   # D-085 起含 --done-by 判据; 原内联块逐字搬进去 (D-075)
+      - name: "副题库 fq-v0.2-cand-reader (D-128): 两道校验 + 反证 / run_tag 只许 fqr- / 默认代码特征仍 8 个 / 截断的「没问读者」记 NULL / D-128 钉 sha"
+        working-directory: scripts
+        run: python check_secondary_bank.py   # §1 正例 · §2 防泄漏 · §3 证据与截断 · §4 代码特征 · §5 run_tag · §6 反证 · §7 主题库绊线 · §8 预注册钩子
       - name: "闸一名单灰格往返 (多灰格 | 分隔) + prob 存所选答案的概率 (D-085)"
         working-directory: scripts
         run: python check_gate1_ingest.py
@@ -3720,7 +3724,7 @@ jobs:
         run: python check_comments_sync_cost.py   # §1 一次读零写 · §2 只写变化 · §3 on_demand 跳过 · §4 对账失败 rc=1 · §5 老调用形状不变
       - name: 闸二可执行版 —— MH/RGB 对 Woolf 闭式、BH、状态表逐条、账号先验分层、占位题 / 快照 / 冻结三条拒跑 (D-093)
         working-directory: scripts
-        run: python check_gate2_run.py   # §1 统计闭式 · §2 BH · §3 状态表 · §3b confounded · §4 占位题拒跑 · §5 快照唯一 · §6 draft 拒跑 · §6c 闸一裁决 · §7 取数与大项目
+        run: python check_gate2_run.py   # §0 主题库金样 · §1 统计闭式 · §2 BH · §3 状态表 · §3b confounded · §4 占位题拒跑 · §5 快照唯一 · §6 draft 拒跑 · §6c 闸一裁决 · §7 取数与大项目
       - name: 闸二后半 · 组合进不进 L2 —— 留一项目 AUC、配对自助、最低 20%、项目内置换 (附录 B.3 / B.4, D-106)
         working-directory: scripts
         run: python check_gate2_combo.py   # §1 中位秩 · §2 留一不泄漏 · §3 真信号进 · §4 噪声不进 · §5 评估集 · §6 最低 20% / 置换 · §7 CLI

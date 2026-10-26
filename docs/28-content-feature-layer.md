@@ -295,6 +295,8 @@ Jev 是 TypeSafe AI 2026-09-15 发布的判断型模型：输入一段文本和�
 
 产出：`data-analysis/feature-gate1-<日期>.md`。
 
+**副题库的闸一（D-128）**：没有人工标注员（D-084），改成模型对模型 + owner 裁决。Sonnet 5.5 跑两遍、Haiku 5.5 跑一遍；参考标签 = Sonnet 与 Haiku 不一致的格由 owner 裁 + 三趟都一致的格，owner 另抽 20 个一致格复核（推翻 > 2 个这题不过）。上表的「模型 vs 人工」换成「Sonnet vs 参考」，线不变。样本、分层、种子和低比例题的判法写在 D-128。
+
 ### 6.2 闸二 · 有区分度（判据先写死）
 
 **数据**：与 l2-feasibility §8.2 同一批行——读 `v_l2_labels`，有 essence、正文 ≥ 50 字。正例 = 清洗后的爆 / 大爆，负例 = 趴；评估中、参考、风控等不进。
@@ -331,6 +333,19 @@ Jev 是 TypeSafe AI 2026-09-15 发布的判断型模型：输入一段文本和�
 - 附录 B.1 的 SQL 与 statsmodels 对数一致。
 
 **预注册**：跑之前把问题库改成 `frozen`、记下 sha256 和当轮的抽取器集合（附录 B.3 的 `:sha` / `:extractors`，就是这一跑的快照），本节的判据数字写进 DECISIONS。产出：`data-analysis/feature-gate2-<日期>.md`，加上 `feature_validation` 各行。
+
+### 6.2b 副题库的闸二（D-128，`fq-v0.2-cand-reader`）
+
+副题库只放候选题，冻结的主题库不动。它的闸二和上面有六处不同，全部写在 yaml 的 `gate2` 块和题上的新键里（进 digest，跑之前定死）：
+
+1. **只用留出半**（`half: holdout`，D-120：sha256(note_id) 首位奇数）。发现半用来想题、抽闸一样本，不再拿来确认。
+2. **两份快照**：副题库的答案（`fqr-*` run_tag、副题库 sha）+ 主题库 ba0f570c 里两道分层题的 Sonnet 答案（`condition_snapshot`）。两份分开取，主题库的 `invites_sharing` v1 不会混进来。
+3. **按题分层**：题上写了 `conditional_on` 的，MH 的层是 项目 × 那几题的答案（不只是项目）；缺分层答案的笔记剔掉并计数。第 4 条照旧再加账号先验。
+4. **剔除比较基数**：`contrast_base_excludes` 的取值（「没问读者」）既不算「有」也不算「没有」，只在问了读者的笔记之间比。
+5. **合并取值**：`merged_contrasts` 把几个取值并成一行（挑一个 + 说自己的）。
+6. **确认族只有两行**（`confirmation_family`），BH 只在这两行里做，q ≤ 0.10——这是对上面「占位题算在同一个校正家族里」的例外。逐个取值的行、不分层的行、阳性对照、代码特征都只报告。占位题按主题库定义从 note_id 现算、同样分层（`placebo: from_primary`），不在家族里，判「显著」用原始 p ≤ 0.10，偏严。
+
+其余判据（support ≥ 30、大项目方向、账号先验变化 ≤ 30%、状态表）照旧。**副题库的结果不写 `feature_validation`**：馆员取全表最新的一次闸二、不分题库（`librarian/core.py` `latest_gate2_run`），写进去写作台的规律下发会整体断掉。结论只进报告和 DECISIONS。
 
 ### 6.3 闸三 · 对新笔记也成立
 
@@ -836,3 +851,4 @@ n₁ = [ z₀.₉₇₅ · √( p̄q̄ (1 + 1/k) ) + z₀.₈ · √( p₁q₁ +
 | 6 | `library_version()` 随 `gate2_run` 变化 | 版本串里去掉 `gate2_run` |
 | 7 | `efficacy_promise` 永不出现在下发给写作台的规律列表里 | 把它标成 validated 后看下发列表 |
 | 8 | 回复容错解析 + 没答的单题兜底（D-083）：围栏 / 字符串里原样换行 / 未转义引号 / 形状不对都能捞，捞出的仍过守卫 3；重问后仍没答 → 单题再问；单问 api 挂 → 整篇 systemic | 严格 `json.loads` 对换行那份必失败；关掉兜底三题全 NULL |
+| 9 | 副题库（D-128，`check_secondary_bank.py`）：结构 + 跨库两道校验（键白名单、`conditional_on` 是主题库闸一 pass 的题、同 id 版本更高、确认族正好两行且不含代码特征）；run_tag 只许 `fqr-`；默认代码特征仍是那 8 个；截断的「没问读者」记 NULL；D-128 写着副题库 sha 前 12 位 | 写错一个键；`invites_sharing` 版本写回 1；run_tag=primary；默认多算 `last_para_has_qmark`；改 yaml 不改 D-128 |

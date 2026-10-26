@@ -1,0 +1,147 @@
+# ════════════════════════════════════════════════════════════════════
+# 内容特征层 · 副题库 fq-v0.2-cand-reader（读者提问方式 · 闸一前预注册, D-128）
+# ════════════════════════════════════════════════════════════════════
+#
+# 两道新模型题 + 一道代码特征, 和冻结的主题库 fq-v0.1 并排; 主题库一个字节不动。
+# 出题规矩、字段说明、答题契约、冻结规则都照主题库文件头, 这里只写副题库多出来的键:
+#   role: secondary       副题库; 不写 = 主题库
+#   primary_bank          钉住的主题库 (版本 + 规范化 sha256); 主题库换了 sha, 副题库校验就不过
+#   run_tag_prefix        只许写在 fqr-* 下 (run_tag=primary 会按同一主键盖掉主题库的行)
+#   done_marker           断点续跑看哪道题判「这篇跑过」(本库的题, 不借主题库的)
+#   conditional_on        闸二按主题库这几题的已有答案再分层 (取自 gate2.condition_snapshot)
+#   contrast_base_excludes  这几个取值不进比较基数 (只在提问的笔记之间比)
+#   null_if_truncated     正文被截断时这几个取值记 NULL + span_truncated (同 bool 题的「否」)
+#   gate2                 闸二的比法: 哪一半、条件快照、合并取值、两行确认族、占位题从主题库算
+# 本库的行永远不写 feature_validation (D-128)。整份文件 (含注释) 进 digest, 改一个字就是新 sha。
+bank_version: fq-v0.2-cand-reader
+status: draft
+role: secondary
+primary_bank:
+  bank_version: fq-v0.1
+  sha256: ba0f570c47d594ca4dad571c5a9f5d06da51861b041ba364c3a915220b985ddd
+run_tag_prefix: fqr-
+done_marker: reader_ask_form
+essence_vocab: v0.2
+label_view: truth_vault.v_l2_labels
+
+spans:
+  title: 标题
+  first_sentence: 正文第一句
+  last_para: 正文最后一段
+  body: 正文
+  full: 标题+正文
+
+families:
+  - name: 评论诱导
+    means: 这篇给了读者什么理由去评论
+
+call_groups:
+  G7_reader_ask:
+    - reader_ask_form
+  G8_sharing:
+    - invites_sharing
+
+questions:
+
+  - id: reader_ask_form
+    version: 1
+    gate1_status: pending
+    family: 评论诱导
+    group: G7_reader_ask
+    layer: surface
+    halflife_months: 30
+    type: choice
+    scope: full
+    conditional_on: [ending_asks_reader, asks_for_help]
+    contrast_base_excludes: [没问读者]
+    null_if_truncated: [没问读者]
+    ask: 作者要读者怎么回？只看两处：正文结尾（最后一段，太短就连上一段）和标题。先找出作者在等读者回答的话：问句和喊话都算，没有问号也算（评评理、你们说呢、蹲一个）；自问自答、反问式感叹、号召去买去试、「欢迎交流」这类客套话不算；标题的问句如果正文自己给了答案，也不算。「有没有……的姐妹 / 朋友？」后面紧跟着问题的，这一句只是在点名，按后面那一问算。有好几问时，按下面选项的顺序从上往下对，哪一种有一问符合就选哪一种。只选一种。
+    options:
+      - value: 挑一个
+        means: 读者挑一个、站一边就答完了。两种情况：原文写出了两样或几样不同的具体东西或做法让读者选（A 还是 B、这几款里哪个），哪怕选哪个有对错，也算这里；或者请读者评作者、评理（我是不是太较真、这算不算乱花钱、你们站哪边）。「该不该 / 要不要 / 做还是不做」只问作者自己下一步：答案看各人立场、喜好、家里怎么想，算这里；看有没有用、伤不伤身、会不会更严重，算求解答。
+        example: 年终奖先还房贷还是先换车？／ 这三支口红哪支更日常？／ 婆婆非要来带娃，我拒绝是不是过分了，评评理
+      - value: 说自己的
+        means: 请读者讲他们自己的做法、习惯、经历或数字，读者回答时说的是自己的事：平时怎么做、吃什么用什么、多久、第几天、后来怎么好的。问句和喊话都算。看问的是谁：「你们吃什么」算这里；「吃多少才合适」「这样对不对」是在要一个正确答案，算求解答。问某一款产品或某个牌子怎么样，哪怕写成「用过的说说」，也算求解答。
+        example: 你们早饭一般吃什么？／ 大家戒到第几天了，报个数／ 过来人说说当时是怎么熬过去的
+      - value: 求推荐
+        means: 请读者推荐一样能买到的东西或一个去处：产品、牌子、款式、店。要方法、要建议的，哪怕用了「推荐」两个字，也算求解答；原文已经列出几款让读者选的，算挑一个。
+        example: 有没有适合干皮的面霜推荐？／ 新手骑行买哪个牌子的头盔好／ 蹲一个不勒手的购物袋
+      - value: 找同类
+        means: 只问有没有人和作者一样、是不是只有作者这样，读者回一句「我也是」就答完了；后面接着问了怎么做、多久这类要讲内容的问题，按后面那一问算。
+        example: 有人和我一样吗／ 只有我一换季就这样吗／ 有没有也在备孕的姐妹
+      - value: 求解答
+        means: 请读者替作者回答一个有对错的问题或者出主意：有没有用、会不会更严重、正不正常、该吃多少、为什么、怎么办、给点建议。问某一款产品或某个牌子（写了名字，或明显指着它：这款、他家）好不好用、效果怎么样、送货售后靠不靠谱，也算这里。在上面几种和这一种之间拿不准时，算这里。
+        example: 膝盖疼还能接着跑吗？／ 爬山前吃多少比较好？／ 买过这个牌子的，售后靠谱吗？
+      - value: 没问读者
+        means: 结尾和标题都没有在等读者回答：只有自问自答、反问式感叹（谁能不爱呢）、号召去买去试（冲就完了）、「欢迎交流」「评论区见」这类没说要读者说什么的客套话，或者标题的问句正文自己答了。
+        example: 为什么我能坚持？因为……／ 谁能不爱呢／ 姐妹们冲就完了
+    evidence: 选「没问读者」以外的选项时，抄决定这个选项的那一问（或那句喊话）。
+    hypothesis:
+      挑一个: "+"
+      说自己的: "+"
+      求推荐: "?"
+      找同类: "?"
+      求解答: "-"
+      没问读者: "-"
+    why: 读者要能张嘴才会回。ending_asks_reader / asks_for_help 只记问没问，这题记读者凭什么答。
+    aw_instruction: 结尾留一个读者凭自己就能答的问题：让读者在几个具体选项里挑一个，或者说说他们自己平时怎么做；别问只有懂行或买过这款的人才答得上的事。
+    aw_instruction_values: [挑一个, 说自己的]
+    cross_check: 选了「没问读者」以外的值，应与 ending_asks_reader=是 或 title_is_question=是 高度一致。
+
+  - id: invites_sharing
+    version: 2
+    gate1_status: pending
+    family: 评论诱导
+    group: G8_sharing
+    layer: surface
+    halflife_months: 30
+    type: bool
+    scope: last_para
+    conditional_on: [ending_asks_reader, asks_for_help]
+    ask: 结尾有没有请读者讲出他们自己的做法、经历或数字——读者回答时说的是自己的事，而且得讲点内容？
+    yes_if: 结尾请读者说自己怎么做的、用什么、多少、多久、第几天。问句和喊话都算，没有问号也算。前面一句「有没有……的人」、后面接着问「你们怎么做的 / 多久好的」，按后面那句算「是」。
+    yes_examples:
+      - 你们早饭一般吃什么？
+      - 大家戒到第几天了，报个数
+      - 评论区说说你是怎么熬过第一周的
+    no_if: 一个字（有 / 没有 / 是 / 我也是）就能答完的；请人给作者出主意（给点建议、我该怎么办）；要一个正确答案的（吃多少才合适、会不会更严重）；问某一款产品或某个牌子怎么样（用过的说说效果、售后靠谱吗）；让读者挑选项或评理（A 还是 B、我是不是过分了）；求推荐；「欢迎交流」「评论区见」这种没说要读者讲什么的客套话。
+    no_examples:
+      - 有人和我一样吗
+      - 懂行的朋友帮我出出主意
+      - 爬山前吃多少比较好？
+      - 用过这款的说说效果
+      - 年终奖先还房贷还是先换车？
+      - 欢迎交流
+    evidence: 答「是」时抄结尾那句邀请或问话。
+    hypothesis: "+"
+    why: 请读者说自己的事，比问一句是非更容易换来长评论和互相回复（v1 的方向，冻结前就写下了）。
+    aw_instruction: 结尾请读者说说他们自己是怎么做的、用了多少或坚持了多久。
+    cross_check: 应与 reader_ask_form = 说自己的（证据在结尾时）高度一致。
+
+code_features:
+
+  - id: last_para_has_qmark
+    version: 1
+    type: bool
+    rule: 正文最后一段（同 last_para 切法）里有 ？ 或 ?。只和 ending_asks_reader=是 组合着看（结尾在问、却没打问号）。
+    hypothesis: "?"
+    why: owner 维度 (c) 的零成本探索版；D-127 刚证明问号个数本身不是机制，所以只探索、不进确认族。
+    store_raw_in: null
+
+placebo: []
+
+gate2:
+  half: holdout
+  condition_snapshot:
+    bank_sha256: ba0f570c47d594ca4dad571c5a9f5d06da51861b041ba364c3a915220b985ddd
+    extractors: [llm:claude-sonnet-5-5]
+    run_tag: primary
+  merged_contrasts:
+    - question_id: reader_ask_form
+      values: [挑一个, 说自己的]
+      label: 挑一个+说自己的
+      hypothesis: "+"
+  confirmation_family:
+    - [reader_ask_form, 挑一个+说自己的]
+    - [invites_sharing, 是]
+  placebo: from_primary
