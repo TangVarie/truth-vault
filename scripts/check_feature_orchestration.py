@@ -737,11 +737,12 @@ def check_workflow_probe() -> None:
     ids = "NUC_phase1_recSynthA,NUC_phase1_recSynthB,NRT_phase2_recSynthC"
     rsha, psha = READER["_sha256"], PRIMARY_SHA
 
-    def run(env: dict, probe: dict) -> tuple[int, str, list[dict]]:
+    def run(env: dict, probe: dict, chunk_extra: dict | None = None) -> tuple[int, str, list[dict]]:
         with tempfile.TemporaryDirectory() as td:
             (Path(td) / "probe.json").write_text(json.dumps(probe, ensure_ascii=False), encoding="utf-8")
             (Path(td) / "chunk.json").write_text(json.dumps({"ok": True, "note_ids_count": 2, "returncode": 0,
-                                                             "stdout_tail": "Done: {\"ok\": 2}"}), encoding="utf-8")
+                                                             "stdout_tail": "Done: {\"ok\": 2}", **(chunk_extra or {})}),
+                                                 encoding="utf-8")
             body = _FAKE_CURL + script.replace("/tmp/", td + "/")
             full = {"FAKE_DIR": td, "WORKER_URL": "http://worker.invalid", "WORKER_API_KEY": "k", "NOTE_IDS": ids,
                     "BATCH": "6", "REANNOTATE": "false", "CODE_ONLY": "false", **env}
@@ -754,9 +755,13 @@ def check_workflow_probe() -> None:
         return f"2026 [INFO] annotate_features · bank={bv} sha={sha[:12]}… model={model} run_tag={tag} title_extraction=x single=False"
     reader_env = {"RUN_TAG": R_TAG, "MODEL": R_MODEL, "BANK_SHA": rsha[:8], "BANK": "reader"}
     good = {"ok": True, "note_ids_count": 1, "bank": "reader", "stderr_tail": line("fq-v0.2-cand-reader", rsha, R_MODEL, R_TAG)}
-    rc, out, sent = run(reader_env, good)
+    rc, out, sent = run(reader_env, good, {"bank": "reader"})
     assert rc == 0 and "✅ worker 按 bank=fq-v0.2-cand-reader 跑" in out, (rc, out[-600:])
     assert len(sent) == 1 + 2 and all(b.get("bank") == "reader" for b in sent), sent        # 探针 + NUC 一批 + NRT 一批
+    # 探针过了, 真跑的批没回显 bank (中途换回旧 worker) / 回显成 primary → 第一批就停: 不重试、不发下一批
+    for extra in ({}, {"bank": "primary"}):
+        rc, out, sent = run(reader_env, good, extra)
+        assert rc == 1 and "批: worker 没回显 bank=reader" in out and len(sent) == 1 + 1, (extra, rc, out[-600:], len(sent))
     assert sent[0]["dry_run"] is True and sent[0]["run_tag"] == R_TAG and sent[0]["model"] == R_MODEL
     # 旧版 worker: 响应没有 bank (吞掉了) → 停在探针, 一个真请求都不发
     old = {k: v for k, v in good.items() if k != "bank"}
@@ -774,7 +779,7 @@ def check_workflow_probe() -> None:
         rc, out, sent = run({"RUN_TAG": "primary", "MODEL": "", "BANK_SHA": "", "BANK": b}, old_primary)
         assert rc == 0 and len(sent) == 3 and not any("bank" in x for x in sent), (b, rc, out[-400:], sent)
     print("  ✓ backfill-features 探针 (bash + 假 curl): reader 要 worker 回显 bank 且日志是 bank=fq-v0.2-cand-reader, 否则停在探针"
-          "、不发真请求; 请求体带 bank; 主题库请求体不带 bank、旧 worker 照旧放行")
+          "、不发真请求; 每一批也要回显 bank, 中途换回旧 worker → 第一批就停、不重试; 请求体带 bank; 主题库请求体不带 bank、旧 worker 照旧放行")
 
 
 def check_worker_banks_source() -> None:

@@ -16,6 +16,8 @@ gate1_agreement.py 是 Jev 那一轮的 (以 Jev 三张表为基准), 不动它;
     owner 从每题三趟一致的格里抽 20 个复核, 推翻 > 2 个这题不过。
   · 参考 = 三趟不全一致的格由 owner 裁 + 三趟都一致的格 (owner 复核过的一致格以 owner 为准)。
     「不全一致」按原始取值算 (6 个选项), 任一趟没答 (校验没过) 也算不一致 —— 那一格也给 owner。
+    不一致格或复核格有一格没裁 (拿不准 / 空着都算没裁) → 对参考的线不作数, 这题 pending (A 对 B、证据无效率、
+    复核推翻 > 2 照样能判 fail); 没裁的格不能悄悄掉出分母, 否则剩下的多是一致格, 一致率和 κ 会被抬高。
   · reader_ask_form 按合并后的 3 档判 (可答 = 挑一个 + 说自己的; 其他问法 = 求推荐 + 找同类 + 求解答; 没问读者),
     κ 还要在「至少一方不是没问读者」的子集上 ≥ 0.60; 6 个选项的表、问了读者之间「可答 vs 其他问法」只报告。
   · invites_sharing v2: κ 只在 A 层 (样本名单的 stratum) 上算; 一致率在全部 200 篇上算; 全部的 κ、B 层的一致率只报告。
@@ -380,28 +382,44 @@ def evaluate(cells: list[dict], bank: dict, has_owner: bool) -> dict:
     return res
 
 
+def _ok_zh(ok) -> str:
+    return "过" if ok else ("不过" if ok is False else "不可算")
+
+
 def _verdict(q: str, r: dict, has_owner: bool) -> tuple[str, list[str]]:
-    """→ (pass / fail / kappa_undefined / pending, 理由)。线一条不过就 fail; 线都没不过但有 κ 没定义 → kappa_undefined。"""
+    """→ (pass / fail / kappa_undefined / pending, 理由)。线一条不过就 fail; 线都没不过但有 κ 没定义 → kappa_undefined。
+
+    对参考的几条线 (一致率、κ、子集 κ) 要等 owner 把【每一个】不一致格和复核格都裁完才作数 (D-128「三趟不全一致的
+    每一格由 owner 裁」; 拿不准 / 空着 / 删了行都算没裁): 没裁的不一致格没有参考、不进 A 对参考, 剩下的多是一致格
+    (参考 = A), 一致率和 κ 会被抬高 —— 裁一半就能判 pass。没裁完时这几条照算照报, 但既不判过也不判不过, 结论是
+    pending。不看参考的线 (A 对 B、证据无效率) 和复核推翻数 (裁得越多只增不减) 随时能判 fail。"""
     why, oks = [], []
     oks.append(("A 对 B 一致率 ≥ 0.90", r["AB"]["ok_agree"]))
     oks.append(("A 证据无效率 ≤ 3%", r["line_evidence"]))
     if not has_owner:
         return "pending", ["还没有 owner 裁决 (参考标签没有), 只看了 A 对 B 和证据无效率"] + \
-            [f"{n}: {'过' if ok else ('不过' if ok is False else '不可算')}" for n, ok in oks]
+            [f"{n}: {_ok_zh(ok)}" for n, ok in oks]
     o = r["owner"]
     pending = []
+    if o["disagree_ruled"] < o["disagree"]:
+        pending.append(f"不一致格只裁了 {o['disagree_ruled']} / {o['disagree']} 个 (拿不准 / 空着都不算裁; "
+                       "D-128 要每一格都裁, 没裁完对参考的线不作数)")
     if o["spot_ruled"] < min(SPOT_N, o["spot"]):
         pending.append(f"复核只裁了 {o['spot_ruled']} / {min(SPOT_N, o['spot'])} 个一致格")
-    oks.append(("A 对参考一致率 ≥ 0.85", r["AR"]["ok_agree"]))
+    ref = [("A 对参考一致率 ≥ 0.85", r["AR"]["ok_agree"])]
     if q == STRATUM_KAPPA_Q:
-        oks.append(("A 对参考 κ ≥ 0.60 (A 层)", r["AR_stratumA"]["ok_kappa"]))
+        ref.append(("A 对参考 κ ≥ 0.60 (A 层)", r["AR_stratumA"]["ok_kappa"]))
     else:
-        oks.append(("A 对参考 κ ≥ 0.60", r["AR"]["ok_kappa"]))
+        ref.append(("A 对参考 κ ≥ 0.60", r["AR"]["ok_kappa"]))
     if q == MERGED_Q:
-        oks.append(("A 对参考 κ ≥ 0.60 (至少一方不是没问读者)", r["AR_asking"]["ok_kappa"]))
+        ref.append(("A 对参考 κ ≥ 0.60 (至少一方不是没问读者)", r["AR_asking"]["ok_kappa"]))
+    if not pending:
+        oks += ref
     oks.append((f"复核推翻 ≤ {SPOT_MAX_OVERTURN}", o["spot_overturned"] <= SPOT_MAX_OVERTURN if o["spot_ruled"] else None))
     for n, ok in oks:
-        why.append(f"{n}: {'过' if ok else ('不过' if ok is False else '不可算')}")
+        why.append(f"{n}: {_ok_zh(ok)}")
+    if pending:
+        why += [f"{n}: 不作数 (裁决没收齐; 眼下算出来是「{_ok_zh(ok)}」)" for n, ok in ref]
     if any(ok is False for _, ok in oks):
         return "fail", why + pending
     if pending:

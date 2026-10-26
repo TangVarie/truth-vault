@@ -9,9 +9,9 @@
      y 不是 0/1 / md5 坏了 → 拒; 层内不按 sha256(种子:note_id) 排、D-128 点名的 8 篇没剔、闸二口径没加    → §1 红
   ② 进了仓库的名单: 不是 200 篇 / 不是 150 + 50 / 有留出半的篇 / 有点名剔掉的篇 / 层内顺序不对 / 层和三道答案对不上 → §2 红
   ③ 裁决表: 正文 md5 对不上还做表 / 带正文的文件写进仓库里没被 ignore 的路径 / 甲乙泄露是哪一趟 / 表里出现模型名  → §3 红
-  ④ 收表: cell_id 不在格子表 / 题页上放了别的题或抽查格 / 抽查页上放了不一致格 / 同一格两次 / 答案不在闭集 → 拒;
-     拿不准和空着的写了行; run_tag 用 primary / gate1-* / 模型的那一趟; 行不是 human:owner + 副题库版本和 sha;
-     owner 的理由或正文进了 SQL                                                                              → §4 红
+  ④ 收表: cell_id 不在格子表 / 题页上放了别的题或抽查格 / 抽查页上放了不一致格 / 同一格两次 / 答案不在闭集 /
+     表里删了行 → 拒; 拿不准和空着的写了行、或没撤回以前收过的裁决; 撤回和 upsert 碰同一格; run_tag 用 primary /
+     gate1-* / 模型的那一趟; 行不是 human:owner + 副题库版本和 sha; owner 的理由或正文进了 SQL               → §4 红
 """
 from __future__ import annotations
 
@@ -245,7 +245,8 @@ def check_ingest(td: pathlib.Path) -> None:
     entries[0]["value"] = UNSURE
     entries[1]["value"] = None
     acc, counts, errs = ig.validate_rulings(entries, cells, BANK)
-    assert not errs and counts == {"rows": len(entries), "accepted": len(entries) - 2, "unsure": 1, "blank": 1}, (errs, counts)
+    assert not errs and counts == {"rows": len(entries), "accepted": len(entries) - 2, "unsure": 1, "blank": 1,
+                                   "unruled_disagree": 2, "unruled_spot": 0}, (errs, counts)
     rows = ig.build_rows(acc, cells, BANK, gm.OWNER_RUN_TAG)
     assert len(rows) == len(entries) - 2
     assert {(r["extractor"], r["run_tag"], r["bank_version"], r["bank_sha256"]) for r in rows} == {
@@ -255,6 +256,28 @@ def check_ingest(td: pathlib.Path) -> None:
     assert all(by[f"{r['subject_id']}:{r['question_id']}"]["kind"] in ("disagree", "spot") for r in rows)
     sql = rows_to_sql(rows)
     assert SENTINEL not in sql and "human:owner" in sql and "fqr-g1-owner" in sql and BANK["_sha256"] in sql
+    # 撤回 (rev: 重收改过的表, 旧裁决要能撤): 空着 / 拿不准的格进 delete, 收下的格进 upsert, 两边不相交、合起来正好是表里的格
+    ret = ig.retract_cells(acc, cells)
+    assert {c["cell_id"] for c in ret} == {entries[0]["cell_id"], entries[1]["cell_id"]}
+    assert not ({c["cell_id"] for c in ret} & set(acc)) and {c["cell_id"] for c in ret} | set(acc) == {c["cell_id"] for c in dis + spot}
+    full = ig.review_sql(acc, cells, BANK, gm.OWNER_RUN_TAG)
+    stm = [ln for ln in full.splitlines() if ln and not ln.startswith("--")]
+    assert stm[0] == "begin;" and stm[-1] == "commit;" and full.index("delete from") < full.index("insert into"), full[:400]
+    dpart = full[full.index("delete from"):full.index(";", full.index("delete from"))]
+    assert dpart.count("NUC_phase1_recRev") == 2 and "t.extractor = 'human:owner' and t.run_tag = 'fqr-g1-owner'" in dpart
+    for c in ret:
+        assert f"('{c['note_id']}', '{c['question_id']}', {1 if c['question_id'] == 'reader_ask_form' else 2})" in dpart
+    assert SENTINEL not in full
+    # 第二版: 全都改成拿不准 → 只有撤回、没有 upsert (旧裁决全删)
+    acc0, counts0, errs0 = ig.validate_rulings([dict(e, value=UNSURE) for e in entries], cells, BANK)
+    sql0 = ig.review_sql(acc0, cells, BANK, gm.OWNER_RUN_TAG)
+    assert not errs0 and not acc0 and counts0["unruled_disagree"] == len(dis) and counts0["unruled_spot"] == len(spot)
+    assert "insert into" not in sql0 and sql0.count("NUC_phase1_recRev") == len(dis) + len(spot) and "commit;" in sql0
+    # 删了行 → 拒 (分不清没裁还是撤回)
+    _, _, errs_m = ig.validate_rulings(entries[:-1], cells, BANK)
+    assert any("表里少了 1 格" in e for e in errs_m), errs_m
+    for tag in ("primary", "fqr-g1-sonnet55-a"):
+        _refused(lambda: ig.retract_sql(ret, BANK, tag), "", f"撤回 run_tag={tag}", ig.IngestRefused)
     # 拒
     for bad, needle in (([dict(entries[2], cell_id="NUC_phase1_recNope:reader_ask_form")], "不在格子表"),
                         ([dict(entries[2], sheet=SHORT["invites_sharing"])], "页, 格子表里是"),
@@ -267,8 +290,8 @@ def check_ingest(td: pathlib.Path) -> None:
         assert any(needle in e for e in errs), (needle, errs)
     for tag in ("primary", "gate1-20260928", "fqr-g1-sonnet55-a", "fqr-g1-haiku55", "owner", "fqr-"):
         _refused(lambda: ig.build_rows(acc, cells, BANK, tag), "", f"owner run_tag={tag}", ig.IngestRefused)
-    print("  §4 收表: 拿不准 / 空着不写行; 行 = human:owner + fqr-g1-owner + 副题库版本与 sha, 没有 evidence; 理由不进 SQL; "
-          "cell_id / 页 / 重复 / 闭集 → 拒; primary / gate1-* / 模型那几趟 / 光前缀 → 拒 ✓")
+    print("  §4 收表: 拿不准 / 空着不写行、撤回旧裁决 (一个事务, 删插不相交); 行 = human:owner + fqr-g1-owner + 副题库版本与 sha, "
+          "没有 evidence; 理由不进 SQL; cell_id / 页 / 重复 / 闭集 / 删了行 → 拒; primary / gate1-* / 模型那几趟 / 光前缀 → 拒 ✓")
 
 
 # §5 xlsx 往返 (--xlsx, 要 openpyxl) ──────────────────────────────────────────────────
@@ -303,7 +326,11 @@ def check_xlsx_roundtrip(td: pathlib.Path) -> None:
     sql_out = td / "owner.sql"
     assert ig.main(["--file", str(filled), "--cells", str(cp), "--sql-out", str(sql_out)]) == 0
     sql = sql_out.read_text(encoding="utf-8")
-    assert SENTINEL not in sql and sql.count("NUC_phase1_recRev") == 12 + 8 and "fqr-g1-owner" in sql
+    ins = sql[sql.index("insert into"):] if "insert into" in sql else ""
+    assert SENTINEL not in sql and "fqr-g1-owner" in sql and sql.count("NUC_phase1_recRev") == 12 + 8 + 2, sql[:600]
+    d0 = sql.index("delete from")
+    assert sql[d0:sql.index(";", d0)].count("NUC_phase1_recRev") == 2      # 两个题页各一格拿不准: 撤回
+    assert ins and sql.startswith("-- ") and "begin;" in sql and sql.rstrip().endswith("commit;")
     assert br.main(["--cells", str(cp), "--manifest", str(man), "--texts", str(tp),
                     "--out", str(ROOT / "scripts" / "x.xlsx.json")]) == 2
     print("  §5 xlsx: 页 / 下拉 / 隐藏 cell_id; 表里没有模型名; 填好收回 → SQL 里没有正文和理由; 输出到仓库里没被 ignore 的路径 → 退出 2 ✓")

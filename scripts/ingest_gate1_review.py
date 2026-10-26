@@ -4,8 +4,10 @@
     cd scripts && python ingest_gate1_review.py --file /path/to/scratchpad/闸一裁决.xlsx \
         --cells ../data-analysis/gate1-reader-cells-<日期>.csv --sql-out /path/to/scratchpad/owner.sql
 
-只出 SQL, 不写库: 这里的 MCP 是只读的, SQL 交给有写权限的人执行 (ingest_gate1_answers.rows_to_sql 的形状:
-一篇一行、两题两个数组再 unnest, 主键冲突就覆盖 —— 重收同一张表是覆盖, 不是再插)。
+只出 SQL, 不写库: 这里的 MCP 是只读的, SQL 交给有写权限的人执行。一张表 = owner 裁决的全量, SQL 是一个事务:
+  ① 撤回: 表里这次空着 / 拿不准的格, 以前收过的裁决删掉 (按主键: note / 篇 / 题 / 版本 / human:owner / 这个 run_tag);
+  ② upsert 收下的格 (ingest_gate1_answers.rows_to_sql 的形状: 一篇一行、两题两个数组再 unnest, 主键冲突就覆盖)。
+  改过的表再收一次 = 以新表为准 (第一版裁了、第二版改成拿不准的格, 旧裁决不会留在 fqr-g1-owner 里当参考)。
 
 写成什么:
   · extractor = human:owner, run_tag = fqr-g1-owner (fb.check_run_tag: primary / gate1-* / 不带 fqr- 都拒;
@@ -13,7 +15,9 @@
   · answer = owner 在「你的判断」里选的值; evidence / prob = NULL —— 「理由」列不进库 (可能抄了原文, D-110 的先例)。
 校验 (任一条不过整份不出, 别把半张表落库):
   · 每个 cell_id 都在格子表里; 题页上的格 kind=disagree 且题号就是这一页的题; 「抽查」页的格 kind=spot;
-  · 同一个 cell_id 不许出现两次; 答案必须在那道题的闭集里; 「拿不准」和空着的不写行, 只计数。
+  · 格子表里每个 disagree / spot 格都要在表里 (删了行 = 分不清没裁还是撤回, 拒);
+  · 同一个 cell_id 不许出现两次; 答案必须在那道题的闭集里; 「拿不准」和空着的不写行, 只计数 ——
+    没裁完也能收 (gate1_models 会判 pending: D-128 要每一格都裁)。
 """
 from __future__ import annotations
 
@@ -26,9 +30,10 @@ from _common import _iso_now
 from build_gate1_review_sheet import SPOT_SHEET, UNSURE, sheet_name
 from gate1_labels import SHORT
 from gate1_models import DEFAULT_RUNS, OWNER_EXTRACTOR, OWNER_RUN_TAG, Gate1Refused, load_secondary, read_cells
-from ingest_gate1_answers import rows_to_sql
+from ingest_gate1_answers import _sql_lit, rows_to_sql
 
 PICK_HEADER = "你的判断"
+REVIEWED_KINDS = ("disagree", "spot")          # 表里有的格 (gate1_models 的格子表 kind)
 
 
 class IngestRefused(Exception):
@@ -95,7 +100,13 @@ def validate_rulings(entries: list[dict], cells: list[dict], bank: dict) -> tupl
             errs.append(f"{cid}: 「{v}」不在 {c['question_id']} 的闭集 {fb.closed_set(idx[c['question_id']])}")
             continue
         accepted[cid] = v
+    missing = [c["cell_id"] for c in cells if c["kind"] in REVIEWED_KINDS and c["cell_id"] not in seen]
+    if missing:
+        errs.append(f"表里少了 {len(missing)} 格 (如 {missing[0]}) —— 行被删了? 用做表时那一份原样填, 不删行、不挪页"
+                    " (删掉的行分不清是没裁还是撤回)")
     counts["accepted"] = len(accepted)
+    for kind in REVIEWED_KINDS:
+        counts[f"unruled_{kind}"] = sum(1 for c in cells if c["kind"] == kind and c["cell_id"] not in accepted)
     return accepted, counts, errs
 
 
@@ -124,13 +135,42 @@ def build_rows(accepted: dict[str, str], cells: list[dict], bank: dict, run_tag:
     return rows
 
 
+def retract_cells(accepted: dict[str, str], cells: list[dict]) -> list[dict]:
+    """表里有、这次没收的格 (拿不准 / 空着): 以前收过的裁决要撤回。和 accepted 不相交 —— 同一个主键不会一删一插。"""
+    return sorted((c for c in cells if c["kind"] in REVIEWED_KINDS and c["cell_id"] not in accepted),
+                  key=lambda c: c["cell_id"])
+
+
+def retract_sql(retract: list[dict], bank: dict, run_tag: str) -> str:
+    """按主键删 owner 的旧裁决 (只删 human:owner + 这个 run_tag; 模型三趟、primary 的行碰不到)。"""
+    check_owner_run_tag(bank, run_tag)
+    if not retract:
+        return "-- ingest_gate1_review.py · 没有要撤回的格\n"
+    idx = fb.question_index(bank)
+    vals = ",\n".join(f"  ({_sql_lit(c['note_id'])}, {_sql_lit(c['question_id'])}, {int(idx[c['question_id']]['version'])})"
+                      for c in retract)
+    return (f"-- ingest_gate1_review.py · 撤回 {len(retract)} 格: 这张表里空着 / 拿不准, 以前收过的 owner 裁决删掉\n"
+            "delete from truth_vault.note_feature_answers t\n"
+            f"using (values\n{vals}\n) as x(subject_id, question_id, question_version)\n"
+            "where t.subject_type = 'note' and t.subject_id = x.subject_id and t.question_id = x.question_id\n"
+            f"  and t.question_version = x.question_version and t.extractor = {_sql_lit(OWNER_EXTRACTOR)}"
+            f" and t.run_tag = {_sql_lit(run_tag)};\n")
+
+
+def review_sql(accepted: dict[str, str], cells: list[dict], bank: dict, run_tag: str) -> str:
+    """一个事务: 先撤回, 再 upsert。一张表 = owner 裁决的全量, 重收改过的表就以新表为准。"""
+    rows = build_rows(accepted, cells, bank, run_tag)
+    return ("-- ingest_gate1_review.py · 一张表 = owner 裁决的全量: 先撤回空着 / 拿不准的格, 再 upsert 收下的格 (一个事务)\n"
+            "begin;\n" + retract_sql(retract_cells(accepted, cells), bank, run_tag) + rows_to_sql(rows) + "commit;\n")
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--file", type=Path, required=True, help="owner 填回的 xlsx")
     ap.add_argument("--cells", type=Path, required=True, help="做表用的那份格子表")
     ap.add_argument("--bank", default="reader")
     ap.add_argument("--run-tag", default=OWNER_RUN_TAG)
-    ap.add_argument("--sql-out", type=Path, help="把行写成 upsert SQL (交给有写权限的人执行)")
+    ap.add_argument("--sql-out", type=Path, help="写成 SQL (一个事务: 撤回 + upsert; 交给有写权限的人执行)")
     a = ap.parse_args(argv)
     try:
         bank = load_secondary(a.bank)
@@ -142,13 +182,17 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  - {e}", file=sys.stderr)
             raise IngestRefused(f"{len(errs)} 处校验不过, 整份不出")
         rows = build_rows(accepted, cells, bank, a.run_tag)
+        sql = review_sql(accepted, cells, bank, a.run_tag)
     except (IngestRefused, Gate1Refused) as exc:
         print(f"拒绝: {exc}", file=sys.stderr)
         return 2
     print(f"{a.file.name}: {counts['rows']} 格 · 收 {counts['accepted']} · 拿不准 {counts['unsure']} · 空着 {counts['blank']} "
-          f"→ {len(rows)} 行 ({OWNER_EXTRACTOR} / {a.run_tag} / {bank['bank_version']} {bank['_sha256'][:12]})")
+          f"→ {len(rows)} 行 + 撤回 {len(retract_cells(accepted, cells))} 格 "
+          f"({OWNER_EXTRACTOR} / {a.run_tag} / {bank['bank_version']} {bank['_sha256'][:12]})")
+    if counts["unruled_disagree"] or counts["unruled_spot"]:
+        print(f"⚠️ 还没裁完: 不一致格 {counts['unruled_disagree']} 格、抽查格 {counts['unruled_spot']} 格没选答案 (拿不准 / 空着) "
+              "—— gate1_models 会判 pending (D-128 要每一格都裁)。owner 补完再收一次, 新表为准。", file=sys.stderr)
     if a.sql_out:
-        sql = rows_to_sql(rows)
         a.sql_out.write_text(sql, encoding="utf-8")
         print(f"SQL 写到 {a.sql_out} ({len(sql.encode('utf-8'))} 字节)")
     return 0

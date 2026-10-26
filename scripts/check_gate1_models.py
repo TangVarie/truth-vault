@@ -284,7 +284,39 @@ def check_verdicts(td) -> None:
     _, cells_u, _ = _run(_rows(ans), m, owner_tag=None)
     _, _, res_u = _run(_rows(ans, {(c["note_id"], c["question_id"]): c["A"] for c in cells_u if c["kind"] == "spot"}), m)
     assert res_u["reader_ask_form"]["verdict"] == "kappa_undefined", res_u["reader_ask_form"]["why"]
-    print("  §4 判定: 没 owner → pending; A–B 一致率 < 0.90 → fail; 复核推翻 3 → fail; 复核没裁完 → 不是 pass; κ 没定义 → kappa_undefined ✓")
+    # 不一致格没裁完 → pending, 不是 pass (rev: 只裁抽查页、不一致页空着 → 没裁的格掉出分母, 剩下全是参考 = A 的一致格)
+    ans = _answers()
+    for i, n in enumerate(NOTES[:9]):
+        ans[(n, "reader_ask_form")] = {"A": ("挑一个", None), "B": ("挑一个", None), "H": ("求解答", None)}
+    for n in NOTES[1:6]:
+        ans[(n, "invites_sharing")] = {L: ("是", None) for L in "ABH"}
+    _, cells_d, _ = _run(_rows(ans), m, owner_tag=None)
+    dis_d = [(c["note_id"], c["question_id"]) for c in cells_d if c["kind"] == "disagree"]
+    assert len(dis_d) == 9 and {k[1] for k in dis_d} == {"reader_ask_form"}, dis_d
+    spot_ok = {(c["note_id"], c["question_id"]): c["A"] for c in cells_d if c["kind"] == "spot"}
+    _, _, rs = _run(_rows(ans, spot_ok), m)
+    r = rs["reader_ask_form"]
+    assert r["owner"]["disagree_ruled"] == 0 and r["AR"]["ok_agree"] is True and r["verdict"] == "pending", (r["verdict"], r["why"])
+    assert any("不一致格只裁了 0 / 9" in w for w in r["why"]) and any("A 对参考一致率 ≥ 0.85: 不作数" in w for w in r["why"])
+    assert rs["invites_sharing"]["verdict"] in ("pass", "kappa_undefined"), rs["invites_sharing"]["why"]   # 那题没有不一致格
+    _, _, rs8 = _run(_rows(ans, {**spot_ok, **{k: "求解答" for k in dis_d[:8]}}), m)            # 裁了 8 / 9, 还是 pending
+    assert rs8["reader_ask_form"]["verdict"] == "pending" and any("只裁了 8 / 9" in w for w in rs8["reader_ask_form"]["why"])
+    _, _, rs_all = _run(_rows(ans, {**spot_ok, **{k: "求解答" for k in dis_d}}), m)            # 全裁, A 全错 → fail
+    assert rs_all["reader_ask_form"]["verdict"] == "fail" and rs_all["reader_ask_form"]["AR"]["agree"] < 0.85
+    _, _, rs_ok = _run(_rows(ans, {**spot_ok, **{k: "挑一个" for k in dis_d}}), m)             # 全裁, A 全对 → 不再 pending
+    assert rs_ok["reader_ask_form"]["verdict"] in ("pass", "kappa_undefined"), rs_ok["reader_ask_form"]["why"]
+    # 没裁完也照样能判 fail 的: A–B 不过 (不看参考) / 复核推翻 3 (只增不减)
+    own_no_inv = {k: v for k, v in own.items() if not (k[1] == "invites_sharing" and
+                                                         next(c for c in cells0 if (c["note_id"], c["question_id"]) == k)["kind"] == "disagree")}
+    _, _, rn = _run(_rows(_answers(), own_no_inv), m)
+    assert rn["invites_sharing"]["verdict"] == "fail" and rn["invites_sharing"]["owner"]["disagree_ruled"] == 0, rn["invites_sharing"]["why"]
+    own3 = _owner(cells0, overturn=3)
+    own3.pop(next(k for k in own3 if k[1] == "reader_ask_form" and
+                  next(c for c in cells0 if (c["note_id"], c["question_id"]) == k)["kind"] == "disagree"))
+    _, _, r3p = _run(_rows(_answers(), own3), m)
+    assert r3p["reader_ask_form"]["verdict"] == "fail" and r3p["reader_ask_form"]["owner"]["disagree_ruled"] == 8, r3p["reader_ask_form"]["why"]
+    print("  §4 判定: 没 owner → pending; A–B 一致率 < 0.90 → fail; 复核推翻 3 → fail; 复核没裁完 → 不是 pass; κ 没定义 → kappa_undefined; "
+          "不一致格没裁完 (0/9、8/9) → pending、对参考的线不作数, A–B 不过 / 推翻 3 照样 fail ✓")
 
 
 # §5 哨兵: 证据原文不出现在任何输出里 ─────────────────────────────────────────────────
