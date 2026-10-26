@@ -7267,7 +7267,7 @@ NUC_phase1_recv2jCgov51Yz,NUC_phase1_recv2lNktp6h13,NUC_phase1_recv2lNktpokW9,NU
   - 剔掉三组对照帖 6 篇：SPX_phase1_reczz28NDCkUnZo2、SPX_phase1_reczz28NDCsT0kYG、HATHERINE_phase1_recvvVqwhU4bwj、HATHERINE_phase1_reczz28PaNo98D3Z、XIWU_phase2_reczz28PahXPKcbQ、XIWU_phase2_reczz28Q05VZa80D；以及 D-127 材料里给 owner 看过的例子 HATHERINE_phase1_recvw1LdlTTJMM、BJS_phase1_recvsWBVowMCHc。
 - 三趟：`fqr-g1-sonnet55-a`、`fqr-g1-sonnet55-b`（Sonnet 5.5 两趟）、`fqr-g1-haiku55`（Haiku 5.5）；owner 裁决记 `fqr-g1-owner`。
 - 通过线：Sonnet A 对 B 一致率 ≥ 0.90；Sonnet A 对参考一致率 ≥ 0.85 且 κ ≥ 0.60；证据无效率 ≤ 3%。每组只有一题，「分组 vs 单问」那项不适用。
-- 参考标签 = Sonnet A 与 Haiku 不一致的每一格由 owner 裁 + 三趟都一致的格（A 与 Haiku 一致、B 不同的格不进参考）。owner 另从每题三趟一致的格里抽 20 个复核，推翻超过 2 个，这题闸一不过。
+- 参考标签 = 三趟不全一致的每一格由 owner 裁（含 A 与 Haiku 一致、B 不同的格：同一模型重跑不稳的格正是难格，不能从参考里拿掉）+ 三趟都一致的格。owner 另从每题三趟一致的格里抽 20 个复核，推翻超过 2 个，这题闸一不过。
 - reader_ask_form 按合并后的 3 档判：可答 = 挑一个 + 说自己的；其他问法 = 求推荐 + 找同类 + 求解答；没问读者。κ 还要在「至少一方没选没问读者」的子集上 ≥ 0.60（没问读者占比高，会把整体 κ 撑高）。6 个选项的表只报告。
 - invites_sharing v2：κ 只在 A 层算（「是」的比例低），一致率在全部 200 篇上算。全部 200 篇的 κ、B 层的一致率另行报告，不参与判定。
 - 不过的题：改措辞 = 升版本 + 新 sha + 全部重跑；除上面那次合并，不再重新编码。
