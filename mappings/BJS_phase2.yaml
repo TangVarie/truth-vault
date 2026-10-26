@@ -1,0 +1,147 @@
+# ════════════════════════════════════════════════════════════════════
+# BJS_phase2 · 百健士成人藻油 —— 接表草稿(B 家族, 2026-10-26)
+# ════════════════════════════════════════════════════════════════════
+# 写作台项目「百健士成人藻油」(10-21 建)的发布表(I-22)。owner 10-26 给的链接: 和 BJS_phase1
+# 同一个 base(XkANwc24CidwrdkauRHcBQELnrh), 新表 tbloWC6k4aDdLwx0 / view vewof8k1Sw。
+# 起草方法同 XIWU_phase2(W-25): 同一个 base、同一拨运营, 先照 BJS_phase1 的列结构起草,
+# 再用 Preflight(只读飞书)对真表校正列名 / 方向 / tier 取值; 首次入库前不定方向口径和人群。
+# ⚠️ 未定: 运营 10-26 把 BJS_phase1 里 9-30 以后的 79 篇挪走了, 其中 65 篇在写作台对应的是
+#    儿童「百健士-藻油」的稿子。新表是不是只放成人藻油, 要先核清再入库(I-22)。
+# ════════════════════════════════════════════════════════════════════
+
+version: 1.0
+
+project_id: BJS_phase2
+brand: 百健士
+product: 成人藻油
+
+brand_aliases:
+  - 百健士澳洲藻油
+category: 保健品
+platform: xiaohongshu
+schema_family: B
+start_date: auto_from_publish_time_min
+end_date: auto_from_publish_time_max
+
+# ── 标题怎么拿 (docs/28 §3 第 4 条, D-065 续; 09-19 实查 17 张表) ──
+# column = notes.title 列 / markers = 从 raw_content 的标记切 / none = 没有标题
+title_extraction: markers          # 文案里带标记, 解析器同时认「【标题】…【正文】…」和「标题：…(换行)正文：…」; 切不出来的单条标题类题目记 NULL
+
+field_mapping:
+  实时数据.评论数: comments_count   # D-062: 判爆的唯一依据(实时总评论数, 含铺评), 巡查机器人抓的
+  素人编号: account_id
+  笔记内容: raw_content
+  发布时间: publish_time
+  反馈链接: publish_url
+  方向: _direction_raw
+  流量状态: _status_raw
+  笔记状态: _note_status_raw
+  随贴评论: _comment_text
+  蓝词字段: hit_blue_keywords
+
+# 方向口径【待首次入库后按真实文案定】(同 XIWU_phase2 的做法)。先照 BJS_phase1 的两个方向值起草,
+# 让 preflight 能核方向是否全部命中; 人群和痛点先写「通用」/ 待定, 不沿用儿童项目的「宝妈」。
+direction_decomposition:
+  "好物分享-产品贴":
+    content_format: 场景植入
+    target_audience: ["通用"]
+    user_pain_point: 待首次入库后按真实文案定
+
+  "提问贴":
+    content_format: 情感叙事
+    target_audience: ["通用"]
+    user_pain_point: 待首次入库后按真实文案定
+
+tier_extraction:
+  source: 状态字段
+  rules:
+    - match_contains: ["大爆"]
+      tier: 大爆
+    - match_contains: ["爆贴预备"]
+      tier: 预备
+    # ⚠️ 「伪爆帖」必须排在「爆帖」【之前】—— 取首个命中, 而「伪爆帖500」含「爆帖」。
+    # 起草稿把这条放在最后, 于是运营手标的假数据被判成 爆(2026-08-28 修; 同 D-045,
+    # scripts/_common.py 的 _reject_shadowed_tier_rules 现在会拦住这种列序)。
+    - match_contains: ["伪爆帖", "伪爆贴", "伪20评"]
+      tier: 数据异常
+    - match_contains: ["爆贴", "爆帖"]
+      tier: 爆
+    - match_contains: ["蓝词"]
+      tier: 参考
+    - match_contains: ["风控"]
+      tier: 风控
+    - match_contains: ["无水花"]
+      tier: 趴
+    - match_contains: ["评估中"]
+      tier: 评估中
+    - default: null
+
+# 定稿 2026-08-30: 这两个数【现在不生效, 也不该现在定】——
+# 本表 field_mapping 里没有 曝光/阅读/互动 任何一列, 入库 43 行 interactions 全 null,
+# 而数值推断只在【tier 源为空 且 有互动数】时兜底。实测 43 行 tier 100% 来自「流量状态」
+# (42 无水花 + 1「无水花/爆贴」), 数值推断一次都没触发过。
+# ── 指标: 本表没有独立的 曝光/阅读/互动 数值列, 9/1 起运营在「数据整理」里以键值文本填 ──
+# 2026-09-02(D-051): 同 LNKT 的 D-048 机制。
+# D-062(2026-09-17): 数值推断只看 comments_count(本表已映「实时数据.评论数」, 此前落在
+# _undeclared 里), 与这里解析出的互动量无关; 项目级互动量阈值整个作废。
+metrics_from_kv_text:
+  sources: ["数据整理"]
+  anchor: 曝光量
+  extract:
+    impressions: ["曝光量"]
+    reads: ["阅读量"]
+    interactions: ["互动量"]
+
+compliance:
+  base_template: 保健品
+  custom_red_flags:
+    - "保健品禁疾病治疗/预防宣称;DHA功效需可证实、禁绝对化(最/第一/100%)"
+    - "禁医疗化表述(治疗/修复等需谨慎)"
+  # 蓝词留空: 同 BJS_phase1(那一列的选项串了别的品牌、没有可信来源), 等运营在新表里填值再定。
+  blue_keyword_strategy:
+    primary: []
+    secondary: []
+    avoid: []
+
+project_specific_fields_to_raw_extra:
+  # ── 投流(2026-09-17 运营对齐 Q7, 见 data-analysis/ops-answers-2026-09-17.md)──
+  # 运营定的三个人工列, 机器不得覆盖。先按 allowlist 收进 raw_extra 留痕;
+  # 等飞书里真建出来、「维护情况」的多选取值定了, 再升成 typed 列(D-062)。
+  # 现在声明是为了它们一出现就有名有姓, 不落进 _undeclared 天天告警。
+  # 2026-09-22 运营回填件给了逐值语义, 注释按它重写(A7)。旧注释写「多选: 准备/已做投流」
+  # 是【错的】—— 这一列至少承载三种语义, 投流只是其中一种。
+  - 维护情况                # 多选·多义: ① 铺评完成度 关注=已做20条 / 重点关注⭐️=已做50条 /
+                            #            ✅=【需要】做50条(待办, 不算已铺)
+                            #         ② 投流   日期+🍟(如 9/15🍟, 日期即投流日) / 已投流，等回收数据
+                            #         ③ 控评置顶 控评&置顶✅(两个动作都做完) / 已评待置顶
+                            #    ⚠️ 同一行会同时出现多类(BJS 6 行「控评&置顶✅」100% 同时带「关注+✅」)。
+                            #    ⚠️ 留空 = 没有做维护(运营 2026-09-22 确认), 所以 paid_promoted 可判 false。
+                            #    引擎按取值分路, 见 sync 的 _CM_MV_* / _PAID_* 常量。
+  - 维护时间                # 日期粒度。⚠️ 实测生产 9 行全是控评/维护动作的时间, 与投流标记零重叠 ——
+                            #    投流日期目前写在「维护情况」的 9/15🍟 值里, 不在这一列。
+  - 维护效果                # 数字: 投流【前后的曝光量差额】(运营 2026-09-22; 2026-09-17 原话是
+                            #    "曝光量增长情况", 两次都是增量。《字段定义》docx 写"投流后12h的曝光量"
+                            #    是孤证)。⚠️ 生产全库 0 行, 连 key 都不存在。
+                            #    ⚠️ 这三列【永不】映 impressions/reads/interactions/comments_count。
+  - 起量时间
+  - 数据整理                        # 2026-09-02(D-051): 9/1 起运营加的键值文本列「曝光量：X；阅读量：Y；互动量：Z」, 43 行被隔离; 也是下方 metrics_from_kv_text 的源
+  - 笔记配图
+  - 随贴评论配图
+  - 相关截图
+  - 蓝词图片
+  - 父记录
+
+onboarding_meta:
+  onboarded_at: 2026-10-26
+  onboarded_by: Claude 照 BJS_phase1 列结构起草(I-22)
+  strategy_lead: [待填]
+  notes: |
+    DRAFT — 先 preflight(只读)校正列名 / 方向 / tier, 核清新表是不是只放成人藻油, 再 on_demand 首次入库。
+    写作台映射: 百健士成人藻油(89d3e7aa)→ BJS_phase2, 首次入库核过之后在 aw tv_project_map 加(I-22)。
+
+sync_config:
+  source_type: feishu_api
+  feishu_app_token: XkANwc24CidwrdkauRHcBQELnrh   # 表标识(非密钥), 和 BJS_phase1 同一个 base, owner 10-26 给的链接
+  feishu_table_id: tbloWC6k4aDdLwx0
+  feishu_view_id: null
+  sync_interval: on_demand          # 新表一律先 on_demand(PR#67): 显式跑通、核过再翻 daily
