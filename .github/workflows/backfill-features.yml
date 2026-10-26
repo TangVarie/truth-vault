@@ -42,6 +42,10 @@ on:
         description: "只在 note_ids 模式生效, 可空。覆盖 worker 的 FEATURE_MODEL (如 claude-haiku-5-5), 闸一影子跑用: 同一批篇、换个模型、落到别的 run_tag, 再用 gate1_agreement.py 对 Jev / owner 裁决算一致率 (D-098: 换站后主抽取器要重过闸一)。pass 写的抽取器是 llm:<model>; 只能配非 primary 的 run_tag。[A-Za-z0-9][A-Za-z0-9_.:/-]{0,79}"
         required: false
         default: ""
+      bank:
+        description: "只在 note_ids 模式生效。题库键 (D-128, feature_bank.BANKS): primary = 冻结的主题库 fq-v0.1 (默认); reader = 副题库 fq-v0.2-cand-reader。非 primary 必须: run_tag 以 fqr- 开头、给 bank_sha 和 model、code_only=false、reannotate=false; 探针还要 worker 回显 bank、日志里 bank=<该库版本>, 否则停 (旧 worker 会吞掉 bank 按主题库跑)。"
+        required: false
+        default: "primary"
 
 # 同一项目同时只允许一个 backfill 在跑 —— 否则两个 run 会各自快照同一批未抽取笔记、
 # 重复烧 LLM 且非确定性地互相覆盖 essence(codex PR#43 review r3355530533)。
@@ -67,6 +71,7 @@ jobs:
       REANNOTATE: ${{ github.event.inputs.reannotate }}
       MODEL: ${{ github.event.inputs.model }}
       CODE_ONLY: ${{ github.event.inputs.code_only }}
+      BANK: ${{ github.event.inputs.bank }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -96,6 +101,8 @@ jobs:
           case "$MAXB"  in ''|*[!0-9]*) echo "::error::max_batches 必须是正整数,收到 '$MAXB'"; exit 1;; esac
           [ "$BATCH" -ge 1 ] || { echo "::error::batch 必须 ≥1"; exit 1; }
           case "$CODE_ONLY" in true|false) ;; *) echo "::error::code_only 只能是 true / false, 收到 '$CODE_ONLY'"; exit 1;; esac
+          [ -n "$BANK" ] || BANK=primary
+          case "$BANK" in primary|reader) ;; *) echo "::error::bank 只能是 primary / reader (feature_bank.BANKS 的键), 收到 '$BANK'"; exit 1;; esac
           if [ "$CODE_ONLY" = "true" ]; then
             # 代码题不调模型, 一篇毫秒级; 上限只防一次请求塞太多篇 (I-19)。
             [ "$BATCH" -le 100 ] || { echo "::error::code_only 时 batch 上限 100, 收到 $BATCH"; exit 1; }
@@ -133,12 +140,21 @@ jobs:
               # primary 是夜跑主抽取器的快照: 混进第二个 llm:* 抽取器, 闸二按 (篇, 题) 唯一性会拒跑 (gate2_run §5)。换模型只能落别的 run_tag。
               [ "$RUN_TAG" != "primary" ] || { echo "::error::model 只能配非 primary 的 run_tag (如 gate1-haiku55), 收到 run_tag=primary"; exit 1; }
             fi
-            echo "✅ inputs OK (note_ids 模式): $n 篇 · batch=$BATCH · run_tag=$RUN_TAG · bank_sha=${BANK_SHA:-(不查)} · reannotate=$REANNOTATE · model=${MODEL:-(worker 默认)} · 并发组=$PROJECT"
+            if [ "$BANK" != "primary" ]; then
+              # 副题库 (D-128): 主键不含 bank_sha256, primary 会盖掉主题库的行; worker 和 pass 也各拦一道
+              echo "$RUN_TAG" | grep -Eq '^fqr-[A-Za-z0-9]' || { echo "::error::bank=$BANK 的 run_tag 必须以 fqr- 开头 (D-128), 收到 '$RUN_TAG'"; exit 1; }
+              [ "$CODE_ONLY" = "false" ] || { echo "::error::bank=$BANK 不收 code_only (代码题只属于主题库)"; exit 1; }
+              [ "$REANNOTATE" = "false" ] || { echo "::error::bank=$BANK 不收 reannotate (重跑换一个 fqr- run_tag, 旧答案留着)"; exit 1; }
+              [ -n "$BANK_SHA" ] || { echo "::error::bank=$BANK 必须给 bank_sha (探针对不上就停, 别拿旧题面烧钱)"; exit 1; }
+              [ -n "$MODEL" ] || { echo "::error::bank=$BANK 必须给 model (续跑按精确的 llm:<model> 判)"; exit 1; }
+            fi
+            echo "✅ inputs OK (note_ids 模式): $n 篇 · batch=$BATCH · bank=$BANK · run_tag=$RUN_TAG · bank_sha=${BANK_SHA:-(不查)} · reannotate=$REANNOTATE · model=${MODEL:-(worker 默认)} · 并发组=$PROJECT"
             exit 0
           fi
           [ -z "$RUN_TAG" ] || [ "$RUN_TAG" = "primary" ] || { echo "::error::run_tag 只在 note_ids 模式生效(整项目回填永远落 primary, count_unannotated_features 也只数 primary), 收到 '$RUN_TAG'"; exit 1; }
           [ -z "$BANK_SHA" ] || { echo "::error::bank_sha 只在 note_ids 模式生效, 收到 '$BANK_SHA'"; exit 1; }
           [ -z "$MODEL" ] || { echo "::error::model 只在 note_ids 模式生效 (整项目回填永远用 worker 的 FEATURE_MODEL 落 primary), 收到 '$MODEL'"; exit 1; }
+          [ "$BANK" = "primary" ] || { echo "::error::bank=$BANK 只在 note_ids 模式生效 (整项目回填永远是主题库), 收到 '$BANK'"; exit 1; }
           # project 必须是已知项目(有 mapping)。否则拼错的名字会查到 remaining=0 → 被当成
           # "已灌完"绿着退出、一条没处理(codex review r3355530520)。
           if [ ! -f "../mappings/${PROJECT}.yaml" ]; then
@@ -159,7 +175,8 @@ jobs:
           probe_id=$(echo "$NOTE_IDS" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -v '^$' | head -1)
           probe_proj="${probe_id%_rec*}"
           [ -n "$RUN_TAG" ] || RUN_TAG=primary
-          body=$(jq -nc --arg p "$probe_proj" --arg id "$probe_id" --arg t "$RUN_TAG" --arg m "$MODEL" --argjson c "$([ "$CODE_ONLY" = "true" ] && echo true || echo false)" '{project:$p, limit:1, dry_run:true, note_ids:[$id], run_tag:$t} + (if $m != "" then {model:$m} else {} end) + (if $c then {code_only:true} else {} end)')
+          [ -n "$BANK" ] || BANK=primary
+          body=$(jq -nc --arg p "$probe_proj" --arg id "$probe_id" --arg t "$RUN_TAG" --arg m "$MODEL" --arg b "$BANK" --argjson c "$([ "$CODE_ONLY" = "true" ] && echo true || echo false)" '{project:$p, limit:1, dry_run:true, note_ids:[$id], run_tag:$t} + (if $m != "" then {model:$m} else {} end) + (if $c then {code_only:true} else {} end) + (if $b != "primary" then {bank:$b} else {} end)')
           code=$(curl -sS -w '%{http_code}' -o /tmp/probe.json --max-time 300 \
             -X POST "${WORKER_URL%/}/annotate-features" \
             -H "X-Worker-Key: $WORKER_API_KEY" -H 'content-type: application/json' -d "$body") || code=000
@@ -187,6 +204,14 @@ jobs:
             case "$bank_line" in *"model=$MODEL run_tag="*) echo "✅ worker 按 model=$MODEL 跑";;
               *) echo "::error::worker 没按 model=$MODEL 跑 (探针打的是 '${bank_line:-空}') —— 旧版 worker 会吞掉 model 字段。停。"; exit 1;; esac
           fi
+          if [ "$BANK" != "primary" ]; then
+            # 副题库 (D-128): 旧版 worker 会吞掉 bank、按主题库跑 (6 组 31 行, ≈3× 钱) —— 响应要回显 bank, 日志那行要是该库的版本
+            pb=$(jq -r '.bank // empty' /tmp/probe.json 2>/dev/null)
+            [ "$pb" = "$BANK" ] || { echo "::error::worker 没回显 bank=$BANK (收到 '${pb:-空}') —— 旧版 worker 会按主题库跑。等 Railway 部署带 bank 的版本再触发。"; exit 1; }
+            bv=$(python -c 'import sys, feature_bank as fb; print(fb.load_bank(fb.BANKS[sys.argv[1]])["bank_version"])' "$BANK") || { echo "::error::读不出 bank=$BANK 的 bank_version"; exit 1; }
+            case "$bank_line" in "bank=$bv "*) echo "✅ worker 按 bank=$bv 跑";;
+              *) echo "::error::worker 日志不是 bank=$bv (探针打的是 '${bank_line:-空}')。停。"; exit 1;; esac
+          fi
 
           mapfile -t ids < <(echo "$NOTE_IDS" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -v '^$' | sort -u)
           total=${#ids[@]}; sent=0; ok_chunks=0; bad_chunks=0; gf_total=0
@@ -195,7 +220,7 @@ jobs:
             for ((i=0; i<${#plist[@]}; i+=BATCH)); do
               chunk=("${plist[@]:i:BATCH}")
               # reannotate 只在真跑时带(探针是 dry_run, 不需要); worker 把它翻成 --reannotate (app.py 的 flag 闭集)。
-              body=$(printf '%s\n' "${chunk[@]}" | jq -R . | jq -sc --arg p "$proj" --argjson n "$BATCH" --arg t "$RUN_TAG" --arg m "$MODEL" --argjson r "$([ "$REANNOTATE" = "true" ] && echo true || echo false)" --argjson c "$([ "$CODE_ONLY" = "true" ] && echo true || echo false)" '{project:$p, limit:$n, note_ids:., run_tag:$t} + (if $r then {reannotate:true} else {} end) + (if $m != "" then {model:$m} else {} end) + (if $c then {code_only:true} else {} end)')
+              body=$(printf '%s\n' "${chunk[@]}" | jq -R . | jq -sc --arg p "$proj" --argjson n "$BATCH" --arg t "$RUN_TAG" --arg m "$MODEL" --arg b "$BANK" --argjson r "$([ "$REANNOTATE" = "true" ] && echo true || echo false)" --argjson c "$([ "$CODE_ONLY" = "true" ] && echo true || echo false)" '{project:$p, limit:$n, note_ids:., run_tag:$t} + (if $r then {reannotate:true} else {} end) + (if $m != "" then {model:$m} else {} end) + (if $c then {code_only:true} else {} end) + (if $b != "primary" then {bank:$b} else {} end)')
               echo "── $proj · 第 $((i/BATCH+1)) 批 (${#chunk[@]} 篇) · 已发 $sent/$total ──"
               ok=false; code=000
               for attempt in 1 2 3 4 5 6; do

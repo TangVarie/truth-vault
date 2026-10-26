@@ -5,7 +5,8 @@
 搬到 Railway 后由 GitHub daily-sync 调本服务端点触发(保留 GitHub 的失败→邮件告警)。
 
   POST /annotate-essence  body={project, limit?, dry_run?, reannotate?}
-  POST /annotate-features body={project, limit?, dry_run?, reannotate?, run_tag?, single?, code_only?, model?, note_ids?, done_by?}
+  POST /annotate-features body={project, limit?, dry_run?, reannotate?, run_tag?, single?, code_only?, model?, note_ids?, done_by?, bank?}
+                          bank (D-128) 只收 feature_bank.BANKS 的键 (primary / reader); 响应永远回显 bank
   POST /curate            body={project?, limit?, dry_run?, recurate?: "stale"|"all"}
   GET  /health            → {ok, service, auth{ok,required,mode}, config{...}, running[]}
 
@@ -298,6 +299,9 @@ _DONE_BY_RE = re.compile(r"^[a-z]+:(?:[A-Za-z0-9.:/-][A-Za-z0-9_.:/-]{0,78}|[A-Z
 _DONE_BY_MAX = 8
 _NOTE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")       # 形如 NUC_phase1_recXXXX; 它会拼进 argv
 _NOTE_IDS_MAX = 200                                       # Railway 边缘 ~5min: 一次其实只跑得完 2–4 篇
+# 题库键 (D-128) —— 与 scripts/feature_bank.py 的 BANKS 的键逐字相同 (CI 比对)。只收键, 不收路径:
+# 走 HTTP 的永远是闭集里的一个名字, worker 自己部署里的 yaml 才是题面。
+_BANKS = ("primary", "reader")
 
 
 @app.post("/annotate-features")
@@ -311,6 +315,11 @@ async def annotate_features(
     run_tag / single / model 是闸一用的旋钮 (每题单问 vs 分组、换模型对比); 默认
     primary + 分组 + FEATURE_MODEL。done_by 是续跑判据 (D-085, 默认 llm:%)。这些值都只在
     闭集/正则内放行 —— 它们会拼进 subprocess 参数。
+
+    bank (D-128): 题库键, 闭集 _BANKS; 不带 = primary, 参数与 D-128 之前一样 (不加 --bank)。非 primary 的
+    在起子进程之前就 400: run_tag 没给或是 primary (主键不含 bank_sha256, 会盖掉主题库的行)、code_only、
+    没给 note_ids、没给 model、带 done_by。fqr- 前缀由 pass 按题库的 run_tag_prefix 再查一次 (退出 2)。
+    响应永远带 bank (没带就是 "primary"): 调用方看不到这个字段 = 旧版 worker, 它会吞掉 bank 按主题库跑。
     """
     _check_auth(x_worker_key)
     body = await _json_body(request)
@@ -360,9 +369,20 @@ async def annotate_features(
                 detail=f"note_ids must be a non-empty list (≤{_NOTE_IDS_MAX}) of ids matching "
                        "[A-Za-z0-9_-]{1,80}")
         args += ["--note-ids", ",".join(note_ids)]
+    bank = body.get("bank")
+    if bank is not None:
+        if not isinstance(bank, str) or bank not in _BANKS:
+            raise HTTPException(status_code=400, detail=f"bank must be one of {list(_BANKS)}")
+        if bank != "primary":
+            why = _secondary_bank_refusal(body, run_tag, model, note_ids, done_by)
+            if why:
+                raise HTTPException(status_code=400, detail=f"bank={bank}: {why}")
+        args += ["--bank", bank]
     res = await run_in_threadpool(_run, "annotate_feature_pass.py", args)
     res["action"] = "annotate-features"
     res["project"] = project
+    # 永远回显 (D-128): 旧版 worker 没有这个字段 —— 它会把 bank 当没见过的键吞掉、按主题库跑 (≈3× 钱、落错题)。
+    res["bank"] = bank if bank is not None else "primary"
     if note_ids is not None:
         # 调用方靠这个字段确认 worker 已经是认识 note_ids 的版本 —— 旧版本会把这个字段
         # 当没见过的键吞掉、按 project+limit 去跑别的笔记, 悄悄烧钱。
@@ -372,6 +392,21 @@ async def annotate_features(
         # 调用方先带 dry_run 探一次, 响应里没有这个字段就别切。
         res["done_by"] = list(done_by)
     return res
+
+
+def _secondary_bank_refusal(body: dict, run_tag, model, note_ids, done_by) -> str | None:
+    """副题库请求在起子进程之前要拒的组合 (与 annotate_feature_pass._secondary_refusal 同一套); None = 可以。"""
+    if not run_tag or run_tag == "primary":
+        return "run_tag is required and must not be primary (note_feature_answers' key has no bank_sha256)"
+    if body.get("code_only"):
+        return "code_only belongs to the primary bank"
+    if not note_ids:
+        return "note_ids is required"
+    if not model:
+        return "model is required (resume matches the exact llm:<model> extractor)"
+    if done_by is not None:
+        return "done_by is a primary-bank resume rule"
+    return None
 
 
 @app.post("/curate")

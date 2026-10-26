@@ -21,6 +21,8 @@ Usage:
     python annotate_feature_pass.py NUC_phase1 --run-tag gate1-a --single --note-ids ids.txt
                                                                         # 闸一: 每题单问, 指定名单
     python annotate_feature_pass.py NUC_phase1 --code-only               # 只跑代码特征
+    python annotate_feature_pass.py NUC_phase1 --bank reader --run-tag fqr-g1-sonnet55-a \
+        --model claude-sonnet-5-5 --note-ids ids.txt                     # 副题库 (D-128), 见文末 --bank
 
 Environment:
     SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY
@@ -49,6 +51,18 @@ Resumability:
     ⚠️ 一篇里**任何一组** LLM 调用系统性失败（api_error）→ 整篇一行不落, 下轮重跑。
     落一半会让标记题那一行先落库, 于是下轮 resume 跳过这篇, 失败的那几组【永远】补不回来
     (codex review on #141)。代价是重跑那几组已经成功的调用, 上限 6 次, 换的是不留永久空洞。
+
+--bank (D-128): 只收 feature_bank.BANKS 的【键】(primary / reader), 不收路径。默认 primary = 冻结的
+    fq-v0.1, 走的还是上面那条路 (fb.load_bank()、8 个代码特征 + 3 道占位题、写 note_features、续跑看
+    has_specific_time), 参数、行、续跑查询与 D-128 之前逐字节一致。别的键是副题库, 拒跑 (退出 2) 的情况:
+      · run_tag 不合 fb.check_run_tag (primary / 不带 fqr- 前缀): note_feature_answers 的主键不含
+        bank_sha256, 用 primary 会按同一主键盖掉主题库的行;
+      · --code-only (代码题只属于主题库) / 没给 --note-ids (副题库只跑点名的篇) / 没显式给 --model
+        (续跑按精确的 llm:<model> 判) / --done-by (那是主题库夜跑的判据, 副题库不收);
+    副题库跑的时候: fb.load_bank_pair (两道校验) 读题库; 代码特征只算它自己声明的 (last_para_has_qmark),
+    主题库那 8 个一行都不写; 不写 note_features (那张表一篇一行、没有 run_tag, 写了会把
+    extractor_version 改成副题库的); 续跑看本库的 done_marker (reader_ask_form) + 精确 extractor
+    + bank_sha256 = 本库 sha, 主题库的 has_specific_time 行不算, 反过来也一样。
 """
 
 from __future__ import annotations
@@ -108,7 +122,8 @@ def fetch_notes(sb, project_id: str) -> list[dict]:
 
 def fetch_done_ids(sb, project_id: str, *, run_tag: str = "primary",
                    code_only: bool = False, extractor: Optional[str] = None,
-                   done_by: Optional[tuple[str, ...]] = None) -> set[str]:
+                   done_by: Optional[tuple[str, ...]] = None,
+                   marker: str = DONE_MARKER_QUESTION, bank_sha: Optional[str] = None) -> set[str]:
     """这个项目里【已经跑过】的 note_id（判据见模块 docstring 的 Resumability）。
 
     extractor 给了就精确匹配（闸一按模型各自续跑）；done_by 给了就按它（D-085: 每项精确值或
@@ -116,9 +131,14 @@ def fetch_done_ids(sb, project_id: str, *, run_tag: str = "primary",
     code-only → `code:v1`，模型跑 → DEFAULT_DONE_BY 即前缀 `llm:%`（GitHub 侧的计数脚本与 Railway 侧
     的 worker 可能配了不同的 FEATURE_MODEL，按前缀两边才对得上，codex review on #141）。
     extractor 与 done_by 同时给 → ValueError（两个判据谁说了算说不清, 不猜）。
+
+    marker / bank_sha (D-128, 只有副题库传): 标记题换成本库的 done_marker, 再加一条 bank_sha256 = 本库 sha。
+    不传就是原来那条查询, 一个过滤条件都不多 (主题库、计数脚本都不传)。code-only 的标记题固定, 不收 marker。
     """
     if extractor and done_by:
         raise ValueError("extractor 与 done_by 只能给一个")
+    if code_only and (marker != DONE_MARKER_QUESTION or bank_sha):
+        raise ValueError("--code-only 的标记题固定是 code:v1 的 body_len_bucket, 不收 marker / bank_sha")
     if code_only:
         if done_by:
             raise ValueError("--code-only 的判据固定是 code:v1, 不收 done_by")
@@ -134,11 +154,13 @@ def fetch_done_ids(sb, project_id: str, *, run_tag: str = "primary",
             sb.schema("truth_vault").table("note_feature_answers")
             .select("subject_id")
             .eq("subject_type", "note")
-            .eq("question_id", CODE_DONE_MARKER_QUESTION if code_only else DONE_MARKER_QUESTION)
+            .eq("question_id", CODE_DONE_MARKER_QUESTION if code_only else marker)
             .eq("run_tag", run_tag)
             .like("subject_id", f"{project_id}_%")
         )
         q = q.like("extractor", pat) if pat.endswith("%") else q.eq("extractor", pat)
+        if bank_sha:
+            q = q.eq("bank_sha256", bank_sha)
         done |= {r["subject_id"] for r in fetch_all_pages(q, order_by="subject_id")}
     return done
 
@@ -173,11 +195,24 @@ def _row(bank: dict, note_id: str, qid: str, version: int, extractor: str, run_t
     }
 
 
+def is_secondary(bank: dict) -> bool:
+    """副题库 (D-128: role: secondary)。主题库没写 role。"""
+    return bank.get("role") == fb.ROLE_SECONDARY
+
+
+def declared_code_ids(bank: dict) -> Optional[list[str]]:
+    """fb.code_features 的 only=: 主题库 → None (原样那 8 个, 与 D-128 之前逐字节一致);
+    副题库 → 只算它自己声明的 (last_para_has_qmark), 主题库那 8 个一行都不写 (写了会按同一主键盖掉主题库的行)。"""
+    if not is_secondary(bank):
+        return None
+    return [c["id"] for c in bank.get("code_features") or []]
+
+
 def code_rows(bank: dict, note: dict, spans: dict, brand_words: list[str], run_tag: str) -> list[dict]:
-    """8 个代码特征 + 3 道占位题, extractor 固定 code:v1。"""
+    """8 个代码特征 + 3 道占位题, extractor 固定 code:v1。副题库只出它自己声明的代码特征 (declared_code_ids)。"""
     rows = []
     versions = {c["id"]: int(c.get("version") or 1) for c in bank.get("code_features") or []}
-    for qid, (ans, reason) in fb.code_features(spans, brand_words).items():
+    for qid, (ans, reason) in fb.code_features(spans, brand_words, only=declared_code_ids(bank)).items():
         rows.append(_row(bank, note["note_id"], qid, versions.get(qid, 1), fb.CODE_EXTRACTOR, run_tag,
                          ans, None, reason))
     for qid, ans in fb.placebo_answers(bank, note["note_id"]).items():
@@ -382,6 +417,19 @@ def _exit_code_for_stats(stats: dict) -> int:
     return 0
 
 
+def _secondary_refusal(args) -> Optional[str]:
+    """副题库 (--bank 不是 primary) 不收的参数组合; None = 可以。run_tag 前缀要读了题库才知道, 在 main 里查。"""
+    if args.code_only:
+        return "--code-only 只属于主题库 (代码题的行按同一主键会盖掉主题库的)"
+    if not args.note_ids:
+        return "副题库只跑点名的篇, 要给 --note-ids"
+    if not args.model:
+        return "要显式给 --model (续跑按精确的 llm:<model> 判, 不跟着 worker 的 FEATURE_MODEL 走)"
+    if args.done_by:
+        return "--done-by 是主题库夜跑的续跑判据, 副题库不收 (续跑看本库 done_marker + 精确 extractor + 本库 sha)"
+    return None
+
+
 def _read_note_ids(spec: str) -> set[str]:
     p = Path(spec)
     try:
@@ -412,11 +460,20 @@ def main(argv: Optional[list[str]] = None) -> int:
                          "如 jev:1.13.0 或 llm:%%,jev:%%; 给了就取代默认的 llm:%% / --model 精确值")
     ap.add_argument("--qps", type=float, default=2.0)
     ap.add_argument("--failed-queue", default="failed_feature_queue.jsonl")
+    ap.add_argument("--bank", choices=tuple(fb.BANKS), default="primary",
+                    help="题库键 (D-128, feature_bank.BANKS): primary = 冻结的 fq-v0.1 (默认, 夜跑); "
+                         "reader = 副题库, 只许 fqr-* run_tag + --note-ids + 显式 --model")
     args = ap.parse_args(argv)
 
     if not _RUN_TAG_RE.match(args.run_tag):
         logger.error("run_tag 只能是字母数字 _ . -, ≤40 字: %r", args.run_tag)
         return 2
+    secondary = args.bank != "primary"
+    if secondary:
+        refusal = _secondary_refusal(args)
+        if refusal:
+            logger.error("bank=%s 拒跑 (D-128): %s", args.bank, refusal)
+            return 2
     model = args.model or os.environ.get("FEATURE_MODEL") or os.environ.get("ESSENCE_MODEL", "claude-sonnet-5-5")
     if _EXTRACTOR_TAG_RE.match(model):
         # 本 pass 的 extractor 是 f"llm:{model}"。传 jev:1.13.0 会拼出 llm:jev:1.13.0 —— 与 judge 写的
@@ -440,11 +497,22 @@ def main(argv: Optional[list[str]] = None) -> int:
         logger.error("ANTHROPIC_API_KEY must be set (or use --dry-run / --code-only)")
         return 2
 
-    bank = fb.load_bank()
-    errs = fb.validate_bank(bank)
-    if errs:
-        logger.error("问题库结构不合法, 拒绝开跑: %s", errs)
-        return 2
+    if secondary:
+        try:
+            bank, _primary = fb.load_bank_pair(fb.BANKS[args.bank])   # 自己的结构 + 对主题库的跨库校验
+        except ValueError as exc:
+            logger.error("问题库结构不合法, 拒绝开跑: %s", exc)
+            return 2
+        tag_err = fb.check_run_tag(bank, args.run_tag)
+        if tag_err:
+            logger.error("bank=%s 拒跑 (D-128): %s", args.bank, tag_err)
+            return 2
+    else:
+        bank = fb.load_bank()
+        errs = fb.validate_bank(bank)
+        if errs:
+            logger.error("问题库结构不合法, 拒绝开跑: %s", errs)
+            return 2
     extractor = f"llm:{model}"
     mapping = load_mapping(args.project_id)
     mode = mapping.get("title_extraction") or "none"
@@ -457,7 +525,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         keep = _read_note_ids(args.note_ids)
         notes = [n for n in notes if n["note_id"] in keep]
     if not args.reannotate:
-        if done_by:
+        if secondary:
+            # 副题库: 本库的标记题 + 精确 extractor + 本库 sha。主题库的 has_specific_time 行不会把这篇算成跑过,
+            # 本库的行也不会被主题库的续跑认走 (主题库的标记题不在本库里, validate_secondary 钉着)。
+            done = fetch_done_ids(sb, args.project_id, run_tag=args.run_tag, extractor=extractor,
+                                  marker=fb.done_marker(bank), bank_sha=bank["_sha256"])
+        elif done_by:
             logger.info("续跑判据 done_by=%s (D-085; 不带时是 %s)", ",".join(done_by), ",".join(DEFAULT_DONE_BY))
             done = fetch_done_ids(sb, args.project_id, run_tag=args.run_tag, done_by=done_by)
         else:
@@ -506,7 +579,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         try:
             # ⚠️ 写序: 数值原值在前, 带标记题的答案在后。反过来的话 note_features 那一写
             # 失败时标记题已经落库 → 下轮 resume 跳过这篇, 原值永远缺 (codex review on #141)。
-            write_raw_counts(sb, note["note_id"], res["raw_counts"], bank["bank_version"], dry_run=False)
+            # 副题库不写 note_features (D-128): 一篇一行、主键没有 run_tag, 写了会把 extractor_version 改成副题库的。
+            if not secondary:
+                write_raw_counts(sb, note["note_id"], res["raw_counts"], bank["bank_version"], dry_run=False)
             write_answers(sb, res["rows"], dry_run=False)
         except Exception as exc:  # noqa: BLE001
             logger.warning("write rejected %s: %s", note["note_id"], exc)
