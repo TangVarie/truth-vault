@@ -1,0 +1,169 @@
+# ════════════════════════════════════════════════════════════════════
+# BJS_phase2 · 百健士成人藻油 —— 接表草稿(A 家族, 2026-10-26)
+# ════════════════════════════════════════════════════════════════════
+# 写作台项目「百健士成人藻油」(10-21 建)的发布表(I-22)。owner 10-26 给的链接: 和 BJS_phase1
+# 同一个 base(XkANwc24CidwrdkauRHcBQELnrh), 新表 tbloWC6k4aDdLwx0 / view vewof8k1Sw。
+# 起草方法同 XIWU_phase2(W-25): 同一个 base、同一拨运营, 先照 BJS_phase1 的列结构起草,
+# 再用 Preflight(只读飞书)对真表校正列名 / 方向 / tier 取值; 首次入库前不定方向口径和人群。
+# 10-26 运营把 BJS_phase1 的 79 行挪到这张表(TV 里旧行: 53 篇有发布时间、在 10-07～10-25, 其中 52 篇
+# 有链接; 另 26 行没有发布时间、链接和 tier, 是还没发的稿); owner 10-26 确认 79 篇全是成人藻油。
+# 65 篇在写作台「百健士-藻油」(efe112d3)有对照: 40 篇是成人项目建之前在那里写的稿, 25 篇是 tv-sync
+# 补录进去的副本(写作台外写的)。BJS_phase1 留下的 182 行(最晚发布 09-15)是儿童藻油。
+# Preflight 10-26(run 40302429088, 只读): 读 76 行、有正文 70 行、空占位 6 行; 下面按它校正过。
+# 新表有正文的只有 70 行, 旧的 79 行至少 9 行在这里配不上; 旧行先配对、再按配对结果撤, 见 OPEN-ITEMS I-22。
+# ════════════════════════════════════════════════════════════════════
+
+version: 1.0
+
+project_id: BJS_phase2
+brand: 百健士
+product: 成人藻油
+
+brand_aliases:
+  - 百健士澳洲藻油
+category: 保健品
+platform: xiaohongshu
+schema_family: A                 # Preflight 10-26: 有「是否巡查」「巡查状态」「最近检查时间」「已确认存活」→ A 家族指纹(BJS_phase1 是 B)
+start_date: auto_from_publish_time_min
+end_date: auto_from_publish_time_max
+
+# ── 标题怎么拿 (docs/28 §3 第 4 条, D-065 续; 09-19 实查 17 张表) ──
+# column = notes.title 列 / markers = 从 raw_content 的标记切 / none = 没有标题
+title_extraction: markers          # 文案里带标记, 解析器同时认「【标题】…【正文】…」和「标题：…(换行)正文：…」; 切不出来的单条标题类题目记 NULL
+
+field_mapping:
+  实时数据.评论数: comments_count   # D-062: 判爆的唯一依据(实时总评论数, 含铺评), 巡查机器人抓的
+  素人编号: account_id
+  笔记内容: raw_content
+  发布时间: publish_time
+  反馈链接: publish_url
+  方向: _direction_raw
+  流量状态: _status_raw
+  笔记状态: _note_status_raw
+  随贴评论: _comment_text
+  蓝词字段: hit_blue_keywords
+  # Preflight 10-26(run 40302429088)校正: 新表有独立的数值列(同 XIWU_phase2 / TUGE: 有数值列就用数值列,
+  # 「数据整理」只留 raw_extra; BJS_phase1 没有这三列才走 metrics_from_kv_text)。
+  曝光量: impressions               # 40 行有值
+  阅读量: reads                     # 41 行
+  互动数: interactions              # 47 行; 列名同 XIWU_phase2 / HATHERINE
+  观众分析: _audience_raw           # 52 行 → actual_audience_data(确定性解析, 同 XIWU_phase2 / SPX / TUGE)
+
+# 方向口径【待首次入库后按真实文案定】(同 XIWU_phase2 的做法)。先照 BJS_phase1 的两个方向值起草,
+# 让 preflight 能核方向是否全部命中; 人群先写「通用」, 不沿用儿童项目的「宝妈」。
+# user_pain_point 先不写(同 XIWU_phase2 草稿 a62c5d3): 它在 sync 的 UPSERT_PROTECTED_COLS 里, 占位句一旦随首次
+# 入库写进 notes, 映射 PR 2 改名或去掉这个键都清不掉(I-17 那条路)。PR 2 按真实文案补真值。
+direction_decomposition:
+  "好物分享-产品贴":
+    content_format: 场景植入
+    target_audience: ["通用"]
+
+  "提问贴":
+    content_format: 情感叙事
+    target_audience: ["通用"]
+
+tier_extraction:
+  source: 状态字段
+  rules:
+    - match_contains: ["大爆"]
+      tier: 大爆
+    - match_contains: ["爆帖预备", "爆贴预备"]   # 两种拼写都认(同 XIWU_phase2): 只认「贴」的话「爆帖预备」会落到下面的「爆帖」判成 爆
+      tier: 预备
+    # ⚠️ 「伪爆帖」必须排在「爆帖」【之前】—— 取首个命中, 而「伪爆帖500」含「爆帖」。
+    # 起草稿把这条放在最后, 于是运营手标的假数据被判成 爆(2026-08-28 修; 同 D-045,
+    # scripts/_common.py 的 _reject_shadowed_tier_rules 现在会拦住这种列序)。
+    - match_contains: ["伪爆帖", "伪爆贴", "伪20评"]
+      tier: 数据异常
+    - match_contains: ["爆贴", "爆帖"]
+      tier: 爆
+    - match_contains: ["蓝词"]
+      tier: 参考
+    - match_contains: ["风控"]
+      tier: 风控
+    - match_contains: ["无水花"]
+      tier: 趴
+    - match_contains: ["评估中"]
+      tier: 评估中
+    - match_contains: ["观察中"]      # 冷启动窗口 → 未知(同 XIWU_phase2 / HATHERINE / TUGE); Preflight 10-26: 观察中×9
+      tier: 未知
+    - default: null
+
+# tier_thresholds 已废(D-062): 判爆只看评论数。
+
+compliance:
+  base_template: 保健品
+  custom_red_flags:
+    - "保健品禁疾病治疗/预防宣称;DHA功效需可证实、禁绝对化(最/第一/100%)"
+    - "禁医疗化表述(治疗/修复等需谨慎)"
+  # 蓝词留空: 同 BJS_phase1(那一列的选项串了别的品牌、没有可信来源), 等运营在新表里填值再定。
+  blue_keyword_strategy:
+    primary: []
+    secondary: []
+    avoid: []
+
+project_specific_fields_to_raw_extra:
+  # ── 投流(2026-09-17 运营对齐 Q7, 见 data-analysis/ops-answers-2026-09-17.md)──
+  # 运营定的三个人工列, 机器不得覆盖。先按 allowlist 收进 raw_extra 留痕;
+  # 等飞书里真建出来、「维护情况」的多选取值定了, 再升成 typed 列(D-062)。
+  # 现在声明是为了它们一出现就有名有姓, 不落进 _undeclared 天天告警。
+  # 2026-09-22 运营回填件给了逐值语义, 注释按它重写(A7)。旧注释写「多选: 准备/已做投流」
+  # 是【错的】—— 这一列至少承载三种语义, 投流只是其中一种。
+  - 维护情况                # 多选·多义: ① 铺评完成度 关注=已做20条 / 重点关注⭐️=已做50条 /
+                            #            ✅=【需要】做50条(待办, 不算已铺)
+                            #         ② 投流   日期+🍟(如 9/15🍟, 日期即投流日) / 已投流，等回收数据
+                            #         ③ 控评置顶 控评&置顶✅(两个动作都做完) / 已评待置顶
+                            #    ⚠️ 同一行会同时出现多类(BJS 6 行「控评&置顶✅」100% 同时带「关注+✅」)。
+                            #    ⚠️ 留空 = 没有做维护(运营 2026-09-22 确认), 所以 paid_promoted 可判 false。
+                            #    引擎按取值分路, 见 sync 的 _CM_MV_* / _PAID_* 常量。
+  - 维护时间                # 日期粒度。⚠️ 实测生产 9 行全是控评/维护动作的时间, 与投流标记零重叠 ——
+                            #    投流日期目前写在「维护情况」的 9/15🍟 值里, 不在这一列。
+  - 维护效果                # 数字: 投流【前后的曝光量差额】(运营 2026-09-22; 2026-09-17 原话是
+                            #    "曝光量增长情况", 两次都是增量。《字段定义》docx 写"投流后12h的曝光量"
+                            #    是孤证)。⚠️ 生产全库 0 行, 连 key 都不存在。
+                            #    ⚠️ 这三列【永不】映 impressions/reads/interactions/comments_count。
+  - 起量时间
+  - 数据整理                        # 运营录的键值文本「曝光量：X；阅读量：Y；互动量：Z」(D-051)。本表另有独立数值列, 指标走数值列, 这列只留痕(同 TUGE / XIWU_phase2)
+  - 笔记配图
+  - 随贴评论配图
+  - 相关截图
+  # Preflight 10-26: 下面这些是巡查机器人那一套(同 XIWU_phase2 01b1988), 全部留痕不做二次处理
+  - 评论状态
+  - 是否巡查
+  - 巡查状态
+  - 已确认存活
+  - 最近检查时间
+  - 下次检查时间
+  - 平台
+  - 排队刷新
+  - 置顶状态
+  - 评论区快照
+  - 诊断信息
+  - 连续失败次数
+  - 上次评论数
+  - 评论关键词
+  - 负面状态
+  - 负面评论快照
+  - 负面词
+  - 整理时互动数
+  - 整理时评论数
+  - 整理状态
+  - 是否截图
+  - 作品ID                          # 58 行; 别的表也没声明过(I-24), 先留痕
+  - 蓝词来源                        # 9 行; 同上
+
+onboarding_meta:
+  onboarded_at: 2026-10-26
+  onboarded_by: Claude 照 BJS_phase1 列结构起草(I-22)
+  strategy_lead: [待填]
+  notes: |
+    DRAFT — 10-26 Preflight(run 40302429088)校正过列名 / tier / 未声明列; owner 10-26 确认新表只放成人藻油。
+    下一步: 显式 on_demand 首次入库(先 dry_run, 勾 skip_essence), 和 BJS_phase1 那 79 行逐篇配对;
+    方向口径 / 人群 / 合规按真实文案定, 和翻 daily 一个 PR(I-22)。
+    写作台映射: 百健士成人藻油(89d3e7aa)→ BJS_phase2, 首次入库核过之后在 aw tv_project_map 加(I-22)。
+
+sync_config:
+  source_type: feishu_api
+  feishu_app_token: XkANwc24CidwrdkauRHcBQELnrh   # 表标识(非密钥), 和 BJS_phase1 同一个 base, owner 10-26 给的链接
+  feishu_table_id: tbloWC6k4aDdLwx0
+  feishu_view_id: null
+  sync_interval: on_demand          # 新表一律先 on_demand(PR#67): 显式跑通、核过再翻 daily
