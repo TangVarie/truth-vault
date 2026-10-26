@@ -156,12 +156,17 @@ def check_committed_manifest() -> None:
 
 
 # §3 裁决表 (纯函数) ────────────────────────────────────────────────────────────────
+FORMULA_TITLE = "=SUM(1,1)早饭吃什么"
+
+
 def _synthetic(td: pathlib.Path):
     import build_gate1_review_sheet as br
     notes = [f"NUC_phase1_recRev{i:03d}" for i in range(30)]
     texts = []
     for i, n in enumerate(notes):
         raw = f"【标题】早饭吃什么第{i}天\n【正文】这周每天七点起来做早饭，燕麦配鸡蛋。{SENTINEL}\n\n你们早饭一般吃什么？"
+        if i == 0:                                # 以 = 开头的原文: 表里要按字面存, 不能变成公式
+            raw = f"【标题】{FORMULA_TITLE}\n【正文】=1+1 这周每天七点起来做早饭。{SENTINEL}\n\n=A1 你们早饭一般吃什么？"
         texts.append({"note_id": n, "project_id": "NUC_phase1", "title": None, "raw_content": raw})
     man = td / "rev_manifest.csv"
     with open(man, "w", encoding="utf-8", newline="") as f:
@@ -312,6 +317,11 @@ def check_xlsx_roundtrip(td: pathlib.Path) -> None:
     dv = ws.data_validations.dataValidation
     assert dv and "拿不准" in dv[0].formula1 and "挑一个" in dv[0].formula1
     assert ws.column_dimensions["J"].hidden
+    # 以 = 开头的标题 / 正文 / 结尾那段按字面存 (data_type s), 不是公式 (codex review on #238)
+    r0 = next(r for r in range(2, ws.max_row + 1) if ws.cell(row=r, column=10).value == "NUC_phase1_recRev000:reader_ask_form")
+    for c, want in ((2, FORMULA_TITLE), (3, "=1+1 "), (4, "=A1 ")):
+        cell = ws.cell(row=r0, column=c)
+        assert cell.data_type == "s" and str(cell.value).startswith(want), (c, cell.data_type, cell.value)
     # owner 填: 题页选「求推荐」/「否」, 第一格拿不准; 抽查页照判读的答案
     for name, val in ((SHORT["reader_ask_form"], "求推荐"), (SHORT["invites_sharing"], "否")):
         w = wb[name]

@@ -196,6 +196,8 @@ def build_workbook(plan: dict, bank: dict, out: Path) -> None:
     def text_cells(ws, ri, vals):
         for c, v in enumerate(vals, 1):
             cell = ws.cell(row=ri, column=c, value=v)
+            if isinstance(v, str):
+                cell.data_type = "s"        # 以 = 开头的原文按字面存, 不让 Excel 当公式算 (codex review on #238)
             cell.font, cell.alignment, cell.border = f_body, wrap, box
 
     for qid, rows in plan["pages"].items():
