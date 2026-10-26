@@ -19,6 +19,12 @@ check_orchestration() 是原块逐字搬过来的 (只把顶层 import 提到文
     (否则拼出 llm:jev:1.13.0, 与 judge 的 jev:1.13.0 永远对不上)。带 :0 尾巴的真模型名照常放行。
   · worker 与 pass 的 _DONE_BY_RE 逐字相同; worker 的 _MODEL_RE 拒 extractor 标签; --worker 时真打端点:
     非法 model / done_by → 400 且不起子进程, 合法 done_by 原样拼进 --done-by 并在响应里回显。
+  · 副题库 (D-128, --bank reader): 3 行/篇 (2 道模型题 + last_para_has_qmark)、2 次调用、行上是 fqr-* run_tag 和
+    副题库 sha、没有主题库的代码题、不写 note_features; 续跑看 reader_ask_form + 精确 extractor + 副题库 sha,
+    假账本上两边的行互相不算「跑过」; run_tag=primary / 不带 fqr- / --code-only / 没 --note-ids / 没 --model /
+    --done-by → 退出 2 不调模型不写库; 主题库那条路 (31 行、8 个代码题、写 note_features、续跑查询) 不变。
+    backfill-features.yml 两步真用 bash 跑: 输入校验的拒绝、探针要 worker 回显 bank 且日志是该库版本 (假 curl),
+    主题库的请求体不带 bank。worker 的 _BANKS 与 fb.BANKS 的键一致; --worker 时 bank 闭集、副题库的 400、回显。
 挡不住什么:
   · 真库上 PostgREST 的 like / eq 语义 —— 这里的假库按 SQL LIKE 自己实现了一遍 (% 任意串, _ 单字)。
   · 调用方 (features-sync / backfill-features) 有没有真的给 worker 和计数脚本传同一个 done_by ——
@@ -479,6 +485,361 @@ def check_worker_endpoint() -> None:
     print("  ✓ worker /annotate-features: extractor 标签当 model → 400 不起子进程; done_by 原样拼进 --done-by 并回显;"
           " 非法 done_by / code_only 带 done_by → 400; 不带 done_by 时参数与响应都和以前一样")
 
+# ─────────────────────────────────────────────────────────────────────────
+# D-128 · 副题库 (--bank reader): 行、续跑、拒跑、workflow、worker
+# ─────────────────────────────────────────────────────────────────────────
+
+READER = fb.load_bank(fb.BANKS["reader"])
+PRIMARY_SHA = fb.load_bank()["_sha256"]
+R_RAW = "【标题】戒烟第几天最难熬？\n【正文】上周三凌晨两点在公司茶水间饿醒。我妈：你身上什么味儿？嗓子像被砂纸磨过。\n你们戒烟第几天了？#戒烟#"
+R_TAG = "fqr-g1-sonnet55-a"
+R_MODEL = "claude-sonnet-5-5"
+
+
+def _reader_llm(calls: list):
+    """副题库的假模型: reader_ask_form 答「说自己的」、invites_sharing 答「是」, 证据都抄结尾那一问。"""
+    def llm(system, user, model):
+        calls.append(model)
+        ids = [ln.split(" · ")[0].split(". ", 1)[1] for ln in system.splitlines() if " · 看【" in ln]
+        ans = {"reader_ask_form": "说自己的", "invites_sharing": "是"}
+        return json.dumps({"answers": [{"id": q, "answer": ans[q], "evidence": "你们戒烟第几天了？"} for q in ids]},
+                          ensure_ascii=False)
+    return llm
+
+
+def check_reader_rows() -> None:
+    note = {"note_id": "R_1", "project_id": "R", "title": None, "raw_content": R_RAW, "target_blue_keywords": ["戒烟"],
+            "projects": {"brand": "某牌", "product": "尼古丁贴"}}
+    mapping = {"project_id": "R", "field_mapping": {}, "title_extraction": "markers"}
+    calls: list = []
+    res = afp.annotate_note(READER, note, mapping, model=R_MODEL, extractor="llm:" + R_MODEL, run_tag=R_TAG,
+                            single=False, code_only=False, dry_run=False, llm=_reader_llm(calls))
+    rows = res["rows"]
+    by = {r["question_id"]: r for r in rows}
+    assert len(rows) == 3 and len(calls) == 2, (len(rows), len(calls))      # 2 组各一次, 没有重问
+    assert set(by) == {"reader_ask_form", "invites_sharing", "last_para_has_qmark"}, sorted(by)
+    assert not set(by) & set(fb.CODE_FEATURE_IDS_V1), "副题库写了主题库的代码题 → 同主键盖掉主题库的行"
+    assert by["reader_ask_form"]["answer"] == "说自己的" and by["invites_sharing"]["answer"] == "是", by
+    assert by["invites_sharing"]["question_version"] == 2 and by["last_para_has_qmark"]["answer"] == "是"
+    assert by["last_para_has_qmark"]["extractor"] == fb.CODE_EXTRACTOR and by["reader_ask_form"]["extractor"] == "llm:" + R_MODEL
+    assert {r["run_tag"] for r in rows} == {R_TAG}
+    assert {(r["bank_version"], r["bank_sha256"]) for r in rows} == {("fq-v0.2-cand-reader", READER["_sha256"])}
+    assert READER["_sha256"] != PRIMARY_SHA
+    # 代码题那条路: 主题库原样 8 + 3 (only=None), 副题库只出它声明的
+    prim = fb.load_bank()
+    assert afp.declared_code_ids(prim) is None and afp.declared_code_ids(READER) == ["last_para_has_qmark"]
+    sp = fb.build_spans(R_RAW, mode="markers")
+    pc = afp.code_rows(prim, note, sp, [], "primary")
+    assert [r["question_id"] for r in pc] == list(fb.CODE_FEATURE_IDS_V1) + [p["id"] for p in prim["placebo"]], pc
+    assert [r["question_id"] for r in afp.code_rows(READER, note, sp, [], R_TAG)] == ["last_para_has_qmark"]
+    print("  ✓ 副题库编排: 3 行/篇 (2 模型题 + last_para_has_qmark), 2 次调用, fqr-* + 副题库 sha, 没有主题库代码题; "
+          "主题库 code_rows 仍是 8 + 3")
+
+
+def _reader_ledger() -> list[dict]:
+    """假账本 (项目 R): R_1 只有主题库的标记行; R_2 副题库跑过 (Sonnet / 本 sha); R_3 副题库行但是别的 sha;
+    R_4 副题库行但是 Haiku; R_5 没人跑过。"""
+    def row(sid, qid, ext, tag, sha):
+        return {"subject_type": "note", "subject_id": sid, "question_id": qid, "run_tag": tag, "extractor": ext,
+                "bank_sha256": sha}
+    rs = READER["_sha256"]
+    return [row("R_1", afp.DONE_MARKER_QUESTION, "llm:" + R_MODEL, "primary", PRIMARY_SHA),
+            row("R_1", afp.DONE_MARKER_QUESTION, "llm:" + R_MODEL, R_TAG, PRIMARY_SHA),
+            row("R_2", "reader_ask_form", "llm:" + R_MODEL, R_TAG, rs),
+            row("R_3", "reader_ask_form", "llm:" + R_MODEL, R_TAG, "0" * 64),
+            row("R_4", "reader_ask_form", "llm:claude-haiku-5-5", R_TAG, rs)]
+
+
+def check_reader_main() -> None:
+    import logging
+    rids = ["R_1", "R_2", "R_3", "R_4", "R_5"]
+    mapping = {"project_id": "R", "field_mapping": {}, "title_extraction": "markers"}
+    notes = [{"note_id": n, "project_id": "R", "title": None, "raw_content": R_RAW, "target_blue_keywords": ["戒烟"],
+              "projects": {"brand": "某牌", "product": "尼古丁贴"}} for n in rids]
+    calls: list = []
+    written: list = []
+    raw_writes: list = []
+    fetched: list = []
+    box: dict = {}
+    saved = {k: getattr(afp, k) for k in ("get_supabase_client", "load_mapping", "fetch_notes", "fetch_done_ids",
+                                          "fetch_all_pages", "write_answers", "write_raw_counts", "_llm")}
+    env_saved = {k: os.environ.get(k) for k in ("ANTHROPIC_API_KEY", "FEATURE_MODEL", "ESSENCE_MODEL")}
+    logs: list = []
+
+    class _H(logging.Handler):
+        def emit(self, rec): logs.append(rec.getMessage())
+    h = _H()
+    afp.logger.addHandler(h)
+
+    def fresh(reader_llm: bool = True):
+        box["sb"] = _SB({"note_feature_answers": _reader_ledger()})
+        calls.clear(); written.clear(); raw_writes.clear(); fetched.clear(); logs.clear()
+        afp._llm = _reader_llm(calls) if reader_llm else _good_llm(calls)
+
+    def ran() -> set:
+        return {r["subject_id"] for r in written if r["extractor"].startswith("llm:")}
+
+    afp.get_supabase_client = lambda: box["sb"]
+    afp.load_mapping = lambda pid: mapping
+    afp.fetch_notes = lambda sb, pid: (fetched.append(pid), [dict(n) for n in notes])[1]
+    afp.fetch_done_ids = _REAL_DONE
+    afp.fetch_all_pages = _pages
+    afp.write_answers = lambda sb, rows, dry_run: written.extend(rows)
+    afp.write_raw_counts = lambda *a, **k: raw_writes.append(a[1])
+    os.environ["ANTHROPIC_API_KEY"] = "x"
+    os.environ.pop("FEATURE_MODEL", None)
+    os.environ["ESSENCE_MODEL"] = R_MODEL
+    ids = ",".join(rids)
+    reader_argv = ["R", "--bank", "reader", "--run-tag", R_TAG, "--model", R_MODEL, "--note-ids", ids, "--qps", "0"]
+    try:
+        # 副题库: R_2 跑过 (本库标记 + Sonnet + 本 sha); R_1 的主题库标记行、R_3 的旧 sha、R_4 的 Haiku 都不算
+        fresh()
+        assert afp.main(reader_argv) == 0
+        assert ran() == {"R_1", "R_3", "R_4", "R_5"}, ran()
+        assert len(written) == 3 * 4 and len(calls) == 2 * 4, (len(written), len(calls))
+        assert raw_writes == [], "副题库不许写 note_features (会把 extractor_version 改成副题库的)"
+        assert {r["run_tag"] for r in written} == {R_TAG} and {r["bank_sha256"] for r in written} == {READER["_sha256"]}
+        assert {r["question_id"] for r in written} == {"reader_ask_form", "invites_sharing", "last_para_has_qmark"}
+        assert {r["extractor"] for r in written} == {"llm:" + R_MODEL, fb.CODE_EXTRACTOR}
+        (q,) = box["sb"].log
+        assert sorted(q.filters) == sorted([("eq", "subject_type", "note"), ("eq", "question_id", "reader_ask_form"),
+                                            ("eq", "run_tag", R_TAG), ("like", "subject_id", "R_%"),
+                                            ("eq", "extractor", "llm:" + R_MODEL),
+                                            ("eq", "bank_sha256", READER["_sha256"])]), q.filters
+        line = next(m for m in logs if m.startswith("bank="))
+        assert line.startswith(f"bank=fq-v0.2-cand-reader sha={READER['_sha256'][:12]}… model={R_MODEL} run_tag={R_TAG} "), line
+        # 主题库 (默认, 夜跑): R_1 的 has_specific_time 算跑过; 副题库的行不算; 查询与 D-128 之前一样 (不带 sha)
+        fresh(reader_llm=False)
+        assert afp.main(["R", "--qps", "0"]) == 0 and ran() == {"R_2", "R_3", "R_4", "R_5"}, ran()
+        assert len(written) == 31 * 4 and sorted(raw_writes) == ["R_2", "R_3", "R_4", "R_5"], (len(written), raw_writes)
+        (q,) = box["sb"].log
+        assert sorted(q.filters) == sorted([("eq", "subject_type", "note"), ("eq", "question_id", afp.DONE_MARKER_QUESTION),
+                                            ("eq", "run_tag", "primary"), ("like", "subject_id", "R_%"),
+                                            ("like", "extractor", "llm:%")]), q.filters
+        assert {r["bank_sha256"] for r in written} == {PRIMARY_SHA}
+        assert next(m for m in logs if m.startswith("bank=")).startswith(f"bank=fq-v0.1 sha={PRIMARY_SHA[:12]}…")
+        # 主题库换到副题库的 run_tag 下跑: 副题库 R_2/R_3/R_4 的 reader_ask_form 行不算主题库跑过; R_1 那行算
+        fresh(reader_llm=False)
+        assert afp.main(["R", "--run-tag", R_TAG, "--model", R_MODEL, "--qps", "0"]) == 0
+        assert ran() == {"R_2", "R_3", "R_4", "R_5"}, ran()
+        # 拒跑: 退出 2, 不读笔记、不调模型、不写库
+        base = ["R", "--bank", "reader", "--qps", "0"]
+        bad = [base + ["--run-tag", "primary", "--model", R_MODEL, "--note-ids", ids],
+               base + ["--model", R_MODEL, "--note-ids", ids],                        # 默认 run_tag=primary
+               base + ["--run-tag", "gate1-sonnet55", "--model", R_MODEL, "--note-ids", ids],
+               base + ["--run-tag", "fqr-", "--model", R_MODEL, "--note-ids", ids],
+               base + ["--run-tag", R_TAG, "--model", R_MODEL, "--note-ids", ids, "--code-only"],
+               base + ["--run-tag", R_TAG, "--model", R_MODEL],                       # 没 --note-ids
+               base + ["--run-tag", R_TAG, "--note-ids", ids],                        # 没 --model (FEATURE_MODEL 不算)
+               base + ["--run-tag", R_TAG, "--model", R_MODEL, "--note-ids", ids, "--done-by", "llm:%"]]
+        for argv in bad:
+            fresh()
+            os.environ["FEATURE_MODEL"] = R_MODEL
+            try:
+                assert afp.main(argv) == 2 and not calls and not written and not raw_writes and not fetched, argv
+            finally:
+                os.environ.pop("FEATURE_MODEL", None)
+        for argv in (["R", "--bank", "secondary"], ["R", "--bank", str(fb.BANKS["reader"])]):
+            fresh()
+            try:
+                with patch("sys.stderr"):
+                    afp.main(argv)
+                raise AssertionError(f"{argv} 该被 argparse 拒 (只收 BANKS 的键, 不收路径)")
+            except SystemExit as e:
+                assert e.code == 2 and not fetched, (argv, e.code)
+        # fetch_done_ids: code-only 不收 marker / bank_sha (标记题固定)
+        for kw in ({"code_only": True, "marker": "reader_ask_form"}, {"code_only": True, "bank_sha": "a" * 64}):
+            try:
+                _REAL_DONE(_SB({}), "R", **kw)
+                raise AssertionError(f"{kw} 该被拒")
+            except ValueError:
+                pass
+    finally:
+        afp.logger.removeHandler(h)
+        for k, v in saved.items():
+            setattr(afp, k, v)
+        for k, v in env_saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    print("  ✓ 副题库 main: 续跑看 reader_ask_form + 精确 extractor + 副题库 sha (主题库标记 / 旧 sha / Haiku 都不算); "
+          "不写 note_features; 主题库续跑不认副题库的行、查询不带 sha; 拒跑 8 种 + 路径当 bank → 退出 2 不读不调不写")
+
+
+# ── backfill-features.yml: 两步真用 bash 跑 (输入校验 / 探针 + 分批请求体) ────────────────────────────
+
+def _wf_step(name_prefix: str) -> str:
+    import yaml
+    wf = yaml.safe_load((ROOT / ".github" / "workflows" / "backfill-features.yml").read_text(encoding="utf-8"))
+    steps = wf["jobs"]["backfill"]["steps"]
+    (step,) = [st for st in steps if str(st.get("name", "")).startswith(name_prefix)]
+    return step["run"]
+
+
+def _bash_step(script: str, env: dict, cwd: Path) -> "subprocess.CompletedProcess":
+    import subprocess
+    full = dict(os.environ)
+    full["PATH"] = os.path.dirname(sys.executable) + os.pathsep + full.get("PATH", "")
+    full.update(env)
+    return subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", script], cwd=str(cwd),
+                          env=full, capture_output=True, text=True, timeout=120)
+
+
+def check_workflow_inputs() -> None:
+    script = _wf_step("Validate inputs")
+    ids = "NUC_phase1_recSynthA,NRT_phase2_recSynthB"
+    sha8 = READER["_sha256"][:8]
+    ok_reader = {"PROJECT": "gate1r", "BATCH": "6", "MAXB": "120", "NOTE_IDS": ids, "RUN_TAG": R_TAG,
+                 "BANK_SHA": sha8, "REANNOTATE": "false", "MODEL": R_MODEL, "CODE_ONLY": "false", "BANK": "reader"}
+    prim = {"PROJECT": "gate1", "BATCH": "6", "MAXB": "120", "NOTE_IDS": ids, "RUN_TAG": "primary",
+            "BANK_SHA": "", "REANNOTATE": "false", "MODEL": "", "CODE_ONLY": "false", "BANK": ""}
+    cwd = ROOT / "scripts"
+    r = _bash_step(script, ok_reader, cwd)
+    assert r.returncode == 0 and "bank=reader" in r.stdout, (r.returncode, r.stdout, r.stderr)
+    for env in (prim, dict(prim, BANK="primary"),
+                {**prim, "NOTE_IDS": "", "PROJECT": "NUC_phase1", "RUN_TAG": ""}):
+        r = _bash_step(script, env, cwd)
+        assert r.returncode == 0, (env, r.stdout, r.stderr)
+    cases = [({"BANK": "Reader"}, "bank 只能是"),
+             ({"BANK": "../prompts/x.yaml"}, "bank 只能是"),
+             ({"RUN_TAG": "primary"}, "run_tag"),
+             ({"RUN_TAG": "gate1-sonnet55"}, "必须以 fqr- 开头"),
+             ({"RUN_TAG": "fqr-"}, "必须以 fqr- 开头"),
+             ({"CODE_ONLY": "true", "MODEL": ""}, "不收 code_only"),
+             ({"REANNOTATE": "true"}, "不收 reannotate"),
+             ({"BANK_SHA": ""}, "必须给 bank_sha"),
+             ({"MODEL": ""}, "必须给 model"),
+             ({"NOTE_IDS": "", "PROJECT": "NUC_phase1", "RUN_TAG": "", "BANK_SHA": "", "MODEL": ""},
+              "整项目回填永远是主题库")]
+    for patch_env, needle in cases:
+        r = _bash_step(script, {**ok_reader, **patch_env}, cwd)
+        assert r.returncode != 0 and needle in r.stdout, (patch_env, r.returncode, r.stdout[-400:])
+    print("  ✓ backfill-features 输入校验 (bash 真跑): reader 要 fqr- / bank_sha / model, 不收 code_only / reannotate / "
+          "整项目模式 / 路径; 主题库三种老用法照旧放行")
+
+
+_FAKE_CURL = r"""
+curl() {
+  local out="" body=""
+  while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2;; -d) body="$2"; shift 2;; *) shift;; esac; done
+  printf '%s\n' "$body" >> "$FAKE_DIR/bodies.jsonl"
+  case "$body" in *'"dry_run":true'*) cp "$FAKE_DIR/probe.json" "$out";; *) cp "$FAKE_DIR/chunk.json" "$out";; esac
+  printf 200
+}
+sleep() { :; }
+"""
+
+
+def check_workflow_probe() -> None:
+    script = _wf_step("Run only the given note_ids")
+    assert script.count("/tmp/") >= 3
+    ids = "NUC_phase1_recSynthA,NUC_phase1_recSynthB,NRT_phase2_recSynthC"
+    rsha, psha = READER["_sha256"], PRIMARY_SHA
+
+    def run(env: dict, probe: dict, chunk_extra: dict | None = None) -> tuple[int, str, list[dict]]:
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "probe.json").write_text(json.dumps(probe, ensure_ascii=False), encoding="utf-8")
+            (Path(td) / "chunk.json").write_text(json.dumps({"ok": True, "note_ids_count": 2, "returncode": 0,
+                                                             "stdout_tail": "Done: {\"ok\": 2}", **(chunk_extra or {})}),
+                                                 encoding="utf-8")
+            body = _FAKE_CURL + script.replace("/tmp/", td + "/")
+            full = {"FAKE_DIR": td, "WORKER_URL": "http://worker.invalid", "WORKER_API_KEY": "k", "NOTE_IDS": ids,
+                    "BATCH": "6", "REANNOTATE": "false", "CODE_ONLY": "false", **env}
+            r = _bash_step(body, full, ROOT / "scripts")
+            p = Path(td) / "bodies.jsonl"
+            sent = [json.loads(ln) for ln in p.read_text(encoding="utf-8").splitlines()] if p.exists() else []
+            return r.returncode, r.stdout, sent
+
+    def line(bv, sha, model, tag):
+        return f"2026 [INFO] annotate_features · bank={bv} sha={sha[:12]}… model={model} run_tag={tag} title_extraction=x single=False"
+    reader_env = {"RUN_TAG": R_TAG, "MODEL": R_MODEL, "BANK_SHA": rsha[:8], "BANK": "reader"}
+    good = {"ok": True, "note_ids_count": 1, "bank": "reader", "stderr_tail": line("fq-v0.2-cand-reader", rsha, R_MODEL, R_TAG)}
+    rc, out, sent = run(reader_env, good, {"bank": "reader"})
+    assert rc == 0 and "✅ worker 按 bank=fq-v0.2-cand-reader 跑" in out, (rc, out[-600:])
+    assert len(sent) == 1 + 2 and all(b.get("bank") == "reader" for b in sent), sent        # 探针 + NUC 一批 + NRT 一批
+    # 探针过了, 真跑的批没回显 bank (中途换回旧 worker) / 回显成 primary → 第一批就停: 不重试、不发下一批
+    for extra in ({}, {"bank": "primary"}):
+        rc, out, sent = run(reader_env, good, extra)
+        assert rc == 1 and "批: worker 没回显 bank=reader" in out and len(sent) == 1 + 1, (extra, rc, out[-600:], len(sent))
+    assert sent[0]["dry_run"] is True and sent[0]["run_tag"] == R_TAG and sent[0]["model"] == R_MODEL
+    # 旧版 worker: 响应没有 bank (吞掉了) → 停在探针, 一个真请求都不发
+    old = {k: v for k, v in good.items() if k != "bank"}
+    rc, out, sent = run(reader_env, old)
+    assert rc == 1 and "没回显 bank=reader" in out and len(sent) == 1, (rc, out[-400:], sent)
+    # 回显了 bank, 但日志那行是主题库 (sha 前缀碰巧对上也不行) → 停
+    rc, out, sent = run(reader_env, dict(good, stderr_tail=line("fq-v0.1", rsha, R_MODEL, R_TAG)))
+    assert rc == 1 and "日志不是 bank=fq-v0.2-cand-reader" in out and len(sent) == 1, (rc, out[-400:])
+    # sha 对不上 → 原有那道照样停
+    rc, out, sent = run(reader_env, dict(good, stderr_tail=line("fq-v0.2-cand-reader", psha, R_MODEL, R_TAG)))
+    assert rc == 1 and "问题库不是期望的" in out and len(sent) == 1, (rc, out[-400:])
+    # 主题库 (bank 没给): 旧 worker 的响应照样放行, 请求体一个 bank 键都没有 —— 与 D-128 之前一样
+    old_primary = {"ok": True, "note_ids_count": 1, "stderr_tail": line("fq-v0.1", psha, "claude-opus-4-6", "primary")}
+    for b in ("", "primary"):
+        rc, out, sent = run({"RUN_TAG": "primary", "MODEL": "", "BANK_SHA": "", "BANK": b}, old_primary)
+        assert rc == 0 and len(sent) == 3 and not any("bank" in x for x in sent), (b, rc, out[-400:], sent)
+    print("  ✓ backfill-features 探针 (bash + 假 curl): reader 要 worker 回显 bank 且日志是 bank=fq-v0.2-cand-reader, 否则停在探针"
+          "、不发真请求; 每一批也要回显 bank, 中途换回旧 worker → 第一批就停、不重试; 请求体带 bank; 主题库请求体不带 bank、旧 worker 照旧放行")
+
+
+def check_worker_banks_source() -> None:
+    src = (ROOT / "worker" / "app.py").read_text(encoding="utf-8")
+    m = re.search(r'^_BANKS = \(([^)]*)\)$', src, re.M)
+    assert m, "worker/app.py 里找不到 _BANKS = (...) (写法变了就同步改这里)"
+    got = tuple(re.findall(r'"([^"]+)"', m.group(1)))
+    assert got == tuple(fb.BANKS), f"worker 的 _BANKS {got} 与 feature_bank.BANKS 的键 {tuple(fb.BANKS)} 不一致"
+    print(f"  ✓ worker: _BANKS {got} 与 feature_bank.BANKS 的键逐字相同")
+
+
+def check_worker_endpoint_bank() -> None:
+    """--worker: bank 闭集、副题库在起子进程之前 400、响应永远回显 bank; 不带 bank 时参数与以前一样。"""
+    sys.path.insert(0, str(ROOT))
+    os.environ.pop("WORKER_API_KEY", None)
+    os.environ["WORKER_ALLOW_ANONYMOUS"] = "1"
+    from fastapi.testclient import TestClient
+    import worker.app as w
+    assert w._BANKS == tuple(fb.BANKS), (w._BANKS, tuple(fb.BANKS))
+    seen: list[list[str]] = []
+    real_run = w._run
+
+    def fake_run(script, args):
+        seen.append(list(args))
+        return {"ok": True, "returncode": 0, "stdout_tail": "", "stderr_tail": ""}
+    w._run = fake_run
+    try:
+        c = TestClient(w.app)
+
+        def post(**body):
+            seen.clear()
+            return c.post("/annotate-features", json={"project": "R", **body})
+        good = {"bank": "reader", "run_tag": R_TAG, "model": R_MODEL, "note_ids": ["R_recA", "R_recB"]}
+        r = post(**good)
+        assert r.status_code == 200 and r.json()["bank"] == "reader", (r.status_code, r.json())
+        assert seen == [["R", "--limit", "50", "--run-tag", R_TAG, "--model", R_MODEL, "--note-ids", "R_recA,R_recB",
+                         "--bank", "reader"]], seen
+        # 不带 bank: 参数与 D-128 之前一模一样 (没有 --bank), 响应回显 primary
+        r = post(model=R_MODEL)
+        assert r.status_code == 200 and seen == [["R", "--limit", "50", "--model", R_MODEL]] and r.json()["bank"] == "primary", seen
+        r = post()
+        assert seen == [["R", "--limit", "50"]] and r.json()["bank"] == "primary", seen
+        r = post(bank="primary", run_tag="primary")
+        assert r.status_code == 200 and seen[0][-2:] == ["--bank", "primary"] and r.json()["bank"] == "primary", seen
+        for bad in ("Reader", "secondary", "../prompts/feature_questions_v0_2_cand_reader.yaml", "", 1, ["reader"]):
+            r = post(**dict(good, bank=bad))
+            assert r.status_code == 400 and not seen, (bad, r.status_code, seen)
+        for patch_body in ({"run_tag": "primary"}, {"run_tag": None}, {"code_only": True}, {"note_ids": None},
+                           {"model": None}, {"done_by": ["llm:%"]}):
+            body = {k: v for k, v in {**good, **patch_body}.items() if v is not None}
+            r = post(**body)
+            assert r.status_code == 400 and not seen and "bank=reader" in r.json()["detail"], (patch_body, r.status_code, r.json())
+    finally:
+        w._run = real_run
+        os.environ.pop("WORKER_ALLOW_ANONYMOUS", None)
+    print("  ✓ worker /annotate-features bank (D-128): _BANKS == fb.BANKS 的键; reader 拼 --bank reader 并回显; 不带 bank "
+          "参数照旧、回显 primary; 非法 bank / 路径 → 400; reader 配 primary 或缺 run_tag / code_only / 缺 note_ids / "
+          "缺 model / done_by → 400 不起子进程")
+
+
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
@@ -486,6 +847,7 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     if a.worker:
         check_worker_endpoint()
+        check_worker_endpoint_bank()
         return 0
     check_note_ids()
     check_orchestration()
@@ -494,7 +856,12 @@ def main(argv: list[str] | None = None) -> int:
     check_main_resume()
     check_count_script()
     check_worker_source()
-    print("✓ 特征层编排自检 + 续跑判据 (D-085): 全过")
+    check_reader_rows()
+    check_reader_main()
+    check_workflow_inputs()
+    check_workflow_probe()
+    check_worker_banks_source()
+    print("✓ 特征层编排自检 + 续跑判据 (D-085) + 副题库 (D-128): 全过")
     return 0
 
 

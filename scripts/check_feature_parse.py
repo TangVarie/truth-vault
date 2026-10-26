@@ -197,6 +197,30 @@ def check_fallback(bank, note, mapping) -> None:
     print("  ✓ ask_group: 解析失败记 json_parse_failed; 重问后仍没答 → 单题兜底 (正常 0 次, 坏组 3 次, 漏一题 1 次); 单问 api 挂 → api_error + systemic; 单问没这题 → missing; 反证关掉兜底三题全 NULL")
 
 
+def check_no_reply_text_in_logs(bank, spans) -> None:
+    """解析失败时回复原文不进日志 (stdout → worker stdout_tail → 公开的 Actions 日志; evidence 是笔记原文)。"""
+    import logging
+    seen: list[str] = []
+
+    class _H(logging.Handler):
+        def emit(self, record):
+            seen.append(record.getMessage())
+
+    h = _H()
+    afp.logger.addHandler(h)
+    try:
+        raw = '{"turning_point": {"answer": "是", "evidence": "SENTINEL-9b1e 你们戒烟第几天了？"}}'
+        assert fb.parse_answers(raw) is None, "前提: 按题号答的回复解析不出"
+        res = afp._validate_or_parse_failed(bank, ["turning_point"], None, spans, raw, "first")
+        assert res["turning_point"]["invalid_reason"] == fb.INVALID_JSON
+    finally:
+        afp.logger.removeHandler(h)
+    msg = "\n".join(seen)
+    assert "parse_failed(first)" in msg and f"raw_len={len(raw)}" in msg and "json_like=True" in msg, msg
+    assert "SENTINEL-9b1e" not in msg and "戒烟" not in msg, msg
+    print("  ✓ 解析失败的日志只有长度 / 指纹 / 像不像 JSON, 回复原文 (含 evidence 里的笔记原文) 不进日志")
+
+
 def main() -> int:
     bank = fb.load_bank()
     note = _note()
@@ -204,6 +228,7 @@ def main() -> int:
     spans = fb.build_spans(RAW, mode="markers")
     check_parse(bank, spans)
     check_fallback(bank, note, mapping)
+    check_no_reply_text_in_logs(bank, spans)
     print("✓ 守卫 8 (D-083): 容错解析 + 单题兜底, 反证都红")
     return 0
 
