@@ -7244,3 +7244,48 @@ NUC_phase1_recv2jCgov51Yz,NUC_phase1_recv2lNktp6h13,NUC_phase1_recv2lNktpokW9,NU
 后续：三组同项目对照帖里，分出高下的不是问号多少，而是读者回答的门槛（凭自己生活就能答 / 要用过这个品牌才能答）和问题的形式（二选一站队、在具体选项里选 vs 知识问答）；现有的「邀请分享经历」那道题闸一没过。这些只是从几组例子看出来的线索，作为候选题走 D-120 的季度找新特征、进下一版题库，先过闸一再测增量，花钱前先报 owner。
 
 守卫：`check_desk_delivery.py` §1（validated 的取值要么下发要么压着）、§2（≥2 个问号不再算命中）、§3（压着的取值变了不影响下发）；`check_external_direction.py --selftest`（中间段不进表、品类内比、不显著的反向不亮）。
+
+## D-128 · 读者提问方式两道候选题进副题库 fq-v0.2-cand-reader，闸一 / 闸二的比法先写死；副题库的结果永远不写 feature_validation（2026-10-26）
+
+来源：D-127 后续。owner 审过两份候选草稿，定下两道模型题 + 一道代码特征，按 D-120 当候选登记：先放副题库，主题库 fq-v0.1 一个字节不动。闸一的钱（约 $6–7）已批，闸二抽取另批。本条在任何付费调用之前写死题库 sha、抽样、通过线和闸二比法。
+
+题库：
+
+- `prompts/feature_questions_v0_2_cand_reader.yaml`，`bank_version: fq-v0.2-cand-reader`，`role: secondary`，规范化 sha256 `9f2cf1c9e7de8a96115559ae1242207e66b20257b41443b2433c5fbf37d79254`。`status: draft`，两题 `gate1_status: pending`。
+- 钉住主题库：`primary_bank` = fq-v0.1 / `ba0f570c47d594ca4dad571c5a9f5d06da51861b041ba364c3a915220b985ddd`。只许写在 `run_tag_prefix: fqr-` 下（`note_feature_answers` 主键不含 `bank_sha256`，用 `primary` 会按同一主键盖掉主题库的行）；续跑标记 `done_marker: reader_ask_form`。
+- `reader_ask_form` v1（choice，G7_reader_ask，看标题+正文）：挑一个 + / 说自己的 + / 求推荐 ? / 找同类 ? / 求解答 − / 没问读者 −。`contrast_base_excludes: [没问读者]`；`null_if_truncated` 列全六个取值（正文被截断时看不到结尾，哪个取值都说不准：结尾那一问可能排得更前，标题的问句也可能在结尾被答掉，所以整题记 NULL + `span_truncated`，不进分子也不进分母；codex review on #237。生产正文最长 1,013 字，今天一篇都不会被截，这条防的是写作台草稿和以后的长文表）。
+- `invites_sharing` v2（bool，G8_sharing，只看结尾）：保留 id，版本 2 > 主题库的 1；v1 的答案留着、不混用（run_tag + sha 分开）。
+- 两题都写 `conditional_on: [ending_asks_reader, asks_for_help]`：闸二按主题库这两题的已有答案分层（两题闸一都是 pass）。
+- `last_para_has_qmark`（代码特征，零抽取费）：只探索，闸一不判，不进确认族。
+- 措辞用审稿定稿，草稿注释去掉。改 yaml 一个字就是新 sha：要么改回去，要么升版本、改本条、闸一全部重跑。
+
+闸一（docs/28 §6.1 的线）：
+
+- 样本 200 篇，只从 D-120 发现半抽（sha256(note_id) 首位十六进制为偶数，直接调 `discover_feature_candidates.in_discovery_half`）。池子 = `v_l2_labels` ∩ 主题库 ba0f570c 的 Sonnet 5.5 答案，要求 ending_asks_reader、asks_for_help 两题都有答案（闸二分层要用）。
+  - A 层 150 篇：ending_asks_reader / asks_for_help / title_is_question 任一为「是」；B 层 50 篇：三题都不是「是」（拿不到标题记 NULL 的按「不是」算）。
+  - 层内按 sha256(种子 + ':' + note_id) 升序取，种子 `fqr-g1-2026-10-26`。抽样脚本自己打印池子大小（10-26 只读查：发现半有 Sonnet 答案 1,365 篇，两题都有答案 1,338 篇，其中问了读者的 583 篇）。
+  - 剔掉三组对照帖 6 篇：SPX_phase1_reczz28NDCkUnZo2、SPX_phase1_reczz28NDCsT0kYG、HATHERINE_phase1_recvvVqwhU4bwj、HATHERINE_phase1_reczz28PaNo98D3Z、XIWU_phase2_reczz28PahXPKcbQ、XIWU_phase2_reczz28Q05VZa80D；以及 D-127 材料里给 owner 看过的例子 HATHERINE_phase1_recvw1LdlTTJMM、BJS_phase1_recvsWBVowMCHc。
+- 三趟：`fqr-g1-sonnet55-a`、`fqr-g1-sonnet55-b`（Sonnet 5.5 两趟）、`fqr-g1-haiku55`（Haiku 5.5）；owner 裁决记 `fqr-g1-owner`。
+- 通过线：Sonnet A 对 B 一致率 ≥ 0.90；Sonnet A 对参考一致率 ≥ 0.85 且 κ ≥ 0.60；证据无效率 ≤ 3%。每组只有一题，「分组 vs 单问」那项不适用。
+- 参考标签 = 三趟不全一致的每一格由 owner 裁（含 A 与 Haiku 一致、B 不同的格：同一模型重跑不稳的格正是难格，不能从参考里拿掉）+ 三趟都一致的格。owner 另从每题三趟一致的格里抽 20 个复核，推翻超过 2 个，这题闸一不过。
+- reader_ask_form 按合并后的 3 档判：可答 = 挑一个 + 说自己的；其他问法 = 求推荐 + 找同类 + 求解答；没问读者。κ 还要在「至少一方没选没问读者」的子集上 ≥ 0.60（没问读者占比高，会把整体 κ 撑高）。6 个选项的表只报告。
+- invites_sharing v2：κ 只在 A 层算（「是」的比例低），一致率在全部 200 篇上算。全部 200 篇的 κ、B 层的一致率另行报告，不参与判定。
+- 不过的题：改措辞 = 升版本 + 新 sha + 全部重跑；除上面那次合并，不再重新编码。
+- 6 篇对照帖只做冒烟测试：owner 先写下预期标签再跑，不算证据。
+
+闸二（跑之前写死，写在 yaml 的 `gate2` 块：`half: holdout`、`condition_snapshot`、`merged_contrasts`、`confirmation_family`、`placebo: from_primary`）：
+
+- 数据：D-120 留出半 ∩ 闸二分析口径 ∩ 两道分层题都有 Sonnet 5.5 ba0f570c 答案的笔记，同样剔掉上面 8 篇（其中 4 篇在留出半）。副题库答案在 `fqr-g2-sonnet55` 下用 Sonnet 5.5 抽；分层答案只取 Sonnet（ba0f570c 快照里还有 Opus 4.6 的行）。
+- 确认族两行，BH 只在这两行里做，q ≤ 0.10：
+  - C1：reader_ask_form {挑一个, 说自己的} 对其余提问类型（剔掉没问读者），按 项目 × ending_asks_reader × asks_for_help 分层做 MH，预期 +；
+  - C2：invites_sharing 是 对 否，同样分层，预期 +。
+  - 两行都过，算一个发现，不算两次确认。
+- 其余判据照旧：support ≥ 30；≥ 3 个大项目、反向最多 1 个；按账号先验再分层、点估计变化 ≤ 30%；占位题报警开着（3 道占位题按主题库定义从 note_id 现算、同样分层、不写行；它们不在两行的 BH 家族里，判「显著」用原始 p ≤ 0.10，偏严）。
+- 只报告、不下发：逐个取值的行；不分层的行；没问读者那一行（阳性对照，应出 −）；代码特征那一行；敏感性重跑（剔掉记过置顶 / 控评 / 铺评 / 投流的笔记，再加一层 body_len_bucket）。
+- 功效：留出半只有 3 个大项目（NUC 44、NRT2 23、NRT3 23 篇爆），正好是下限；「样本不够」很可能，不等于被否定。
+- 只读两次：留出半读一次；样本不够就在 2027-04-02 那次季度跑合并冻结后的新笔记再读一次，中间不改措辞。
+- 副题库的结果永远不写 `feature_validation`：馆员 `latest_gate2_run` 取全表最新的一次闸二、不分题库，写进去写作台的规律下发会整体断掉（`patterns.py` fail-closed）。结论只进报告和 DECISIONS。
+
+不改：主题库文件、冻结 sha、已下发的规律；生产不读这份 yaml。抽取 pass / worker / workflow 的 `--bank` 与闸一工具、`gate2_run` 的副题库分支另开 PR。
+
+守卫：`scripts/check_secondary_bank.py`（CI）：结构 + 跨库两道校验和逐条反证、run_tag 只许 fqr-、默认代码特征仍是那 8 个、截断正文的 reader_ask_form 整题记 NULL（六个取值列全，少一个就红）、主题库没动、features-sync 请求体不带 bank；本条必须写着副题库 sha 前 12 位，改了 yaml 不改本条 CI 就红。`check_gate2_run.py` §0 把主题库闸二的输出钉成金样（14 行摘要 `81cc83e46442`、报告 `46d9c73b51b3`），以后加副题库分支时主题库的结果一个字节都不许变。

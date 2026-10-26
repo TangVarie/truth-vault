@@ -14,11 +14,13 @@
   ⑦ draft 题库不带 --allow-draft 也跑              → §6 红
   ⑧ run_gate2 不调 validate_bank (冻结后改题照跑)   → §6b 红
   ⑨ 题库 gate1_status: fail 的题没打 unreliable / 冻结带着 pending 照跑 → §6c 红
+  ⑩ 主题库那条路的输出变了一个字节 (行或报告)                           → §0 红
 
 跑法: cd scripts && python check_gate2_run.py
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import random
@@ -138,8 +140,8 @@ def _row(res, qid, value="是"):
     return next(r for r in res["rows"] if r["question_id"] == qid and r["answer"] == value)
 
 
-# ── §3 状态表逐条 ───────────────────────────────────────────────────────────────
-def check_status_matrix() -> None:
+def _status_matrix_dataset() -> tuple[list, list]:
+    """§3 状态表那份合成数据 (§0 金样也用它): 每条状态各造一个特征值, 全按计数造, 确定性。"""
     notes, answers, _ = _dataset()
     # validated (+): 正例 60% 是, 负例 30% 是, 五个项目同向
     _fill_bool(answers, notes, "title_is_question", p_pos=0.6, p_neg=0.3)
@@ -163,7 +165,32 @@ def check_status_matrix() -> None:
     for n in notes:
         v = ">=400" if (n["y"] and int(n["note_id"][-3:]) % 10 < 6) or (not n["y"] and int(n["note_id"][-3:]) % 10 < 3) else "100-199"
         _answer(answers, n["note_id"], "body_len_bucket", v, extractor="code:v1")
+    return notes, answers
 
+
+# ── §0 金样: 主题库那条路的输出钉死 (D-128) ─────────────────────────────────────────
+# 351a4bf (D-127 之后、副题库之前) 上 §3 那份合成数据跑出来的 14 行摘要和报告全文 sha256, Python 3.11 / 3.13 两次实测一致。
+# 以后给 gate2_run 加副题库的分支 (条件分层 / 剔除基数 / 合并取值 / 两行确认族) 只许走新键, 主题库的输出一个字节都不许变。
+# 这里红了先别改数: 是主题库的结论口径变了, 要么改回去, 要么另记 DECISIONS 再换金样。
+GOLDEN_ROWS_SHA256 = "81cc83e4644248d28d777db883f7b644ffc6329523657217ab83c68d1b1544ed"
+GOLDEN_REPORT_SHA256 = "46d9c73b51b3403e893569b294b9f245500ae3e3df6e3e81a7f33244c09b994b"
+
+
+def check_golden() -> None:
+    notes, answers = _status_matrix_dataset()
+    res = _run(notes, answers, unreliable=["own_experience"])
+    rows = G.validation_rows(res)
+    assert len(rows) == 14, len(rows)
+    got_rows = G.rows_digest(rows)
+    got_report = hashlib.sha256(G.render_report(res).encode()).hexdigest()
+    assert got_rows == GOLDEN_ROWS_SHA256, f"§0 主题库闸二的行变了: {got_rows} ≠ 金样 {GOLDEN_ROWS_SHA256[:12]}"
+    assert got_report == GOLDEN_REPORT_SHA256, f"§0 主题库闸二的报告变了: {got_report} ≠ 金样 {GOLDEN_REPORT_SHA256[:12]}"
+    print(f"  §0 金样: 状态表数据 14 行摘要 {GOLDEN_ROWS_SHA256[:12]}、报告 {GOLDEN_REPORT_SHA256[:12]} 逐字节不变 ✓")
+
+
+# ── §3 状态表逐条 ───────────────────────────────────────────────────────────────
+def check_status_matrix() -> None:
+    notes, answers = _status_matrix_dataset()
     res = _run(notes, answers, unreliable=["own_experience"])
     s = {(r["question_id"], r["answer"]): r for r in res["rows"]}
     assert set(res["big_projects"]) == {"P0", "P1", "P2", "P3", "P4"} and all(v == 40 for v in res["big_projects"].values())
@@ -433,6 +460,7 @@ def check_projects_present() -> None:
 
 
 def main() -> int:
+    check_golden()
     check_single_stratum_is_woolf()
     check_bh()
     check_status_matrix()
@@ -445,7 +473,7 @@ def main() -> int:
     check_gate1_status_from_bank()
     check_analysis_filter_and_big_projects()
     check_projects_present()
-    print("\ncheck_gate2_run: 12 节全过")
+    print("\ncheck_gate2_run: 13 节全过")
     return 0
 
 
