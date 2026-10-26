@@ -10,7 +10,7 @@
 #   done_marker           断点续跑看哪道题判「这篇跑过」(本库的题, 不借主题库的)
 #   conditional_on        闸二按主题库这几题的已有答案再分层 (取自 gate2.condition_snapshot)
 #   contrast_base_excludes  这几个取值不进比较基数 (只在提问的笔记之间比)
-#   null_if_truncated     正文被截断时这几个取值记 NULL + span_truncated (同 bool 题的「否」)
+#   null_if_truncated     正文被截断时这几个取值记 NULL + span_truncated (同 bool 题的「否」); 列全了 = 截断就整题 NULL
 #   gate2                 闸二的比法: 哪一半、条件快照、合并取值、两行确认族、占位题从主题库算
 # 本库的行永远不写 feature_validation (D-128)。整份文件 (含注释) 进 digest, 改一个字就是新 sha。
 bank_version: fq-v0.2-cand-reader
@@ -54,7 +54,7 @@ questions:
     scope: full
     conditional_on: [ending_asks_reader, asks_for_help]
     contrast_base_excludes: [没问读者]
-    null_if_truncated: [没问读者]
+    null_if_truncated: [挑一个, 说自己的, 求推荐, 找同类, 求解答, 没问读者]
     ask: 作者要读者怎么回？只看两处：正文结尾（最后一段，太短就连上一段）和标题。先找出作者在等读者回答的话：问句和喊话都算，没有问号也算（评评理、你们说呢、蹲一个）；自问自答、反问式感叹、号召去买去试、「欢迎交流」这类客套话不算；标题的问句如果正文自己给了答案，也不算。「有没有……的姐妹 / 朋友？」后面紧跟着问题的，这一句只是在点名，按后面那一问算。有好几问时，按下面选项的顺序从上往下对，哪一种有一问符合就选哪一种。只选一种。
     options:
       - value: 挑一个

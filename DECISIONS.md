@@ -7251,9 +7251,9 @@ NUC_phase1_recv2jCgov51Yz,NUC_phase1_recv2lNktp6h13,NUC_phase1_recv2lNktpokW9,NU
 
 题库：
 
-- `prompts/feature_questions_v0_2_cand_reader.yaml`，`bank_version: fq-v0.2-cand-reader`，`role: secondary`，规范化 sha256 `90cb4b424b43f4ae93a18bdec2f99150a18404c9937410274dc99e303b05db22`。`status: draft`，两题 `gate1_status: pending`。
+- `prompts/feature_questions_v0_2_cand_reader.yaml`，`bank_version: fq-v0.2-cand-reader`，`role: secondary`，规范化 sha256 `9f2cf1c9e7de8a96115559ae1242207e66b20257b41443b2433c5fbf37d79254`。`status: draft`，两题 `gate1_status: pending`。
 - 钉住主题库：`primary_bank` = fq-v0.1 / `ba0f570c47d594ca4dad571c5a9f5d06da51861b041ba364c3a915220b985ddd`。只许写在 `run_tag_prefix: fqr-` 下（`note_feature_answers` 主键不含 `bank_sha256`，用 `primary` 会按同一主键盖掉主题库的行）；续跑标记 `done_marker: reader_ask_form`。
-- `reader_ask_form` v1（choice，G7_reader_ask，看标题+正文）：挑一个 + / 说自己的 + / 求推荐 ? / 找同类 ? / 求解答 − / 没问读者 −。`contrast_base_excludes: [没问读者]`；`null_if_truncated: [没问读者]`（正文被截断时看不到结尾，「没问读者」记 NULL + `span_truncated`）。
+- `reader_ask_form` v1（choice，G7_reader_ask，看标题+正文）：挑一个 + / 说自己的 + / 求推荐 ? / 找同类 ? / 求解答 − / 没问读者 −。`contrast_base_excludes: [没问读者]`；`null_if_truncated` 列全六个取值（正文被截断时看不到结尾，哪个取值都说不准：结尾那一问可能排得更前，标题的问句也可能在结尾被答掉，所以整题记 NULL + `span_truncated`，不进分子也不进分母；codex review on #237。生产正文最长 1,013 字，今天一篇都不会被截，这条防的是写作台草稿和以后的长文表）。
 - `invites_sharing` v2（bool，G8_sharing，只看结尾）：保留 id，版本 2 > 主题库的 1；v1 的答案留着、不混用（run_tag + sha 分开）。
 - 两题都写 `conditional_on: [ending_asks_reader, asks_for_help]`：闸二按主题库这两题的已有答案分层（两题闸一都是 pass）。
 - `last_para_has_qmark`（代码特征，零抽取费）：只探索，闸一不判，不进确认族。
@@ -7288,4 +7288,4 @@ NUC_phase1_recv2jCgov51Yz,NUC_phase1_recv2lNktp6h13,NUC_phase1_recv2lNktpokW9,NU
 
 不改：主题库文件、冻结 sha、已下发的规律；生产不读这份 yaml。抽取 pass / worker / workflow 的 `--bank` 与闸一工具、`gate2_run` 的副题库分支另开 PR。
 
-守卫：`scripts/check_secondary_bank.py`（CI）：结构 + 跨库两道校验和逐条反证、run_tag 只许 fqr-、默认代码特征仍是那 8 个、截断的「没问读者」记 NULL、主题库没动、features-sync 请求体不带 bank；本条必须写着副题库 sha 前 12 位，改了 yaml 不改本条 CI 就红。`check_gate2_run.py` §0 把主题库闸二的输出钉成金样（14 行摘要 `81cc83e46442`、报告 `46d9c73b51b3`），以后加副题库分支时主题库的结果一个字节都不许变。
+守卫：`scripts/check_secondary_bank.py`（CI）：结构 + 跨库两道校验和逐条反证、run_tag 只许 fqr-、默认代码特征仍是那 8 个、截断正文的 reader_ask_form 整题记 NULL（六个取值列全，少一个就红）、主题库没动、features-sync 请求体不带 bank；本条必须写着副题库 sha 前 12 位，改了 yaml 不改本条 CI 就红。`check_gate2_run.py` §0 把主题库闸二的输出钉成金样（14 行摘要 `81cc83e46442`、报告 `46d9c73b51b3`），以后加副题库分支时主题库的结果一个字节都不许变。

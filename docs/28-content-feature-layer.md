@@ -341,7 +341,7 @@ Jev 是 TypeSafe AI 2026-09-15 发布的判断型模型：输入一段文本和�
 1. **只用留出半**（`half: holdout`，D-120：sha256(note_id) 首位奇数）。发现半用来想题、抽闸一样本，不再拿来确认。
 2. **两份快照**：副题库的答案（`fqr-*` run_tag、副题库 sha）+ 主题库 ba0f570c 里两道分层题的 Sonnet 答案（`condition_snapshot`）。两份分开取，主题库的 `invites_sharing` v1 不会混进来。
 3. **按题分层**：题上写了 `conditional_on` 的，MH 的层是 项目 × 那几题的答案（不只是项目）；缺分层答案的笔记剔掉并计数。第 4 条照旧再加账号先验。
-4. **剔除比较基数**：`contrast_base_excludes` 的取值（「没问读者」）既不算「有」也不算「没有」，只在问了读者的笔记之间比。
+4. **剔除比较基数**：`contrast_base_excludes` 的取值（「没问读者」）既不算「有」也不算「没有」，只在问了读者的笔记之间比。正文被截断（超 1,500 字、看不到结尾）的笔记这题整题记 NULL（`null_if_truncated` 列全六个取值），分子分母都不进；生产正文最长 1,013 字，今天没有一篇受影响。
 5. **合并取值**：`merged_contrasts` 把几个取值并成一行（挑一个 + 说自己的）。
 6. **确认族只有两行**（`confirmation_family`），BH 只在这两行里做，q ≤ 0.10——这是对上面「占位题算在同一个校正家族里」的例外。两行都过算一个发现，不算两次确认。逐个取值的行、不分层的行、阳性对照、代码特征都只报告。占位题按主题库定义从 note_id 现算、同样分层（`placebo: from_primary`），不在家族里，判「显著」用原始 p ≤ 0.10，偏严。
 
@@ -851,4 +851,4 @@ n₁ = [ z₀.₉₇₅ · √( p̄q̄ (1 + 1/k) ) + z₀.₈ · √( p₁q₁ +
 | 6 | `library_version()` 随 `gate2_run` 变化 | 版本串里去掉 `gate2_run` |
 | 7 | `efficacy_promise` 永不出现在下发给写作台的规律列表里 | 把它标成 validated 后看下发列表 |
 | 8 | 回复容错解析 + 没答的单题兜底（D-083）：围栏 / 字符串里原样换行 / 未转义引号 / 形状不对都能捞，捞出的仍过守卫 3；重问后仍没答 → 单题再问；单问 api 挂 → 整篇 systemic | 严格 `json.loads` 对换行那份必失败；关掉兜底三题全 NULL |
-| 9 | 副题库（D-128，`check_secondary_bank.py`）：结构 + 跨库两道校验（键白名单、`conditional_on` 是主题库闸一 pass 的题、同 id 版本更高、确认族正好两行且不含代码特征）；run_tag 只许 `fqr-`；默认代码特征仍是那 8 个；截断的「没问读者」记 NULL；D-128 写着副题库 sha 前 12 位 | 写错一个键；`invites_sharing` 版本写回 1；run_tag=primary；默认多算 `last_para_has_qmark`；改 yaml 不改 D-128 |
+| 9 | 副题库（D-128，`check_secondary_bank.py`）：结构 + 跨库两道校验（键白名单、`conditional_on` 是主题库闸一 pass 的题、同 id 版本更高、确认族正好两行且不含代码特征）；run_tag 只许 `fqr-`；默认代码特征仍是那 8 个；截断正文的 reader_ask_form 整题记 NULL（六个取值列全）；D-128 写着副题库 sha 前 12 位 | 写错一个键；`invites_sharing` 版本写回 1；`null_if_truncated` 只列「没问读者」；run_tag=primary；默认多算 `last_para_has_qmark`；改 yaml 不改 D-128 |

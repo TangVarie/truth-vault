@@ -18,7 +18,7 @@ check_feature_orchestration 守着, 这里只加一道「主题库没动」的�
      primary_bank.bank_version 钉错; null_if_truncated 空 / 重复 / 不是列表  → §6 红
   ⑧ 副题库用 run_tag=primary 或不带 fqr- 前缀                              → §5 红
   ⑨ 默认 code_features 多算了 last_para_has_qmark (冻结题库多一行)          → §4 红
-  ⑩ 截断正文的「没问读者」照常落库                                          → §3 红
+  ⑩ 截断正文的 reader_ask_form 照常落库 (任何一个取值; 结尾看不到, 哪个都说不准) → §1 / §3 红
   ⑪ 副题库 yaml 改了一个字却没改 D-128 (sha 前 12 位对不上)                 → §8 红
 
 跑法: cd scripts && python check_secondary_bank.py
@@ -81,7 +81,9 @@ def check_positive() -> None:
     for qid in ("reader_ask_form", "invites_sharing"):
         assert _q(SEC, qid)["conditional_on"] == ["ending_asks_reader", "asks_for_help"], qid
     assert _q(SEC, "reader_ask_form")["contrast_base_excludes"] == ["没问读者"]
-    assert _q(SEC, "reader_ask_form")["null_if_truncated"] == ["没问读者"]
+    # 截断正文整题 NULL: 结尾看不到时六个取值都说不准 (codex review on #237), 所以要列全, 少一个 CI 就红
+    assert _q(SEC, "reader_ask_form")["null_if_truncated"] == fb._options(_q(SEC, "reader_ask_form")), \
+        _q(SEC, "reader_ask_form")["null_if_truncated"]
     # 题干原文里不许再有草稿那句「不进仓库」(D-128: 用定稿措辞, 去掉草稿注释)
     assert "不进仓库" not in SEC_RAW.decode("utf-8")
     print(f"  §1 副题库 {SEC['bank_version']} sha {SEC['_sha256'][:12]}: 两道校验都过; 2 模型题 / 1 代码特征 / 0 占位题; "
@@ -106,7 +108,7 @@ def check_hygiene() -> None:
     print("  §2 副题库两组 (分组 / 单问) 过 hygiene; 分层题与新键不进提示词 ✓")
 
 
-# ── §3 证据与截断: 没问读者免证据、挑一个要证据、截断正文的没问读者 → span_truncated ─────────
+# ── §3 证据与截断: 没问读者免证据、挑一个要证据、截断正文的 reader_ask_form 整题 → span_truncated ─
 def check_evidence_and_truncation() -> None:
     sp = fb.build_spans("【标题】年终奖先还房贷还是先换车？\n【正文】今年拿到年终奖，纠结了一周。\n\n大家要是遇到这种情况会怎么选？", mode="markers")
     r = fb.validate_answers(SEC, ["reader_ask_form"], _ans(reader_ask_form=("没问读者", "")), sp)
@@ -119,24 +121,36 @@ def check_evidence_and_truncation() -> None:
     assert r["invites_sharing"]["answer"] == "是", r
     r = fb.validate_answers(SEC, ["invites_sharing"], _ans(invites_sharing=("是", "纠结了一周")), sp)
     assert r["invites_sharing"]["invalid_reason"] == fb.INVALID_EVIDENCE_NOT_FOUND, "invites_sharing 只看结尾那段"
-    # 截断: full 被截到 1,500 字, 结尾看不到 → 「没问读者」说不准 → NULL + span_truncated; 证据在前缀里的取值照常
+    # 截断: full 被截到 1,500 字, 结尾看不到。「没问读者」说不准; 前缀里有一问也说不准 (结尾那一问可能排得更前,
+    # 标题的问句也可能在结尾被答掉) → 六个取值一律 NULL + span_truncated (codex review on #237)
     sp_t = fb.build_spans("【标题】这三支口红哪支更日常？\n【正文】" + "今天试色。" * 400 + "\n\n你们呢？", mode="markers")
     assert sp_t["_truncated"]
-    r = fb.validate_answers(SEC, ["reader_ask_form"], _ans(reader_ask_form=("没问读者", "")), sp_t)
-    assert r["reader_ask_form"] == {"answer": None, "evidence": None, "invalid_reason": fb.INVALID_SPAN_TRUNCATED}, r
-    r = fb.validate_answers(SEC, ["reader_ask_form"], _ans(reader_ask_form=("挑一个", "哪支更日常")), sp_t)
-    assert r["reader_ask_form"]["answer"] == "挑一个", r
+    for val, ev in (("没问读者", ""), ("挑一个", "哪支更日常"), ("说自己的", "这三支口红哪支更日常"),
+                    ("求推荐", "哪支更日常"), ("找同类", "哪支更日常"), ("求解答", "哪支更日常")):
+        r = fb.validate_answers(SEC, ["reader_ask_form"], _ans(reader_ask_form=(val, ev)), sp_t)
+        assert r["reader_ask_form"] == {"answer": None, "evidence": None,
+                                        "invalid_reason": fb.INVALID_SPAN_TRUNCATED}, (val, r)
     # invites_sharing 看 last_para (从没截断的正文切), 截断不影响它的「否」
     r = fb.validate_answers(SEC, ["invites_sharing"], _ans(invites_sharing=("否", "")), sp_t)
     assert r["invites_sharing"]["answer"] == "否", r
-    # 反证: 拿掉 null_if_truncated → 截断正文的「没问读者」照常落库 (这正是 D-128 要挡的)
+    # 反证: 拿掉 null_if_truncated → 截断正文的取值照常落库 (这正是 D-128 要挡的)
     b = copy.deepcopy(SEC); _q(b, "reader_ask_form").pop("null_if_truncated")
     r = fb.validate_answers(b, ["reader_ask_form"], _ans(reader_ask_form=("没问读者", "")), sp_t)
     assert r["reader_ask_form"]["answer"] == "没问读者", "反证前提: 没有 null_if_truncated 时截断不拦 choice 题"
+    # 反证: 只拦「没问读者」(#237 初版) → 前缀里的「挑一个」照常落库, §1 的「列全」断言就是为它设的
+    b = copy.deepcopy(SEC); _q(b, "reader_ask_form")["null_if_truncated"] = ["没问读者"]
+    r = fb.validate_answers(b, ["reader_ask_form"], _ans(reader_ask_form=("挑一个", "哪支更日常")), sp_t)
+    assert r["reader_ask_form"]["answer"] == "挑一个", "反证前提: 只列没问读者时前缀里的取值不拦"
+    # 没截断的长文照常: 1,500 字以内 (生产最长 1,013 字) 一个都不拦
+    sp_n = fb.build_spans("【标题】这三支口红哪支更日常？\n【正文】" + "今天试色。" * 250 + "\n\n你们呢？", mode="markers")
+    assert not sp_n["_truncated"]
+    r = fb.validate_answers(SEC, ["reader_ask_form"], _ans(reader_ask_form=("挑一个", "哪支更日常")), sp_n)
+    assert r["reader_ask_form"]["answer"] == "挑一个", r
     # 主题库不受影响: 截断时 choice 题照常 (product_role 选 未出现 免证据)
     r = fb.validate_answers(PRIMARY, ["product_role"], _ans(product_role=("未出现", "")), sp_t)
     assert r["product_role"]["answer"] == "未出现", r
-    print("  §3 没问读者免证据、挑一个要证据、invites_sharing 只认结尾; 截断正文的没问读者 → span_truncated; 主题库照旧 ✓")
+    print("  §3 没问读者免证据、挑一个要证据、invites_sharing 只认结尾; 截断正文的 reader_ask_form 六个取值都 → "
+          "span_truncated, 不截断的照常; 主题库照旧 ✓")
 
 
 # ── §4 代码特征: 默认仍是那 8 个; last_para_has_qmark 只在点名时算 ─────────────────────
