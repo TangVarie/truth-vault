@@ -11,8 +11,11 @@ check_feature_orchestration 守着, 这里只加一道「主题库没动」的�
   ③ 和主题库同 id 的题 version 没升 (invites_sharing 写回 1)              → §6 红
   ④ done_marker 没写 / 写成主题库的 has_specific_time                      → §6 红
   ⑤ code_features 里写了没实现的 id                                        → §6 红
-  ⑥ 确认族里放代码特征 / 取值不成立 / 不是正好 2 行                        → §6 红
+  ⑥ 确认族里放代码特征 / 取值不成立 / 不是正好 2 行 / 两行重复 / 行形状不对  → §6 红
   ⑦ 键写错 (题内 / 顶层 / gate2 块)                                         → §6 红
+  ⑦b gate2 块: 不是映射 / 写了 conditional_on 却没条件快照 / 合并行 hypothesis 不在闭集 /
+     合并行指向 bool 题 / placebo=in_bank 却没占位题 / from_primary 用在主题库;
+     primary_bank.bank_version 钉错; null_if_truncated 空 / 重复 / 不是列表  → §6 红
   ⑧ 副题库用 run_tag=primary 或不带 fqr- 前缀                              → §5 红
   ⑨ 默认 code_features 多算了 last_para_has_qmark (冻结题库多一行)          → §4 红
   ⑩ 截断正文的「没问读者」照常落库                                          → §3 红
@@ -254,6 +257,13 @@ def check_negatives() -> None:
     p2 = copy.deepcopy(PRIMARY); p2["status"] = "draft"
     errs = fb.validate_secondary(SEC, p2)
     assert any("主题库没冻结" in e for e in errs), errs
+    p2 = copy.deepcopy(PRIMARY); p2["frozen_sha256"] = "2" * 64
+    errs = fb.validate_secondary(SEC, p2)
+    assert any("frozen_sha256 与规范化 digest 不符" in e for e in errs), errs
+    for bad_pb in ("fq-v0.1", {"bank_version": "fq-v0.1", "sha256": PRIMARY["_sha256"].upper()},
+                   {"sha256": PRIMARY["_sha256"]}):
+        b = copy.deepcopy(SEC); b["primary_bank"] = bad_pb
+        _must_fail(b, "副题库要写 primary_bank", f"primary_bank={bad_pb!r}")
     b = copy.deepcopy(SEC); b["call_groups"]["G3_engagement"] = b["call_groups"].pop("G8_sharing")
     _q(b, "invites_sharing")["group"] = "G3_engagement"
     _must_fail(b, "组名和主题库撞了", "组名撞主题库")
@@ -271,6 +281,30 @@ def check_negatives() -> None:
     _must_fail(b, "gate2.half", "gate2.half 不在闭集")
     b = copy.deepcopy(SEC); b["gate2"]["placebo"] = "none"
     _must_fail(b, "gate2.placebo", "gate2.placebo 不在闭集")
+    b = copy.deepcopy(SEC); b["gate2"]["placebo"] = "in_bank"
+    _must_fail(b, "本库没有占位题", "placebo=in_bank 但本库没有占位题")
+    b = copy.deepcopy(SEC); b.pop("role")
+    errs = fb.validate_bank(b)
+    assert any("placebo=from_primary 只用于副题库" in e for e in errs), f"from_primary 用在非副题库没被抓住: {errs}"
+    b = copy.deepcopy(SEC); b["gate2"].pop("condition_snapshot")
+    _must_fail(b, "gate2.condition_snapshot 必须写明", "写了 conditional_on 却没写条件快照")
+    b = copy.deepcopy(SEC); b["gate2"] = ["holdout"]
+    _must_fail(b, "gate2 必须是映射", "gate2 写成列表")
+    b = copy.deepcopy(SEC); b["primary_bank"]["bank_version"] = "fq-v0.0"
+    _must_fail(b, "primary_bank.bank_version", "钉错主题库版本名")
+    b = copy.deepcopy(SEC); b["gate2"]["confirmation_family"][1] = list(b["gate2"]["confirmation_family"][0])
+    _must_fail(b, "'挑一个+说自己的'] 重复", "确认族两行重复")
+    b = copy.deepcopy(SEC); b["gate2"]["confirmation_family"][1] = ["invites_sharing", "是", "+"]
+    _must_fail(b, "必须是 [question_id, 取值]", "确认族的行多一列")
+    b = copy.deepcopy(SEC); b["gate2"]["merged_contrasts"][0]["hypothesis"] = "++"
+    _must_fail(b, "hypothesis='++'", "合并行的 hypothesis 不在闭集")
+    b = copy.deepcopy(SEC); b["gate2"]["merged_contrasts"][0]["question_id"] = "invites_sharing"
+    _must_fail(b, "必须是本库的 choice 模型题", "合并行指向 bool 题")
+    b = copy.deepcopy(SEC); b["gate2"]["merged_contrasts"] = {"reader_ask_form": ["挑一个", "说自己的"]}
+    _must_fail(b, "merged_contrasts 必须是列表", "merged_contrasts 写成映射")
+    for bad_nit in ([], ["没问读者", "没问读者"], "没问读者"):
+        b = copy.deepcopy(SEC); _q(b, "reader_ask_form")["null_if_truncated"] = bad_nit
+        _must_fail(b, "null_if_truncated 必须是", f"null_if_truncated={bad_nit!r}")
     b = copy.deepcopy(SEC); _q(b, "reader_ask_form")["null_if_truncated"] = ["否"]
     _must_fail(b, "不在闭集里", "null_if_truncated 取值不在选项里")
     b = copy.deepcopy(SEC); _q(b, "invites_sharing")["null_if_truncated"] = ["否"]
@@ -291,7 +325,7 @@ def check_negatives() -> None:
             raise AssertionError(f"load_bank_pair({path}) 必须 raise")
     pathlib.Path(tmp).unlink()
     print("  §6 反证 (conditional_on / excludes / 版本 / done_marker / 代码特征 / 确认族 / 键写错 / 合并 / 钉 sha / 组名 / "
-          "gate2 闭集 / null_if_truncated / 读文件) 全部变红 ✓")
+          "gate2 闭集与形状 / 主题库钉版本与冻结 sha / null_if_truncated / 读文件) 全部变红 ✓")
 
 
 # ── §7 绊线: 主题库没动; features-sync 的请求体不带 bank ─────────────────────────────
