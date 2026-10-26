@@ -347,6 +347,38 @@ Jev 是 TypeSafe AI 2026-09-15 发布的判断型模型：输入一段文本和�
 
 其余判据（support ≥ 30、大项目方向、账号先验变化 ≤ 30%、状态表）照旧。**副题库的结果不写 `feature_validation`**：馆员取全表最新的一次闸二、不分题库（`librarian/core.py` `latest_gate2_run`），写进去写作台的规律下发会整体断掉。结论只进报告和 DECISIONS。
 
+**副题库闸一的跑法（runbook，PR2 起；worker 部署了带 `bank` 的版本之后）**。样本名单已进仓库：`data-analysis/gate1-reader-sample-2026-10-26.csv`（`gate1_sample.py` 按 D-128 抽，200 篇 = A 层 150 + B 层 50）。三趟都在 note_ids 模式、`bank=reader`、`fqr-` run_tag、显式 model 下跑，workflow / worker / pass 三处都拦 `primary`；探针要 worker 回显 `bank` 且日志是 `bank=fq-v0.2-cand-reader`，否则停在探针、不花钱。在当天 features-sync 跑完之后开始（`gh run list -w features-sync.yml -L1`，约 18:00 UTC 以后），在仓库根目录：
+
+```bash
+SHA=$(cd scripts && python -c "import feature_bank as fb; print(fb.load_bank(fb.BANKS['reader'])['_sha256'])")
+IDS=$(tail -n +2 data-analysis/gate1-reader-sample-2026-10-26.csv | cut -d, -f1 | paste -sd,)
+gh workflow run backfill-features.yml -f project=gate1r -f batch=6 -f note_ids="$IDS" -f bank=reader -f bank_sha=$SHA -f reannotate=false -f code_only=false -f run_tag=fqr-g1-sonnet55-a -f model=claude-sonnet-5-5
+gh workflow run backfill-features.yml -f project=gate1r -f batch=6 -f note_ids="$IDS" -f bank=reader -f bank_sha=$SHA -f reannotate=false -f code_only=false -f run_tag=fqr-g1-sonnet55-b -f model=claude-sonnet-5-5
+gh workflow run backfill-features.yml -f project=gate1r -f batch=6 -f note_ids="$IDS" -f bank=reader -f bank_sha=$SHA -f reannotate=false -f code_only=false -f run_tag=fqr-g1-haiku55 -f model=claude-haiku-5-5
+```
+
+三条**一条跑完再发下一条**（`gh run watch <run id> --exit-status`）：同一个 `project=gate1r` 是同一个 concurrency group，GitHub 对同组只留一个 pending，三条一起发，第三条会把排着的第二条挤掉（D-100 记过）。某一趟有批没成功，原样再发同一条，续跑只补缺的篇（按 `reader_ask_form` + 精确 extractor + 副题库 sha 判）。
+
+跑完的只读检查（第一趟开始前先记下 ④ 的数和开始时间 `<T0>`）：
+
+```sql
+-- ① 每个 fqr-g1-* run_tag：reader_ask_form v1 / invites_sharing v2 (llm:…) 和 last_para_has_qmark v1 (code:v1) 各 200 行，一个 sha
+select run_tag, extractor, left(bank_sha256, 12) as sha, question_id, question_version,
+       count(*) as n, count(distinct subject_id) as notes, count(*) filter (where invalid_reason is not null) as invalid
+from truth_vault.note_feature_answers where subject_type = 'note' and run_tag like 'fqr-g1-%'
+group by 1, 2, 3, 4, 5 order by 1, 4;
+-- ② 副题库的行只在 fqr-* 下；primary 下没有新 sha 的行（都应是 0）
+select count(*) from truth_vault.note_feature_answers where bank_version = 'fq-v0.2-cand-reader' and run_tag not like 'fqr-%';
+select count(*) from truth_vault.note_feature_answers where run_tag = 'primary' and bank_sha256 not like 'ba0f570c%' and extracted_at > '<T0>';
+-- ③ note_features 的戳没被改（只应有 fq-v0.1/code:v1）
+select extractor_version, count(*) from truth_vault.note_features group by 1;
+-- ④ 样本这 200 篇的主题库行一行没动（前后一样；<IDS 加引号> = tail -n +2 名单 | cut -d, -f1 | sed "s/.*/'&'/" | paste -sd,）
+select count(*), max(extracted_at) from truth_vault.note_feature_answers
+where run_tag = 'primary' and bank_sha256 like 'ba0f570c%' and subject_id in (<IDS 加引号>);
+```
+
+之后：`gate1_models.py --print-sql` 拿去只读 MCP 跑、存进 scratchpad，再 `--from-json … --out data-analysis/gate1-reader-<日期>.md --cells-out data-analysis/gate1-reader-cells-<日期>.csv`（第一版报告：A 对 B、证据无效率）；`build_gate1_review_sheet.py --print-sql` 取正文进 scratchpad，做裁决表（仓库外）直接交给 owner；收回后 `ingest_gate1_review.py --sql-out` 出 SQL（`human:owner` / `fqr-g1-owner`），由有写权限的人执行；再带 `--owner-run-tag fqr-g1-owner` 出终版报告。闸二的抽取名单：`gate1_sample.py --half holdout --take all`（多加闸二口径：有 essence、正文 ≥ 50 字、没删），分批 ≤ 200 篇、`run_tag=fqr-g2-sonnet55`，题库冻结之后另批钱再跑。
+
 ### 6.3 闸三 · 对新笔记也成立
 
 历史数据里时间和项目完全共线（l2-feasibility §4③），分不清「规律失效了」还是「换了个客户」。唯一的办法是往前看：

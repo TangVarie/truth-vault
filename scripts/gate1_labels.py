@@ -58,4 +58,6 @@ SHORT: dict[str, str] = {
     "turning_point": "前后转折",
     "judged_by_others": "被人评价",
     "negative_outcome_happened": "已发生的坏结果",
+    # 副题库 fq-v0.2-cand-reader (D-128)。invites_sharing v2 沿用上面那个标签 (同一个 id)。标签必须唯一: 收表脚本按标签反查题号。
+    "reader_ask_form": "读者怎么回答",
 }

@@ -61,6 +61,12 @@ jobs:
             scripts/check_feature_parse.py \
             scripts/check_feature_orchestration.py \
             scripts/check_secondary_bank.py \
+            scripts/gate1_sample.py \
+            scripts/gate1_models.py \
+            scripts/build_gate1_review_sheet.py \
+            scripts/ingest_gate1_review.py \
+            scripts/check_gate1_models.py \
+            scripts/check_gate1_review.py \
             scripts/check_gateway_filter.py \
             scripts/check_onboarder_jobs.py \
             scripts/check_comment_parser.py \
@@ -1233,6 +1239,12 @@ jobs:
       - name: "副题库 fq-v0.2-cand-reader (D-128): 两道校验 + 反证 / run_tag 只许 fqr- / 默认代码特征仍 8 个 / 截断的「没问读者」记 NULL / D-128 钉 sha"
         working-directory: scripts
         run: python check_secondary_bank.py   # §1 正例 · §2 防泄漏 · §3 证据与截断 · §4 代码特征 · §5 run_tag · §6 反证 · §7 主题库绊线 · §8 预注册钩子
+      - name: "副题库闸一 (D-128): 三趟模型 + owner 参考 · 合并 3 档 / A 层 κ / 证据无效率 / 拒算 / 证据不出报告"
+        working-directory: scripts
+        run: python check_gate1_models.py   # §1 判定档 · §2 证据无效率 · §3 拒算 · §4 判定 · §5 哨兵 · §6 格子表 · §7 合并对 yaml
+      - name: "副题库闸一 (D-128): 抽样 + 进仓名单绊线 + 裁决表 (甲乙不露模型) + 收表 (human:owner / fqr-g1-owner)"
+        working-directory: scripts
+        run: python check_gate1_review.py   # §1 抽样 · §2 名单 · §3 裁决表 · §4 收表; xlsx 往返要 openpyxl, 本地 --xlsx
       - name: "闸一名单灰格往返 (多灰格 | 分隔) + prob 存所选答案的概率 (D-085)"
         working-directory: scripts
         run: python check_gate1_ingest.py
