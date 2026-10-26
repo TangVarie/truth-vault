@@ -377,7 +377,7 @@ select count(*), max(extracted_at) from truth_vault.note_feature_answers
 where run_tag = 'primary' and bank_sha256 like 'ba0f570c%' and subject_id in (<IDS 加引号>);
 ```
 
-之后：`gate1_models.py --print-sql` 拿去只读 MCP 跑、存进 scratchpad，再 `--from-json … --out data-analysis/gate1-reader-<日期>.md --cells-out data-analysis/gate1-reader-cells-<日期>.csv`（第一版报告：A 对 B、证据无效率）；`build_gate1_review_sheet.py --print-sql` 取正文进 scratchpad，做裁决表（仓库外）直接交给 owner；收回后 `ingest_gate1_review.py --sql-out` 出 SQL（`human:owner` / `fqr-g1-owner`），由有写权限的人执行；再带 `--owner-run-tag fqr-g1-owner` 出终版报告。不一致格和复核格要**每一格**都裁（D-128）：有一格拿不准或空着，对参考的线不作数，这道题判 `pending`（A 对 B、证据无效率不过或复核推翻 > 2 照样判 `fail`）。一张表就是 owner 裁决的全量：SQL 是一个事务，先删掉这张表里空着 / 拿不准的格以前收过的裁决，再 upsert 收下的格，所以改过的表再收一次就以新表为准；表里删了行会被拒。闸二的抽取名单：`gate1_sample.py --half holdout --take all`（多加闸二口径：有 essence、正文 ≥ 50 字、没删），分批 ≤ 200 篇、`run_tag=fqr-g2-sonnet55`，题库冻结之后另批钱再跑。
+之后：`gate1_models.py --print-sql` 拿去只读 MCP 跑、存进 scratchpad，再 `--from-json … --out data-analysis/gate1-reader-<日期>.md --cells-out data-analysis/gate1-reader-cells-<日期>.csv`（第一版报告：A 对 B、证据无效率）；`build_gate1_review_sheet.py --print-sql` 取正文进 scratchpad，做裁决表（仓库外）直接交给 owner；收回后 `ingest_gate1_review.py --sql-out` 出 SQL（`human:owner` / `fqr-g1-owner`），由有写权限的人执行；再带 `--owner-run-tag fqr-g1-owner` 出终版报告。不一致格和复核格要**每一格**都裁（D-128）：有一格拿不准或空着，对参考的线不作数，这道题判 `pending`（A 对 B、证据无效率不过或复核推翻 > 2 照样判 `fail`）。三趟全一致的格凑不满 20 个时复核做不满，这道题一直 `pending`，不降成「有几格裁几格」：要补样本或在 DECISIONS 里另作决定。一张表就是 owner 裁决的全量：SQL 是一个事务，先删掉这张表里空着 / 拿不准的格以前收过的裁决，再 upsert 收下的格，所以改过的表再收一次就以新表为准；表里删了行会被拒。闸二的抽取名单：`gate1_sample.py --half holdout --take all`（多加闸二口径：有 essence、正文 ≥ 50 字、没删），分批 ≤ 200 篇、`run_tag=fqr-g2-sonnet55`，题库冻结之后另批钱再跑。
 
 ### 6.3 闸三 · 对新笔记也成立
 

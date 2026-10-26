@@ -272,6 +272,12 @@ def check_verdicts(td) -> None:
     own_in[k_in] = "求推荐"
     _, _, res_in = _run(_rows(_answers(), own_in), m)
     assert (res_in["reader_ask_form"]["owner"]["spot_overturned"], res_in["reader_ask_form"]["owner"]["spot_overturned_raw"]) == (1, 2)
+    # 一致格凑不满 20 个复核 → pending, 不能降成「有几格裁几格」再判 pass (codex review on #238)
+    assert res["reader_ask_form"]["verdict"] == "pass", res["reader_ask_form"]["why"]
+    r10 = copy.deepcopy(res["reader_ask_form"])
+    r10["owner"].update(spot=10, spot_ruled=10)
+    v10, why10 = gm._verdict("reader_ask_form", r10, True)
+    assert v10 == "pending" and any("凑不满 D-128 预注册的复核 20 格" in w for w in why10), (v10, why10)
     # 复核没裁完 → pending (不是 pass)
     own19 = dict(own)
     spot_keys = [(c["note_id"], c["question_id"]) for c in cells0 if c["kind"] == "spot" and c["question_id"] == "reader_ask_form"]

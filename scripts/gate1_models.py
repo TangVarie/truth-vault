@@ -407,8 +407,12 @@ def _verdict(q: str, r: dict, has_owner: bool) -> tuple[str, list[str]]:
     if o["disagree_ruled"] < o["disagree"]:
         pending.append(f"不一致格只裁了 {o['disagree_ruled']} / {o['disagree']} 个 (拿不准 / 空着都不算裁; "
                        "D-128 要每一格都裁, 没裁完对参考的线不作数)")
-    if o["spot_ruled"] < min(SPOT_N, o["spot"]):
-        pending.append(f"复核只裁了 {o['spot_ruled']} / {min(SPOT_N, o['spot'])} 个一致格")
+    if o["spot"] < SPOT_N:
+        # D-128 预注册的是每题复核 {SPOT_N} 格; 三趟全一致的格不够时不能悄悄降成「有几格裁几格」(codex review on #238)
+        pending.append(f"三趟全一致的格只有 {o['spot']} 个, 凑不满 D-128 预注册的复核 {SPOT_N} 格 —— 裁完也判不了 pass, "
+                       "要补样本或在 DECISIONS 里另作决定")
+    elif o["spot_ruled"] < SPOT_N:
+        pending.append(f"复核只裁了 {o['spot_ruled']} / {SPOT_N} 个一致格")
     ref = [("A 对参考一致率 ≥ 0.85", r["AR"]["ok_agree"])]
     if q == STRATUM_KAPPA_Q:
         ref.append(("A 对参考 κ ≥ 0.60 (A 层)", r["AR_stratumA"]["ok_kappa"]))
