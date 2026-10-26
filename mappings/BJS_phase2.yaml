@@ -1,12 +1,16 @@
 # ════════════════════════════════════════════════════════════════════
-# BJS_phase2 · 百健士成人藻油 —— 接表草稿(B 家族, 2026-10-26)
+# BJS_phase2 · 百健士成人藻油 —— 接表草稿(A 家族, 2026-10-26)
 # ════════════════════════════════════════════════════════════════════
 # 写作台项目「百健士成人藻油」(10-21 建)的发布表(I-22)。owner 10-26 给的链接: 和 BJS_phase1
 # 同一个 base(XkANwc24CidwrdkauRHcBQELnrh), 新表 tbloWC6k4aDdLwx0 / view vewof8k1Sw。
 # 起草方法同 XIWU_phase2(W-25): 同一个 base、同一拨运营, 先照 BJS_phase1 的列结构起草,
 # 再用 Preflight(只读飞书)对真表校正列名 / 方向 / tier 取值; 首次入库前不定方向口径和人群。
-# ⚠️ 未定: 运营 10-26 把 BJS_phase1 里 9-30 以后的 79 篇挪走了, 其中 65 篇在写作台对应的是
-#    儿童「百健士-藻油」的稿子。新表是不是只放成人藻油, 要先核清再入库(I-22)。
+# 10-26 运营把 BJS_phase1 的 79 行挪到这张表(TV 里旧行: 53 篇有发布时间、在 10-07～10-25, 其中 52 篇
+# 有链接; 另 26 行没有发布时间、链接和 tier, 是还没发的稿); owner 10-26 确认 79 篇全是成人藻油。
+# 65 篇在写作台「百健士-藻油」(efe112d3)有对照: 40 篇是成人项目建之前在那里写的稿, 25 篇是 tv-sync
+# 补录进去的副本(写作台外写的)。BJS_phase1 留下的 182 行(最晚发布 09-15)是儿童藻油。
+# Preflight 10-26(run 40302429088, 只读): 读 76 行、有正文 70 行、空占位 6 行; 下面按它校正过。
+# 新表有正文的只有 70 行, 旧的 79 行至少 9 行在这里配不上; 旧行先配对、再按配对结果撤, 见 OPEN-ITEMS I-22。
 # ════════════════════════════════════════════════════════════════════
 
 version: 1.0
@@ -19,7 +23,7 @@ brand_aliases:
   - 百健士澳洲藻油
 category: 保健品
 platform: xiaohongshu
-schema_family: B
+schema_family: A                 # Preflight 10-26: 有「是否巡查」「巡查状态」「最近检查时间」「已确认存活」→ A 家族指纹(BJS_phase1 是 B)
 start_date: auto_from_publish_time_min
 end_date: auto_from_publish_time_max
 
@@ -38,26 +42,32 @@ field_mapping:
   笔记状态: _note_status_raw
   随贴评论: _comment_text
   蓝词字段: hit_blue_keywords
+  # Preflight 10-26(run 40302429088)校正: 新表有独立的数值列(同 XIWU_phase2 / TUGE: 有数值列就用数值列,
+  # 「数据整理」只留 raw_extra; BJS_phase1 没有这三列才走 metrics_from_kv_text)。
+  曝光量: impressions               # 40 行有值
+  阅读量: reads                     # 41 行
+  互动数: interactions              # 47 行; 列名同 XIWU_phase2 / HATHERINE
+  观众分析: _audience_raw           # 52 行 → actual_audience_data(确定性解析, 同 XIWU_phase2 / SPX / TUGE)
 
 # 方向口径【待首次入库后按真实文案定】(同 XIWU_phase2 的做法)。先照 BJS_phase1 的两个方向值起草,
-# 让 preflight 能核方向是否全部命中; 人群和痛点先写「通用」/ 待定, 不沿用儿童项目的「宝妈」。
+# 让 preflight 能核方向是否全部命中; 人群先写「通用」, 不沿用儿童项目的「宝妈」。
+# user_pain_point 先不写(同 XIWU_phase2 草稿 a62c5d3): 它在 sync 的 UPSERT_PROTECTED_COLS 里, 占位句一旦随首次
+# 入库写进 notes, 映射 PR 2 改名或去掉这个键都清不掉(I-17 那条路)。PR 2 按真实文案补真值。
 direction_decomposition:
   "好物分享-产品贴":
     content_format: 场景植入
     target_audience: ["通用"]
-    user_pain_point: 待首次入库后按真实文案定
 
   "提问贴":
     content_format: 情感叙事
     target_audience: ["通用"]
-    user_pain_point: 待首次入库后按真实文案定
 
 tier_extraction:
   source: 状态字段
   rules:
     - match_contains: ["大爆"]
       tier: 大爆
-    - match_contains: ["爆贴预备"]
+    - match_contains: ["爆帖预备", "爆贴预备"]   # 两种拼写都认(同 XIWU_phase2): 只认「贴」的话「爆帖预备」会落到下面的「爆帖」判成 爆
       tier: 预备
     # ⚠️ 「伪爆帖」必须排在「爆帖」【之前】—— 取首个命中, 而「伪爆帖500」含「爆帖」。
     # 起草稿把这条放在最后, 于是运营手标的假数据被判成 爆(2026-08-28 修; 同 D-045,
@@ -74,23 +84,11 @@ tier_extraction:
       tier: 趴
     - match_contains: ["评估中"]
       tier: 评估中
+    - match_contains: ["观察中"]      # 冷启动窗口 → 未知(同 XIWU_phase2 / HATHERINE / TUGE); Preflight 10-26: 观察中×9
+      tier: 未知
     - default: null
 
-# 定稿 2026-08-30: 这两个数【现在不生效, 也不该现在定】——
-# 本表 field_mapping 里没有 曝光/阅读/互动 任何一列, 入库 43 行 interactions 全 null,
-# 而数值推断只在【tier 源为空 且 有互动数】时兜底。实测 43 行 tier 100% 来自「流量状态」
-# (42 无水花 + 1「无水花/爆贴」), 数值推断一次都没触发过。
-# ── 指标: 本表没有独立的 曝光/阅读/互动 数值列, 9/1 起运营在「数据整理」里以键值文本填 ──
-# 2026-09-02(D-051): 同 LNKT 的 D-048 机制。
-# D-062(2026-09-17): 数值推断只看 comments_count(本表已映「实时数据.评论数」, 此前落在
-# _undeclared 里), 与这里解析出的互动量无关; 项目级互动量阈值整个作废。
-metrics_from_kv_text:
-  sources: ["数据整理"]
-  anchor: 曝光量
-  extract:
-    impressions: ["曝光量"]
-    reads: ["阅读量"]
-    interactions: ["互动量"]
+# tier_thresholds 已废(D-062): 判爆只看评论数。
 
 compliance:
   base_template: 保健品
@@ -124,19 +122,43 @@ project_specific_fields_to_raw_extra:
                             #    是孤证)。⚠️ 生产全库 0 行, 连 key 都不存在。
                             #    ⚠️ 这三列【永不】映 impressions/reads/interactions/comments_count。
   - 起量时间
-  - 数据整理                        # 2026-09-02(D-051): 9/1 起运营加的键值文本列「曝光量：X；阅读量：Y；互动量：Z」, 43 行被隔离; 也是下方 metrics_from_kv_text 的源
+  - 数据整理                        # 运营录的键值文本「曝光量：X；阅读量：Y；互动量：Z」(D-051)。本表另有独立数值列, 指标走数值列, 这列只留痕(同 TUGE / XIWU_phase2)
   - 笔记配图
   - 随贴评论配图
   - 相关截图
-  - 蓝词图片
-  - 父记录
+  # Preflight 10-26: 下面这些是巡查机器人那一套(同 XIWU_phase2 01b1988), 全部留痕不做二次处理
+  - 评论状态
+  - 是否巡查
+  - 巡查状态
+  - 已确认存活
+  - 最近检查时间
+  - 下次检查时间
+  - 平台
+  - 排队刷新
+  - 置顶状态
+  - 评论区快照
+  - 诊断信息
+  - 连续失败次数
+  - 上次评论数
+  - 评论关键词
+  - 负面状态
+  - 负面评论快照
+  - 负面词
+  - 整理时互动数
+  - 整理时评论数
+  - 整理状态
+  - 是否截图
+  - 作品ID                          # 58 行; 别的表也没声明过(I-24), 先留痕
+  - 蓝词来源                        # 9 行; 同上
 
 onboarding_meta:
   onboarded_at: 2026-10-26
   onboarded_by: Claude 照 BJS_phase1 列结构起草(I-22)
   strategy_lead: [待填]
   notes: |
-    DRAFT — 先 preflight(只读)校正列名 / 方向 / tier, 核清新表是不是只放成人藻油, 再 on_demand 首次入库。
+    DRAFT — 10-26 Preflight(run 40302429088)校正过列名 / tier / 未声明列; owner 10-26 确认新表只放成人藻油。
+    下一步: 显式 on_demand 首次入库(先 dry_run, 勾 skip_essence), 和 BJS_phase1 那 79 行逐篇配对;
+    方向口径 / 人群 / 合规按真实文案定, 和翻 daily 一个 PR(I-22)。
     写作台映射: 百健士成人藻油(89d3e7aa)→ BJS_phase2, 首次入库核过之后在 aw tv_project_map 加(I-22)。
 
 sync_config:
