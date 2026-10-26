@@ -77,14 +77,14 @@ def s1_consistency() -> None:
 def s2_hits() -> None:
     ans = {
         "a": {"ending_asks_reader": "是", "brand_first_position": "后20%", "brand_in_title": "否"},
-        "b": {"body_question_marks": ">=2", "brand_first_position": "中间"},
+        "b": {"body_question_marks": ">=2", "brand_first_position": "中间"},   # 正文抛问题 D-127 撤了, 不再算命中
         "c": {"brand_in_title": "否"},                                   # 位置没答过 → 品牌那条不算做到
         "d": {"asks_for_help": "否", "brand_first_position": "未出现"},   # 没露品牌 → 不是品牌位置的例子
         "e": {"brand_first_position": "后20%", "brand_in_title": "是"},
         "f": {"brand_first_position": "后20%"},
     }
     h = P.card_hits(ans, D)
-    assert h == {"a": ["ending_asks_reader", "brand_placement"], "b": ["question_marks"], "f": ["brand_placement"]}, h
+    assert h == {"a": ["ending_asks_reader", "brand_placement"], "f": ["brand_placement"]}, h
     print("  §2 命中: any_of / none_of / 没答过不算 / 没露品牌不算 ✓")
 
 
@@ -128,7 +128,8 @@ def s3_switch() -> None:
     assert not P.matches_db(flip("ending_asks_reader", "是", status="no_signal"), D), "同标签重跑后不再 validated"
     assert not P.matches_db(flip("brand_in_title", "是", mh_odds_ratio=1.4), D), "「别这么写」那条方向反了"
     assert not P.matches_db(flip("asks_for_help", "是", bank_version="fq-v0.2"), D)
-    assert not P.matches_db([r for r in rows if r["question_id"] != "body_question_marks"], D), "行没了"
+    assert not P.matches_db([r for r in rows if r["question_id"] != "asks_for_help"], D), "行没了"
+    assert P.matches_db(flip("body_question_marks", ">=2", status="no_signal"), D), "压着不下发的取值变了不影响 (D-127)"
     assert P.matches_db(flip("emoji_bucket", "0", status="no_signal"), D), "没下发的取值变了不影响"
 
     P._verified.clear()
@@ -174,7 +175,8 @@ def s5_prompt() -> None:
     blk = core.build_system_blocks({}, [dict(CARD, validated_hits=["结尾问读者"])], D)[0]["text"]
     assert blk.startswith(core.ROLE_TASK_INSTR)
     assert blk.index("已验证规律") < blk.index("候选经验卡"), "规律段要在卡前面 (稳定前缀)"
-    assert "命中已验证规律: 结尾问读者" in blk and D["patterns"][3]["instruction"] in blk
+    brand = next(p for p in D["patterns"] if p["id"] == "brand_placement")       # 按 id 取, 撤一条规律下标就变 (D-127)
+    assert "命中已验证规律: 结尾问读者" in blk and brand["instruction"] in blk
     print("  §5 prompt: 规律段只在下发时出现、在卡前、卡面标命中 ✓")
 
 

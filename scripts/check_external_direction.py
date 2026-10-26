@@ -9,16 +9,19 @@ check_external_direction.py
 为什么要看: 闸二只在我们自己的帖子上验过。自己投、自己铺评、自己判爆, 飞轮只学自己, 一条规律可能只是我们这套
 打法的特征 (近亲繁殖, jev docs/00 #11)。外部帖是另一群人写的, 方向在那边也对, 才更像「这么写本身管用」。
 
-口径:
-  · 爆 = 评论 ≥ 50 (和我们判爆同一把尺子);
+口径 (D-127, 10-26 改: 原来 ≥50 对 <50、不分层、谁大算谁, 真实无效应时一半的周一会报「相反」):
+  · 和闸二同一个比法 (docs/28 §6.2): 爆 = 评论 ≥ 50 对 趴 = 评论 < 20, 中间 20–49 (运营口径的「评估中」) 不进表;
+  · 按品类分层 (外部一个品类就是一两个搜索词的结果页, 爆率差很多), Mantel–Haenszel 合并优势比 + RGB 区间,
+    用 gate2_run.mh_odds_ratio 同一个函数;
+  · 区间整段在 1 的上面才算「外部也同向」, 整段在下面才亮「外部方向相反」, 跨 1 = 外部看不出, 不判;
   · 只看「有就算」(any_of) 的规律; 「别这么写」那条 (品牌位置) 外部帖不是我们的品牌, 不适用;
   · 模型题用 Jev 已经给外部帖打好的答案 (note_feature_answers, subject_type=external_note, 同一份冻结题库);
     代码题 (问号数) 用 feature_bank.code_features 同一套代码在外部正文上现算;
-  · 有 / 没有 两侧各至少 30 篇才判 (MIN_N); 不够就写「样本不够」, 不判。
+  · 去掉中间段之后有 / 没有 两侧各至少 30 篇才判 (MIN_N); 不够就写「样本不够」, 不判。
 
 顺带报外部参考书架 (D-117 ②, librarian/external.py) 每个品类达标几张 —— 和馆员上架用同一个 qualifies, 口径只有一份。
 
-灯 (docs/29 登记, advisory): 有一条规律在够样本的情况下外部方向相反 → rc=1, 提醒这条可能只在我们自己帖子上成立,
+灯 (docs/29 登记, advisory): 有一条规律在够样本、品类内区间整段 < 1 时 → rc=1, 提醒这条可能只在我们自己帖子上成立,
 该拿出来议 (改下发的是批准层, 修在 TV 仓 prompts/desk_delivery_v1.json + 新 D 号)。外部表空 / 某道题的外部答案不止一个
 抽取器 (Jev 换版没清旧答案) → rc=2, 判不了。
 末行哨兵 EXTERNAL_DIRECTION_CHECK_DONE rc=<码>。
@@ -39,17 +42,29 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from librarian import external as X  # noqa: E402
 
+sys.path.insert(0, str(ROOT / "scripts"))
+from gate2_run import mh_odds_ratio  # noqa: E402  (闸二的同一个 MH + RGB, 口径只有一份)
+
 DELIVERY = ROOT / "prompts" / "desk_delivery_v1.json"
 BAO_COMMENTS = 50
+FLOP_COMMENTS = 20      # 闸二口径: 趴 = 评论 < 20; 20–49 是「评估中」, 不进表 (docs/28 §6.2)
 MIN_N = 30
+
+
+def _outcome(comments) -> Optional[int]:
+    """1 = 爆 (≥50), 0 = 趴 (<20), None = 中间段, 不进表。"""
+    c = comments or 0
+    return 1 if c >= BAO_COMMENTS else (0 if c < FLOP_COMMENTS else None)
 
 
 def judge(patterns: list[dict], notes: list[dict], answers: dict[str, dict[str, str]],
           mixed: frozenset = frozenset()) -> tuple[int, list[str]]:
-    """纯函数。notes: [{note_id, comments}]; answers: {note_id: {question_id: answer}};
+    """纯函数。notes: [{note_id, comments, category}]; answers: {note_id: {question_id: answer}};
     mixed: 外部答案不止一个抽取器的题 (不判)。返回 (rc, 报告行)。rc: 1 有规律方向相反 > 2 有判不了的 > 0。"""
-    lines = [f"外部方向复核 · {len(notes)} 篇 (评论 ≥{BAO_COMMENTS} 的 "
-             f"{sum(1 for n in notes if (n.get('comments') or 0) >= BAO_COMMENTS)} 篇) · 两侧各 ≥{MIN_N} 篇才判"]
+    outs = [_outcome(n.get("comments")) for n in notes]
+    lines = [f"外部方向复核 · {len(notes)} 篇 · 同闸二口径: 爆 (评论 ≥{BAO_COMMENTS}) {outs.count(1)} 篇 对 "
+             f"趴 (<{FLOP_COMMENTS}) {outs.count(0)} 篇, 中间 {outs.count(None)} 篇不算 · 按品类分层 · "
+             f"两侧各 ≥{MIN_N} 篇才判, 区间整段在 1 的一侧才算有方向"]
     if not notes:
         lines.append("  ⚠️  external_notes 是空的, 判不了")
         return 2, lines
@@ -65,33 +80,39 @@ def judge(patterns: list[dict], notes: list[dict], answers: dict[str, dict[str, 
                          "先定用哪一版 Jev 的答案")
             rc = rc or 2
             continue
-        has, no = [0, 0], [0, 0]                        # [篇数, 爆]
+        qs = {q for q, _ in f["any_of"]}
+        tables: dict[str, list[int]] = {}                 # 品类 → [有·爆, 有·趴, 没有·爆, 没有·趴]
         unknown = 0
-        for n in notes:
+        for n, y in zip(notes, outs):
             ans = answers.get(n["note_id"]) or {}
-            qs = {q for q, _ in f["any_of"]}
             if not (qs & set(ans)):
                 unknown += 1
                 continue
-            side = has if any(ans.get(q) == a for q, a in f["any_of"]) else no
-            side[0] += 1
-            side[1] += int((n.get("comments") or 0) >= BAO_COMMENTS)
-        rh = has[1] / has[0] if has[0] else None
-        rn = no[1] / no[0] if no[0] else None
-        fmt = (lambda r: "—" if r is None else f"{100 * r:.1f}%")
-        body = (f"{p['label']}: 有 {has[0]} 篇 {fmt(rh)} / 没有 {no[0]} 篇 {fmt(rn)}"
+            if y is None:
+                continue
+            has = any(ans.get(q) == a for q, a in f["any_of"])
+            t = tables.setdefault(n.get("category") or "—", [0, 0, 0, 0])
+            t[(0 if has else 2) + (0 if y else 1)] += 1
+        a, b, c, d = (sum(t[i] for t in tables.values()) for i in range(4))
+        fmt = (lambda k, m: "—" if not m else f"{100 * k / m:.1f}%")
+        body = (f"{p['label']}: 有 {a + b} 篇爆 {fmt(a, a + b)} / 没有 {c + d} 篇爆 {fmt(c, c + d)}"
                 + (f" (没答 {unknown})" if unknown else ""))
-        if has[0] < MIN_N or no[0] < MIN_N:
-            same = "同向" if (rh is not None and rn is not None and rh > rn) else "方向不明"
-            lines.append(f"  …  {body} → 样本不够, 不判 (目前{same})")
-        elif rh > rn:
-            lines.append(f"  ✅ {body} → 外部也同向")
-        elif rh == rn:
-            lines.append(f"  …  {body} → 外部持平, 不算相反")
-        else:
-            lines.append(f"  🟡 {body} → 外部方向相反: 这条可能只在我们自己的帖子上成立。拿出来议, 要撤就改批准层 "
+        if a + b < MIN_N or c + d < MIN_N:
+            lines.append(f"  …  {body} → 样本不够, 不判")
+            continue
+        m = mh_odds_ratio(tuple(t) for t in tables.values())
+        if m is None:
+            lines.append(f"  …  {body} → 品类内比不出来 (每个品类都缺一格), 不判")
+            continue
+        est = f"品类内 OR {m['or']:.2f} ({m['ci_low']:.2f}–{m['ci_high']:.2f})"
+        if m["ci_low"] > 1:
+            lines.append(f"  ✅ {body}, {est} → 外部也同向")
+        elif m["ci_high"] < 1:
+            lines.append(f"  🟡 {body}, {est} → 外部方向相反: 这条可能只在我们自己的帖子上成立。拿出来议, 要撤就改批准层 "
                          "prompts/desk_delivery_v1.json 并写新 D 号 (修在 TV 仓)")
             rc = 1
+        else:
+            lines.append(f"  …  {body}, {est} → 区间跨 1, 外部看不出方向, 不算相反")
     return rc, lines
 
 
@@ -243,7 +264,29 @@ def selftest() -> int:
     assert judge(pats, [], {})[0] == 2
     n, a = notes([(1, 1)] * 10 + [(1, 0)] * 20 + [(0, 1)] * 20 + [(0, 0)] * 40)     # 33.3% 对 33.3%
     rc, lines = judge(pats, n, a)
-    assert rc == 0 and any("持平" in l for l in lines), "一样的爆率不是方向相反"
+    assert rc == 0 and any("跨 1" in l for l in lines), "一样的爆率不是方向相反"
+
+    def notes2(spec):                                  # (有没有, 评论数, 品类, 篇数)
+        out, ans = [], {}
+        for has, comments, cat, k in spec:
+            for _ in range(k):
+                nid = f"m{len(out)}"
+                out.append({"note_id": nid, "comments": comments, "category": cat})
+                ans[nid] = {"ending_asks_reader": "是" if has else "否"}
+        return out, ans
+    # D-127: 中间段 (20–49) 不进表 —— 原来 ≥50 对 <50 时, 有的那侧多落在中间段就被算成「相反」(10-26 正文抛问题那次)
+    n, a = notes2([(1, 60, "x", 15), (1, 3, "x", 15), (1, 30, "x", 30), (0, 60, "x", 30), (0, 3, "x", 30)])
+    rc, lines = judge(pats, n, a)
+    assert rc == 0 and "中间 30 篇不算" in lines[0] and any("跨 1" in l and "结尾问读者" in l for l in lines), lines
+    # 按品类分层: 合起来看是反的 (40% 对 54%), 每个品类里都是同向 —— 不亮「相反」
+    n, a = notes2([(1, 60, "高", 8), (1, 3, "高", 2), (0, 60, "高", 60), (0, 3, "高", 30),
+                   (1, 60, "低", 12), (1, 3, "低", 28), (0, 60, "低", 5), (0, 3, "低", 25)])
+    rc, lines = judge(pats, n, a)
+    assert rc == 0 and not any("🟡" in l for l in lines), lines
+    # 不显著的反向 (43% 对 50%, 区间跨 1) 不亮
+    n, a = notes2([(1, 60, "x", 13), (1, 3, "x", 17), (0, 60, "x", 15), (0, 3, "x", 15)])
+    rc, lines = judge(pats, n, a)
+    assert rc == 0 and any("跨 1" in l for l in lines), lines
     rc, lines = judge(pats, n, a, frozenset({"ending_asks_reader"}))
     assert rc == 2 and any("不止一个抽取器" in l and "结尾问读者" in l for l in lines), "抽取器混了不判"
     cfg = X.load_config()
@@ -251,8 +294,8 @@ def selftest() -> int:
             {"category": "戒烟", "comments": 10, "has_product": False}]
     assert "鼻炎 1" in shelf_counts(rows, cfg)[0] and "戒烟 0" in shelf_counts(rows, cfg)[0]
     _selftest_gather(d)
-    print("  ✓ selftest: 同向 / 反向亮黄 / 持平不算反 / 抽取器混了不判 / 样本不够不判 / 品牌类不适用 / 表空 / 书架达标数 / "
-          "取答案只认 external、抽取器混了标出来")
+    print("  ✓ selftest: 同向 / 反向亮黄 / 持平不算反 / 中间段不进表 / 品类内比 / 不显著的反向不亮 / 抽取器混了不判 / "
+          "样本不够不判 / 品牌类不适用 / 表空 / 书架达标数 / 取答案只认 external、抽取器混了标出来")
     return 0
 
 
