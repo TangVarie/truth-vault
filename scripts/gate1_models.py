@@ -397,7 +397,10 @@ def _verdict(q: str, r: dict, has_owner: bool) -> tuple[str, list[str]]:
     oks.append(("A 对 B 一致率 ≥ 0.90", r["AB"]["ok_agree"]))
     oks.append(("A 证据无效率 ≤ 3%", r["line_evidence"]))
     if not has_owner:
-        return "pending", ["还没有 owner 裁决 (参考标签没有), 只看了 A 对 B 和证据无效率"] + \
+        # 不看参考的线已经不过 → 直接 fail (裁多少格都救不回来, 别让 owner 去裁一道已经挂了的题);
+        # 撤回全部裁决后 (ingest 整表重写) 也是这里, 不能从 fail 退回 pending
+        head = "fail" if any(ok is False for _, ok in oks) else "pending"
+        return head, ["还没有 owner 裁决 (参考标签没有), 只看了 A 对 B 和证据无效率"] + \
             [f"{n}: {_ok_zh(ok)}" for n, ok in oks]
     o = r["owner"]
     pending = []

@@ -251,7 +251,9 @@ def check_refusals(td) -> None:
 def check_verdicts(td) -> None:
     m = _manifest(td)
     _, cells_no, res_no = _run(_rows(_answers()), m, owner_tag=None)
-    assert {r["verdict"] for r in res_no.values()} == {"pending"} and "AR" not in res_no["reader_ask_form"]
+    # 没有 owner: A 对 B 已不过的题直接 fail (请读者讲经历 5/39 不一致), 其余 pending —— 不让 owner 白裁一道挂了的题
+    assert res_no["invites_sharing"]["verdict"] == "fail", res_no["invites_sharing"]["why"]
+    assert res_no["reader_ask_form"]["verdict"] == "pending" and "AR" not in res_no["reader_ask_form"]
     cells0, own = _owner_for(m)
     _, _, res = _run(_rows(_answers(), own), m)
     assert res["reader_ask_form"]["owner"]["spot_overturned"] == 1 and res["reader_ask_form"]["owner"]["spot_ruled"] == 20

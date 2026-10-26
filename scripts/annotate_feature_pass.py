@@ -68,6 +68,7 @@ Resumability:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import errno
@@ -327,10 +328,15 @@ def _is_systemic(st: dict, reannotate: bool = False) -> bool:
 
 def _validate_or_parse_failed(bank: dict, qids: list[str], parsed, spans: dict, raw: str, stage: str
                               ) -> dict[str, dict]:
-    """parsed 为 None → 整组记 json_parse_failed 并把回复开头记进日志 (Railway 日志里能看到是什么样的回复);
-    否则照常 validate_answers (缺题记 missing)。"""
+    """parsed 为 None → 整组记 json_parse_failed, 日志只记回复的长度 / 指纹 / 像不像 JSON;
+    否则照常 validate_answers (缺题记 missing)。
+
+    回复原文不进日志: stdout 经 worker 的 stdout_tail 回到 GitHub Actions 日志 (公开仓库), 而 evidence
+    按设计就是笔记原文的引用 —— 以前记的 raw_head 前 200 字会把客户笔记带进公开日志。"""
     if parsed is None:
-        logger.warning("parse_failed(%s) qids=%s raw_head=%r", stage, qids, (raw or "")[:200])
+        s = raw or ""
+        logger.warning("parse_failed(%s) qids=%s raw_len=%d raw_sha=%s json_like=%s", stage, qids, len(s),
+                       hashlib.sha256(s.encode("utf-8")).hexdigest()[:12], s.lstrip()[:1] in ("{", "[", "`"))
         return {q: {"answer": None, "evidence": None, "invalid_reason": fb.INVALID_JSON} for q in qids}
     return fb.validate_answers(bank, qids, parsed, spans)
 
