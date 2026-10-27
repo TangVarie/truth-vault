@@ -372,7 +372,11 @@ def check_preregistration_hook() -> None:
     assert re.search(r"^### 6\.2b ", doc, re.M), "docs/28 缺 §6.2b (副题库的闸二比法)"
     # 反证: yaml 多一个字 → digest 变 → D-128 里找不到 → 红 (status / gate1_status 两行不进 digest, 改它们不触发)
     assert fb.bank_digest(SEC_RAW + b"# x\n")[:12] not in d128
-    assert fb.bank_digest(SEC_RAW.replace(b"gate1_status: pending", b"gate1_status: pass")) == SEC["_sha256"]
+    # 闸一裁完、冻结之后 (D-128 闸一结论): 退回 draft / pending 也不动 digest; 替换落空 = 文件改了形状, 反证就成了空转
+    thawed = (SEC_RAW.replace(b"\nstatus: frozen\n", b"\nstatus: draft\n")
+              .replace(b"gate1_status: pass", b"gate1_status: pending"))
+    assert thawed != SEC_RAW and b"\nfrozen_sha256: " in SEC_RAW, "副题库应已冻结 (status: frozen + frozen_sha256 + gate1_status: pass)"
+    assert fb.bank_digest(thawed) == SEC["_sha256"]
     print(f"  §8 D-128 写了副题库 sha {sha12}; docs/28 §6.2b 在; 改一个字就对不上 ✓")
 
 
