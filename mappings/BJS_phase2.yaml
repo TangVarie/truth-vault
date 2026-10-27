@@ -1,26 +1,32 @@
 # ════════════════════════════════════════════════════════════════════
-# BJS_phase2 · 百健士成人藻油 —— 接表草稿(A 家族, 2026-10-26)
+# BJS_phase2 · 百健士成人藻油 —— 接表(A 家族, 10-26 起草, 10-27 翻 daily)
 # ════════════════════════════════════════════════════════════════════
 # 写作台项目「百健士成人藻油」(10-21 建)的发布表(I-22)。owner 10-26 给的链接: 和 BJS_phase1
 # 同一个 base(XkANwc24CidwrdkauRHcBQELnrh), 新表 tbloWC6k4aDdLwx0 / view vewof8k1Sw。
 # 起草方法同 XIWU_phase2(W-25): 同一个 base、同一拨运营, 先照 BJS_phase1 的列结构起草,
 # 再用 Preflight(只读飞书)对真表校正列名 / 方向 / tier 取值; 首次入库前不定方向口径和人群。
 # 10-26 运营把 BJS_phase1 的 79 行挪到这张表(TV 里旧行: 53 篇有发布时间、在 10-07～10-25, 其中 52 篇
-# 有链接; 另 26 行没有发布时间、链接和 tier, 是还没发的稿); owner 10-26 确认 79 篇全是成人藻油。
+# 有链接; 另 26 行没有发布时间、链接和 tier, 是还没发的稿); owner 10-26 确认 79 篇全是成人藻油(10-27 按真实文案更正, 见下)。
 # 65 篇在写作台「百健士-藻油」(efe112d3)有对照: 40 篇是成人项目建之前在那里写的稿, 25 篇是 tv-sync
 # 补录进去的副本(写作台外写的)。BJS_phase1 留下的 182 行(最晚发布 09-15)是儿童藻油。
 # Preflight 10-26(run 40302429088, 只读): 读 76 行、有正文 70 行、空占位 6 行; 下面按它校正过。
-# 新表有正文的只有 70 行, 旧的 79 行至少 9 行在这里配不上; 旧行先配对、再按配对结果撤, 见 OPEN-ITEMS I-22。
+# 10-26 首次实跑入库 70 行; 和 BJS_phase1 那 79 行配对、旧行下线见 D-129。
+# 10-27 看了真实文案: 70 行按发布时间分两段 —— 10-07 ~ 10-19 发布的 41 行是儿童 / 青少年款(家长口吻:
+# 长高 / 用眼 / 大胶囊咽不下, DHA+叶黄素复合), 10-21 以后发布的 25 行 + 4 行没发的稿是成人款(上班用脑 /
+# 备考 / 给爸妈挑 / 30+ 状态)。owner 10-27 定: 运营按时间分的, 表不改, 口径按混合写(下面的产品、人群、
+# 痛点、合规都同时覆盖两段)。方向列只有两种取值, 分不开两段, 所以不按方向硬拆。
 # ════════════════════════════════════════════════════════════════════
 
 version: 1.0
 
 project_id: BJS_phase2
 brand: 百健士
-product: 成人藻油
+product: 青少年藻油 / 成人藻油     # owner 10-27: 同一张表前段青少年款、后段成人款(见文件头)
 
 brand_aliases:
   - 百健士澳洲藻油
+  - 青少年藻油                      # product 写成两款合一后整串匹配不上正文, 两个款名单独进品牌词典(D-129 之前 product 就是「成人藻油」)
+  - 成人藻油
 category: 保健品
 platform: xiaohongshu
 schema_family: A                 # Preflight 10-26: 有「是否巡查」「巡查状态」「最近检查时间」「已确认存活」→ A 家族指纹(BJS_phase1 是 B)
@@ -49,18 +55,22 @@ field_mapping:
   互动数: interactions              # 47 行; 列名同 XIWU_phase2 / HATHERINE
   观众分析: _audience_raw           # 52 行 → actual_audience_data(确定性解析, 同 XIWU_phase2 / SPX / TUGE)
 
-# 方向口径【待首次入库后按真实文案定】(同 XIWU_phase2 的做法)。先照 BJS_phase1 的两个方向值起草,
-# 让 preflight 能核方向是否全部命中; 人群先写「通用」, 不沿用儿童项目的「宝妈」。
-# user_pain_point 先不写(同 XIWU_phase2 草稿 a62c5d3): 它在 sync 的 UPSERT_PROTECTED_COLS 里, 占位句一旦随首次
-# 入库写进 notes, 映射 PR 2 改名或去掉这个键都清不掉(I-17 那条路)。PR 2 按真实文案补真值。
+# 方向拆解 —— 10-27 按首次入库的 70 篇定(混合口径, 见文件头)
+# 「方向」只有两种取值(提问贴 55 / 好物分享-产品贴 15), 全单选; 两种方向里都是前段青少年、后段成人
+# (提问贴 31 / 24, 好物分享-产品贴 10 / 5)。人群按 D-010 的混合表写法记「宝妈 + 通用」: 前段是家长口吻,
+# 后段是上班 / 备考 / 给爸妈挑, 散在几类人群里, 不硬塞进学生党或伴侣家人(闸三 U 权重宝妈和通用几乎一样)。
+# 没有 direction_from_content, 也不用 sub_directions(两种方向都拆会让 D-056 必填检查失效)。
+# 这四个字段在 sync 的 UPSERT_PROTECTED_COLS 里: 送了就写, 以后改名或删键都清不掉旧值(I-17), 措辞定了再动。
 direction_decomposition:
-  "好物分享-产品贴":
+  "好物分享-产品贴":                 # 15 篇; 全部点名品牌、先给生活场景再带出产品
     content_format: 场景植入
-    target_audience: ["通用"]
+    target_audience: ["宝妈", "通用"]
+    user_pain_point: 鱼油大颗粒难咽又反腥, 想换一款每天吃得下去的 DHA(给上学的孩子 / 自己久坐用脑、备考)
 
-  "提问贴":
-    content_format: 情感叙事
-    target_audience: ["通用"]
+  "提问贴":                         # 55 篇; 45 篇结尾真在问(求推荐 / 怎么选), 只有 2 篇已发布的点名品牌
+    content_format: 提问求助
+    target_audience: ["宝妈", "通用"]
+    user_pain_point: 想给孩子或自己补 DHA 又拿不准(藻油 / 鱼油 / 磷虾油怎么选、难咽反腥、成分和来源看不懂)
 
 tier_extraction:
   source: 状态字段
@@ -90,11 +100,14 @@ tier_extraction:
 
 # tier_thresholds 已废(D-062): 判爆只看评论数。
 
+# 合规配置 —— 10-27 按两段真实文案定(这一节只给人看, 代码不读)
 compliance:
   base_template: 保健品
   custom_red_flags:
-    - "保健品禁疾病治疗/预防宣称;DHA功效需可证实、禁绝对化(最/第一/100%)"
-    - "禁医疗化表述(治疗/修复等需谨慎)"
+    - "保健品口径: 禁疾病诊断/治疗/预防宣称(近视、注意力缺陷、骨量减少、慢性炎症/痘、健忘), 禁把症状归因于缺 DHA 再拿产品当解法"
+    - "功效只写个人感受, 禁量化或时限承诺、医疗化机理话术(抗炎/细胞层面), 禁绝对化(最/第一/100%/闭眼入), 海外注册登记不写成功效或安全背书"
+    - "儿童/青少年: 禁长高、视力改善、补脑提分之类的功效暗示; 孕产哺乳期、老人、慢病或肠胃弱的人只讲自身体验, 能不能吃一律引导问医生"
+    - "和鱼油/磷虾油比只讲可证实的差异(颗粒、口感、原料来源), 禁笼统贬低竞品品类(重金属/污染/智商税), 禁点名或影射品牌"
   # 蓝词留空: 同 BJS_phase1(那一列的选项串了别的品牌、没有可信来源), 等运营在新表里填值再定。
   blue_keyword_strategy:
     primary: []
@@ -156,14 +169,14 @@ onboarding_meta:
   onboarded_by: Claude 照 BJS_phase1 列结构起草(I-22)
   strategy_lead: [待填]
   notes: |
-    DRAFT — 10-26 Preflight(run 40302429088)校正过列名 / tier / 未声明列; owner 10-26 确认新表只放成人藻油。
-    下一步: 显式 on_demand 首次入库(先 dry_run, 勾 skip_essence), 和 BJS_phase1 那 79 行逐篇配对;
-    方向口径 / 人群 / 合规按真实文案定, 和翻 daily 一个 PR(I-22)。
-    写作台映射: 百健士成人藻油(89d3e7aa)→ BJS_phase2, 首次入库核过之后在 aw tv_project_map 加(I-22)。
+    10-26: Preflight(run 40302429088)校正列名 / tier / 未声明列; 首次实跑入库 70 行、评论 66 条;
+    aw tv_project_map 已加 BJS_phase2 → 百健士成人藻油(89d3e7aa, 10-27 起是补录目标)和 → 百健士-藻油(efe112d3, 只对照)。
+    10-27: D-129 撤完 BJS_phase1 旧行; 按真实文案定方向口径 / 人群 / 痛点 / 合规(混合口径, owner 定), 翻 daily(I-22)。
 
 sync_config:
   source_type: feishu_api
   feishu_app_token: XkANwc24CidwrdkauRHcBQELnrh   # 表标识(非密钥), 和 BJS_phase1 同一个 base, owner 10-26 给的链接
   feishu_table_id: tbloWC6k4aDdLwx0
   feishu_view_id: null
-  sync_interval: on_demand          # 新表一律先 on_demand(PR#67): 显式跑通、核过再翻 daily
+  # 10-26 显式实跑核过(入库 70 / 空占位 6 / 错误 0)、10-27 D-129 撤完旧行后翻 daily: 进夜间 cron 的入库 / essence / 策展 / 通道 1
+  sync_interval: daily
