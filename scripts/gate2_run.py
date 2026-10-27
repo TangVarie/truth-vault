@@ -1308,6 +1308,9 @@ def main_secondary(args, bank_path) -> int:
                           "--reports-dir 只给 --fixture 的离线跑用 (补记 7)")
         if out.resolve().parent != Path(args.reports_dir).resolve():
             return refuse(f"正式读的报告必须写进 {args.reports_dir} (收到 --out {out}): 写到别处, 下次读找不到它 (补记 7)")
+        if out.suffix != ".md":
+            return refuse(f"正式读的报告名必须以 .md 结尾 (收到 {out.name}): 「读过没有」只扫 *.md, 别的扩展名下次读找不到它 "
+                          "(补记 7; codex review on #246)")
         if "-void" in out.name:
             return refuse(f"报告名 {out.name} 带 -void: 那是作废报告的名字 (补记 7), 正式读不许这么叫")
         if out.name.endswith("-counts.md"):

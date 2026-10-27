@@ -104,6 +104,11 @@ jobs:
         run: |
           [ -n "$SUPABASE_URL" ] || { echo "::error::缺 secret SUPABASE_URL"; exit 1; }
           [ -n "$SUPABASE_SERVICE_ROLE_KEY" ] || { echo "::error::缺 secret SUPABASE_SERVICE_ROLE_KEY"; exit 1; }
+          # 输入不许带换行: 下面的 grep 按行匹配, 带换行的值能混过校验, 再经 GITHUB_ENV 多写出几行、盖掉 job 级的 IN_* (复核 on #246)
+          for v in "$IN_SHA" "$IN_EXTRACTORS" "$IN_RUN_TAG" "$IN_PROJECTS" "$IN_UNRELIABLE" "$IN_WRITE" "$IN_REVIEWED" \
+                   "$IN_IGNORE_PLACEBO" "$IN_BANK" "$IN_MANIFESTS" "$IN_COUNTS_ONLY"; do
+            case "$v" in *$'\n'*|*$'\r'*) echo "::error::输入里不许有换行"; exit 1;; esac
+          done
           echo "$IN_SHA" | grep -Eq '^[0-9a-f]{8,64}$' || { echo "::error::sha 要是 ≥8 位十六进制前缀, 收到 '$IN_SHA'"; exit 1; }
           case "$IN_BANK" in primary|reader) ;; *) echo "::error::bank 只能是 primary / reader, 收到 '$IN_BANK'"; exit 1;; esac
           if [ "$IN_BANK" = "reader" ]; then

@@ -1152,7 +1152,8 @@ def check_secondary_single_read(td: Path) -> None:
         d.mkdir()
     fbase = nodata[:-1] + [str(fresh), "--fixture", str(fx)]
     for extra, needle in (([], "必须带 --out"), (["--out", str(td / "elsewhere" / "r.md")], "必须写进"),
-                          (["--out", str(fresh / "x-void.md")], "-void"), (["--out", str(fresh / "x-counts.md")], "-counts.md")):
+                          (["--out", str(fresh / "x-void.md")], "-void"), (["--out", str(fresh / "x-counts.md")], "-counts.md"),
+                          (["--out", str(fresh / "first.txt")], ".md 结尾"), (["--out", str(fresh / "first")], ".md 结尾")):
         rc, out, err = _main(fbase + extra)                   # fresh 里没有读过的报告: 拒只能是因为 --out
         assert rc == 2 and needle in err and "validated" not in out + err, (extra, rc, err)
     assert not list(fresh.iterdir()), "拒跑不留文件"
@@ -1397,7 +1398,9 @@ def check_secondary_cli_and_workflow(td: Path) -> None:
     for env, needle in (({"IN_WRITE": "true"}, "write 必须是 false"), ({"IN_IGNORE_PLACEBO": "true"}, "不许忽略占位题报警"),
                         ({"IN_PROJECTS": "P0"}, "projects / unreliable"), ({"IN_MANIFESTS": ""}, "要给 manifests"),
                         ({"IN_MANIFESTS": "data-analysis/nope.csv"}, "没进仓库"), ({"IN_MANIFESTS": "/etc/passwd"}, "data-analysis/"),
-                        ({"IN_COUNTS_ONLY": "maybe"}, "counts_only"), ({"IN_BANK": "other"}, "bank 只能是")):
+                        ({"IN_COUNTS_ONLY": "maybe"}, "counts_only"), ({"IN_BANK": "other"}, "bank 只能是"),
+                        # 带换行的输入: grep 按行匹配会放过去, 再经 GITHUB_ENV 盖掉 IN_COUNTS_ONLY (复核 on #246)
+                        ({"IN_RUN_TAG": "ok\nIN_COUNTS_ONLY=false"}, "不许有换行"), ({"IN_SHA": SEC_SHA[:12] + "\r"}, "不许有换行")):
         rc, out = _guard(**env)
         assert rc != 0 and needle in out, (env, rc, out[-300:])
     in_git = subprocess.run(["git", "ls-files", "--error-unmatch", "../data-analysis/gate2-reader-holdout-2026-10-27.csv"],
