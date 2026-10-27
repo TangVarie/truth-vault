@@ -650,6 +650,23 @@ def combined_manifest_sha(note_ids: Iterable[str]) -> str:
     return hashlib.sha256("".join(f"{n}\n" for n in sorted(set(note_ids))).encode("utf-8")).hexdigest()
 
 
+def untracked_manifests(paths: Iterable[str]) -> list[str]:
+    """没进 git 的名单 (git ls-files --error-unmatch 不认的; 没装 git / 不在仓库里也算没进)。正式读只读进了仓库的名单 ——
+    临时拼一份没提交的名单读, 名单 sha 就不在仓库的记录里 (D-128 补记)。"""
+    import subprocess
+    bad = []
+    for p in paths:
+        p = Path(p).resolve()
+        try:
+            ok = subprocess.run(["git", "-C", str(p.parent), "ls-files", "--error-unmatch", "--", p.name],
+                                capture_output=True, text=True).returncode == 0
+        except OSError:
+            ok = False
+        if not ok:
+            bad.append(str(p))
+    return bad
+
+
 def void_path(out: Path) -> Path:
     """作废那次的报告名带 -void (补记 2 / 7): 不算读过。"""
     return out if out.stem.endswith("-void") else out.with_name(f"{out.stem}-void{out.suffix}")
@@ -766,7 +783,8 @@ def run_gate2_secondary(dataset: dict, bank: dict, primary: dict, *, sha: str, m
                         min_big: int = 3, big_pos: int = 20, confound_delta: float = 0.30) -> dict:
     """副题库闸二 (纯函数: dataset + 两份题库 + 名单 → 结果)。dataset = {notes (v_l2_labels 去掉飞书已删的, 带 has_essence /
     body_len / data_quality_flags / has_pinned_comment), vanished, answers (两份快照的行混在一起, 这里按 run_tag / sha /
-    抽取器分开), half_alias ({new_id: old_id}, D-129 映射表)}。counts_only = 只数行数和覆盖, 一个 y 都不碰。"""
+    抽取器分开), half_alias ({new_id: old_id}, D-129 映射表), ignored_rows (可无: 生产取数只取快照那一片, 快照外的行数在
+    库里数好带过来)}。counts_only = 只数行数和覆盖, 一个 y 都不碰。"""
     from discover_feature_candidates import half_id, in_discovery_half
     from gate1_sample import EXCLUDE
 
@@ -844,6 +862,8 @@ def run_gate2_secondary(dataset: dict, bank: dict, primary: dict, *, sha: str, m
                 cond_rows.append(a)
             else:
                 ignored["condition"] += 1                     # Opus 4.6 那些行、别的 sha
+    for k, v in (dataset.get("ignored_rows") or {}).items():  # 生产取数只取快照那一片, 快照外的行在库里数好了带过来
+        ignored[k] += int(v)
     sec = _snapshot(sec_rows, expect=sec_expect, vocab=sec_vocab, what="副题库快照")
     cond = _snapshot(cond_rows, expect=cond_expect, vocab=cond_vocab, what="分层快照")
     model_qids = [q["id"] for q in fb.llm_questions(bank)]
@@ -1180,7 +1200,8 @@ def fetch_dataset_secondary(sb, *, bank: dict, primary: dict, answers_run_tag: s
     """run_gate2_secondary 要的 dataset。两份快照分开查, 每次查一个 (题, 抽取器, 版本) 的切片 —— 这个切片里 subject_id 唯一
     (主键 subject_type, subject_id, question_id, question_version, extractor, run_tag), fetch_all_pages 按 subject_id 去重
     不会吞掉行。版本不对的行另用一个有上限的查询捞出来放进 answers, 让 run_gate2_secondary 拒 (不在这里静默丢)。
-    D-129 映射表读不到 / 0 对 → Gate2Refused (fail closed)。正文、置顶评论的文字都不取, 只取「有没有」。"""
+    D-129 映射表读不到 / 0 对 → Gate2Refused (fail closed)。正文、置顶评论的文字都不取, 只取「有没有」。快照外的行
+    (同 run_tag、同题, 别的 sha / 抽取器) 只数不取, 放进 ignored_rows。"""
     from _common import fetch_all_pages, fetch_half_alias, fetch_vanished_note_ids, mask_secrets
     try:
         alias = fetch_half_alias(sb)
@@ -1221,7 +1242,22 @@ def fetch_dataset_secondary(sb, *, bank: dict, primary: dict, answers_run_tag: s
         answers.extend(fetch_all_pages(base().eq("question_version", ver), order_by="subject_id"))
         # 同一切片里版本不对的行 (比如 invites_sharing v1 混进副题库 sha 下): 有一行就够拒, 捞前 50 行
         answers.extend((base().neq("question_version", ver).limit(50).execute()).data or [])
-    return {"notes": notes, "vanished": sorted(vanished), "answers": answers, "half_alias": alias}
+    # 快照外的行 (同 run_tag、同题, 别的 sha / 抽取器, 比如 primary 下 Opus 4.6 的分层行): 上面只取了快照那一片, 这些行
+    # 到不了 run_gate2_secondary, 这里只数不取 —— 报告里「快照外 N 行」要的是库里的真数, 不是 0
+    def _n(tag, qid, sha=None, ext=None) -> int:
+        q = (tv("note_feature_answers").select("subject_id", count="exact").eq("subject_type", "note")
+             .eq("run_tag", tag).eq("question_id", qid))
+        if sha is not None:
+            q = q.eq("bank_sha256", sha).eq("extractor", ext)
+        return int(q.limit(1).execute().count or 0)
+    groups: dict[tuple[str, str, str], tuple[str, set]] = {}
+    for tag, sha, qid, _ver, ext in slices:
+        kind = "secondary" if tag == answers_run_tag else "condition"
+        groups.setdefault((kind, tag, qid), (sha, set()))[1].add(ext)
+    ignored = {"secondary": 0, "condition": 0}
+    for (kind, tag, qid), (sha, exts) in groups.items():
+        ignored[kind] += _n(tag, qid) - sum(_n(tag, qid, sha, e) for e in sorted(exts))
+    return {"notes": notes, "vanished": sorted(vanished), "answers": answers, "half_alias": alias, "ignored_rows": ignored}
 
 
 def main_secondary(args, bank_path) -> int:
@@ -1251,11 +1287,33 @@ def main_secondary(args, bank_path) -> int:
     except ValueError as exc:
         return refuse(str(exc))
     out = Path(args.out) if args.out else None
-    if out is not None and not args.counts_only:
+    if args.counts_only:
+        # 只数行数的文件只许叫 …-counts.md, 也不许盖掉带「读过」标记的报告 (盖掉 = 抹掉只读一次的记号)
+        if out is not None:
+            if not out.name.endswith("-counts.md"):
+                return refuse(f"--counts-only 的 --out 要叫 …-counts.md (收到 {out.name}): 不和读的报告混名")
+            try:
+                marked = out.exists() and SEC_MARK_RE.search(out.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError) as exc:
+                return refuse(f"{out} 读不了, 不覆盖: {exc}")
+            if marked:
+                return refuse(f"{out} 是读过的报告 (带标记), 只数行数不许盖掉它 (补记 7)")
+    else:
+        # 正式读必须留下记号: 报告写进 --reports-dir (默认 data-analysis/), 那里才是 prior_secondary_reads 找的地方 (补记 7)
+        if out is None:
+            return refuse("正式读必须带 --out, 把报告写进 data-analysis/: 只打到 stdout 的读不留记号, 「只读一次」守不住 (补记 7)")
+        if out.resolve().parent != Path(args.reports_dir).resolve():
+            return refuse(f"正式读的报告必须写进 {args.reports_dir} (收到 --out {out}): 写到别处, 下次读找不到它 (补记 7)")
         if "-void" in out.name:
             return refuse(f"报告名 {out.name} 带 -void: 那是作废报告的名字 (补记 7), 正式读不许这么叫")
+        if out.name.endswith("-counts.md"):
+            return refuse(f"报告名 {out.name} 以 -counts.md 结尾: 那是只数行数的名字, 正式读不许这么叫")
         if out.exists() or void_path(out).exists():
             return refuse(f"{out} (或 -void 那份) 已经在了, 不覆盖")
+        if not args.fixture:
+            loose = untracked_manifests(args.manifest)
+            if loose:
+                return refuse(f"名单没进仓库: {loose} —— 正式读只读进了仓库的名单 (先 git add -f, D-128 补记)")
     dirs = [Path(args.reports_dir)] + ([out.parent] if out is not None else [])
     try:
         manifests = load_manifests(args.manifest)
@@ -1279,13 +1337,10 @@ def main_secondary(args, bank_path) -> int:
               + (" —— 超过 3%, 读的时候会拒" if res["would_refuse"] else ""), file=sys.stderr)
         return 0
     text = render_report_secondary(res)
-    target = void_path(out) if (res["void"] and out is not None) else out
-    if target is not None:
-        target.write_text(text, encoding="utf-8")
-    else:
-        print(text)
+    target = void_path(out) if res["void"] else out
+    target.write_text(text, encoding="utf-8")
     if res["void"]:
-        print(f"闸二 (副题库) 作废: 占位题报警 {res['placebo_alarm']} —— 确认族两行没算; 报告 {target or '(stdout)'} "
+        print(f"闸二 (副题库) 作废: 占位题报警 {res['placebo_alarm']} —— 确认族两行没算; 报告 {target} "
               "(补记 2: 查清原因、记 DECISIONS 后可重读)", file=sys.stderr)
         return 3
     print("闸二 (副题库): " + ", ".join(f"{r['question_id']}={r['answer']} {r['status']}" for r in res["family_rows"])

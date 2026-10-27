@@ -5,6 +5,8 @@
 # gate1_status: fail 的题自动 unreliable (D-103 / D-105), 不用手传。
 # bank=reader 走副题库 fq-v0.2-cand-reader 那条路 (D-128, docs/28 §6.2b): 只读进了仓库的名单 (manifests), 先 counts_only=true
 # 只数行数和覆盖, 第二波定了之后 counts_only=false 读一次; 永远不写 feature_validation (write 必须 false), 不跑组合对比。
+# 读完 (退出码 0) 报告另以 gate2-reader-read-<合并名单 sha 前 12 位> 为名传 artifact; 再读同一份名单, Guard 按这个名字查到就拒
+# (补记 7: 报告提交进仓库之前, 重跑 job / 再点一次也读不了第二次)。
 name: Gate 2 run (feature discrimination · docs/28 §6.2)
 
 on:
@@ -64,6 +66,10 @@ jobs:
   gate2:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # actions: read 给 Guard 查「这份名单读过没有」的 artifact (gh api); 其余照默认只读
+    permissions:
+      contents: read
+      actions: read
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -92,6 +98,8 @@ jobs:
           fi
       - name: Guard secrets + inputs
         working-directory: scripts
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           [ -n "$SUPABASE_URL" ] || { echo "::error::缺 secret SUPABASE_URL"; exit 1; }
           [ -n "$SUPABASE_SERVICE_ROLE_KEY" ] || { echo "::error::缺 secret SUPABASE_SERVICE_ROLE_KEY"; exit 1; }
@@ -121,6 +129,16 @@ jobs:
           assert b.get('status') == 'frozen', f'副题库 status={b.get(\"status\")!r}, 不是 frozen'
           assert fs.startswith(sha), f'sha {sha} 不是副题库 frozen_sha256 {fs[:12]}… 的前缀 (D-128: 9f2cf1c9e7de)'
           print(f'✅ 副题库 {b[\"bank_version\"]} frozen, digest {fs[:12]}…; 钉的主题库 {p[\"bank_version\"]} {p[\"_sha256\"][:12]}…')" "$IN_SHA"
+            if [ "$IN_COUNTS_ONLY" = "false" ]; then
+              # 只读一次 (补记 7) 在这层也守: 读完的报告以 gate2-reader-read-<合并名单 sha 前 12 位> 为名传了 artifact, 有这个名字
+              # 就是读过 (报告还没提交进仓库时, 重跑 job / 再点一次都在这里拒); 查不了 artifact 也不读 (fail closed)
+              KEY="$(python -c "import sys, gate2_run as G; ms = G.load_manifests(['../' + m for m in sys.argv[1:]]); print(G.combined_manifest_sha(r['note_id'] for m in ms for r in m['rows'])[:12])" $MANS)" \
+                || { echo "::error::合并名单 sha 算不出"; exit 1; }
+              N="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=gate2-reader-read-$KEY&per_page=1" --jq .total_count)" \
+                || { echo "::error::查不了之前读过没有 (actions artifacts), 不读 (fail closed)"; exit 1; }
+              [ "$N" = "0" ] || { echo "::error::这份名单 (sha $KEY…) 已经读过: 有 $N 个 artifact gate2-reader-read-$KEY —— 留出半只读一次 (D-128 补记 7)"; exit 1; }
+              echo "READ_KEY=$KEY" >> "$GITHUB_ENV"
+            fi
             echo "TAG=$TAG" >> "$GITHUB_ENV"
             echo "MANIFESTS=$MANS" >> "$GITHUB_ENV"
             echo "✅ bank=reader sha=$IN_SHA run_tag=$TAG manifests=$MANS counts_only=$IN_COUNTS_ONLY write=false"
@@ -227,8 +245,17 @@ jobs:
           if [ "$IN_COUNTS_ONLY" = "true" ]; then
             echo "::notice::只数了行数和覆盖, 不是闸二的读。"
           else
-            echo "::notice::读完了: 从 artifact 下载 $(basename "$OUT") 提交进 data-analysis/ —— 「只读一次」靠仓库里这份报告守 (D-128 补记 7)。"
+            echo "::notice::读完了: 从 artifact 下载 $(basename "$OUT") 提交进 data-analysis/ —— workflow 这层靠 artifact gate2-reader-read-${READ_KEY} 拒第二次读, 本地跑和 90 天之后靠仓库里这份报告守 (D-128 补记 7)。"
           fi
+      # 读过的记号 (补记 7): 正式读退出码 0 才传 (作废 3 / 拒跑 2 不传, 作废那次不算读过); Guard 按这个名字查
+      - name: 副题库读过的记号 (artifact gate2-reader-read-<合并名单 sha>)
+        if: success() && env.IN_BANK == 'reader' && env.IN_COUNTS_ONLY == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate2-reader-read-${{ env.READ_KEY }}
+          path: data-analysis/feature-gate2-${{ env.TAG }}.md
+          if-no-files-found: error
+          retention-days: 90
       - name: 组合对比跳过 (占位题反证被忽略的排查跑)
         if: success() && env.IN_BANK == 'primary' && env.IN_IGNORE_PLACEBO == 'true'
         run: echo "::notice::ignore_placebo_alarm=true 是排查跑, 不出组合进不进 L2 的判定 (反证没过的结果不作数)。"

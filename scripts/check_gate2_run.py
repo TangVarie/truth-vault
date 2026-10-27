@@ -17,7 +17,7 @@
   ⑩ 主题库那条路的输出变了一个字节 (行或报告)                           → §0 红
 
 §8 副题库 (D-128 / docs/28 §6.2b, run_gate2_secondary)。下面每一条都在一份拷贝上真改坏过、确认变红 (10-27, 50 处改法,
-外加 check_gate1_review §1b 4 处、discover 自检 1 处):
+外加 check_gate1_review §1b 4 处、discover 自检 1 处; 复审后又补 18 处, 逐个改坏确认变红再改回):
   ⑪ 副题库收了 --write / --rows-out, 或读的时候调了 write_validation              → §8b 红
   ⑫ 半区按 note_id 不按 D-129 old_id / 映射没读到照跑 / fetch_half_alias 0 对不抛 / 映射表读不了不转成拒跑 /
      名单里新旧两行同在、有点名剔掉的篇不拒                                       → §8a / §8c 红
@@ -25,15 +25,21 @@
   ⑭ 3% 线差一 / 截断 NULL 算成缺 / 截断 NULL 进了比较基数                          → §8a / §8e / §8f 红
   ⑮ 取值行 / 合并行的基数没剔「没问读者」/ 阳性对照的基数剔了 / 合并行的取值集合不对 / 分析不限名单 → §8a / §8f 红
   ⑯ BH 把只报告的行算进家族 / 算不出 p 的那行被挤出家族                              → §8a / §8g 红
-  ⑰ 占位题报警四条少一条 / p = 0.10 不算 / 报警了照样算两行 / 作废报告名不带 -void / 占位题不按 note_id 算 → §8a / §8h 红
+  ⑰ 占位题报警四条少一条 / p = 0.10 不算 / 报警了照样算两行 / 作废报告名不带 -void / 占位题按 old_id 算 (夹具里换了 id
+     的那篇新旧 id 的占位题答案特意挑成不同)                                     → §8a / §8h 红
   ⑱ 分层快照收了 Opus / 不查版本 (invites_sharing v1 混进来) / 不查重复                → §8a / §8i 红
   ⑲ 副题库 draft 也跑 / 不做跨库校验                                             → §8j 红
   ⑳ --counts-only 的结果或输出碰了 y                                             → §8k 红
   ㉑ 敏感性重跑不剔 / 不加 body_len_bucket / paid_promoted=false 也剔                    → §8a / §8l 红
-  ㉒ 只读一次不守 / 作废只看标记或只看文件名 / 名单 sha 按文件算 (拆两份就绕过) / --out 覆盖已有报告 → §8a / §8m 红
-  ㉓ 取数不钉 sha / 没有版本探针                                                 → §8n 红
+  ㉒ 只读一次不守 / 作废只看标记或只看文件名 / 名单 sha 按文件算 (拆两份就绕过) / --out 覆盖已有报告 / 正式读不带 --out
+     也跑 (只打 stdout、不留记号) / --out 写到 --reports-dir 外也跑 / 名单没进 git 也读 / --counts-only 的 --out 不限
+     …-counts.md、能盖掉带标记的报告                                              → §8a / §8m 红
+  ㉓ 取数不钉 sha / 没有版本探针 / 快照外的行取数时不数 (报告里恒 0) / run_gate2_secondary 不加取数带来的数 → §8n 红
   ㉔ 判据参数能改 / 大项目方向改成按层判 / 不做账号先验 / 只过一行也算发现               → §8a / §8c / §8o 红
-  ㉕ workflow 的 reader 分支能 write / 能忽略报警 / 收没进仓库的名单 / 跑组合对比          → §8o 红
+  ㉕ workflow 的 reader 分支能 write / 能忽略报警 / 收没进仓库的名单 / 跑组合对比 / counts_only=true 不传 --counts-only /
+     读完不传记号 artifact、只数也传 / Guard 见了记号照读                          → §8o 红
+  ㉖ 大项目分层内方向按合并 2×2 算 / 有支持的大项目不筛「有这个取值」/ 一篇两种都缺归到分层题 / 缺代码特征那行也算掉 → §8d / §8e / §8q 红
+  ㉗ 按名单写死时的 y 算 / 按名单写死时的项目分层 (补记 4 要的是现在的)              → §8p 红
 
 跑法: cd scripts && python check_gate2_run.py
 """
@@ -487,7 +493,7 @@ def check_projects_present() -> None:
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════
 # §8 副题库 (D-128 / docs/28 §6.2b): run_gate2_secondary 那条路。夹具全是合成的 (note_id 形如 P0_recS00012, 没有正文,
 # 没有一行真答案), 效应按计数造、顺序按 sha256 定, 确定性。真题库 (fq-v0.2-cand-reader, 已冻结) 直接用。
-# 每一节在拷贝上改坏对应的代码都会红 (见文件头 ⑪–㉕)。
+# 每一节在拷贝上改坏对应的代码都会红 (见文件头 ⑪–㉗)。
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════
 SEC_BANK, SEC_PRIMARY = fb.load_bank_pair(fb.BANKS["reader"])
 SEC_SHA = SEC_BANK["_sha256"]
@@ -599,7 +605,9 @@ def _sec_fixture(*, raf=lambda ear, afh, y: RAF_POS if y else RAF_NEG,
         p2[13]["data_quality_flags"] = {"paid_promoted": False}                   # false 不剔
         # D-129: 一篇新行自己的 id 落在发现半, 旧 id 在留出半 → 按旧 id 算留出半, 进得来
         moved = _half_ids("P3", 1, half="discovery", tag="Moved")[0]
-        old = _half_ids("BJSX", 1, half="holdout", tag="Old")[0]
+        # 旧 id 挑一个三道占位题答案和新 id 不全相同的: 占位题错按旧 id 算时支持数会变, §8h 才测得出
+        plc = lambda nid: [fb.placebo_answer(nid, k) for k in (1, 2, 3)]                 # noqa: E731
+        old = next(o for o in _half_ids("BJSX", 50, half="holdout", tag="Old") if plc(o) != plc(moved))
         alias[moved] = old
         src = next(n for n in notes if n["project_id"] == "P3" and not n["y"])
         notes.append(dict(src, note_id=moved))
@@ -695,7 +703,7 @@ def check_secondary_never_writes(td: Path) -> None:
     fx.write_text(json.dumps(ds, ensure_ascii=False), encoding="utf-8")
     csvp.write_text(gs.to_csv(man), encoding="utf-8")
     base = ["--bank", "reader", "--sha", SEC_SHA[:12], "--manifest", str(csvp), "--fixture", str(fx),
-            "--reports-dir", str(td / "reports"), "--run-tag", "gate2-reader-test"]
+            "--reports-dir", str(td / "nw"), "--run-tag", "gate2-reader-test"]
 
     def _main(extra):
         out, err = io.StringIO(), io.StringIO()
@@ -765,10 +773,13 @@ def check_secondary_simpson() -> None:
     assert abs(c2["mh_odds_ratio"] - 1.0) < 1e-9, c2["mh_odds_ratio"]
     assert c2["or_project_only"] > 1.3 and c2["or_crude"] > 1.3, (c2["or_project_only"], c2["or_crude"])
     assert c2["status"] == "no_signal", c2["summary"]
+    # 补记 1 另报的那列: 每个大项目在 ear × afh 层内的 MH 方向是「=」, 合并 2×2 判的却是 4 个都 >1 —— 这列就是为了露出这种翻转
+    assert set(c2["big_within"]) == {"P0", "P1", "P2", "P3"} and set(c2["big_within"].values()) == {"="}, c2["big_within"]
+    assert c2["n_or_above_1"] == 4, c2["n_or_above_1"]
     assert res["verdict"].startswith("单行过，不算发现") and "等 2027-04-02" in res["verdict"], res["verdict"]
     assert "invites_sharing 模型偏宽" in res["verdict"], "C2 不显著时要带上闸一那条提醒"
     print(f"  §8d 辛普森: 只按项目 OR {c2['or_project_only']:.2f} / 不分层 {c2['or_crude']:.2f}, 分层题内 1.00 → no_signal; "
-          "只过 C1 → 「单行过，不算发现」 ✓")
+          "大项目合并 2×2 4 个 >1、分层内方向全「=」; 只过 C1 → 「单行过，不算发现」 ✓")
 
 
 # ── §8e 掉出去的三种 + 3% 线; 截断 NULL 不算缺 ─────────────────────────────────────────
@@ -814,7 +825,21 @@ def check_secondary_drops() -> None:
     _refused(lambda: _sec_run(_more(9, 9, 10), man), "超过 3%", "31 篇 > 1,001 的 3%")
     over = _sec_run(_more(9, 9, 10), man, counts_only=True)
     assert over["would_refuse"] and "读的时候会拒" in G.render_counts_secondary(over), "counts-only 不拒, 但要写明"
-    print("  §8e 掉出去的: 三种分开数 (口径 / 两道题 / 分层题, 各自明细); 30 = 上限照读、31 拒; 截断 NULL 5 篇不算缺 ✓")
+    # 一篇两道题没行、分层题也没答案 → 只归「两道题」(先后: 口径 → 两道题 → 分层题); 只缺 last_para_has_qmark 那行的不算掉
+    # (补记 5 只数两道模型题), 留在分析集里, 覆盖里记「名单里没行」
+    d = json.loads(json.dumps(ds, ensure_ascii=False))
+    both, qm_only = p0[0], p0[1]
+    d["answers"] = [a for a in d["answers"] if not ((a["subject_id"] == both and a["question_id"] == "invites_sharing"
+                                                     and a["run_tag"] == SEC_TAG)
+                                                    or (a["subject_id"] == qm_only and a["question_id"] == "last_para_has_qmark"))]
+    next(a for a in d["answers"] if a["subject_id"] == both and a["question_id"] == "ending_asks_reader"
+         and a["extractor"] == SONNET)["answer"] = None
+    r3 = _sec_run(d, man)
+    assert {k: sum(v.values()) for k, v in r3["drops"].items()} == {"out_of_scope": 1, "no_answer": 2, "no_condition": 1}, r3["drops"]
+    assert r3["drops"]["no_answer"]["invites_sharing: 没有行"] == 2 and r3["n_drop"] == 4 and r3["n_analysis"] == 1001 - 4
+    assert r3["coverage"]["last_para_has_qmark"]["manifest_without_row"] == res["coverage"]["last_para_has_qmark"]["manifest_without_row"] + 1
+    print("  §8e 掉出去的: 三种分开数 (口径 / 两道题 / 分层题, 各自明细); 30 = 上限照读、31 拒; 截断 NULL 5 篇不算缺; "
+          "两种都缺的只归第一种; 只缺代码特征那行的不算掉 ✓")
 
 
 # ── §8f 比较基数 / 阳性对照 / 合并行手算 / 截断 NULL 不进分子分母 ─────────────────────────
@@ -901,6 +926,9 @@ def check_secondary_placebo(td: Path) -> None:
     for k, r in enumerate(res["placebo_rows"], start=1):                 # 主题库的定义, 按 note_id 现算 (不是旧 id)
         assert r["support"] == sum(1 for n in ana if fb.placebo_answer(n, k) == "是"), r["question_id"]
         assert r["base_n"] == len(ana)
+    moved = [n for n in ana if n in ds["half_alias"]]
+    assert moved and any(fb.placebo_answer(n, k) != fb.placebo_answer(ds["half_alias"][n], k) for n in moved for k in (1, 2, 3)), \
+        "夹具里换了 id 的篇, 新旧 id 的占位题答案要有不同, 否则「按 note_id 不按 old_id」这条测不出"
     # 报警规则逐条 (补记 2)
     base = {"mh_odds_ratio": 1.8, "ci_low": 1.2, "ci_high": 2.7, "p_value": 0.004, "support": 60, "big_projects_n": 3,
             "n_or_above_1": 2, "n_or_below_1": 1}
@@ -1091,25 +1119,62 @@ def check_secondary_single_read(td: Path) -> None:
     assert _sec_run(ds, man, reports_dirs=[rdir])["family_rows"], "作废的那份不算读过"
     (rdir / "feature-gate2-reader-1-void.md").rename(rdir / "feature-gate2-reader-1.md")
     _refused(lambda: _sec_run(ds, man, reports_dirs=[rdir]), "已经读过", "标记 void=1 但名字不带 -void")
-    # CLI: --out 带 -void / 已存在 → 拒
+    # CLI: 正式读必须把报告写进 --reports-dir (那里才找得到); 不带 --out / 写到别处 / 带 -void / -counts.md / 已存在 → 拒
     import contextlib
     fx, csvp = td / "sr.json", td / "sr.csv"
     fx.write_text(json.dumps(ds, ensure_ascii=False), encoding="utf-8")
     csvp.write_text(gs.to_csv(man), encoding="utf-8")
-    base = ["--bank", "reader", "--sha", SEC_SHA[:12], "--manifest", str(csvp), "--fixture", str(fx),
-            "--reports-dir", str(td / "empty")]
-    for out, needle in ((td / "x-void.md", "-void"), (rdir / "feature-gate2-reader-1.md", "已经在了")):
-        err = io.StringIO()
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
-            rc = G.main(base + ["--out", str(out)])
-        assert rc == 2 and needle in err.getvalue(), (out, rc, err.getvalue())
-    # --out 所在目录也查: 读过的报告在 out 旁边, --reports-dir 指别处也拦得住
-    err = io.StringIO()
-    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
-        rc = G.main(base + ["--out", str(rdir / "feature-gate2-reader-2.md")])
-    assert rc == 2 and "已经读过" in err.getvalue(), (rc, err.getvalue())
+    nodata = ["--bank", "reader", "--sha", SEC_SHA[:12], "--manifest", str(csvp), "--reports-dir", str(rdir)]
+    base = nodata + ["--fixture", str(fx)]
+
+    def _main(args):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = G.main(args)
+        return rc, out.getvalue(), err.getvalue()
+    fresh = td / "single-fresh"
+    for d in (fresh, td / "elsewhere", td / "elsewhere2"):
+        d.mkdir()
+    fbase = nodata[:-1] + [str(fresh), "--fixture", str(fx)]
+    for extra, needle in (([], "必须带 --out"), (["--out", str(td / "elsewhere" / "r.md")], "必须写进"),
+                          (["--out", str(fresh / "x-void.md")], "-void"), (["--out", str(fresh / "x-counts.md")], "-counts.md")):
+        rc, out, err = _main(fbase + extra)                   # fresh 里没有读过的报告: 拒只能是因为 --out
+        assert rc == 2 and needle in err and "validated" not in out + err, (extra, rc, err)
+    assert not list(fresh.iterdir()), "拒跑不留文件"
+    rc, _, err = _main(base + ["--out", str(rdir / "feature-gate2-reader-1.md")])
+    assert rc == 2 and "已经在了" in err, (rc, err)
+    rc, _, err = _main(base + ["--out", str(rdir / "feature-gate2-reader-2.md")])
+    assert rc == 2 and "已经读过" in err, (rc, err)
+    # 名单没进 git → 正式读拒 (在连库之前就拒; --fixture 的离线跑不查)。连库换成抛错的桩: 这条测试本身永远不连库
+    import _common as C
+    real_client = C.get_supabase_client
+    C.get_supabase_client = lambda: (_ for _ in ()).throw(AssertionError("名单没进仓库却去连库了"))
+    try:
+        rc, _, err = _main(nodata[:-1] + [str(fresh), "--out", str(fresh / "r.md")])
+    finally:
+        C.get_supabase_client = real_client
+    assert rc == 2 and "没进仓库" in err, (rc, err)
+    # --counts-only 不许盖掉读过的报告: 只收 …-counts.md, 同名文件里有标记也拒 (盖掉 = 抹掉记号, 再读就放行了)
+    marked = rdir / "feature-gate2-reader-1.md"
+    before = marked.read_text(encoding="utf-8")
+    rc, _, err = _main(base + ["--counts-only", "--out", str(marked)])
+    assert rc == 2 and "-counts.md" in err and marked.read_text(encoding="utf-8") == before, (rc, err)
+    sneaky = rdir / "feature-gate2-reader-3-counts.md"
+    sneaky.write_text(before, encoding="utf-8")
+    rc, _, err = _main(base + ["--counts-only", "--out", str(sneaky)])
+    assert rc == 2 and "读过的报告" in err and sneaky.read_text(encoding="utf-8") == before, (rc, err)
+    sneaky.unlink()
+    rc, _, err = _main(base + ["--counts-only", "--out", str(rdir / "feature-gate2-reader-4-counts.md")])
+    assert rc == 0 and _main(base + ["--out", str(rdir / "feature-gate2-reader-5.md")])[0] == 2, "数完行数照样拦着再读"
+    # 读一次 (fresh 里) 留下记号; 第二次不管写到哪都拒
+    rc, out, err = _main(fbase + ["--out", str(fresh / "feature-gate2-reader-a.md")])
+    assert rc == 0 and (fresh / "feature-gate2-reader-a.md").is_file() and not out.strip(), (rc, err)
+    for extra in ([], ["--out", str(fresh / "feature-gate2-reader-b.md")], ["--out", str(td / "elsewhere2" / "b.md")]):
+        rc, out, err = _main(fbase + extra)
+        assert rc == 2 and "validated" not in out + err, (extra, rc, err)
     print("  §8m 只读一次: 同一份名单 (含拆成两份) 第二次 → 拒; 少一篇 = 另一份; 作废要「名字带 -void + 标记 void=1」才不算; "
-          "--out 带 -void / 已存在 / 旁边有读过的 → 拒 ✓")
+          "正式读不带 --out / 写到 data-analysis 外 / -void / -counts.md / 已存在 / 名单没进 git → 拒; "
+          "--counts-only 盖不掉读过的报告 ✓")
 
 
 # ── §8n 取数: 假库上跑 fetch_dataset_secondary, 和直接给 dataset 结果相同 ────────────────────
@@ -1118,10 +1183,11 @@ class _FakeQ:
 
     def __init__(self, rows, log, name):
         self.rows, self.log, self.name = rows, log, name
-        self.filters, self.cols, self._order, self._rng, self._limit = [], None, None, None, None
+        self.filters, self.cols, self._order, self._rng, self._limit, self._count = [], None, None, None, None, None
 
-    def select(self, cols):
+    def select(self, cols, count=None):
         self.cols = [c.strip() for c in cols.split(",")]
+        self._count = count
         return self
 
     def eq(self, c, v):
@@ -1148,6 +1214,7 @@ class _FakeQ:
 
     def execute(self):
         rows = [r for r in self.rows if all((r.get(c) == v) == want for c, v, want in self.filters)]
+        n = len(rows) if self._count == "exact" else None
         if self._order:
             rows.sort(key=lambda r: str(r.get(self._order)))
         if self._rng:
@@ -1156,7 +1223,7 @@ class _FakeQ:
             rows = rows[:self._limit]
         if self.cols:
             rows = [{c: r.get(c) for c in self.cols} for r in rows]
-        return type("R", (), {"data": rows})()
+        return type("R", (), {"data": rows, "count": n})()
 
 
 class _FakeSB:
@@ -1191,6 +1258,9 @@ def _fake_tables(ds: dict) -> dict:
 
 def check_secondary_fetch() -> None:
     ds, man = _sec_fixture()
+    # 副题库 run_tag 下快照外的两行 (Haiku、别的 sha); 夹具本来就有 Opus 的分层行
+    a0 = next(a for a in ds["answers"] if a["run_tag"] == SEC_TAG and a["question_id"] == "reader_ask_form")
+    ds["answers"] += [dict(a0, extractor="llm:claude-haiku-5-5"), dict(a0, bank_sha256="0" * 64)]
     sb = _FakeSB(_fake_tables(ds))
     got = G.fetch_dataset_secondary(sb, bank=SEC_BANK, primary=SEC_PRIMARY)
     assert got["half_alias"] == ds["half_alias"] and got["vanished"] == ds["vanished"]
@@ -1199,6 +1269,11 @@ def check_secondary_fetch() -> None:
     res = _sec_run(ds, man)
     r2 = _sec_run(got, man)
     assert _cmp(r2) == _cmp(res) and r2["drops"] == res["drops"] and r2["sensitivity_flags"] == res["sensitivity_flags"]
+    # 快照外的行取数时不取、在库里数: 报告里「快照外 N 行」和直接给全部行时一样, 不是恒 0
+    n_opus = sum(1 for a in ds["answers"] if a["extractor"] == OPUS and a["question_id"] in ("ending_asks_reader", "asks_for_help"))
+    assert r2["ignored_rows"] == res["ignored_rows"] == {"secondary": 2, "condition": n_opus} and n_opus > 0, \
+        (r2["ignored_rows"], res["ignored_rows"], n_opus)
+    assert f"本次快照外 {n_opus} 行" in G.render_counts_secondary(_sec_run(got, man, counts_only=True))
     eqs = {(c, v) for name, op, c, v in sb.log if name == "note_feature_answers" and op == "eq"}
     assert ("run_tag", SEC_TAG) in eqs and ("bank_sha256", SEC_SHA) in eqs and ("bank_sha256", PRI_SHA) in eqs, eqs
     assert ("extractor", SONNET) in eqs and ("extractor", fb.CODE_EXTRACTOR) in eqs and ("question_version", 2) in eqs
@@ -1209,7 +1284,7 @@ def check_secondary_fetch() -> None:
     bad = G.fetch_dataset_secondary(_FakeSB(t), bank=SEC_BANK, primary=SEC_PRIMARY)
     _refused(lambda: _sec_run(bad, man), "不是题库版本", "取数时混进的 invites_sharing v1")
     print("  §8n 取数 (假库, 过滤 / 投影 / 翻页都真做): 结果和直接给 dataset 相同; 只查 Sonnet / code:v1、全 sha、钉版本; "
-          "不取正文; 版本不对的行被探针捞出来 → 拒 ✓")
+          "快照外的行 (Opus / Haiku / 别的 sha) 只数不取、数对; 不取正文; 版本不对的行被探针捞出来 → 拒 ✓")
 
 
 # ── §8o CLI / workflow / 进了仓库的第一波名单 ──────────────────────────────────────────
@@ -1230,7 +1305,7 @@ def check_secondary_cli_and_workflow(td: Path) -> None:
             except SystemExit as exc:
                 rc = exc.code
         return rc, err.getvalue()
-    ok = base + ["--sha", SEC_SHA[:12], "--manifest", str(csvp)]
+    ok = base + ["--sha", SEC_SHA[:12], "--manifest", str(csvp), "--out", str(td / "cli-reports" / "feature-gate2-reader-cli.md")]
     for extra, needle in ((["--projects", "P0"], "--projects"), (["--q-max", "0.2"], "D-128"),
                           (["--min-support", "20"], "D-128"), (["--extractors", "code:v1,llm:claude-opus-4-6"], "钉死"),
                           (["--allow-draft"], "--allow-draft"), (["--ignore-placebo-alarm"], "不许忽略"),
@@ -1241,8 +1316,10 @@ def check_secondary_cli_and_workflow(td: Path) -> None:
     assert rc == 2 and "--sha 必填" in err, err
     rc, err = _main(base + ["--sha", SEC_SHA[:12]])
     assert rc == 2 and "--manifest 必填" in err, err
-    rc, err = _main(ok + ["--extractors", "llm:claude-sonnet-5-5,code:v1", "--counts-only", "--out", str(td / "c.md")])
-    assert rc == 0 and (td / "c.md").is_file() and "只数行数" in err, (rc, err)
+    rc, err = _main(ok + ["--extractors", "llm:claude-sonnet-5-5,code:v1", "--counts-only", "--out", str(td / "c-counts.md")])
+    assert rc == 0 and (td / "c-counts.md").is_file() and "只数行数" in err, (rc, err)
+    rc, err = _main(ok + ["--counts-only", "--out", str(td / "c.md")])
+    assert rc == 2 and "-counts.md" in err and not (td / "c.md").exists(), (rc, err)
     rc, err = _main(ok + ["--manifest", str(csvp)])
     assert rc == 2 and "两份名单里都有" in err, "同一份名单给两次 = 重叠"
     # 主题库那条路: --manifest / --counts-only 不收; --sha / --extractors 照旧必填; --bank primary 这个键能用
@@ -1289,15 +1366,72 @@ def check_secondary_cli_and_workflow(td: Path) -> None:
         assert rc != 0 and needle in out, (env, rc, out[-300:])
     in_git = subprocess.run(["git", "ls-files", "--error-unmatch", "../data-analysis/gate2-reader-holdout-2026-10-27.csv"],
                             cwd=Path(__file__).resolve().parent, capture_output=True, text=True).returncode == 0
+    # 假 gh: 记下参数, 回 GH_COUNT (Guard 用 --jq .total_count 取数); GH_FAIL 非空就失败 (查不了 artifact)
+    ghbin = td / "ghbin"
+    ghbin.mkdir()
+    (ghbin / "gh").write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$GH_LOG"\n[ -n "$GH_FAIL" ] && exit 1\necho "$GH_COUNT"\n',
+                              encoding="utf-8")
+    (ghbin / "gh").chmod(0o755)
+    ghlog = td / "gh.log"
+
+    def _guard_gh(count="0", fail="", **env):
+        for f in (ghlog, td / "genv"):
+            f.unlink(missing_ok=True)
+        rc, out = _guard(PATH=str(ghbin) + os.pathsep + os.path.dirname(sys.executable) + os.pathsep + os.environ.get("PATH", ""),
+                         GH_LOG=str(ghlog), GH_COUNT=count, GH_FAIL=fail, GITHUB_REPOSITORY="o/r", **env)
+        return rc, out, (ghlog.read_text(encoding="utf-8") if ghlog.exists() else "")
     if in_git:                                              # 过了「名单进没进仓库」才走得到的: 要 git (CI 的 checkout 是 git 仓库)
         rc, out = _guard(IN_SHA="ba0f570c")
         assert rc != 0 and "不是副题库" in out, out[-300:]
-        rc, out = _guard()
-        assert rc == 0 and "bank=reader" in out and "write=false" in out, out[-300:]
+        rc, out, gh = _guard_gh(count="1")                  # counts_only=true: 不查读过没有 (数行数随时能跑)
+        assert rc == 0 and "bank=reader" in out and "write=false" in out and not gh, (out[-300:], gh)
         genv = (td / "genv").read_text(encoding="utf-8")
         assert "TAG=gate2-reader-" in genv and "MANIFESTS= data-analysis/gate2-reader-holdout-2026-10-27.csv" in genv, genv
-    run_reader = next(s for s in steps if "副题库" in s.get("name", ""))
+        assert "READ_KEY" not in genv
+        # counts_only=false: 按合并名单 sha 查 artifact gate2-reader-read-<前 12 位>; 有 → 拒; 查不了 → 拒; 没有 → 记 READ_KEY
+        key = "35549d5ca27b"                                # 第一波单独的合并名单 sha 前 12 位 (下面另核)
+        rc, out, gh = _guard_gh(count="1", IN_COUNTS_ONLY="false")
+        assert rc != 0 and "已经读过" in out and f"actions/artifacts?name=gate2-reader-read-{key}" in gh, (out[-300:], gh)
+        rc, out, gh = _guard_gh(fail="1", IN_COUNTS_ONLY="false")
+        assert rc != 0 and "fail closed" in out, out[-300:]
+        rc, out, gh = _guard_gh(count="0", IN_COUNTS_ONLY="false")
+        assert rc == 0 and f"READ_KEY={key}" in (td / "genv").read_text(encoding="utf-8"), out[-300:]
+        assert G.untracked_manifests([str(Path(__file__).resolve().parent.parent / "data-analysis"
+                                          / "gate2-reader-holdout-2026-10-27.csv")]) == []
+    assert G.untracked_manifests([str(csvp)]) == [str(csvp.resolve())], "临时名单不在 git 里"
+    assert wf["jobs"]["gate2"]["permissions"] == {"contents": "read", "actions": "read"}, "Guard 查 artifact 要 actions: read"
+    run_reader = next(s for s in steps if s.get("name", "").startswith("副题库闸二"))
     assert "--bank reader" in run_reader["run"] and "--write" not in run_reader["run"] and run_reader["if"].count("reader")
+    # 真跑一遍 reader 那步的 bash (python 换成只记参数的桩): counts_only=true 才带 --counts-only、写 …-counts.md;
+    # false 不带、写 feature-gate2-<TAG>.md —— 少了 --counts-only, 「只数」的那一下就成了那唯一一次读, 还打进公开的 job log
+    wfdir = td / "wf"
+    (wfdir / "scripts").mkdir(parents=True)
+    (wfdir / "data-analysis").mkdir()
+    pybin = td / "pybin"
+    pybin.mkdir()
+    (pybin / "python").write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$ARGV_LOG"\nout=""; prev=""\n'
+                                  'for a in "$@"; do [ "$prev" = "--out" ] && out="$a"; prev="$a"; done\n'
+                                  '[ -n "$out" ] && echo stub > "$out"\nexit 0\n', encoding="utf-8")
+    (pybin / "python").chmod(0o755)
+    rfile = td / "reader.sh"
+    rfile.write_text(run_reader["run"], encoding="utf-8")
+    for co in ("true", "false"):
+        e = dict(os.environ, PATH=str(pybin) + os.pathsep + os.environ.get("PATH", ""), ARGV_LOG=str(td / "argv.txt"),
+                 IN_COUNTS_ONLY=co, MANIFESTS=" data-analysis/w1.csv data-analysis/w2.csv", TAG="gate2-reader-t",
+                 IN_SHA=SEC_SHA[:12], READ_KEY="0" * 12, GITHUB_STEP_SUMMARY=str(td / "summary.md"))
+        p = subprocess.run(["bash", "-e", str(rfile)], cwd=wfdir / "scripts", env=e, capture_output=True, text=True)
+        argv = (td / "argv.txt").read_text(encoding="utf-8").splitlines()
+        assert p.returncode == 0 and argv[:3] == ["gate2_run.py", "--bank", "reader"], (co, p.returncode, p.stderr[-300:], argv)
+        assert ("--counts-only" in argv) == (co == "true") and "--write" not in argv, (co, argv)
+        want = "../data-analysis/feature-gate2-gate2-reader-t" + ("-counts.md" if co == "true" else ".md")
+        assert argv[argv.index("--out") + 1] == want, (co, argv)
+        assert [argv[i + 1] for i, a in enumerate(argv) if a == "--manifest"] == ["../data-analysis/w1.csv", "../data-analysis/w2.csv"]
+    # 读过的记号: 紧跟在 reader 那步后面, 只在正式读成功时传, 名字按 Guard 查的那个, 文件就是正式读写的那份
+    mark = steps[steps.index(run_reader) + 1]
+    assert mark.get("uses", "").startswith("actions/upload-artifact") and mark["with"]["name"] == "gate2-reader-read-${{ env.READ_KEY }}", mark
+    assert mark["with"]["path"] == "data-analysis/feature-gate2-${{ env.TAG }}.md" and mark["with"]["if-no-files-found"] == "error"
+    assert "success()" in mark["if"] and "env.IN_BANK == 'reader'" in mark["if"] and "env.IN_COUNTS_ONLY == 'false'" in mark["if"]
+    assert "gate2-reader-read-$KEY" in guard and "READ_KEY=$KEY" in guard
     combo = next(s for s in steps if s.get("name", "").startswith("组合进不进 L2"))
     assert "primary" in combo["if"], "组合对比只给主题库"
     # 进了仓库的第一波名单: sha 和 D-128 补记一致、全在留出半 (10-27 映射表里没有一篇是它的 new_id / old_id)、没有点名的篇
@@ -1311,9 +1445,57 @@ def check_secondary_cli_and_workflow(td: Path) -> None:
         "名单 sha 的定义变了 (D-128 补记: 第一波单独 = 35549d5ca27b…)"
     dec = (Path(__file__).resolve().parent.parent / "DECISIONS.md").read_text(encoding="utf-8")
     assert m1["sha256"] in dec, "D-128 补记里记的第一波名单 sha 对不上"
-    print("  §8o CLI: 范围 / 判据 / 抽取器 / draft / 忽略报警 / run_tag / 缺 sha / 缺名单 / 名单重叠 → 2; counts-only 写文件; "
-          "主题库不收副题库参数、--bank primary 能用; workflow reader 分支不写库、组合对比只给主题库; "
+    print("  §8o CLI: 范围 / 判据 / 抽取器 / draft / 忽略报警 / run_tag / 缺 sha / 缺名单 / 名单重叠 → 2; counts-only 写 …-counts.md; "
+          "主题库不收副题库参数、--bank primary 能用; workflow reader 分支不写库、counts_only 才带 --counts-only、"
+          "读完传记号 artifact、Guard 见记号 / 查不了就拒、组合对比只给主题库; "
           "第一波名单 sha c761364a… / 1,227 篇 / 全在留出半 / md5 18a22fa1… ✓")
+
+
+# ── §8p 按现在的标签和项目算, 不按名单写死时的 (补记 4) ─────────────────────────────────────
+def check_secondary_current_labels() -> None:
+    ds, man = _sec_fixture()
+    res = _sec_run(ds, man)
+    assert res["y_changed"] == 0 and res["project_changed"] == 0
+    ana = _analysis_ids(res, ds, man)
+    flip = [m["note_id"] for m in man if m["note_id"] in ana and m["project_id"] == "P1"][:5]
+    moved = [m["note_id"] for m in man if m["note_id"] in ana and m["project_id"] == "P0"][:40]
+    man2 = []
+    for m in man:
+        m = dict(m)
+        if m["note_id"] in flip:
+            m["y"] = 1 - int(m["y"])                       # 名单写死之后标签变了
+        if m["note_id"] in moved:
+            m["project_id"] = "PX"                         # 名单写死时的旧项目 (挪表前那种): 分层用现在的项目
+        man2.append(m)
+    r2 = _sec_run(ds, man2)
+    assert r2["y_changed"] == 5 and r2["project_changed"] == 40, (r2["y_changed"], r2["project_changed"])
+    assert _cmp(r2) == _cmp(res) and r2["big_projects"] == res["big_projects"], "名单里写死的 y / 项目不该进计算"
+    for r, r0 in zip(r2["family_rows"], res["family_rows"]):
+        assert r["big_within"] == r0["big_within"] and r["strata"] == r0["strata"], r["question_id"]
+    print("  §8p 名单写死时的 y (5 篇) / 项目 (40 篇) 和现在不同: 只记数, 计算全按现在的标签和项目 (补记 4) ✓")
+
+
+# ── §8q 有支持的大项目: 大项目里没有这个取值的不算 ───────────────────────────────────────────
+def check_secondary_big_support() -> None:
+    ds, man = _sec_fixture(extras=False)
+    for a in ds["answers"]:                                # P3 里「挑一个 / 说自己的」一篇都没有 (都改成求推荐)
+        if a["question_id"] == "reader_ask_form" and a["subject_id"].startswith("P3_") and a["answer"] in ("挑一个", "说自己的"):
+            a["answer"] = "求推荐"
+    res = _sec_run(ds, man)
+    assert set(res["big_projects"]) == {"P0", "P1", "P2", "P3"}, res["big_projects"]
+    c1 = _row2(res, "reader_ask_form", "挑一个+说自己的")
+    assert c1["big_projects_n"] == 3 and set(c1["big_within"]) == {"P0", "P1", "P2"}, (c1["big_projects_n"], c1["big_within"])
+    assert c1["n_or_above_1"] + c1["n_or_below_1"] <= 3
+    assert _row2(res, "invites_sharing", "是")["big_projects_n"] == 4
+    # 占位题报警的「有支持的大项目 ≥ 3」也是这个数: 四个大项目里只有两个有「是」→ 不报; 其余三条都满足 (换成 4 就报)
+    notes = [{"note_id": f"{p}_{i:03d}", "project_id": p, "cond": ("是", "否"), "y": int(i < 30)}
+             for p in ("P0", "P1", "P2", "P3") for i in range(100)]
+    has = {n["note_id"] for n in notes if n["project_id"] in ("P0", "P1") and (int(n["note_id"][3:]) < 12 or 30 <= int(n["note_id"][3:]) < 38)}
+    row = G._sec_stats(notes, lambda n: n["note_id"] in has, strata_of=lambda n: (n["project_id"],) + n["cond"],
+                       big={"P0", "P1", "P2", "P3"})
+    assert row["support"] == 40 and row["big_projects_n"] == 2 and not G.placebo_alarm(row), row
+    assert G.placebo_alarm(dict(row, big_projects_n=4)), "夹具其余三条要满足, 不然测不出这一条"
+    print("  §8q 有支持的大项目: C1 在 P3 没支持 → 4 个大项目只算 3 个; 占位题只有 2 个大项目有支持 → 不报警 ✓")
 
 
 def main() -> int:
@@ -1347,7 +1529,9 @@ def main() -> int:
         check_secondary_single_read(t)
         check_secondary_fetch()
         check_secondary_cli_and_workflow(t)
-    print("\ncheck_gate2_run: 13 节 + §8 副题库 15 节全过")
+        check_secondary_current_labels()
+        check_secondary_big_support()
+    print("\ncheck_gate2_run: 13 节 + §8 副题库 17 节全过")
     return 0
 
 
