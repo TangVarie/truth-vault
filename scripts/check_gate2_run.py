@@ -20,7 +20,7 @@
 外加 check_gate1_review §1b 4 处、discover 自检 1 处; 复审后又补 18 处, 逐个改坏确认变红再改回):
   ⑪ 副题库收了 --write / --rows-out, 或读的时候调了 write_validation              → §8b 红
   ⑫ 半区按 note_id 不按 D-129 old_id / 映射没读到照跑 / fetch_half_alias 0 对不抛 / 映射表读不了不转成拒跑 /
-     名单里新旧两行同在、有点名剔掉的篇不拒                                       → §8a / §8c 红
+     名单里新旧两行同在、有点名剔掉的篇不拒 / verify #92 不把映射表除外、OPEN-ITEMS S-02 把它列进可删 → §8a / §8c 红
   ⑬ MH 只按项目分层 (不分 ear × afh)                                           → §8a / §8d 红
   ⑭ 3% 线差一 / 截断 NULL 算成缺 / 截断 NULL 进了比较基数                          → §8a / §8e / §8f 红
   ⑮ 取值行 / 合并行的基数没剔「没问读者」/ 阳性对照的基数剔了 / 合并行的取值集合不对 / 分析不限名单 → §8a / §8f 红
@@ -32,12 +32,14 @@
   ⑳ --counts-only 的结果或输出碰了 y                                             → §8k 红
   ㉑ 敏感性重跑不剔 / 不加 body_len_bucket / paid_promoted=false 也剔                    → §8a / §8l 红
   ㉒ 只读一次不守 / 作废只看标记或只看文件名 / 名单 sha 按文件算 (拆两份就绕过) / --out 覆盖已有报告 / 正式读不带 --out
-     也跑 (只打 stdout、不留记号) / --out 写到 --reports-dir 外也跑 / 名单没进 git 也读 / --counts-only 的 --out 不限
-     …-counts.md、能盖掉带标记的报告                                              → §8a / §8m 红
+     也跑 (只打 stdout、不留记号) / --out 写到 --reports-dir 外也跑 / 连库的正式读 --reports-dir 指到 data-analysis 外
+     (连 --out 一起挪走) 就不查 data-analysis / 名单没进 git 也读 / --counts-only 的 --out 不限 …-counts.md、能盖掉带标记的报告
+                                                                                  → §8a / §8m 红
   ㉓ 取数不钉 sha / 没有版本探针 / 快照外的行取数时不数 (报告里恒 0) / run_gate2_secondary 不加取数带来的数 → §8n 红
   ㉔ 判据参数能改 / 大项目方向改成按层判 / 不做账号先验 / 只过一行也算发现               → §8a / §8c / §8o 红
   ㉕ workflow 的 reader 分支能 write / 能忽略报警 / 收没进仓库的名单 / 跑组合对比 / counts_only=true 不传 --counts-only /
-     读完不传记号 artifact、只数也传 / Guard 见了记号照读                          → §8o 红
+     读完不传记号 artifact、只数也传 / Guard 见了记号照读 / 记号传上去之前结果就进了 job log / step summary / 别的 artifact
+     (记号传失败、读完取消) / Guard 不拒仓库里已有的同名报告                        → §8o 红
   ㉖ 大项目分层内方向按合并 2×2 算 / 有支持的大项目不筛「有这个取值」/ 一篇两种都缺归到分层题 / 缺代码特征那行也算掉 → §8d / §8e / §8q 红
   ㉗ 按名单写死时的 y 算 / 按名单写死时的项目分层 (补记 4 要的是现在的)              → §8p 红
 
@@ -761,7 +763,20 @@ def check_secondary_half_alias() -> None:
             raise AssertionError(f"§8c fetch_half_alias 该抛没抛 ({needle})")
     _refused(lambda: G.fetch_dataset_secondary(_FakeSB({}, missing={C.D129_ID_MAP_TABLE}), bank=SEC_BANK,
                                                primary=SEC_PRIMARY), "fail closed", "映射表读不了")
-    print("  §8c 半区: 换了 id 的按 old_id (两个方向); 去掉映射 / 映射为空 / 读不了 → 拒; 新旧两行同在、点名的篇 → 拒 ✓")
+    # 映射表永久保留: 名字像备份, 运维清单不能把它当过期备份删 (删了闸二和每季度 G-18 fail closed, 41 篇的半区也算不回来)。
+    # verify #92 (过期备份计数, 「> 0 = 该 drop 了」) 要把它除外; OPEN-ITEMS S-02 「…之后才可删」那一句里不能有它
+    import re as _re
+    root = Path(__file__).resolve().parent.parent
+    verify = (Path(__file__).resolve().parent / "verify_supabase_state.sql").read_text(encoding="utf-8")
+    v92 = verify[verify.index("SELECT '92'"):verify.index("SELECT '93'")]
+    assert f"(n.nspname, c.relname) <> ('truth_vault', '{C.D129_ID_MAP_TABLE}')" in v92, "verify #92 没把 D-129 映射表除外"
+    s02 = next(ln for ln in (root / "OPEN-ITEMS.md").read_text(encoding="utf-8").splitlines() if ln.startswith("| S-02 |"))
+    droppable = [seg for seg in _re.split(r"[；。]", s02) if "可删" in seg]
+    assert droppable and not any(C.D129_ID_MAP_TABLE in seg for seg in droppable), "S-02 把 D-129 映射表列进了可删"
+    assert f"`truth_vault.{C.D129_ID_MAP_TABLE}`（old_id → new_id 映射）**永久保留、不删**" in s02
+    assert f"COMMENT ON TABLE truth_vault.{C.D129_ID_MAP_TABLE} IS '" in s02 and "永久保留" in s02
+    print("  §8c 半区: 换了 id 的按 old_id (两个方向); 去掉映射 / 映射为空 / 读不了 → 拒; 新旧两行同在、点名的篇 → 拒; "
+          "映射表 verify #92 除外、S-02 不删 ✓")
 
 
 # ── §8d 辛普森: 不分层 OR > 1, 分层题内 OR = 1 ────────────────────────────────────────
@@ -1147,12 +1162,13 @@ def check_secondary_single_read(td: Path) -> None:
     assert rc == 2 and "已经读过" in err, (rc, err)
     # 名单没进 git → 正式读拒 (在连库之前就拒; --fixture 的离线跑不查)。连库换成抛错的桩: 这条测试本身永远不连库
     import _common as C
-    real_client = C.get_supabase_client
+    real_client, real_reports, real_untracked = C.get_supabase_client, G.REPORTS_DIR, G.untracked_manifests
     C.get_supabase_client = lambda: (_ for _ in ()).throw(AssertionError("名单没进仓库却去连库了"))
+    G.REPORTS_DIR = fresh                                     # 连库的正式读只认 REPORTS_DIR: 这里把它指到 fresh
     try:
         rc, _, err = _main(nodata[:-1] + [str(fresh), "--out", str(fresh / "r.md")])
     finally:
-        C.get_supabase_client = real_client
+        C.get_supabase_client, G.REPORTS_DIR = real_client, real_reports
     assert rc == 2 and "没进仓库" in err, (rc, err)
     # --counts-only 不许盖掉读过的报告: 只收 …-counts.md, 同名文件里有标记也拒 (盖掉 = 抹掉记号, 再读就放行了)
     marked = rdir / "feature-gate2-reader-1.md"
@@ -1172,8 +1188,28 @@ def check_secondary_single_read(td: Path) -> None:
     for extra in ([], ["--out", str(fresh / "feature-gate2-reader-b.md")], ["--out", str(td / "elsewhere2" / "b.md")]):
         rc, out, err = _main(fbase + extra)
         assert rc == 2 and "validated" not in out + err, (extra, rc, err)
+    # 连库的正式读 (不带 --fixture) 只认 data-analysis/ (这里 = 打桩的 REPORTS_DIR): --reports-dir 指到别处、--out 跟过去,
+    # 也绕不过那里读过的报告 (补记 7 实现口径)。连库换成假库、名单当作进了 git —— 不守的话这一跑真能读完、再写一份 void=0 的报告;
+    # 先在空的 REPORTS_DIR 里真读一次, 证明这条路走得通, 拒是因为 --reports-dir
+    G.untracked_manifests = lambda paths: []
+    C.get_supabase_client = lambda: _FakeSB(_fake_tables(ds))
+    live = nodata[:-1]                                        # 没有 --fixture
+    try:
+        G.REPORTS_DIR = td / "single-live"
+        G.REPORTS_DIR.mkdir()
+        rc, out, err = _main(live + [str(G.REPORTS_DIR), "--out", str(G.REPORTS_DIR / "feature-gate2-reader-live.md")])
+        assert rc == 0 and (G.REPORTS_DIR / "feature-gate2-reader-live.md").is_file(), (rc, err)
+        G.REPORTS_DIR = fresh                                 # fresh 里有读过的报告 (上面那次)
+        other = td / "elsewhere3"
+        other.mkdir()
+        rc, out, err = _main(live + [str(other), "--out", str(other / "again.md")])
+        assert rc == 2 and "连库的正式读只在" in err and "validated" not in out + err and not list(other.iterdir()), (rc, err)
+        rc, out, err = _main(live + [str(fresh), "--out", str(fresh / "feature-gate2-reader-c.md")])
+        assert rc == 2 and "已经读过" in err and not (fresh / "feature-gate2-reader-c.md").exists(), (rc, err)
+    finally:
+        C.get_supabase_client, G.REPORTS_DIR, G.untracked_manifests = real_client, real_reports, real_untracked
     print("  §8m 只读一次: 同一份名单 (含拆成两份) 第二次 → 拒; 少一篇 = 另一份; 作废要「名字带 -void + 标记 void=1」才不算; "
-          "正式读不带 --out / 写到 data-analysis 外 / -void / -counts.md / 已存在 / 名单没进 git → 拒; "
+          "正式读不带 --out / 写到 data-analysis 外 / -void / -counts.md / 已存在 / 名单没进 git / 连库时 --reports-dir 指到别处 → 拒; "
           "--counts-only 盖不掉读过的报告 ✓")
 
 
@@ -1402,36 +1438,133 @@ def check_secondary_cli_and_workflow(td: Path) -> None:
     assert wf["jobs"]["gate2"]["permissions"] == {"contents": "read", "actions": "read"}, "Guard 查 artifact 要 actions: read"
     run_reader = next(s for s in steps if s.get("name", "").startswith("副题库闸二"))
     assert "--bank reader" in run_reader["run"] and "--write" not in run_reader["run"] and run_reader["if"].count("reader")
-    # 真跑一遍 reader 那步的 bash (python 换成只记参数的桩): counts_only=true 才带 --counts-only、写 …-counts.md;
-    # false 不带、写 feature-gate2-<TAG>.md —— 少了 --counts-only, 「只数」的那一下就成了那唯一一次读, 还打进公开的 job log
+    # 真跑一遍 reader 那步的 bash (python 换成桩: 记参数, 成功时往 --out 写「读的结果」、往 stderr 写两行状态, 退出码按 STUB_RC):
+    # counts_only=true 才带 --counts-only、写 …-counts.md; false 不带、写 feature-gate2-<TAG>.md —— 少了 --counts-only,
+    # 「只数」的那一下就成了那唯一一次读, 还打进公开的 job log
     wfdir = td / "wf"
     (wfdir / "scripts").mkdir(parents=True)
     (wfdir / "data-analysis").mkdir()
     pybin = td / "pybin"
     pybin.mkdir()
-    (pybin / "python").write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$ARGV_LOG"\nout=""; prev=""\n'
-                                  'for a in "$@"; do [ "$prev" = "--out" ] && out="$a"; prev="$a"; done\n'
-                                  '[ -n "$out" ] && echo stub > "$out"\nexit 0\n', encoding="utf-8")
+    (pybin / "python").write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$@" > "$ARGV_LOG"\nout=""; prev=""\n'
+        'for a in "$@"; do [ "$prev" = "--out" ] && out="$a"; prev="$a"; done\nrc="${STUB_RC:-0}"\n'
+        'if [ "$rc" = "0" ]; then echo "READ-STDERR validated" >&2; [ -n "$out" ] && echo "READ-RESULT" > "$out"; '
+        'else echo "REFUSE-REASON" >&2; fi\n'
+        '[ "$rc" = "3" ] && [ -n "$out" ] && echo "VOID-COUNTS" > "${out%.md}-void.md"\nexit "$rc"\n', encoding="utf-8")
     (pybin / "python").chmod(0o755)
     rfile = td / "reader.sh"
     rfile.write_text(run_reader["run"], encoding="utf-8")
-    for co in ("true", "false"):
+    summary = td / "summary.md"
+    for co, stub_rc in (("true", "0"), ("false", "0"), ("false", "2")):
+        summary.unlink(missing_ok=True)
         e = dict(os.environ, PATH=str(pybin) + os.pathsep + os.environ.get("PATH", ""), ARGV_LOG=str(td / "argv.txt"),
                  IN_COUNTS_ONLY=co, MANIFESTS=" data-analysis/w1.csv data-analysis/w2.csv", TAG="gate2-reader-t",
-                 IN_SHA=SEC_SHA[:12], READ_KEY="0" * 12, GITHUB_STEP_SUMMARY=str(td / "summary.md"))
+                 IN_SHA=SEC_SHA[:12], READ_KEY="0" * 12, GITHUB_STEP_SUMMARY=str(summary), RUNNER_TEMP=str(td), STUB_RC=stub_rc)
         p = subprocess.run(["bash", "-e", str(rfile)], cwd=wfdir / "scripts", env=e, capture_output=True, text=True)
         argv = (td / "argv.txt").read_text(encoding="utf-8").splitlines()
-        assert p.returncode == 0 and argv[:3] == ["gate2_run.py", "--bank", "reader"], (co, p.returncode, p.stderr[-300:], argv)
+        assert p.returncode == int(stub_rc) and argv[:3] == ["gate2_run.py", "--bank", "reader"], (co, p.returncode, p.stderr[-300:], argv)
         assert ("--counts-only" in argv) == (co == "true") and "--write" not in argv, (co, argv)
         want = "../data-analysis/feature-gate2-gate2-reader-t" + ("-counts.md" if co == "true" else ".md")
         assert argv[argv.index("--out") + 1] == want, (co, argv)
         assert [argv[i + 1] for i, a in enumerate(argv) if a == "--manifest"] == ["../data-analysis/w1.csv", "../data-analysis/w2.csv"]
-    # 读过的记号: 紧跟在 reader 那步后面, 只在正式读成功时传, 名字按 Guard 查的那个, 文件就是正式读写的那份
+        shown = p.stdout + p.stderr + (summary.read_text(encoding="utf-8") if summary.exists() else "")
+        if co == "true":                                    # 只数行数: 照旧当场打出来
+            assert "READ-RESULT" in shown and "READ-STDERR" in shown, shown[-300:]
+        elif stub_rc == "0":                                # 正式读: 记号传上去之前结果哪儿都不露 (stderr 存着, 报告不打)
+            assert "READ-RESULT" not in shown and "READ-STDERR" not in shown, shown[-300:]
+            assert "READ-STDERR" in (td / "gate2-reader-stderr.txt").read_text(encoding="utf-8")
+        else:                                               # 拒跑: 原因照打
+            assert "REFUSE-REASON" in shown, shown[-300:]
+    # 读过的记号: 紧跟在 reader 那步后面, 名字按 Guard 查的那个, 文件就是正式读写的那份; 报告文件在就传 (always(), 不看前面成没成)
     mark = steps[steps.index(run_reader) + 1]
     assert mark.get("uses", "").startswith("actions/upload-artifact") and mark["with"]["name"] == "gate2-reader-read-${{ env.READ_KEY }}", mark
     assert mark["with"]["path"] == "data-analysis/feature-gate2-${{ env.TAG }}.md" and mark["with"]["if-no-files-found"] == "error"
-    assert "success()" in mark["if"] and "env.IN_BANK == 'reader'" in mark["if"] and "env.IN_COUNTS_ONLY == 'false'" in mark["if"]
+    assert mark.get("id") and "env.IN_BANK == 'reader'" in mark["if"] and "env.IN_COUNTS_ONLY == 'false'" in mark["if"]
     assert "gate2-reader-read-$KEY" in guard and "READ_KEY=$KEY" in guard
+    # 整个 job 按 if 走一遍 (只认这个 workflow 用到的写法; reader 相关的 run 步真跑 bash, python 是上面的桩):
+    # 不管记号传成没成、中途取消没有, 读的结果 (报告 / 两行状态) 只能在记号传上去之后露出来 (job log、step summary、别的 artifact)
+    import re as _re
+
+    def _if_ok(step, st) -> bool:
+        expr = (step.get("if") or "").strip()
+        atoms = [a.strip() for a in expr.split("&&")] if expr else []
+        ok = st["status"] == "success" or any(a in ("always()", "!cancelled()", "failure()", "cancelled()") for a in atoms)
+        for a in atoms:
+            if a == "always()":
+                continue
+            if a == "success()":
+                ok = ok and st["status"] == "success"
+                continue
+            m = _re.fullmatch(r"(env|steps)\.(\w+)(?:\.outcome)? (==|!=) '([^']*)'", a)
+            h = _re.fullmatch(r"hashFiles\(format\('([^']*)', env\.(\w+)\)\) != ''", a)
+            if m:
+                v = (st["env"] if m[1] == "env" else st["outcome"]).get(m[2], "")
+                ok = ok and ((v == m[4]) == (m[3] == "=="))
+            elif h:
+                ok = ok and (st["ws"] / h[1].replace("{0}", st["env"].get(h[2], ""))).is_file()
+            else:
+                raise AssertionError(f"workflow 模拟不认识的 if: {a!r} ({step.get('name')})")
+        return ok
+
+    def _job(name, stub_rc="0", mark_fails=False, cancel_after_reader=False):
+        ws = td / f"job-{name}"
+        for d in ("scripts", "data-analysis", "tmp"):
+            (ws / d).mkdir(parents=True)
+        tag = "gate2-reader-t"
+        st = {"status": "success", "outcome": {}, "ws": ws,
+              "env": {"IN_BANK": "reader", "IN_COUNTS_ONLY": "false", "IN_IGNORE_PLACEBO": "false", "IN_WRITE": "false",
+                      "TAG": tag, "READ_KEY": "0" * 12, "MANIFESTS": " data-analysis/w1.csv", "IN_SHA": SEC_SHA[:12]}}
+        report = ws / "data-analysis" / f"feature-gate2-{tag}.md"
+        summ = ws / "summary.md"
+        marked, leaks, ran = False, [], []
+        for s in steps:
+            sname = s.get("name") or s.get("uses", "")
+            if not _if_ok(s, st):
+                if s.get("id"):
+                    st["outcome"][s["id"]] = "skipped"
+                continue
+            ran.append(sname)
+            outcome, shown = "success", ""
+            if s.get("uses", "").startswith("actions/upload-artifact"):
+                paths = [ln.strip().replace("${{ env.TAG }}", tag) for ln in str(s["with"]["path"]).splitlines() if ln.strip()]
+                if s is mark:
+                    outcome = "failure" if mark_fails or not report.is_file() else "success"
+                    marked = marked or outcome == "success"
+                elif f"data-analysis/feature-gate2-{tag}.md" in paths and report.is_file():
+                    shown = report.read_text(encoding="utf-8")
+            elif "run" in s and (s is run_reader or "reader" in (s.get("if") or "") or "read_mark" in (s.get("if") or "")):
+                before = summ.read_text(encoding="utf-8") if summ.exists() else ""
+                e = dict(os.environ, PATH=str(pybin) + os.pathsep + os.environ.get("PATH", ""), ARGV_LOG=str(ws / "argv.txt"),
+                         GITHUB_STEP_SUMMARY=str(summ), RUNNER_TEMP=str(ws / "tmp"), STUB_RC=stub_rc, **st["env"])
+                p = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", s["run"]],
+                                   cwd=ws / s.get("working-directory", "."), env=e, capture_output=True, text=True)
+                outcome = "success" if p.returncode == 0 else "failure"
+                shown = p.stdout + p.stderr + (summ.read_text(encoding="utf-8") if summ.exists() else "")[len(before):]
+            if ("READ-RESULT" in shown or "READ-STDERR" in shown) and not marked:
+                leaks.append(sname)
+            if s.get("id"):
+                st["outcome"][s["id"]] = outcome
+            if outcome == "failure" and st["status"] == "success":
+                st["status"] = "failure"
+            if s is run_reader and cancel_after_reader:
+                st["status"] = "cancelled"
+        return {"marked": marked, "leaks": leaks, "ran": ran, "report_left": report.is_file(),
+                "summary": summ.read_text(encoding="utf-8") if summ.exists() else ""}
+    ok = _job("ok")
+    assert ok["marked"] and not ok["leaks"] and "READ-RESULT" in ok["summary"], ok
+    for name, kw in (("mark-fails", {"mark_fails": True}), ("cancelled", {"cancel_after_reader": True}),
+                     ("void", {"stub_rc": "3"}), ("refused", {"stub_rc": "2"})):
+        r = _job(name, **kw)
+        assert not r["leaks"], (name, r)                    # 记号没传上去的时候, 结果一处都没露
+        assert "READ-RESULT" not in r["summary"], (name, r)
+        assert r["marked"] == (name == "cancelled"), (name, r)   # 读完再取消: 报告在就传记号; 作废 / 拒跑不传
+        if name == "mark-fails":                           # 记号传失败: 报告在离开 runner 之前删掉, 重跑再读不算第二次
+            assert not r["report_left"], r
+    # Guard: 仓库里已有同名报告 (这里借已提交的主题库报告 feature-gate2-gate2-20261010.md) → 拒, 不让旧文件冒充这次读去传记号
+    if in_git:
+        rc, out, gh = _guard_gh(count="0", IN_COUNTS_ONLY="false", IN_RUN_TAG="gate2-20261010")
+        assert rc != 0 and "已经在仓库里" in out and not gh, (out[-300:], gh)
     combo = next(s for s in steps if s.get("name", "").startswith("组合进不进 L2"))
     assert "primary" in combo["if"], "组合对比只给主题库"
     # 进了仓库的第一波名单: sha 和 D-128 补记一致、全在留出半 (10-27 映射表里没有一篇是它的 new_id / old_id)、没有点名的篇
@@ -1447,7 +1580,8 @@ def check_secondary_cli_and_workflow(td: Path) -> None:
     assert m1["sha256"] in dec, "D-128 补记里记的第一波名单 sha 对不上"
     print("  §8o CLI: 范围 / 判据 / 抽取器 / draft / 忽略报警 / run_tag / 缺 sha / 缺名单 / 名单重叠 → 2; counts-only 写 …-counts.md; "
           "主题库不收副题库参数、--bank primary 能用; workflow reader 分支不写库、counts_only 才带 --counts-only、"
-          "读完传记号 artifact、Guard 见记号 / 查不了就拒、组合对比只给主题库; "
+          "读完传记号 artifact、记号传上去之前结果不露 (传失败 / 取消 / 作废 / 拒跑整 job 走一遍)、Guard 见记号 / 查不了 / 同名报告已在就拒、"
+          "组合对比只给主题库; "
           "第一波名单 sha c761364a… / 1,227 篇 / 全在留出半 / md5 18a22fa1… ✓")
 
 

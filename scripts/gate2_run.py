@@ -1302,6 +1302,10 @@ def main_secondary(args, bank_path) -> int:
         # 正式读必须留下记号: 报告写进 --reports-dir (默认 data-analysis/), 那里才是 prior_secondary_reads 找的地方 (补记 7)
         if out is None:
             return refuse("正式读必须带 --out, 把报告写进 data-analysis/: 只打到 stdout 的读不留记号, 「只读一次」守不住 (补记 7)")
+        # 连库的正式读只认 data-analysis/: --reports-dir 指到别处, 那里没有读过的报告, 第二次读就放过去了 (补记 7 实现口径)
+        if not args.fixture and Path(args.reports_dir).resolve() != REPORTS_DIR.resolve():
+            return refuse(f"连库的正式读只在 {REPORTS_DIR} 找读过的报告、只往那里写 (收到 --reports-dir {args.reports_dir}): "
+                          "--reports-dir 只给 --fixture 的离线跑用 (补记 7)")
         if out.resolve().parent != Path(args.reports_dir).resolve():
             return refuse(f"正式读的报告必须写进 {args.reports_dir} (收到 --out {out}): 写到别处, 下次读找不到它 (补记 7)")
         if "-void" in out.name:
@@ -1379,7 +1383,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                     help="副题库: 只数行数 / 覆盖 / 名单, 不出 y 的交叉表、OR、p (读之前只许跑这个, D-128 补记 6)")
     ap.add_argument("--answers-run-tag", default=SEC_ANSWERS_RUN_TAG, help="副题库答案的 run_tag (fqr-*)")
     ap.add_argument("--reports-dir", default=str(REPORTS_DIR),
-                    help="副题库: 到这里找读过的报告 (同一份名单只读一次, 补记 7)")
+                    help="副题库: 到这里找读过的报告 (同一份名单只读一次, 补记 7); 只给 --fixture 的离线跑改, "
+                         "连库的正式读只认 data-analysis/ (改了就拒)")
     args = ap.parse_args(argv)
     bank_path = fb.BANKS.get(args.bank, args.bank)
     if fb.load_bank(bank_path).get("role") == fb.ROLE_SECONDARY:

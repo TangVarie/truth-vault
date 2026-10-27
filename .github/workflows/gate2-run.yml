@@ -5,8 +5,9 @@
 # gate1_status: fail 的题自动 unreliable (D-103 / D-105), 不用手传。
 # bank=reader 走副题库 fq-v0.2-cand-reader 那条路 (D-128, docs/28 §6.2b): 只读进了仓库的名单 (manifests), 先 counts_only=true
 # 只数行数和覆盖, 第二波定了之后 counts_only=false 读一次; 永远不写 feature_validation (write 必须 false), 不跑组合对比。
-# 读完 (退出码 0) 报告另以 gate2-reader-read-<合并名单 sha 前 12 位> 为名传 artifact; 再读同一份名单, Guard 按这个名字查到就拒
-# (补记 7: 报告提交进仓库之前, 重跑 job / 再点一次也读不了第二次)。
+# 读完 (报告文件在) 报告另以 gate2-reader-read-<合并名单 sha 前 12 位> 为名传 artifact; 再读同一份名单, Guard 按这个名字查到就拒
+# (补记 7: 报告提交进仓库之前, 重跑 job / 再点一次也读不了第二次)。记号传上去之前读的结果哪儿都不露 (不进 job log、step summary、
+# artifact): 记号传失败 / 中途取消时没人看到结果, 重跑再读不算第二次。
 name: Gate 2 run (feature discrimination · docs/28 §6.2)
 
 on:
@@ -130,6 +131,10 @@ jobs:
           assert fs.startswith(sha), f'sha {sha} 不是副题库 frozen_sha256 {fs[:12]}… 的前缀 (D-128: 9f2cf1c9e7de)'
           print(f'✅ 副题库 {b[\"bank_version\"]} frozen, digest {fs[:12]}…; 钉的主题库 {p[\"bank_version\"]} {p[\"_sha256\"][:12]}…')" "$IN_SHA"
             if [ "$IN_COUNTS_ONLY" = "false" ]; then
+              # 记号步按报告文件在不在传: 仓库里已有同名报告 (或作废那份) 就拒 —— 脚本也不覆盖, 但旧文件不能冒充这次读去传记号
+              for f in "../data-analysis/feature-gate2-$TAG.md" "../data-analysis/feature-gate2-$TAG-void.md"; do
+                [ ! -e "$f" ] || { echo "::error::$f 已经在仓库里了, 换一个 run_tag (脚本不覆盖; 记号按这份文件传, 旧文件不能冒充这次读)"; exit 1; }
+              done
               # 只读一次 (补记 7) 在这层也守: 读完的报告以 gate2-reader-read-<合并名单 sha 前 12 位> 为名传了 artifact, 有这个名字
               # 就是读过 (报告还没提交进仓库时, 重跑 job / 再点一次都在这里拒); 查不了 artifact 也不读 (fail closed)
               KEY="$(python -c "import sys, gate2_run as G; ms = G.load_manifests(['../' + m for m in sys.argv[1:]]); print(G.combined_manifest_sha(r['note_id'] for m in ms for r in m['rows'])[:12])" $MANS)" \
@@ -220,8 +225,11 @@ jobs:
           else
             OUT="../data-analysis/feature-gate2-${TAG}.md"
           fi
-          python gate2_run.py --bank reader --sha "$IN_SHA" --run-tag "$TAG" --out "$OUT" "${FLAGS[@]}"
+          # stderr 先存着: 正式读成功时里面有两行的状态, 要等记号 artifact 传上去之后 (下下步) 才打出来 (补记 7)
+          ERR="${RUNNER_TEMP:-/tmp}/gate2-reader-stderr.txt"
+          python gate2_run.py --bank reader --sha "$IN_SHA" --run-tag "$TAG" --out "$OUT" "${FLAGS[@]}" 2> "$ERR"
           rc=$?
+          if [ "$rc" != "0" ] || [ "$IN_COUNTS_ONLY" = "true" ]; then cat "$ERR" >&2; fi
           VOID="${OUT%.md}-void.md"
           if [ "$rc" = "3" ]; then
             echo "::error::占位题报警, 这次读作废 (D-128 补记 2): $VOID 只有报警和计数, 确认族两行没算。查清原因、记进 DECISIONS 之后可以重读"
@@ -235,27 +243,44 @@ jobs:
             echo "::error::gate2_run.py 退出码 $rc"
             exit "$rc"
           fi
-          echo "── 报告 $OUT ──"
-          cat "$OUT"
-          {
-            echo "## 闸二 (副题库) · run_tag \`$TAG\` · sha \`$IN_SHA\` · counts_only=$IN_COUNTS_ONLY"
-            echo
-            cat "$OUT"
-          } >> "$GITHUB_STEP_SUMMARY"
           if [ "$IN_COUNTS_ONLY" = "true" ]; then
+            echo "── 报告 $OUT ──"
+            cat "$OUT"
+            {
+              echo "## 闸二 (副题库) · run_tag \`$TAG\` · sha \`$IN_SHA\` · counts_only=$IN_COUNTS_ONLY"
+              echo
+              cat "$OUT"
+            } >> "$GITHUB_STEP_SUMMARY"
             echo "::notice::只数了行数和覆盖, 不是闸二的读。"
           else
-            echo "::notice::读完了: 从 artifact 下载 $(basename "$OUT") 提交进 data-analysis/ —— workflow 这层靠 artifact gate2-reader-read-${READ_KEY} 拒第二次读, 本地跑和 90 天之后靠仓库里这份报告守 (D-128 补记 7)。"
+            echo "::notice::读完了。结果先不打出来: 下一步传记号 artifact gate2-reader-read-${READ_KEY}, 传上去了才打进日志 (D-128 补记 7)。"
           fi
-      # 读过的记号 (补记 7): 正式读退出码 0 才传 (作废 3 / 拒跑 2 不传, 作废那次不算读过); Guard 按这个名字查
+      # 读过的记号 (补记 7): 正式读的报告文件在就传 —— always(): 读完之后中途取消 / 后面失败也传; 作废 (3) / 拒跑 (2) 不写这份文件,
+      # 不传 (作废那次不算读过; Guard 已拒仓库里有同名旧文件的)。Guard 按这个名字查
       - name: 副题库读过的记号 (artifact gate2-reader-read-<合并名单 sha>)
-        if: success() && env.IN_BANK == 'reader' && env.IN_COUNTS_ONLY == 'false'
+        id: read_mark
+        if: always() && env.IN_BANK == 'reader' && env.IN_COUNTS_ONLY == 'false' && hashFiles(format('data-analysis/feature-gate2-{0}.md', env.TAG)) != ''
         uses: actions/upload-artifact@v4
         with:
           name: gate2-reader-read-${{ env.READ_KEY }}
           path: data-analysis/feature-gate2-${{ env.TAG }}.md
           if-no-files-found: error
           retention-days: 90
+      # 记号传上去了才把读的结果打进 job log 和 step summary
+      - name: 副题库读的结果 (记号传上去之后才打出来)
+        if: steps.read_mark.outcome == 'success'
+        working-directory: scripts
+        run: |
+          OUT="../data-analysis/feature-gate2-${TAG}.md"
+          cat "${RUNNER_TEMP:-/tmp}/gate2-reader-stderr.txt" >&2 || true
+          echo "── 报告 $OUT ──"
+          cat "$OUT"
+          {
+            echo "## 闸二 (副题库) · run_tag \`$TAG\` · sha \`$IN_SHA\` · counts_only=false"
+            echo
+            cat "$OUT"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::读完了: 从 artifact 下载 $(basename "$OUT") 提交进 data-analysis/ —— workflow 这层靠 artifact gate2-reader-read-${READ_KEY} 拒第二次读, 本地跑和 90 天之后靠仓库里这份报告守 (D-128 补记 7)。"
       - name: 组合对比跳过 (占位题反证被忽略的排查跑)
         if: success() && env.IN_BANK == 'primary' && env.IN_IGNORE_PLACEBO == 'true'
         run: echo "::notice::ignore_placebo_alarm=true 是排查跑, 不出组合进不进 L2 的判定 (反证没过的结果不作数)。"
@@ -277,6 +302,10 @@ jobs:
           fi
           cat "$COMBO"
           { echo; cat "$COMBO"; } >> "$GITHUB_STEP_SUMMARY"
+      # 记号没传上去 (传失败 / 取消 / 没读) 就不让读的报告离开 runner: 下面 always() 的上传会把它带走, 先删 (记号 artifact 里有一份)
+      - name: 副题库记号没传上去就删掉读的报告
+        if: always() && env.IN_BANK == 'reader' && env.IN_COUNTS_ONLY == 'false' && steps.read_mark.outcome != 'success'
+        run: rm -f "data-analysis/feature-gate2-${TAG}.md"
       - name: Upload report + rows
         if: always()
         uses: actions/upload-artifact@v4

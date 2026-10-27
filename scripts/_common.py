@@ -1422,7 +1422,8 @@ def fetch_vanished_note_ids(sb, project_id: Optional[str] = None) -> set[str]:
 
 # D-129 挪表的 id 映射 (old_id → new_id, 9 行废稿 new_id 为空)。发现半 / 留出半按 old_id 定 (D-128 补记)。
 # ⚠️ 它名字里带 backup, 但只要还有人按半区取数 (读者题闸二、每季度找新特征 G-18) 就不能删 —— 删了 fetch_half_alias
-#    会让这两条路 fail closed。
+#    会让这两条路 fail closed。所以永久保留: verify_supabase_state.sql #92 把它除外、OPEN-ITEMS S-02 不删它
+#    (check_gate2_run §8c 守着这两处)。
 D129_ID_MAP_TABLE = "backup_d129_ids_20261026"
 
 
