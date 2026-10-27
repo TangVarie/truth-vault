@@ -510,6 +510,40 @@ SELECT '94', 'H · 跨 schema 孤儿',
     '> 0 = 删笔记那一步漏了 aw 侧的对照 (对照没有跨 schema 外键, #83 只盖答案侧, #93 的视图不盖已删的篇). '
     '修法同 D-104: 先 CREATE TABLE autowriter.backup_tv_note_links_<原因>_<日期> AS SELECT 这些行, 再 DELETE FROM autowriter.tv_note_links WHERE note_id NOT IN (SELECT note_id FROM truth_vault.notes).'
 
+UNION ALL
+SELECT '95', 'H · 跨 schema 孤儿',
+    'public.reference_samples (三省六部样本) 的 source_truth_vault_note_id 在 truth_vault.notes 里已经没有的行数 (D-129 / L-10)',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(*) FROM public.reference_samples r
+        LEFT JOIN truth_vault.notes n ON n.note_id = r.source_truth_vault_note_id
+        WHERE r.source_truth_vault_note_id IS NOT NULL AND n.note_id IS NULL$q$
+    )::TEXT, 'N/A'),
+    '0',
+    '> 0 = 删 TV 笔记之前没撤它推去三省六部的样本. 通道 1 的回收 (D-087 B 路) 找不到 TV 行只记 missing、不撤, 这些样本会一直留在高权重参考池里. '
+    '修法同 D-129: 先备份这些样本行 (存 truth_vault, 别存 public), 再按 id 删; 没有 TV 来源的原生样本 (列为空) 不算.'
+
+UNION ALL
+SELECT '96', 'H · 跨 schema 孤儿',
+    'truth_vault.content_scores (闸三分) 指向不存在的笔记的行数 (表对 notes 没有外键; D-129 / L-10)',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(*) FROM truth_vault.content_scores s
+        LEFT JOIN truth_vault.notes n ON n.note_id = s.subject_id
+        WHERE s.subject_type = 'note' AND n.note_id IS NULL$q$
+    )::TEXT, 'N/A'),
+    '0',
+    '> 0 = 删笔记那一步漏了闸三分. 修法同 D-129: 先 CREATE TABLE truth_vault.backup_content_scores_<原因>_<日期> AS SELECT 这些行 (闸三冻结集要可复现), 再按 subject_id 删.'
+
+UNION ALL
+SELECT '97', 'H · 跨 schema 孤儿',
+    'autowriter.tv_edit_diffs (改稿差异) 指向不存在的 TV 笔记的行数 (跨 schema 没有外键, #94 只盖对照表; D-129 / L-10)',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(*) FROM autowriter.tv_edit_diffs e
+        LEFT JOIN truth_vault.notes n ON n.note_id = e.note_id
+        WHERE n.note_id IS NULL$q$
+    )::TEXT, 'N/A'),
+    '0',
+    '> 0 = 删笔记时没清 aw 的改稿差异, 这些行还会进写作台的改稿摘要. 修法同 D-129: 先 CREATE TABLE autowriter.backup_tv_edit_diffs_<原因>_<日期> AS SELECT 这些行, 再 DELETE.'
+
 -- ── I · 数据一致性副作用 ──────────────────────────────────────────────
 UNION ALL
 SELECT '90', 'I · 数据一致性',
