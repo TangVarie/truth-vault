@@ -1244,7 +1244,7 @@ jobs:
         run: python check_gate1_models.py   # §1 判定档 · §2 证据无效率 · §3 拒算 · §4 判定 · §5 哨兵 · §6 格子表 · §7 合并对 yaml
       - name: "副题库闸一 (D-128): 抽样 + 进仓名单绊线 + 裁决表 (甲乙不露模型) + 收表 (human:owner / fqr-g1-owner)"
         working-directory: scripts
-        run: python check_gate1_review.py   # §1 抽样 · §2 名单 · §3 裁决表 · §4 收表; xlsx 往返要 openpyxl, 本地 --xlsx
+        run: python check_gate1_review.py   # §1 抽样 · §1b 半区按 D-129 old_id · §2 名单 · §3 裁决表 · §4 收表; xlsx 往返要 openpyxl, 本地 --xlsx
       - name: "闸一名单灰格往返 (多灰格 | 分隔) + prob 存所选答案的概率 (D-085)"
         working-directory: scripts
         run: python check_gate1_ingest.py
@@ -3736,7 +3736,7 @@ jobs:
         run: python check_comments_sync_cost.py   # §1 一次读零写 · §2 只写变化 · §3 on_demand 跳过 · §4 对账失败 rc=1 · §5 老调用形状不变
       - name: 闸二可执行版 —— MH/RGB 对 Woolf 闭式、BH、状态表逐条、账号先验分层、占位题 / 快照 / 冻结三条拒跑 (D-093)
         working-directory: scripts
-        run: python check_gate2_run.py   # §0 主题库金样 · §1 统计闭式 · §2 BH · §3 状态表 · §3b confounded · §4 占位题拒跑 · §5 快照唯一 · §6 draft 拒跑 · §6c 闸一裁决 · §7 取数与大项目
+        run: python check_gate2_run.py   # §0 主题库金样 · §1 统计闭式 · §2 BH · §3 状态表 · §3b confounded · §4 占位题拒跑 · §5 快照唯一 · §6 draft 拒跑 · §6c 闸一裁决 · §7 取数与大项目 · §8 副题库 (D-128: 不写库 / old_id 半区 / 分层 / 3% / 基数 / BH 两行 / 占位题作废 / counts-only / 只读一次 / 取数 / workflow)
       - name: 闸二后半 · 组合进不进 L2 —— 留一项目 AUC、配对自助、最低 20%、项目内置换 (附录 B.3 / B.4, D-106)
         working-directory: scripts
         run: python check_gate2_combo.py   # §1 中位秩 · §2 留一不泄漏 · §3 真信号进 · §4 噪声不进 · §5 评估集 · §6 最低 20% / 置换 · §7 CLI

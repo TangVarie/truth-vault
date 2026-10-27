@@ -24,6 +24,10 @@ numpy / statsmodels), 与 statsmodels 的核对靠闭式: 单层时 Robins–Bre
         --run-tag gate2-2026-10-15 --out ../data-analysis/feature-gate2-2026-10-15.md            # 试算, 不写库
     … --write                                                                                   # 写 feature_validation
     … --fixture some.json                                                                       # 离线 (CI 夹具)
+副题库 (D-128, docs/28 §6.2b; 题库 role: secondary 自动走 run_gate2_secondary 那条路, 永远不写 feature_validation):
+    python gate2_run.py --bank reader --sha 9f2cf1c9e7de --manifest ../data-analysis/gate2-reader-holdout-2026-10-27.csv \
+        --counts-only                                                                           # 读之前: 只数行数和覆盖
+    … --run-tag gate2-reader-2026-11-03 --out ../data-analysis/feature-gate2-gate2-reader-2026-11-03.md   # 只读一次
 B.3 组合对比 (留一项目 AUC + 配对自助) 与 B.4 置换反证在 gate2_combo.py (D-106) —— 那是「组合进不进 L2」的决定, 不是单个特征值的闸。
 """
 from __future__ import annotations
@@ -33,6 +37,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import sys
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -498,12 +503,804 @@ def write_validation(sb, rows: list[dict]) -> int:
     return len(rows)
 
 
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+# 副题库的闸二 (D-128 + 三条补记, docs/28 §6.2b): fq-v0.2-cand-reader 读者提问方式两道题。
+# 独立一条路: 上面主题库的函数 (run_gate2 / render_report / validation_rows / bank_targets / contrast_tables /
+# fetch_dataset / _assign_status) 一个字节不动 (check_gate2_run §0 金样), 这里只【调用】其中几个纯函数。和主题库不同的地方:
+#   · 只读 --manifest (进了仓库的名单 CSV, 可给多份) 里的篇; 每份名单的 sha256 和合并名单 sha 进报告; 同一份名单只读一次 (补记 7)
+#   · 留出半, D-129 换了 id 的按 old_id 定 (映射表读不到就不跑); 名单里有一篇不在留出半就拒
+#   · 两份快照分开取: 副题库答案 (fqr-g2-sonnet55 + 副题库全 64 位 sha + Sonnet 5.5 / code:v1) 与分层答案
+#     (gate2.condition_snapshot: 主题库 ba0f570c、run_tag primary、只认 Sonnet —— Opus 的行不算); (笔记, 题) 唯一, 版本钉死
+#   · 名单里掉出去的分三种数, 加起来 > 名单 3% 拒读; 正文截断记 NULL 的单独计数、不算缺, 也不进分子分母 (补记 5)
+#   · MH 的层 = 项目 × ending_asks_reader × asks_for_help (题上的 conditional_on); 账号先验在这上面再加一层
+#   · contrast_base_excludes (没问读者) 不进取值行和合并行的比较基数; 阳性对照 (没问读者 对其余) 用全部
+#   · 确认族两行 (C1 合并行、C2 invites_sharing 是), BH 只在这两行里做 (q ≤ 0.10); 其余只报告、不判状态
+#   · 占位题从主题库定义按 note_id 现算, 同样分层, 不进家族; 报警 = 这次读作废: 两行连算都不算, 报告带 -void (补记 2)
+#   · 结果永远不写 feature_validation —— 这条路里没有 write_validation 的调用, CLI 也不收 --write
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+SEC_ANSWERS_RUN_TAG = "fqr-g2-sonnet55"          # D-128 补记: 第一波 / 第二波都抽在这个 run_tag 下
+SEC_LLM_EXTRACTOR = "llm:claude-sonnet-5-5"     # 副题库的模型题只认这一个抽取器; 代码特征是 fb.CODE_EXTRACTOR
+SEC_MISSING_MAX_FRAC = 0.03                     # 补记 5: 三种掉出去的加起来超过名单篇数的 3% 就拒读
+SEC_PLACEBO_P_MAX = 0.10                        # 补记 2: 占位题判「显著」用原始 p ≤ 0.10 (偏严)
+SEC_DROP_KINDS = ("out_of_scope", "no_answer", "no_condition")
+SEC_DROP_LABELS = {"out_of_scope": "不在闸二口径里了 (删了 / 标签变了 / 没 essence / 正文 < 50 字)",
+                   "no_answer": "两道题有一道没有可用答案 (没行, 或 answer 为空但不是正文截断)",
+                   "no_condition": "两道分层题有一道没有答案"}
+# body_len_bucket 的切点 = feature_bank 主题库代码特征的同名特征 (按 note_features.body_len 现算, check_gate2_run §8 对过)
+BODY_LEN_EDGES = ((99, "<100"), (199, "100-199"), (399, "200-399"))
+BODY_LEN_TOP = ">=400"
+REPORTS_DIR = Path(__file__).resolve().parent.parent / "data-analysis"
+# 读过的报告第一行之后带这一行 (HTML 注释, markdown 里看不见); 「只读一次」靠它找 (补记 7)
+SEC_MARK = "<!-- gate2-secondary bank_sha256={sha} combined_manifest_sha256={man} void={void} -->"
+SEC_MARK_RE = re.compile(r"<!-- gate2-secondary bank_sha256=([0-9a-f]{64}) combined_manifest_sha256=([0-9a-f]{64}) "
+                         r"void=([01]) -->")
+
+
+def body_len_bucket(body_len) -> str:
+    """note_features.body_len → 主题库 body_len_bucket 的档; 没有 body_len 的单独一档 (闸二口径里缺值不剔)。"""
+    if body_len is None:
+        return "unknown"
+    for upper, label in BODY_LEN_EDGES:
+        if int(body_len) <= upper:
+            return label
+    return BODY_LEN_TOP
+
+
+def sensitivity_flags(dq: Optional[dict], has_pinned_comment: bool = False) -> list[str]:
+    """敏感性重跑要剔的篇 (D-128: 记过置顶 / 控评 / 铺评 / 投流)。读的是同步引擎写好的标记, 不重判:
+      · data_quality_flags.comment_maintained_routes 非空: 铺评工单 / 起量后干预 (控评、置顶、改评) / 铺评未跨线;
+        只写了 comment_maintained=true 没写 routes 的老行也算;
+      · data_quality_flags.paid_promoted = true (投流三态里只认 true; 缺键 = 不知道, 不剔);
+      · notes.pinned_comment 非空 (同步时已并进「起量后干预」, 这里再直接看一遍列)。"""
+    dq = dq if isinstance(dq, dict) else {}
+    out = set()
+    routes = dq.get("comment_maintained_routes") or []
+    for r in (routes if isinstance(routes, list) else [routes]):
+        out.add(f"维护:{r}")
+    if dq.get("comment_maintained") is True and not routes:
+        out.add("维护")
+    if dq.get("paid_promoted") is True:
+        out.add("投流")
+    if has_pinned_comment:
+        out.add("置顶")
+    return sorted(out)
+
+
+def contrast_tables_by(notes: list[dict], side, stratum_of) -> dict[Any, list[float]]:
+    """集合版的 contrast_tables (副题库): side(note) → True (有) / False (没有) / None (不进比较基数: 没答、正文截断
+    记 NULL、contrast_base_excludes 的取值)。每层一张 2×2, 下标同 contrast_tables: a 有且爆 / b 有且趴 / c 没有且爆 / d 没有且趴。"""
+    tabs: dict[Any, list[float]] = defaultdict(lambda: [0.0, 0.0, 0.0, 0.0])
+    for n in notes:
+        s = side(n)
+        if s is None:
+            continue
+        y = int(n["y"])
+        idx = (0 if y else 1) if s else (2 if y else 3)
+        tabs[stratum_of(n)][idx] += 1
+    return tabs
+
+
+def _options(q: dict) -> list[str]:
+    return [str(o.get("value")) if isinstance(o, dict) else str(o) for o in q.get("options") or []]
+
+
+def secondary_targets(bank: dict) -> list[dict]:
+    """副题库要算的行。has = 算「有」的取值; base = 进比较基数的取值 (None = 所有有答案的)。
+      · merged (合并行, gate2.merged_contrasts): 集合对集合, 基数剔掉 contrast_base_excludes;
+      · value (choice 题每个不在 excludes 里的取值): 对其余提问类型, 基数同上 —— 只报告;
+      · control (excludes 的取值, 阳性对照): 对其余全部 —— 只报告;
+      · bool 模型题的「是」; 代码特征 —— 只报告。
+    family = 在 gate2.confirmation_family 里 (只有这两行判状态、做 BH)。占位题从主题库现算, 不在这里。"""
+    g2 = bank["gate2"]
+    family = {(str(q), str(v)) for q, v in g2["confirmation_family"]}
+    out: list[dict] = []
+
+    def add(qid, label, has, base, hyp, kind):
+        out.append({"question_id": qid, "answer": str(label), "has": frozenset(has),
+                    "base": None if base is None else frozenset(base), "hypothesis": str(hyp), "kind": kind,
+                    "family": (qid, str(label)) in family})
+
+    for q in fb.llm_questions(bank):
+        hyp = q.get("hypothesis")
+        if q.get("type") == "bool":
+            add(q["id"], "是", {"是"}, None, hyp if isinstance(hyp, str) else "?", "bool")
+            continue
+        opts = _options(q)
+        exc = [v for v in opts if v in (q.get("contrast_base_excludes") or [])]
+        asked = [v for v in opts if v not in exc]
+        hyp = hyp if isinstance(hyp, dict) else {}
+        for m in g2.get("merged_contrasts") or []:
+            if m["question_id"] == q["id"]:
+                add(q["id"], m["label"], m["values"], asked, m["hypothesis"], "merged")
+        for v in asked:
+            add(q["id"], v, {v}, asked, hyp.get(v, "?"), "value")
+        for v in exc:
+            add(q["id"], v, {v}, None, hyp.get(v, "?"), "control")
+    for c in bank.get("code_features") or []:
+        if c.get("type", "bool") == "bool":
+            add(c["id"], "是", {"是"}, None, c.get("hypothesis", "?"), "code")
+        else:
+            for v in _options(c):
+                add(c["id"], v, {v}, None, "?", "code")
+    missing = family - {(t["question_id"], t["answer"]) for t in out}
+    if missing:
+        raise Gate2Refused(f"gate2.confirmation_family 里的 {sorted(missing)} 算不出行 —— 题库和比法对不上")
+    return out
+
+
+def load_manifests(paths: Iterable[str]) -> list[dict]:
+    """--manifest 的每份 CSV → {path, sha256 (文件字节), rows}。列 / 重复 / 层的检查用 gate1_sample.read_manifest (同一个读法)。"""
+    from gate1_sample import SampleRefused, read_manifest
+    out = []
+    for p in paths:
+        path = Path(p)
+        try:
+            raw = path.read_bytes()
+            rows = read_manifest(path)
+        except (OSError, SampleRefused) as exc:
+            raise Gate2Refused(f"名单 {p} 读不了: {exc}") from exc
+        out.append({"path": str(p), "sha256": hashlib.sha256(raw).hexdigest(), "rows": rows})
+    return out
+
+
+def combined_manifest_sha(note_ids: Iterable[str]) -> str:
+    """合并名单 sha (补记 7 的「名单 sha」): 几份名单的 note_id 按码点排序、每个一行再 sha256 —— 同一批篇换个拆法 sha 不变,
+    多一篇少一篇就变。"""
+    return hashlib.sha256("".join(f"{n}\n" for n in sorted(set(note_ids))).encode("utf-8")).hexdigest()
+
+
+def void_path(out: Path) -> Path:
+    """作废那次的报告名带 -void (补记 2 / 7): 不算读过。"""
+    return out if out.stem.endswith("-void") else out.with_name(f"{out.stem}-void{out.suffix}")
+
+
+def prior_secondary_reads(dirs: Iterable[Path], combined_sha: str) -> list[str]:
+    """dirs 下已有的、同一份合并名单的副题库闸二报告 (补记 7)。作废的那次 (标记 void=1 且文件名带 -void) 不算读过;
+    只改文件名、标记还是 void=0 的照算 —— 不能靠改名把读过的那次变成作废。"""
+    hits: list[str] = []
+    seen: set[Path] = set()
+    for d in dirs:
+        d = Path(d)
+        if not d.is_dir() or d.resolve() in seen:
+            continue
+        seen.add(d.resolve())
+        for f in sorted(d.glob("*.md")):
+            try:
+                text = f.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            for m in SEC_MARK_RE.finditer(text):
+                if m.group(2) == combined_sha and not (m.group(3) == "1" and "-void" in f.name):
+                    hits.append(str(f))
+                    break
+    return hits
+
+
+def _secondary_prereg(bank: dict, primary: dict, sha: str) -> str:
+    """副题库的预注册: 冻结 + digest (preregistration_check, 不许 allow_draft) + 主题库自己合法 + 跨库校验 (load_bank_pair 那两道)。"""
+    if bank.get("role") != fb.ROLE_SECONDARY:
+        raise Gate2Refused("run_gate2_secondary 只收副题库 (role: secondary); 主题库走 run_gate2")
+    sha = preregistration_check(bank, sha, allow_draft=False)
+    errs = [f"主题库: {e}" for e in fb.validate_bank(primary)] + fb.validate_secondary(bank, primary)
+    if errs:
+        raise Gate2Refused("副题库跨库校验没过: " + "; ".join(errs))
+    g2 = bank.get("gate2") or {}
+    if g2.get("placebo") != "from_primary":
+        raise Gate2Refused(f"gate2.placebo={g2.get('placebo')!r}: 这条路只实现了 from_primary (D-128)")
+    snap = g2.get("condition_snapshot") or {}
+    if snap.get("extractors") != [SEC_LLM_EXTRACTOR] or snap.get("run_tag") != "primary":
+        raise Gate2Refused(f"D-128 的分层答案只取主题库 primary 快照里的 Sonnet 5.5, yaml 写的是 {snap}")
+    return sha
+
+
+def _snapshot(rows: list[dict], *, expect: dict[str, tuple[int, set]], vocab: dict[str, tuple], what: str
+              ) -> dict[str, dict[str, dict]]:
+    """一份快照的行 (调用方已按 run_tag / sha / 抽取器筛过) → {题: {笔记: 行}}。版本必须是 expect 里钉的那个、(笔记, 题)
+    唯一、答案在闭集 —— 有一条不满足整跑拒 (同 snapshot_answers 的纪律)。"""
+    bad_ver = sorted({(a["question_id"], int(a["question_version"])) for a in rows
+                      if int(a["question_version"]) != expect[a["question_id"]][0]})
+    if bad_ver:
+        raise Gate2Refused(f"{what}里有不是题库版本的行: {bad_ver} (应是 "
+                           f"{ {q: v for q, (v, _) in expect.items()} }) —— 比如主题库的 invites_sharing v1 混进来了")
+    seen: dict[tuple[str, str], int] = defaultdict(int)
+    for a in rows:
+        seen[(a["subject_id"], a["question_id"])] += 1
+    dups = sorted(k for k, v in seen.items() if v > 1)
+    if dups:
+        raise Gate2Refused(f"{what}内 (笔记, 题) 不唯一: {len(dups)} 对, 如 {dups[:3]} —— 先清快照再跑")
+    oov = sorted({(a["question_id"], a["answer"]) for a in rows
+                  if a.get("answer") is not None and str(a["answer"]) not in vocab[a["question_id"]]})
+    if oov:
+        raise Gate2Refused(f"{what}里有闭集外的答案: {oov[:5]}")
+    out: dict[str, dict[str, dict]] = {q: {} for q in expect}
+    for a in rows:
+        out[a["question_id"]][a["subject_id"]] = a
+    return out
+
+
+def _sec_stats(notes: list[dict], side, *, strata_of, big: set, prior: Optional[dict] = None) -> dict:
+    """一行的数: 分层 MH (+ RGB 区间 + Wald p)、支持、比较基数、大项目方向 (合并 2×2 +0.5, 照主题库) 与每个大项目分层内
+    的 MH 方向 (只报告)、账号先验再分层的 OR、只按项目分层的 OR、完全不分层的 OR。"""
+    by_stratum = contrast_tables_by(notes, side, strata_of)
+    by_proj = contrast_tables_by(notes, side, lambda n: n["project_id"])
+    support = int(sum(t[0] + t[1] for t in by_stratum.values()))
+    base_n = int(sum(sum(t) for t in by_stratum.values()))
+    big_tabs = {p: t for p, t in by_proj.items() if p in big and (t[0] + t[1]) > 0}
+    above = sum(1 for t in big_tabs.values() if (t[0] + .5) * (t[3] + .5) > (t[1] + .5) * (t[2] + .5))
+    below = sum(1 for t in big_tabs.values() if (t[0] + .5) * (t[3] + .5) < (t[1] + .5) * (t[2] + .5))
+    within = {}
+    for p in sorted(big_tabs):
+        m = mh_odds_ratio([t for k, t in by_stratum.items() if k[0] == p])
+        within[p] = "?" if m is None else ("+" if m["or"] > 1 else "-" if m["or"] < 1 else "=")
+    row = {"support": support, "base_n": base_n, "big_projects_n": len(big_tabs), "n_or_above_1": above,
+           "n_or_below_1": below, "big_within": within, "mh_odds_ratio": None, "ci_low": None, "ci_high": None,
+           "p_value": None, "mh_prior": None, "or_project_only": None, "or_crude": None, "strata": 0}
+    mh = mh_odds_ratio(by_stratum.values())
+    if mh is not None:
+        row.update({"mh_odds_ratio": mh["or"], "ci_low": mh["ci_low"], "ci_high": mh["ci_high"],
+                    "p_value": wald_p(mh["or"], mh["se_log"]), "strata": mh["strata"]})
+        if prior is not None:
+            m2 = mh_odds_ratio(contrast_tables_by(notes, side, lambda n: strata_of(n) + (prior[n["note_id"]],)).values())
+            row["mh_prior"] = m2["or"] if m2 else None
+    mp = mh_odds_ratio(by_proj.values())
+    row["or_project_only"] = mp["or"] if mp else None
+    tot = [sum(t[i] for t in by_stratum.values()) for i in range(4)]
+    mc = mh_odds_ratio([tuple(tot)])
+    row["or_crude"] = mc["or"] if mc else None
+    return row
+
+
+def _side(answers: dict[str, str], has: frozenset, base: Optional[frozenset]):
+    def side(n):
+        a = answers.get(n["note_id"])
+        if a is None or (base is not None and a not in base):
+            return None
+        return a in has
+    return side
+
+
+def run_gate2_secondary(dataset: dict, bank: dict, primary: dict, *, sha: str, manifests: list[dict], run_tag: str,
+                        answers_run_tag: str = SEC_ANSWERS_RUN_TAG, counts_only: bool = False,
+                        reports_dirs: Iterable[Path] = (), q_max: float = 0.10, min_support: int = 30,
+                        min_big: int = 3, big_pos: int = 20, confound_delta: float = 0.30) -> dict:
+    """副题库闸二 (纯函数: dataset + 两份题库 + 名单 → 结果)。dataset = {notes (v_l2_labels 去掉飞书已删的, 带 has_essence /
+    body_len / data_quality_flags / has_pinned_comment), vanished, answers (两份快照的行混在一起, 这里按 run_tag / sha /
+    抽取器分开), half_alias ({new_id: old_id}, D-129 映射表)}。counts_only = 只数行数和覆盖, 一个 y 都不碰。"""
+    from discover_feature_candidates import half_id, in_discovery_half
+    from gate1_sample import EXCLUDE
+
+    sha = _secondary_prereg(bank, primary, sha)
+    full_sha = bank["_sha256"]
+    err = fb.check_run_tag(bank, answers_run_tag)
+    if err:
+        raise Gate2Refused(err)
+    g2 = bank["gate2"]
+    alias = dataset.get("half_alias")
+    if not isinstance(alias, dict) or not alias:
+        raise Gate2Refused("D-129 的 id 映射 (half_alias) 没读到 —— 换了 id 的行半区定不了, 不跑 (fail closed, D-128 补记)")
+
+    # ── 名单 ──
+    if not manifests:
+        raise Gate2Refused("没给名单 (--manifest): 副题库闸二只读进了仓库的名单 (D-128 补记)")
+    man: dict[str, dict] = {}
+    for m in manifests:
+        for r in m["rows"]:
+            if r["note_id"] in man:
+                raise Gate2Refused(f"{r['note_id']} 在两份名单里都有 (第二份 {m['path']}) —— 名单之间不许重叠")
+            man[r["note_id"]] = r
+    excl = sorted(set(man) & set(EXCLUDE))
+    if excl:
+        raise Gate2Refused(f"名单里有 D-128 点名剔掉的篇: {excl}")
+    twins = sorted(n for n in man if alias.get(n) in man)
+    if twins:
+        raise Gate2Refused(f"名单里同时有新行和它的旧行 (D-129): {twins[:3]} —— 同一篇算了两次")
+    half = g2.get("half")
+    if half in ("holdout", "discovery"):
+        wrong = sorted(n for n in man if in_discovery_half(half_id(n, alias)) != (half == "discovery"))
+        if wrong:
+            raise Gate2Refused(f"名单里 {len(wrong)} 篇不在{'留出' if half == 'holdout' else '发现'}半 (半区按 D-129 old_id 定), "
+                               f"如 {wrong[:3]} —— 发现半看过的篇不能拿来确认 (D-120 / D-128)")
+    combined = combined_manifest_sha(man)
+    ids_md5 = hashlib.md5(",".join(sorted(man)).encode("utf-8")).hexdigest()
+    if not counts_only:
+        hits = prior_secondary_reads(reports_dirs, combined)
+        if hits:
+            raise Gate2Refused(f"这份名单 (sha {combined[:12]}) 已经读过: {hits} —— 留出半只读一次 (D-128 补记 7); "
+                               "作废那次的报告名带 -void、标记 void=1 才不算")
+
+    # ── 两份快照 ──
+    sec_expect: dict[str, tuple[int, set]] = {}
+    sec_vocab: dict[str, tuple] = {}
+    for q in fb.llm_questions(bank):
+        sec_expect[q["id"]] = (int(q["version"]), {SEC_LLM_EXTRACTOR})
+        sec_vocab[q["id"]] = fb.closed_set(q)
+    for c in bank.get("code_features") or []:
+        sec_expect[c["id"]] = (int(c["version"]), {fb.CODE_EXTRACTOR})
+        sec_vocab[c["id"]] = fb.BOOL_VALUES if c.get("type", "bool") == "bool" else tuple(_options(c))
+    snap = g2["condition_snapshot"]
+    cond_qids: list[str] = []
+    for q in fb.llm_questions(bank):
+        for c in q.get("conditional_on") or []:
+            if c not in cond_qids:
+                cond_qids.append(c)
+    pidx = fb.question_index(primary)
+    cond_expect = {c: (int(pidx[c]["version"]), set(snap["extractors"])) for c in cond_qids}
+    cond_vocab = {c: fb.closed_set(pidx[c]) for c in cond_qids}
+
+    sec_rows, cond_rows = [], []
+    ignored = {"secondary": 0, "condition": 0}
+    for a in dataset["answers"]:
+        if a.get("subject_type", "note") != "note":
+            continue
+        tag, asha, ext, qid = a.get("run_tag", "primary"), str(a.get("bank_sha256", "")).lower(), a.get("extractor"), a["question_id"]
+        if tag == answers_run_tag and qid in sec_expect:
+            if asha == full_sha and ext in sec_expect[qid][1]:
+                sec_rows.append(a)
+            else:
+                ignored["secondary"] += 1                     # 同 run_tag 下别的 sha / 抽取器: 不在快照里
+        elif tag == snap["run_tag"] and qid in cond_expect:
+            if asha == snap["bank_sha256"] and ext in cond_expect[qid][1]:
+                cond_rows.append(a)
+            else:
+                ignored["condition"] += 1                     # Opus 4.6 那些行、别的 sha
+    sec = _snapshot(sec_rows, expect=sec_expect, vocab=sec_vocab, what="副题库快照")
+    cond = _snapshot(cond_rows, expect=cond_expect, vocab=cond_vocab, what="分层快照")
+    model_qids = [q["id"] for q in fb.llm_questions(bank)]
+    code_qids = [c["id"] for c in bank.get("code_features") or []]
+
+    # ── 掉出去的 (补记 5): 按 口径 → 两道题 → 分层题 的先后归到第一种, 三种加起来就是掉出去的篇数 ──
+    labels = {n["note_id"]: n for n in dataset["notes"]}
+    vanished = set(dataset.get("vanished") or [])
+    drops: dict[str, dict[str, int]] = {k: defaultdict(int) for k in SEC_DROP_KINDS}
+    truncated: dict[str, int] = defaultdict(int)
+    in_scope: list[dict] = []
+    analysis: list[dict] = []
+    for nid in sorted(man):
+        n = labels.get(nid)
+        if n is None:
+            drops["out_of_scope"]["vanished" if nid in vanished else "not_in_v_l2_labels"] += 1
+            continue
+        if not n.get("has_essence"):
+            drops["out_of_scope"]["no_essence"] += 1
+            continue
+        if n.get("body_len") is not None and n["body_len"] < 50:
+            drops["out_of_scope"]["body_lt_50"] += 1
+            continue
+        in_scope.append(n)
+        why = None
+        for q in model_qids:
+            a = sec[q].get(nid)
+            if a is None:
+                why = f"{q}: 没有行"
+            elif a.get("answer") is None and a.get("invalid_reason") != fb.INVALID_SPAN_TRUNCATED:
+                why = f"{q}: NULL ({a.get('invalid_reason') or '没写原因'})"
+            if why:
+                break
+        if why:
+            drops["no_answer"][why] += 1
+            continue
+        miss = [c for c in cond_qids if cond[c].get(nid) is None or cond[c][nid].get("answer") is None]
+        if miss:
+            drops["no_condition"][f"{miss[0]}: 没有答案"] += 1
+            continue
+        for q in model_qids:
+            if sec[q][nid].get("answer") is None:
+                truncated[q] += 1
+        analysis.append(dict(n, cond=tuple(str(cond[c][nid]["answer"]) for c in cond_qids)))
+    n_man = len(man)
+    n_drop = sum(sum(v.values()) for v in drops.values())
+    would_refuse = n_drop > SEC_MISSING_MAX_FRAC * n_man
+
+    # ── 覆盖 (counts-only 也出; 只数行, 不碰 y) ──
+    coverage = {}
+    for q in model_qids + code_qids:
+        rows_q = sec[q]
+        on = [rows_q[n] for n in man if n in rows_q]
+        nulls: dict[str, int] = defaultdict(int)
+        for a in on:
+            if a.get("answer") is None:
+                nulls[a.get("invalid_reason") or "没写原因"] += 1
+        coverage[q] = {"version": sec_expect[q][0], "extractor": sorted(sec_expect[q][1])[0], "rows": len(rows_q),
+                       "rows_in_manifest": len(on), "answered": sum(1 for a in on if a.get("answer") is not None),
+                       "null_by_reason": dict(sorted(nulls.items())), "manifest_without_row": n_man - len(on),
+                       "rows_outside_manifest": len(rows_q) - len(on)}
+    for c in cond_qids:
+        on = [cond[c][n] for n in man if n in cond[c]]
+        coverage[c] = {"version": cond_expect[c][0], "extractor": ",".join(sorted(cond_expect[c][1])),
+                       "rows_in_manifest": len(on), "answered": sum(1 for a in on if a.get("answer") is not None),
+                       "manifest_without_row": n_man - len(on)}
+    by_alias = sum(1 for n in man if n in alias)
+    result = {
+        "run_tag": run_tag, "answers_run_tag": answers_run_tag, "bank_version": bank["bank_version"], "sha": full_sha,
+        "sha_arg": sha, "primary_version": primary["bank_version"], "primary_sha": primary["_sha256"],
+        "condition_snapshot": {"run_tag": snap["run_tag"], "bank_sha256": snap["bank_sha256"],
+                               "extractors": list(snap["extractors"]), "questions": {c: cond_expect[c][0] for c in cond_qids}},
+        "model_questions": {q: sec_expect[q][0] for q in model_qids}, "code_features": {c: sec_expect[c][0] for c in code_qids},
+        "manifests": [{"path": m["path"], "sha256": m["sha256"], "n": len(m["rows"])} for m in manifests],
+        "combined_sha": combined, "ids_md5": ids_md5, "n_manifest": n_man, "half": half, "half_by_old_id": by_alias,
+        "drops": {k: dict(sorted(v.items())) for k, v in drops.items()}, "n_drop": n_drop,
+        "tolerance": int(math.floor(SEC_MISSING_MAX_FRAC * n_man)), "would_refuse": would_refuse,
+        "truncated": dict(truncated), "n_analysis": len(analysis), "coverage": coverage, "ignored_rows": ignored,
+        "counts_only": counts_only, "void": False,
+        "params": {"q_max": q_max, "min_support": min_support, "min_big": min_big, "big_pos": big_pos,
+                   "confound_delta": confound_delta, "missing_max_frac": SEC_MISSING_MAX_FRAC,
+                   "placebo_p_max": SEC_PLACEBO_P_MAX}}
+    if counts_only:
+        return result
+    if would_refuse:
+        raise Gate2Refused(f"名单 {n_man} 篇里掉出去 {n_drop} 篇, 超过 3% (最多 {result['tolerance']} 篇) —— 先查原因再读 "
+                           f"(D-128 补记 5): " + "; ".join(f"{SEC_DROP_LABELS[k]} {sum(v.values())}" for k, v in drops.items()))
+    if not analysis:
+        raise Gate2Refused("名单里没有一篇进得了分析集")
+
+    # ── 从这里起才碰 y ──
+    strata_of = lambda n: (n["project_id"],) + n["cond"]                        # noqa: E731  项目 × ear × afh
+    pos_by_proj: dict[str, int] = defaultdict(int)
+    for n in in_scope:                                                          # 补记 1: 名单里、闸二口径内的爆
+        pos_by_proj[n["project_id"]] += int(n["y"])
+    big = {p for p, c in pos_by_proj.items() if c >= big_pos}
+    prior = account_prior_strata(analysis_notes(dataset["notes"]))              # 账号先验照主题库: 口径内全部已标签笔记
+    result.update({"big_projects": {p: pos_by_proj[p] for p in sorted(big)}, "n_pos": sum(int(n["y"]) for n in analysis),
+                   "y_changed": sum(1 for n in in_scope if int(n["y"]) != int(man[n["note_id"]]["y"])),
+                   "project_changed": sum(1 for n in in_scope if n["project_id"] != man[n["note_id"]]["project_id"]),
+                   "prior_strata": {k: sum(1 for n in analysis if prior[n["note_id"]] == k)
+                                    for k in (PRIOR_NONE, PRIOR_BELOW, PRIOR_AT_OR_ABOVE)}})
+
+    # ── 反证先跑 (补记 2): 占位题从主题库定义按 note_id 现算, 同样分层, 不进家族 ──
+    plc_ans = {n["note_id"]: fb.placebo_answers(primary, n["note_id"]) for n in analysis}
+    placebo_rows, alarm = [], []
+    for p in primary.get("placebo") or []:
+        ans = {nid: v[p["id"]] for nid, v in plc_ans.items()}
+        r = {"question_id": p["id"], "answer": "是", "hypothesis": "0", "kind": "placebo",
+             **_sec_stats(analysis, _side(ans, frozenset({"是"}), None), strata_of=strata_of, big=big)}
+        r["alarm"] = placebo_alarm(r, min_support=min_support, min_big=min_big)
+        placebo_rows.append(r)
+        if r["alarm"]:
+            alarm.append(p["id"])
+    result.update({"placebo_rows": placebo_rows, "placebo_alarm": alarm})
+    if alarm:
+        result["void"] = True                         # 两行连算都不算: 作废那次没露出两行的结果, 才不算用掉「只读一次」
+        return result
+
+    # ── 两行确认族 + 只报告的行 ──
+    answered = {q: {nid: str(a["answer"]) for nid, a in sec[q].items() if a.get("answer") is not None} for q in sec}
+    unreliable = gate1_unreliable(bank)
+    family_rows, report_rows = [], []
+    targets = {(t["question_id"], t["answer"]): t for t in secondary_targets(bank)}
+    for t in targets.values():
+        st = _sec_stats(analysis, _side(answered[t["question_id"]], t["has"], t["base"]), strata_of=strata_of, big=big,
+                        prior=prior if t["family"] else None)
+        row = {"question_id": t["question_id"], "question_version": sec_expect[t["question_id"]][0], "answer": t["answer"],
+               "hypothesis": t["hypothesis"], "kind": t["kind"], "family": t["family"],
+               "has": sorted(t["has"]), "base": None if t["base"] is None else sorted(t["base"]),
+               "q_value": None, "status": None, "hyp_note": "", **st}
+        (family_rows if t["family"] else report_rows).append(row)
+    # BH 只在确认族两行里做 (D-128); 算不出 p 的那行按 p = 1 留在家族里 —— 家族大小钉死是 2, 不因为一行算不出就变成 1
+    qv = bh_qvalues({(r["question_id"], r["answer"]): (r["p_value"] if r["p_value"] is not None else 1.0)
+                     for r in family_rows})
+    for r in family_rows:
+        r["q_value"] = qv[(r["question_id"], r["answer"])]
+        _assign_status(r, q_max=q_max, min_support=min_support, min_big=min_big, confound_delta=confound_delta,
+                       unreliable=unreliable)
+    # 敏感性重跑 (只报告): 剔掉记过置顶 / 控评 / 铺评 / 投流的篇, 再加一层 body_len_bucket
+    flagged = {n["note_id"]: sensitivity_flags(n.get("data_quality_flags"), bool(n.get("has_pinned_comment")))
+               for n in analysis}
+    kept = [n for n in analysis if not flagged[n["note_id"]]]
+    flag_counts: dict[str, int] = defaultdict(int)
+    for fl in flagged.values():
+        for f in fl:
+            flag_counts[f] += 1
+    sens = []
+    for r in family_rows:
+        t = targets[(r["question_id"], r["answer"])]
+        st = _sec_stats(kept, _side(answered[t["question_id"]], t["has"], t["base"]),
+                        strata_of=lambda n: strata_of(n) + (body_len_bucket(n.get("body_len")),), big=big)
+        sens.append({"question_id": r["question_id"], "answer": r["answer"], **st})
+    result.update({"family_rows": family_rows, "report_rows": report_rows, "sensitivity": sens,
+                   "sensitivity_dropped": sum(1 for v in flagged.values() if v),
+                   "sensitivity_flags": dict(sorted(flag_counts.items())),
+                   "verdict": secondary_verdict(family_rows)})
+    return result
+
+
+def placebo_alarm(r: dict, *, min_support: int = 30, min_big: int = 3) -> bool:
+    """补记 2 的报警规则, 四条同时满足才报: 支持 ≥ 30 且有支持的大项目 ≥ 3; MH 95% 区间不跨 1; 原始 p ≤ 0.10;
+    大项目最多一个反向 (反向 = 和合并 OR 的方向相反, 合并 2×2 +0.5 判)。"""
+    or_ = r["mh_odds_ratio"]
+    if or_ is None or r["support"] < min_support or r["big_projects_n"] < min_big:
+        return False
+    if r["ci_low"] <= 1.0 <= r["ci_high"] or r["p_value"] > SEC_PLACEBO_P_MAX:
+        return False
+    opposite = r["n_or_below_1"] if or_ > 1 else r["n_or_above_1"] if or_ < 1 else 0
+    return opposite <= 1
+
+
+def secondary_verdict(family_rows: list[dict]) -> str:
+    """补记 3: 两行都 validated 才算一个发现; 只过一行 = 单行过, 不算发现。"""
+    ok = [f"{r['question_id']}={r['answer']}" for r in family_rows if r["status"] == "validated"]
+    st = ", ".join(f"{r['question_id']}={r['answer']} {r['status']}" for r in family_rows)
+    if len(ok) == len(family_rows):
+        v = "两行都 validated —— 算一个发现 (不算两次确认, D-128)。下发要另记 DECISIONS, 副题库不写 feature_validation。"
+    elif len(ok) == 1:
+        v = (f"单行过，不算发现 (D-128 补记 3): 只有 {ok[0]} validated ({st})。不下发, 不升主题库, 等 2027-04-02 那次再读。")
+    else:
+        v = f"没有发现: 两行都没过 ({st})。"
+        if any(r["status"] == "insufficient" for r in family_rows):
+            v += " insufficient = 样本不够, 不等于被否定 (D-128 功效那条)。"
+    c2 = next((r for r in family_rows if r["question_id"] == "invites_sharing"), None)
+    if c2 is not None and c2["status"] in ("insufficient", "no_signal"):
+        v += (" C2 读出「样本不够」或不显著: invites_sharing 模型偏宽 (闸一 A 判「是」23 篇里 9 篇参考是「否」), 「是」组里"
+              "混着约四成参考的「否」, 效应往 1 拉 (D-128 闸一结论第 2 点)。")
+    return v
+
+
+# ── 副题库: 报告 ─────────────────────────────────────────────────────────────────
+
+def _f(v, d=2) -> str:
+    return "—" if v is None else f"{v:.{d}f}"
+
+
+def _fp(p) -> str:
+    return "—" if p is None else (f"{p:.1e}" if p < 0.001 else f"{p:.3f}")
+
+
+def _secondary_head(res: dict) -> list[str]:
+    cs = res["condition_snapshot"]
+    lines = [f"> 题库 `{res['bank_version']}` sha `{res['sha']}` (frozen) · 答案 run_tag `{res['answers_run_tag']}` · "
+             f"模型题 {', '.join(f'{q} v{v}' for q, v in res['model_questions'].items())} 只认 `{SEC_LLM_EXTRACTOR}` · "
+             f"代码特征 {', '.join(f'{q} v{v}' for q, v in res['code_features'].items())} 只认 `{fb.CODE_EXTRACTOR}`",
+             f"> 分层快照 (gate2.condition_snapshot): 主题库 `{res['primary_version']}` sha `{cs['bank_sha256'][:12]}…` · "
+             f"run_tag `{cs['run_tag']}` · {', '.join(cs['extractors'])} · "
+             f"{', '.join(f'{q} v{v}' for q, v in cs['questions'].items())} (别的抽取器的行不算, 本次快照外 "
+             f"{res['ignored_rows']['condition']} 行)",
+             "> 名单: " + " · ".join(f"`{m['path']}` {m['n']} 篇 sha256 `{m['sha256']}`" for m in res["manifests"]),
+             f"> 合并名单 {res['n_manifest']:,} 篇 · 名单 sha `{res['combined_sha']}` · note_id 逗号拼接 md5 `{res['ids_md5']}` · "
+             f"半区 {res['half']} (D-129 换了 id、按 old_id 定半区的 {res['half_by_old_id']} 篇)"]
+    return lines
+
+
+def _drops_table(res: dict) -> list[str]:
+    lines = ["| 掉出去的原因 (补记 5; 一篇只归第一种) | 篇 | 明细 |", "|---|---|---|"]
+    for k in SEC_DROP_KINDS:
+        v = res["drops"][k]
+        lines.append(f"| {SEC_DROP_LABELS[k]} | {sum(v.values())} | "
+                     + ("; ".join(f"{a} {b}" for a, b in v.items()) or "—") + " |")
+    lines.append(f"| **合计** | **{res['n_drop']}** | 容忍上限 {res['tolerance']} 篇 (名单 {res['n_manifest']:,} 篇的 3%)"
+                 + (" —— **超过了, 读的时候会拒**" if res["would_refuse"] else "") + " |")
+    lines += ["", "正文截断记 NULL 的 (不算缺, 也不进分子分母): "
+              + (", ".join(f"{q} {n}" for q, n in sorted(res["truncated"].items())) or "0") + f" · 进分析集 {res['n_analysis']:,} 篇"]
+    return lines
+
+
+def _coverage_table(res: dict) -> list[str]:
+    lines = ["| 题 | 版本 | 抽取器 | 快照行 | 名单内的行 | 有答案 | NULL (原因) | 名单里没行 | 名单外的行 |",
+             "|---|---|---|---|---|---|---|---|---|"]
+    for q, c in res["coverage"].items():
+        nulls = "; ".join(f"{k} {v}" for k, v in c.get("null_by_reason", {}).items()) or "0"
+        lines.append(f"| `{q}` | v{c['version']} | {c['extractor']} | {c.get('rows', '—')} | {c['rows_in_manifest']} | "
+                     f"{c['answered']} | {nulls if 'null_by_reason' in c else '—'} | {c['manifest_without_row']} | "
+                     f"{c.get('rows_outside_manifest', '—')} |")
+    lines.append(f"\n副题库 run_tag 下快照外的行 (别的 sha / 抽取器): {res['ignored_rows']['secondary']}")
+    return lines
+
+
+def render_counts_secondary(res: dict) -> str:
+    """--counts-only: 只有行数、覆盖、名单核对 —— 没有 y、没有 OR、没有 p (读之前只许跑这个, D-128 补记 6)。"""
+    lines = [f"# 闸二 · 副题库 · 只数行数 · {res['run_tag']}", ""] + _secondary_head(res) + [
+        "", "## 名单与掉出去的", ""] + _drops_table(res) + ["", "## 覆盖", ""] + _coverage_table(res) + [
+        "", "这一份只数行数和覆盖, 不是闸二的读: 没把答案和标签放在一起算过。"]
+    return "\n".join(lines) + "\n"
+
+
+def render_report_secondary(res: dict) -> str:
+    if res["void"]:
+        return _render_void_secondary(res)
+    p = res["params"]
+    lines = [f"# 闸二 · 副题库 {res['bank_version']} · {res['run_tag']}", "",
+             SEC_MARK.format(sha=res["sha"], man=res["combined_sha"], void=0), ""] + _secondary_head(res) + [
+        f"> 分析集 {res['n_analysis']:,} 篇 (正例 {res['n_pos']:,}) · 大项目 (名单里、口径内爆 ≥ {p['big_pos']}): "
+        + (", ".join(f"{k} {v}" for k, v in res["big_projects"].items()) or "无"),
+        f"> 判据: 确认族两行 BH q ≤ {p['q_max']} · 支持 ≥ {p['min_support']} · 有支持的大项目 ≥ {p['min_big']}、最多 1 个反向 "
+        f"(合并 2×2 +0.5) · 账号先验再分层后 OR 变化 ≤ {int(p['confound_delta'] * 100)}% · MH 的层 = 项目 × "
+        + " × ".join(res["condition_snapshot"]["questions"]),
+        f"> 账号先验档 (分析集): 无记录 {res['prior_strata'][PRIOR_NONE]} · 低于基线 {res['prior_strata'][PRIOR_BELOW]} · "
+        f"不低于 {res['prior_strata'][PRIOR_AT_OR_ABOVE]} · 标签和名单写死时不同的 {res['y_changed']} 篇 (按现在的算) · "
+        f"项目变了的 {res['project_changed']} 篇 (按现在的项目分层, 补记 4)", "",
+        "## 结论", "", f"**{res['verdict']}**", "",
+        "## 确认族 (BH 只在这两行里做)", "",
+        "| 行 | 预注册 | 状态 | OR | 95% CI | p | q | 大项目同向/有支持 | 大项目分层内方向 (只报告) | 支持 / 基数 | "
+        "先验分层 OR | 只按项目 OR | 不分层 OR | 说明 |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    for r in res["family_rows"]:
+        lines.append(f"| `{r['question_id']}` {r['answer']} | {r['hypothesis']} | **{r['status']}** | {_f(r['mh_odds_ratio'])} | "
+                     f"{_f(r['ci_low'])}–{_f(r['ci_high'])} | {_fp(r['p_value'])} | {_f(r['q_value'], 3)} | "
+                     f"{r['big_projects_same_dir']}/{r['big_projects_n']} | "
+                     f"{', '.join(f'{k} {v}' for k, v in r['big_within'].items()) or '—'} | {r['support']} / {r['base_n']} | "
+                     f"{_f(r['mh_prior'])} | {_f(r['or_project_only'])} | {_f(r['or_crude'])} | {r['summary'].split(': ', 1)[-1]} |")
+    lines += ["", "## 只报告 (不判状态、不进 BH、不下发)", "",
+              "| 题 | 取值 | 比较基数 | 预注册 | OR | 95% CI | p | 支持 / 基数 | 大项目 >1/<1 (合并 2×2) | 大项目分层内方向 | "
+              "只按项目 OR | 不分层 OR |", "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    kind_note = {"value": "其余提问类型 (剔掉 contrast_base_excludes)", "control": "全部 (阳性对照)", "merged": "其余提问类型",
+                 "bool": "全部", "code": "全部"}
+    for r in res["report_rows"]:
+        lines.append(f"| `{r['question_id']}` | {r['answer']} | {kind_note[r['kind']]} | {r['hypothesis']} | "
+                     f"{_f(r['mh_odds_ratio'])} | {_f(r['ci_low'])}–{_f(r['ci_high'])} | {_fp(r['p_value'])} | "
+                     f"{r['support']} / {r['base_n']} | {r['n_or_above_1']}/{r['n_or_below_1']} of {r['big_projects_n']} | "
+                     f"{', '.join(f'{k} {v}' for k, v in r['big_within'].items()) or '—'} | {_f(r['or_project_only'])} | "
+                     f"{_f(r['or_crude'])} |")
+    lines += ["", "「只按项目」= 不分 ending_asks_reader / asks_for_help 的层 (主题库的分法); 「不分层」= 全部并成一张 2×2。"
+              "两者和上面分层的 OR 差得多时, 是分层题在混杂 (辛普森那种), 以分层的为准。", "",
+              f"## 敏感性重跑 (只报告): 剔掉记过置顶 / 控评 / 铺评 / 投流的 {res['sensitivity_dropped']} 篇, 再加一层 body_len_bucket", "",
+              "剔的依据: `notes.data_quality_flags.comment_maintained_routes` 非空 (铺评工单 / 起量后干预 / 铺评未跨线)、"
+              "`data_quality_flags.paid_promoted = true`、`notes.pinned_comment` 非空。命中: "
+              + (", ".join(f"{k} {v}" for k, v in res["sensitivity_flags"].items()) or "无"), "",
+              "| 行 | OR | 95% CI | p | 支持 / 基数 |", "|---|---|---|---|---|"]
+    for s in res["sensitivity"]:
+        lines.append(f"| `{s['question_id']}` {s['answer']} | {_f(s['mh_odds_ratio'])} | {_f(s['ci_low'])}–{_f(s['ci_high'])} | "
+                     f"{_fp(s['p_value'])} | {s['support']} / {s['base_n']} |")
+    lines += ["", "## 反证 (占位题, 不在 BH 家族里)", "",
+              f"3 道占位题按主题库定义从 note_id 现算, 同一份名单、同样分层。报警 = 支持 ≥ {p['min_support']} 且有支持的大项目 ≥ "
+              f"{p['min_big']}、区间不跨 1、原始 p ≤ {p['placebo_p_max']}、大项目最多一个反向, 四条同时满足 (补记 2)。", ""]
+    lines += _placebo_table(res)
+    lines += ["", "过: 没有一道占位题报警。", "", "## 掉出去的与覆盖", ""] + _drops_table(res) + [""] + _coverage_table(res)
+    lines += ["", "## 读的时候要记着的两点 (D-128 闸一结论, 不改判定)", "",
+              "1. reader_ask_form 按 C1 两组看, A 和参考跨组的错判两个方向差不多 (3 对 4); 错判和爆不相关时效应只会往 1 拉, 偏保守。",
+              "2. invites_sharing 模型偏宽: 参考「是」16 篇, A 判「是」23 篇, 其中 9 篇参考是「否」 —— C2 的「是」组里混着约四成参考的「否」。",
+              "", "## 不写", "", "- 副题库的结果永远不写 `feature_validation` (D-128): 馆员取全表最新的一次闸二、不分题库, 写进去写作台的规律下发会整体断掉。"
+              "结论只进这份报告和 DECISIONS。"]
+    return "\n".join(lines) + "\n"
+
+
+def _placebo_table(res: dict) -> list[str]:
+    lines = ["| 占位题 | OR | 95% CI | 原始 p | 支持 | 大项目 >1/<1 (合并 2×2) | 报警 |", "|---|---|---|---|---|---|---|"]
+    for r in res["placebo_rows"]:
+        lines.append(f"| `{r['question_id']}` | {_f(r['mh_odds_ratio'])} | {_f(r['ci_low'])}–{_f(r['ci_high'])} | "
+                     f"{_fp(r['p_value'])} | {r['support']} | {r['n_or_above_1']}/{r['n_or_below_1']} of {r['big_projects_n']} | "
+                     f"{'**报警**' if r['alarm'] else '—'} |")
+    return lines
+
+
+def _render_void_secondary(res: dict) -> str:
+    """占位题报警 (补记 2): 这次读作废。报告只写报警内容和计数, 确认族两行不出 OR、p 和状态 (它们根本没算)。"""
+    lines = [f"# 闸二 · 副题库 {res['bank_version']} · {res['run_tag']} · 作废 (占位题报警)", "",
+             SEC_MARK.format(sha=res["sha"], man=res["combined_sha"], void=1), ""] + _secondary_head(res) + [
+        f"> 分析集 {res['n_analysis']:,} 篇", "",
+        f"## 占位题报警: {', '.join(res['placebo_alarm'])}", "",
+        "这次读作废 (D-128 补记 2): 确认族两行没有算, 这份报告里没有它们的 OR、p 和状态。查清原因 (快照混了、标签没清洗之类)、"
+        "记进 DECISIONS 之后可以重读; 作废这次没露出两行的结果, 不算用掉「只读一次」(报告名带 -void)。", ""]
+    lines += _placebo_table(res)
+    lines += ["", "## 掉出去的与覆盖", ""] + _drops_table(res) + [""] + _coverage_table(res)
+    return "\n".join(lines) + "\n"
+
+
+# ── 副题库: 取数 (生产) ─────────────────────────────────────────────────────────
+
+def fetch_dataset_secondary(sb, *, bank: dict, primary: dict, answers_run_tag: str = SEC_ANSWERS_RUN_TAG) -> dict:
+    """run_gate2_secondary 要的 dataset。两份快照分开查, 每次查一个 (题, 抽取器, 版本) 的切片 —— 这个切片里 subject_id 唯一
+    (主键 subject_type, subject_id, question_id, question_version, extractor, run_tag), fetch_all_pages 按 subject_id 去重
+    不会吞掉行。版本不对的行另用一个有上限的查询捞出来放进 answers, 让 run_gate2_secondary 拒 (不在这里静默丢)。
+    D-129 映射表读不到 / 0 对 → Gate2Refused (fail closed)。正文、置顶评论的文字都不取, 只取「有没有」。"""
+    from _common import fetch_all_pages, fetch_half_alias, fetch_vanished_note_ids, mask_secrets
+    try:
+        alias = fetch_half_alias(sb)
+    except Exception as exc:  # noqa: BLE001 — 什么原因都一样: 半区定不了就不跑
+        raise Gate2Refused(f"D-129 映射表读不到, 半区定不了, 不跑 (fail closed): {type(exc).__name__}: "
+                           f"{mask_secrets(str(exc))[:300]}") from exc
+    tv = lambda t: sb.schema("truth_vault").table(t)                            # noqa: E731
+    labels = fetch_all_pages(tv("v_l2_labels").select("note_id, project_id, account_id, publish_time, y"), order_by="note_id")
+    meta = {r["note_id"]: r for r in fetch_all_pages(
+        tv("notes").select("note_id, emotional_lever, data_quality_flags, pinned_comment"), order_by="note_id")}
+    blen = {r["note_id"]: r.get("body_len")
+            for r in fetch_all_pages(tv("note_features").select("note_id, body_len"), order_by="note_id")}
+    vanished = fetch_vanished_note_ids(sb)
+    notes = []
+    for r in labels:
+        if r["note_id"] in vanished:
+            continue
+        m = meta.get(r["note_id"]) or {}
+        notes.append({"note_id": r["note_id"], "project_id": r["project_id"], "account_id": r.get("account_id"),
+                      "publish_time": r.get("publish_time"), "y": int(r["y"]),
+                      "has_essence": m.get("emotional_lever") is not None, "body_len": blen.get(r["note_id"]),
+                      "data_quality_flags": m.get("data_quality_flags") or {},
+                      "has_pinned_comment": m.get("pinned_comment") not in (None, "")})
+    cols = "subject_type, subject_id, question_id, question_version, bank_sha256, extractor, run_tag, answer, invalid_reason"
+    slices = [(answers_run_tag, bank["_sha256"], q["id"], int(q["version"]), SEC_LLM_EXTRACTOR) for q in fb.llm_questions(bank)]
+    slices += [(answers_run_tag, bank["_sha256"], c["id"], int(c["version"]), fb.CODE_EXTRACTOR)
+               for c in bank.get("code_features") or []]
+    snap = bank["gate2"]["condition_snapshot"]
+    pidx = fb.question_index(primary)
+    conds = []
+    for q in fb.llm_questions(bank):
+        conds += [c for c in q.get("conditional_on") or [] if c not in conds]
+    slices += [(snap["run_tag"], snap["bank_sha256"], c, int(pidx[c]["version"]), e) for c in conds for e in snap["extractors"]]
+    answers: list[dict] = []
+    for tag, sha, qid, ver, ext in slices:
+        base = lambda: (tv("note_feature_answers").select(cols).eq("subject_type", "note").eq("run_tag", tag)  # noqa: E731
+                        .eq("bank_sha256", sha).eq("question_id", qid).eq("extractor", ext))
+        answers.extend(fetch_all_pages(base().eq("question_version", ver), order_by="subject_id"))
+        # 同一切片里版本不对的行 (比如 invites_sharing v1 混进副题库 sha 下): 有一行就够拒, 捞前 50 行
+        answers.extend((base().neq("question_version", ver).limit(50).execute()).data or [])
+    return {"notes": notes, "vanished": sorted(vanished), "answers": answers, "half_alias": alias}
+
+
+def main_secondary(args, bank_path) -> int:
+    """副题库那条路的 CLI (main 按题库 role 分过来)。退出码: 0 读完 / 只数完; 2 拒跑; 3 占位题报警、作废报告已写。"""
+    def refuse(msg) -> int:
+        print(f"闸二 (副题库) 没跑: {msg}", file=sys.stderr)
+        return 2
+
+    if args.write or args.expect_rows_sha256 or args.rows_out:
+        return refuse("副题库的结果永远不写 feature_validation (D-128): 不收 --write / --expect-rows-sha256 / --rows-out")
+    if args.allow_draft:
+        return refuse("副题库不收 --allow-draft: 只读冻结的题库 (D-128 闸一结论, status: frozen)")
+    if args.ignore_placebo_alarm:
+        return refuse("占位题报警 = 这次读作废 (D-128 补记 2), 不许忽略")
+    if args.projects or args.unreliable:
+        return refuse("范围由名单定、闸一裁决在题库里: 不收 --projects / --unreliable")
+    if (args.q_max, args.min_support, args.min_big, args.big_pos, args.confound_delta) != (0.10, 30, 3, 20, 0.30):
+        return refuse("判据跑之前写死在 D-128 (q ≤ 0.10、支持 ≥ 30、大项目 ≥ 3 / 爆 ≥ 20、先验变化 ≤ 30%), 不收改动")
+    if args.extractors and {e.strip() for e in args.extractors.split(",") if e.strip()} != {fb.CODE_EXTRACTOR, SEC_LLM_EXTRACTOR}:
+        return refuse(f"副题库的抽取器钉死是 {SEC_LLM_EXTRACTOR} (模型题) + {fb.CODE_EXTRACTOR} (代码特征), 不收 {args.extractors!r}")
+    if not args.sha:
+        return refuse("--sha 必填: 副题库 digest 的前缀 (≥ 8 位, D-128 写的是 9f2cf1c9e7de)")
+    if not args.manifest:
+        return refuse("--manifest 必填: 进了仓库的名单 CSV (第一波 data-analysis/gate2-reader-holdout-2026-10-27.csv, 第二波另给一次)")
+    try:
+        bank, primary = fb.load_bank_pair(bank_path)
+    except ValueError as exc:
+        return refuse(str(exc))
+    out = Path(args.out) if args.out else None
+    if out is not None and not args.counts_only:
+        if "-void" in out.name:
+            return refuse(f"报告名 {out.name} 带 -void: 那是作废报告的名字 (补记 7), 正式读不许这么叫")
+        if out.exists() or void_path(out).exists():
+            return refuse(f"{out} (或 -void 那份) 已经在了, 不覆盖")
+    dirs = [Path(args.reports_dir)] + ([out.parent] if out is not None else [])
+    try:
+        manifests = load_manifests(args.manifest)
+        if args.fixture:
+            dataset = json.loads(Path(args.fixture).read_text(encoding="utf-8"))
+        else:
+            from _common import get_supabase_client
+            dataset = fetch_dataset_secondary(get_supabase_client(), bank=bank, primary=primary,
+                                              answers_run_tag=args.answers_run_tag)
+        res = run_gate2_secondary(dataset, bank, primary, sha=args.sha, manifests=manifests, run_tag=args.run_tag,
+                                  answers_run_tag=args.answers_run_tag, counts_only=args.counts_only, reports_dirs=dirs)
+    except Gate2Refused as exc:
+        return refuse(exc)
+    if args.counts_only:
+        text = render_counts_secondary(res)
+        if out is not None:
+            out.write_text(text, encoding="utf-8")
+        else:
+            print(text)
+        print(f"闸二 (副题库) 只数行数: 名单 {res['n_manifest']} 篇、掉出去 {res['n_drop']} 篇 (上限 {res['tolerance']})"
+              + (" —— 超过 3%, 读的时候会拒" if res["would_refuse"] else ""), file=sys.stderr)
+        return 0
+    text = render_report_secondary(res)
+    target = void_path(out) if (res["void"] and out is not None) else out
+    if target is not None:
+        target.write_text(text, encoding="utf-8")
+    else:
+        print(text)
+    if res["void"]:
+        print(f"闸二 (副题库) 作废: 占位题报警 {res['placebo_alarm']} —— 确认族两行没算; 报告 {target or '(stdout)'} "
+              "(补记 2: 查清原因、记 DECISIONS 后可重读)", file=sys.stderr)
+        return 3
+    print("闸二 (副题库): " + ", ".join(f"{r['question_id']}={r['answer']} {r['status']}" for r in res["family_rows"])
+          + f" · 名单 sha {res['combined_sha'][:12]} —— 报告进 data-analysis/ 并提交, 「只读一次」靠它守 (补记 7)", file=sys.stderr)
+    return 0
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--sha", required=True, help="bank_sha256 前缀 (≥ 8 位), 快照的一半")
-    ap.add_argument("--extractors", required=True, help="逗号分隔, 快照的另一半, 如 code:v1,llm:claude-opus-4-6")
+    ap.add_argument("--sha", default="", help="bank_sha256 前缀 (≥ 8 位), 快照的一半 (必填; 副题库给副题库的 sha)")
+    ap.add_argument("--extractors", default="", help="逗号分隔, 快照的另一半, 如 code:v1,llm:claude-opus-4-6 (主题库必填; "
+                                                     "副题库钉死, 不用给)")
     ap.add_argument("--run-tag", default="gate2-" + datetime.now(timezone.utc).strftime("%Y-%m-%d"))
-    ap.add_argument("--bank", default=str(fb.BANK_PATH))
+    ap.add_argument("--bank", default=str(fb.BANK_PATH),
+                    help="题库: primary / reader (feature_bank.BANKS 的键) 或 yaml 路径; role: secondary 的走副题库那条路 (D-128)")
     ap.add_argument("--projects", default="", help="逗号分隔只看这些项目; 空 = 全部")
     ap.add_argument("--unreliable", default="", help="逗号分隔, 额外打 unreliable 的题号 (题库 gate1_status: fail 的题自动算, D-103)")
     ap.add_argument("--q-max", type=float, default=0.10)
@@ -513,18 +1310,33 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--confound-delta", type=float, default=0.30)
     ap.add_argument("--allow-draft", action="store_true", help="题库没冻结也跑 (试算 / CI 夹具); 正式跑不许")
     ap.add_argument("--ignore-placebo-alarm", action="store_true", help="反证没过也出报告 (只为排查, 不写库)")
-    ap.add_argument("--fixture", default="", help="离线: 从 json 读 {notes, answers}, 不连库")
+    ap.add_argument("--fixture", default="", help="离线: 从 json 读 {notes, answers} (副题库另带 vanished / half_alias), 不连库")
     ap.add_argument("--out", default="", help="报告 markdown 路径")
     ap.add_argument("--rows-out", default="", help="feature_validation 行 json 路径")
     ap.add_argument("--write", action="store_true", help="写 feature_validation (upsert, 主键含 gate2_run); 必须带 --expect-rows-sha256")
     ap.add_argument("--expect-rows-sha256", default="",
                     help="--write 必带: 这次算出的 feature_validation 行摘要必须以它开头 (≥12 位十六进制), 从看过报告的那次 "
                          "(报告末尾 / stdout 的 rows_sha256) 抄 —— 写进库的就是看过的那份, 中间数据变了就拒 (codex review on #173)")
+    # 副题库 (D-128 / docs/28 §6.2b) 才用的四个
+    ap.add_argument("--manifest", action="append", default=[],
+                    help="副题库: 进了仓库的名单 CSV, 可给多次 (第一波 + 第二波); 只读名单里的篇, 名单 sha 进报告")
+    ap.add_argument("--counts-only", action="store_true",
+                    help="副题库: 只数行数 / 覆盖 / 名单, 不出 y 的交叉表、OR、p (读之前只许跑这个, D-128 补记 6)")
+    ap.add_argument("--answers-run-tag", default=SEC_ANSWERS_RUN_TAG, help="副题库答案的 run_tag (fqr-*)")
+    ap.add_argument("--reports-dir", default=str(REPORTS_DIR),
+                    help="副题库: 到这里找读过的报告 (同一份名单只读一次, 补记 7)")
     args = ap.parse_args(argv)
+    bank_path = fb.BANKS.get(args.bank, args.bank)
+    if fb.load_bank(bank_path).get("role") == fb.ROLE_SECONDARY:
+        return main_secondary(args, bank_path)
+    if args.manifest or args.counts_only or args.answers_run_tag != SEC_ANSWERS_RUN_TAG:
+        ap.error("--manifest / --counts-only / --answers-run-tag 只给副题库 (--bank reader)")
+    if not args.sha or not args.extractors:
+        ap.error("the following arguments are required: --sha, --extractors")
     extractors = [e.strip() for e in args.extractors.split(",") if e.strip()]
     unreliable = [u.strip() for u in args.unreliable.split(",") if u.strip()]
     projects = {p.strip() for p in args.projects.split(",") if p.strip()} or None
-    bank = fb.load_bank(args.bank)
+    bank = fb.load_bank(bank_path)
     sb = None
     try:
         if args.fixture:

@@ -3,6 +3,8 @@
 # 默认只出报告 (打进 job log + step summary + artifact), 看过报告再把 write 勾成 true 写 feature_validation。
 # 预注册在脚本里, 这里不放水: 题库必须 status: frozen 且 --sha 与 frozen_sha256 一致、占位题显著则整跑作废 (退出码 2);
 # gate1_status: fail 的题自动 unreliable (D-103 / D-105), 不用手传。
+# bank=reader 走副题库 fq-v0.2-cand-reader 那条路 (D-128, docs/28 §6.2b): 只读进了仓库的名单 (manifests), 先 counts_only=true
+# 只数行数和覆盖, 第二波定了之后 counts_only=false 读一次; 永远不写 feature_validation (write 必须 false), 不跑组合对比。
 name: Gate 2 run (feature discrimination · docs/28 §6.2)
 
 on:
@@ -40,6 +42,18 @@ on:
         description: "true = 占位题显著也出报告 (只为排查; 脚本不许同时 write)"
         required: false
         default: "false"
+      bank:
+        description: "primary = 主题库 fq-v0.1 (照旧); reader = 副题库 fq-v0.2-cand-reader (D-128: sha 填 9f2cf1c9e7de, 只出报告、永远不写库)"
+        required: false
+        default: "primary"
+      manifests:
+        description: "bank=reader 才用: 逗号分隔、进了仓库的名单 CSV (仓库根目录相对路径), 如 data-analysis/gate2-reader-holdout-2026-10-27.csv (第二波另加一份)"
+        required: false
+        default: ""
+      counts_only:
+        description: "bank=reader 才用: true = 只数行数 / 覆盖 / 名单 (不出 y 的交叉表、OR、p; 读之前只许跑这个); false = 正式读, 同一份名单只读一次 (D-128 补记 6 / 7)"
+        required: false
+        default: "true"
 
 # 同时只允许一个闸二在跑: 同一个 run_tag 两个 run 互相覆盖 feature_validation 行。
 concurrency:
@@ -61,6 +75,9 @@ jobs:
       IN_WRITE: ${{ github.event.inputs.write }}
       IN_REVIEWED: ${{ github.event.inputs.reviewed_rows_sha }}
       IN_IGNORE_PLACEBO: ${{ github.event.inputs.ignore_placebo_alarm }}
+      IN_BANK: ${{ github.event.inputs.bank || 'primary' }}
+      IN_MANIFESTS: ${{ github.event.inputs.manifests }}
+      IN_COUNTS_ONLY: ${{ github.event.inputs.counts_only || 'true' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -79,6 +96,36 @@ jobs:
           [ -n "$SUPABASE_URL" ] || { echo "::error::缺 secret SUPABASE_URL"; exit 1; }
           [ -n "$SUPABASE_SERVICE_ROLE_KEY" ] || { echo "::error::缺 secret SUPABASE_SERVICE_ROLE_KEY"; exit 1; }
           echo "$IN_SHA" | grep -Eq '^[0-9a-f]{8,64}$' || { echo "::error::sha 要是 ≥8 位十六进制前缀, 收到 '$IN_SHA'"; exit 1; }
+          case "$IN_BANK" in primary|reader) ;; *) echo "::error::bank 只能是 primary / reader, 收到 '$IN_BANK'"; exit 1;; esac
+          if [ "$IN_BANK" = "reader" ]; then
+            # 副题库 (D-128): 永远不写库、不许忽略占位题报警、范围由名单定; 名单必须是进了仓库的文件
+            [ "$IN_WRITE" = "false" ] || { echo "::error::bank=reader 不写 feature_validation (D-128), write 必须是 false"; exit 1; }
+            [ "$IN_IGNORE_PLACEBO" = "false" ] || { echo "::error::bank=reader 不许忽略占位题报警: 报警 = 这次读作废 (D-128 补记 2)"; exit 1; }
+            if [ -n "$IN_PROJECTS" ] || [ -n "$IN_UNRELIABLE" ]; then
+              echo "::error::bank=reader 的范围由名单定、闸一裁决在题库里: projects / unreliable 要留空"; exit 1
+            fi
+            case "$IN_COUNTS_ONLY" in true|false) ;; *) echo "::error::counts_only 只能是 true / false, 收到 '$IN_COUNTS_ONLY'"; exit 1;; esac
+            [ -n "$IN_MANIFESTS" ] || { echo "::error::bank=reader 要给 manifests (进了仓库的名单 CSV)"; exit 1; }
+            TAG="${IN_RUN_TAG:-gate2-reader-$(date -u +%Y-%m-%d)}"
+            echo "$TAG" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$' || { echo "::error::run_tag 不合法: '$TAG'"; exit 1; }
+            MANS=""
+            IFS=',' read -ra MS <<< "$IN_MANIFESTS"
+            for m in "${MS[@]}"; do
+              m="$(echo "$m" | xargs)"
+              echo "$m" | grep -Eq '^data-analysis/[A-Za-z0-9._-]+[.]csv$' || { echo "::error::名单要是 data-analysis/ 下的 csv, 收到 '$m'"; exit 1; }
+              git ls-files --error-unmatch "../$m" > /dev/null 2>&1 || { echo "::error::名单 $m 没进仓库 —— 只读进了仓库的名单 (D-128 补记)"; exit 1; }
+              MANS="$MANS $m"
+            done
+            # 副题库必须冻结、sha 必须是它的 frozen_sha256 前缀、跨库校验过 (load_bank_pair) —— 脚本自己也拒, 这里只是把原因说清楚
+            python -c "import sys, feature_bank as fb; b, p = fb.load_bank_pair(fb.BANKS['reader']); sha = sys.argv[1]; fs = b.get('frozen_sha256') or ''
+          assert b.get('status') == 'frozen', f'副题库 status={b.get(\"status\")!r}, 不是 frozen'
+          assert fs.startswith(sha), f'sha {sha} 不是副题库 frozen_sha256 {fs[:12]}… 的前缀 (D-128: 9f2cf1c9e7de)'
+          print(f'✅ 副题库 {b[\"bank_version\"]} frozen, digest {fs[:12]}…; 钉的主题库 {p[\"bank_version\"]} {p[\"_sha256\"][:12]}…')" "$IN_SHA"
+            echo "TAG=$TAG" >> "$GITHUB_ENV"
+            echo "MANIFESTS=$MANS" >> "$GITHUB_ENV"
+            echo "✅ bank=reader sha=$IN_SHA run_tag=$TAG manifests=$MANS counts_only=$IN_COUNTS_ONLY write=false"
+            exit 0
+          fi
           [ -n "$IN_EXTRACTORS" ] || { echo "::error::extractors 不能为空"; exit 1; }
           TAG="${IN_RUN_TAG:-gate2-$(date -u +%Y-%m-%d)}"
           echo "$TAG" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$' || { echo "::error::run_tag 不合法: '$TAG'"; exit 1; }
@@ -107,6 +154,7 @@ jobs:
           echo "TAG=$TAG" >> "$GITHUB_ENV"
           echo "✅ sha=$IN_SHA extractors=$IN_EXTRACTORS run_tag=$TAG projects='${IN_PROJECTS:-(all)}' unreliable='${IN_UNRELIABLE:-(none)}' write=$IN_WRITE"
       - name: Run gate2_run.py (报告 + feature_validation 行; write=true 才写库)
+        if: env.IN_BANK == 'primary'
         working-directory: scripts
         run: |
           set +e
@@ -141,11 +189,51 @@ jobs:
           fi
       # 占位题反证没过时 (ignore_placebo_alarm=true 只为排查) 不出"进不进 L2"的正式判定: 预注册说反证过了才看正式结果
       # (docs/28 §6.2; codex review on #174)。
+      - name: 副题库闸二 (bank=reader; counts_only=true 只数行数, false 读一次; 永远不写库)
+        if: env.IN_BANK == 'reader'
+        working-directory: scripts
+        run: |
+          set +e
+          FLAGS=()
+          for m in $MANIFESTS; do FLAGS+=(--manifest "../$m"); done
+          if [ "$IN_COUNTS_ONLY" = "true" ]; then
+            OUT="../data-analysis/feature-gate2-${TAG}-counts.md"
+            FLAGS+=(--counts-only)
+          else
+            OUT="../data-analysis/feature-gate2-${TAG}.md"
+          fi
+          python gate2_run.py --bank reader --sha "$IN_SHA" --run-tag "$TAG" --out "$OUT" "${FLAGS[@]}"
+          rc=$?
+          VOID="${OUT%.md}-void.md"
+          if [ "$rc" = "3" ]; then
+            echo "::error::占位题报警, 这次读作废 (D-128 补记 2): $VOID 只有报警和计数, 确认族两行没算。查清原因、记进 DECISIONS 之后可以重读"
+            cat "$VOID"
+            { echo "## 闸二 (副题库) 作废 · run_tag \`$TAG\`"; echo; cat "$VOID"; } >> "$GITHUB_STEP_SUMMARY"
+            exit 3
+          elif [ "$rc" = "2" ]; then
+            echo "::error::闸二 (副题库) 没跑 —— 预注册 / 名单 / 半区 / D-129 映射表 / 快照 / 缺答案超 3% / 这份名单已经读过, 原因在上面 stderr。"
+            exit 2
+          elif [ "$rc" != "0" ]; then
+            echo "::error::gate2_run.py 退出码 $rc"
+            exit "$rc"
+          fi
+          echo "── 报告 $OUT ──"
+          cat "$OUT"
+          {
+            echo "## 闸二 (副题库) · run_tag \`$TAG\` · sha \`$IN_SHA\` · counts_only=$IN_COUNTS_ONLY"
+            echo
+            cat "$OUT"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$IN_COUNTS_ONLY" = "true" ]; then
+            echo "::notice::只数了行数和覆盖, 不是闸二的读。"
+          else
+            echo "::notice::读完了: 从 artifact 下载 $(basename "$OUT") 提交进 data-analysis/ —— 「只读一次」靠仓库里这份报告守 (D-128 补记 7)。"
+          fi
       - name: 组合对比跳过 (占位题反证被忽略的排查跑)
-        if: success() && env.IN_IGNORE_PLACEBO == 'true'
+        if: success() && env.IN_BANK == 'primary' && env.IN_IGNORE_PLACEBO == 'true'
         run: echo "::notice::ignore_placebo_alarm=true 是排查跑, 不出组合进不进 L2 的判定 (反证没过的结果不作数)。"
       - name: 组合进不进 L2 (gate2_combo.py · 附录 B.3 留一项目 AUC + 自助 + B.4 置换; 只出报告)
-        if: success() && env.IN_IGNORE_PLACEBO != 'true'
+        if: success() && env.IN_BANK == 'primary' && env.IN_IGNORE_PLACEBO != 'true'
         working-directory: scripts
         run: |
           set +e
@@ -172,5 +260,7 @@ jobs:
             data-analysis/feature-gate2-${{ env.TAG }}.rows.json
             data-analysis/feature-gate2-combo-${{ env.TAG }}.md
             data-analysis/feature-gate2-combo-${{ env.TAG }}.json
+            data-analysis/feature-gate2-${{ env.TAG }}-void.md
+            data-analysis/feature-gate2-${{ env.TAG }}-counts.md
           if-no-files-found: warn
           retention-days: 90
