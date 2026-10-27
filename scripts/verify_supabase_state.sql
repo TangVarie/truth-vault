@@ -479,12 +479,14 @@ SELECT '91', 'H · 跨 schema 孤儿',
 
 UNION ALL
 SELECT '92', 'I · 数据一致性',
-    '名字带 backup / 日期后缀 (_YYYYMMDD) 且日期已超过 30 天的一次性表个数 (审计 C-17: 一次性表没有过期日)',
+    '名字带 backup / 日期后缀 (_YYYYMMDD) 且日期已超过 30 天的一次性表个数 (审计 C-17: 一次性表没有过期日; '
+    'truth_vault.backup_d129_ids_20261026 除外: 名字像备份, 其实是永久保留的 D-129 id 映射, 闸二和 G-18 按它定半区, D-128 补记)',
     COALESCE(pg_temp.safe_count(
         $q$SELECT COUNT(*)
         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
         WHERE c.relkind = 'r' AND n.nspname IN ('truth_vault', 'autowriter', 'public')
           AND c.relname ~ '(backup|_20[0-9]{6}$)'
+          AND (n.nspname, c.relname) <> ('truth_vault', 'backup_d129_ids_20261026')
           AND substring(c.relname from '_(20[0-9]{6})$') IS NOT NULL
           AND to_date(substring(c.relname from '_(20[0-9]{6})$'), 'YYYYMMDD') < current_date - 30$q$
     )::TEXT, 'N/A'),

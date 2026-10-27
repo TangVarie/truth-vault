@@ -1420,6 +1420,33 @@ def fetch_vanished_note_ids(sb, project_id: Optional[str] = None) -> set[str]:
     return {r["note_id"] for r in fetch_all_pages(q, order_by="note_id")}
 
 
+# D-129 挪表的 id 映射 (old_id → new_id, 9 行废稿 new_id 为空)。发现半 / 留出半按 old_id 定 (D-128 补记)。
+# ⚠️ 它名字里带 backup, 但只要还有人按半区取数 (读者题闸二、每季度找新特征 G-18) 就不能删 —— 删了 fetch_half_alias
+#    会让这两条路 fail closed。所以永久保留: verify_supabase_state.sql #92 把它除外、OPEN-ITEMS S-02 不删它
+#    (check_gate2_run §8c 守着这两处)。
+D129_ID_MAP_TABLE = "backup_d129_ids_20261026"
+
+
+def fetch_half_alias(sb) -> dict[str, str]:
+    """{new_id: old_id}: D-129 换了 id 的行, 定半区时用旧 id (discover_feature_candidates.half_id)。
+
+    fail closed (D-128 补记 1 / 4): 表读不到就让异常抛出去; 读出 0 对也抛 —— D-129 记的是 70 对, 0 对多半是权限或表被
+    删了, 照常跑会让 41 篇悄悄换半区。按 old_id 翻页 (它唯一; fetch_all_pages 按 order_by 那一列去重, new_id 有空值),
+    new_id 重复也抛 (一个新行不能对两个旧行)。"""
+    rows = fetch_all_pages(sb.schema("truth_vault").table(D129_ID_MAP_TABLE).select("old_id, new_id"), order_by="old_id")
+    alias: dict[str, str] = {}
+    for r in rows:
+        new, old = r.get("new_id"), r.get("old_id")
+        if not new:
+            continue
+        if not old or new in alias:
+            raise RuntimeError(f"fetch_half_alias: {D129_ID_MAP_TABLE} 的 new_id {new!r} 重复或 old_id 为空 —— 映射不是一一对应")
+        alias[new] = old
+    if not alias:
+        raise RuntimeError(f"fetch_half_alias: {D129_ID_MAP_TABLE} 读出 0 对 (D-129 是 70 对) —— 权限 / 表被删? 不按半区取数")
+    return alias
+
+
 # 中转站 (new-api) 的敏感词拦截: 回 HTTP 500, message 里是 "sensitive_words_detected"。这是【这一篇
 # 内容】的问题, 不是连通 / 余额 / 鉴权: 同一篇重发多半还被拦, 别的篇照常 (10-23 XIWU_phase2 一篇,
 # 正文里有个词在中转站词表里, 要引原句做证据的几组次次被拦)。标注 pass 用它把这类失败和真正的系统性失败分开计 (D-125)。

@@ -377,7 +377,32 @@ select count(*), max(extracted_at) from truth_vault.note_feature_answers
 where run_tag = 'primary' and bank_sha256 like 'ba0f570c%' and subject_id in (<IDS 加引号>);
 ```
 
-之后：`gate1_models.py --print-sql` 拿去只读 MCP 跑、存进 scratchpad，再 `--from-json … --out data-analysis/gate1-reader-<日期>.md --cells-out data-analysis/gate1-reader-cells-<日期>.csv`（第一版报告：A 对 B、证据无效率）；`build_gate1_review_sheet.py --print-sql` 取正文进 scratchpad，做裁决表（仓库外）直接交给 owner；收回后 `ingest_gate1_review.py --sql-out` 出 SQL（`human:owner` / `fqr-g1-owner`），由有写权限的人执行；再带 `--owner-run-tag fqr-g1-owner` 出终版报告。不一致格和复核格要**每一格**都裁（D-128）：有一格拿不准或空着，对参考的线不作数，这道题判 `pending`（A 对 B、证据无效率不过或复核推翻 > 2 照样判 `fail`）。三趟全一致的格凑不满 20 个时复核做不满，这道题一直 `pending`，不降成「有几格裁几格」：要补样本或在 DECISIONS 里另作决定。一张表就是 owner 裁决的全量：SQL 是一个事务，先删掉这张表里空着 / 拿不准的格以前收过的裁决，再 upsert 收下的格，所以改过的表再收一次就以新表为准；表里删了行会被拒。闸二的抽取名单：`gate1_sample.py --half holdout --take all`（多加闸二口径：有 essence、正文 ≥ 50 字、没删），分批 ≤ 200 篇、`run_tag=fqr-g2-sonnet55`，题库冻结之后另批钱再跑。
+之后：`gate1_models.py --print-sql` 拿去只读 MCP 跑、存进 scratchpad，再 `--from-json … --out data-analysis/gate1-reader-<日期>.md --cells-out data-analysis/gate1-reader-cells-<日期>.csv`（第一版报告：A 对 B、证据无效率）；`build_gate1_review_sheet.py --print-sql` 取正文进 scratchpad，做裁决表（仓库外）直接交给 owner；收回后 `ingest_gate1_review.py --sql-out` 出 SQL（`human:owner` / `fqr-g1-owner`），由有写权限的人执行；再带 `--owner-run-tag fqr-g1-owner` 出终版报告。不一致格和复核格要**每一格**都裁（D-128）：有一格拿不准或空着，对参考的线不作数，这道题判 `pending`（A 对 B、证据无效率不过或复核推翻 > 2 照样判 `fail`）。三趟全一致的格凑不满 20 个时复核做不满，这道题一直 `pending`，不降成「有几格裁几格」：要补样本或在 DECISIONS 里另作决定。一张表就是 owner 裁决的全量：SQL 是一个事务，先删掉这张表里空着 / 拿不准的格以前收过的裁决，再 upsert 收下的格，所以改过的表再收一次就以新表为准；表里删了行会被拒。闸二的抽取名单：`gate1_sample.py --half holdout --take all`（多加闸二口径：有 essence、正文 ≥ 50 字、没删；半区按 D-129 映射表的 old_id 定，SQL 左连 `truth_vault.backup_d129_ids_20261026`、导出多一列 old_id），分批 ≤ 200 篇、`run_tag=fqr-g2-sonnet55`，题库冻结之后另批钱再跑。
+
+**副题库闸二的读法（runbook，D-128 补记「闸二读之前写死的几条」）**。`gate2_run.py` 读到 `role: secondary` 的题库就走另一条路（`run_gate2_secondary`；主题库那几个函数一个字节不动，`check_gate2_run` §0 金样守着），结果只进报告和 DECISIONS，**永远不写 `feature_validation`**（不收 `--write`）。
+
+1. **名单进仓库**：第一波 `data-analysis/gate2-reader-holdout-2026-10-27.csv`（sha256 `c761364a…`）；第二波按补记 6 查完、补抽完，另存一份 CSV（同样的列），`git add -f`（`*.csv` 在 `.gitignore` 里），sha 记进 D-128。
+2. **读之前只许数行数**（可以跑很多次，不碰 y）：
+
+   ```bash
+   gh workflow run gate2-run.yml -f bank=reader -f sha=9f2cf1c9e7de -f counts_only=true \
+     -f manifests=data-analysis/gate2-reader-holdout-2026-10-27.csv        # 第二波: 逗号再接一份
+   ```
+
+   看：三种掉出去的（不在口径 / 两道题没有可用答案 / 分层题没答案）加起来不超过名单的 3%（第一波 36 篇）；每题「名单里没行」是 0、「名单外的行」是 0；正文截断记 NULL 的单独列、不算缺；名单对得上：只给第一波时，报告里的名单 md5 应是 `18a22fa1…`（和抽取时一致）；两波一起给时，md5 是两波合起来算的、和哪一波抽取时都不同，这时逐份核报告里每个名单 CSV 的 sha256（第一波 `c761364a…`，第二波记在 D-128 补记）。超过 3% 时这一步照样出数，但写明「读的时候会拒」——先查原因。
+3. **读一次**：
+
+   ```bash
+   gh workflow run gate2-run.yml -f bank=reader -f sha=9f2cf1c9e7de -f counts_only=false \
+     -f run_tag=gate2-reader-2026-11-03 -f manifests=data-analysis/gate2-reader-holdout-2026-10-27.csv[,第二波]
+   ```
+
+   本地等价（要 `SUPABASE_*`）：`cd scripts && python gate2_run.py --bank reader --sha 9f2cf1c9e7de --manifest ../data-analysis/gate2-reader-holdout-2026-10-27.csv [--manifest 第二波] --run-tag gate2-reader-2026-11-03 --out ../data-analysis/feature-gate2-gate2-reader-2026-11-03.md`（workflow 同名；作废的是 `…-void.md`，只数行数的是 `…-counts.md`）。正式读必须带 `--out`、写进 `data-analysis/`（不写文件、写到别处都拒，免得读过不留记号；`--reports-dir` 只给 `--fixture` 的离线跑用，连库时指到别处也拒），名单要先 `git add -f`（没进 git 的拒）；`--counts-only` 的 `--out` 只许叫 `…-counts.md`，也不许盖掉带标记的报告。
+   - 退出码 0：报告在 artifact 里，**马上提交进 `data-analysis/`**，结论写进 DECISIONS。报告带一行 HTML 标记（副题库 sha、合并名单 sha、void），之后同一份合并名单（按 note_id 算，拆成几份文件也一样）再读就拒。workflow 读完另把报告以 `gate2-reader-read-<合并名单 sha 前 12 位>` 为名传一份 artifact，Guard 先按这个名字查：有就拒、查不了也拒，所以报告提交之前重跑 job、再点一次也读不了第二次。记号传上去之前读的结果不进 job log、step summary 和别的 artifact（记号传失败或中途取消就把报告删掉，没人看到结果，重跑再读不算第二次）；本地跑和 artifact 过期（90 天）之后，靠仓库里那份报告守。
+   - 退出码 3：占位题报警（补记 2），这次作废：报告名带 `-void`、标记 `void=1`，只有报警和计数，确认族两行连算都没算。也提交进去；查清原因、记进 DECISIONS 后可以重读（不算用掉「只读一次」）；查不出原因就作废，等 2027-04-02 那次换名单再读（D-128 实现口径补记）。报警线是每道占位题原始 p ≤ 0.05/3（三道合起来 5%，10-27 由 0.10 改来）。
+   - 退出码 2：拒跑，原因在日志（题库没冻结 / sha 对不上 / 名单里有发现半的篇 / D-129 映射表读不到 / 快照重复或版本不对 / 缺答案超 3% / 这份名单已经读过 / 报告文件已存在 / 正式读没带 `--out` 或写到 `data-analysis/` 外 / 连库时 `--reports-dir` 不是 `data-analysis/` / 名单没进 git）。
+4. **报告里有什么**：结论一句（两行都 validated = 一个发现；只过一行 = 「单行过，不算发现」，等 2027-04-02）；确认族两行（C1 挑一个+说自己的 对其余提问类型、C2 invites_sharing 是；层 = 项目 × ending_asks_reader × asks_for_help；BH 只在这两行；大项目方向照主题库按项目合并 2×2 +0.5 判，另列每个大项目分层内的 MH 方向只报告；账号先验再分层）；只报告的行（逐个取值、没问读者阳性对照、last_para_has_qmark、每行的「只按项目」和「不分层」OR）；敏感性重跑（剔掉 `data_quality_flags.comment_maintained_routes` 非空 / `paid_promoted = true` / `pinned_comment` 非空的篇，再加一层 body_len_bucket）；占位题（主题库 3 道按 note_id 现算，不在家族里）；掉出去的与覆盖。
+5. **别删** `truth_vault.backup_d129_ids_20261026`：闸二和每季度找新特征（G-18）都按它的 old_id 定半区，读不到就 fail closed。名字像备份，但永久保留：verify #92 把它除外，OPEN-ITEMS S-02 不在删除清单里（表的 COMMENT 改成永久保留的语句也在 S-02）。
 
 ### 6.3 闸三 · 对新笔记也成立
 

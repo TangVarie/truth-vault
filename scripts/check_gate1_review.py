@@ -7,6 +7,7 @@
 反证 (改坏之后必须变红):
   ① 抽样: 留出半的篇混进发现半 / note_id 重复 / 分层题多行 / note_id 不像 <项目>_rec / 项目没 mapping / 层不够数 /
      y 不是 0/1 / md5 坏了 → 拒; 层内不按 sha256(种子:note_id) 排、D-128 点名的 8 篇没剔、闸二口径没加    → §1 红
+  ①b 半区不按 D-129 的 old_id 定 / 新旧两行同在不拒 / 导出不收 old_id 那一列 / SQL 没左连映射表          → §1b 红
   ② 进了仓库的名单: 不是 200 篇 / 不是 150 + 50 / 有留出半的篇 / 有点名剔掉的篇 / 层内顺序不对 / 层和三道答案对不上 → §2 红
   ③ 裁决表: 正文 md5 对不上还做表 / 带正文的文件写进仓库里没被 ignore 的路径 / 甲乙泄露是哪一趟 / 表里出现模型名  → §3 红
   ④ 收表: cell_id 不在格子表 / 题页上放了别的题或抽查格 / 抽查页上放了不一致格 / 同一格两次 / 答案不在闭集 /
@@ -133,6 +134,49 @@ def check_sampler(td: pathlib.Path) -> None:
         assert gs.main(["--from-json", str(j)]) == 2          # 默认 150/50, 合成池子不够 → 拒, 退出 2
     print("  §1 抽样: 层内按 sha256(种子:note_id)、点名的篇剔掉、两题没答全不进池、tiq NULL 算「不是」; 留出半 / 重复 / 多行 / "
           "项目 / mapping / 不够数 / y / md5 → 拒; 留出半加闸二口径; SQL 钉快照; --verify ✓")
+
+
+# §1b 半区按 D-129 的 old_id 定 (D-128 补记 1) ────────────────────────────────────────
+def check_sampler_alias(td: pathlib.Path) -> None:
+    """挪表换了 id 的行: 导出带 old_id, 半区按它定 (两个方向都换得过来); 不带 old_id 的旧导出照旧, 名单逐字节不变。
+    反证 (都试过、都红): build_sample 改回 in_discovery_half(note_id) → 「按旧 id 进留出半」那两条红; load_pool 不收 14 列 →
+    导出那条红; 去掉新旧两行同在的检查 → 「旧行」那条红; pool_sql 去掉左连映射表 → SQL 那条红。"""
+    hp, dp = _pool(8, 4, "holdout"), _pool(8, 4, "discovery")
+    taken = {r["note_id"] for r in hp + dp}
+    new_in_disc = next(n for n in _ids(30, "discovery") if n not in taken)   # 自己的 id 在发现半 ……
+    old_in_hold = _ids(1, "holdout", prefix="BJS_phase1")[0]                 # …… 旧 id 在留出半
+    new_in_hold = next(n for n in _ids(30, "holdout") if n not in taken)
+    old_in_disc = _ids(1, "discovery", prefix="BJS_phase1")[0]
+    moved_h = dict(hp[0], note_id=new_in_disc, old_id=old_in_hold, raw_md5=hashlib.md5(b"m1").hexdigest())
+    moved_d = dict(dp[0], note_id=new_in_hold, old_id=old_in_disc, raw_md5=hashlib.md5(b"m2").hexdigest())
+    rows, st = gs.build_sample(hp + [moved_h], half="holdout", take=None)
+    assert new_in_disc in {r["note_id"] for r in rows} and st["half_by_old_id"] == 1, st
+    assert "按 D-129 old_id 定半区 1 篇" in gs.summary_text(st)
+    rows, st = gs.build_sample(dp + [moved_d], half="discovery", take=None)
+    assert new_in_hold in {r["note_id"] for r in rows}, "旧 id 在发现半的新行该进发现半"
+    _refused(lambda: gs.build_sample(hp + [moved_d], half="holdout", take=None), "不在留出半", "旧 id 在发现半的新行进留出半")
+    _refused(lambda: gs.build_sample(dp + [moved_h], half="discovery", take=None), "不在发现半", "旧 id 在留出半的新行进发现半")
+    twin = dict(hp[1], note_id=old_in_hold, project_id="BJS_phase1")
+    _refused(lambda: gs.build_sample(hp + [moved_h, twin], half="holdout", take=None), "旧行", "新行和它的旧行都在池子里")
+    # 导出: 13 列 (没有 old_id) 和 14 列都收, 12 列拒; 没有 old_id 的 / old_id 是 null 的出来的名单逐字节相同
+    j = td / "alias_pool.json"
+    j.write_text(json.dumps([[r[c] for c in gs.POOL_COLUMNS] + [r.get("old_id")] for r in hp + [moved_h]], ensure_ascii=False),
+                 encoding="utf-8")
+    loaded = gs.load_pool(j)
+    assert loaded[-1]["old_id"] == old_in_hold and loaded[0]["old_id"] is None
+    j.write_text(json.dumps([[r[c] for c in gs.POOL_COLUMNS] for r in hp], ensure_ascii=False), encoding="utf-8")
+    old_style = gs.load_pool(j)
+    assert all(r["old_id"] is None for r in old_style)
+    assert gs.to_csv(gs.build_sample(old_style, half="holdout", take=None)[0]) == \
+        gs.to_csv(gs.build_sample([{k: v for k, v in r.items() if k != "old_id"} for r in hp], half="holdout", take=None)[0])
+    assert "old_id" not in gs.summary_text(gs.build_sample(old_style, half="holdout", take=None)[1]), "没有换 id 的行时输出照旧"
+    j.write_text(json.dumps([[r[c] for c in gs.POOL_COLUMNS][:-1] for r in hp], ensure_ascii=False), encoding="utf-8")
+    _refused(lambda: gs.load_pool(j), "列", "12 列的导出")
+    sql = gs.pool_sql("holdout")
+    assert f"left join {gs.ALIAS_TABLE} m on m.new_id = l.note_id" in sql and "coalesce(m.old_id, l.note_id)" in sql
+    assert "v.note_id is not null, m.old_id)" in sql and gs.ALIAS_TABLE.endswith("backup_d129_ids_20261026")
+    print("  §1b 半区按 D-129 old_id: 新行按旧 id 进留出半 / 发现半, 反方向拒; 新旧两行同在拒; 13 / 14 列导出都收、12 列拒; "
+          "没有换 id 的行名单逐字节不变; SQL 左连映射表、按 coalesce(old_id, note_id) 切半 ✓")
 
 
 # §2 进了仓库的名单 (绊线: 内部自洽; 池子完整性要连库才查得了, 那是 gate1_sample --verify 的事) ─────────────────
@@ -354,12 +398,13 @@ def main(argv: list[str] | None = None) -> int:
     with tempfile.TemporaryDirectory() as td:
         t = pathlib.Path(td)
         check_sampler(t)
+        check_sampler_alias(t)
         check_committed_manifest()
         check_review_plan(t)
         check_ingest(t)
         if a.xlsx:
             check_xlsx_roundtrip(t)
-    print(f"\ncheck_gate1_review: {5 if a.xlsx else 4} 节全过" + ("" if a.xlsx else " (xlsx 往返用 --xlsx, 要 openpyxl)"))
+    print(f"\ncheck_gate1_review: {6 if a.xlsx else 5} 节全过" + ("" if a.xlsx else " (xlsx 往返用 --xlsx, 要 openpyxl)"))
     return 0
 
 
