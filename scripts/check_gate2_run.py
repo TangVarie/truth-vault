@@ -679,7 +679,7 @@ def _row2(res: dict, qid: str, value: str) -> dict:
 
 # 合成夹具 + 那份报告全文的 sha256 (本地 Python 3.11 / 3.13 两次实测一致)。改了副题库那条路的口径这里就红:
 # 先看是不是本意, 是的话另记 DECISIONS 再换金样。
-SEC_GOLDEN_REPORT_SHA256 = "54104acf41ec38161c293d6cda6296ad1df7db2bd9016dd162ecc2b14e0cab5c"
+SEC_GOLDEN_REPORT_SHA256 = "3a53851041ceffb8ce05bcedc6b4a138ff5f5385f6bf23cd145fa461d60fcf81"
 
 
 # ── §8a 金样 + 两行都过 = 一个发现 ───────────────────────────────────────────────────
@@ -952,7 +952,10 @@ def check_secondary_placebo(td: Path) -> None:
                  ("mh_odds_ratio", None)):
         assert not G.placebo_alarm(dict(base, **{k: v})), f"占位题报警: {k}={v} 时不该报"
     assert G.placebo_alarm(dict(base, mh_odds_ratio=0.5, ci_low=0.3, ci_high=0.8, n_or_above_1=1, n_or_below_1=2))
-    assert G.placebo_alarm(dict(base, p_value=0.10)), "原始 p ≤ 0.10 含等号"
+    assert G.placebo_alarm(dict(base, p_value=G.SEC_PLACEBO_P_MAX)), "原始 p ≤ 0.05/3 含等号"
+    # 10-27 改 (补记 2): 三道合起来 5%; 单道 p 在 0.0167 和 0.05 之间、区间也不跨 1 的不再报警
+    assert abs(G.SEC_PLACEBO_P_MAX - 0.05 / 3) < 1e-12
+    assert not G.placebo_alarm(dict(base, p_value=0.02)), "p = 0.02 > 0.05/3 不该报"
     # 报警 → 作废: 两行没算、报告不出它们的数、文件名带 -void、不算读过
     ads, aman = _sec_fixture(y_order=lambda nid: fb.placebo_answer(nid, 1) != "是")
     vres = _sec_run(ads, aman)

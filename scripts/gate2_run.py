@@ -522,7 +522,7 @@ def write_validation(sb, rows: list[dict]) -> int:
 SEC_ANSWERS_RUN_TAG = "fqr-g2-sonnet55"          # D-128 补记: 第一波 / 第二波都抽在这个 run_tag 下
 SEC_LLM_EXTRACTOR = "llm:claude-sonnet-5-5"     # 副题库的模型题只认这一个抽取器; 代码特征是 fb.CODE_EXTRACTOR
 SEC_MISSING_MAX_FRAC = 0.03                     # 补记 5: 三种掉出去的加起来超过名单篇数的 3% 就拒读
-SEC_PLACEBO_P_MAX = 0.10                        # 补记 2: 占位题判「显著」用原始 p ≤ 0.10 (偏严)
+SEC_PLACEBO_P_MAX = 0.05 / 3                    # 补记 2 (10-27 改): 三道占位题合起来 5% (Bonferroni), 每道原始 p ≤ 0.0167
 SEC_DROP_KINDS = ("out_of_scope", "no_answer", "no_condition")
 SEC_DROP_LABELS = {"out_of_scope": "不在闸二口径里了 (删了 / 标签变了 / 没 essence / 正文 < 50 字)",
                    "no_answer": "两道题有一道没有可用答案 (没行, 或 answer 为空但不是正文截断)",
@@ -1025,7 +1025,7 @@ def run_gate2_secondary(dataset: dict, bank: dict, primary: dict, *, sha: str, m
 
 
 def placebo_alarm(r: dict, *, min_support: int = 30, min_big: int = 3) -> bool:
-    """补记 2 的报警规则, 四条同时满足才报: 支持 ≥ 30 且有支持的大项目 ≥ 3; MH 95% 区间不跨 1; 原始 p ≤ 0.10;
+    """补记 2 的报警规则, 四条同时满足才报: 支持 ≥ 30 且有支持的大项目 ≥ 3; MH 95% 区间不跨 1; 原始 p ≤ 0.05/3;
     大项目最多一个反向 (反向 = 和合并 OR 的方向相反, 合并 2×2 +0.5 判)。"""
     or_ = r["mh_odds_ratio"]
     if or_ is None or r["support"] < min_support or r["big_projects_n"] < min_big:
@@ -1161,7 +1161,7 @@ def render_report_secondary(res: dict) -> str:
                      f"{_fp(s['p_value'])} | {s['support']} / {s['base_n']} |")
     lines += ["", "## 反证 (占位题, 不在 BH 家族里)", "",
               f"3 道占位题按主题库定义从 note_id 现算, 同一份名单、同样分层。报警 = 支持 ≥ {p['min_support']} 且有支持的大项目 ≥ "
-              f"{p['min_big']}、区间不跨 1、原始 p ≤ {p['placebo_p_max']}、大项目最多一个反向, 四条同时满足 (补记 2)。", ""]
+              f"{p['min_big']}、区间不跨 1、原始 p ≤ {p['placebo_p_max']:.4f} (三道合起来 5%)、大项目最多一个反向, 四条同时满足 (补记 2)。", ""]
     lines += _placebo_table(res)
     lines += ["", "过: 没有一道占位题报警。", "", "## 掉出去的与覆盖", ""] + _drops_table(res) + [""] + _coverage_table(res)
     lines += ["", "## 读的时候要记着的两点 (D-128 闸一结论, 不改判定)", "",
