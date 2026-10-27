@@ -10,6 +10,7 @@ public.reference_samples（sanshengliubu 保持在 public schema，D-024）。
     python sync_truth_vault_baokuan_to_sanshengliubu.py
     python sync_truth_vault_baokuan_to_sanshengliubu.py --project NUC_phase1
     python sync_truth_vault_baokuan_to_sanshengliubu.py --dry-run
+    python sync_truth_vault_baokuan_to_sanshengliubu.py --allow-bulk-push   # 人看过名单, 放行这一次大批首推
 
 ⚠️ 默认【不推】sync_interval=on_demand 的项目 —— 没翻 daily = 还没拍板, 而这一步是
    跨库单向的(写进三生六部的生产检索池, 推过去追不回来)。要单推走 --include-on-demand;
@@ -25,6 +26,10 @@ public.reference_samples（sanshengliubu 保持在 public schema，D-024）。
           可以把 fallback 路径删掉。
     重跑只会处理新出现的爆款。
 
+⚠️ 大批首推闸 (I-06, D-119 第 14 条, D-130): 一轮要往 reference_samples【新插】超过 30 行 → 整步不推、
+   列名单、退出码 1 (daily-sync 那一步红)。人看过名单后用 `--allow-bulk-push` (daily-sync 的
+   workflow_dispatch 输入 allow_bulk_ssll_push) 放行那一次。详见 plan_bulk_first_push() 的 docstring。
+
 自愈回收 (每次跑都先做, 不受 on_demand 闸管):
     已推进 ssll 但【现在】不满足 push 判据的样本会被撤回 (ssll 行按 id 删, TV 两列标记清空):
     tier 降档出 爆/大爆/参考、tier_source 退回 数值推断/NULL、爆/大爆 指标不可信 (synthetic / 铺评工单)。
@@ -39,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import uuid
 from typing import Any
@@ -742,6 +748,83 @@ def mark_synced(sb, note_id: str, sample_id: str, dry_run: bool = False) -> None
     )
 
 
+# ── 大批首推闸 (I-06, D-119 第 14 条; D-130) ────────────────────────────────────────────────
+# 上限按 D-119 定: 近 45 天每晚 1–5 篇、最多一晚 13 篇(09-15), 30 是它的两倍多; 正常的多爆日压不到。
+BULK_FIRST_PUSH_MAX = 30
+
+
+def plan_bulk_first_push(sb, todo: list[dict[str, Any]], *, allow: bool = False) -> dict[str, Any]:
+    """这一轮会往 reference_samples【新插】几行; 超过 BULK_FIRST_PUSH_MAX 且没放行 → blocked。只读, 不写。
+
+    为什么要这道闸 (D-119 第 14 条, Codex 复审 #200): D-091 的整批翻转闸 (plan_tier_flip) 是逐篇比
+    【库里已有】的 tier, 库里没有的新 note_id 一律跳过。所以已在跑的项目出映射事故 (飞书记录大面积换号:
+    一批新 note_id 带着爆款档进来) 两道闸都看不见 —— on_demand 闸 (D-047) 只挡还没翻 daily 的项目 ——
+    当晚就全推进三生六部, 推过去追不回来 (只有 D-087 隔晚回收, 而换号来的新篇资格是齐的, 回收不撤)。
+
+    数什么 = 本轮循环里真会走到 insert_reference_sample 的篇:
+      · 在 todo 里 = 已过 fetch_pending_baokuan (资格 / 12 个月窗 / 未同步 / 飞书没删) 和 on_demand 闸,
+        且在 --limit 之内 (daily-sync 不传 --limit);
+      · 且 ssll 里还没有它的样本 (existing_ssll_sample_id 为 None)。已有样本的是 insert 成功、mark_synced
+        失败留下的 orphan, 本轮只补 TV 标记、不新插, 不算。
+    所以 D-091 只数到的那一类 (老篇整批升档) 和它数不到的那一类 (新 note_id) 这里都算; 被回收撤过又重新
+    合格的篇样本已删, 推回去也是新插, 同样算。D-091 放行过的整批升档, 当晚到这里会再撞一次 —— 两道闸
+    各管一件事 (一个管 TV 的 tier, 一个管往外推), 两个开关各勾各的。
+
+    待推篇数本身 ≤ 上限时不逐篇查 (新插只会更少): new=None, 正常夜 (1–13 篇) 一次多余的查询都没有。
+    查某篇有没有旧样本时出错 → 按新插算 (宁可多数一篇也不让闸漏)。
+
+    返回 {"new": [note_id…] 或 None, "orphans": [note_id…], "over": 新插 > 上限, "blocked": over 且没放行}。
+    """
+    if len(todo) <= BULK_FIRST_PUSH_MAX:
+        return {"new": None, "orphans": [], "over": False, "blocked": False}
+    new: list[str] = []
+    orphans: list[str] = []
+    for note in todo:
+        nid = note["note_id"]
+        try:
+            sid = existing_ssll_sample_id(sb, nid)
+        except Exception as exc:          # noqa: BLE001 —— 判不了就按新插算
+            logger.warning("大批首推闸: 查 %s 有没有旧样本失败(%s) → 按新插算", nid, exc)
+            sid = None
+        (orphans if sid is not None else new).append(nid)
+    over = len(new) > BULK_FIRST_PUSH_MAX
+    return {"new": new, "orphans": orphans, "over": over, "blocked": over and not allow}
+
+
+def report_bulk_first_push(plan: dict[str, Any], todo: list[dict[str, Any]], *, dry_run: bool, allow: bool) -> None:
+    """把超线的名单打进日志 (只有 note_id) 和 GitHub 的 step summary。不写库。"""
+    new = sorted(plan["new"] or [])
+    by_project: dict[str, int] = {}
+    pid_of = {n["note_id"]: n.get("project_id") or "" for n in todo}
+    for nid in new:
+        by_project[pid_of.get(nid, "")] = by_project.get(pid_of.get(nid, ""), 0) + 1
+    per_proj = json.dumps(by_project, ensure_ascii=False, sort_keys=True)
+    if allow:
+        head = f"大批首推闸: 本轮新插 {len(new)} 篇 > {BULK_FIRST_PUSH_MAX}, 已放行 (--allow-bulk-push)"
+        logger.warning("%s。按项目: %s。名单: %s", head, per_proj, " ".join(new))
+    elif dry_run:
+        head = f"大批首推闸 [dry-run]: 本轮新插 {len(new)} 篇 > {BULK_FIRST_PUSH_MAX}, 真跑会整步不推、退出码 1"
+        logger.warning("%s。按项目: %s。名单: %s", head, per_proj, " ".join(new))
+    else:
+        head = (f"【大批首推被挡】本轮要往三生六部新插 {len(new)} 篇, 超过上限 {BULK_FIRST_PUSH_MAX} "
+                f"(D-119 第 14 条) —— 整步一篇不推")
+        logger.error(
+            "%s。按项目: %s。先看是不是映射事故 (飞书记录换号 / 状态列整批误标); 确认这批该推 → "
+            "Run workflow 勾 allow_bulk_ssll_push 再跑一次 (本地: --allow-bulk-push)。名单: %s",
+            head, per_proj, " ".join(new))
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"### 通道 1 · {head}\n\n按项目: `{per_proj}`; 旧样本只补标记 {len(plan['orphans'])} 篇。\n\n")
+            if not allow and not dry_run:
+                f.write("确认这批该推 → Run workflow 勾 `allow_bulk_ssll_push` 再跑一次。\n\n")
+            f.write("<details><summary>新插名单 (note_id)</summary>\n\n```\n" + "\n".join(new) + "\n```\n\n</details>\n\n")
+    except OSError as exc:
+        logger.warning("写 step summary 失败(%s), 名单见上面的日志行", exc)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--project", help="Only sync this project (e.g. NUC_phase1)")
@@ -752,6 +835,12 @@ def main() -> int:
         "--include-on-demand", action="store_true",
         help="连 sync_interval=on_demand 的项目也推(默认不推 —— 没翻 daily = 还没拍板, "
              "而推进三生六部检索池是【没有回头路】的一步; 见 drop_on_demand_projects)",
+    )
+    parser.add_argument(
+        "--allow-bulk-push", action="store_true",
+        help=f"放行大批首推闸 (I-06 / D-130)。默认一轮要往三生六部新插超过 {BULK_FIRST_PUSH_MAX} 篇就整步不推、"
+             "列名单、退出码 1; 人看过名单确认该推时用本开关 (daily-sync 的 workflow_dispatch 输入 "
+             "allow_bulk_ssll_push)。不放行 on_demand 闸 (那是 --include-on-demand)",
     )
     args = parser.parse_args()
 
@@ -776,9 +865,24 @@ def main() -> int:
         )
 
     stats = {"synced": 0, "recovered": 0, "retracted": retracted, "errors": 0}
-    for i, note in enumerate(pending):
-        if args.limit and i >= args.limit:
-            break
+    # 本轮真会处理的篇 (--limit 是调试用的截断, daily-sync 不传)。
+    todo = pending[: args.limit] if args.limit else pending
+    # ── 大批首推闸 (I-06, D-119 第 14 条; D-130) ──
+    # 放在 on_demand 闸之后 (被那道挡下的不推, 不算数)、往三生六部写之前; 回收在更前面, 不受它管 ——
+    # 闸挡的是"往外推", 不是"把推错的拉回来"。挡住时连 orphan 的补标记也不做: 整步不推, 下一次放行时一起做。
+    # dry-run 不挡 (本来就一行不写), 只把真跑会被挡的名单打出来。
+    bulk = plan_bulk_first_push(sb, todo, allow=args.allow_bulk_push)
+    if bulk["new"] is not None:
+        logger.info("大批首推闸: 待推 %d 篇 = 新插 %d + 旧样本只补标记 %d (上限 %d)",
+                    len(todo), len(bulk["new"]), len(bulk["orphans"]), BULK_FIRST_PUSH_MAX)
+    if bulk["over"]:
+        report_bulk_first_push(bulk, todo, dry_run=args.dry_run, allow=args.allow_bulk_push)
+    if bulk["blocked"] and not args.dry_run:
+        stats["bulk_blocked"] = len(bulk["new"])
+        logger.info("Done: %s", json.dumps(stats, ensure_ascii=False))
+        return 1
+
+    for note in todo:
         try:
             # Belt-and-suspenders: ref_samples may already have a row for
             # this TV note (previous run inserted then crashed before
