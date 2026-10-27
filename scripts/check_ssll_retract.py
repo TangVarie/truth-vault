@@ -366,6 +366,7 @@ print("✓ §7a 正常夜 13 篇照推, 闸不多查一次库")
 sb = FakeSB(fresh(CAP), [])
 rc, log, summ = run_main(sb)
 assert rc == 0 and len(sb.inserted) == CAP, f"30 篇是上限本身, 不该挡: rc={rc} 新插 {len(sb.inserted)}"
+assert sb.lookups == CAP * 2, f"待推恰好 30 篇闸也不该逐篇查 (≤ 上限就不查): {sb.lookups} 次, 应为主循环的 60"
 orph2 = [note(f"P_orph{i:02d}", "爆", None) for i in range(2)]
 sb = FakeSB(fresh(CAP) + orph2, [{"id": f"s-{r['note_id']}", "source_truth_vault_note_id": r["note_id"]} for r in orph2])
 rc, log, summ = run_main(sb)
@@ -383,7 +384,12 @@ ids31 = [r["note_id"] for r in rows31]
 assert "大批首推被挡" in log and all(i in log for i in ids31), "日志里要有被挡的字样和完整名单"
 assert all(i in summ for i in ids31) and "allow_bulk_ssll_push" in summ, "step summary 里要有名单和放行开关的名字"
 assert BODY not in log + summ, "名单只给 note_id, 不带正文"
-print("✓ §7c 31 篇: 一行不写、rc=1、日志和 step summary 都有完整名单")
+# §7c' 31 篇新插 + 2 篇 orphan: 挡住时 orphan 的补标记也不做 (D-130 第 3 条), truth_vault.notes 一行不动
+sb = FakeSB(rows31 + orph2, [{"id": f"s-{r['note_id']}", "source_truth_vault_note_id": r["note_id"]} for r in orph2])
+rc, log, summ = run_main(sb)
+assert rc == 1 and wrote_nothing(sb), \
+    f"挡住的那一轮 orphan 也不许补标记: rc={rc} 新插 {sb.inserted} 标记 {list(sb.updated)} 删 {sb.deleted}"
+print("✓ §7c 31 篇: 一行不写、rc=1、日志和 step summary 都有完整名单; 带 orphan 时 orphan 也不补标记")
 
 # §7d 放行: --allow-bulk-push 让同一批 31 篇全推, rc=0
 sb = FakeSB(rows31, [])
@@ -397,7 +403,9 @@ sb = FakeSB(rows31, [])
 rc, log, summ = run_main(sb, "--dry-run")
 assert rc == 0 and wrote_nothing(sb), f"dry-run 不许写、不许因为这道闸红: rc={rc}"
 assert "[dry-run]" in log and "真跑会" in log and all(i in log for i in ids31), "dry-run 要把真跑会挡的名单打出来"
-print("✓ §7e dry-run 31 篇: 不写、rc=0、名单照打")
+# 「照样逐篇走一遍」: 闸逐篇查 31×2 次 + 主循环逐篇查 31×2 次; 只有前一半 = dry-run 被闸截在循环前面了
+assert sb.lookups == (CAP + 1) * 2 * 2, f"dry-run 要照样逐篇走主循环 (预演 31 篇新插): 按键查样本 {sb.lookups} 次, 应为 124"
+print("✓ §7e dry-run 31 篇: 不写、rc=0、名单照打、主循环照样逐篇走")
 
 # §7f 数的是【新插】: 25 篇新 + 10 篇 orphan (ssll 已有样本、TV 标记空 → 只补标记) = 待推 35, 新插 25 ≤ 30 → 照推
 orph = [note(f"P_orph{i:02d}", "爆", None) for i in range(10)]
@@ -483,5 +491,44 @@ assert rc_ == 1 and "ssll_sync" in out_, f"通道 1 被挡 (failure) 时失败�
 rc_, _, _ = sh(agg_run, {f"steps.{k}.outcome": v for k, v in outcomes.items()})
 assert rc_ == 0, "全绿时失败聚合不该红"
 print("✓ §7j daily-sync: 定时跑 / 不勾不放行、勾了才放行且不带 --include-on-demand; 退出码 1 → 这一步红 → 聚合点名 ssll_sync")
+
+
+# §7k 闸查旧样本出错 → 按新插算 (D-130 第 1 条: 宁可多数一篇也不让闸漏)。
+#     PostgREST 一时 5xx: 闸里那一次查炸了, 到主循环再查就好了 —— 闸要是把出错当 orphan (或干脆跳过),
+#     新插就被少数, 一批换号来的新篇照样整批推出去。
+class FlakySB(FakeSB):
+    """flaky 里的 note_id 第一次按键查样本就抛 (只抛一次), 之后照常。"""
+
+    def __init__(self, notes, samples, flaky):
+        super().__init__(notes, samples)
+        self.flaky = set(flaky)
+
+    def execute(self, q: FakeQ):
+        if q.op == "select" and q.table_ == "reference_samples":
+            hit = [v for _c, op, v in q.filters if op == "eq" and v in self.flaky]
+            if hit:
+                self.flaky.discard(hit[0])
+                raise RuntimeError(f"假 PostgREST 503 ({hit[0]})")
+        return super().execute(q)
+
+
+#   直接调: 31 篇在闸里全查炸 → 31 篇全算新插、挡
+sb = FlakySB(rows31, [], flaky=ids31)
+s.logger.disabled = True            # 31 条「查失败 → 按新插算」不刷屏; 日志行本身下面 main() 那段核
+try:
+    plan = s.plan_bulk_first_push(sb, rows31)
+finally:
+    s.logger.disabled = False
+assert sorted(plan["new"]) == sorted(ids31) and plan["orphans"] == [] and plan["blocked"], \
+    f"查样本出错要按新插算: 新插 {len(plan['new'] or [])} / orphan {len(plan['orphans'])} / blocked={plan['blocked']}"
+#   驱动 main(): 31 篇里 3 篇在闸里查炸 —— 按新插算才 31 > 30 挡住; 当 orphan 算就只剩 28, 闸漏、主循环再查又好了, 31 篇全推
+flaky3 = ids31[:3]
+sb = FlakySB(rows31, [], flaky=flaky3)
+rc, log, summ = run_main(sb)
+err = [ln for ln in log.splitlines() if "【大批首推被挡】" in ln]
+assert rc == 1 and wrote_nothing(sb), f"闸里查炸的篇要算新插、照挡: rc={rc} 新插 {len(sb.inserted)} 标记 {len(sb.updated)}"
+assert len(err) == 1 and all(i in err[0] for i in flaky3), "查炸的那 3 篇要在 ERROR 行的新插名单里"
+assert "按新插算" in log, "查炸要留一行 WARNING"
+print("✓ §7k 闸里查旧样本出错 → 按新插算 (31 篇全炸全算; 3 篇炸把 28 顶过线照挡、名单里有它们)")
 
 print("\ncheck_ssll_retract: all checks passed")

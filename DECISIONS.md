@@ -7438,19 +7438,21 @@ owner 10-27 填回裁决表：83 格（不一致 43 + 复核 40），每一格�
 
 - `scripts/check_ssll_retract.py` §7（CI 原步骤，改了名字）：真的驱动 `main()`，假 PostgREST 记下每一次 insert / update / delete。
   - §7a 13 篇照推，按键查样本的次数和没有这道闸时一样（26 次）。
-  - §7b 30 篇照推；待推 32 = 新插 30 + orphan 2 也照推。
-  - §7c 31 篇：一行不写、rc=1，日志和 step summary 都有完整名单、没有正文。
+  - §7b 30 篇照推，闸不逐篇查（按键查样本 60 次，只有主循环的）；待推 32 = 新插 30 + orphan 2 也照推。
+  - §7c 31 篇：一行不写、rc=1，日志和 step summary 都有完整名单、没有正文；31 篇新插 + 2 篇 orphan 时 orphan 也不补标记（第 3 条）。
   - §7d `--allow-bulk-push` 让同一批 31 篇全推。
-  - §7e dry-run 31 篇：不写、rc=0、名单照打。
+  - §7e dry-run 31 篇：不写、rc=0、名单照打，主循环照样逐篇走（按键查样本 124 次 = 闸 62 + 循环 62）。
   - §7f 待推 35 = 新插 25 + orphan 10：照推，orphan 补上旧样本 id。
   - §7g 铺评工单的爆和 on_demand 项目的不算数；放行开关不放 on_demand。
   - §7h `--project` / `--limit` 之内数。
   - §7i 挡住的那一晚回收照撤。
   - §7j 把 daily-sync 通道 1 那一步和失败聚合垫假 python 真跑（`bash -eo pipefail`）：定时跑 / 手动不勾都不带开关，勾了才带、且不带 `--include-on-demand`；脚本 rc=1 → 这一步失败 → 聚合 rc=1 并点名 `ssll_sync`。
-- 反证 20 条，每条改坏一处（临时副本 + `python -B`），全红：
+  - §7k 闸里查旧样本出错 → 按新插算（第 1 条）：31 篇在闸里全查炸，31 篇全算新插、挡；31 篇里 3 篇查炸（只炸一次，到主循环再查就好了），按新插算才过线，照挡、rc=1、一行不写，ERROR 名单里有这 3 篇。
+- 反证 26 条，每条改坏一处（临时副本 + `python -B`），全红：
   - 脚本：`>` 改 `>=`、恒不挡、orphan 也算新插、放行不生效、dry-run 也挡、正常夜也逐篇查、在 on_demand 闸之前数、不认 `--limit`、挡住 rc=0、日志不列名单、step summary 不列名单、挡住不 return、放行顺带放 on_demand、main 不回收、上限改成 40。
   - workflow：勾了也不传开关、定时跑也放行、聚合漏 `ssll_sync`、去掉 continue-on-error、开关默认开。
-- ci.yml python / yaml 两个 job 本地重放 98/98 过；`check_system_map` 六条过（heredoc 块数没涨，G6 500,233 字节）。
+  - 复审补的 6 条（10-27）：挡住时闸里先给 orphan 补标记（§7c）；查样本出错按 orphan 算、跳过不算、去掉 try/except（§7k）；dry-run 被挡就在主循环前 return 0（§7e）；`len(todo) <= 30` 改 `< 30`（恰好 30 篇也逐篇查，§7b）。
+- ci.yml python / yaml 两个 job 本地重放 98/98 过（复审补测之后 103/103，连带 5 个装 fastapi 的步骤）；`check_system_map` 六条过（heredoc 块数没涨，G6 500,233 字节）。
 - 10-27 只读：现在待推的 82 篇（TUGE 59、BJS_phase1 10、RIO 10、ANSHEN 2、SPX 1）全是铺评工单 / synthetic 的爆，资格判据本来就不推；合并后第一晚不会撞闸。
 
 ### 挡不住什么
