@@ -15,8 +15,10 @@ SQL 编辑器跑, 结果存成文件, 再 --from-json。
   · 池子 = v_l2_labels ∩ 主题库 ba0f570c 的 Sonnet 5.5 答案 (run_tag primary), ending_asks_reader 和
     asks_for_help 两题都要有答案 (闸二按它们分层)。快照的 sha / 抽取器取自副题库 yaml 的
     gate2.condition_snapshot (只有一份来源), title_is_question 拿不到 (没标题记 NULL) 的按「不是」算。
-  · 半边: 发现半 = sha256(note_id) 首位十六进制为偶数 —— 直接调 discover_feature_candidates.in_discovery_half,
-    不抄一份; SQL 里也按同一规则先筛一遍, 两边对不上 (导出混进了另一半) 就拒。
+  · 半边: 发现半 = sha256(半区 id) 首位十六进制为偶数 —— 直接调 discover_feature_candidates.in_discovery_half,
+    不抄一份; SQL 里也按同一规则先筛一遍, 两边对不上 (导出混进了另一半) 就拒。半区 id = D-129 映射表
+    (truth_vault.backup_d129_ids_20261026) 的 old_id, 不在表里的用 note_id 本身 (D-128 补记 1): SQL 左连映射表、
+    导出多带一列 old_id; 没带这一列的旧导出照旧按 note_id。10-27 第一波名单里没有一篇在映射表里, 所以照样逐字节复现。
   · 剔掉 D-128 点名的 8 篇 (三组对照帖 6 篇 + D-127 材料里给 owner 看过的 2 篇)。
   · 层: A = 三题任一为「是」; B = 三题都不是「是」。层内按 sha256(种子 + ':' + note_id) 升序取;
     种子 fqr-g1-2026-10-26, 发现半 A 150 + B 50; 某层不够数就拒, 不悄悄少抽。
@@ -58,6 +60,9 @@ OUT_COLUMNS = ("note_id", "project_id", "y", "ear", "afh", "tiq", "stratum", "ra
 # SQL 导出的列 (数组形式, 省体积); --from-json 也认同名键的对象
 POOL_COLUMNS = ("note_id", "project_id", "y", "ear", "afh", "tiq", "n_ear", "n_afh", "n_tiq", "raw_md5",
                 "has_essence", "body_len", "vanished")
+# D-129 挪表换了 id 的行: 导出末尾多一列 old_id (没换 id 的是 null), 半区按它定。可选: 加这一列之前的导出 (13 列) 照收。
+POOL_ALIAS_COLUMN = "old_id"
+ALIAS_TABLE = "truth_vault.backup_d129_ids_20261026"            # = _common.D129_ID_MAP_TABLE (这里不 import _common: 不连库)
 _NOTE_ID = re.compile(r"^(?P<proj>[A-Za-z0-9_-]+?)_rec[A-Za-z0-9]+$")
 _HALVES = ("discovery", "holdout")
 _EVEN = ("0", "2", "4", "6", "8", "a", "c", "e")
@@ -90,7 +95,7 @@ def pool_sql(half: str = "discovery") -> str:
                               for q, k in zip(CONDITION_QIDS, ("ear", "afh", "tiq")))
     ans = ",\n         ".join(f"max(answer) filter (where question_id = '{q}') as {k}"
                               for q, k in zip(CONDITION_QIDS, ("ear", "afh", "tiq")))
-    return f"""-- gate1_sample.py --print-sql --half {half} · 只读 · 列: {', '.join(POOL_COLUMNS)}
+    return f"""-- gate1_sample.py --print-sql --half {half} · 只读 · 列: {', '.join(POOL_COLUMNS + (POOL_ALIAS_COLUMN,))}
 with a as (
   select subject_id,
          {cnt},
@@ -102,29 +107,33 @@ with a as (
   group by 1)
 select json_agg(json_build_array(l.note_id, l.project_id, l.y, a.ear, a.afh, a.tiq, a.n_ear, a.n_afh, a.n_tiq,
                                  md5(coalesce(n.raw_content, '')), n.emotional_lever is not null, f.body_len,
-                                 v.note_id is not null) order by l.note_id)::text as pivot
+                                 v.note_id is not null, m.old_id) order by l.note_id)::text as pivot
 from truth_vault.v_l2_labels l
 join a on a.subject_id = l.note_id
 join truth_vault.notes n on n.note_id = l.note_id
 left join truth_vault.note_features f on f.note_id = l.note_id
 left join truth_vault.v_notes_vanished v on v.note_id = l.note_id
-where substr(encode(sha256(convert_to(l.note_id, 'UTF8')), 'hex'), 1, 1) in ({digits});"""
+left join {ALIAS_TABLE} m on m.new_id = l.note_id
+where substr(encode(sha256(convert_to(coalesce(m.old_id, l.note_id), 'UTF8')), 'hex'), 1, 1) in ({digits});"""
 
 
 def load_pool(path: Path) -> list[dict]:
-    """MCP / SQL 编辑器的导出 → [{POOL_COLUMNS…}]。行可以是数组 (pool_sql 的形状) 或同名键的对象。"""
+    """MCP / SQL 编辑器的导出 → [{POOL_COLUMNS…, old_id}]。行可以是数组 (pool_sql 的形状) 或同名键的对象。
+    old_id 可选 (D-129 之前的 13 列导出没有它 → None, 半区按 note_id)。"""
     data = load_pivot(path)
+    cols = POOL_COLUMNS + (POOL_ALIAS_COLUMN,)
     out = []
     for r in data:
         if isinstance(r, list):
-            if len(r) != len(POOL_COLUMNS):
-                raise SampleRefused(f"导出的行有 {len(r)} 列, 应是 {len(POOL_COLUMNS)} 列 ({POOL_COLUMNS})")
-            out.append(dict(zip(POOL_COLUMNS, r)))
+            if len(r) not in (len(POOL_COLUMNS), len(cols)):
+                raise SampleRefused(f"导出的行有 {len(r)} 列, 应是 {len(cols)} 列 ({cols}; 不带 old_id 的旧导出 "
+                                    f"{len(POOL_COLUMNS)} 列)")
+            out.append({POOL_ALIAS_COLUMN: None, **dict(zip(cols, r))})
         elif isinstance(r, dict):
             missing = [c for c in POOL_COLUMNS if c not in r]
             if missing:
                 raise SampleRefused(f"导出的行缺列 {missing}")
-            out.append({c: r[c] for c in POOL_COLUMNS})
+            out.append({c: r.get(c) for c in cols})
         else:
             raise SampleRefused("导出的行既不是数组也不是对象")
     return out
@@ -161,10 +170,16 @@ def build_sample(pool: list[dict], *, half: str = "discovery", take: dict | None
     dup = sorted(k for k, c in Counter(ids).items() if c > 1)
     if dup:
         raise SampleRefused(f"导出里 note_id 重复 {len(dup)} 个, 如 {dup[:3]} —— SQL 的 join 放大了行")
-    wrong_half = [n for n in ids if in_discovery_half(n) != (half == "discovery")]
+    # 半区按 half_id 定: D-129 换了 id 的行用 old_id (导出带的那一列), 其余用 note_id 本身 (D-128 补记 1)
+    wrong_half = [r["note_id"] for r in pool
+                  if in_discovery_half(r.get(POOL_ALIAS_COLUMN) or r["note_id"]) != (half == "discovery")]
     if wrong_half:
         raise SampleRefused(f"{len(wrong_half)} 篇不在{'发现' if half == 'discovery' else '留出'}半 (如 {wrong_half[:3]}) —— "
-                            "导出混进了另一半, 闸二会被污染 (D-120)")
+                            "导出混进了另一半, 闸二会被污染 (D-120; D-129 换了 id 的按 old_id)")
+    twins = sorted(r["note_id"] for r in pool if r.get(POOL_ALIAS_COLUMN) in set(ids))
+    if twins:
+        raise SampleRefused(f"{len(twins)} 篇的旧行 (old_id) 也在池子里 (如 {twins[:3]}) —— 同一篇内容算了两次; "
+                            "D-129 的旧行该删没删")
     multi = [r["note_id"] for r in pool if any(int(r.get(k) or 0) > 1 for k in ("n_ear", "n_afh", "n_tiq"))]
     if multi:
         raise SampleRefused(f"{len(multi)} 篇的分层题在快照里有多行 (如 {multi[:3]}) —— 快照没钉住")
@@ -185,7 +200,8 @@ def build_sample(pool: list[dict], *, half: str = "discovery", take: dict | None
         if not re.fullmatch(r"[0-9a-f]{32}", str(r.get("raw_md5") or "")):
             raise SampleRefused(f"{r['note_id']}: raw_md5 不是 32 位十六进制")
 
-    st = {"half": half, "seed": seed, "rows_with_any_answer": len(pool)}
+    st = {"half": half, "seed": seed, "rows_with_any_answer": len(pool),
+          "half_by_old_id": sum(1 for r in pool if r.get(POOL_ALIAS_COLUMN))}
     both = [r for r in pool if all(r.get(k) is not None for k in ("ear", "afh"))]
     st["pool_both_answered"] = len(both)
     excluded = sorted(r["note_id"] for r in both if r["note_id"] in EXCLUDE)
@@ -260,7 +276,8 @@ def read_manifest(path: Path) -> list[dict]:
 
 
 def summary_text(st: dict) -> str:
-    lines = [f"half={st['half']} seed={st['seed']}",
+    lines = [f"half={st['half']} seed={st['seed']}"
+             + (f" · 按 D-129 old_id 定半区 {st['half_by_old_id']} 篇" if st.get("half_by_old_id") else ""),
              f"导出行 (三题任一有行) {st['rows_with_any_answer']} · 两道分层题都有答案 {st['pool_both_answered']}"
              f" · 剔掉 D-128 点名的 {len(st['excluded_present'])} 篇"
              + (f" · 闸二口径再剔 {st['gate2_filter_drops']}" if "gate2_filter_drops" in st else "")

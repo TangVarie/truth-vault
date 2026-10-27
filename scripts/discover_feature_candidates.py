@@ -69,6 +69,18 @@ def in_discovery_half(note_id: str) -> bool:
     return int(hashlib.sha256(str(note_id).encode("utf-8")).hexdigest()[0], 16) % 2 == 0
 
 
+def half_id(note_id: str, alias: Optional[dict[str, str]] = None) -> str:
+    """定半区用哪个 id (D-129 / D-128 补记): 挪表换了 id 的行按【旧 id】定半区, 不然 70 对里 41 篇会悄悄换半区
+    (发现半看过的篇跑到留出半去确认)。alias = {new_id: old_id} (_common.fetch_half_alias 读 D-129 那张映射表);
+    不在里面的用 note_id 本身。只查一层: 映射表里没有链式改名。"""
+    return (alias or {}).get(note_id, note_id)
+
+
+def in_discovery_half_aliased(note_id: str, alias: Optional[dict[str, str]]) -> bool:
+    """in_discovery_half 的 old_id 版: sha256(half_id) 首位偶数 → 发现半。alias 为空时与 in_discovery_half 逐篇相同。"""
+    return in_discovery_half(half_id(note_id, alias))
+
+
 def existing_questions(bank: dict) -> list[tuple[str, str]]:
     out = [(q["id"], q.get("ask") or "") for q in bank.get("questions") or [] if q.get("id")]
     out += [(c["id"], c.get("ask") or c.get("what") or "") for c in bank.get("code_features") or []
@@ -187,9 +199,9 @@ def merge(per_project: list[list[dict]], existing_ids: Optional[set[str]] = None
 
 
 def sample(labels: list[dict], *, since: datetime, per_group: int,
-           until: Optional[datetime] = None) -> dict[str, dict[int, list[str]]]:
+           until: Optional[datetime] = None, alias: Optional[dict[str, str]] = None) -> dict[str, dict[int, list[str]]]:
     """项目 → {1: [爆的 note_id], 0: [趴的 note_id]}, 只取发现半、since 之后发布的, 每组按 note_id 稳定取前 per_group 篇
-    (按哈希排, 不按时间: 避免全挤在季末)。"""
+    (按哈希排, 不按时间: 避免全挤在季末)。半区按 half_id 定 (alias = D-129 的 {new_id: old_id})。"""
     groups: dict[str, dict[int, list[str]]] = defaultdict(lambda: {0: [], 1: []})
     for r in labels:
         ts = r.get("publish_time")
@@ -199,7 +211,7 @@ def sample(labels: list[dict], *, since: datetime, per_group: int,
             t = None
         if t is not None and t.tzinfo is None:
             t = t.replace(tzinfo=timezone.utc)
-        if t is None or t < since or (until is not None and t >= until) or not in_discovery_half(r["note_id"]):
+        if t is None or t < since or (until is not None and t >= until) or not in_discovery_half_aliased(r["note_id"], alias):
             continue
         groups[r["project_id"]][int(r["y"])].append(r["note_id"])
     rank = lambda nid: hashlib.sha256(f"order:{nid}".encode()).hexdigest()  # noqa: E731
@@ -217,16 +229,17 @@ def previous_quarter(now: datetime) -> tuple[datetime, datetime]:
 
 def run(*, labels: list[dict], fetch_notes: Callable[[list[str]], dict[str, dict]], categories: dict[str, str],
         bank: dict, call: Optional[Callable[[str, str], str]], since: datetime, per_group: int = PER_GROUP,
-        projects: Optional[set[str]] = None, until: Optional[datetime] = None) -> dict:
-    """``call(system, user) -> text``; None = dry-run (只数样本)。"""
+        projects: Optional[set[str]] = None, until: Optional[datetime] = None,
+        alias: Optional[dict[str, str]] = None) -> dict:
+    """``call(system, user) -> text``; None = dry-run (只数样本)。alias = D-129 的 {new_id: old_id}, 半区按旧 id 定。"""
     existing = existing_questions(bank)
     existing_ids = {i for i, _ in existing}
     existing_asks = {_norm_ask(a): i for i, a in existing if a}
     system = SYSTEM.format(k=PER_PROJECT_CANDIDATES, existing="\n".join(f"{i}: {a}" for i, a in existing))
-    groups = sample(labels, since=since, per_group=per_group, until=until)
+    groups = sample(labels, since=since, per_group=per_group, until=until, alias=alias)
     report = {"since": since.date().isoformat(), "until": until.date().isoformat() if until else None,
               "projects": [], "skipped": [], "dropped": [], "candidates": [], "answered": 0,
-              "holdout_rule": "sha256(note_id) 首位十六进制为奇数的笔记没给模型看 —— 候选题的闸二只用这一半或下一季的新笔记",
+              "holdout_rule": "sha256(note_id) 首位十六进制为奇数的笔记没给模型看 (D-129 换了 id 的按旧 id) —— 候选题的闸二只用这一半或下一季的新笔记",
               "bank_version": bank.get("bank_version"), "bank_sha256": bank.get("frozen_sha256")}
     per_project = []
     for p in sorted(groups):
@@ -396,6 +409,17 @@ def _selftest() -> None:
     assert q["until"] == "2026-10-01"
     # 模型全挂: answered 记 0, main 据它报红
     assert bad["answered"] == 0 and rep["answered"] == 1
+    # D-129 换了 id 的行按旧 id 定半区, 两个方向都换得过来 (去掉 sample 里的 alias → 这两条红)
+    new_in = next(f"Q_recNew{i:03d}" for i in range(999) if not in_discovery_half(f"Q_recNew{i:03d}"))
+    new_out = next(f"Q_recNew{i:03d}" for i in range(999) if in_discovery_half(f"Q_recNew{i:03d}"))
+    old_disc = next(f"Q_recOld{i:03d}" for i in range(999) if in_discovery_half(f"Q_recOld{i:03d}"))
+    old_hold = next(f"Q_recOld{i:03d}" for i in range(999) if not in_discovery_half(f"Q_recOld{i:03d}"))
+    alias = {new_in: old_disc, new_out: old_hold}
+    assert half_id(new_in, alias) == old_disc and half_id("Q_recOther", alias) == "Q_recOther"
+    moved = [{"note_id": n, "project_id": "Q", "publish_time": "2026-09-01T00:00:00", "y": 1} for n in (new_in, new_out)]
+    got = sample(moved, since=now - timedelta(days=DEFAULT_DAYS), per_group=10, alias=alias)["Q"][1]
+    assert got == [new_in], f"按旧 id 定半区: 自己落留出半、旧 id 在发现半的要进; 反过来的不进 ({got})"
+    assert sample(moved, since=now - timedelta(days=DEFAULT_DAYS), per_group=10)["Q"][1] == [new_out], "不给 alias 照旧按 note_id"
     print("discover_feature_candidates selftest: OK")
 
 
@@ -412,7 +436,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.selftest:
         _selftest()
         return 0
-    from _common import fetch_all_pages, fetch_vanished_note_ids, get_supabase_client
+    from _common import fetch_all_pages, fetch_half_alias, fetch_vanished_note_ids, get_supabase_client
     sb = get_supabase_client()
     bank = fb.load_bank()
     labels = fetch_all_pages(sb.schema("truth_vault").table("v_l2_labels")
@@ -420,6 +444,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     # 飞书里已经删掉的篇不当样本(同闸二取数, gate2_run.fetch_dataset; codex review on TV#202)
     vanished = fetch_vanished_note_ids(sb)
     labels = [r for r in labels if r["note_id"] not in vanished]
+    # D-129 换了 id 的行按旧 id 定半区 (D-128 补记 / G-19); 映射表读不到就抛 —— 半区错了比这一季不跑更糟
+    alias = fetch_half_alias(sb)
     cats = {r["project_id"]: r.get("category") for r in fetch_all_pages(
         sb.schema("truth_vault").table("projects").select("project_id, category"), order_by="project_id")}
 
@@ -458,7 +484,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         if gated:
             print(f"定时跑, 跳过 on_demand 项目: {'、'.join(sorted(gated))}")
     report = run(labels=labels, fetch_notes=fetch_notes, categories=cats, bank=bank, call=call, since=since,
-                 per_group=args.per_group, projects=projects, until=until)
+                 per_group=args.per_group, projects=projects, until=until, alias=alias)
     md = render(report, dry_run=args.dry_run)
     print(md)
     if args.out:
