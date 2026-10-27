@@ -14,7 +14,8 @@
 #   gate2                 闸二的比法: 哪一半、条件快照、合并取值、两行确认族、占位题从主题库算
 # 本库的行永远不写 feature_validation (D-128)。整份文件 (含注释) 进 digest, 改一个字就是新 sha。
 bank_version: fq-v0.2-cand-reader
-status: draft
+status: frozen
+frozen_sha256: 9f2cf1c9e7de8a96115559ae1242207e66b20257b41443b2433c5fbf37d79254
 role: secondary
 primary_bank:
   bank_version: fq-v0.1
@@ -45,7 +46,7 @@ questions:
 
   - id: reader_ask_form
     version: 1
-    gate1_status: pending
+    gate1_status: pass
     family: 评论诱导
     group: G7_reader_ask
     layer: surface
@@ -90,7 +91,7 @@ questions:
 
   - id: invites_sharing
     version: 2
-    gate1_status: pending
+    gate1_status: pass
     family: 评论诱导
     group: G8_sharing
     layer: surface

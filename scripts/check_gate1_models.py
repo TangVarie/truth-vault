@@ -22,6 +22,7 @@ import copy
 import io
 import json
 import pathlib
+import re
 import tempfile
 
 import feature_bank as fb
@@ -395,6 +396,11 @@ def check_merge_consistency(td) -> None:
     raw = pathlib.Path(fb.BANKS["reader"]).read_text(encoding="utf-8")
     bad = raw.replace("      values: [挑一个, 说自己的]", "      values: [挑一个, 求推荐]", 1)
     assert bad != raw
+    # 题库 10-27 已冻结: 改了一个字 frozen_sha256 就对不上, 会先被 validate_bank 拒。照新 digest 重新冻结,
+    # 这样拒的只能是「3 档对不上」这一条 (重新冻结也躲不过)
+    old_sha = re.search(r"(?m)^frozen_sha256: ([0-9a-f]{64})$", bad)
+    assert old_sha, "副题库应已冻结 (frozen_sha256)"
+    bad = bad.replace(old_sha.group(1), fb.bank_digest(bad.encode("utf-8")), 1)
     p = td / "bank_bad_merge.yaml"
     p.write_text(bad, encoding="utf-8")
     _refused(lambda: gm.load_secondary(str(p)), "3 档对不上", "yaml 的合并和 D-128 不一致")
