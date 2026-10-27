@@ -7,7 +7,7 @@
   §3 curate_flywheel_lessons.fetch_uncurated_cards: 名单里的卡不进策展 (默认路 / --recurate 都是), 项目筛传下去
   §4 sync_truth_vault_baokuan_to_sanshengliubu.fetch_pending_baokuan: 资格全够也不推名单里的篇, 项目筛传下去
   §5 gate2_run.fetch_dataset: 名单里的篇不进闸二 notes, vanished_dropped 数出来
-  §6 verify_supabase_state.sql #93 读这张视图 (灯)
+  §6 verify_supabase_state.sql #93 读这张视图 (灯); #95 / #96 / #97 数删篇时最容易漏的三类孤儿 (D-129)
 """
 from __future__ import annotations
 
@@ -138,6 +138,14 @@ def main() -> int:
     verify = (HERE / "verify_supabase_state.sql").read_text(encoding="utf-8")
     if "SELECT '93'," not in verify or "truth_vault.v_notes_vanished" not in verify:
         fails.append("§6 verify_supabase_state.sql 要有 #93 读 v_notes_vanished")
+    # 删已消失的篇时最容易漏的三类没外键的子行 (D-129 / L-10): 三省六部样本、闸三分、aw 改稿差异
+    for ord_, needle in (("95", "public.reference_samples"), ("96", "truth_vault.content_scores"),
+                         ("97", "autowriter.tv_edit_diffs")):
+        i = verify.find(f"SELECT '{ord_}',")
+        j = verify.find("UNION ALL", i) if i >= 0 else -1
+        block = verify[i:j if j >= 0 else len(verify)] if i >= 0 else ""
+        if needle not in block or "IS NULL" not in block:
+            fails.append(f"§6 verify_supabase_state.sql 要有 #{ord_} 数 {needle} 里指向不存在笔记的行 (D-129)")
 
     for f in fails:
         print("  ❌", f)

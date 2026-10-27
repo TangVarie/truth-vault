@@ -165,7 +165,6 @@
 | L-03 | 每周看灯：`LIBRARIAN_TRAFFIC`、`ANGLE_LEDGER`、`EXTERNAL_CORPUS`、`EXTERNAL_DIRECTION`（周一才跑，10-26 起闸二比法，D-127）、`DESK_USE_RATE`（10-20 加，周一才跑）、`GATE3_SCORE`、Jev `external-corpus.yml` | 例行。10-26（run 40287828329）：`LIBRARIAN_TRAFFIC` rc=0（07:59 跑，在 08:04 那次借卡之前，是「没活」）、`ANGLE_LEDGER` rc=1（判据 A 6 轮都在 W-29 修复前；判据 C 途鸽 / 西屋911gt）、`EXTERNAL_CORPUS` rc=0、`EXTERNAL_DIRECTION` rc=0、`DESK_USE_RATE` rc=1（HATHERINE_phase1 / XIWU_phase2 亮黄）、`GATE3_SCORE` rc=0；Jev external-corpus 定时周跑 40294747654（08:47～08:55 UTC）success，另有 03:05 UTC 手动首跑 40262355921（S-12 验 key）success；夜跑用时 13 / 240 分钟 | 你动手（周一定时检查会代看一遍） | 每周 | docs/29:32-45 |
 | L-07 | 写作台第二批 A–C 上线四周后判接住率走向 | **10-23 已上线**：A–C（#121）06:22 UTC 前后随 deskcore `7ec8c48` 上线，E（#117）07:55 UTC 前后上线（`e3bc3fb`）。真实业务样本从 10-23 起算；途鸽在 W-29 修好前的批次不计入。上线日 + 28 天，拿 D 灯连续四周的接住率、未改动率（docs/32 §4 那张表）判：不动 = 问题不在版式和规则，回头看内容本身（选题、角度、示例），另开条目；在动 = 继续按周看。单周起落不下结论 | 工程（Claude 周检）→ 你拍板下一步 | **11-20**（10-23 + 28 天） | docs/32 §4 |
 | L-09 | D-126 的另一半：重抽后清馆员缓存（`prune_librarian_cache --delivery-only`）改成只把 `selected` 清成 NULL、不删行，生产上还没跑过（从已关 L-08 挪出来） | 只在 backfill-features 带 note_ids + reannotate（run_tag 为空或 primary）时收尾跑；D-126 合并后还没有这样的一次（最近一次 backfill-features 是 10-23 20:46，在 D-126 之前）。要核：跑完后带 `:dl` 的缓存行还在、`selected IS NULL`，下一次借卡按 cache_key 覆盖成新的；通道 2 灯照常数到这几次借阅 | 工程 | 下一次 backfill-features 带 note_ids + reannotate 重抽之后 | D-126；L-08 |
-| L-10 | verify 补三项孤儿检查：三省六部样本对不上 TV 笔记、`content_scores` 对不上、`tv_edit_diffs` 对不上 | D-129 调查时发现：删 TV 行时这三类都不会红（#83 / #85 / #94 不盖它们）；10-27 全库都是 0 | 工程 | 下次改 verify | D-129 |
 
 ## 7. 运维、密钥、备份
 
@@ -213,6 +212,7 @@
 
 | 日期 | 条目 | 证据 |
 |---|---|---|
+| 2026-10-27 | **L-10：verify 补三项孤儿检查** | `scripts/verify_supabase_state.sql` 加 #95（三省六部样本对不上 TV 笔记）、#96（闸三分对不上）、#97（aw 改稿差异对不上），提示里写了 D-129 的修法；CI `check_vanished_notes.py` §6 钉住三项（拿掉任一项就红）。本地复制库整份跑过，10-27 生产三项都是 0 |
 | 2026-10-27 | **W-35：成人藻油查重看不到挂在「百健士-藻油」的 42 篇** | 10-27 看真实文案更正：42 篇里 41 篇是 10-07～10-19 发的儿童 / 青少年款（owner 10-27：运营按时间分，前段青少年、后段成人），挂在「百健士-藻油」是对的；只剩 1 篇 10-21 的成人帖补录副本在那边，不值得为它改查重（D-129 已更正） |
 | 2026-10-27 | **I-22 撤旧行：BJS_phase1 挪表的 79 行下线（D-129）** | 70 对一一配上、9 行废稿（owner 10-26 确认）；10-27 02:47 UTC owner 跑备份 + 下线：下线 75 行，闸一样本 4 行保留；新行接住 127 个早期快照、25 条链接指回原补录副本，三省六部撤回 1 条；只读复核全对，全库孤儿 0。备份 12 张表，保留到读者题闸二和闸三裁决之后 |
 | 2026-10-26 | **W-24：写手升级 skill（D-120 协议）** | 没走原定的 `/skill-versions` 计数（要 key、只在进程内存、每次部署清零，10-19 之后 aw 部署了 14 次，没有基线）。owner 10-26 直接核了写手机器：DeskCore 服务端协议 `be4d668f5ab6`（17,628 字符）；本机 `~/.workbuddy/skills/bywood-writing-desk/SKILL.md` 也是 `be4d668f5ab6`（45,382 字节，北京时间 10-26 17:42），`up_to_date: true`，和源仓库里那份文件 MD5 一致（`6bc44ca3…`）。aw#126（`f033758`）之后协议没变。9-22 之后没再用写作台的另一位写手（O-03）不在这次核里，回来时服务端探针照常在工具返回里带升级提醒（aw#106）。J-15 的可选预编不用再等这一步 |
