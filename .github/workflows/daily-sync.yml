@@ -47,6 +47,10 @@ on:
         description: "放行整批 tier 翻转闸 (D-091)。默认一个项目一晚超过 max(15, 10% 存量) 篇在 爆/大爆/参考 与非正例之间翻转, 这些篇只写内容不写 tier 并红 (08-18 OKMAN 285 篇误标那种)。去飞书确认是真的批量改标之后, 勾上它再跑一次。"
         type: boolean
         default: false
+      allow_bulk_ssll_push:
+        description: "放行通道 1 的大批首推闸 (I-06 / D-130)。默认一晚要往三生六部新插超过 30 篇, 通道 1 这一步一篇不推、列名单 (日志 + 步骤摘要) 并红 (映射事故: 飞书记录换号、整批误标)。看过名单确认该推之后, 勾上它再跑一次。不放行 on_demand 项目。"
+        type: boolean
+        default: false
   schedule:
     # 02:17 UTC = 10:17 北京时间. 飞书表通常这之前已经填好昨日数据.
     # 非整点分钟是故意的 (GitHub 文档: 整点是 schedule 高负载时段, 会排队几小时)。
@@ -360,7 +364,12 @@ jobs:
           # (写进三生六部生产检索池, 推过去追不回来), 手动触发并不会让 mapping 里的
           # [待确认] 变成已拍板, 所以【任何一次跑】都挡, 直到该项目翻 daily。
           # 要单推某个还没翻 daily 的项目: 加 --include-on-demand(指名道姓的那条路)。
-          python sync_truth_vault_baokuan_to_sanshengliubu.py $DRYRUN $PROJ
+          # ── 大批首推闸 (I-06, D-119 第 14 条; D-130) ── 也在脚本里: 一轮新插 > 30 篇 → 一篇不推、列名单、
+          # 退出码 1, 这一步 outcome=failure, 收尾的失败聚合点名 ssll_sync、整轮红。放行开关只在手动触发时
+          # 可能为 true; 定时跑永远不放行。它不放行 on_demand 项目 (那是 --include-on-demand, 这里不传)。
+          ALLOWBULK=""
+          [ "${{ github.event.inputs.allow_bulk_ssll_push }}" = "true" ] && ALLOWBULK="--allow-bulk-push"
+          python sync_truth_vault_baokuan_to_sanshengliubu.py $DRYRUN $PROJ $ALLOWBULK
 
       # 通道2 push 已退役 (D-038 / docs/15): TV 不再写 autowriter.items;
       # aw 改为 write-time 主动 pull 馆员书架 (见上 curate_sync 步骤策展经验卡)。
