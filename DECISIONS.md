@@ -7370,18 +7370,18 @@ owner 10-27 填回裁决表：83 格（不一致 43 + 复核 40），每一格�
 
 补记 6 说第二波要等 BJS_phase2 补齐 essence 和 Sonnet 分层答案以后，照规则查一次。靠夜跑补齐要到 10-30 前后（features 每晚补 24 篇）。10-28 owner 问能不能提速，规则没规定补齐必须走哪条路，所以手动跑了两次回填补齐，再照规则查了一次。写这条时，这 18 篇在 `fqr-g2-sonnet55` 下还没有任何答案；第一波的答案也只数过行数和覆盖，没和 y 放在一起算过。
 
-- **补齐**：10-28 05:56 UTC 派发，06:04 两次都成功。
+- **补齐**：10-28 05:56 UTC 派发；`backfill-features` 06:03、`backfill-essence` 06:04 先后成功。
   - `backfill-essence`（run 40640857247）：BJS_phase2 还没标 essence 的 23 篇全部标完，其中 7 篇在那 24 篇里。
   - `backfill-features`（run 40640859244）：用 note_ids 模式给其中 15 篇抽主题库答案。参数和夜跑相同：`bank=primary`、`run_tag=primary`、`bank_sha=ba0f570c`，模型是 worker 默认的 Sonnet 5.5。另外 9 篇夜跑已经抽过。
-  - 两步都碰不到 y：两个提示词里只有切好的正文，抽哪几篇只按 id 定。
+  - 两步都碰不到 y：features 的提示词里只有切好的标题 / 正文片段；essence 的提示词是项目上下文（品牌、产品、品类、蓝词、方向）加标题、正文前 1500 字和话题标签。两者都没有 tier、互动数或 y（D-028 的断言每次渲染都查，这两次 `hygiene_failed` 都是 0）。抽哪几篇也不看 tier：features 按 15 个 id，essence 按「BJS_phase2 里还没标 essence 的」。
 - **还是 10-27 那 24 篇**：`v_l2_labels` 里的「趴」全部都进。这 24 篇都是「趴」，`audit_log` 显示它们自 10-26 11:08 UTC 插入以来 tier 一次没改过。10-27 07:51 那 5 次 tier 改动是另外 5 篇从空变成「未知」，进不了 `v_l2_labels`。所以和 10-27 写死的是同一批。
-- **查一次**（10-28 约 06:10 UTC，生产只读）：用 `gate1_sample.py --print-sql --half holdout` 的 SQL，where 里加一条 `m.old_id is not null`，只取挪表的行；导出后走 `--from-json --half holdout --take all`，和第一波同一份代码。四条规则逐条看：
+- **查一次**（10-28 06:04–06:08 UTC 之间：两次回填都跑完之后、名单提交和补抽派发之前；生产只读）：用 `gate1_sample.py --print-sql --half holdout` 的 SQL，where 里加一条 `m.old_id is not null`，只取挪表的行；导出后走 `--from-json --half holdout --take all`，和第一波同一份代码。四条规则逐条看：
   1. 留出半（按 old_id 定）：24 篇都在。
   2. 闸二口径：24 篇都在 `v_l2_labels`、都有 essence、正文都 ≥ 50 字（63–393）、都没删。
-  3. 两道分层题都有可用答案：18 篇。另外 6 篇的 `ending_asks_reader` 答案为空（`invalid_reason=evidence_not_found`：模型引的原文在正文里找不到），其中 1 篇的 `asks_for_help` 也为空。第一波用同一份代码按这一条剔过，这 6 篇不重抽来凑数。
+  3. 两道分层题都有可用答案：18 篇。另外 6 篇的 `ending_asks_reader` 答案为空（`invalid_reason=evidence_not_found`：模型给的证据不是这道题所看那一段（结尾一段 `last_para`）的原文。BJS_phase2 这道题在主题库的空答案率是 11/39，别的项目都 ≤ 5.4%，BJS_phase1 是 1/37，疑似这个项目的正文分段少、切出来的「结尾一段」不对；不改名单，另查），其中 1 篇的 `asks_for_help` 也为空。第一波用同一份代码按这一条剔过（按 10-27 06:35 UTC 之前的答案重算是 14 篇，正好是第一波补记里 1,255 − 512 − 729 的差），这 6 篇不重抽来凑数。
   4. D-128 点名的 8 篇：一篇都不在里面。
-- **第二波名单**：`data-analysis/gate2-reader-holdout-wave2-2026-10-28.csv`，18 篇，sha256 `8c434aad5f6d80d216a5bfbd82f4c3e4ff335803b23b829c43b5781d89e92c62`，列和第一波相同。A 层 13 篇、B 层 5 篇，全在 BJS_phase2，爆 0 篇，和第一波不重叠。照补记 6，它对各层 MH 优势比和方差没有贡献，只增加 support。
-- **补抽**：参数和第一波相同（`bank=reader`、全 64 位 sha、`run_tag=fqr-g2-sonnet55`、`model=claude-sonnet-5-5`、`batch=6`），一次抽完 18 篇。抽完只数行数和覆盖。
+- **第二波名单**：`data-analysis/gate2-reader-holdout-wave2-2026-10-28.csv`，18 篇，sha256 `8c434aad5f6d80d216a5bfbd82f4c3e4ff335803b23b829c43b5781d89e92c62`，列和第一波相同。A 层 13 篇、B 层 5 篇，全在 BJS_phase2，爆 0 篇，和第一波不重叠。读的时候这 18 篇的 y 仍是 0 的话，照补记 6，它对各层 MH 优势比和方差没有贡献，只增加 support（只报告的「完全不分层」OR 会跟着变，判定用的几条不变）。
+- **补抽**：参数和第一波相同（`bank=reader`、全 64 位 sha、`run_tag=fqr-g2-sonnet55`、`model=claude-sonnet-5-5`、`batch=6`），一次抽完 18 篇。已抽：run 40642085016，06:09–06:11 UTC 写入 54 行（18 篇 × 3 题），没有空答案；这 6 篇和名单外的 BJS_phase2 都是 0 行。只数了行数和覆盖，没和 y 放在一起算。
 - **读**：名单 = 第一波 ∪ 第二波，共 1,245 篇，合并名单 sha `32d6f88fefd08d84f12c91f3d805c2d469d855dcb2a8b8f31ba47623dd46ebc4`（第一波单独是 `35549d5ca27b…`）。缺答案的上限按合并后的篇数算，3% 向下取整是 37 篇。先跑 `counts_only=true`，覆盖没问题再读一次，报告里的名单 sha 应该等于上面这个值。原定 10-30 的那次检查就不需要了。
 
 ## D-129 · BJS_phase1 挪表的 79 行：70 行和成人表新行一一配对、9 行是废稿，备份后下线 75 行（闸一样本 4 行裁完再删）；新行接住早期快照和写作台链接，三省六部按 D-087 撤回（2026-10-26 定，10-27 执行）
