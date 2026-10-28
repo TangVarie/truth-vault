@@ -213,6 +213,7 @@ python sync_truth_vault_baokuan_to_autowriter_items.py
 | Feishu `code: 99991663` | tenant_access_token 失效 | 脚本会自动重试一次；如果连续失败，检查 app_id/app_secret 是否正确 |
 | `mapping_to_autowriter_project_id IS NULL` | TV 项目没建立 autowriter 映射 | 手动在 truth_vault.projects 表里 UPDATE 该列 |
 | Excel lineage 没出现在飞书 → TV recovery 拿不到 | 运营走的是复制粘贴而不是整表导入 | 见 docs/09-system-integration.md 的 Excel 工作流规则 |
+| Supabase SQL editor 整份 Run 完，最后报 `relation "<临时表名>" does not exist` | 事务其实已经提交：editor 在提交之后又单独执行了一次，那次里没有这张临时表（10-27 D-129、I-25 两次都是这样） | 以 editor 里最后那句「已提交」或脚本自己的回读为准，再跑一遍只读复核；给 owner 跑的脚本不用 `ON COMMIT DROP` 临时表 |
 
 ## 测试
 
