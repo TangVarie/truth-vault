@@ -7366,6 +7366,24 @@ owner 10-27 填回裁决表：83 格（不一致 43 + 复核 40），每一格�
 - **快照**：副题库答案的条件是 run_tag 为 `fqr-g2-sonnet55`、sha 等于全 64 位、模型题只认 `llm:claude-sonnet-5-5`、代码特征只认 `code:v1`、版本等于题库版本。版本不对的行会被捞出来，整跑拒，`invites_sharing` v1 混进来就是这种情况。分层答案只取 `gate2.condition_snapshot` 那份，Opus 的行不算。两份快照里 (笔记, 题) 有重复，或者答案在闭集外，都拒跑。快照外的行（同 run_tag、同题，别的 sha 或抽取器）取数时不取，只在库里数，报告里记「快照外 N 行」。
 - **映射表**：`truth_vault.backup_d129_ids_20261026` 名字里带 backup，但只要还有人按半区取数，就不能删。闸二和每季度找新特征（G-18）读不到它都会 fail closed。所以它永久保留：verify #92（过期备份表计数）把它除外，OPEN-ITEMS S-02 的删除清单里没有它，表的 COMMENT 改成永久保留（语句在 S-02，owner 跑）。第二波名单 CSV 要 `git add -f`，因为 `*.csv` 在 `.gitignore` 里。
 
+### D-128 补记（2026-10-28）：第二波名单写死——18 篇
+
+补记 6 说第二波要等 BJS_phase2 补齐 essence 和 Sonnet 分层答案以后，照规则查一次。靠夜跑补齐要到 10-30 前后（features 每晚补 24 篇）。10-28 owner 问能不能提速，规则没规定补齐必须走哪条路，所以手动跑了两次回填补齐，再照规则查了一次。写这条时，这 18 篇在 `fqr-g2-sonnet55` 下还没有任何答案；第一波的答案也只数过行数和覆盖，没和 y 放在一起算过。
+
+- **补齐**：10-28 05:56 UTC 派发，06:04 两次都成功。
+  - `backfill-essence`（run 40640857247）：BJS_phase2 还没标 essence 的 23 篇全部标完，其中 7 篇在那 24 篇里。
+  - `backfill-features`（run 40640859244）：用 note_ids 模式给其中 15 篇抽主题库答案。参数和夜跑相同：`bank=primary`、`run_tag=primary`、`bank_sha=ba0f570c`，模型是 worker 默认的 Sonnet 5.5。另外 9 篇夜跑已经抽过。
+  - 两步都碰不到 y：两个提示词里只有切好的正文，抽哪几篇只按 id 定。
+- **还是 10-27 那 24 篇**：`v_l2_labels` 里的「趴」全部都进。这 24 篇都是「趴」，`audit_log` 显示它们自 10-26 11:08 UTC 插入以来 tier 一次没改过。10-27 07:51 那 5 次 tier 改动是另外 5 篇从空变成「未知」，进不了 `v_l2_labels`。所以和 10-27 写死的是同一批。
+- **查一次**（10-28 约 06:10 UTC，生产只读）：用 `gate1_sample.py --print-sql --half holdout` 的 SQL，where 里加一条 `m.old_id is not null`，只取挪表的行；导出后走 `--from-json --half holdout --take all`，和第一波同一份代码。四条规则逐条看：
+  1. 留出半（按 old_id 定）：24 篇都在。
+  2. 闸二口径：24 篇都在 `v_l2_labels`、都有 essence、正文都 ≥ 50 字（63–393）、都没删。
+  3. 两道分层题都有可用答案：18 篇。另外 6 篇的 `ending_asks_reader` 答案为空（`invalid_reason=evidence_not_found`：模型引的原文在正文里找不到），其中 1 篇的 `asks_for_help` 也为空。第一波用同一份代码按这一条剔过，这 6 篇不重抽来凑数。
+  4. D-128 点名的 8 篇：一篇都不在里面。
+- **第二波名单**：`data-analysis/gate2-reader-holdout-wave2-2026-10-28.csv`，18 篇，sha256 `8c434aad5f6d80d216a5bfbd82f4c3e4ff335803b23b829c43b5781d89e92c62`，列和第一波相同。A 层 13 篇、B 层 5 篇，全在 BJS_phase2，爆 0 篇，和第一波不重叠。照补记 6，它对各层 MH 优势比和方差没有贡献，只增加 support。
+- **补抽**：参数和第一波相同（`bank=reader`、全 64 位 sha、`run_tag=fqr-g2-sonnet55`、`model=claude-sonnet-5-5`、`batch=6`），一次抽完 18 篇。抽完只数行数和覆盖。
+- **读**：名单 = 第一波 ∪ 第二波，共 1,245 篇，合并名单 sha `32d6f88fefd08d84f12c91f3d805c2d469d855dcb2a8b8f31ba47623dd46ebc4`（第一波单独是 `35549d5ca27b…`）。缺答案的上限按合并后的篇数算，3% 向下取整是 37 篇。先跑 `counts_only=true`，覆盖没问题再读一次，报告里的名单 sha 应该等于上面这个值。原定 10-30 的那次检查就不需要了。
+
 ## D-129 · BJS_phase1 挪表的 79 行：70 行和成人表新行一一配对、9 行是废稿，备份后下线 75 行（闸一样本 4 行裁完再删）；新行接住早期快照和写作台链接，三省六部按 D-087 撤回（2026-10-26 定，10-27 执行）
 
 来源：I-22。10-26 BJS_phase1 9-30 以后的 79 行从飞书表里没了：70 行运营挪到同一个 base 的成人藻油新表（TV `BJS_phase2`，TV#240；10-26 11:08 UTC 第一次实跑入库 70 行），9 行新表里没有。owner 10-26 定：配上的旧行备份后下线；配不上的 9 行 owner 确认是废稿，一起下线。
