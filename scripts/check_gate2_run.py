@@ -1432,11 +1432,14 @@ def check_secondary_cli_and_workflow(td: Path) -> None:
         assert "READ_KEY" not in genv
         # counts_only=false: 按合并名单 sha 查 artifact gate2-reader-read-<前 12 位>; 有 → 拒; 查不了 → 拒; 没有 → 记 READ_KEY
         key = "35549d5ca27b"                                # 第一波单独的合并名单 sha 前 12 位 (下面另核)
-        rc, out, gh = _guard_gh(count="1", IN_COUNTS_ONLY="false")
+        # run_tag 写死一个不会是真报告的名字: 留空时默认 gate2-reader-<今天 UTC>, 正式读那天仓库里就有这份报告,
+        # Guard 先按「已经在仓库里」拒, 走不到这里要测的 artifact 查询 (10-28 读完提交报告时 CI 撞上过)
+        tag = "gate2-reader-ci-guard"
+        rc, out, gh = _guard_gh(count="1", IN_COUNTS_ONLY="false", IN_RUN_TAG=tag)
         assert rc != 0 and "已经读过" in out and f"actions/artifacts?name=gate2-reader-read-{key}" in gh, (out[-300:], gh)
-        rc, out, gh = _guard_gh(fail="1", IN_COUNTS_ONLY="false")
+        rc, out, gh = _guard_gh(fail="1", IN_COUNTS_ONLY="false", IN_RUN_TAG=tag)
         assert rc != 0 and "fail closed" in out, out[-300:]
-        rc, out, gh = _guard_gh(count="0", IN_COUNTS_ONLY="false")
+        rc, out, gh = _guard_gh(count="0", IN_COUNTS_ONLY="false", IN_RUN_TAG=tag)
         assert rc == 0 and f"READ_KEY={key}" in (td / "genv").read_text(encoding="utf-8"), out[-300:]
         assert G.untracked_manifests([str(Path(__file__).resolve().parent.parent / "data-analysis"
                                           / "gate2-reader-holdout-2026-10-27.csv")]) == []
