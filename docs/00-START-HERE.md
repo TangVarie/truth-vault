@@ -114,6 +114,13 @@ flowchart TD
 
     N -->|通道 1 · push| SSLL[script:sync_truth_vault_baokuan_to_sanshengliubu.py]
     SSLL --> RS[(public.reference_samples<br/>三生六部)]
+
+    N -->|只读 raw_extra 白名单五列 · D-133| PM[/tv:v_paid_marker_elements<br/>投流标记逐元素/]
+    PM --> PE[/tv:v_paid_boost_events<br/>投流事件/]
+    PM --> PQ[/tv:v_paid_boost_quarantine<br/>定不了日子 · 认不出/]
+    PE -->|tv:audit_log 逐夜读数| PR[/tv:v_paid_boost_readings<br/>基线 · 当天 · D+1 · D+3 · D+7/]
+    PR --> PV[/tv:v_paid_boost_evidence<br/>一个事件一行/]
+    PB[script:check_paid_boost.py] -.CI 守 Python 与 SQL 判据逐字一致.-> PM
 ```
 
 **入口只有一个**：飞书表。TV 不产内容，只把别处产出的东西**结构化**。

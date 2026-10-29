@@ -835,6 +835,96 @@ def parse_feishu_date(value: Any) -> Optional[str]:
     return None
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# 投流标记判据 (A4 → D-133: 按【元素】精确匹配)
+# ─────────────────────────────────────────────────────────────────────────
+#
+# 同一份判据在 SQL 里还有一份: schemas/notes_v1_22_paid_boost_evidence.sql 的
+# truth_vault.tv_cell_elements / tv_pyrepr_elements / tv_classify_paid_element。
+# 下面每个正则、每个精确值、每个列名都和 SQL 里的字面量【逐字相同】——
+# scripts/check_paid_boost.py 的 parity 段把 SQL 文件里的字面量抠出来和这里比, 两边漂开就红。
+#
+# 为什么不再是「元素里含 🍟 / 投流 就算」(2026-09-22 A4 的子串判据): 「准备投流」「不投流」
+# 含「投流」, 子串判据会判成投流; 而「关注后续流量 爆贴」整串、「Sep15🍟」这种写法读不出日期。
+# 认不出的一律不算投流 (paid_promoted 不写, 记 paid_marker_unrecognized), 进 SQL 的隔离视图。
+# 只读白名单列, 从不扫整个 raw_extra: 生产里「帐号昵称」(RIO)、「评论区快照」(ANSHEN / XIWU_phase2)、
+# 标题正文 (NUC)、paid_promoted_reason 都带 🍟。
+PAID_COLS = ("维护情况", "关注情况")
+PAID_TIER_KEY = "_tier_source_raw"
+OPS_DATE_COL = "维护时间"
+OPS_EFFECT_COL = "维护效果"
+PAID_DATED_RE = re.compile(r"^([0-9]{1,2})/([0-9]{1,2}) *🍟$")          # 「9/15🍟」= 9 月 15 日投的薯条
+PAID_UNDATED_EXACT = ("已投流，等回收数据",)                              # 全角逗号, 整格就这一个值
+PAID_TIER_EXACT = ("关注后续流量",)                                       # 途鸽 tier 源多选里的一个选项
+PAID_MARKER_LIKE_RE = re.compile(r"🍟|投流|薯条|关注后续流量")            # 像标记但上面都不是 → 认不出
+OPS_EFFECT_NUMERIC_RE = re.compile(r"^[0-9]+(\.[0-9]+)?$")              # 「维护效果」纯数字才配得上来源 B
+PAID_ELEM_WS = " \t\r\n"                                                 # 元素首尾去掉的空白 (SQL: E' \t\r\n')
+PAID_HIT_CLASSES = ("paid_dated", "paid_undated")                        # sync 写 paid_promoted=true 的只有这两类
+
+
+def _paid_elem_text(x: Any) -> Optional[str]:
+    """数组里一个标量元素 → 文本; 和 SQL 的 `x #>> '{}'` 一致 (字符串原样, 数字 / 布尔按 JSON 写法)。"""
+    if x is None:
+        return None
+    if isinstance(x, str):
+        return x
+    return json.dumps(x, ensure_ascii=False)
+
+
+def paid_cell_elements(cell: Any) -> list[str]:
+    """把一个飞书格子拆成元素文本 (去首尾空白、丢空串)。SQL 同一份: truth_vault.tv_cell_elements。
+
+    - 多选 / 数组: 每个元素一个 (JSON null 跳过);
+    - 数组里只要有 dict = 飞书文本格 [{text,type}…]: 拼成【一个】元素 (一段话被切成几段, 不是几个值);
+    - 单个字符串 / 数字: 一个元素; dict 只认 text; None / "" / [] → []。
+    tier 源 (`_tier_source_raw`) 也走这里, 但 Python 拿的是 intermediates 里的原值 (list / str),
+    不是 raw_extra 里那份 str() —— SQL 那边用 tv_pyrepr_elements 把 str() 拆回来, 结果相同。
+    """
+    if cell is None:
+        return []
+    if isinstance(cell, list):
+        if any(isinstance(x, dict) for x in cell):
+            joined = "".join(
+                (_paid_elem_text(x.get("text")) if isinstance(x, dict) else _paid_elem_text(x)) or ""
+                for x in cell)
+            t = joined.strip(PAID_ELEM_WS)
+            return [t] if t else []
+        out = []
+        for x in cell:
+            t = (_paid_elem_text(x) or "").strip(PAID_ELEM_WS)
+            if t:
+                out.append(t)
+        return out
+    if isinstance(cell, dict):
+        t = (_paid_elem_text(cell.get("text")) or "").strip(PAID_ELEM_WS)
+        return [t] if t else []
+    t = (_paid_elem_text(cell) or "").strip(PAID_ELEM_WS)
+    return [t] if t else []
+
+
+def classify_paid_element(col: str, txt: str) -> Optional[str]:
+    """一个元素的类别。SQL 同一份: truth_vault.tv_classify_paid_element。白名单外的列 → None。"""
+    if col in PAID_COLS:
+        if PAID_DATED_RE.fullmatch(txt):
+            return "paid_dated"
+        if txt in PAID_UNDATED_EXACT:
+            return "paid_undated"
+        if PAID_MARKER_LIKE_RE.search(txt):
+            return "marker_like_unrecognized"
+        return "non_paid"
+    if col == PAID_TIER_KEY:
+        if txt in PAID_TIER_EXACT:
+            return "paid_undated"
+        if PAID_MARKER_LIKE_RE.search(txt):
+            return "marker_like_unrecognized"
+        return "non_paid"
+    if col == OPS_DATE_COL:
+        return "ops_date"
+    if col == OPS_EFFECT_COL:
+        return "ops_effect_numeric" if OPS_EFFECT_NUMERIC_RE.fullmatch(txt) else "ops_effect_other"
+    return None
+
+
 def _audience_text(value: Any) -> str:
     """把飞书「观众分析」cell 归一成 parse_audience_analysis 期望的【；分段】文本。
 

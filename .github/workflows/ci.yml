@@ -88,6 +88,7 @@ jobs:
             scripts/check_essence_subtype_backfill.py \
             scripts/check_vanished_notes.py \
             scripts/check_tier_veto.py \
+            scripts/check_paid_boost.py \
             scripts/gate3_score.py \
             scripts/check_gate3.py \
             librarian/__init__.py \
@@ -1771,6 +1772,9 @@ jobs:
       - name: comment_maintained 分来路 × synthetic 正交 × 维护情况取值 × 投流三态 (D-060 / A2 / A4)
         working-directory: scripts
         run: python check_comment_maintained.py
+      - name: 投流证据链 F1 (D-133) · 元素精确匹配 / 整行三态 / 改坏代码反证 / SQL 与 Python 字面量一致 / 禁整块扫 🍟
+        working-directory: scripts
+        run: python check_paid_boost.py
       - name: 评价来源不得伪造成人工 (TV-01)
         working-directory: scripts
         run: |
@@ -7073,6 +7077,14 @@ jobs:
           [ "$GOT" = "$WANT" ] || { echo "❌ v1.21 判据不对。期望 [$WANT] 实得 [$GOT]"; exit 1; }
           psql -v ON_ERROR_STOP=1 -c "DELETE FROM truth_vault.notes WHERE project_id LIKE 'CI_V21%'; DELETE FROM truth_vault.projects WHERE project_id LIKE 'CI_V21%';"
           echo "✓ v1.20 / v1.21: human_via_agent 进 CHECK; 消失只数 r1 那篇, 没盖过戳的两篇不算"
+      - name: Apply v1.22 paid-boost evidence views (+ idempotency)
+        # D-133: 6 个函数 + 5 个视图, 读 notes / audit_log / v_notes_vanished (v1.21), 不建表; CREATE OR REPLACE, 两遍验幂等。
+        run: |
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_22_paid_boost_evidence.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_22_paid_boost_evidence.sql
+      - name: Sanity-check v1.22 (投流事件 / 隔离 / 前后读数; 夹具与 check_paid_boost.py 共用, 反证在文件头)
+        run: |
+          psql -v ON_ERROR_STOP=1 -v cases="$(cat scripts/check_paid_boost_cases.json)" -f scripts/check_paid_boost.sql
       - name: Apply security revoke (anon/authenticated write on public.* ) (+ idempotency)
         # 撤 anon/authenticated 对 5 张 public 表的写权限(读保留,不开 RLS)。
         # guarded:表/角色不存在则跳过 → 裸 PG / CI 为 no-op。REVOKE 幂等,两遍验。

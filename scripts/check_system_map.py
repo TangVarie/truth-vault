@@ -273,8 +273,9 @@ def check_features_batch(verbose: bool = True) -> list[str]:
 # 今天没有任何一份 mapping 这么映, 这条是【前向】守卫: 新表按 _template 抄过去的时候
 # 很容易顺手把三列升成 typed。
 # ⚠️ 挡不住什么(D-051):
-#   · 挡不住运营在飞书那一端把投流后的数字填回「曝光量」—— 那是 metric_snapshots
-#     的历史快照去对账的事(投流日期写在「维护情况」的 9/15🍟 值里)。
+#   · 挡不住运营在飞书那一端把投流后的数字填回「曝光量」—— 那是 audit_log 逐夜读数去对账的事
+#     (D-078 / D-133: 投流日期写在「维护情况」的 9/15🍟 值里, 前后读数见 truth_vault.v_paid_boost_readings;
+#     metric_snapshots 每个窗口只留最后一次, 当不了基线)。
 #   · 挡不住把三列映到【别的】typed 列(比如 raw 文本列), 只钉住这四个指标列。
 #   · 只看 field_mapping 的 value, 不看 computed_fields。
 _PROMO_COLS = ("维护情况", "维护时间", "维护效果")
