@@ -7573,7 +7573,7 @@ owner 10-27 填回裁决表：83 格（不一致 43 + 复核 40），每一格�
    - **`paid_promoted` 同一判据收紧**（`_common.classify_paid_element`，SQL 那份 `truth_vault.tv_classify_paid_element` 逐字相同）：只有认不出的 → 不写 `paid_promoted`（不知道，owner Q8），记 `paid_marker_unrecognized`；reason 文本和 A4 一字不差。10-29 生产 20 篇 true 全是精确值，按新判据逐篇模拟 0 篇变化、认不出 0 个。
    - **来源 B（owner Q1）**：「维护时间」第 i 个元素配「维护效果」第 i 个、且后者是纯数字，算一次投流，日期 = 维护时间。两列个数对不上（且效果里有数字）→ 隔离 `time_effect_count_mismatch`；维护时间配不上数字效果 → 不算（owner Q7），元素视图里写 `ops_date_unpaired`。**来源 B 不写 `paid_promoted`**，闸二敏感性（D-128）的数字不变。
    - 同一篇同一天在几列都标了 = 一次事件（09-15～09-17 BJS 7 篇两列都有）。
-3. **日期（owner Q2：按发布日补年，再两头核，不猜）。** JSON 数字 = 毫秒（2000–2100 之外不认），按北京日；`YYYY/M/D` 照写；`M/D🍟`、`M月D日`、`M/D` 没有年：取北京发布日那年，早于发布日就看下一年（12 月发 1 月投），下一年也还没到 → `before_publish`。然后核：早于发布日 `before_publish`、晚于北京今天 `date_in_future`、发布日未知 `year_unresolvable`、写法认不出或日历上没有（2/30）`unparseable_date`；🍟 的日期晚于 TV 第一次看到这个元素的那天 → `date_after_first_seen`（来源 B 不核这条：维护时间可能先填计划日、效果事后补）。
+3. **日期（owner Q2：按发布日补年，再两头核，不猜）。** JSON 数字 = 毫秒（2000–2100 之外不认），按北京日；`YYYY/M/D` 照写；`M/D🍟`、`M月D日`、`M/D` 没有年：取北京发布日那年，早于发布日就看下一年，但只认跨年那一种（12 月发 1 月投：下一年那天已经到了、离发布 ≤ 92 天），否则 → `before_publish`，不随今天变（复审：不设上限的话，一条早于发布日的手误到明年那天就成了「发布一年后投流」的事件，CI 的 before_pub 夹具也会在 2027-10-22 变红）。然后核：早于发布日 `before_publish`、晚于北京今天 `date_in_future`、发布日未知 `year_unresolvable`、写法认不出或日历上没有（2/30）`unparseable_date`；🍟 的日期晚于 TV 第一次看到这个元素的那天 → `date_after_first_seen`（来源 B 不核这条：维护时间可能先填计划日、效果事后补）。
 4. **读数（F2，只读 audit_log）。**
    - 一次「读到」= 完整同步盖了 `last_seen_run_id` 的那一行（UPDATE 带这个键，或 INSERT 里它非空）；同一北京日取最后一次；v1_9 之前没有戳，这一篇第一次盖戳之前、且早于 2026-08-31 的写入算一次读（`pre_v1_9_any_write`）。
    - **基线 = 投流日之前最后一次读（owner Q3）**；投流当天单列 k=0、前后不明；D+1 / D+3 / D+7 只认正好那天，不向邻日借。这也更正了 D-078 和 ops-answers §0.3 的例子：SPX 9/16🍟 那篇「阅读 778 · 互动 73」是 9/16 15:10（北京）读到的，投流当天、前后不明，现在算 k=0，不是基线。
@@ -7589,7 +7589,7 @@ owner 10-27 填回裁决表：83 格（不一致 43 + 复核 40），每一格�
 ### 实现时和计划不一样的地方
 
 - 函数 6 个（计划 4 个）：多了 `tv_raw_cell`（_cm_cell 同一规则，三处在用）和 `tv_classify_paid_element`（SQL 判据只住一处，CI 逐字比对字面量）。`tv_parse_ops_date` 收 `today` 参数、标 IMMUTABLE（计划是 STABLE 读 now()），CI 才能拿定值逐例测。两个拆元素函数标了 `ROWS 3`：默认估 1000 行，本地 / CI 的 PG16（`jit` 默认开）五个视图因此被 JIT 编译、一次读 2–4 秒，标了之后 10–20 毫秒；生产 `jit = off`，不受这个影响，标了也只是让行数估计更准。
-- 补年多了一刀：计划写「早于发布日就 +1 年」，那会把「比发布早一天」报成 `date_in_future`；现在下一年还没到就报 `before_publish`。生产正好有 1 例（HATHERINE 一篇维护时间比北京发布日早 1 天）。
+- 补年多了一刀：计划写「早于发布日就 +1 年」，那会把「比发布早一天」报成 `date_in_future`；现在下一年还没到、或离发布超过 92 天，都报 `before_publish`。生产正好有 1 例（HATHERINE 一篇维护时间比北京发布日早 1 天）。
 - `paid_promoted_state` 缺键叫 `unknown`（计划叫 no_column）：缺键也可能是这篇还没按新声明重算（XIWU_phase2 两篇最后见于 10-19 / 10-26）。
 - 「TV 第一次看到这个元素」用同一个拆元素函数逐个比，不用 `@>`：文本格、单字符串格也比得了。
 - 年份规则列叫 `year_rules`（数组：同一天两条标记的规则可能不同）。

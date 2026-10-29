@@ -194,13 +194,13 @@ assert f(n12d).get("paid_promoted") is False, f"有列无投流值该判 false: 
 n12e, _, _ = s.transform_row(BASE, "r12e", {"文案": "c", "状态": "爆贴"})
 assert "paid_promoted" not in f(n12e), f"没有这一列时必须缺键: {f(n12e)}"
 # ⑫f 只看 _common.PAID_COLS 这两列, 不许扫整个 raw_extra —— 生产里别的列也带 🍟:
-#    RIO 有个账号昵称叫「🍟的快乐小记」, ANSHEN 有两条评论区快照带 🍟。
+#    RIO 有个账号昵称带 🍟, ANSHEN 有两条评论区快照带 🍟。
 #    夹具用一个【已声明进 raw_extra 且不在 PAID_COLS 里】的列, 才够得着这个场景
 #    (账号名走 _account_name 中间量, 判据跑完之后才倒进 raw_extra, 测不到)。
 M12f = dict(BASE, project_specific_fields_to_raw_extra=[
     *BASE["project_specific_fields_to_raw_extra"], "评论区快照"])
 n12f, _, _ = s.transform_row(M12f, "r12f",
-    {"文案": "c", "状态": "爆贴", "评论区快照": "楼主是🍟的快乐小记 求链接"})
+    {"文案": "c", "状态": "爆贴", "评论区快照": "楼主是🍟的合成小号 求链接"})
 assert "paid_promoted" not in f(n12f), \
     f"别的列里的 🍟 不是投流标记, 判据不许扫整个 raw_extra: {f(n12f)}"
 

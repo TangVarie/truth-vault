@@ -157,7 +157,7 @@ tier / tier_source / publish_time / synthetic / comment_maintained_routes）。
 `维护情况` 8 行（BJS 7 + SPX 1）· `关注情况` 3 行（ANSHEN 2 + SPX 1，mapping 里被记成"运营手记"）·
 TUGE 的 `_tier_source_raw` 含「关注后续流量」9 行。只读「维护情况」漏 **12/20 = 60%**。
 判据要按 JSON 数组元素逐个精确匹配，不能全 blob 扫 🍟 ——
-会误收 RIO 的账号昵称「🍟的快乐小记」。
+会误收 RIO 一个带 🍟 的账号昵称。
 
 **口径：三方说法，两票是增量。** 《字段定义》docx 写「投流后 12h 的曝光量」（绝对值），
 但 2026-09-17 运营原话是「曝光量**增长情况**」、回填件是「投流前后的**差额**」、

@@ -188,7 +188,8 @@ $$;
 --   JSON 数字 = 毫秒时间戳 (2000–2100 之外不认), 按北京日算, year_rule = epoch_ms;
 --   「YYYY/M/D」「YYYY-M-D」「YYYY.M.D」= explicit;
 --   「M/D🍟」「M月D日」「M/D」没有年 = publish_anchor: 先取北京发布日那年, 早于发布日就看下一年
---     (publish_anchor_next_year, 例如 12 月发、1 月投), 下一年还没到 → before_publish (d 给同年那天, 只作参考);
+--     (publish_anchor_next_year, 只认跨年: 12 月发、1 月投, 下一年那天离发布 ≤ 92 天且已经到了), 否则 → before_publish
+--     (d 给同年那天, 只作参考; 不随今天变);
 --   发布日未知 → year_unresolvable; 别的写法 / 日历上没有的日子 → unparseable_date;
 --   然后两头核: 早于发布日 → before_publish, 晚于今天 → date_in_future。
 --   today 由调用方传 (视图传北京今天, CI 传定值), 所以函数是 IMMUTABLE、可以逐例测。
@@ -246,7 +247,9 @@ BEGIN
                 RETURN;
             ELSIF d_same IS NOT NULL AND d_same >= anchor THEN
                 d := d_same;
-            ELSIF d_next IS NOT NULL AND d_next <= today THEN
+            ELSIF d_next IS NOT NULL AND d_next <= today AND d_next - anchor <= 92 THEN
+                -- 只认跨年那一种(12 月发、1 月投): 下一年那天离发布不过一季。不设上限的话, 一条早于发布日的手误
+                -- (隔离着的 before_publish)到了明年那一天就变成「发布一年后投流」的事件(复审 on D-133)
                 d := d_next;
                 year_rule := 'publish_anchor_next_year';
             ELSIF d_same IS NOT NULL THEN
