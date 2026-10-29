@@ -158,7 +158,7 @@ flowchart TD
     SYNC -->|match_kind='ingested'<br/>**没有 angle_key**| FPR
     SYNC --> TNL[("aw:tv_note_links")]
 
-    AL["script:check_angle_ledger_leak.py<br/>漏账灯 · 夜跑 advisory"]
+    AL["script:check_angle_ledger_leak.py<br/>发帖对账灯 · 夜跑 advisory"]
     LEDGER --> AL
     FPR --> AL
     TNL -->|排除导入副本，否则读出来是假的| AL
