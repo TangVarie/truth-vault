@@ -13,7 +13,8 @@ check_angle_ledger_leak.py
 现在的判据(只有一条, C; 2026-10-19 O-04 补的那条):
     某 TV 项目窗口内【发出去】的帖(publish_time 在窗口内、飞书里没删的)里, 补录成副本的(tv-sync 记成 ingested ——
     对不回写作台、又不会再重对的终态)>= MIN_UNCAUGHT 篇、对上写作台的 <= MAX_CAUGHT 篇(两个下限按窗口长度等比放大, 每
-    7 天一份), 而它对应的写作台项目用过写作台(台账里有过它的牌、或者在写作台查过重, 不限时间) → 发出去的帖对不回写作台。
+    7 天一份), 而它对应的写作台项目用过写作台(台账里有过它的牌、写作台给它出过稿、或者查过重; 不限时间) → 发出去的帖
+    对不回写作台。
     红只数补录副本, 和 aw 给写手的 desk_gap 提醒同一个口径; 没对上(unmatched: 没有补录目标的项目、没正文、W-38 这晚没转成
     明晚再试)、分不出(ambiguous: 对上了不止一版, 本来就是写作台的稿)、tv-sync 还没对到的, 只在表里分列。分两种报:
       · 写作台窗口内没查过这个项目一篇稿(draft_snapshots, W-38) → 写它的那几场对话没走到写作台(skill 没被调起来、没开项目
@@ -34,8 +35,9 @@ check_angle_ledger_leak.py
 
 数据: autowriter.tv_project_map(TV 项目 → 写作台项目)、truth_vault.notes(publish_time 在窗口内) 减
 truth_vault.v_notes_vanished(飞书里删了的)、autowriter.tv_note_links(按 match_kind 分)、autowriter.angle_ledger
-(发过牌的写作台项目不限时间; 窗口内的发牌)、autowriter.draft_fingerprints(窗口内的稿子)、autowriter.draft_snapshots
-(查重底稿: 只取 project_id / checked_at 数篇数, 不取标题正文)。
+(发过牌的写作台项目不限时间; 窗口内的发牌)、autowriter.batches(params.source = deskcore 的: 写作台出过稿的项目, 不限
+时间)、autowriter.draft_fingerprints(窗口内的稿子)、autowriter.draft_snapshots(查重底稿: 只取 project_id / checked_at
+数篇数, 不取标题正文)。
 
 窗口: 默认 7 天。
 
@@ -323,6 +325,10 @@ def gather_publish(sb, since_iso: str, until_iso: str | None = None) -> dict:
             links[l["note_id"]] = l
     # 不限时间: 断得越久越该喊(见文件头)。台账全表千把行, id + project_id 两列, 夜跑拉一遍不贵。
     used = fetch_all_pages(sb.schema("autowriter").table("angle_ledger").select("id, project_id"), order_by="id")
+    # 写作台出过稿的项目(存了档的 / 查重底稿转正的, batches.params.source = deskcore)也算用过, 不限时间 —— 只查过重、
+    # 没发过牌的项目, 底稿表只留 60 天, 光靠它, 断了两个月的项目会自己转绿(codex review on TV#252)
+    desk_batches = fetch_all_pages(sb.schema("autowriter").table("batches").select("id, project_id")
+                                   .eq("params->>source", "deskcore"), order_by="id")
 
     by_tv: dict[str, list] = {}
     for m in maps:
@@ -355,7 +361,7 @@ def gather_publish(sb, since_iso: str, until_iso: str | None = None) -> dict:
         elif kind in INFO_KINDS:
             c[kind] += 1
     return {"map": by_tv, "links": counts, "snapshots": snap_counts,
-            "used": ({u["project_id"] for u in used} | snap_ever) & pids}
+            "used": ({u["project_id"] for u in used} | {b["project_id"] for b in desk_batches} | snap_ever) & pids}
 
 
 def _project_names(sb, pids: set) -> dict:
@@ -509,7 +515,10 @@ def selftest() -> int:
               "notes": NOTES, "tv_note_links": LINKS + [{"version_id": f"vi{i}", "match_kind": INGESTED_KIND,
                                                           "note_id": f"x{i}"} for i in range(8)],
               "angle_ledger": LEDGER, "draft_fingerprints": FPS,
-              "projects": [{"id": "d1", "name": "途鸽"}]}
+              "projects": [{"id": "d1", "name": "途鸽"}],
+              # h1 存过档(写作台的 batch), 底稿过了 60 天删光了也还算用过; ingest 的 batch 不算
+              "batches": [{"id": "b1", "project_id": "h1", "params->>source": "deskcore"},
+                          {"id": "b2", "project_id": "d2", "params->>source": "ingest"}]}
 
     class SB:
         def schema(self, s): return self
@@ -558,7 +567,8 @@ def selftest() -> int:
         # 018 没跑: 底稿那一列空着、全部副本都算「记底稿之前」、按发牌和稿子分两种(老办法)
         missing_snapshots[0] = True
         g0 = gather_publish(SB(), "2026-10-12T00:00:00", until_iso="2026-10-19T08:00:00")
-        assert g0["snapshots"] is None and g0["links"]["TUGE"]["pre_snapshot"] == 21 and g0["used"] == {"d1"}, g0
+        assert g0["snapshots"] is None and g0["links"]["TUGE"]["pre_snapshot"] == 21, g0
+        assert g0["used"] == {"d1", "h1"}, "没有底稿表时, 存过档的(写作台的 batch)照样算用过; 补录的 batch 不算"
         missing_snapshots[0] = False
 
         # ── gather: 台账表排除补录副本(反证: 不排除, 8 条副本会被当成 8 篇不带坐标的稿) ────────────
