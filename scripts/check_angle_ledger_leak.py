@@ -76,6 +76,15 @@ CAUGHT_KINDS = frozenset({"body_exact", "title_exact", "fuzzy", "edited", "tv_li
 INFO_KINDS = ("unmatched", "ambiguous")
 
 
+def _utc_or_none(ts) -> datetime | None:
+    """PostgREST 的时刻文本 → aware UTC; 没带时区的按 UTC; 解析不了回 None(夜跑不能因为一个怪值整个崩掉)。"""
+    try:
+        t = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return (t if t.tzinfo else t.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+
+
 def unattributed(by_project: dict) -> list[dict]:
     """发了牌、稿子够数、一篇都没带 angle_key 的写作台项目(以前的判据 B; 10-29 起只报不喊)。纯函数。
 
@@ -116,14 +125,18 @@ def verdicts_publish(by_project: dict, pub: dict, window_days: int = CHECK_C_BAS
         drawn = sum((by_project.get(p) or {}).get("drawn", 0) for p in pids)
         drafts = sum((by_project.get(p) or {}).get("drafts", 0) for p in pids)
         checked = None if snaps is None else sum(snaps.get(p, 0) for p in pids)
-        silent = (checked == 0) if checked is not None else (drawn == 0 and drafts == 0)
-        if silent:
-            kind, why = "desk_silent", ("写作台这几天没" + ("查过" if checked is not None else "收到")
-                                        + "这个项目一篇稿 —— 写它的对话没走到写作台(skill 没被调起来, 没开项目就写了)")
+        # 一点动静都没有(没发牌、没存稿、也没查过重)才算对话没走到写作台; 底稿表刚建、还没记上的那几天, 发了牌的不算没动静
+        if drawn == 0 and drafts == 0 and not checked:
+            kind, why = "desk_silent", ("写作台这几天没收到这个项目的发牌、稿子" + ("、查重" if checked is not None else "")
+                                        + " —— 写它的对话没走到写作台(skill 没被调起来, 没开项目就写了)")
+        elif checked:
+            kind, why = "published_unmatched", (f"写作台这几天查过 {checked} 篇稿, 发出去的帖却对不回: 改写得太多 / 底稿过期了,"
+                                                " 或 aw tv-sync 的底稿那一步出了错(看 tv-sync 日志「查重底稿」那一行)")
         else:
-            kind, why = "published_unmatched", (
-                (f"写作台这几天查过 {checked} 篇稿" if checked is not None else f"写作台这几天发牌 {drawn}、稿子 {drafts}")
-                + ", 发出去的帖却对不回: 改写得太多 / 底稿过期了, 或 aw tv-sync 的底稿那一步出了错(看 tv-sync 日志「查重底稿」那一行)")
+            kind, why = "published_unmatched", (f"写作台这几天发牌 {drawn}、稿子 {drafts}"
+                                                + ("" if checked is None else ", 一篇都没记下查重底稿")
+                                                + " —— 发出去的帖对不回: 多半是写作台开始记查重底稿之前写的(看「之前」那几篇), "
+                                                "不是的话看 aw tv-sync 日志")
         pre_note = (f"(其中约 {pre} 篇发布于写作台开始记查重底稿之前, 已补录成副本、改不回来)" if pre else "")
         out.append({"project": tv, "kind": kind, "ingested": ing, "caught": caught, "pre_snapshot": pre,
                     "drawn": drawn, "drafts": drafts, "checked": checked,
@@ -252,25 +265,34 @@ def gather(sb, since_iso: str) -> dict:
     return {"by_project": by_project, "ingested_skipped": len(ingested)}
 
 
-def _snapshot_counts(sb, pids: set, since_iso: str) -> tuple[dict, str | None] | None:
-    """查重底稿(W-38): 窗口内每个写作台项目查过几篇、全表最早一篇是哪会儿查的。只取 project_id / checked_at, 不碰标题正文。
-    表不在(018 没跑, PGRST205)回 None; 别的错直接抛(灯崩了比错判好, 有哨兵行兜着)。"""
+def _snapshot_counts(sb, pids: set, since_iso: str) -> tuple[dict, set, str | None] | None:
+    """查重底稿(W-38): 窗口内每个写作台项目查过几篇、表里有过底稿的项目(不限窗口, 表本身只留 60 天)、全表最早一篇是哪会儿
+    查的。只取 project_id / checked_at, 不碰标题正文。表不在(018 没跑, PGRST205)回 None; 别的错直接抛(灯崩了比错判好,
+    有哨兵行兜着)。"""
     from _common import fetch_all_pages  # 局部 import, 理由见文件头
 
     try:
         rows = fetch_all_pages(sb.schema("autowriter").table("draft_snapshots")
-                               .select("id, project_id, checked_at").gte("checked_at", since_iso), order_by="id")
-        first = (sb.schema("autowriter").table("draft_snapshots").select("checked_at")
-                 .order("checked_at").limit(1).execute()).data or []
+                               .select("id, project_id, checked_at"), order_by="id")
     except Exception as exc:                            # noqa: BLE001
         if "pgrst205" in str(exc).lower() and "draft_snapshots" in str(exc):
             return None
         raise
     counts: dict[str, int] = {}
+    ever: set = set()
     for r in rows:
         if r.get("project_id") in pids:
-            counts[r["project_id"]] = counts.get(r["project_id"], 0) + 1
-    return counts, (first[0].get("checked_at") if first else None)
+            ever.add(r["project_id"])
+            if str(r.get("checked_at") or "") >= since_iso:
+                counts[r["project_id"]] = counts.get(r["project_id"], 0) + 1
+    first = min((str(r["checked_at"]) for r in rows if r.get("checked_at")), default=None)
+    return counts, ever, first
+
+
+def _cn_day(ts: str):
+    """时刻文本 → 北京日历日。TV 的 publish_time 不带时区、是北京那天的 0 点存成 UTC(前一天 16:00), 也按 UTC 读。"""
+    t = _utc_or_none(ts)
+    return None if t is None else (t + timedelta(hours=8)).date()
 
 
 def gather_publish(sb, since_iso: str, until_iso: str | None = None) -> dict:
@@ -307,7 +329,8 @@ def gather_publish(sb, since_iso: str, until_iso: str | None = None) -> dict:
         by_tv.setdefault(m["tv_project_id"], []).append(m["project_id"])
     pids = {p for ps in by_tv.values() for p in ps}
     snap = _snapshot_counts(sb, pids, since_iso)
-    snap_counts, first_snapshot = snap if snap is not None else (None, None)
+    snap_counts, snap_ever, first_snapshot = snap if snap is not None else (None, set(), None)
+    first_day = _cn_day(first_snapshot) if first_snapshot else None
     counts: dict[str, dict] = {}
     for n in mine:
         c = counts.setdefault(n["project_id"], {"published": 0, "caught": 0, INGESTED_KIND: 0, "pre_snapshot": 0,
@@ -324,14 +347,15 @@ def gather_publish(sb, since_iso: str, until_iso: str | None = None) -> dict:
                 c["late"] += 1                  # 写作台那版晚于发布 = 发出去之后抄回去的, 不算对上
         elif kind == INGESTED_KIND:
             c[INGESTED_KIND] += 1
-            # 写作台开始记查重底稿(018)之前发的: 那时还认不回没存档的稿, 已经补录成副本、改不回来。发布时间是北京那天的
-            # 0 点, 和查重时刻比只是个约数
-            if first_snapshot is None or str(n.get("publish_time") or "") < str(first_snapshot)[:19]:
+            # 写作台开始记查重底稿(018)之前发的: 那时还认不回没存档的稿, 已经补录成副本、改不回来。按北京日历日比(发布时间
+            # 只有日期): 第一份底稿那天发的不算之前
+            pub_day = _cn_day(str(n.get("publish_time") or ""))
+            if first_day is None or (pub_day is not None and pub_day < first_day):
                 c["pre_snapshot"] += 1
         elif kind in INFO_KINDS:
             c[kind] += 1
     return {"map": by_tv, "links": counts, "snapshots": snap_counts,
-            "used": ({u["project_id"] for u in used} | set(snap_counts or ())) & pids}
+            "used": ({u["project_id"] for u in used} | snap_ever) & pids}
 
 
 def _project_names(sb, pids: set) -> dict:
@@ -409,8 +433,11 @@ def selftest() -> int:
     # 018 跑了: 有没有在写作台查过重来分两种(发了牌、一篇没查 = 对话没走到写作台; 查过 = 查过的稿对不回)
     snap_week = lambda snaps: {h["project"]: h["kind"] for h in verdicts_publish(  # noqa: E731
         {"d1": P(26, 0, 0, 0)}, pub({"TUGE": L(ing=13, pre=13)}, snaps=snaps))}
-    assert snap_week({}) == {"TUGE": "desk_silent"}, "发了牌但一篇都没查重 = 对话没走到写作台"
     assert snap_week({"d2": 7}) == {"TUGE": "published_unmatched"}
+    # 底稿表刚建、还没记上: 发了牌的不算「没动静」(不能把它说成对话没走到写作台)
+    h0 = verdicts_publish({"d1": P(26, 0, 0, 0)}, pub({"TUGE": L(ing=13, pre=13)}, snaps={}))[0]
+    assert h0["kind"] == "published_unmatched" and "一篇都没记下查重底稿" in h0["detail"], h0
+    assert [x["kind"] for x in verdicts_publish({}, pub({"TUGE": L(ing=13)}, snaps={}))] == ["desk_silent"]
     h = verdicts_publish({}, pub({"TUGE": L(ing=13, pre=13)}, snaps={"d2": 7}))[0]
     assert "写作台这几天查过 7 篇稿" in h["detail"] and "其中约 13 篇发布于写作台开始记查重底稿之前" in h["detail"], h
 
@@ -471,7 +498,8 @@ def selftest() -> int:
                "created_at": "2026-10-13T07:00:00"}])
     SNAPS = [{"id": "s1", "project_id": "h1", "checked_at": "2026-10-15T03:00:00+00:00", "title": "不该被读到"},
              {"id": "s2", "project_id": "h1", "checked_at": "2026-10-16T03:00:00+00:00", "title": "不该被读到"},
-             {"id": "s3", "project_id": "zz-unmapped", "checked_at": "2026-10-16T03:00:00+00:00"}]
+             {"id": "s3", "project_id": "zz-unmapped", "checked_at": "2026-10-16T03:00:00+00:00"},
+             {"id": "s4", "project_id": "d2", "checked_at": "2026-10-20T03:00:00+00:00"}]          # d2 没发过牌, 只查过重: 也算用过
     eq_seen: list = []
     snap_cols: list = []
     missing_snapshots = [False]
@@ -514,9 +542,9 @@ def selftest() -> int:
                                       "unmatched": 1, "ambiguous": 1, "unlinked": 1, "late": 0}, g["links"]["TUGE"]
         assert g["links"]["HATH"] == {"published": 3, "caught": 2, INGESTED_KIND: 0, "pre_snapshot": 0,
                                       "unmatched": 0, "ambiguous": 0, "unlinked": 0, "late": 1}, g["links"]["HATH"]
-        assert g["snapshots"] == {"h1": 2}, "只数映射里的写作台项目"
+        assert g["snapshots"] == {"h1": 2, "d2": 1}, "只数映射里的写作台项目"
         assert all("title" not in c and "body" not in c and c != "*" for c in snap_cols), f"底稿只数不读: {snap_cols}"
-        assert g["used"] == {"d1", "h1"}, "没映射的写作台项目不进 used; 只查过重的也算用过"
+        assert g["used"] == {"d1", "h1", "d2"}, "没映射的写作台项目不进 used; 只查过重的也算用过"
         # 反证: 不传 until → 排期的 5 篇算进来; 窗口拉到 9 月 → 旧的 30 篇算进来 —— 窗口确实是 publish_time
         assert gather_publish(SB(), "2026-10-12T00:00:00")["links"]["TUGE"][INGESTED_KIND] == 26
         assert gather_publish(SB(), "2026-09-01T00:00:00",
