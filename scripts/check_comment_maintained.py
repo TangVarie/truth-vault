@@ -164,23 +164,43 @@ for v in ("9/15🍟", "08/27🍟", "已投流，等回收数据"):
 # ⑫b 🍟 也可能记在「关注情况」里(ANSHEN 2 行 + SPX 1 行, 占三列合计的 15%)
 n12b, _, _ = s.transform_row(M11f, "r12b", {"文案": "c", "状态": "爆贴", "关注情况": ["9/16🍟"]})
 assert f(n12b).get("paid_promoted") is True, f"关注情况里的 🍟 漏判: {f(n12b)}"
-# ⑫c 途鸽把投流记在 tier 源里(「关注后续流量」9 行, 7 行已进书架)
-n12c, _, _ = s.transform_row(BASE, "r12c", {"文案": "c", "状态": "关注后续流量 爆贴"})
+# ⑫c 途鸽把投流记在 tier 源里(「关注后续流量」9 行, 7 行已进书架)。
+#     夹具用生产的形状: 「流量状态」是多选, 原值是 list —— 2026-10-29 生产 9 行的 _tier_source_raw
+#     全是 "['关注后续流量', '爆贴' …]" 这种 str(list)。D-133 起按元素精确匹配。
+n12c, _, _ = s.transform_row(BASE, "r12c", {"文案": "c", "状态": ["关注后续流量", "爆贴"]})
 assert f(n12c).get("paid_promoted") is True, f"tier 源里的投流标记漏判: {f(n12c)}"
+assert f(n12c).get("paid_promoted_reason") == "tier 源含「关注后续流量」(运营 2026-09-22: 投流会给的标记)", \
+    f"reason 文本要和 A4 一字不差, 否则每晚多一条 audit: {f(n12c)}"
+assert "paid_marker_unrecognized" not in f(n12c), f(n12c)
+# ⑫g 整串「关注后续流量 爆贴」(一个元素) 认不出日期也认不出是哪个选项 → 不写 paid_promoted (不知道),
+#     记 paid_marker_unrecognized; data_quality_flags 一定带上 (受保护列, 不带就留着库里旧的 true)。
+#     反证: 退回 A4 的子串判据, 这里会是 True。
+n12g, _, _ = s.transform_row(BASE, "r12g", {"文案": "c", "状态": "关注后续流量 爆贴"})
+assert "paid_promoted" not in f(n12g), f"认不出的标记不许判投流: {f(n12g)}"
+assert f(n12g).get("paid_marker_unrecognized") == ["tier 源取值「关注后续流量 爆贴」"], f(n12g)
+# ⑫h 「准备投流」「不投流」含「投流」两个字但不是投流 → 不是 True; 有「维护情况」这一列也不判 false (不知道)
+for v in ("准备投流", "不投流"):
+    n12h, _, _ = s.transform_row(M11, "r12h", {"文案": "c", "状态": "爆贴", "维护情况": ["关注", v]})
+    assert "paid_promoted" not in f(n12h), f"「{v}」不是投流, 也不能说没投: {f(n12h)}"
+    assert f(n12h).get("paid_marker_unrecognized") == [f"「维护情况」取值「{v}」"], f(n12h)
+# ⑫i 认得出的和认不出的同在一格 → True (认得出的那个算数), 认不出的照记
+n12i, _, _ = s.transform_row(M11, "r12i", {"文案": "c", "状态": "爆贴", "维护情况": ["9/15🍟", "准备投流"]})
+assert f(n12i).get("paid_promoted") is True and f(n12i).get("paid_promoted_reason") == "「维护情况」取值「9/15🍟」", f(n12i)
+assert f(n12i).get("paid_marker_unrecognized") == ["「维护情况」取值「准备投流」"], f(n12i)
 # ⑫d 有这一列但没投流取值 → false(运营 2026-09-22:「维护情况」留空=没做维护)
 n12d, _, _ = s.transform_row(M11, "r12d", {"文案": "c", "状态": "爆贴", "维护情况": ["关注"]})
 assert f(n12d).get("paid_promoted") is False, f"有列无投流值该判 false: {f(n12d)}"
 # ⑫e 【没有】这一列 → 缺键, 不是 false。写 false = 拿"这张表没这列"冒充"没投流"。
 n12e, _, _ = s.transform_row(BASE, "r12e", {"文案": "c", "状态": "爆贴"})
 assert "paid_promoted" not in f(n12e), f"没有这一列时必须缺键: {f(n12e)}"
-# ⑫f 只看 _PAID_COLS 这两列, 不许扫整个 raw_extra —— 生产里别的列也带 🍟:
-#    RIO 有个账号昵称叫「🍟的快乐小记」, ANSHEN 有两条评论区快照带 🍟。
-#    夹具用一个【已声明进 raw_extra 且不在 _PAID_COLS 里】的列, 才够得着这个场景
+# ⑫f 只看 _common.PAID_COLS 这两列, 不许扫整个 raw_extra —— 生产里别的列也带 🍟:
+#    RIO 有个账号昵称带 🍟, ANSHEN 有两条评论区快照带 🍟。
+#    夹具用一个【已声明进 raw_extra 且不在 PAID_COLS 里】的列, 才够得着这个场景
 #    (账号名走 _account_name 中间量, 判据跑完之后才倒进 raw_extra, 测不到)。
 M12f = dict(BASE, project_specific_fields_to_raw_extra=[
     *BASE["project_specific_fields_to_raw_extra"], "评论区快照"])
 n12f, _, _ = s.transform_row(M12f, "r12f",
-    {"文案": "c", "状态": "爆贴", "评论区快照": "楼主是🍟的快乐小记 求链接"})
+    {"文案": "c", "状态": "爆贴", "评论区快照": "楼主是🍟的合成小号 求链接"})
 assert "paid_promoted" not in f(n12f), \
     f"别的列里的 🍟 不是投流标记, 判据不许扫整个 raw_extra: {f(n12f)}"
 

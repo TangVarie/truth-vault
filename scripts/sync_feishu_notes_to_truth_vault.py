@@ -43,7 +43,11 @@ import requests
 from supabase import Client
 
 from _common import (
+    PAID_COLS,
+    PAID_HIT_CLASSES,
+    PAID_TIER_KEY,
     assert_db_schema_ready,
+    classify_paid_element,
     ensure_account_exists,
     ensure_project_exists,
     extract_tier,
@@ -53,6 +57,7 @@ from _common import (
     load_mapping,
     make_note_id,
     map_intent,
+    paid_cell_elements,
     parse_array,
     parse_numeric,
     parse_feishu_date,
@@ -336,14 +341,19 @@ _CM_POSTHOC_COLS = ("爆帖控评置顶", "爆帖置顶评论")
 # 实测投流标记散在【三处】且互不重叠(共 20 行): 维护情况 8 · 关注情况 3 · 途鸽的
 # tier 源含「关注后续流量」9。只读「维护情况」漏 12/20 = 60%。
 # ⚠️ 判据按【数组元素】匹配, 不扫整个 raw_extra —— 全 blob 扫 🍟 会误收 RIO 的账号昵称
-# 「🍟的快乐小记」和 ANSHEN 的两条评论区快照。
+# 带 🍟 的账号昵称、ANSHEN / XIWU_phase2 的评论区快照、NUC 的正文。
+# 2026-10-29 (D-133) 从「元素里含 🍟 / 投流」收紧成【元素精确匹配】: 「M/D🍟」「已投流，等回收数据」、
+# tier 源元素「关注后续流量」才算; 「准备投流」「不投流」、整串「关注后续流量 爆贴」这种认不出的
+# 不算投流, 记 paid_marker_unrecognized, 进 SQL 的隔离视图。判据本体和常量在 _common
+# (PAID_* / paid_cell_elements / classify_paid_element), SQL 那份在 notes_v1_22, 两边由
+# check_paid_boost.py 逐字比对。10-29 生产 20 篇 true 全是精确值, 收紧后 0 行变化。
 # 【为什么是三态不是布尔】: 无值只在【声明了这一列】的表里等于"没投流"; 没有这一列的
 # 表(今天 13 张)无值只是"不知道"。写 false 会是假阴性冒充已核实 —— 同 comment_maintained。
 # ⚠️ 挡不住什么(D-051): 挡不住运营投了流但一个标记都没打; 也挡不住把投流后的曝光数
-# 填回「曝光量」列 —— 后者靠 metric_snapshots 的历史快照对账(投流日期就写在 🍟 里)。
-_PAID_COLS = ("维护情况", "关注情况")
-_PAID_VALUE_EXACT = ("已投流，等回收数据",)
-_PAID_TIER_SRC_RE = re.compile(r"关注后续流量")
+# 填回「曝光量」列 —— 后者靠 audit_log 的逐夜读数对账(D-078 / D-133: 投流日期写在 🍟 里,
+# 前后读数见 truth_vault.v_paid_boost_readings; metric_snapshots 每个窗口只留最后一次, 当不了基线)。
+# 「维护时间」配纯数字「维护效果」(来源 B) 在 SQL 里算投流事件, 但【不】写 paid_promoted (owner Q1,
+# 闸二敏感性 D-128 的数字不变)。
 
 
 # 判据本体已移到 _common.skip_on_demand_on_cron —— daily-sync 里【每一步】自动处理都要用
@@ -1248,23 +1258,39 @@ def transform_row(
             flags["comment_maintained_seeded"] = cm_seeded
         note["data_quality_flags"] = flags
 
-    # ── 投流三态(A4)。写 data_quality_flags.paid_promoted: True/False/缺键 ────────
+    # ── 投流三态(A4 → D-133 元素精确匹配)。写 data_quality_flags.paid_promoted: True/False/缺键 ──
+    #   命中 (M/D🍟 / 已投流，等回收数据 / tier 源元素「关注后续流量」) → True, reason 文本与 A4 一字不差
+    #   (同一行每晚写出同一份 JSON, 不制造 audit 噪音);
+    #   只有认不出的 (准备投流 / 不投流 / 整串「关注后续流量 爆贴」…) → 不写 paid_promoted (= 不知道),
+    #   记 paid_marker_unrecognized。⚠️ 这一键同时保证 data_quality_flags 这一晚【一定带上】—— 它在
+    #   UPSERT_PROTECTED_COLS 里, 不带就保留库里旧 JSON, 以前子串判据写的 True 会永远留着。
     _paid_hits: list[str] = []
-    for _col in _PAID_COLS:
-        _pv = _cm_cell(_col)
-        if _pv in (None, "", []):
-            continue
-        for _v in ([str(x).strip() for x in _pv] if isinstance(_pv, list) else [str(_pv).strip()]):
-            if not _v:
-                continue
-            if "🍟" in _v or "投流" in _v or _v in _PAID_VALUE_EXACT:
+    _paid_odd: list[str] = []
+    for _col in PAID_COLS:
+        for _v in paid_cell_elements(_cm_cell(_col)):
+            _cls = classify_paid_element(_col, _v)
+            if _cls in PAID_HIT_CLASSES:
                 _paid_hits.append(f"「{_col}」取值「{_v}」")
-    if tier_src_seen and _PAID_TIER_SRC_RE.search(tier_src_str):
-        _paid_hits.append("tier 源含「关注后续流量」(运营 2026-09-22: 投流会给的标记)")
-    if _paid_hits:
+            elif _cls == "marker_like_unrecognized":
+                _paid_odd.append(f"「{_col}」取值「{_v}」")
+    if tier_src_seen:
+        # 拿 intermediates 里的原值拆 (多选是 list), 不拿 str() 之后的 tier_src_str 去搜子串。
+        _tier_hit = False
+        for _v in paid_cell_elements(intermediates.get(tier_intermediate_key)):
+            _cls = classify_paid_element(PAID_TIER_KEY, _v)
+            if _cls in PAID_HIT_CLASSES:
+                _tier_hit = True
+            elif _cls == "marker_like_unrecognized":
+                _paid_odd.append(f"tier 源取值「{_v}」")
+        if _tier_hit:
+            _paid_hits.append("tier 源含「关注后续流量」(运营 2026-09-22: 投流会给的标记)")
+    if _paid_hits or _paid_odd:
         flags = dict(note.get("data_quality_flags") or {})
-        flags["paid_promoted"] = True
-        flags["paid_promoted_reason"] = "; ".join(_paid_hits)
+        if _paid_hits:
+            flags["paid_promoted"] = True
+            flags["paid_promoted_reason"] = "; ".join(_paid_hits)
+        if _paid_odd:
+            flags["paid_marker_unrecognized"] = _paid_odd
         note["data_quality_flags"] = flags
     elif _CM_MULTISELECT_COL in fields_to_raw_extra:
         # 这张表有「维护情况」这一列, 而运营 2026-09-22 明确"留空 = 没有做维护" →

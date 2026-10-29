@@ -546,6 +546,56 @@ SELECT '97', 'H · 跨 schema 孤儿',
     '0',
     '> 0 = 删笔记时没清 aw 的改稿差异, 这些行还会进写作台的改稿摘要. 修法同 D-129: 先 CREATE TABLE autowriter.backup_tv_edit_diffs_<原因>_<日期> AS SELECT 这些行, 再 DELETE.'
 
+UNION ALL
+SELECT '98', 'B · truth_vault',
+    '投流证据链 v1_22 (D-133) 缺几个对象: 5 个视图 (v_paid_marker_elements / v_paid_boost_events / v_paid_boost_quarantine / '
+    'v_paid_boost_readings / v_paid_boost_evidence) + 6 个函数 (tv_safe_date / tv_raw_cell / tv_cell_elements / tv_pyrepr_elements / '
+    'tv_classify_paid_element / tv_parse_ops_date)',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT 11
+            - (SELECT COUNT(*) FROM pg_views WHERE schemaname = 'truth_vault'
+                 AND viewname IN ('v_paid_marker_elements', 'v_paid_boost_events', 'v_paid_boost_quarantine',
+                                  'v_paid_boost_readings', 'v_paid_boost_evidence'))
+            - (SELECT COUNT(DISTINCT p.proname) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+                WHERE n.nspname = 'truth_vault'
+                  AND p.proname IN ('tv_safe_date', 'tv_raw_cell', 'tv_cell_elements', 'tv_pyrepr_elements',
+                                    'tv_classify_paid_element', 'tv_parse_ops_date'))$q$
+    )::TEXT, 'N/A'),
+    '0',
+    '11 = schemas/notes_v1_22_paid_boost_evidence.sql 还没在生产跑 (owner 在 SQL editor 跑, 只建函数和视图, 可重跑); 1–10 = 跑了一半或被人删了, 整份重跑.'
+
+UNION ALL
+SELECT '99', 'I · 数据一致性',
+    'data_quality_flags.paid_promoted = true、却既不在 v_paid_boost_events 也不在 v_paid_boost_quarantine 的篇数 (D-133: 打了投流标记的每一篇都要有去处)',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(*) FROM truth_vault.notes n
+        WHERE n.data_quality_flags -> 'paid_promoted' = 'true'::jsonb
+          AND n.note_id NOT IN (SELECT note_id FROM truth_vault.v_paid_boost_events)
+          AND n.note_id NOT IN (SELECT note_id FROM truth_vault.v_paid_boost_quarantine)$q$
+    )::TEXT, 'N/A'),
+    '0',
+    '> 0 = sync 的判据 (_common.classify_paid_element) 和 v1_22 的 SQL 判据漂开了, 或者 paid_promoted 是旧判据留下的、这篇今晚还没重算 '
+    '(data_quality_flags 受 UPSERT 保护). 先看 v_paid_marker_elements 里这篇的行; CI check_paid_boost.py 的 parity 段本该挡住前一种.'
+
+UNION ALL
+SELECT '100', 'I · 数据一致性',
+    '投流标记要人看的两类 (认不出的标记元素数 / 投流标记被删的篇数): 前者 = v_paid_marker_elements 里 marker_like_unrecognized '
+    '(准备投流、不投流、整串「关注后续流量 爆贴」…); 后者 = audit_log 里 paid_promoted 从 true 变成非 true 的篇 (标记从飞书删了, 事件也跟着从视图里消失)',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(*) FROM truth_vault.v_paid_marker_elements WHERE class = 'marker_like_unrecognized'$q$
+    )::TEXT, 'N/A') || '/' ||
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(DISTINCT a.row_id) FROM truth_vault.audit_log a
+        WHERE a.schema_name = 'truth_vault' AND a.table_name = 'notes' AND a.operation = 'UPDATE'
+          AND a.changed_cols ? 'data_quality_flags'
+          AND a.changed_cols -> 'data_quality_flags' -> 0 -> 'paid_promoted' = 'true'::jsonb
+          AND COALESCE(a.changed_cols -> 'data_quality_flags' -> 1 -> 'paid_promoted', 'null'::jsonb) <> 'true'::jsonb$q$
+    )::TEXT, 'N/A'),
+    '0/0',
+    '前一个数 > 0 = 运营用了一种认不出的写法, 那几行在 v_paid_boost_quarantine 里 (reason = marker_like_unrecognized), 问运营是什么意思 (O-06), '
+    '要认就两边一起改 _common.PAID_* 和 v1_22 的 tv_classify_paid_element; 后一个数 > 0 = 有投流标记被删过, 按 audit_log 那一行找回原值, '
+    '问运营是标错了还是删错了 (10-29 生产 0 篇; 这条是全表扫 audit_log, 约 0.4 秒).'
+
 -- ── I · 数据一致性副作用 ──────────────────────────────────────────────
 UNION ALL
 SELECT '90', 'I · 数据一致性',
@@ -574,4 +624,4 @@ SELECT
     END AS status,
     hint
 FROM checks
-ORDER BY ord;
+ORDER BY length(ord), ord;   -- 编号到了三位 (#100), 按文本排会插到 '03' 和 '11' 中间

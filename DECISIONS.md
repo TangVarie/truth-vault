@@ -7551,3 +7551,70 @@ owner 10-27 填回裁决表：83 格（不一致 43 + 复核 40），每一格�
 - 帖被改写得太多（包含度 < 0.45）的认不回来，照旧补录。
 - 主索引弱对上（`edited` / `fuzzy`）一个旧的存档版本的帖，不再拿底稿比一次。
 - 一张牌查过重、一天后又被重抽（占位 1 天）：和以前一样，同一个角度可能被写两遍；底稿转正之后才销牌。
+
+## D-133 · 投流证据链 F1/F2：事件、隔离、前后读数全是视图，判据按元素精确匹配（2026-10-29，G-15 证据部分）
+
+来源：owner 10-29「TV 功能说明：投流证据链」（F1 投流事件、F2 投流前后读数、F3 搜索指数导入、F4 看板）。先做 F1 / F2；F3、F4 另记 G-21、G-22。文档里留给 owner 的 9 个口径问题，owner 说「按我的风格直接定」，下面全按默认定。参照 Q2b（`data-analysis/ops-answers-2026-09-22.md`）、D-078、D-119 第 5 条。
+
+### 说明文档和代码 / 生产对不上的地方（按代码和生产来）
+
+- 文档说「关注情况」里的 🍟 和 tier 源的「关注后续流量」不在投流判据里。其实 09-22（073cb91，A4）起就在；10-29 生产 `paid_promoted = true` 的 20 篇 = 维护情况 8 + 关注情况 3 + 途鸽 tier 源 9，和 09-22 一样。
+- 文档要按元素精确匹配；当时的代码是逐元素【子串】（`'🍟' in v or '投流' in v`），「准备投流」「不投流」都会判成投流。tier 源是对 Python `str(list)` 的整串做正则。
+- 「维护效果 ≥3 种填法」：Q2b 列的是三种【口径】（docx 12h 绝对值 / 09-17 增长 / 09-22 差额），不是格式。生产的格式是：数字字符串数组（HATHERINE、XIWU_phase2）、单个字符串（SPX）、非数字（XIWU_phase2 的「20条评论」）。
+- 「维护时间」不是 linkcheck 建的列，运营 09-17 说是人工列、机器不许覆盖；生产里有 `M月D日` / `YYYY/M/D` / `M/D` 三种写法，09-19～10-12 的历史里还有毫秒数。含义也分行：SPX 老的 9 行是控评日期，BJS_phase2 `10/26` 和 XIWU_phase2「一轮 / 二轮维护」是铺评，只有配着数字「维护效果」的像投流。
+- 按文档原样做，试点项目 HATHERINE 是 0 个事件：它的 20 篇只有「维护时间 + 维护效果」，没有 🍟、投流、关注后续流量。
+
+### 定了什么
+
+1. **只推翻 D-119 第 5 条里「证据链」这一块。** 第二标签「投流后增量」仍不做，重开条件不变（维护效果有值 ≥200 篇、跨 ≥3 个项目）。不训练模型、不做因果归因、不动 tier / 书架 / L2。
+2. **判据：只读白名单列，按元素精确匹配。**
+   - 只读 `raw_extra` 的「维护情况」「关注情况」「维护时间」「维护效果」（顶层空才看 `_undeclared`，同 sync 的 `_cm_cell`）和 `_tier_source_raw`。从不扫整个 `raw_extra` / `data_quality_flags` 的文本：生产里 RIO「帐号昵称」、ANSHEN 两条评论区快照（1 条现版 + 1 条只在历史里）、XIWU_phase2 一条评论区快照（10-22 起，文档没提）、NUC 一篇正文、10 篇的 `paid_promoted_reason` 都带 🍟。
+   - 维护情况 / 关注情况的元素：`M/D🍟`（`^([0-9]{1,2})/([0-9]{1,2}) *🍟$`）= 带日期的投流；整格「已投流，等回收数据」= 没日期的投流；tier 源元素「关注后续流量」= 没日期的投流；其余带 🍟 / 投流 / 薯条 / 关注后续流量 的（准备投流、不投流、整串「关注后续流量 爆贴」、Sep15🍟、贴进来的评论）= 认不出，进隔离、不算投流；别的取值（关注、✅、控评&置顶✅ …）只列出来备查。
+   - **`paid_promoted` 同一判据收紧**（`_common.classify_paid_element`，SQL 那份 `truth_vault.tv_classify_paid_element` 逐字相同）：只有认不出的 → 不写 `paid_promoted`（不知道，owner Q8），记 `paid_marker_unrecognized`；reason 文本和 A4 一字不差。10-29 生产 20 篇 true 全是精确值，按新判据逐篇模拟 0 篇变化、认不出 0 个。
+   - **来源 B（owner Q1）**：「维护时间」第 i 个元素配「维护效果」第 i 个、且后者是纯数字，算一次投流，日期 = 维护时间。两列个数对不上（且效果里有数字）→ 隔离 `time_effect_count_mismatch`；维护时间配不上数字效果 → 不算（owner Q7），元素视图里写 `ops_date_unpaired`。**来源 B 不写 `paid_promoted`**，闸二敏感性（D-128）的数字不变。
+   - 同一篇同一天在几列都标了 = 一次事件（09-15～09-17 BJS 7 篇两列都有）。
+3. **日期（owner Q2：按发布日补年，再两头核，不猜）。** JSON 数字 = 毫秒（2000–2100 之外不认），按北京日；`YYYY/M/D` 照写；`M/D🍟`、`M月D日`、`M/D` 没有年：取北京发布日那年，早于发布日就看下一年，但只认跨年那一种（12 月发 1 月投：下一年那天已经到了、离发布 ≤ 92 天），否则 → `before_publish`，不随今天变（复审：不设上限的话，一条早于发布日的手误到明年那天就成了「发布一年后投流」的事件，CI 的 before_pub 夹具也会在 2027-10-22 变红）。然后核：早于发布日 `before_publish`、晚于北京今天 `date_in_future`、发布日未知 `year_unresolvable`、写法认不出或日历上没有（2/30）`unparseable_date`；🍟 的日期晚于 TV 第一次看到这个元素的那天 → `date_after_first_seen`（来源 B 不核这条：维护时间可能先填计划日、效果事后补）。
+4. **读数（F2，只读 audit_log）。**
+   - 一次「读到」= 完整同步盖了 `last_seen_run_id` 的那一行（UPDATE 带这个键，或 INSERT 里它非空）；同一北京日取最后一次；v1_9 之前没有戳，这一篇第一次盖戳之前、且早于 2026-08-31 的写入算一次读（`pre_v1_9_any_write`）。
+   - **基线 = 投流日之前最后一次读（owner Q3）**；投流当天单列 k=0、前后不明；D+1 / D+3 / D+7 只认正好那天，不向邻日借。这也更正了 D-078 和 ops-answers §0.3 的例子：SPX 9/16🍟 那篇「阅读 778 · 互动 73」是 9/16 15:10（北京）读到的，投流当天、前后不明，现在算 k=0，不是基线。
+   - 评论数读 typed `comments_count`；它为空、且这次读在 09-18（北京）之前，回退 raw_extra 的「实时数据.评论数」（顶层 / `_undeclared`），`comments_source` 写明。`上次评论数` 不用（owner Q4）。巡查时刻（「最近检查时间」）并排给：评论数没变可能只是 linkcheck 没再巡。
+   - 曝光 / 阅读 / 互动在 k ≥ 0 时，投流日 0 点（北京）以后这个数改过、或「相关截图」的 file_token 集合换过才给值（tmp_url 每晚都变，不比），否则 `missing:no_rescreenshot`，并给值是哪天来的。
+   - 缺就写 `missing:<原因>`（not_due / before_history / no_reading_before_boost / no_full_sync_that_day / value_null / value_not_numeric / no_rescreenshot），值一律 NULL，从不写 0；增量只在两头都 ok 时算。
+   - vanished / 下线的篇照样算，带 `vanished` 列（owner Q5）。
+5. **「维护效果」单列（owner Q6）**：`ops_effect_*` 一块，`metric_flag` 一律 `unknown`，等运营答 O-06；不进任何增量；另给它和当前曝光比（10-29 有 2 篇效果大于当前曝光）。
+6. **扩 D-078（保留任务以后做时，I-10）**：先抽的清单再加两样，至少覆盖事件 ∪ 隔离里的篇：(a) `raw_extra` 和 `data_quality_flags` 的变化行（投流标记、维护三列、09-17 之前的评论数、`paid_promoted` 都在里面）；(b) 这些篇的完整同步观测行（带 `last_seen_run_id` 的）。D-078 第 2 条「只动 updated_at / last_seen_* 的行是噪音、可放心删」对这些篇不再成立。`schemas/notes_v1_2.sql:665` 的「30 天 retention」注释早就不对，不改那份文件（生产是逐字 apply 的），以本条为准。
+7. **全是视图，不建表（owner Q9，偏离文档的「隔离表」）。** 输入全在 TV 里（`notes.raw_extra` / `data_quality_flags` / `publish_time`、`audit_log`），audit_log 本身就是改不了的历史；建表要加夜跑写入、失败聚合、`_REQUIRED_COLUMNS`、D-122 批写列卫生、一盏灯和 docs/29 一行，而且运营一改值就过期。视图的隔离会自己清：运营补了日期，下一次读就从隔离挪进事件，不用审核状态。改成物化视图（daily-sync 里刷新）的条件：一次读超过 5 秒、F4 要一个便宜的公开读、或者运营删标记让事件从视图里消失（verify #100 数这个）。
+8. **不进夜跑**：没有新步骤、新灯、docs/29 行。夜跑唯一的变化是 sync 判据收紧（今天 0 行）。
+
+### 实现时和计划不一样的地方
+
+- 函数 6 个（计划 4 个）：多了 `tv_raw_cell`（_cm_cell 同一规则，三处在用）和 `tv_classify_paid_element`（SQL 判据只住一处，CI 逐字比对字面量）。`tv_parse_ops_date` 收 `today` 参数、标 IMMUTABLE（计划是 STABLE 读 now()），CI 才能拿定值逐例测。两个拆元素函数标了 `ROWS 3`：默认估 1000 行，本地 / CI 的 PG16（`jit` 默认开）五个视图因此被 JIT 编译、一次读 2–4 秒，标了之后 10–20 毫秒；生产 `jit = off`，不受这个影响，标了也只是让行数估计更准。
+- 补年多了一刀：计划写「早于发布日就 +1 年」，那会把「比发布早一天」报成 `date_in_future`；现在下一年还没到、或离发布超过 92 天，都报 `before_publish`。生产正好有 1 例（HATHERINE 一篇维护时间比北京发布日早 1 天）。
+- `paid_promoted_state` 缺键叫 `unknown`（计划叫 no_column）：缺键也可能是这篇还没按新声明重算（XIWU_phase2 两篇最后见于 10-19 / 10-26）。
+- 「TV 第一次看到这个元素」用同一个拆元素函数逐个比，不用 `@>`：文本格、单字符串格也比得了。
+- 年份规则列叫 `year_rules`（数组：同一天两条标记的规则可能不同）。
+
+### 验证
+
+- CI python job：`scripts/check_paid_boost.py` ① 32 个格子逐元素定类（正例、同列反例、tier 源 `str()` 形状）② 25 行过真的 `transform_row`（三态、`paid_marker_unrecognized`、reason 一字不差；6 个陷阱行不碰；`transform_row` 写出的 raw_extra 和 SQL 夹具拼法一字不差）③ 改坏代码：退回 A4 子串判据 → 「准备投流」「整串关注后续流量」红，改成整块扫 🍟 → RIO / ANSHEN / XIWU_phase2 红，元素判据换子串 → 4 个反例红 ④ SQL ↔ Python 字面量两个方向都比（17 个）、白名单和预筛键表、btrim 字符集 ⑤ 禁止把 raw_extra / data_quality_flags 转文本搜 🍟、禁止回到 `'🍟' in _v`（规则先对坏样本自测）。`check_comment_maintained.py` ⑫c 改成生产形状（多选 list），新增 ⑫g / ⑫h / ⑫i。
+- CI sql job：v1_22 apply 两遍；`scripts/check_paid_boost.sql`（同一份夹具）(a) 元素判据 + 15 个日期 (b) 事件 / 隔离集合逐条相等 (c) true 的篇都有去处 (d) 6 个陷阱三张视图 0 行 (e) 反证：同一批陷阱整块转文本搜 🍟 6 篇全中 (f) F2 21 格逐格对（同日两次取后一次、当天不当基线、D+3 只有 essence 写 = 缺、D+7 清空 = value_null、INSERT 带空键不算基线、09-18 前回退 `_undeclared` 的评论数含数字字符串、只换 tmp_url = 没重截、新 file_token 给值、v1_9 前、进库晚于投流日、not_due、缺的格子没有值也没有 0）。
+- 反证（本地 PG16，改一处跑一遍）：SQL 16 处改坏 16 处红——基线含当天、向邻日借、任何写都算读、缺的评论写 0、tmp_url 算重截、子串判据、不去重、补年直接 +1、不核首次出现、个数不对也配、没配上的维护时间算事件、INSERT 空键跳过、不回退 raw_extra、不认 v1_9 前、去掉 not_due、tier 源子串。
+- 本地 PG16 按 ci.yml sql job 的顺序整段重放（52 步，含新两步）全过，整段约 11 秒；ci.yml python / yaml job 本地重放 104/104 过；`check_system_map` 六条过（heredoc 块数没涨，G6 491,781 字节）。
+- 生产只读（10-29）：白名单列的子集（67 篇，不含正文）拷进本地库跑视图：事件 42（🍟 10 + 来源 B 32：HATHERINE 23、SPX 6、XIWU_phase2 3），隔离 12（TUGE `关注后续流量` 9、SPX「已投流，等回收数据」1、HATHERINE 个数对不上 1、HATHERINE 早于发布 1），认不出 0，`paid_promoted = true` 的 20 篇全有去处。🍟 元素第一次出现都不早于投流日。F2 拿 BJS 9/15🍟、SPX 9/16🍟、HATHERINE 10-14 三篇手对过 audit_log。
+
+### 挡不住什么
+
+- 投了流一个标记都没打；发布后 0–2 天就投的多半没有基线（10-29 本地跑生产子集：来源 B 的 32 次里 27 次是发布后 0–2 天，🍟 10 次里 1 次）。
+- 曝光总数里本来就含投流量；评论增量里混着铺评（`comment_maintained_seeded` 并排给，BJS 9/15 那几篇 09-17 前后 0 → 50 就是铺的）。
+- 夜跑粒度，投流当天前后不明；note_id 换号（D-129）把历史切成两段。
+- tier 是 TV 的 tier（UPSERT 保护，整批翻转闸挡住的那晚不写）。
+- 飞书里删掉的标记，事件跟着从视图消失（verify #100 看 `paid_promoted` 真 → 非真；10-29 为 0）。
+- 运营换一种全新写法（比如「9月15日🍟」）两边一起判认不出、进隔离——对的，但要人看隔离视图才知道。
+- 视图在生产上还没跑过（还没 apply），执行计划只在本地看过；apply 后读数报告里要附 `EXPLAIN ANALYZE`（生产 `jit = off`，本地 / CI 的 PG16 默认开，见上一节 `ROWS 3`）。
+
+### 上线顺序
+
+1. 合并前只读记一份基线：书架 `v_flywheel_lesson_cards` 已策展卡数、按项目的 tier 分布、按项目的 `paid_promoted` 真 / 假 / 缺、闸二敏感性篇数。
+2. owner 在 SQL editor 跑 `schemas/notes_v1_22_paid_boost_evidence.sql`（只建函数和视图，可重跑；或 MCP `apply_migration`，文件与 main 一字不差）。verify #98 应为 0。
+3. 合并后第一晚：上面四个数都不变，`paid_promoted = true` 仍 20 篇，verify #99 = 0、#100 = 0/0。
+4. 读数报告 `data-analysis/paid-boost-evidence-readout-2026-10-29.md` 按骨架填（逐例证据，不做因果；维护效果是运营自报）。
