@@ -35,9 +35,10 @@ check_desk_use_rate.py
   · 够不够格判只有一条规则(_judgeable): verdicts() 和「没有项目够格判」那句都调它, ✓ 那句照它写, 不各写一遍;
   · 只看在用的: 回看期内一张牌都没发、窗口里也没有一篇接住的项目本来就没在用写作台, 它的没接住归角度台账灯
     判据 C(写作台零动静), 这里不重复喊(D-053)。没抽新牌、翻更早的牌写出接住的帖的也算在用(接住本身就是证据,
-    codex review on TV#208)。在用的项目两盏灯会同时亮: 判据 C 的「连上了、写完没存档」也算在用的项目。两边
-    读的是同一批 tv_note_links, 光凭链接分不清「没存档」和「被重写」(两种都是补录副本), 分开它们要看写作台
-    这段时间存没存这个项目的稿 —— 判据 C 那张表的「真稿」列。亮黄的报文里点明这一句;
+    codex review on TV#208)。在用的项目两盏灯会同时亮: 判据 C 的「查过稿、发出去对不回」也算在用的项目。两边
+    读的是同一批 tv_note_links, 光凭链接分不清「没在写作台写」和「被重写」(两种都是补录副本), 分开它们要看写作台
+    这段时间查没查过这个项目的稿 —— 判据 C 那张表的「查重底稿」列(W-38 / D-132; 写手没有存档这一步, 不看存档)。
+    亮黄的报文里点明这一句;
   · 15 篇是比例能不能读的样本下限, 不随窗口放大(它管的是一个比例有几个分母, 不是一周该发多少);
   · 分母用对过账的, 不用发布数: 没对过账的不知道是不是写作台的稿, 当成没接住会在 tv-sync 某晚失败时冒假黄。
 rc=2: 判不了 —— 映射的 TV 项目窗口内一篇都没发, 或发了但一条链接都没有(tv-sync 没对过账); 或者【某一个】项目
@@ -90,7 +91,7 @@ USE_TAIL_DAYS = DRAW_LOOKBACK_DAYS
 # 改动差异的当前口径(aw deskcore/tvlink.py DIFF_REV): 2 = 话题行两边都剥、写作台那版晚于发布的不算(10-20)。
 # 旧口径的行(0 / 1)把话题行算成"人删了一句"、把抄回去的副本算成"人改过", 不能拿来算未改动。
 CURRENT_DIFF_REV = 2
-# 对上写作台存档的几种(tv-sync 的 match_kind)。同 check_angle_ledger_leak.CAUGHT_KINDS、aw _TV_BACKFILL_KINDS。
+# 对上写作台版本的几种(tv-sync 的 match_kind)。同 check_angle_ledger_leak.CAUGHT_KINDS、aw _TV_BACKFILL_KINDS。
 CAUGHT_KINDS = frozenset({"body_exact", "title_exact", "fuzzy", "edited", "tv_lineage"})
 CHUNK = 200     # .in_() 走 URL, 约 26 KB 撞线(D-080), 一批 ≤200 个 id
 
@@ -332,12 +333,12 @@ def report(g: dict, window_days: int, delay_days: int) -> int:
     _warn("写作台的稿没被用上",
           f"{span} 发布的帖里, {len(hits)} 个项目写作台在用(发过牌或有接住的帖)、在用期里发出去的却大多不是写作台的稿: "
           + "; ".join(f"{h['project']}({h['detail']})" for h in hits)
-          + " —— 写作台在用、稿子没被用上: 要么写完没存档, 要么存了、在飞书里被整篇重写了(稿短、彼此像、版式不对)。"
-            "光看链接分不清这两种, 看写作台这段时间存没存这几个项目的稿: 角度台账灯判据 C 那张表的「真稿」列"
+          + " —— 写作台在用、稿子没被用上: 要么稿子没在写作台写(没查过重), 要么查过、在飞书里被整篇重写了(稿短、彼此像、"
+            "版式不对)。光看链接分不清这两种, 看写作台这段时间查没查过这几个项目的稿: 发帖对账灯判据 C 那张表的「查重底稿」列"
             "(它默认看最近 7 天, 要盖住这里的窗口就手动跑 check_angle_ledger_leak.py --window-days 21)。"
-            "真稿接近 0 = 没存档, 判据 C 多半也亮着「连上了、写完没存档」, 先按那边查 score_drafts 存档; "
-            "存了不少稿、发出去的仍对不上 = 被重写, 修在 autowriter 仓(写作台出稿质量, TV docs/32 第一批 / 第二批), "
-            "先看这几个项目的改稿差异摘要和最近几批稿子长什么样。TV 这边两种都改不好。")
+            "查重底稿接近 0 = 没在写作台写, 判据 C 多半也亮着「写作台没查过这个项目一篇稿」, 先按那边查; "
+            "查过不少稿、发出去的仍对不上 = 被重写, 修在 autowriter 仓(写作台出稿质量, TV docs/32 第一批 / 第二批), "
+            "先看这几个项目的改稿差异摘要和最近几批稿子长什么样。写手没有存档这一步; TV 这边两种都改不好。")
     return 1
 
 
@@ -512,7 +513,8 @@ def selftest() -> int:
     assert "未改动率: 待重算" in out and "1/1" not in out, "没有 rev 2 的行时不打未改动的数"
     rc, out = run(G(many, low, {"n00": D(False), "n01": D(True, True)}, {"d2": 3}))
     assert rc == 1 and "未改动率 1/2(50%)" in out, out
-    assert "没存档" in out and "真稿" in out and "判据 C" in out, "亮黄要说清怎么和判据 C 的「写完没存档」分开"
+    assert "查重底稿" in out and "判据 C" in out and "被重写" in out, "亮黄要说清怎么和判据 C 的「没在写作台写」分开"
+    assert "写完没存档" not in out and "查 score_drafts 存档" not in out, "写手没有存档这一步(D-132)"
 
     def row_of(out, tv):
         return next(ln.split() for ln in out.splitlines() if ln.startswith(f"  {tv} "))
