@@ -3,12 +3,13 @@
     "闸二结论 → 写作台的人工批准层（D-116）。不放进冻结题库 fq-v0.1：往题库里加字段会改掉冻结摘要，把答案劈成两批。",
     "馆员（librarian/patterns.py）读它：gate2_run 和库里最新一轮闸二对不上时整份不下发（fail-closed）。",
     "闸二重跑（G-12）后这份要按新一轮结论重过一遍、升 version，不自动沿用。version 2（2026-10-26，D-127）：「正文抛问题」移进 suppressed。",
+    "version 3（2026-10-30，D-134）：「品牌别硬插」指令照常下发，但 examples=false：不给卡标命中、馆员不偏着借（「后20%」八成是品牌词只在连写话题标签的残渣里，正文没提品牌，G-20 / G-24）。examples 缺省 = true。",
     "follow.any_of: 卡的源笔记有其中任一取值就算「命中」；follow.none_of: 一个都没有、且 requires 里的题都答过，才算命中（「别这么写」的规律）；",
     "follow.skip_if: 有其中任一取值的卡不是这条规律的例子，不算命中（none_of 规律里 requires 题被压着的取值必须列在这里，免得从后门下发）。",
     "CI（scripts/check_desk_delivery.py）核：每个取值在闸二产物里都是 validated、版本对得上；新发现（hypothesis ?）必须有 owner 批准；",
     "闸二 validated 的取值要么在 patterns 里、要么在 suppressed 里，不许静默漏掉；题库原话来源的指令必须和题库逐字一致；aw_instruction=never 的永不出现。"
   ],
-  "version": 2,
+  "version": 3,
   "gate2_run": "gate2-20261010",
   "bank_version": "fq-v0.1",
   "bank_sha256": "ba0f570c47d594ca4dad571c5a9f5d06da51861b041ba364c3a915220b985ddd",
@@ -37,6 +38,8 @@
       "evidence": "品牌名进标题 OR 0.25、开头就出现 OR 0.27、正文中段才第一次出现 OR 0.30，都是项目内爆的几率明显更低",
       "follow": {"none_of": [["brand_in_title", "是"], ["brand_first_position", "前20%"], ["brand_first_position", "中间"]],
                  "requires": ["brand_first_position"], "skip_if": [["brand_first_position", "未出现"]]},
+      "examples": false,
+      "examples_off_why": "D-134（2026-10-30）：brand_first_position=后20% 的 199 篇里 162 篇的品牌词只出现在话题标签里（code:v1 去不干净连写标签 #A#B#C，残渣留在正文末尾，G-20 / G-24），这些卡正文其实没提品牌；标成命中会让馆员偏着借不提品牌的卡，等于从后门下发 owner 压着的「未出现」。指令本身（别进标题、别开头点名、别中段硬插）不受影响，照常下发。修好切法、重抽这道题之后再开",
       "source": "owner 2026-10-16 G-02 ③ 按 B + 预注册 −（D-116）"
     }
   ],
