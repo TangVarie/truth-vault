@@ -257,9 +257,19 @@ def gather(sb, since_iso: str) -> dict:
         s["drawn"] += 1
         if a.get("consumed_version_id"):
             s["consumed"] += 1
+    # 一版一篇: 同一版下可以有几行指纹 —— 发出去的帖和底稿不一样的, 帖的文字也记一行在同一版下(aw W-38 转正、W-40 对上存档
+    # 版本的帖)。按行数会把一篇改过再发的稿数成两篇。没有 version_id 的老行各算一篇。带坐标 = 这一版任一行带了 angle_key。
+    seen: dict[str, dict] = {}
     for f in fps:
         if f.get("version_id") in ingested:
             continue
+        vid = f.get("version_id") or f"row:{f.get('id')}"
+        if vid in seen:
+            if f.get("angle_key") and not seen[vid]["key"]:
+                seen[vid]["key"] = True
+                slot(seen[vid]["pid"])["with_key"] += 1
+            continue
+        seen[vid] = {"pid": f["project_id"], "key": bool(f.get("angle_key"))}
         s = slot(f["project_id"])
         s["drafts"] += 1
         if f.get("angle_key"):
@@ -501,6 +511,9 @@ def selftest() -> int:
     FPS = ([{"id": f"f{i}", "project_id": "d1", "angle_key": None, "version_id": f"vi{i}",
              "created_at": "2026-10-14T00:00:00"} for i in range(8)]                 # 补录副本: 不算稿子
            + [{"id": "g1", "project_id": "d1", "angle_key": "k1", "version_id": "v9",
+               "created_at": "2026-10-13T07:00:00"},
+              # 同一版下发出去的帖那一行(aw W-38 / W-40): 还是一篇(反证: 按行数这里会是 2 篇)
+              {"id": "g2", "project_id": "d1", "angle_key": "k1", "version_id": "v9",
                "created_at": "2026-10-13T07:00:00"}])
     SNAPS = [{"id": "s1", "project_id": "h1", "checked_at": "2026-10-15T03:00:00+00:00", "title": "不该被读到"},
              {"id": "s2", "project_id": "h1", "checked_at": "2026-10-16T03:00:00+00:00", "title": "不该被读到"},
