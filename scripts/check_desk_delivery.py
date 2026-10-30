@@ -45,6 +45,9 @@ def s1_consistency() -> None:
     used: set = set()
     for p in D["patterns"]:
         f = p["follow"]
+        assert p.get("examples", True) in (True, False), f"{p['id']}: examples 只能是 true / false"
+        if p.get("examples") is False:
+            assert str(p.get("examples_off_why") or "").strip(), f"{p['id']}: examples=false 要写 examples_off_why (D-134)"
         assert bool(f.get("any_of")) != bool(f.get("none_of")), f"{p['id']}: any_of / none_of 二选一"
         assert set(f.get("requires") or []) <= {q for q, _ in f.get("none_of") or []}, f"{p['id']}: requires 只给 none_of 用"
         assert not f.get("skip_if") or f.get("none_of"), f"{p['id']}: skip_if 只给 none_of 用"
@@ -83,9 +86,19 @@ def s2_hits() -> None:
         "e": {"brand_first_position": "后20%", "brand_in_title": "是"},
         "f": {"brand_first_position": "后20%"},
     }
-    h = P.card_hits(ans, D)
+    # none_of 的判法照旧要对: 拿一份把 examples 打开的批准层来测 (D-134 之前就是这样)
+    on = json.loads(json.dumps(D))
+    for p in on["patterns"]:
+        p.pop("examples", None)
+    h = P.card_hits(ans, on)
     assert h == {"a": ["ending_asks_reader", "brand_placement"], "f": ["brand_placement"]}, h
-    print("  §2 命中: any_of / none_of / 没答过不算 / 没露品牌不算 ✓")
+    # D-134: 「品牌别硬插」examples=false —— 指令照常下发 (规律段 / patterns 里还有它), 但一张卡都不标命中
+    h = P.card_hits(ans, D)
+    assert h == {"a": ["ending_asks_reader"]}, h
+    bp = next(p for p in D["patterns"] if p["id"] == "brand_placement")
+    assert bp.get("examples") is False and bp["instruction"] in P.render_block(D), "examples=false 只关命中, 指令照给"
+    assert "brand_placement" in {p["id"] for p in P.public_patterns(D)}
+    print("  §2 命中: any_of / none_of / 没答过不算 / 没露品牌不算 / examples=false 只给指令不标卡 ✓")
 
 
 class _FV:
