@@ -199,7 +199,7 @@ FROM trap;
 |---|---|---|---|
 | 书架已策展卡数 | 313 | 313 | 315（今晚策展新进 2 张，`curated_at` 都在 08:55 UTC 前后；不是 v1_22 带来的） |
 | 全库 tier 分布 | 趴 5,169 · 空 615 · 风控 310 · 爆 304 · 评估中 125 · 大爆 114 · 预备 108 · 未知 61 · 参考 2 · 数据异常 1 | 同左（共 6,809） | 趴 5,200 · 空 593 · 风控 310 · 爆 304 · 评估中 127 · 大爆 116 · 预备 108 · 未知 64 · 参考 2 · 数据异常 1（共 6,825：今晚新入库 16 篇，加上飞书补了数据的篇从「空」挪进各档；视图只读，不写 tier） |
-| `paid_promoted` 真 / 假 / 缺（分项目） | ANSHEN 2/199/0 · BJS_phase1 7/175/0 · BJS_phase2 0/95/0 · HATHERINE 0/327/0 · SPX 2/641/0 · TUGE 9/178/0 · XIWU_phase2 0/184/2 | 真的分项目全同（ANSHEN 2 · BJS_phase1 7 · SPX 2 · TUGE 9，共 20）；假的 SPX 655、TUGE 182（今晚新帖），其余同；缺的仍是 XIWU_phase2 2 篇 |
+| `paid_promoted` 真 / 假 / 缺（分项目） | ANSHEN 2/199/0 · BJS_phase1 7/175/0 · BJS_phase2 0/95/0 · HATHERINE 0/327/0 · SPX 2/641/0 · TUGE 9/178/0 · XIWU_phase2 0/184/2 | 真的分项目全同；假的 SPX 642、TUGE 179、XIWU_phase2 204（10-29 入库的新帖） | 真的分项目全同（ANSHEN 2 · BJS_phase1 7 · SPX 2 · TUGE 9，共 20）；假的 SPX 655、TUGE 182（今晚新帖），XIWU_phase2 204 和夜跑前一样，ANSHEN / BJS_phase1 / BJS_phase2 / HATHERINE 同合并前；缺的仍是 XIWU_phase2 2 篇 |
 | 闸二敏感性剔除篇数（投流一项） | `paid_promoted = true` 的 20 篇 | 同（20 篇） | 同（20 篇） |
 
 verify #99（true 却没有去处）= **0**，#100（认不出 / 标记被删）= **0 / 0**（apply 后和第一晚后两次都是）。第一晚后事件 42、隔离 12，和 §2 / §3 一样。
