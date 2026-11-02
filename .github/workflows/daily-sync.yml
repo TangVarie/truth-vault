@@ -146,6 +146,14 @@ jobs:
             echo "::error::ANTHROPIC_API_KEY/ANTHROPIC_BASE_URL not configured on a scheduled run — essence and curate would be skipped silently. Fix repo secrets."
             exit 1
           fi
+          # FEISHU_APP_ID / FEISHU_APP_SECRET 也一样 (外部审计 11-02 F01; D-090 / D-100 那两条漏了它): 飞书入库那一步是
+          # `env.FEISHU_APP_ID != ''` 才跑, 定时跑少了 APP_ID 会被判 skipped, 聚合以前把 skipped 当合法、看门狗只看
+          # conclusion=success —— 一整晚没有新笔记进来, 下游的灯读到的是"空"而不是红。少的是 APP_SECRET 时入库那步会跑、
+          # 脚本自己报错, 这里一起拦, 省得等它连飞书才红。手动触发照旧优雅跳过。
+          if [ "${{ github.event_name }}" = "schedule" ] && { [ -z "$FEISHU_APP_ID" ] || [ -z "$FEISHU_APP_SECRET" ]; }; then
+            echo "::error::FEISHU_APP_ID/FEISHU_APP_SECRET not configured on a scheduled run — the Feishu ingest would be skipped and nothing new would come in. Fix repo secrets."
+            exit 1
+          fi
 
       - name: feishu → TV (per project from mappings/)
         id: feishu_sync
@@ -242,7 +250,8 @@ jobs:
             [ "$rem" = "0" ] && { echo "  ✅ $p essence 已全部标完"; continue; }
             echo "─── essence annotate (直连) · project=$p · 待标=$rem · 每日上限=$WORKER_LIMIT ───"
             rc=0; python annotate_essence_pass.py "$p" --limit "$WORKER_LIMIT" $DRY_FLAG > /tmp/ess.log 2>&1 || rc=$?
-            grep -E 'Found [0-9]+ notes|Done:|全部失败|卫生断言|有 [0-9]+ 条失败|· gateway_filtered[ :]' /tmp/ess.log | tail -5 || true
+            # 「待标」里也数正文改过、essence 过期的篇 (D-137); 「content_sha 还没建」= v1_23 没跑, 这一轮照旧只标没标过的
+            grep -E 'Found [0-9]+ notes|Done:|全部失败|卫生断言|有 [0-9]+ 条失败|· gateway_filtered[ :]|content_sha 还没建' /tmp/ess.log | tail -6 || true
             if [ "$rc" != "0" ]; then
               tail -n 12 /tmp/ess.log
               # 脚本退非零 = 全军覆没 / hygiene 漂移 / 参数错 —— 多半是模型名 · 中转站 · 余额这类系统性问题, 判红排查。
@@ -306,40 +315,55 @@ jobs:
           fail_count=0
           done_any=0
           deferred=""
-          for f in ../mappings/*.yaml; do
-            p=$(basename "$f" .yaml)
-            [ "$p" = "_template" ] && continue
-            [ -n "$PROJECT_FILTER" ] && [ "$p" != "$PROJECT_FILTER" ] && continue
-            # ⚠️ 不能写成 `python skip_on_cron.py "$p"; rc=$?` —— 步骤默认 `bash -e`, 退出码 1
-            #    (= 照跑)会在 rc=$? 之前就把整步掐死, 一行输出都没有(D-051, 8/31~9/2 连红三晚)。
-            rc=0; python skip_on_cron.py "$p" || rc=$?
-            if [ "$rc" = "0" ]; then
-              echo "  ⏭  $p sync_interval=on_demand → 夜间 cron 跳过 curate(与入库/essence 同一道闸)"
-              continue
-            fi
-            # 预算耗尽: 不静默截断 —— 明说还剩谁没跑, 否则日志看着像"全都策展过了"。
-            if [ "$remaining" -le 0 ]; then deferred="$deferred $p"; continue; fi
-            echo "─── curate (直连) · project=$p · 本轮剩余预算=$remaining ───"
-            rc=0; python curate_flywheel_lessons.py --project "$p" --limit "$remaining" $DRY_FLAG > /tmp/cur.log 2>&1 || rc=$?
-            grep -E 'Done:|全部失败|有 [0-9]+ 张失败' /tmp/cur.log | tail -3 || true
-            if [ "$rc" = "0" ]; then
-              done_any=1
-              # 扣掉这个项目真策展了几张 (Done: {"ok": N,...}); 取不到就保守按 0 扣, 宁可多跑一轮也别把预算算没了
-              # 导致后面的项目被静默跳过。只认 `"ok": <数字>` (至少一位数字, 否则 `"ok": true` 会匹配出空串)。
-              n=$(grep -o '"ok": *[0-9][0-9]*' /tmp/cur.log | tail -1 | grep -o '[0-9][0-9]*$' || true)
-              [ -n "$n" ] && remaining=$((remaining - n))
-            else
-              tail -n 8 /tmp/cur.log
-              # 脚本退非零 = 全军覆没 (ok=0 且有失败) / 参数错 —— 系统性, 判红; 零星单卡失败脚本退 0 并告警,
-              # 失败卡 is_curated=false 下轮幂等重试。一个项目挂了不带走其余项目, 但收尾判红。
-              echo "::error::curate $p 退出码 $rc —— 全军覆没 / 配置 (模型名 · 中转站 · 余额), 需排查; 失败卡下轮幂等重试。"
-              fail_count=$((fail_count + 1))
-            fi
+          stale_deferred=""
+          # 两遍 (D-137, 复审 on 52f690e): 第一遍每个项目只策展没策展过的卡 (--daily-pass new), 第二遍拿剩下的预算每个项目
+          # 重策展「essence 比卡新」的已策展卡 (--daily-pass stale)。预算全局共享、按项目字母序扣, 只跑一遍的话「先新后旧」只在
+          # 一个项目里成立, 排在前面的项目 (HATHERINE / OKMAN) 的重策展会抢掉后面项目 (TUGE / XIWU …) 的新卡。
+          # stale 那一遍在 v1_23 跑之前一张都不取 (脚本打一行「content_sha 还没建」), 见到就整遍停, 不再挨个项目空跑。
+          for pass in new stale; do
+            for f in ../mappings/*.yaml; do
+              p=$(basename "$f" .yaml)
+              [ "$p" = "_template" ] && continue
+              [ -n "$PROJECT_FILTER" ] && [ "$p" != "$PROJECT_FILTER" ] && continue
+              # ⚠️ 不能写成 `python skip_on_cron.py "$p"; rc=$?` —— 步骤默认 `bash -e`, 退出码 1
+              #    (= 照跑)会在 rc=$? 之前就把整步掐死, 一行输出都没有(D-051, 8/31~9/2 连红三晚)。
+              rc=0; python skip_on_cron.py "$p" || rc=$?
+              if [ "$rc" = "0" ]; then
+                [ "$pass" = "new" ] && echo "  ⏭  $p sync_interval=on_demand → 夜间 cron 跳过 curate(与入库/essence 同一道闸)"
+                continue
+              fi
+              # 预算耗尽: 不静默截断 —— 明说还剩谁没跑, 否则日志看着像"全都策展过了"。
+              if [ "$remaining" -le 0 ]; then
+                if [ "$pass" = "new" ]; then deferred="$deferred $p"; else stale_deferred="$stale_deferred $p"; fi
+                continue
+              fi
+              echo "─── curate (直连) · $pass · project=$p · 本轮剩余预算=$remaining ───"
+              rc=0; python curate_flywheel_lessons.py --project "$p" --limit "$remaining" --daily-pass "$pass" $DRY_FLAG > /tmp/cur.log 2>&1 || rc=$?
+              grep -E 'Done:|全部失败|有 [0-9]+ 张失败' /tmp/cur.log | tail -3 || true
+              if [ "$rc" = "0" ]; then
+                done_any=1
+                # 扣掉这个项目真策展了几张 (Done: {"ok": N,...}); 取不到就保守按 0 扣, 宁可多跑一轮也别把预算算没了
+                # 导致后面的项目被静默跳过。只认 `"ok": <数字>` (至少一位数字, 否则 `"ok": true` 会匹配出空串)。
+                n=$(grep -o '"ok": *[0-9][0-9]*' /tmp/cur.log | tail -1 | grep -o '[0-9][0-9]*$' || true)
+                [ -n "$n" ] && remaining=$((remaining - n))
+              else
+                tail -n 8 /tmp/cur.log
+                # 脚本退非零 = 全军覆没 (ok=0 且有失败) / 参数错 —— 系统性, 判红; 零星单卡失败脚本退 0 并告警,
+                # 失败卡 is_curated=false 下轮幂等重试。一个项目挂了不带走其余项目, 但收尾判红。
+                echo "::error::curate $p ($pass) 退出码 $rc —— 全军覆没 / 配置 (模型名 · 中转站 · 余额), 需排查; 失败卡下轮幂等重试。"
+                fail_count=$((fail_count + 1))
+              fi
+              if [ "$pass" = "stale" ] && grep -q 'content_sha 还没建' /tmp/cur.log; then
+                echo "  · notes.content_sha 还没建 (v1_23 没跑): 夜跑不重策展 essence 比卡新的卡, 和以前一样 (D-137)"
+                break
+              fi
+            done
           done
           [ -n "$deferred" ] && echo "::notice::curate 本轮预算($CUR_LIMIT)用完, 这些项目留到下轮 cron:$deferred"
+          [ -n "$stale_deferred" ] && echo "::notice::curate 本轮预算($CUR_LIMIT)用完, 这些项目的重策展 (essence 比卡新的卡) 留到下轮 cron:$stale_deferred"
           [ "$done_any" = "0" ] && [ "$fail_count" = "0" ] && echo "  (本轮没有项目需要 curate 或全被 on_demand 闸跳过)"
           if [ "$fail_count" -gt 0 ]; then
-            echo "::error::curate failed for $fail_count project(s)"
+            echo "::error::curate failed $fail_count time(s) (项目 × 遍)"
             exit 1
           fi
 
@@ -573,6 +597,10 @@ jobs:
           # ⚠️ 老实说清楚这条补丁能做到什么: 它让本步打出 ::error 并点名, 不再假报绿。
           #    它【不能】让邮件发出来 —— job 被 cancel 时结论就是 cancelled, 本步 exit 1 也盖不过去。
           #    真正防这件事的是上面那个 timeout-minutes: 240 和把特征层拆去 features-sync.yml。
+          # 定时跑时 skipped 也算失败 (外部审计 11-02 F01): 下面六步在定时跑里没有合法的跳过 —— skip_essence 只有手动
+          # 触发才有, 缺 secret 已经在检查那一步红了。还能让它们 skipped 的只剩"某个条件悄悄不成立"(比如入库那步的
+          # FEISHU_APP_ID 条件), 那正是整晚静默绿的样子。手动 / dispatch 触发的 skipped 照旧算合法跳过。
+          sched="${{ github.event_name }}"
           failed_steps=""
           for kv in "feishu_sync:${{ steps.feishu_sync.outcome }}" \
                     "comments_sync:${{ steps.comments_sync.outcome }}" \
@@ -584,6 +612,8 @@ jobs:
             case "$outcome" in
               failure)   failed_steps="$failed_steps $name" ;;
               cancelled) failed_steps="$failed_steps $name(cancelled)" ;;
+              skipped)
+                if [ "$sched" = "schedule" ]; then failed_steps="$failed_steps $name(skipped-on-schedule)"; fi ;;
             esac
           done
           if [ -n "$failed_steps" ]; then

@@ -13,10 +13,13 @@ check_desk_use_rate.py
            (v_notes_vanished, 审计 B-21 / D-103)不算, 同闸二 / 策展 / 通道 1
   发牌   = autowriter.angle_ledger 里 drawn_at 落在 [窗口起点 − 7 天, 窗口终点] 的牌: 牌先发、稿后存、帖再发,
            只看窗口内会把起点前几天发的那批读成零动静(见 DRAW_LOOKBACK_DAYS)。
-  在用期 = 这个 TV 项目每张牌那天起 7 天, 加上每篇接住的帖存稿那天(发布日 − lag_days)起 7 天, 按日、可以断成
+  在用期 = 这个 TV 项目每张牌那天起 7 天, 加上每篇接住的帖存稿那天(写作台那一版的 versions.created_at; 取不到时
+           发布日 − lag_days, 见 _save_day)起 7 天, 按日、可以断成
            几段(见 USE_TAIL_DAYS)。首牌之前、末牌 7 天之后、中间停了一阵的那几天发的帖基本不可能是写作台的稿, 判据只看
            在用期里发布的; 接住的帖本身证明那几天写作台在出稿(翻旧牌写、没抽新牌也算)(codex review on TV#208)。
-           回看期内一张牌都没发的项目没有在用期(D-053, 见下)
+           回看期内一张牌都没发的项目没有在用期(D-053, 见下)。发牌日、发布日、存稿日、窗口两头都按【北京日历日】比
+           (同 aw tvlink._cn_day; 外部审计 11-02 F12 之前按 UTC 日期切, 和发牌同一个北京日发的帖掉出在用期), 11-09 那次
+           周一读数起在用期内的数和之前各周不可比; 整窗的发布 / 对过账 / 接住不受影响
   对过账 = 其中在 autowriter.tv_note_links 里有一行的(tv-sync 每晚给映射项目的每篇都写一行, 正常等于发布)
   接住   = match_kind ∈ {body_exact, title_exact, fuzzy, edited, tv_lineage} 且 lag_days 为空或 >= 0。
            写作台那版晚于发布的, 是发出去之后抄回写作台的, 不算接住(首晚 440 条对上里 212 条是这种;
@@ -102,14 +105,52 @@ def is_caught(link: dict) -> bool:
     return link.get("match_kind") in CAUGHT_KINDS and (lag is None or lag >= 0)
 
 
+_CN_TZ = timezone(timedelta(hours=8))
+
+
 def _day(ts) -> str:
-    """时间戳 → YYYY-MM-DD。按日比, 同 aw tvlink.lag_days(两边各取日期相减)。"""
-    return str(ts or "")[:10]
+    """时间戳 → 北京日历日 YYYY-MM-DD。按日比, 同 aw deskcore/tvlink.py 的 _cn_day / lag_days(两边都换成北京日再相减)。
+
+    外部审计 11-02 F12: 以前是 ``str(ts)[:10]``, 取的是 UTC 日期。notes.publish_time 是不带时区的时间戳, 存的是北京那天的
+    0 点 = 前一天 16:00 UTC(aw 10-29 查过 2542 篇里 2524 篇是 16:00), 切出来是北京日 − 1; angle_ledger.drawn_at 是
+    timestamptz、读回来是 UTC。结果在用期整体错成北京 [牌后 1 天, 牌后 8 天], 和发牌同一个北京日发出去的帖掉出判据
+    (10-12 ~ 10-26 那周 TUGE_phase1 在用期对过账 17 篇被数成 14 篇、判不了, 实际 0/17 该亮黄)。存稿日见 _save_day:
+    库里的 lag_days 不全是北京日口径, 不能拿北京发布日直接减。
+    规则同 aw: 不带时区的当 UTC(TV 的 TIMESTAMP 列都是 UTC, _common._iso_now), 换到 UTC+8 取日期; 带偏移的照偏移换;
+    光秃秃的 YYYY-MM-DD 本来就是日子, 原样返回; 认不出的退回前 10 个字符(不让一行脏数据把整盏灯打崩)。
+    """
+    if ts is None or ts == "":
+        return ""
+    if isinstance(ts, datetime):
+        d = ts
+    elif isinstance(ts, date):
+        return ts.isoformat()
+    else:
+        s = str(ts).strip()
+        if len(s) == 10:
+            return s                    # YYYY-MM-DD: 已经是日子(夹具、gather 换好的发牌日)
+        try:
+            d = datetime.fromisoformat(s.replace("Z", "+00:00").replace(" ", "T", 1))
+        except ValueError:
+            return s[:10]
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=timezone.utc)
+    return d.astimezone(_CN_TZ).date().isoformat()
 
 
 def _save_day(n: dict, link: dict) -> str:
-    """接住的帖那版存进写作台的日子: 发布日 − lag_days; lag 不知道的(tv_lineage 等)按发布日。"""
+    """接住的帖那版存进写作台的日子(北京日)。
+
+    先用那一版自己的时间(gather 带上的 versions.created_at, 只取 id 和时间), 不拿北京发布日减 lag_days: 库里的 lag_days
+    口径换过 —— aw 10-29(W-38)之前对上的链接存的是 UTC 日期相减, 之后的才是北京日相减; 旧链接 aw 不回头重算(tv-sync 只
+    重核正文指纹变了的)。11-02 生产只读: 用上率窗口(10-05 ~ 10-26 发布)接住的 104 条里 101 条是 UTC 口径, 北京白天存稿、
+    第二天发的那篇存的 lag 是 0, 北京发布日 − 0 会晚一天(复审 on 52f690e)。存稿日不会晚于发布日(取两者早的)。
+    版本时间取不到(没 version_id、版本删了)才退回 北京发布日 − lag_days; lag 不知道的(tv_lineage 等)按发布日。"""
     day, lag = _day(n.get("publish_time")), link.get("lag_days")
+    created = link.get("version_created_at")
+    if created and lag is not None:
+        saved = _day(created)
+        return min(saved, day) if day else saved
     return (date.fromisoformat(day) - timedelta(days=lag)).isoformat() if day and lag else day
 
 
@@ -373,6 +414,19 @@ def gather(sb, since_iso: str, until_iso: str) -> dict:
                   .in_("note_id", ids[i:i + CHUNK]).execute()).data or []:
             links[r["note_id"]] = r
     caught_ids = [nid for nid in ids if nid in links and is_caught(links[nid])]
+    # 接住的那一版什么时候存的(只取 id 和 created_at, 不读正文): _save_day 用它算北京的存稿日 —— 库里的 lag_days 有一大半
+    # 是 aw 10-29 之前按 UTC 日算的, 拿北京发布日去减会晚一天(复审 on 52f690e)
+    vids = sorted({links[nid]["version_id"] for nid in caught_ids if links[nid].get("version_id")})
+    created: dict[str, str] = {}
+    for i in range(0, len(vids), CHUNK):
+        for r in (sb.schema("autowriter").table("versions")
+                  .select("id, created_at")
+                  .in_("id", vids[i:i + CHUNK]).execute()).data or []:
+            if r.get("created_at"):
+                created[r["id"]] = r["created_at"]
+    for nid in caught_ids:
+        if links[nid].get("version_id") in created:
+            links[nid] = dict(links[nid], version_created_at=created[links[nid]["version_id"]])
     diffs: dict[str, dict] = {}
     for i in range(0, len(caught_ids), CHUNK):
         for r in (sb.schema("autowriter").table("tv_edit_diffs")
@@ -439,6 +493,26 @@ def selftest() -> int:
     assert not is_caught(L("body_exact", -3)), "发了之后才存进写作台的那版是抄回去的, 不算接住"
     assert not any(is_caught(L(k)) for k in ("ingested", "ambiguous", "unmatched"))
 
+    # ── 按北京日历日比(外部审计 11-02 F12, 同 aw tvlink._cn_day): 不带时区的当 UTC, 换到 UTC+8 取日期 ──
+    assert _day("2026-10-19T16:00:00") == "2026-10-20", "飞书发布日期 = 北京 0 点 = 前一天 16:00 UTC, 要读回北京那天"
+    assert _day("2026-10-19T15:59:59") == "2026-10-19"
+    assert _day("2026-10-20T02:00:00+00:00") == _day("2026-10-20T01:00:00+08:00") == "2026-10-20", "带偏移的照偏移换"
+    assert _day("2026-10-19T18:30:00.123456+00:00") == _day("2026-10-19T18:30:00Z") == "2026-10-20"
+    assert _day("2026-10-20") == "2026-10-20" and _day(None) == "" and _day("") == "", "光秃秃的日子原样过"
+    assert _save_day({"publish_time": "2026-10-19T16:00:00"}, {"lag_days": 1}) == "2026-10-19", \
+        "取不到版本时间: 存稿日 = 北京发布日 − lag_days"
+    # 存稿日按那一版的时间(复审 on 52f690e): 北京 10-19 11:00 存、北京 10-20 发。aw 10-29 之前按 UTC 日相减存的 lag 是 0
+    # (两头都是 UTC 10-19), 北京发布日 − 0 = 10-20 晚一天; 之后按北京日存的是 1。两种口径都得 10-19。反证: 去掉版本时间那一路 → 第一条红
+    pub = {"publish_time": "2026-10-19T16:00:00"}
+    assert _save_day(pub, {"lag_days": 0, "version_created_at": "2026-10-19T03:00:00+00:00"}) == "2026-10-19", \
+        "旧链接的 lag_days 是 UTC 口径, 存稿日要按版本时间算, 不是北京发布日 − lag"
+    assert _save_day(pub, {"lag_days": 1, "version_created_at": "2026-10-19T03:00:00+00:00"}) == "2026-10-19"
+    assert _save_day({"publish_time": "2026-10-19T08:00:00"},
+                     {"lag_days": 0, "version_created_at": "2026-10-19T17:00:00+00:00"}) == "2026-10-19", \
+        "存稿日不晚于发布日(UTC 同一天、北京晚一天存的那版)"
+    assert _save_day(pub, {"lag_days": None, "version_created_at": "2026-10-01T03:00:00+00:00"}) == "2026-10-20", \
+        "lag 不知道的照旧按发布日"
+
     # ── tally: 一个 TV 项目映射两个写作台项目, 发牌合起来算; 没映射的 TV 项目不进表 ──
     def G(notes, links=None, diffs=None, drawn=None, any_rev2=True, days=None):
         # days 不给 = 发过牌的项目一直在用(09-30 起每 7 天一张, 在用期盖住整个窗口、窗口里的帖全判); 给了就是在测在用期
@@ -451,21 +525,22 @@ def selftest() -> int:
     N = lambda nid, tv="AAA", at="2026-10-12T08:00:00": {"note_id": nid, "project_id": tv, "publish_time": at}  # noqa: E731
     D = lambda changed, title=False, rev=2: {"changed": changed, "title_changed": title, "diff_rev": rev}  # noqa: E731
     g = G([N("a1"), N("a2"), N("a3"), N("a4"), N("a5", at="2026-10-07T23:00:00"), N("a6", at="2026-10-08T00:30:00"),
-           N("a7"), N("x1", "ZZZ")],
+           N("a7"), N("a8", at="2026-10-07T15:59:00"), N("x1", "ZZZ")],
           {"a1": L("body_exact"), "a2": L("fuzzy", 2), "a3": L("edited", None), "a4": L("title_exact", -6),
            "a5": L("ingested", None), "a7": L("edited", 1), "x1": L("body_exact")},
           {"a1": D(False), "a2": D(True, True), "a3": D(False, rev=1), "a4": D(False), "a7": D(True, False)},
           {"d1": 3, "d2": 4, "d3": 9}, days={"d1": ["2026-10-10"], "d2": ["2026-10-08"], "d3": ["2026-10-01"]})
     t = tally(g)
     assert set(t) == {"AAA"}, "没映射的 ZZZ 不算; BBB 窗口内一篇没发不出现"
-    assert t["AAA"] == {"published": 7, "linked": 6, "caught": 4, "diffed": 3, "unchanged": 1, "title_changed": 1,
+    assert t["AAA"] == {"published": 8, "linked": 6, "caught": 4, "diffed": 3, "unchanged": 1, "title_changed": 1,
                         "drawn": 7, "use_spans": [("2026-10-08", "2026-10-19")],
-                        "j_published": 6, "j_linked": 5, "j_caught": 4, "desk": ["乙台", "甲台"]}, t["AAA"]
+                        "j_published": 7, "j_linked": 6, "j_caught": 4, "desk": ["乙台", "甲台"]}, t["AAA"]
     # a4 (lag −6) 不算接住, 它那行 changed=false 也不进未改动; a3 只有旧口径(rev 1)的行 → 不进分母。
     # a7 只改了正文(changed=T、title_changed=F, 最常见的一种): 未改动和改标题各数各的, 不能从同一个标记推出来。
     # 在用期: d1 / d2 合起来的发牌日 10-08、10-10, 加接住的存稿日(a2 10-12 − 2 = 10-10、a7 10-11、a1 / a3 10-12),
-    # 各起 7 天 → 10-08 ~ 10-19(截到窗口终点); a5 10-07 发的在在用期之前 → 进发布 / 对过账两列、不进 j_*;
-    # a6 和第一个发牌日同一天(按日比)→ 进 j_published
+    # 各起 7 天 → 10-08 ~ 10-19(截到窗口终点)。按北京日(F12): a5 10-07 23:00 UTC = 北京 10-08 07:00, 和第一个发牌日
+    # 同一天 → 进 j_*(以前按 UTC 日期切成 10-07、掉出在用期, 这就是 j_published 6 → 7 那一篇); a8 10-07 15:59 UTC = 北京
+    # 10-07 23:59, 在在用期之前 → 只进发布一列、不进 j_*; a6 北京 10-08 08:30 → 进 j_published
 
     # ── 判据: 下限真的在起作用 ─────────────────────────────────────────────────
     def R(linked, caught, drawn=5):
@@ -626,12 +701,27 @@ def selftest() -> int:
         and "✓" in out and "判不了的项目不在内" in out, "tv-sync 从 10-14 起漏了 AAA: 点名, BBB 照常 ✓"
     assert row_of(out, "AAA")[9] == "0/0/20", "在用期内一格要露出没对上的 20 篇, 不能是 0/0"
 
+    # ── 反例(F12): 15 篇在北京 10-20 发(publish_time 存成 10-19 16:00)、同一个北京日上午 10 点发了一张牌(drawn_at
+    #    timestamptz 读回来是 10-20 02:00 UTC)。以前按 UTC 日期切: 帖算 10-19、牌算 10-20, 15 篇全掉在在用期之前,
+    #    j_linked = 0、「没有项目够格判」—— 10-12 ~ 10-26 那周 TUGE_phase1 0/17 就是这么被藏掉的。按北京日: 同一天, 15/15 判、
+    #    0 篇接住 → 亮黄。反证: 把 _day 换回 str(ts)[:10] → 这里红 ──
+    same = [N(f"bj{i:02d}", at="2026-10-19T16:00:00") for i in range(15)]
+    gb = dict(G(same, {n["note_id"]: L("unmatched", None) for n in same}, {}, {"d1": 1},
+                days={"d1": ["2026-10-20T02:00:00+00:00"]}),
+              since="2026-10-13T08:00:00", until="2026-10-27T08:00:00")
+    t = tally(gb)["AAA"]
+    assert (t["j_published"], t["j_linked"], t["j_caught"]) == (15, 15, 0), t
+    assert t["use_spans"] == [("2026-10-20", "2026-10-27")], t["use_spans"]
+    rc, out = run(gb)
+    assert rc == 1 and "AAA(在用期 10-20~10-27 发布 15 篇、对过账 15 篇、接住 0 篇(0%)" in out, out
+
     # ── gather: 窗口按 publish_time、只取映射项目、in_ 分批、差异只认当前口径、翻页键唯一 ──
     calls: list[tuple] = []
+    selects: list[tuple] = []
 
     class _Q:
         def __init__(self, t, rows): self.t, self.rows, self.f, self.lim = t, rows, [], None
-        def select(self, *a, **k): return self
+        def select(self, *a, **k): selects.append((self.t, a[0] if a else "")); return self
         def gte(self, k, v): self.f.append(lambda r: r[k] >= v); return self
         def lte(self, k, v): self.f.append(lambda r: r[k] <= v); return self
         def limit(self, n): self.lim = n; return self
@@ -645,6 +735,7 @@ def selftest() -> int:
 
     INWIN, OLD, LATER = "2026-10-08T08:00:00", "2026-09-20T08:00:00", "2026-10-20T08:00:00"
     PRE = "2026-10-01T08:00:00"         # 窗口起点(10-05)前 4 天发的牌: 回看 7 天之内, 帖(10-08)正好落在窗口里、牌后第 7 天
+    PRE_TZ = "2026-10-01T20:00:00+00:00"    # drawn_at 是 timestamptz: UTC 10-01 20:00 = 北京 10-02 04:00, 记成 10-02(F12)
     NOTES = ([{"note_id": f"a{i:03d}", "project_id": "AAA", "publish_time": INWIN} for i in range(230)]
              + [{"note_id": "old1", "project_id": "AAA", "publish_time": OLD},
                 {"note_id": "late1", "project_id": "AAA", "publish_time": LATER},
@@ -662,12 +753,16 @@ def selftest() -> int:
              {"note_id": "old1", "changed": False, "title_changed": False, "diff_rev": 2}]
     LEDGER = [{"id": f"g{i}", "project_id": p, "drawn_at": at}
               for i, (p, at) in enumerate([("d1", INWIN), ("d1", INWIN), ("d1", OLD), ("d1", LATER),
-                                            ("dx", INWIN), ("d1", PRE)])]
+                                            ("dx", INWIN), ("d1", PRE), ("d1", PRE_TZ)])]
     # d1 那张 LATER(窗口之后才发)的牌不能算: 最近 7 天才开始发牌的项目, 不能拿 7~21 天前它不可能写的帖判它。
     # OLD(9-20)在回看 7 天(9-28 起)之外也不算; PRE(10-01)要算, 首牌就是它
+    # 写作台那一版的时间: UTC 10-07 20:00 = 北京 10-08 04:00, 帖北京 10-08 16:00 发。库里 lag 1 是 10-29 之前的 UTC 口径
+    # (10-08 − 10-07), 北京日其实是同一天 —— 存稿日该是 10-08, 不是 北京发布日 − 1 = 10-07(复审 on 52f690e)
+    VERSIONS = [{"id": f"v{i}", "created_at": "2026-10-07T20:00:00+00:00"} for i in range(230)] + \
+        [{"id": "vx", "created_at": "2026-10-07T20:00:00+00:00"}]
     TABLES = {"tv_project_map": [{"tv_project_id": "AAA", "project_id": "d1"}],
               "notes": NOTES, "tv_note_links": LINKS, "tv_edit_diffs": DIFFS, "angle_ledger": LEDGER,
-              "projects": [{"id": "d1", "name": "甲台"}]}
+              "projects": [{"id": "d1", "name": "甲台"}], "versions": VERSIONS}
 
     class SB:
         def schema(self, s): return self
@@ -695,11 +790,17 @@ def selftest() -> int:
         assert vanished_calls == [None], "已删名单读一次、全库(按项目筛会漏映射的别的项目)"
         assert all(n <= CHUNK for _, n in calls) and ("tv_note_links", 30) in calls, calls
         assert set(gg["diffs"]) == {"a001", "a205"}, "差异只取接住的、当前口径的(a002 是 rev 1, old1 在窗口外)"
-        assert gg["drawn"] == {"d1": 3} and gg["any_rev2"] is True and gg["names"] == {"d1": "甲台"}, gg["drawn"]
-        assert gg["drawn_days"] == {"d1": ["2026-10-01", "2026-10-08"]} and gg["draw_since"] == "2026-09-28T08:00:00", \
+        assert gg["drawn"] == {"d1": 4} and gg["any_rev2"] is True and gg["names"] == {"d1": "甲台"}, gg["drawn"]
+        assert gg["drawn_days"] == {"d1": ["2026-10-01", "2026-10-02", "2026-10-08"]} \
+            and gg["draw_since"] == "2026-09-28T08:00:00", \
             (gg["drawn_days"], gg.get("draw_since"))
         tt = tally(gg)["AAA"]
         assert (tt["published"], tt["linked"], tt["caught"], tt["diffed"], tt["unchanged"]) == (230, 230, 209, 2, 1), tt
+        # 版本时间: 只给接住的取(a000 lag −2 不算接住、a210 起 unmatched 都不取), 只选 id 和时间, 分批
+        assert ("versions", 200) in calls and ("versions", 9) in calls, calls
+        assert {c for t, c in selects if t == "versions"} == {"id, created_at"}, "版本表只取 id 和时间, 不读正文"
+        assert gg["links"]["a001"]["version_created_at"] == "2026-10-07T20:00:00+00:00" \
+            and "version_created_at" not in gg["links"]["a000"], gg["links"]["a000"]
         # a000 的写作台那版晚于发布(lag −2): 不算接住 —— 209 而不是 210
         # 只在窗口起点前几天发过一批牌的项目, 帖落在窗口里: 是在用写作台, 要判(以前按发布窗口切发牌, 读成零动静)
         TABLES["angle_ledger"] = [r for r in LEDGER if r["drawn_at"] == PRE]
@@ -710,6 +811,14 @@ def selftest() -> int:
         assert rc == 1 and "AAA(在用期 10-05~10-08 发布 230 篇、对过账 230 篇、接住 0 篇(0%)" in out, \
             "没有接住的帖垫着, 光凭 10-01 那张牌也要判(在用期到牌后第 7 天 10-08 为止, 含当天)"
         TABLES["tv_note_links"] = LINKS
+        # 存稿日按版本时间(北京 10-08)划在用期; 一张牌都没有, 在用期只靠接住的帖: 10-08 ~ 10-15。版本表读不到时退回
+        # 北京发布日 − lag(10-07 ~ 10-14) —— 这就是旧链接 UTC 口径的 lag 会让在用期晚一天 / 早一天的地方
+        TABLES["angle_ledger"] = []
+        spans = tally(gather(SB(), "2026-10-05T08:00:00", "2026-10-19T08:00:00"))["AAA"]["use_spans"]
+        assert spans == [("2026-10-08", "2026-10-15")], spans
+        TABLES["versions"] = []
+        spans = tally(gather(SB(), "2026-10-05T08:00:00", "2026-10-19T08:00:00"))["AAA"]["use_spans"]
+        assert spans == [("2026-10-07", "2026-10-14")], spans
         TABLES["tv_edit_diffs"] = [d for d in DIFFS if d["diff_rev"] < 2]
         assert gather(SB(), "2026-10-05T08:00:00", "2026-10-19T08:00:00")["any_rev2"] is False
 
@@ -765,7 +874,8 @@ def selftest() -> int:
     assert "--window-days" not in step and "--delay-days" not in step, "夜跑不该自己传窗口 —— 默认值由脚本钉着"
     assert "set +e" in step, "advisory: 脚本 rc=1/2 不能把这一步判红"
     print("  ✓ 写作台用上率灯: 接住只认发布前那版 / 未改动只认 diff_rev ≥2 且没有时打待重算 / 下限与分母 / "
-          "够格判与判据同一条 / 判不了 rc=2(整窗或在用期对账不全) / 发牌回看 7 天 + 在用期 / 已删的篇不算 / "
+          "够格判与判据同一条 / 判不了 rc=2(整窗或在用期对账不全) / 发牌回看 7 天 + 在用期 / 北京日 + 存稿日按版本时间 / "
+          "已删的篇不算 / "
           "取数窗口按 publish_time、分批、翻页键唯一 / 哨兵行 / 每周一接线")
     return 0
 

@@ -83,6 +83,7 @@ jobs:
             scripts/check_external_corpus_fresh.py \
             scripts/check_secret_masking.py \
             scripts/check_curate_stale.py \
+            scripts/check_content_sha.py \
             scripts/check_curate_note_ids.py \
             scripts/check_prompt_cache_fallback.py \
             scripts/check_essence_subtype_backfill.py \
@@ -3750,9 +3751,12 @@ jobs:
       - name: secret 掩码挂在 logger 出口 (B-11, RISKS R-023 后记) · 消息 / %-参数 / traceback / 源码引用 / 边界
         working-directory: scripts
         run: python check_secret_masking.py
-      - name: 重策展 essence 比卡新的那条路 (D-096) · 挑选 / 时区 / 取数 / worker 映射 / 收敛前提
+      - name: 重策展 essence 比卡新的那条路 (D-096) · 挑选 / 时区 / 取数 / worker 映射 / 收敛前提 / 夜跑先新卡再重策展过期卡 (D-137)
         working-directory: scripts
         run: python check_curate_stale.py
+      - name: 正文改了 → essence 重标 (D-137, 外部审计 11-02 F02) · 指纹 / 选取与计数 / 写回与收敛 / 没迁移照旧 / 夜跑接线
+        working-directory: scripts
+        run: python check_content_sha.py   # 只改空白 / 话题不重标; 改写过的排在没标过的后面; v1_23 没跑时行为不变; SQL 那一半在 sql job 的 v1.23 两步
       - name: 按 note_id 点名重策展 (D-122 修复计划第 5 条, D-123) · 读名单 / 只取点名的 / 少一张就不跑 / dry-run / 预算截断点名 / workflow 入参
         working-directory: scripts
         run: python check_curate_note_ids.py   # §1 读名单 · §2 取数(不看 is_curated、分块 in_) · §3 缺卡 rc=2 / 只写点名的 / 失败名单 · §4 默认路不变 · §5 recurate-lessons.yml (入参校验 + 点名步 / 循环步垫假 python 真跑)
@@ -5610,13 +5614,17 @@ jobs:
           #    本地 yaml.safe_load 对它完全无感。所以拼出来, 别写出来。
           OPEN = "$" + "{{"
           MARK = OPEN + " steps.%s.outcome }}"
-          def run(outcomes):
+          EVENT = OPEN + " github.event_name }}"
+          def run(outcomes, event=None):
               sh = body
               for i in ids:
                   sh = sh.replace(MARK % i, outcomes.get(i, "success"))
+              if event is not None:
+                  assert EVENT in sh, "聚合步不再按 github.event_name 区分定时跑了 —— skipped-on-schedule 那条 (F01) 被删了?"
+                  sh = sh.replace(EVENT, event)
               # 剩下的 github.repository / run_id 之类一并抹掉
               sh = re.sub(re.escape(OPEN) + r"[^}]*\}\}", "x", sh)
-              r = subprocess.run(["bash", "-c", sh], capture_output=True, text=True)
+              r = subprocess.run(["bash", "-e", "-c", sh], capture_output=True, text=True)
               return r.returncode, r.stdout + r.stderr
           rc, out = run({})
           assert rc == 0 and "All sync steps succeeded" in out, f"全 success 该绿: rc={rc} {out}"
@@ -5629,8 +5637,48 @@ jobs:
               )
               rc, out = run({i: "skipped"})
               assert rc == 0, f"{i}=skipped 是合法跳过(没配 WORKER_URL / skip_essence), 不该判红: {out}"
+              # ③ 外部审计 11-02 F01: 定时跑里这几步没有合法的跳过, skipped = 某个 if 条件悄悄不成立(FEISHU_APP_ID 没了,
+              #    入库那步被判 skipped, 以前整轮照绿)。定时跑 skipped 必须判红并点名; 手动 / dispatch 的 skipped 照旧放行。
+              # 反证: 删掉聚合里 skipped 那个 case → 这里红; 去掉 sched = schedule 那个判断 → 下面 dispatch 那条红。
+              rc, out = run({i: "skipped"}, event="schedule")
+              assert rc == 1 and i in out and "skipped-on-schedule" in out, (
+                  f"{i}=skipped 在定时跑里该判红并点名(F01: 缺 FEISHU_APP_ID 时入库被跳过还报绿): rc={rc} {out}")
+              for ev in ("workflow_dispatch", "push"):
+                  rc, out = run({i: "skipped"}, event=ev)
+                  assert rc == 0, f"{i}=skipped 在 {ev} 触发里是合法跳过(skip_essence / 没配 secret), 不该判红: {out}"
+          rc, out = run({}, event="schedule")
+          assert rc == 0 and "All sync steps succeeded" in out, f"定时跑全 success 该绿: rc={rc} {out}"
+          rc, out = run({ids[0]: "failure", ids[-1]: "skipped"}, event="schedule")
+          assert rc == 1 and ids[0] in out and f"{ids[-1]}(skipped-on-schedule)" in out, out
+
+          # ④ 检查 secret 那一步: 定时跑缺 FEISHU_APP_ID / FEISHU_APP_SECRET 必须红(F01), 手动触发照旧优雅跳过。
+          #    同 ② 的做法: 把那段 shell 真的跑一遍, 只换 event_name。
+          import os, tempfile
+          chk = [st for st in steps if st.get("id") == "check"]
+          assert len(chk) == 1, "找不到 id=check 的检查 secret 那一步"
+          full = {"SUPABASE_URL": "u", "SUPABASE_SERVICE_ROLE_KEY": "k", "ANTHROPIC_API_KEY": "a",
+                  "ANTHROPIC_BASE_URL": "b", "FEISHU_APP_ID": "fid", "FEISHU_APP_SECRET": "fs"}
+          def check(event, **over):
+              sh = chk[0]["run"].replace(EVENT, event)
+              assert OPEN not in sh, "检查那一步里还有别的表达式, 这条守卫要跟着换"
+              with tempfile.NamedTemporaryFile("r", suffix=".out") as gh_out:
+                  env = dict(os.environ, **full, GITHUB_OUTPUT=gh_out.name)
+                  env.update({k: v for k, v in over.items()})
+                  r = subprocess.run(["bash", "-e", "-c", sh], capture_output=True, text=True, env=env)
+                  return r.returncode, r.stdout + r.stderr + gh_out.read()
+          assert check("schedule")[0] == 0, check("schedule")
+          for missing in ("FEISHU_APP_ID", "FEISHU_APP_SECRET"):
+              rc, out = check("schedule", **{missing: ""})
+              assert rc == 1 and "FEISHU_APP_ID/FEISHU_APP_SECRET" in out, (missing, rc, out)
+              rc, out = check("workflow_dispatch", **{missing: ""})
+              assert rc == 0 and "skip=true" not in out, f"手动触发缺 {missing} 该优雅跳过(只跳入库那步), 不该红: {out}"
+          rc, out = check("schedule", SUPABASE_URL="")
+          assert rc == 1, "D-090 那条(定时跑缺 SUPABASE 红)不能被这次改动带掉"
+          rc, out = check("workflow_dispatch", SUPABASE_URL="")
+          assert rc == 0 and "skip=true" in out, out
           print(f"  ✓ 失败聚合覆盖 {len(ids)} 个 continue-on-error 步骤: {' '.join(ids)}")
-          print("  ✓ failure / cancelled 都判红且点名, skipped 不误伤")
+          print("  ✓ failure / cancelled 都判红且点名, skipped 不误伤; 定时跑 skipped 判红点名 (F01)")
+          print("  ✓ 检查 secret 那步: 定时跑缺 FEISHU_APP_ID / SECRET 红, 手动触发照旧优雅跳过 (F01)")
           PY
 
       - name: "看门狗自检 —— 每一种情形都得判对 (D-073; 加用例时别再往标题里写个数)"
@@ -7085,6 +7133,70 @@ jobs:
       - name: Sanity-check v1.22 (投流事件 / 隔离 / 前后读数; 夹具与 check_paid_boost.py 共用, 反证在文件头)
         run: |
           psql -v ON_ERROR_STOP=1 -v cases="$(cat scripts/check_paid_boost_cases.json)" -f scripts/check_paid_boost.sql
+      - name: Apply v1.23 content_sha (+ idempotency)
+        # D-137 / 外部审计 11-02 F02: 指纹函数 + 生成列 content_sha + essence_content_sha + 从 audit_log 回填; 两遍验幂等 (第二遍回填 0 行)。
+        run: |
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_23_content_sha.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_23_content_sha.sql
+      - name: Sanity-check v1.23 (SQL 指纹 = Python 指纹; 回填按 essence 那一刻的正文; 只改空白 / 话题不算; 回填不写审计、不动 updated_at)
+        # 七篇: essence 之后整段改写 / 只改空白和话题 / 没动 / 先改后标 / 没标过 / 改了又改回来 / 后加标题。
+        # 反证: 回填取「最后一次」改动的旧值 → reverted 变过期, 红; 去掉去话题那一步 → 夹具 parity 和 ws 都红;
+        #       回填不关触发器 → audit 行数 / updated_at 那条红; 取 essence 之前的改动 → before 变过期, 红。
+        run: |
+          psql -v ON_ERROR_STOP=1 -v cases="$(cat scripts/check_content_sha_cases.json)" <<'SQL'
+          CREATE TEMP TABLE v23_cases AS
+              SELECT c ->> 'label' AS label, c ->> 'title' AS title, c ->> 'raw_content' AS raw, c ->> 'sha' AS sha
+              FROM jsonb_array_elements(:'cases'::jsonb) c;
+          DO $$
+          DECLARE bad text;
+          BEGIN
+              IF (SELECT count(*) FROM v23_cases) < 10 THEN RAISE EXCEPTION 'v1.23: 夹具没读进来'; END IF;
+              SELECT string_agg(label, ',') INTO bad FROM v23_cases WHERE truth_vault.tv_content_sha(title, raw) <> sha;
+              IF bad IS NOT NULL THEN RAISE EXCEPTION 'v1.23: SQL 指纹和 Python (_common.content_sha) 不一样: %', bad; END IF;
+          END $$;
+          INSERT INTO truth_vault.projects (project_id, brand, product, category) VALUES ('CI_V23', 'b', 'p', '保健品');
+          INSERT INTO truth_vault.notes (note_id, project_id, raw_content, essence_annotated_at) VALUES
+            ('CI_V23_rewrite',  'CI_V23', '排期时写的旧正文',                     now()::timestamp - interval '1 day'),
+            ('CI_V23_ws',       'CI_V23', '维生素D每天吃多少？ #维生素[话题]#',    now()::timestamp - interval '1 day'),
+            ('CI_V23_same',     'CI_V23', '没动过的正文',                         now()::timestamp - interval '1 day'),
+            ('CI_V23_before',   'CI_V23', '先改的正文一',                         NULL),
+            ('CI_V23_never',    'CI_V23', '还没标过',                             NULL),
+            ('CI_V23_reverted', 'CI_V23', '改了又改回来',                         now()::timestamp - interval '1 day'),
+            ('CI_V23_title',    'CI_V23', '正文没动',                             now()::timestamp - interval '1 day');
+          UPDATE truth_vault.notes SET raw_content = '飞书里整段改写过的新正文' WHERE note_id = 'CI_V23_rewrite';
+          UPDATE truth_vault.notes SET raw_content = E'维生素D 每天吃多少?\n#维生素' WHERE note_id = 'CI_V23_ws';
+          UPDATE truth_vault.notes SET raw_content = '中间版本' WHERE note_id = 'CI_V23_reverted';
+          UPDATE truth_vault.notes SET raw_content = '改了又改回来' WHERE note_id = 'CI_V23_reverted';
+          UPDATE truth_vault.notes SET title = '后来加的标题' WHERE note_id = 'CI_V23_title';
+          UPDATE truth_vault.notes SET raw_content = '先改的正文二' WHERE note_id = 'CI_V23_before';
+          UPDATE truth_vault.notes SET essence_annotated_at = now()::timestamp + interval '1 hour' WHERE note_id = 'CI_V23_before';
+          CREATE TABLE public.ci_v23_before AS
+              SELECT note_id, updated_at,
+                     (SELECT count(*) FROM truth_vault.audit_log a WHERE a.table_name = 'notes' AND a.row_id = n.note_id) AS n_audit
+              FROM truth_vault.notes n WHERE project_id = 'CI_V23';
+          SQL
+          # 再跑一遍迁移 = 回填这七篇 (只碰已标、essence_content_sha 还空的)
+          psql -v ON_ERROR_STOP=1 -q -f schemas/notes_v1_23_content_sha.sql > /dev/null
+          GOT=$(psql -v ON_ERROR_STOP=1 -tA -c "SELECT string_agg(note_id, ',' ORDER BY note_id) FROM truth_vault.notes WHERE project_id = 'CI_V23' AND essence_annotated_at IS NOT NULL AND essence_content_sha IS DISTINCT FROM content_sha")
+          WANT="CI_V23_rewrite,CI_V23_title"
+          [ "$GOT" = "$WANT" ] || { echo "❌ v1.23 回填后的过期集合不对。期望 [$WANT] 实得 [$GOT] (ws 只改空白话题 / reverted 改回来 / before 先改后标都不该过期)"; exit 1; }
+          N=$(psql -v ON_ERROR_STOP=1 -tA -c "SELECT count(*) FROM truth_vault.notes WHERE note_id = 'CI_V23_never' AND essence_content_sha IS NULL")
+          [ "$N" = "1" ] || { echo "❌ v1.23: 没标过的篇不该回填指纹"; exit 1; }
+          N=$(psql -v ON_ERROR_STOP=1 -tA -c "SELECT count(*) FROM truth_vault.notes n JOIN public.ci_v23_before b USING (note_id) WHERE n.updated_at IS DISTINCT FROM b.updated_at OR (SELECT count(*) FROM truth_vault.audit_log a WHERE a.table_name = 'notes' AND a.row_id = n.note_id) <> b.n_audit")
+          [ "$N" = "0" ] || { echo "❌ v1.23: 回填改了 $N 篇的 updated_at 或往 audit_log 写了行 (触发器该在回填那段关着)"; exit 1; }
+          N=$(psql -v ON_ERROR_STOP=1 -tA -c "SELECT count(*) FROM pg_trigger WHERE tgrelid = 'truth_vault.notes'::regclass AND tgname IN ('tv_audit_notes', 'tv_notes_updated_at') AND tgenabled = 'O'")
+          [ "$N" = "2" ] || { echo "❌ v1.23: 回填之后审计 / updated_at 触发器没开回来 ($N/2)"; exit 1; }
+          # 生成列跟着正文走: 只改空白标点不变, 真改了就过期; 写回 essence_content_sha = content_sha (write_essence_back 做的事) 就不再过期
+          psql -v ON_ERROR_STOP=1 -q -c "UPDATE truth_vault.notes SET raw_content = E'没动过的 正文。\n#加个话题' WHERE note_id = 'CI_V23_same'"
+          N=$(psql -v ON_ERROR_STOP=1 -tA -c "SELECT count(*) FROM truth_vault.notes WHERE note_id = 'CI_V23_same' AND essence_content_sha IS DISTINCT FROM content_sha")
+          [ "$N" = "0" ] || { echo "❌ v1.23: 只加了空格 / 标点 / 话题, content_sha 不该变"; exit 1; }
+          psql -v ON_ERROR_STOP=1 -q -c "UPDATE truth_vault.notes SET raw_content = '没动过的正文后来加了一句' WHERE note_id = 'CI_V23_same'"
+          psql -v ON_ERROR_STOP=1 -q -c "UPDATE truth_vault.notes SET essence_content_sha = content_sha WHERE note_id = 'CI_V23_rewrite'"
+          GOT=$(psql -v ON_ERROR_STOP=1 -tA -c "SELECT string_agg(note_id, ',' ORDER BY note_id) FROM truth_vault.notes WHERE project_id = 'CI_V23' AND essence_annotated_at IS NOT NULL AND essence_content_sha IS DISTINCT FROM content_sha")
+          WANT="CI_V23_same,CI_V23_title"
+          [ "$GOT" = "$WANT" ] || { echo "❌ v1.23 生成列 / 写回之后的过期集合不对。期望 [$WANT] 实得 [$GOT]"; exit 1; }
+          psql -v ON_ERROR_STOP=1 -q -c "DROP TABLE public.ci_v23_before; DELETE FROM truth_vault.notes WHERE project_id = 'CI_V23'; DELETE FROM truth_vault.projects WHERE project_id = 'CI_V23';"
+          echo "✓ v1.23: SQL 指纹 = Python 指纹; 回填只让 essence 之后真改过的篇过期 (改回来 / 先改后标 / 只改空白话题都不算); 回填不写审计不动 updated_at; 生成列跟着正文走"
       - name: Apply security revoke (anon/authenticated write on public.* ) (+ idempotency)
         # 撤 anon/authenticated 对 5 张 public 表的写权限(读保留,不开 RLS)。
         # guarded:表/角色不存在则跳过 → 裸 PG / CI 为 no-op。REVOKE 幂等,两遍验。

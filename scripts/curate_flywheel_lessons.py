@@ -19,7 +19,9 @@ JSON 解析)。未来若再加第三个 LLM pass, 可把这两个 helper 提到 
 
 Usage:
     python curate_flywheel_lessons.py --dry-run --limit 5     # 渲染 prompt, 不调 LLM/不写库
-    python curate_flywheel_lessons.py --limit 20              # 真跑
+    python curate_flywheel_lessons.py --limit 20              # 真跑 (夜跑模式: 先没策展过的, 预算有剩再重策展 essence 比卡新的, D-137)
+    python curate_flywheel_lessons.py --project P --limit 5 --daily-pass new     # daily-sync 第一遍: 只策展没策展过的
+    python curate_flywheel_lessons.py --project P --limit 5 --daily-pass stale   # 第二遍: 只重策展 essence 比卡新的
     python curate_flywheel_lessons.py --project WTG_phase1     # 只策展某项目
     python curate_flywheel_lessons.py --recurate              # 重策展(覆盖已有卡)
     python curate_flywheel_lessons.py --note-ids NUC_phase1_recA,NUC_phase1_recB --dry-run
@@ -46,7 +48,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from _common import fetch_all_pages, fetch_vanished_note_ids, get_supabase_client, setup_logger, _iso_now
+from _common import (fetch_all_pages, fetch_vanished_note_ids, get_supabase_client, notes_content_sha_supported,
+                     setup_logger, _iso_now)
 # 复用 essence pass 的带重试 Anthropic 调用 + JSON 解析, 避免重复实现那套 retry。
 # (导入 annotate_essence_pass 仅触发其 def/常量定义, main 有 __name__ guard, 无副作用。)
 from annotate_essence_pass import call_claude, parse_claude_json
@@ -272,6 +275,29 @@ def fetch_uncurated_cards(sb, project_id, recurate: bool, stale_only: bool = Fal
     return cards
 
 
+def fetch_daily_cards(sb, project_id, limit: int = 0, which: str = "both") -> list[dict]:
+    """夜跑 (不带 --recurate / --recurate-stale / --note-ids) 取哪些卡: 先没策展过的 (is_curated=false, 和以前一样),
+    预算还有剩再接上「essence 比卡新」的已策展卡 —— 就是 --recurate-stale 那一路 (stale_cards), 不另写判据。
+    ``which``: "new" 只要没策展过的, "stale" 只要 essence 比卡新的, "both" 两样 (先新后旧)。daily-sync 分两遍跑 (先每个项目
+    "new"、再拿剩下的预算每个项目 "stale"): 预算是全局共享、按项目字母序扣的, 一遍里先新后旧只在一个项目里成立, 排在前面
+    的项目的重策展会抢掉后面项目的新卡 (复审 on 52f690e)。
+    "stale" 那一路只在 v1_23 跑过 (notes_content_sha_supported) 之后才走: 没迁移之前夜跑策展和以前一模一样 (owner 11-02:
+    代码先能在没迁移的库上照常跑), essence 比卡新的照旧靠手动的 recurate-lessons.yml。
+
+    外部审计 11-02 F02 第一期 (D-137): 飞书里正文改了, essence 夜跑会按新正文重标 (essence_content_sha ≠ content_sha);
+    重标之后 essence_annotated_at 比卡新, 这张卡就是按旧正文策展的。以前只有手动的 recurate-lessons.yml 才会去重策展
+    它们, 书架上就一直挂着旧正文的卡 (11-02 生产: OKMAN 33 张, 10-21 有两次借阅把其中的卡给了写手)。
+    没策展过的永远排前面; limit 给了且没策展过的已经占满, 就不去查 essence 时间 (省两三个请求)。两边去重, 同一张卡只出现一次。"""
+    cards = fetch_uncurated_cards(sb, project_id, False) if which != "stale" else []
+    if which == "new" or (limit and len(cards) >= limit) or not notes_content_sha_supported(sb):
+        return cards
+    seen = {c["source_note_id"] for c in cards}
+    # _stale 只给日志数数用 (main 数完就 pop), 不进 prompt (build_curator_prompt 只读固定几个键); 拷一份, 不改取回来的行
+    stale = [dict(c, _stale=True) for c in fetch_uncurated_cards(sb, project_id, True, stale_only=True)
+             if c["source_note_id"] not in seen]
+    return cards + stale
+
+
 def write_lesson_back(sb, note_id: str, model: str, parsed: dict, dry_run: bool) -> None:
     row = {
         "note_id": note_id,
@@ -309,6 +335,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                         help="只重策展这几张卡 (source_note_id; 逗号分隔或文件路径, 一行一个)。已策展的也重来, "
                              "不和 --recurate / --recurate-stale 一起用; 有一个不在候选视图里 (不是合格爆款 / "
                              "项目对不上 / 飞书已删 / 拼错) 就一张都不跑 (D-122 修复计划第 5 条)")
+    parser.add_argument("--daily-pass", choices=("new", "stale", "both"), default="both",
+                        help="夜跑模式 (不带 --recurate / --recurate-stale / --note-ids) 取哪些卡: new 只要没策展过的, stale 只要 "
+                             "essence 比卡新的 (v1_23 跑过才有), both 两样、先新后旧 (默认)。daily-sync 先每个项目 new、再每个项目 "
+                             "stale, 新卡先占全局预算 (D-137)")
     parser.add_argument("--qps", type=float, default=2.0,
                         help="限速 (default 2 req/s)")
     args = parser.parse_args(argv)
@@ -323,14 +353,23 @@ def main(argv: Optional[list[str]] = None) -> int:
             logger.error("--note-ids 是空的: %r", args.note_ids)
             return 2
 
+    if args.daily_pass != "both" and (args.recurate or args.recurate_stale or note_ids is not None):
+        logger.error("--daily-pass 只给夜跑模式用, 不和 --recurate / --recurate-stale / --note-ids 一起用")
+        return 2
+
     model = os.environ.get("FLYWHEEL_CURATOR_MODEL", "claude-sonnet-5-5")
     if not args.dry_run and not os.environ.get("ANTHROPIC_API_KEY"):
         logger.error("ANTHROPIC_API_KEY must be set (or use --dry-run)")
         return 2
 
     sb = get_supabase_client()
-    cards = fetch_uncurated_cards(sb, args.project, args.recurate or args.recurate_stale,
-                                  stale_only=args.recurate_stale, note_ids=note_ids)
+    daily = not (args.recurate or args.recurate_stale or note_ids is not None)
+    if daily:
+        # 夜跑: 没策展过的在前, 预算有剩再重策展 essence 比卡新的 (D-137)
+        cards = fetch_daily_cards(sb, args.project, args.limit, args.daily_pass)
+    else:
+        cards = fetch_uncurated_cards(sb, args.project, args.recurate or args.recurate_stale,
+                                      stale_only=args.recurate_stale, note_ids=note_ids)
     if note_ids is not None:
         # 点名的卡少一张就一张都不跑: 静默跑一个子集, 日志看着像「点名的都重策展了」(和预算截断不静默同一个道理)。
         got = {c["source_note_id"] for c in cards}
@@ -346,9 +385,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         cards = cards[: args.limit]
     # dry_run 写进这一行 (小写 true / false, 和 workflow 输入同形): recurate-lessons.yml 从这里取「脚本实际是不是 dry-run」,
     # 不回显输入 —— 参数传丢了, ✅ 行也不会照样写 dry_run=true (D-123 复审)
-    logger.info("Found %d card(s) to curate (model=%s, recurate=%s, stale_only=%s, note_ids=%s, dry_run=%s)",
+    n_stale = sum(1 for c in cards if c.pop("_stale", False))
+    # daily_stale = 夜跑模式里接在没策展过的后面、因为 essence 比卡新而重策展的张数 (D-137); dry_run 必须留在行尾
+    # (check_curate_note_ids §3 / recurate-lessons.yml 从行尾取)
+    logger.info("Found %d card(s) to curate (model=%s, recurate=%s, stale_only=%s, note_ids=%s, daily_stale=%d, "
+                "dry_run=%s)",
                 len(cards), model, args.recurate or args.recurate_stale or note_ids is not None,
-                args.recurate_stale, "-" if note_ids is None else len(note_ids), str(args.dry_run).lower())
+                args.recurate_stale, "-" if note_ids is None else len(note_ids), n_stale, str(args.dry_run).lower())
 
     stats = {"ok": 0, "ok_after_retry": 0, "failed": 0}
     failed_ids: list[str] = []

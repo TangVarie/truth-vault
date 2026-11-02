@@ -596,6 +596,45 @@ SELECT '100', 'I · 数据一致性',
     '要认就两边一起改 _common.PAID_* 和 v1_22 的 tv_classify_paid_element; 后一个数 > 0 = 有投流标记被删过, 按 audit_log 那一行找回原值, '
     '问运营是标错了还是删错了 (10-29 生产 0 篇; 这条是全表扫 audit_log, 约 0.4 秒).'
 
+-- ── v1_23 正文指纹 (外部审计 11-02 F02 第一期, D-137) ─────────────────────
+UNION ALL
+SELECT '101', 'I · 数据一致性',
+    '已标 essence、却没有 essence_content_sha 的篇数 (v1_23 回填之后应为 0; 之后每次标 essence 都写这一列)',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(*) FROM truth_vault.notes
+        WHERE essence_annotated_at IS NOT NULL AND essence_content_sha IS NULL$q$
+    )::TEXT, 'N/A'),
+    '0',
+    'N/A = schemas/notes_v1_23_content_sha.sql 还没跑 (owner 在 SQL editor 跑; 没跑之前代码照旧只标没标过的). '
+    '> 0 = 回填漏了, 或者有别的路径标 essence 时没写指纹 (只有 annotate_essence_pass.write_essence_back 该写 essence): '
+    '这些篇在夜跑里会被当成过期重标一次, 不丢数据, 但要查是哪条路径.'
+
+UNION ALL
+SELECT '102', 'I · 数据一致性',
+    'essence 过期的篇数: 已标 essence、但标的时候那份正文和现在不是一份 (essence_content_sha IS DISTINCT FROM content_sha; 只改空白 / 标点 / #话题 不算)',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(*) FROM truth_vault.notes
+        WHERE essence_annotated_at IS NOT NULL AND essence_content_sha IS DISTINCT FROM content_sha$q$
+    )::TEXT, 'N/A'),
+    '0',
+    '跑完 v1_23 当天是几百 (11-02 预演 508: OKMAN 318 / TUGE 65 / XIWU_phase2 54 / SPX 29 / HATHERINE 26 …), 不是全库 6838 —— '
+    '接近已标总数 = 回填没对上, 回来查. 之后夜跑 essence 在 WORKER_LIMIT 日预算里先标没标过的、再消这些, 应逐日下降, '
+    '平时只剩当天飞书里改过的几篇; 连续一周不降 = 夜跑没在消 (看 daily-sync essence 步的 Found 行 content_changed=N). '
+    'on_demand 项目夜跑不标, 它们的过期篇留着, 要消就手动跑 backfill-essence.'
+
+UNION ALL
+SELECT '103', 'I · 数据一致性',
+    '书架上 essence 比卡新的经验卡数 (v_flywheel_lesson_cards 里已策展、notes.essence_annotated_at > curated_at)',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(*) FROM truth_vault.v_flywheel_lesson_cards v
+        JOIN truth_vault.notes n ON n.note_id = v.source_note_id
+        WHERE v.is_curated AND n.essence_annotated_at > v.curated_at$q$
+    )::TEXT, 'N/A'),
+    '0',
+    'D-137 起夜跑策展分两遍: 先每个项目策展没策展过的卡, 预算有剩再每个项目重策展这些 (同 --recurate-stale 的判据; v1_23 跑过才重策展, '
+    '没跑之前夜跑不碰它们, 和以前一样). essence 因正文改过重标之后这里会先涨、'
+    '再被夜跑消掉 (11-02: 正文改过的篇上有卡 42 张, OKMAN 33). 一周不降 = 夜跑策展预算被新卡占满, 手动跑 recurate-lessons.yml (stale).'
+
 -- ── I · 数据一致性副作用 ──────────────────────────────────────────────
 UNION ALL
 SELECT '90', 'I · 数据一致性',

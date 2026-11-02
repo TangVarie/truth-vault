@@ -218,6 +218,12 @@ def report(res: dict, v: dict, sc: dict) -> int:
     need_b, need_r = max(0, cr["min_bottom"] - v["bottom_n"]), max(0, cr["min_rest"] - v["rest_n"])
     if v["status"] == "accumulating":
         print(f"  进度: 还差最低档 {need_b} 篇、其余 {need_r} 篇 (目标 {cr['min_bottom']} / {cr['min_rest']}), 不出结论")
+        # 落档率 (D-137 第 7 条): 冻结的分项目 20% 切点下实际只落约 10%, 最低档按 20% 估会把读数时间估早一倍
+        tot = v["bottom_n"] + v["rest_n"]
+        if tot:
+            share = v["bottom_n"] / tot
+            need_all = f"约 {math.ceil(cr['min_bottom'] / share):,} 篇有标签的笔记" if share else "算不出 (最低档 0 篇)"
+            print(f"  落档率: 最低档 {v['bottom_n']}/{tot} = {share:.1%} · 照这个落档率最低档到 {cr['min_bottom']} 要{need_all}")
     else:
         print(f"  ⚖️  样本够了, 判定 = {v['status']} (线: 比值 ≤ {cr['ratio_max']} 且 p < {cr['alpha']})。写 DECISIONS, 不自动做任何事")
     rc = 0
