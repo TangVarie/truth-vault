@@ -3,7 +3,8 @@
 
   §1 指纹: _common.content_sha 对 check_content_sha_cases.json 每一条都等于记下的 sha (CI sql job 拿同一份文件对
      truth_vault.tv_content_sha, 两边逐条相等); 同组 (只改空白 / 标点 / #话题 / 全角空格 / 零宽字符) 指纹相同,
-     不同组 (改一个字、换表情、整段重写、加标题) 指纹不同
+     不同组 (改一个字、换表情、整段重写、加标题) 指纹不同; 两边的字符类里没有字面的非 ASCII 字符 (都写成 \\uXXXX,
+     粘贴进 SQL editor 不会丢)
   §2 选取 (两列在): fetch_unannotated_notes 默认路 = 没标过的 + 正文改过的 (essence_content_sha ≠ content_sha), 没标过的
      排前面; 只改空白 / 话题的不选; 正文改过又改回来的不选; --reannotate / --only-missing-subtype 不叠加过期那一路;
      count_remaining = 没标过的 + 过期的 (daily-sync 见 0 就跳过项目, 不数过期的就永远轮不到)
@@ -163,6 +164,15 @@ def main() -> int:
         fails.append("§1 不同组 (改字 / 换表情 / 重写 / 加标题) 的指纹撞了")
     if C.content_sha_text("T", "a #tag b") != "Tab":
         fails.append(f"§1 归一化顺序不对: {C.content_sha_text('T', 'a #tag b')!r}")
+    # 两个字符类里不许出现 ASCII 以外的字面字符 (都写成 \uXXXX): owner 是粘贴进 SQL editor 跑的, 不换行空格 / 零宽 / 行分隔这类
+    # 一被编辑器吞掉或换掉, 范围就悄悄变了, 两边仍各自自洽, 上面的夹具也看不出来 (复审 on 52f690e)。
+    sql_fn = (HERE.parent / C.CONTENT_SHA_MIGRATION).read_text(encoding="utf-8")
+    sql_fn = sql_fn[sql_fn.index("AS $fn$"):sql_fn.index("$fn$;")]
+    for name, pat in (("CONTENT_SHA_HASHTAG", C.CONTENT_SHA_HASHTAG), ("CONTENT_SHA_STRIP", C.CONTENT_SHA_STRIP),
+                      ("v1_23 tv_content_sha 的两个字符类", sql_fn.replace("话题", ""))):
+        raw = [f"U+{ord(ch):04X}" for ch in pat if ord(ch) > 127]
+        if raw:
+            fails.append(f"§1 {name} 里有字面的非 ASCII 字符 {raw[:5]}: 写成 \\uXXXX")
 
     # §2 选取 (两列在)
     sb = _SB(_fixture())

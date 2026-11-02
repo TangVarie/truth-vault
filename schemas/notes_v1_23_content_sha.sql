@@ -5,13 +5,16 @@
 --   知道"这篇的正文变过"。essence 按 essence_annotated_at IS NULL 取, 标过一次就再也不看; 夜跑策展只取没策展过的卡。
 --   11-02 生产只读 (audit_log, 只数不读正文): 6835 篇已标 essence 里, 571 篇的 raw_content 在 essence 之后改过 (近 14 天 135 篇),
 --   按下面的规则去掉空白 / 标点 / #话题 之后还不一样的 508 篇 (OKMAN_phase1 318、TUGE_phase1 65、XIWU_phase2 54、
---   SPX_phase1 29、HATHERINE_phase1 26 …); 书架上有卡的 42 张 (OKMAN 33)。大多是排期稿进了飞书之后、发出去之前又改过。
+--   SPX_phase1 29、HATHERINE_phase1 26 …); 书架上有卡的 42 张 (OKMAN 33)。两种来路: OKMAN 那 318 篇是 07-27～08-18 整条
+--   record 改指到另一篇帖 —— audit_log 里同一行 UPDATE 连 publish_url (新旧都不为空)、账号、发布时间、指标、tier 一起换
+--   (319/319), 现在的行自己是对的, 只有旧 essence 是按别的帖标的; 其余约 190 篇是排期稿进了飞书之后、发出去之前又改过
+--   (publish_url 是新填上的)。
 --
 -- 这份迁移做三件事:
---   ① truth_vault.tv_content_sha(title, raw_content): 标题 + 换行 + 正文, 去掉「[话题]」、#话题 (# 后最多 40 个非空白非 # 字符)、
+--   ① truth_vault.tv_content_sha(title, raw_content): 标题 + 换行 + 正文, 去掉「[话题]」、#话题 (# 后最多 40 个不是空白、# 或方括号的字符)、
 --      全部空白和标点, 再取 md5。只改空格 / 换行 / 标点 / 话题标签不算改 —— 不然夜跑每次同步都会让一批篇白白重标。
---      Python 同一份在 scripts/_common.py content_sha() (CI sql job 拿同一批字符串两边对; 两边都只用 \uXXXX 写的字符类,
---      不依赖库的 locale)。
+--      Python 同一份在 scripts/_common.py content_sha() (CI sql job 拿同一批字符串两边对; 两个字符类里 ASCII 以外的字符
+--      两边都写成 \uXXXX, 文件里没有看不见的字符; 不依赖库的 locale)。
 --   ② notes.content_sha: 上面那个函数的 STORED 生成列, 正文一改它就跟着变, 不用任何代码去写。
 --      notes.essence_content_sha: essence 标的时候那份正文的指纹 —— annotate_essence_pass.write_essence_back 每次标都写。
 --      essence_annotated_at 不为空、两个指纹不一样 = 这篇的 essence 是按旧正文标的 (过期), 夜跑 essence 在同一份日预算里
@@ -22,8 +25,8 @@
 --
 -- 挡不住什么 / 不做什么:
 --   · 闸三不重打分 (D-118 入库即打分)。分数按旧正文标的 essence 打的那些, 出读数时按 D-137 预先登记的敏感性切片单列。
---   · 特征层 (note_feature_answers) 不跟着重抽、content_scores 不加 input_sha、OKMAN 07-27~08-19 正文在 record 之间挪过之后
---     指标和 tier 跟没跟着挪 —— 都是第二期 (OPEN-ITEMS F02-2), 这份迁移不碰。
+--   · 特征层 (note_feature_answers) 不跟着重抽、content_scores 不加 input_sha —— 都是第二期 (OPEN-ITEMS AU-F02b), 这份迁移
+--     不碰。OKMAN 那 318 篇的指标和 tier 已经跟着帖一起换过了 (audit_log 同一行), 不用另修。
 --   · 飞书里改的只是 hashtags 列 / 评论区 / 指标: 不算正文改动, 不重标。
 --   · 生成列只在这份迁移跑的那一刻按函数当时的定义算; 以后要改规则 = 新迁移: 改函数 + 重建这一列 + 重算 essence_content_sha,
 --     不能只 CREATE OR REPLACE 函数 (存量的值不会跟着变)。
@@ -45,8 +48,10 @@
 -- ── ① 指纹函数 ─────────────────────────────────────────────────────
 --   三步, 顺序不能换: 先去「[话题]」(把 #词[话题]# 变成 #词#), 再去 #话题 (# 后面最多 40 个非空白、非 #、非方括号的字符,
 --   同 feature_bank._HASHTAG_BARE), 最后去全部空白和标点 (剩下的孤零零的 # 也在这一步去掉)。
---   字符类全用 \uXXXX 写: Postgres ARE 和 Python re 都认, 结果不随库的 locale 变 (11-02 在生产 17.6 / en_US.UTF-8 和
---   CI 16 / C.UTF-8 上对过同一批字符串)。去掉的标点: ASCII 标点和控制符、Latin-1 标点 (U+00A1–U+00BF)、
+--   字符类里 ASCII 以外的字符全写成 \uXXXX (Postgres ARE 和 Python re 都认): 文件里没有零宽 / 不换行 / 行分隔这类看不见的
+--   字符, 粘贴进 SQL editor 不会被编辑器吞掉或换掉 —— 吞掉一个端点会悄悄改掉一段范围, 两边仍各自自洽, CI 看不出来。
+--   结果不随库的 locale 变 (11-02 在生产 17.6 / en_US.UTF-8 和 CI 16 / C.UTF-8 上对过同一批字符串; 改成 \uXXXX 前后,
+--   PG 16 和 Python 对全部 1,112,063 个码位逐个比过, 两个字符类的归属一个不差)。去掉的标点: ASCII 标点和控制符、Latin-1 标点 (U+00A1–U+00BF)、
 --   U+2000–U+206F (各种空格、零宽字符、破折号、引号、省略号)、CJK 标点 (U+3000–U+3004, U+3008–U+3020, U+3030, U+303D–U+303F;
 --   〇 々 这类算字, 留着)、变体选择符和竖排 / 小写形式 (U+FE00–U+FE19, U+FE30–U+FE6B)、BOM、全角标点 (U+FF01–U+FF0F,
 --   U+FF1A–U+FF20, U+FF3B–U+FF40, U+FF5B–U+FF65)。字母、数字、汉字、表情都留着: 换一个表情算改了。
@@ -59,8 +64,8 @@ AS $fn$
             regexp_replace(
                 regexp_replace(coalesce(title, '') || E'\n' || coalesce(raw_content, ''),
                                '\[话题\]', '', 'g'),
-                '#[^#\[\]\u0001- \u007f-   -​    　﻿]{1,40}', '', 'g'),
-            '[\u0001-/:-@[-`{-¿  -⁯　-〄〈-〠〰〽-〿︀-︙︰-﹫﻿！-／：-＠［-｀｛-･]',
+                '#[^#\[\]\u0001- \u007f-\u00a0\u1680\u2000-\u200b\u2028\u2029\u202f\u205f\u3000\ufeff]{1,40}', '', 'g'),
+            '[\u0001-/:-@[-`{-\u00bf\u1680\u2000-\u206f\u3000-\u3004\u3008-\u3020\u3030\u303d-\u303f\ufe00-\ufe19\ufe30-\ufe6b\ufeff\uff01-\uff0f\uff1a-\uff20\uff3b-\uff40\uff5b-\uff65]',
             '', 'g'));
 $fn$;
 

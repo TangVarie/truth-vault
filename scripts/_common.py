@@ -1541,14 +1541,15 @@ def fetch_half_alias(sb) -> dict[str, str]:
 # 库里是生成列 notes.content_sha = truth_vault.tv_content_sha(title, raw_content); essence 标的时候那份的指纹记在
 # notes.essence_content_sha。两者不同 = essence 是按旧正文标的, 夜跑重标。这里的 content_sha() 是 SQL 那个函数的
 # Python 同一份: 线上判过期只用库里的生成列 (写回的也是取数时库里那一列的值), Python 这份给 CI 用 —— 三组字符类
-# 和 SQL 逐字一样 (都只用 \uXXXX 写, 不依赖 locale), CI 拿 scripts/check_content_sha_cases.json 两边各算一遍对。
+# 和 SQL 逐字一样 (ASCII 以外的字符都写成 \uXXXX: 文件里没有看不见的字符, 复制粘贴不会丢; 不依赖 locale),
+# CI 拿 scripts/check_content_sha_cases.json 两边各算一遍对。
 CONTENT_SHA_MIGRATION = "schemas/notes_v1_23_content_sha.sql"
 CONTENT_SHA_TOPIC = r"\[话题\]"                                     # 「[话题]」
-CONTENT_SHA_HASHTAG = (r"#[^#\[\]\u0001- \u007f-   -​    　﻿]"
+CONTENT_SHA_HASHTAG = (r"#[^#\[\]\u0001- \u007f-\u00a0\u1680\u2000-\u200b\u2028\u2029\u202f\u205f\u3000\ufeff]"
                        r"{1,40}")                                           # 同 feature_bank._HASHTAG_BARE, 空白写全
-CONTENT_SHA_STRIP = (r"[\u0001-/:-@[-`{-¿  -⁯"
-                     r"　-〄〈-〠〰〽-〿︀-︙︰-﹫﻿"
-                     r"！-／：-＠［-｀｛-･]")  # 空白 + 标点 (字母 / 数字 / 汉字 / 表情留着)
+CONTENT_SHA_STRIP = (r"[\u0001-/:-@[-`{-\u00bf\u1680\u2000-\u206f"
+                     r"\u3000-\u3004\u3008-\u3020\u3030\u303d-\u303f\ufe00-\ufe19\ufe30-\ufe6b\ufeff"
+                     r"\uff01-\uff0f\uff1a-\uff20\uff3b-\uff40\uff5b-\uff65]")  # 空白 + 标点 (字母 / 数字 / 汉字 / 表情留着)
 
 
 def content_sha_text(title: Optional[str], raw_content: Optional[str]) -> str:
