@@ -10,13 +10,17 @@
   · 评论 ≥ min_comments;
   · 日均评论 = 评论 / max(发出天数, 3) 不低于同品类这批帖 (同样 3–max_age_days 天、最近抓到的, 不管有没有产品) 的中位数;
   · 每个品类按日均评论从高到低给模型看前 show_per_request 张。卡的 rank_score 是日均评论在同品类这批帖里的百分位,
-    卡上带发出几天、每天多少条评论, 和 Jev 给这篇答的结构题 (开头怎么起、有没有转折、结尾问没问读者……)。
+    卡上带抓到时发出几天、共几条评论、那时每天几条 (三个数是同一次抓取量的, 乘得回去), 另带现在发出几天
+    (posted_days_ago, 命中缓存时按 id 重算; 不和日均评论挨着写, 免得读的人拿现在的天数去乘), 和 Jev 给这篇答的结构题
+    (开头怎么起、有没有转折、结尾问没问读者……)。why_it_worked 只写抓取那一刻定下的数, 缓存放多久都不过时。
 
 哪些请求有:
   · 只给显式带了 explore 的消费方 (写作台; 规律臂、探索臂都给 —— 两臂只差已验证规律, 对照才干净);
     不带这个键的老消费方 (通道 1 / 旧版写作台) 不给, 缓存键也不变;
   · 只给同品类的项目: brief 的品牌 / 项目名里出现 prompts/external_shelf_v1.json 里某品类登记的品牌名。
     写作台那边发牌也认这张表 (aw deskcore/priors.py 的 EXT_CATEGORY_BY_PROJECT 照抄, 两边各有钉表的用例)。
+  · 「至少 min_external 张」只管 min_external_categories 里的品类 (别家品牌名查过、补进了 mask_terms 的)。别的品类
+    (家居家电 / 个护 / 藻油, F-10: 本仓公开, 别家品牌名不写进来, 还没有地方遮) 照样上架、模型可以挑, 但不强塞、不补。
 
 卡长什么样: 不带外部的品牌名 —— 只收 Jev 分诊判了没带产品、不像广告的帖 (外部品牌认不全, 只能要本来就没提产品的)。
 分诊漏网、正文里仍点了别家品牌的 (配置的 mask_terms), 2026-10-19 起 (D-120) 不再整篇不收, 而是把品牌名换成「某品牌」
@@ -88,6 +92,9 @@ def load_config(path: Path = CONFIG_PATH) -> Optional[dict]:
             raise ValueError("max_age_days / min_comments / show_per_request 不对")
         if not 0 <= int(c.get("min_external") or 0) <= int(c["max_per_borrow"]):
             raise ValueError("min_external 要在 0 和 max_per_borrow 之间")
+        forced = c.get("min_external_categories") or []
+        if not isinstance(forced, list) or any(f not in c["categories"] for f in forced):
+            raise ValueError("min_external_categories 要是 categories 里登记过的品类名")
     except Exception:  # noqa: BLE001
         logger.warning("外部参考书架配置读不了 (%s), 本次不给外部卡", path, exc_info=True)
         c = None
@@ -213,20 +220,24 @@ def to_card(row: dict, cfg: Optional[dict] = None, *, rate: Optional[float] = No
             fq: Optional[dict] = None, now: Optional[float] = None) -> dict:
     """``cfg`` 给 mask_terms 用; 不给就读默认配置 (读不了就不换, 但那时整个书架本来就不出卡)。
     ``rate`` / ``pct`` 是 qualified() 算好的日均评论和百分位 (不给就按这一行自己算日均、百分位记 0);
-    ``fq`` 是 Jev 给这篇答的结构题; ``now`` 用来算发出几天。"""
+    ``fq`` 是 Jev 给这篇答的结构题; ``now`` 用来算现在发出几天 (posted_days_ago)。
+
+    why_it_worked 只写抓取那一刻定下的数 (抓到时发出几天、共几条评论、那时每天几条): 写作台模型读它, 缓存行一放一周,
+    写「现在发出几天」会和命中时重算的 posted_days_ago 对不上; 百分位是上架那天同品类那批帖排出来的, 也会过时,
+    只放在 rank_score 里。日均评论旁边只写抓到时的天数 —— 写现在的天数, 读的人一乘就和总评论数对不上。"""
     cfg = cfg if cfg is not None else load_config()
     now = time.time() if now is None else now
     n = row.get("comments") or 0
     rate = velocity(row) if rate is None else rate
     posted = posted_at(row.get("note_id"))
     days_ago = int((now - posted) // DAY_S) if posted is not None else None
+    age = age_at_scrape(row)
+    scraped_age = int(age + 0.5) if age is not None else None    # 四舍五入: 乘回去离总评论数最近
     per_day = round(rate, 1) if rate is not None else None
     fq = {q: fq[q] for q in STRUCTURE_QIDS if (fq or {}).get(q) is not None}
     why = "别家同品类最近涨得快的帖 (不是帆谷投的, 自然流量)"
-    if days_ago is not None and per_day is not None:
-        why += f": 发出约 {days_ago} 天, 每天约 {per_day} 条评论 (共 {n} 条)"
-        if pct is not None:
-            why += f", 快过同品类近期 {round(pct * 100)}% 的帖"
+    if scraped_age is not None and per_day is not None:
+        why += f": 抓到时发出约 {scraped_age} 天、共 {n} 条评论, 那时每天约 {per_day} 条"
     return {
         "source_note_id": f"{ID_PREFIX}{row['note_id']}",
         "external": True,
@@ -234,7 +245,8 @@ def to_card(row: dict, cfg: Optional[dict] = None, *, rate: Optional[float] = No
         "brand": None,
         "category": row.get("category"),
         "comments": n,
-        "posted_days_ago": days_ago,
+        "posted_days_ago": days_ago,           # 现在发出几天 (命中缓存时按 id 重算)
+        "age_at_scrape_days": scraped_age,     # 抓到时发出几天: comments / comments_per_day 是这个时候量的
         "comments_per_day": per_day,
         "fq": fq,
         "rank_score": round(pct, 3) if pct is not None else 0.0,
@@ -330,7 +342,8 @@ def shelf_for(sb, brief: dict, *, path: Path = CONFIG_PATH, now: Optional[float]
 def digest(cards: list[dict]) -> str:
     """进 library_version 的外部卡指纹: 卡的 id、**卡面摘录和结构**。只认 id 的话, mask_terms 补了一个新品牌, 卡面变了
     而版本没变, 旧缓存里没换掉品牌名的摘录会一直被命中(codex review on TV#202); 结构题晚到也一样。
-    发出几天每天都在变, 不进指纹 (命中缓存时按 id 重算, core._refresh_external)。没有外部卡时与以前一样。"""
+    现在发出几天每天都在变, 不进指纹 (命中缓存时按 id 重算, core._refresh_external); 卡上别的数 (why_it_worked 也是)
+    都是抓取那一刻定下的, 不随时间变。没有外部卡时与以前一样。"""
     parts = sorted(f"{c.get('source_note_id')}\x00{c.get('raw_excerpt') or ''}\x00{c.get('structure') or ''}"
                    for c in cards)
     if not parts:
@@ -348,18 +361,33 @@ def max_per_borrow(path: Path = CONFIG_PATH) -> int:
 
 
 def min_external(path: Path = CONFIG_PATH) -> int:
-    """每次借卡至少带几张外部卡 (书架有卡时; 模型一张没挑就补, core._ensure_external)。配置读不了 → 0。"""
+    """配置的每次至少几张外部卡 (只管 min_external_categories 里的品类, 见 min_external_for)。配置读不了 → 0。"""
     cfg = load_config(path)
     return min(int(cfg.get("min_external") or 0), int(cfg["max_per_borrow"])) if cfg else 0
 
 
-PROMPT_NOTE = ("标了「外部参考」的卡是别家同品类最近涨得快的帖 (不是帆谷投的, 评论是自然流量; 卡上有发出几天、每天多少条评论): "
-               "{pick}, 只借结构 / 钩子, 不抄内容, 不提它的品牌。")
+def forceable(cards: list[dict], path: Path = CONFIG_PATH) -> list[dict]:
+    """``cards`` 里能拿来凑「至少 min_external 张」的外部卡: 品类在 min_external_categories 里 (别家品牌名查过、
+    补进了 mask_terms)。别的品类 (F-10: 别家品牌名还没有地方遮) 的外部卡模型可以挑, 但不强塞、不补。配置读不了 → []。"""
+    cfg = load_config(path)
+    cats = set((cfg or {}).get("min_external_categories") or [])
+    return [c for c in cards if is_external(c) and c.get("category") in cats]
 
 
-def prompt_note(path: Path = CONFIG_PATH) -> str:
-    """候选卡前面那句外部卡用法; 配置读不了 → 空串。min_external = 1 时是「至少挑 1 张、最多 2 张」。"""
-    n, m = max_per_borrow(path), min_external(path)
+def min_external_for(cards: list[dict], path: Path = CONFIG_PATH) -> int:
+    """这一摞候选卡要求至少挑几张外部卡: 有 forceable 的外部卡 → min_external, 否则 0。
+    prompt 那句用法 (prompt_note) 和保底 (core._ensure_external) 都看它, 缓存版本也带着它 (core.librarian_select)。"""
+    return min_external(path) if forceable(cards, path) else 0
+
+
+PROMPT_NOTE = ("标了「外部参考」的卡是别家同品类最近涨得快的帖 (不是帆谷投的, 评论是自然流量; 卡上有抓到时发出几天、"
+               "共几条评论、那时每天几条, 和现在发出几天): {pick}, 只借结构 / 钩子, 不抄内容, 不提它的品牌。")
+
+
+def prompt_note(cards: list[dict], path: Path = CONFIG_PATH) -> str:
+    """候选卡前面那句外部卡用法; 配置读不了 → 空串。``cards`` 里有 forceable 的外部卡时是「至少挑 1 张、最多 2 张」,
+    只有没遮挡的品类 (F-10) 时是「最多挑 2 张」。"""
+    n, m = max_per_borrow(path), min_external_for(cards, path)
     if not n:
         return ""
     return PROMPT_NOTE.format(pick=f"至少挑 {m} 张、最多 {n} 张" if m else f"最多挑 {n} 张")

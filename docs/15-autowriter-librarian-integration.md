@@ -31,7 +31,7 @@ POST  {LIBRARIAN_URL}/librarian
 - **空库 / 馆员内部出错 → `{"selected": []}`**(不是 500)。所以 aw 永远拿得到一个可用结构,`[]` 就当"这次没飞轮料"处理。
 - **P4 起（D-116，2026-10-16）**：响应多一个 `patterns`（这次下发的闸二已验证规律：id / label / instruction / evidence），选中的卡多一个 `validated_hits`。只有 brief 显式带 `explore` 才参与：`false` 是规律臂，`true` 是探索臂（写作台 15% 的对照批次），两样都是空的；不带这个键就和以前一样，不下发。不认这两个字段的老消费方不受影响。细节见 `prompts/flywheel_librarian.md` 末节。
 - **D-117 起（2026-10-16）**：显式带 `explore` 的请求，如果项目品牌在外部参考书架登记的品类里，候选里多几张别家同品类的「外部参考」卡，选中最多 2 张。选中的卡多一个 `external`（true = 外部参考卡，id 是 `ext:` 开头，没有品牌，只借结构不抄内容）。不带 `explore` 的老消费方不受影响。细节见 `prompts/flywheel_librarian.md`「外部参考书架」。
-- **D-138 起**：外部卡按「最近涨得快」上架（发出 3–90 天、评论 ≥20、日均评论不低于同品类中位数），选中至少 1 张、最多 2 张：模型一张没挑时系统补一张，那一行带 `forced: true`。外部卡另带 `posted_days_ago`（发出几天）、`comments_per_day`（每天几条评论）、`fq`（结构题答案）；`structure` 是结构题的一句人话。所有选中卡的 `excerpt` 最长 600 字。老字段都没变。
+- **D-138 起**：外部卡按「最近涨得快」上架（发出 3–90 天、评论 ≥20、日均评论不低于同品类中位数），选中至少 1 张、最多 2 张：模型一张没挑时系统补一张，那一行带 `forced: true`（家居家电 / 个护 / 藻油不补，别家品牌名还没有地方遮，F-10）。外部卡另带 `posted_days_ago`（现在发出几天）、`age_at_scrape_days`（抓到时发出几天）、`comments_per_day`（抓到时每天几条评论，是在 `age_at_scrape_days` 那个时候量的，别拿 `posted_days_ago` 去乘）、`fq`（结构题答案）；`why_it_worked` 只写抓取那一刻的数；`structure` 是结构题的一句人话。所有选中卡的 `excerpt` 最长 600 字。老字段都没变。
 - `GET {LIBRARIAN_URL}/health` → `{"ok":true}`(健康检查)。
 - 鉴权:没带对 `X-Librarian-Key` → 401。
 

@@ -8,7 +8,7 @@ librarian_select(brief) 的流程:
        命中缓存 → 直接返回 (跳过 LLM)。
     4. 未命中 → 预筛 shortlist(): 按 brief 的【项目级】字段挑 ≤SHORTLIST_CAP 张 (D-088)
        → 渲染 brief + 候选 → LLM 推理选 3-5 张 → 校验 id → 富集摘要
-       → 外部卡保底 (书架有卡、模型一张没挑就补一张, D-138) → 写缓存。
+       → 外部卡保底 (书架有能补的卡、模型一张没挑就补一张, D-138) → 写缓存。
        LLM 出错 → 返回 []  (绝不阻塞写稿; 飞轮是增强项)。
 
 library_version 说明: 用 (候选数, max(curated_at)) 而非每行 updated_at ——
@@ -334,10 +334,15 @@ def _render_fields(brief: dict, fields) -> str:
 def _render_cards(cards: list[dict]) -> str:
     blocks = []
     for c in cards:
-        if X.is_external(c):   # D-117: 外部参考卡没有品牌、没策展, 卡头写明只借结构; D-138: 带发出几天、日均评论、结构
+        if X.is_external(c):   # D-117: 外部参考卡没有品牌、没策展, 卡头写明只借结构; D-138: 带起量速度、结构
             excerpt = (c.get("raw_excerpt") or "").strip().replace("\n", " ")[:200]
-            if c.get("posted_days_ago") is not None and c.get("comments_per_day") is not None:
-                speed = f"发出约 {c['posted_days_ago']} 天 · 每天约 {c['comments_per_day']} 条评论 · 共 {c.get('comments')} 条"
+            # 日均评论是抓到那一刻量的 (评论 / 抓到时发出的天数): 挨着它只写抓到时的天数, 三个数乘得回去;
+            # 现在发出几天另起半句 (卡可能是 40 多天前抓的, 写在一起读的人会拿 47 天去乘 20 条/天)
+            if c.get("age_at_scrape_days") is not None and c.get("comments_per_day") is not None:
+                speed = (f"抓到时发出约 {c['age_at_scrape_days']} 天、共 {c.get('comments')} 条评论、"
+                         f"那时每天约 {c['comments_per_day']} 条")
+                if c.get("posted_days_ago") is not None:
+                    speed += f"；现在发出约 {c['posted_days_ago']} 天"
             else:
                 speed = f"评论 {c.get('comments')}"
             shape = f"\n  结构: {c['structure']}" if c.get("structure") else ""
@@ -373,7 +378,7 @@ def build_system_blocks(brief: dict, cards: list[dict], delivery: Optional[dict]
       block2 = 项目 prompt 包      (同项目内稳定)
     本次 delta 不在这里(进 user message)。"""
     rules = f"{P.render_block(delivery)}\n\n" if delivery else ""   # 规律全局稳定, 放在卡前面 (缓存前缀越稳越靠前)
-    note = X.prompt_note() if any(X.is_external(c) for c in cards) else ""
+    note = X.prompt_note(cards) if any(X.is_external(c) for c in cards) else ""
     ext_note = f"{note}\n\n" if note else ""
     cards_text = (
         f"{ROLE_TASK_INSTR}\n\n"
@@ -421,9 +426,9 @@ def _enrich(card: dict, why_relevant, borrow_what) -> dict:
         "validated_hits": list(card.get("validated_hits") or []),   # P4: 这张卡命中了哪几条已验证规律
         "external": X.is_external(card),   # D-117: 外部参考卡 (别家同品类帖, 不是帆谷投的)
     }
-    if row["external"]:   # D-138: 发出几天、每天多少条评论、Jev 答的结构题
-        row.update(posted_days_ago=card.get("posted_days_ago"), comments_per_day=card.get("comments_per_day"),
-                   fq=dict(card.get("fq") or {}))
+    if row["external"]:   # D-138: 现在发出几天、抓到时发出几天和那时每天多少条评论、Jev 答的结构题
+        row.update(posted_days_ago=card.get("posted_days_ago"), age_at_scrape_days=card.get("age_at_scrape_days"),
+                   comments_per_day=card.get("comments_per_day"), fq=dict(card.get("fq") or {}))
     return row
 
 
@@ -433,13 +438,14 @@ FORCED_BORROW = "只借开头和结构的路数, 不抄内容"
 
 
 def _ensure_external(selected: list[dict], cards: list[dict]) -> list[dict]:
-    """书架上有外部卡、模型选的里面却不到 X.min_external() 张 (配置 1) → 补日均评论最高的那张 (同速按书架顺序),
+    """书架上有能补的外部卡、模型选的里面却不到 X.min_external_for() 张 (配置 1) → 补日均评论最高的那张 (同速按书架顺序),
     标 ``forced: true`` (进缓存的 selected[] 里也带着, 周检数得出补了几次)。
     · 不到 5 张就加在末尾, 一张内部卡都不顶; 满 5 张才顶掉 rank_score 最低的那张内部卡 (同分顶靠后的);
     · 模型一张都没挑 (no_match) 不补: 它说了这次没有合适的, 也没有内部卡可顶;
+    · 只补 X.forceable() 的卡: 别家品牌名还没有地方遮的品类 (家居家电 / 个护 / 藻油, F-10) 不补, 模型自己挑了才有;
     · 书架空 (没登记品类 / 外部表里这个品类还没有帖 / 查库失败) 原样返回。"""
-    need = X.min_external()
-    ext = [c for c in cards if X.is_external(c)]
+    need = X.min_external_for(cards)
+    ext = X.forceable(cards)
     have = sum(1 for s in selected if s.get("external"))
     if need <= have or not ext or not selected:
         return selected
@@ -459,7 +465,8 @@ def _ensure_external(selected: list[dict], cards: list[dict]) -> list[dict]:
 
 
 def _refresh_external(c: dict, now: float) -> None:
-    """命中缓存的外部卡: 「发出几天」按 id 重算 (缓存行可能是几天前写的; 发帖时间就在 id 里, 不用查库)。"""
+    """命中缓存的外部卡: 「现在发出几天」按 id 重算 (缓存行可能是几天前写的; 发帖时间就在 id 里, 不用查库)。
+    别的数 (抓到时发出几天、那时每天几条评论、why_it_worked) 是抓取那一刻定下的, 不用动。"""
     nid = str(c.get("source_note_id") or "")
     posted = X.posted_at(nid[len(X.ID_PREFIX):]) if nid.startswith(X.ID_PREFIX) else None
     if posted is not None:
@@ -610,10 +617,12 @@ def librarian_select(brief: dict, *, model: Optional[str] = None,
     # 版本串看【整架】(D-088): 预筛挑掉的那张换了也要换缓存键 —— TV-03 那课 (50 张换 1 张版本不变)
     # 的边界如今是整个书架, 不是喂给 LLM 的那 24 张。
     # D-117: 外部参考书架只给显式带 explore 的消费方 (两臂都给, 两臂只差规律), 且只给同品类项目。
+    # 这摞卡要求至少挑几张 (X.min_external_for: 品类挪进 / 挪出 min_external_categories 就变) 也进版本串,
+    # 否则改了配置, 已缓存的选择 (补过 / 没补过外部卡) 还会一直被命中。
     ext = X.shelf_for(sb, brief) if isinstance(arm, bool) else []
     lib_v = library_version(cards, gate2_run=g2, explore=explore,
                             delivery=P.delivery_digest(delivery) if delivery else None,
-                            external=X.digest(ext) if ext else None)
+                            external=f"{X.digest(ext)}m{X.min_external_for(ext)}" if ext else None)
     key = cache_key(brief, lib_v)
     shown = shortlist(cards, brief) + ext
 
