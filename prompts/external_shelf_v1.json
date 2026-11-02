@@ -1,7 +1,9 @@
 {
   "_comment": [
-    "外部参考书架（D-117 ②，J-14）：别家同品类、评论 ≥50 的外部笔记，借卡时和内部卡一起给，每次最多占 2 张。馆员 librarian/external.py 读它。",
-    "categories 是「外部品类 → 我们哪些品牌算同品类」。品类名必须和 Jev config/external_corpus.yaml 的 categories[].name 一字不差（外部表的 category 列就是它）。",
+    "外部参考书架（D-117 ②，J-14；D-138 起按「最近涨得快」上架）：别家同品类的外部笔记，借卡时和内部卡一起给，每次至少 min_external 张、最多 max_per_borrow 张（模型一张没挑就补一张，标 forced）。馆员 librarian/external.py 读它。",
+    "上架条件（D-138）：抓到时发出 3–max_age_days 天、最近 45 天里抓到；评论 ≥ min_comments；日均评论 = 评论 / max(发出天数, 3) 不低于同品类同一批帖的中位数。每个品类按日均评论取前 show_per_request 张给模型看。发帖时间从 note_id 前 8 位十六进制解（外部表的 publish_time 是空的）。min_comments 不再和判爆（50）同一把尺子：书架看的是起量速度，判爆看的是闸二的结果标签，两件事。",
+    "categories 是「外部品类 → 我们哪些品牌算同品类」。品类名必须和 Jev config/external_corpus.yaml 的 categories[].name 一字不差（外部表的 category 列就是它）。写作台发牌照抄这张表（aw deskcore/priors.py 的 EXT_CATEGORY_BY_PROJECT），这里改一行，那边跟着改一行。",
+    "家居家电 / 个护 / 藻油 三行（D-138）先登记：Jev 那边的同名品类和这次一起加，外部表里还没有这三个品类的帖之前书架是空的，馆员照常只选内部卡。",
     "为什么是一张手写的小表，而不是从数据里推：10-16 实查，17 个项目里只有力克雷、大象、花西子的笔记带目标蓝词；",
     "写作台的雷诺考特、sportsix 项目连定位都是空的，按项目文本字面匹配品类名一个都对不上，反而把唐小轻（家庭叙事里提到戒烟）错配到戒烟。",
     "这张表只管「谁和谁同品类」，不管「该借什么」（D-038 §6.1 不许的是后者）。Jev 新加一个外部品类时，在这里补一行。",
@@ -10,7 +12,9 @@
     "mask_terms 是 10-16 在达标帖里实际查到的别家品牌；以后周更里再见到，补在这里。认不全的品牌是剩下的风险，卡上和 prompt 里都写了「不提它的品牌」。"
   ],
   "version": 1,
-  "min_comments": 50,
+  "min_comments": 20,
+  "max_age_days": 90,
+  "min_external": 1,
   "max_per_borrow": 2,
   "show_per_request": 6,
   "mask_terms": ["辅舒良", "内舒拿", "安素", "雅培", "佳维体", "迈胜", "maurten", "尼古清"],
@@ -19,6 +23,9 @@
     "鼻炎": ["雷诺考特"],
     "运动补给": ["sportsix"],
     "术后营养": ["大象集团", "nucare"],
-    "求职留学": ["途鸽"]
+    "求职留学": ["途鸽"],
+    "家居家电": ["西屋"],
+    "个护": ["hatherine"],
+    "藻油": ["百健士"]
   }
 }
