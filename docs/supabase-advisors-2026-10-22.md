@@ -11,7 +11,7 @@
 | 10-30 public 授权变更（邮件） | — | 我们不用改任何东西 | 10-31 复查一次（§4） |
 | `rls_enabled_no_policy`（INFO） | 32（9 autowriter + 23 truth_vault） | 有意设计：只给 service_role，anon / authenticated 没有任何表权限 | 不动 |
 | `unindexed_foreign_keys`（INFO） | 3 | 都不在热路径上 | 不动 |
-| `no_primary_key`（INFO） | 19 | 全是一次性备份 / 修复表 | 按 S-01 / S-02 到期删；S-01 两张今天到期 |
+| `no_primary_key`（INFO） | 19 | 全是一次性备份 / 修复表 | 按 S-01 / S-02 到期删；S-01 两张今天到期（11-02 D-136：都不删，留着，S-02 改成备份登记） |
 | `unused_index`（INFO） | 14 | 只有 autowriter 两个可以考虑删（§5 有前提） | 低优先级 |
 | Auth 连接数固定 10（INFO） | 1 | 6 个用户，08-19 以后没人登录 | 不动 |
 
