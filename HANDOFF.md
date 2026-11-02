@@ -114,8 +114,8 @@ Railway 10-21 公告：环境变量被未授权访问，部分被解密；全平
 | 10-21 14:40 | 核 aw#116 修复后第一次 14:00 tv-sync：<br>① 没有 23502，`tv_edit_diffs` 的 `max(computed_at)` 往前走了；<br>② BJS / SPX 能算差异的对子变成 `diff_rev = 2`。<br>SQL：`select d.tv_project_id, d.diff_rev, count(*) from autowriter.tv_edit_diffs d join autowriter.tv_note_links l using (note_id) where l.lag_days is null or l.lag_days >= 0 group by 1,2;` | OPEN-ITEMS W-23、「0. 按时间」10-20 夜那行 |
 | 10-22 | ① S-01：D-086 两张备份到期，核备份表和现表没有要回滚的差异，DROP SQL 给 owner 在 SQL editor 自己跑；<br>② F-03：librarian 借卡延迟对比 D-090 基线（`truth_vault.flywheel_librarian_cache.select_ms`、`/health` 的 `prompt_cache_usage`），连同 W-08 `LIBRARIAN_TIMEOUT_SEC` 要不要按 p95 重调一起下结论；<br>③ L-01：daily-sync 的 `stale_in_ssll` 连续两周是 0 的话，开 PR 去掉 C-20 的 `|| true` | OPEN-ITEMS S-01、F-03、L-01 |
 | 10-23 | G-05：10-16 14:00 UTC 起 `params.source='deskcore'` 的 batch，数四样：<br>① `params.flywheel_arm`，探索臂应约 15%；<br>② `params.flywheel_arm_source`，简报传回来的占多少；<br>③ 带 `flywheel_arm_mixed` 的条数，以及 `batch_metrics` 里 `meta.mode='deskcore_commit'` 的 `arm_mixed_unmarked_item_ids` 非空的条数；<br>④ `truth_vault.flywheel_librarian_cache` 里 `library_version` 带 `:dl`、`:explore` / `:ext` 的行。<br>偏离大的告诉 owner | OPEN-ITEMS G-05 |
-| 11-09 | S-02：10-09 / 10-10 两批备份表到期（名单以 OPEN-ITEMS S-02 为准），核过没有要回滚的，DROP SQL 给 owner 跑 | OPEN-ITEMS S-02 |
-| 11-16 | S-02：`truth_vault.backup_quarantine_resolve_20261016` 到期，同上 | OPEN-ITEMS S-02 |
+| ~~11-09~~ | **11-02 撤了（D-136：备份都留着，不再给 owner 发删表 SQL）**。原来是：S-02：10-09 / 10-10 两批备份表到期（名单以 OPEN-ITEMS S-02 为准），核过没有要回滚的，DROP SQL 给 owner 跑 | OPEN-ITEMS S-02 |
+| ~~11-16~~ | **11-02 撤了（D-136，同上）**。原来是：S-02：`truth_vault.backup_quarantine_resolve_20261016` 到期，同上 | OPEN-ITEMS S-02 |
 | 每周一 01:47 | OPEN-ITEMS 周检。这个 routine 每次起新会话，不依赖上一会话，**保留着** | 它自己开 PR |
 
 ### owner 定的规矩，接手照办

@@ -78,7 +78,7 @@ FROM truth_vault.v_paid_boost_quarantine GROUP BY 1, 2, 3, 4 ORDER BY 1, 2, 3, 4
 | TUGE_phase1 | _tier_source_raw | no_date | 关注后续流量 | 9 |
 | **合计** | | | | **12** |
 
-认不出的标记元素（`marker_like_unrecognized`）0 个。12 篇都等运营补日期 / 对齐个数（O-06）；补了下一次读就自己挪进 §2。
+认不出的标记元素（`marker_like_unrecognized`）0 个。12 篇都留在隔离：owner 10-30 定投流只按飞书表里已有的信息记录和判断，不再请运营补日期 / 对齐个数（11-02 补记，O-06 ④⑥ 不问了，见 OPEN-ITEMS 已关 O-06、D-136）；运营哪天自己补了，下一次读就自己挪进 §2。
 
 ## 4. 覆盖：每个事件有没有读数
 
