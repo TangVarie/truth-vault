@@ -7,7 +7,8 @@ librarian_select(brief) 的流程:
     3. 算 cache_key = hash(consumer + project_id + brief_digest + library_version);
        命中缓存 → 直接返回 (跳过 LLM)。
     4. 未命中 → 预筛 shortlist(): 按 brief 的【项目级】字段挑 ≤SHORTLIST_CAP 张 (D-088)
-       → 渲染 brief + 候选 → LLM 推理选 3-5 张 → 校验 id → 富集摘要 → 写缓存。
+       → 渲染 brief + 候选 → LLM 推理选 3-5 张 → 校验 id → 富集摘要
+       → 外部卡保底 (书架有能补的卡、模型一张没挑就补一张, D-138) → 写缓存。
        LLM 出错 → 返回 []  (绝不阻塞写稿; 飞轮是增强项)。
 
 library_version 说明: 用 (候选数, max(curated_at)) 而非每行 updated_at ——
@@ -59,8 +60,9 @@ LIBRARIAN_MAX_TOKENS = 1000   # 输出封顶: 5 张 × (id + 两句 ≤30 字) �
 # Anthropic 单请求最多 4 个 cache breakpoint, 这里用 2 个。这层 prompt-cache 与上面的
 # 结果缓存(flywheel_librarian_cache)互补: 结果缓存挡"完全相同的请求", prompt-cache 省
 # "同库不同 brief"的请求(只重算 delta 部分)。prompts/flywheel_librarian.md 同步说明。
-ROLE_TASK_INSTR = """你是帆谷内容飞轮的"经验馆员"。下面给你一批【已验证爆款/值得参考】的"经验卡",
-和一个写作 brief。你的任务: 为这次写作【推理挑选 3-5 张最有借鉴价值的卡】, 并说清每张
+ROLE_TASK_INSTR = """你是帆谷内容飞轮的"经验馆员"。下面给你一批"经验卡"和一个写作 brief: 帆谷自己的卡是
+【已验证爆款/值得参考】的帖; 标了「外部参考」的卡(有的话)是别家同品类最近涨得快的帖, 用法见候选卡前面那句。
+你的任务: 为这次写作【推理挑选 3-5 张最有借鉴价值的卡】, 并说清每张
 【为什么相关】+【借它哪个部位】。
 
 推理(不是按相似度硬凑): 优先同品牌/同品类/同人群, 但也可跨主题借走可迁移的钩子/结构/手法。
@@ -332,10 +334,20 @@ def _render_fields(brief: dict, fields) -> str:
 def _render_cards(cards: list[dict]) -> str:
     blocks = []
     for c in cards:
-        if X.is_external(c):   # D-117: 外部参考卡没有品牌、没策展, 卡头写明只借结构
+        if X.is_external(c):   # D-117: 外部参考卡没有品牌、没策展, 卡头写明只借结构; D-138: 带起量速度、结构
             excerpt = (c.get("raw_excerpt") or "").strip().replace("\n", " ")[:200]
-            blocks.append(f"[{c.get('source_note_id')}] 外部参考|{c.get('category')}｜别家同品类帖, 只借结构不抄内容, "
-                          f"别提它的品牌\n  评论 {c.get('comments')}\n  摘要: {excerpt}")
+            # 日均评论是抓到那一刻量的 (评论 / 抓到时发出的天数): 挨着它只写抓到时的天数, 三个数乘得回去;
+            # 现在发出几天另起半句 (卡可能是 40 多天前抓的, 写在一起读的人会拿 47 天去乘 20 条/天)
+            if c.get("age_at_scrape_days") is not None and c.get("comments_per_day") is not None:
+                speed = (f"抓到时发出约 {c['age_at_scrape_days']} 天、共 {c.get('comments')} 条评论、"
+                         f"那时每天约 {c['comments_per_day']} 条")
+                if c.get("posted_days_ago") is not None:
+                    speed += f"；现在发出约 {c['posted_days_ago']} 天"
+            else:
+                speed = f"评论 {c.get('comments')}"
+            shape = f"\n  结构: {c['structure']}" if c.get("structure") else ""
+            blocks.append(f"[{c.get('source_note_id')}] 外部参考|{c.get('category')}｜别家同品类最近涨得快的帖, "
+                          f"只借结构不抄内容, 别提它的品牌\n  {speed}{shape}\n  摘要: {excerpt}")
             continue
         head = f"[{c.get('source_note_id')}] {c.get('tier')}|{c.get('brand')}|{c.get('category')}"
         if c.get("synthetic"):
@@ -366,8 +378,8 @@ def build_system_blocks(brief: dict, cards: list[dict], delivery: Optional[dict]
       block2 = 项目 prompt 包      (同项目内稳定)
     本次 delta 不在这里(进 user message)。"""
     rules = f"{P.render_block(delivery)}\n\n" if delivery else ""   # 规律全局稳定, 放在卡前面 (缓存前缀越稳越靠前)
-    n_ext = X.max_per_borrow()
-    ext_note = f"{X.PROMPT_NOTE.format(n=n_ext)}\n\n" if n_ext and any(X.is_external(c) for c in cards) else ""
+    note = X.prompt_note(cards) if any(X.is_external(c) for c in cards) else ""
+    ext_note = f"{note}\n\n" if note else ""
     cards_text = (
         f"{ROLE_TASK_INSTR}\n\n"
         f"{rules}"
@@ -394,6 +406,71 @@ def build_prompt(brief: dict, cards: list[dict], delivery: Optional[dict] = None
     """dry-run 展示用: 把缓存块 + user message 拼成可读串(实际调用走分块 system)。"""
     sys_text = "\n\n".join(b["text"] for b in build_system_blocks(brief, cards, delivery))
     return f"{sys_text}\n\n──────── [user message] ────────\n{build_user_message(brief)}"
+
+
+def _enrich(card: dict, why_relevant, borrow_what) -> dict:
+    """选中的一张卡 → 回给消费方的那一行: 两句批注 + 卡内容 (消费方拼 prompt 直接可用)。
+    摘录截到 X.EXCERPT_CAP (600) 字: 内部卡视图本来就截在 600, 外部卡是标题 + 整篇正文 (最长 1,300 多字)。"""
+    excerpt = card.get("raw_excerpt")
+    row = {
+        "source_note_id": card.get("source_note_id"),
+        "why_relevant": (why_relevant or "").strip(),
+        "borrow_what": (borrow_what or "").strip(),
+        "tier": card.get("tier"),
+        "synthetic": bool(card.get("synthetic")),  # 指标未验证(伪爆贴); 消费方可据此降权/标注
+        "hook_type": card.get("hook_type"),
+        "structure": card.get("structure"),
+        "why_it_worked": card.get("why_it_worked"),
+        "transferable_tactic": card.get("transferable_tactic"),
+        "excerpt": excerpt[:X.EXCERPT_CAP] if isinstance(excerpt, str) else excerpt,
+        "validated_hits": list(card.get("validated_hits") or []),   # P4: 这张卡命中了哪几条已验证规律
+        "external": X.is_external(card),   # D-117: 外部参考卡 (别家同品类帖, 不是帆谷投的)
+    }
+    if row["external"]:   # D-138: 现在发出几天、抓到时发出几天和那时每天多少条评论、Jev 答的结构题
+        row.update(posted_days_ago=card.get("posted_days_ago"), age_at_scrape_days=card.get("age_at_scrape_days"),
+                   comments_per_day=card.get("comments_per_day"), fq=dict(card.get("fq") or {}))
+    return row
+
+
+# 模型一张外部卡都没挑时系统补的那张 (D-138), 两句批注由这里写。
+FORCED_WHY = "同品类别家最近涨得快的帖, 换个写法的参照"
+FORCED_BORROW = "只借开头和结构的路数, 不抄内容"
+
+
+def _ensure_external(selected: list[dict], cards: list[dict]) -> list[dict]:
+    """书架上有能补的外部卡、模型选的里面却不到 X.min_external_for() 张 (配置 1) → 补日均评论最高的那张 (同速按书架顺序),
+    标 ``forced: true`` (进缓存的 selected[] 里也带着, 周检数得出补了几次)。
+    · 不到 5 张就加在末尾, 一张内部卡都不顶; 满 5 张才顶掉 rank_score 最低的那张内部卡 (同分顶靠后的);
+    · 模型一张都没挑 (no_match) 不补: 它说了这次没有合适的, 也没有内部卡可顶;
+    · 只补 X.forceable() 的卡: 别家品牌名还没有地方遮的品类 (家居家电 / 个护 / 藻油, F-10) 不补, 模型自己挑了才有;
+    · 书架空 (没登记品类 / 外部表里这个品类还没有帖 / 查库失败) 原样返回。"""
+    need = X.min_external_for(cards)
+    ext = X.forceable(cards)
+    have = sum(1 for s in selected if s.get("external"))
+    if need <= have or not ext or not selected:
+        return selected
+    picked = {s.get("source_note_id") for s in selected}
+    pool = [c for _, c in sorted(enumerate(ext), key=lambda t: (-(t[1].get("comments_per_day") or 0.0), t[0]))
+            if c.get("source_note_id") not in picked]
+    rank = {c.get("source_note_id"): c.get("rank_score") or 0.0 for c in cards}
+    out = list(selected)
+    for card in pool[:need - have]:
+        if len(out) >= DEFAULT_SELECT_MAX:
+            internal = [i for i, s in enumerate(out) if not s.get("external")]
+            if not internal:
+                break
+            del out[min(internal, key=lambda i: (rank.get(out[i].get("source_note_id"), 0.0), -i))]
+        out.append(dict(_enrich(card, FORCED_WHY, FORCED_BORROW), forced=True))
+    return out
+
+
+def _refresh_external(c: dict, now: float) -> None:
+    """命中缓存的外部卡: 「现在发出几天」按 id 重算 (缓存行可能是几天前写的; 发帖时间就在 id 里, 不用查库)。
+    别的数 (抓到时发出几天、那时每天几条评论、why_it_worked) 是抓取那一刻定下的, 不用动。"""
+    nid = str(c.get("source_note_id") or "")
+    posted = X.posted_at(nid[len(X.ID_PREFIX):]) if nid.startswith(X.ID_PREFIX) else None
+    if posted is not None:
+        c["posted_days_ago"] = int((now - posted) // X.DAY_S)
 
 
 def _select_via_llm(brief: dict, cards: list[dict], model: str, delivery: Optional[dict] = None) -> list[dict]:
@@ -428,21 +505,7 @@ def _select_via_llm(brief: dict, cards: list[dict], model: str, delivery: Option
             if ext_left <= 0:
                 continue
             ext_left -= 1
-        out.append({
-            "source_note_id": nid,
-            "why_relevant": (item.get("why_relevant") or "").strip(),
-            "borrow_what": (item.get("borrow_what") or "").strip(),
-            # 富集: 把卡内容附上, 消费方拼 prompt 直接可用
-            "tier": card.get("tier"),
-            "synthetic": bool(card.get("synthetic")),  # 指标未验证(伪爆贴); 消费方可据此降权/标注
-            "hook_type": card.get("hook_type"),
-            "structure": card.get("structure"),
-            "why_it_worked": card.get("why_it_worked"),
-            "transferable_tactic": card.get("transferable_tactic"),
-            "excerpt": card.get("raw_excerpt"),
-            "validated_hits": list(card.get("validated_hits") or []),   # P4: 这张卡命中了哪几条已验证规律
-            "external": X.is_external(card),   # D-117: 外部参考卡 (别家同品类帖, 不是帆谷投的)
-        })
+        out.append(_enrich(card, item.get("why_relevant"), item.get("borrow_what")))
     # 模型挑了东西, 但【一条都不在候选里】= 契约失败(编 id / 认错候选集), 不是
     # "库里没有相关卡"(codex review P2)。不抛的话它会被当成 no_match:
     #   ① 状态是 no_match, 恰好把 TV-06 要暴露的故障又藏回去;
@@ -554,10 +617,12 @@ def librarian_select(brief: dict, *, model: Optional[str] = None,
     # 版本串看【整架】(D-088): 预筛挑掉的那张换了也要换缓存键 —— TV-03 那课 (50 张换 1 张版本不变)
     # 的边界如今是整个书架, 不是喂给 LLM 的那 24 张。
     # D-117: 外部参考书架只给显式带 explore 的消费方 (两臂都给, 两臂只差规律), 且只给同品类项目。
+    # 这摞卡要求至少挑几张 (X.min_external_for: 品类挪进 / 挪出 min_external_categories 就变) 也进版本串,
+    # 否则改了配置, 已缓存的选择 (补过 / 没补过外部卡) 还会一直被命中。
     ext = X.shelf_for(sb, brief) if isinstance(arm, bool) else []
     lib_v = library_version(cards, gate2_run=g2, explore=explore,
                             delivery=P.delivery_digest(delivery) if delivery else None,
-                            external=X.digest(ext) if ext else None)
+                            external=f"{X.digest(ext)}m{X.min_external_for(ext)}" if ext else None)
     key = cache_key(brief, lib_v)
     shown = shortlist(cards, brief) + ext
 
@@ -579,10 +644,13 @@ def librarian_select(brief: dict, *, model: Optional[str] = None,
         cached = get_cache(sb, key)
         if cached is not None:
             # 部署前写的缓存行没有这两个键; 文档承诺选中的卡都带 (缺 = 没有命中 / 不是外部卡)
+            now = time.time()
             for c in cached if isinstance(cached, list) else []:
                 if isinstance(c, dict):
                     c.setdefault("validated_hits", [])
                     c.setdefault("external", False)
+                    if c["external"]:
+                        _refresh_external(c, now)
             if _status_out is not None:
                 _status_out["status"] = STATUS_OK if cached else STATUS_NO_MATCH
             return cached
@@ -592,7 +660,7 @@ def librarian_select(brief: dict, *, model: Optional[str] = None,
         shown, hits_ok = _with_hits(sb, shown, delivery)
     t0 = time.monotonic()
     try:
-        selected = _select_via_llm(brief, shown, model, delivery)
+        selected = _ensure_external(_select_via_llm(brief, shown, model, delivery), shown)
     except Exception:
         # 降级: 绝不阻塞写稿。但必须记日志 —— 否则 schema 缺列 / 解析全错这类真 bug
         # 会被静默吞成 [],服务永远返回空、看不出问题(原审计标的"排障盲区")。

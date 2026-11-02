@@ -19,7 +19,8 @@ check_external_direction.py
     代码题 (问号数) 用 feature_bank.code_features 同一套代码在外部正文上现算;
   · 去掉中间段之后有 / 没有 两侧各至少 30 篇才判 (MIN_N); 不够就写「样本不够」, 不判。
 
-顺带报外部参考书架 (D-117 ②, librarian/external.py) 每个品类达标几张 —— 和馆员上架用同一个 qualifies, 口径只有一份。
+顺带报外部参考书架 (D-117 ②, librarian/external.py) 每个品类达标几张 —— 和馆员上架用同一个 qualified (D-138: 发出 3–90 天、
+最近抓到、评论 ≥20、日均评论不低于同品类中位数), 口径只有一份。书架的评论门槛不再是这里判爆的 50: 书架看起量速度, 这里看闸二的结果标签。
 
 灯 (docs/29 登记, advisory): 有一条规律在够样本、品类内区间整段 < 1 时 → rc=1, 提醒这条可能只在我们自己帖子上成立,
 该拿出来议 (改下发的是批准层, 修在 TV 仓 prompts/desk_delivery_v1.json + 新 D 号)。外部表空 / 某道题的外部答案不止一个
@@ -35,6 +36,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -116,12 +118,14 @@ def judge(patterns: list[dict], notes: list[dict], answers: dict[str, dict[str, 
     return rc, lines
 
 
-def shelf_counts(notes: list[dict], cfg: Optional[dict]) -> list[str]:
-    """外部参考书架每个登记品类达标几张 (纯函数)。"""
+def shelf_counts(notes: list[dict], cfg: Optional[dict], *, now: Optional[float] = None) -> list[str]:
+    """外部参考书架每个登记品类达标几张 (纯函数; ``now`` 给 selftest 钉时间)。登记了、外部表里还没有的品类报 0。"""
     if not cfg:
         return ["  ⚠️  外部参考书架配置读不了, 馆员这次不给外部卡"]
-    n = {c: sum(1 for r in notes if r.get("category") == c and X.qualifies(r, cfg)) for c in cfg["categories"]}
-    return ["外部参考书架达标 (评论 ≥{} · 没带产品 · 不像广告): ".format(cfg["min_comments"])
+    got = X.qualified(notes, cfg, now=now)
+    n = {c: sum(1 for r, _, _ in got if r.get("category") == c) for c in cfg["categories"]}
+    return ["外部参考书架达标 (发出 {}–{} 天 · 最近 {} 天抓到 · 评论 ≥{} · 日均评论不低于同品类中位数 · 没带产品 · 不像广告): "
+            .format(X.MIN_AGE_DAYS, cfg["max_age_days"], X.FRESH_DAYS, cfg["min_comments"])
             + " · ".join(f"{c} {k}" for c, k in n.items())]
 
 
@@ -143,7 +147,7 @@ EXTERNAL_RUN_TAG = "external"   # Jev 给外部帖答题写的 run_tag (10-16 �
 def gather(sb, d: dict) -> tuple[list[dict], dict[str, dict[str, str]], frozenset]:
     from _common import fetch_all_pages
     notes = fetch_all_pages(sb.schema("truth_vault").table("external_notes")
-                            .select("note_id, category, title, body, comments, has_product, ad_like"),
+                            .select("note_id, category, title, body, comments, has_product, ad_like, fetched_at"),
                             order_by="note_id")
     qids = {q for p in d["patterns"] for q, _ in (p.get("follow") or {}).get("any_of") or []}
     sys.path.insert(0, str(ROOT / "scripts"))
@@ -290,9 +294,17 @@ def selftest() -> int:
     rc, lines = judge(pats, n, a, frozenset({"ending_asks_reader"}))
     assert rc == 2 and any("不止一个抽取器" in l and "结尾问读者" in l for l in lines), "抽取器混了不判"
     cfg = X.load_config()
-    rows = [{"category": "鼻炎", "comments": 80, "has_product": False}, {"category": "鼻炎", "comments": 80, "has_product": True},
-            {"category": "戒烟", "comments": 10, "has_product": False}]
-    assert "鼻炎 1" in shelf_counts(rows, cfg)[0] and "戒烟 0" in shelf_counts(rows, cfg)[0]
+    now = 1_790_000_000.0                               # 钉时间: 都是前一天抓的
+
+    def ext(cat, comments, age_days, **kw):             # note_id 前 8 位十六进制 = 发帖时刻
+        fetched = now - 86400
+        return {"note_id": f"{int(fetched - age_days * 86400):08x}" + "0" * 16, "category": cat, "comments": comments,
+                "has_product": False, "fetched_at": datetime.fromtimestamp(fetched, timezone.utc).isoformat(), **kw}
+    rows = [ext("鼻炎", 80, 10), ext("鼻炎", 80, 10, has_product=True), ext("鼻炎", 20, 60),   # 日均 8 / 8 / 0.33, 中位数 8
+            ext("鼻炎", 300, 200),                                                            # 发出超过 90 天: 不算
+            ext("戒烟", 10, 10)]                                                              # 评论不到 20
+    line = shelf_counts(rows, cfg, now=now)[0]
+    assert "鼻炎 1" in line and "戒烟 0" in line and "家居家电 0" in line, line
     _selftest_gather(d)
     print("  ✓ selftest: 同向 / 反向亮黄 / 持平不算反 / 中间段不进表 / 品类内比 / 不显著的反向不亮 / 抽取器混了不判 / "
           "样本不够不判 / 品牌类不适用 / 表空 / 书架达标数 / 取答案只认 external、抽取器混了标出来")
