@@ -168,6 +168,13 @@ def s8_report(sc: dict) -> None:
     with contextlib.redirect_stdout(buf):
         rc = G.report(G.plan([_note("a")], set(), sc, now), v, sc)
     assert rc == 0 and "还差最低档 212" in buf.getvalue(), buf.getvalue()
+    assert "落档率" not in buf.getvalue(), "一篇标签都没有时不报落档率 (分母 0)"
+    # 落档率 (D-137 第 7 条): 35 / 352 落在最低档 → 照这个率到 212 要约 2,133 篇有标签的笔记
+    labeled = [{"pct_in_project": 0.1, "y": 0}] * 35 + [{"pct_in_project": 0.5, "y": 1 if i < 9 else 0} for i in range(317)]
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        G.report(G.plan([_note("a")], set(), sc, now), G.verdict(labeled, sc), sc)
+    assert "落档率: 最低档 35/352 = 9.9%" in buf.getvalue() and "约 2,133 篇" in buf.getvalue(), buf.getvalue()
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         rc = G.report(G.plan([_note("x", essence_annotated_by="claude-opus-4-6")], set(), sc, now), v, sc)

@@ -19,7 +19,7 @@ JSON 解析)。未来若再加第三个 LLM pass, 可把这两个 helper 提到 
 
 Usage:
     python curate_flywheel_lessons.py --dry-run --limit 5     # 渲染 prompt, 不调 LLM/不写库
-    python curate_flywheel_lessons.py --limit 20              # 真跑
+    python curate_flywheel_lessons.py --limit 20              # 真跑 (夜跑模式: 先没策展过的, 预算有剩再重策展 essence 比卡新的, D-137)
     python curate_flywheel_lessons.py --project WTG_phase1     # 只策展某项目
     python curate_flywheel_lessons.py --recurate              # 重策展(覆盖已有卡)
     python curate_flywheel_lessons.py --note-ids NUC_phase1_recA,NUC_phase1_recB --dry-run
@@ -272,6 +272,24 @@ def fetch_uncurated_cards(sb, project_id, recurate: bool, stale_only: bool = Fal
     return cards
 
 
+def fetch_daily_cards(sb, project_id, limit: int = 0) -> list[dict]:
+    """夜跑 (不带 --recurate / --recurate-stale / --note-ids) 取哪些卡: 先没策展过的 (is_curated=false, 和以前一样),
+    预算还有剩再接上「essence 比卡新」的已策展卡 —— 就是 --recurate-stale 那一路 (stale_cards), 不另写判据。
+
+    外部审计 11-02 F02 第一期 (D-137): 飞书里正文改了, essence 夜跑会按新正文重标 (essence_content_sha ≠ content_sha);
+    重标之后 essence_annotated_at 比卡新, 这张卡就是按旧正文策展的。以前只有手动的 recurate-lessons.yml 才会去重策展
+    它们, 书架上就一直挂着旧正文的卡 (11-02 生产: OKMAN 33 张, 10-21 有两次借阅把其中的卡给了写手)。
+    没策展过的永远排前面; limit 给了且没策展过的已经占满, 就不去查 essence 时间 (省两三个请求)。两边去重, 同一张卡只出现一次。"""
+    cards = fetch_uncurated_cards(sb, project_id, False)
+    if limit and len(cards) >= limit:
+        return cards
+    seen = {c["source_note_id"] for c in cards}
+    # _stale 只给日志数数用 (main 数完就 pop), 不进 prompt (build_curator_prompt 只读固定几个键); 拷一份, 不改取回来的行
+    stale = [dict(c, _stale=True) for c in fetch_uncurated_cards(sb, project_id, True, stale_only=True)
+             if c["source_note_id"] not in seen]
+    return cards + stale
+
+
 def write_lesson_back(sb, note_id: str, model: str, parsed: dict, dry_run: bool) -> None:
     row = {
         "note_id": note_id,
@@ -329,8 +347,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 2
 
     sb = get_supabase_client()
-    cards = fetch_uncurated_cards(sb, args.project, args.recurate or args.recurate_stale,
-                                  stale_only=args.recurate_stale, note_ids=note_ids)
+    daily = not (args.recurate or args.recurate_stale or note_ids is not None)
+    if daily:
+        # 夜跑: 没策展过的在前, 预算有剩再重策展 essence 比卡新的 (D-137)
+        cards = fetch_daily_cards(sb, args.project, args.limit)
+    else:
+        cards = fetch_uncurated_cards(sb, args.project, args.recurate or args.recurate_stale,
+                                      stale_only=args.recurate_stale, note_ids=note_ids)
     if note_ids is not None:
         # 点名的卡少一张就一张都不跑: 静默跑一个子集, 日志看着像「点名的都重策展了」(和预算截断不静默同一个道理)。
         got = {c["source_note_id"] for c in cards}
@@ -346,9 +369,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         cards = cards[: args.limit]
     # dry_run 写进这一行 (小写 true / false, 和 workflow 输入同形): recurate-lessons.yml 从这里取「脚本实际是不是 dry-run」,
     # 不回显输入 —— 参数传丢了, ✅ 行也不会照样写 dry_run=true (D-123 复审)
-    logger.info("Found %d card(s) to curate (model=%s, recurate=%s, stale_only=%s, note_ids=%s, dry_run=%s)",
+    n_stale = sum(1 for c in cards if c.pop("_stale", False))
+    # daily_stale = 夜跑模式里接在没策展过的后面、因为 essence 比卡新而重策展的张数 (D-137); dry_run 必须留在行尾
+    # (check_curate_note_ids §3 / recurate-lessons.yml 从行尾取)
+    logger.info("Found %d card(s) to curate (model=%s, recurate=%s, stale_only=%s, note_ids=%s, daily_stale=%d, "
+                "dry_run=%s)",
                 len(cards), model, args.recurate or args.recurate_stale or note_ids is not None,
-                args.recurate_stale, "-" if note_ids is None else len(note_ids), str(args.dry_run).lower())
+                args.recurate_stale, "-" if note_ids is None else len(note_ids), n_stale, str(args.dry_run).lower())
 
     stats = {"ok": 0, "ok_after_retry": 0, "failed": 0}
     failed_ids: list[str] = []

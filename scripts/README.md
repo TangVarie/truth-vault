@@ -116,6 +116,9 @@ CI 和 daily-sync workflow 都优先读 `.lock`; `.txt` 仅作为 "high-level in
 #   - schemas/notes_v1_21_vanished_notes.sql         → 视图 v_notes_vanished: 盖过 last_seen 戳、但本项目最近一次完整同步没见到的篇 (飞书已删); 新策展 / 通道 1 / 闸二取数按它排除 (在 v1_9 之后; D-103)
 #   - schemas/notes_v1_22_paid_boost_evidence.sql    → 投流证据链: 6 个函数 + 5 个视图 (v_paid_marker_elements / v_paid_boost_events / _quarantine / _readings / _evidence),
 #         只读 notes.raw_extra 白名单列和 audit_log, 不建表、不写库、sync 不依赖它 (漏了只是看不到证据链) (在 v1_9 / v1_12 / v1_21 之后; D-133)
+#   - schemas/notes_v1_23_content_sha.sql            → 正文指纹: 函数 tv_content_sha + 生成列 notes.content_sha + notes.essence_content_sha, 从 audit_log 回填
+#         essence 标注那一刻的指纹 (只有 essence 之后正文真改过的篇过期, 11-02 预演 508 篇); 夜跑 essence 先标没标过的再重标过期的,
+#         夜跑策展先策展新卡再重策展 essence 比卡新的。代码宽容: 没跑之前照旧只标没标过的, 打一行 warning (D-137, 外部审计 11-02 F02)
 #   - autowriter-migrations/001_create_autowriter_schema.sql → 把 autowriter 表从 public 迁到 autowriter schema
 #   - autowriter-migrations/002_add_external_source.sql     → items 加 (external_source, external_source_id) 列
 #         + per-user partial UNIQUE (user_id, external_source, external_source_id) WHERE external_source IS NOT NULL.

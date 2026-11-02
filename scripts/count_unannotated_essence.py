@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """scripts/count_unannotated_essence.py — print how many notes in a project still
-lack essence annotation.
+lack essence annotation (or carry essence from an older version of the text, D-137).
 
 由 .github/workflows/backfill-essence.yml 调:循环灌 essence 时,用它判断"该项目还剩多少
 未标注",remaining==0 就停、或两轮没下降就停(防全失败时死循环)。
@@ -31,7 +31,12 @@ def count_remaining(project_id: str, only_missing_subtype: bool = False) -> int:
         .execute()
     )
     # postgrest 的 exact count;兜底用 data 长度(理论不会走到)。
-    return res.count if res.count is not None else len(res.data or [])
+    never = res.count if res.count is not None else len(res.data or [])
+    # 外部审计 11-02 F02 / D-137: 标过、但正文后来改过的也算「待标」—— daily-sync 见到 0 就跳过这个项目, 不数它们的话
+    # 没有新笔记的项目上过期的 essence 永远轮不到重标。和抽取同一个函数 (annotate_essence_pass.fetch_stale_essence_ids);
+    # v1_23 没跑的库上它回空列表, 这里就和以前一样只数没标过的。
+    from annotate_essence_pass import fetch_stale_essence_ids
+    return never + len(fetch_stale_essence_ids(sb, project_id))
 
 
 def main() -> int:

@@ -485,11 +485,14 @@ rc_, _, _ = sh(ssll_run, {"github.event.inputs.dry_run": "", "github.event.input
                {"PROJECT_FILTER": "", "STUB_RC": "1"})
 assert rc_ == 1, f"脚本退出码 1 时这一步要失败 (continue-on-error 之后 outcome=failure), 实得 {rc_}"
 outcomes = {k: "success" for k in ("feishu_sync", "comments_sync", "essence_sync", "gate3_score", "curate_sync", "ssll_sync")}
-agg_run = agg[0]["run"].replace("${{ github.repository }}", "o/r").replace("${{ github.run_id }}", "1")
-rc_, _, out_ = sh(agg_run, {f"steps.{k}.outcome": v for k, v in dict(outcomes, ssll_sync="failure").items()})
-assert rc_ == 1 and "ssll_sync" in out_, f"通道 1 被挡 (failure) 时失败聚合要红并点名 ssll_sync: rc={rc_}"
-rc_, _, _ = sh(agg_run, {f"steps.{k}.outcome": v for k, v in outcomes.items()})
-assert rc_ == 0, "全绿时失败聚合不该红"
+agg_tpl = agg[0]["run"].replace("${{ github.repository }}", "o/r").replace("${{ github.run_id }}", "1")
+# 聚合按触发方式区分 skipped (外部审计 11-02 F01: 定时跑 skipped 算失败, 手动不算); 两种触发都跑一遍
+for event in ("schedule", "workflow_dispatch"):
+    agg_run = agg_tpl.replace("${{ github.event_name }}", event)
+    rc_, _, out_ = sh(agg_run, {f"steps.{k}.outcome": v for k, v in dict(outcomes, ssll_sync="failure").items()})
+    assert rc_ == 1 and "ssll_sync" in out_, f"通道 1 被挡 (failure) 时失败聚合要红并点名 ssll_sync ({event}): rc={rc_}"
+    rc_, _, _ = sh(agg_run, {f"steps.{k}.outcome": v for k, v in outcomes.items()})
+    assert rc_ == 0, f"全绿时失败聚合不该红 ({event})"
 print("✓ §7j daily-sync: 定时跑 / 不勾不放行、勾了才放行且不带 --include-on-demand; 退出码 1 → 这一步红 → 聚合点名 ssll_sync")
 
 

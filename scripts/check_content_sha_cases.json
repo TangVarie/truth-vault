@@ -1,0 +1,100 @@
+[
+ {
+  "label": "base",
+  "title": null,
+  "raw_content": "维生素D每天吃多少？\n\n真的有用吗😂 #维生素[话题]# #补钙[话题]#",
+  "group": "A",
+  "sha": "4e1c471348dcc958227299d960efee6d"
+ },
+ {
+  "label": "ws_tags_only",
+  "title": null,
+  "raw_content": "维生素D 每天吃多少?真的有用吗😂\n#维生素 #补钙",
+  "group": "A",
+  "sha": "4e1c471348dcc958227299d960efee6d"
+ },
+ {
+  "label": "punct_only",
+  "title": null,
+  "raw_content": "维生素D——每天吃多少……真的有用吗😂",
+  "group": "A",
+  "sha": "4e1c471348dcc958227299d960efee6d"
+ },
+ {
+  "label": "fullwidth_space",
+  "title": null,
+  "raw_content": "维生素D　每天吃多少 真的有用吗​😂 #新话题[话题]#",
+  "group": "A",
+  "sha": "4e1c471348dcc958227299d960efee6d"
+ },
+ {
+  "label": "one_char",
+  "title": null,
+  "raw_content": "维生素C每天吃多少？真的有用吗😂",
+  "group": "B",
+  "sha": "98be1b880fa465a6beda7d060f6959a0"
+ },
+ {
+  "label": "emoji_changed",
+  "title": null,
+  "raw_content": "维生素D每天吃多少？真的有用吗🤔",
+  "group": "C",
+  "sha": "98007de5e00b80566b04fdfe7da082d1"
+ },
+ {
+  "label": "rewrite",
+  "title": null,
+  "raw_content": "完全不同的一段正文，讲的是另一件事。",
+  "group": "D",
+  "sha": "09978e65724b876b4e33c9e60d0b842e"
+ },
+ {
+  "label": "title_added",
+  "title": "新标题",
+  "raw_content": "维生素D每天吃多少？真的有用吗😂",
+  "group": "E",
+  "sha": "21710feb1e285e74ed24ba7be8f89654"
+ },
+ {
+  "label": "title_punct",
+  "title": "新标题！",
+  "raw_content": "维生素D每天吃多少 真的有用吗😂",
+  "group": "E",
+  "sha": "21710feb1e285e74ed24ba7be8f89654"
+ },
+ {
+  "label": "bracket_emoji",
+  "title": null,
+  "raw_content": "[哭惹R]ＡＢＣ１２３％＆",
+  "group": "F",
+  "sha": "85385e59dec84eaeeeb6eadfb8582c3f"
+ },
+ {
+  "label": "number_kept",
+  "title": null,
+  "raw_content": "二〇二六年々①",
+  "group": "G",
+  "sha": "eff44e57e527cdfcfbed5feb14d7ea40"
+ },
+ {
+  "label": "empty",
+  "title": null,
+  "raw_content": "",
+  "group": "H",
+  "sha": "d41d8cd98f00b204e9800998ecf8427e"
+ },
+ {
+  "label": "null",
+  "title": null,
+  "raw_content": null,
+  "group": "H",
+  "sha": "d41d8cd98f00b204e9800998ecf8427e"
+ },
+ {
+  "label": "only_tags",
+  "title": null,
+  "raw_content": "#话题一[话题]# #话题二",
+  "group": "H",
+  "sha": "d41d8cd98f00b204e9800998ecf8427e"
+ }
+]

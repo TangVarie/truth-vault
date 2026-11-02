@@ -7,6 +7,9 @@
      默认路径仍是 is_curated=false (daily-sync 的行为一字不变)
   §4 worker /curate: recurate="stale" → --recurate-stale; "all"/true → --recurate; 省略 → 都不带; 别的 → 400
   §5 收敛前提: 重策展写回的 curated_at 是现在 (写回路径没改也要钉住: 否则 stale 永远 stale, 工作流空转烧钱)
+  §6 夜跑模式 (外部审计 11-02 F02 第一期, D-137): 不带 --recurate / --recurate-stale / --note-ids 时, 先没策展过的,
+     预算有剩再接上 essence 比卡新的已策展卡 (同 §3 的 stale_only 那一路); 没策展过的占满预算就不去查 essence 时间;
+     main() 真走这条路 (dry-run, 日志 daily_stale=N, 两类都策展到)
 """
 from __future__ import annotations
 
@@ -131,12 +134,46 @@ def main() -> int:
     if '"curated_at": _iso_now()' not in src:
         fails.append("§5 写回必须把 curated_at 置为现在, 否则 stale 永远 stale、重策展工作流空转烧钱")
 
+    # §6 夜跑模式: 正文改了 → essence 按新正文重标 (essence_annotated_at 变新) → 这张卡按旧正文策展的, 夜跑要重策展它。
+    #    反证: fetch_daily_cards 只回没策展过的 (以前的行为) → 下面第一条红; 把 stale 排到没策展的前面 → 顺序那条红。
+    sb6 = _SB({"v_flywheel_lesson_cards": view, "notes": notes, "v_notes_vanished": []})
+    got6 = [c["source_note_id"] for c in cur.fetch_daily_cards(sb6, None)]
+    if got6 != ["n3", "n1"]:
+        fails.append(f"§6 夜跑应先 n3 (没策展过) 再 n1 (essence 比卡新), n2 (卡比 essence 新) 不取; 实际 {got6}")
+    sb6 = _SB({"v_flywheel_lesson_cards": view, "notes": notes, "v_notes_vanished": []})
+    got6 = [c["source_note_id"] for c in cur.fetch_daily_cards(sb6, None, limit=1)]
+    if got6 != ["n3"] or any(f and f[0][:2] == ("in", "note_id") for f in sb6.log):
+        fails.append(f"§6 没策展过的占满预算 (limit=1) 就不该再查 essence 时间: {got6} / {sb6.log}")
+    only_curated = [r for r in view if r["is_curated"]]
+    sb6 = _SB({"v_flywheel_lesson_cards": only_curated, "notes": notes, "v_notes_vanished": []})
+    got6 = [c["source_note_id"] for c in cur.fetch_daily_cards(sb6, None, limit=5)]
+    if got6 != ["n1"]:
+        fails.append(f"§6 没有没策展过的卡时, 夜跑照样重策展 essence 比卡新的那张: 期望 ['n1'], 实际 {got6}")
+    import io
+    import logging
+    sb6 = _SB({"v_flywheel_lesson_cards": view, "notes": notes, "v_notes_vanished": []})
+    saved_client = cur.get_supabase_client
+    buf = io.StringIO()
+    h = logging.StreamHandler(buf)
+    cur.logger.addHandler(h)
+    try:
+        cur.get_supabase_client = lambda: sb6
+        rc = cur.main(["--limit", "5", "--dry-run", "--qps", "0"])
+    finally:
+        cur.get_supabase_client = saved_client
+        cur.logger.removeHandler(h)
+    out = buf.getvalue()
+    if rc != 0 or "Found 2 card(s)" not in out or "daily_stale=1" not in out or '"ok": 2' not in out:
+        fails.append(f"§6 main() 夜跑模式该策展 2 张 (1 张没策展过 + 1 张 essence 比卡新): rc={rc} {out[-400:]}")
+    if "'_stale'" in out or any("_stale" in c for c in view):
+        fails.append("§6 内部标记 _stale 漏进了日志 / 候选行 (它只给日志数数用)")
+
     for f in fails:
         print("  ❌", f)
     if fails:
         print(f"❌ curate stale: {len(fails)} 条不过")
         return 1
-    print("✅ curate stale: §1 挑选 · §2 时区 · §3 取数 · §4 worker 映射 · §5 收敛前提 全过")
+    print("✅ curate stale: §1 挑选 · §2 时区 · §3 取数 · §4 worker 映射 · §5 收敛前提 · §6 夜跑先新卡再重策展过期卡 全过")
     return 0
 
 

@@ -1537,6 +1537,67 @@ def fetch_half_alias(sb) -> dict[str, str]:
     return alias
 
 
+# ── 正文指纹 (外部审计 11-02 F02 第一期, D-137; schemas/notes_v1_23_content_sha.sql) ──────────────────────
+# 库里是生成列 notes.content_sha = truth_vault.tv_content_sha(title, raw_content); essence 标的时候那份的指纹记在
+# notes.essence_content_sha。两者不同 = essence 是按旧正文标的, 夜跑重标。这里的 content_sha() 是 SQL 那个函数的
+# Python 同一份: 线上判过期只用库里的生成列 (写回的也是取数时库里那一列的值), Python 这份给 CI 用 —— 三组字符类
+# 和 SQL 逐字一样 (都只用 \uXXXX 写, 不依赖 locale), CI 拿 scripts/check_content_sha_cases.json 两边各算一遍对。
+CONTENT_SHA_MIGRATION = "schemas/notes_v1_23_content_sha.sql"
+CONTENT_SHA_TOPIC = r"\[话题\]"                                     # 「[话题]」
+CONTENT_SHA_HASHTAG = (r"#[^#\[\]\u0001- \u007f-   -​    　﻿]"
+                       r"{1,40}")                                           # 同 feature_bank._HASHTAG_BARE, 空白写全
+CONTENT_SHA_STRIP = (r"[\u0001-/:-@[-`{-¿  -⁯"
+                     r"　-〄〈-〠〰〽-〿︀-︙︰-﹫﻿"
+                     r"！-／：-＠［-｀｛-･]")  # 空白 + 标点 (字母 / 数字 / 汉字 / 表情留着)
+
+
+def content_sha_text(title: Optional[str], raw_content: Optional[str]) -> str:
+    """指纹前的归一化: 标题 + 换行 + 正文 → 去「[话题]」→ 去 #话题 → 去全部空白和标点。顺序同 SQL, 不能换。"""
+    t = (title or "") + "\n" + (raw_content or "")
+    t = re.sub(CONTENT_SHA_TOPIC, "", t)
+    t = re.sub(CONTENT_SHA_HASHTAG, "", t)
+    return re.sub(CONTENT_SHA_STRIP, "", t)
+
+
+def content_sha(title: Optional[str], raw_content: Optional[str]) -> str:
+    """= truth_vault.tv_content_sha(title, raw_content)。"""
+    import hashlib
+    return hashlib.md5(content_sha_text(title, raw_content).encode("utf-8")).hexdigest()
+
+
+_CONTENT_SHA_COLS = ("content_sha", "essence_content_sha")
+_CONTENT_SHA_WARNED: list[bool] = []
+
+
+def _is_missing_column_error(exc: BaseException, cols: tuple[str, ...]) -> bool:
+    """PostgREST 说「没有这一列」: select 不存在的列回 42703 (column ... does not exist), update 写不存在的列回
+    PGRST204 (Could not find the '…' column)。只认带列名的这两种; 连不上 / 权限 / 别的错照抛。"""
+    s = f"{exc!r} {exc}"
+    return any(c in s for c in cols) and any(m in s for m in ("42703", "PGRST204", "does not exist", "Could not find"))
+
+
+def notes_content_sha_supported(sb) -> bool:
+    """生产库有没有 notes.content_sha / essence_content_sha (v1_23 跑没跑)。没有 → 一个进程只打一次 warning、回 False,
+    调用方 (essence 取数 / 计数 / 写回) 照今天的行为走: 只标没标过的、不写 essence_content_sha。
+    ⚠️ 两列故意不收进 _REQUIRED_COLUMNS: 收了, owner 跑迁移之前 sync 会先红 (owner 11-02: 代码要先能在没迁移的库上跑)。
+    探的方式: select 这两列 limit 1。抛「没有这一列」= 没迁移; 回来的行里没有这两个键也算没有 (CI 的假库就是这样);
+    0 行 (空库) 算有。别的错照抛, 不把连不上当成「没迁移」悄悄降级。"""
+    try:
+        rows = (sb.schema("truth_vault").table("notes")
+                .select("note_id, " + ", ".join(_CONTENT_SHA_COLS)).limit(1).execute()).data or []
+        ok = not rows or all(c in rows[0] for c in _CONTENT_SHA_COLS)
+    except Exception as exc:  # noqa: BLE001 —— 只吞「没有这一列」, 别的照抛
+        if not _is_missing_column_error(exc, _CONTENT_SHA_COLS):
+            raise
+        ok = False
+    if not ok and not _CONTENT_SHA_WARNED:
+        _CONTENT_SHA_WARNED.append(True)
+        print(f"⚠️ notes.content_sha 还没建 (owner 在 SQL editor 跑 {CONTENT_SHA_MIGRATION} 之前都是这样): essence 照旧"
+              "只标没标过的、不写 essence_content_sha, 正文改过的篇这一轮不重标 (外部审计 11-02 F02 / D-137)",
+              file=sys.stderr, flush=True)
+    return ok
+
+
 # 中转站 (new-api) 的敏感词拦截: 回 HTTP 500, message 里是 "sensitive_words_detected"。这是【这一篇
 # 内容】的问题, 不是连通 / 余额 / 鉴权: 同一篇重发多半还被拦, 别的篇照常 (10-23 XIWU_phase2 一篇,
 # 正文里有个词在中转站词表里, 要引原句做证据的几组次次被拦)。标注 pass 用它把这类失败和真正的系统性失败分开计 (D-125)。

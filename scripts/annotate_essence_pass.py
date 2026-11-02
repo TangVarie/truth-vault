@@ -37,6 +37,12 @@ Resumability:
     notes.essence_annotated_at + essence_vocab_version are written on
     success. Reruns skip rows that already have essence_annotated_at NOT
     NULL. Use --reannotate to overwrite (e.g. after a vocab version bump).
+
+Content changes (外部审计 11-02 F02 第一期, D-137; schemas/notes_v1_23_content_sha.sql):
+    每次标都把取数时那份正文的指纹 (notes.content_sha, 生成列) 写进 essence_content_sha。默认路径的选取 =
+    「essence_annotated_at IS NULL  OR  essence_content_sha IS DISTINCT FROM content_sha」: 先取没标过的, 再取标过、
+    但正文后来改过的 (只改空白 / 标点 / #话题 不算), 同一个 --limit 预算, 没标过的排前面。两列还没建的库上照旧只取
+    没标过的、不写指纹, 打一行 warning (_common.notes_content_sha_supported)。
 """
 
 from __future__ import annotations
@@ -54,6 +60,7 @@ from _common import (
     get_supabase_client,
     is_gateway_filtered,
     load_mapping,
+    notes_content_sha_supported,
     setup_logger,
     _direction_key,
     _iso_now,
@@ -616,8 +623,30 @@ def parse_claude_json(text: str) -> Optional[dict]:
 # Database I/O
 # ─────────────────────────────────────────────────────────────────────────
 
+NOTE_SELECT = ("note_id, project_id, title, body, raw_content, hashtags, "
+               "intent, target_blue_keywords, raw_extra, "
+               "projects(brand, product, category)")
+STALE_IDS_CHUNK = 150     # .in_ 走 URL (同 curate 的 NOTE_IDS_CHUNK)
+
+
+def fetch_stale_essence_ids(sb, project_id: str) -> list[str]:
+    """标过 essence、但标的时候那份正文和现在不是一份的篇: essence_content_sha IS DISTINCT FROM content_sha (D-137)。
+    PostgREST 不能拿两列互相比, 所以取 (note_id, 两个指纹) 回来在这边比 —— 一个项目千级行、两列 32 位短串, 几页就完。
+    两列还没建 (v1_23 没跑) → 空列表, 调用方照今天的行为走。按 note_id 升序 (同没标过的那一路, 每轮从同一头往后消)。"""
+    if not notes_content_sha_supported(sb):
+        return []
+    rows = fetch_all_pages(
+        sb.schema("truth_vault").table("notes")
+        .select("note_id, content_sha, essence_content_sha")
+        .eq("project_id", project_id)
+        .not_.is_("essence_annotated_at", None),
+        order_by="note_id")
+    return sorted(r["note_id"] for r in rows if r.get("essence_content_sha") != r.get("content_sha"))
+
+
 def fetch_unannotated_notes(sb, project_id: str, reannotate: bool,
-                            only_missing_subtype: bool = False, mapping: Optional[dict] = None) -> list[dict]:
+                            only_missing_subtype: bool = False, mapping: Optional[dict] = None,
+                            include_stale: bool = True) -> list[dict]:
     """默认: 还没标 essence 的。--reannotate: 全部 (不收敛: 每轮 --limit 都从 note_id 最小的开始重做)。
     --only-missing-subtype (审计 C-03): 已标 essence、但 direction_subtype 空、且飞书给了方向原文
     (raw_extra._direction_raw 非空) 的 —— NUC 10-08 实查 206 篇。以前只有 --reannotate 全重做能补,
@@ -626,15 +655,16 @@ def fetch_unannotated_notes(sb, project_id: str, reannotate: bool,
     ⚠️ 给了 mapping 就再筛一道: 只留方向在 direction_decomposition 里**定义了 sub_directions** 的篇
     (codex review on #169, P1)。单方向配置 (NUC 的 糖尿病相关 / 抗癌放化疗相关) 本来就没有子方向可判,
     get_sub_directions_for_note 回 None、direction_subtype 永远空 —— 不筛的话这些篇每轮都被重标、
-    remaining 永远不到 0、backfill 最后判失败。count_unannotated_essence 走同一个函数, 两边判据一致。"""
+    remaining 永远不到 0、backfill 最后判失败。count_unannotated_essence 走同一个函数, 两边判据一致。
+    默认路径 (外部审计 11-02 F02, D-137): 没标过的之后再接上「正文改过、essence 过期」的 (fetch_stale_essence_ids), 没标过的
+    排前面 —— 调用方的 --limit 截断时先标没标过的。include_stale=False 只要没标过的。两列在库里时, 所有路径都把
+    content_sha 一起取回来, 写回时记成 essence_content_sha (这一轮 LLM 看到的就是这份正文)。"""
+    sha_ok = notes_content_sha_supported(sb)
+    cols = NOTE_SELECT + (", content_sha" if sha_ok else "")
     q = (
         sb.schema("truth_vault")
         .table("notes")
-        .select(
-            "note_id, project_id, title, body, raw_content, hashtags, "
-            "intent, target_blue_keywords, raw_extra, "
-            "projects(brand, product, category)"
-        )
+        .select(cols)
         .eq("project_id", project_id)
     )
     if only_missing_subtype:
@@ -646,6 +676,15 @@ def fetch_unannotated_notes(sb, project_id: str, reannotate: bool,
     notes = fetch_all_pages(q, order_by="note_id")
     if only_missing_subtype and mapping is not None:
         notes = [n for n in notes if get_sub_directions_for_note(mapping, n) is not None]
+    if sha_ok and include_stale and not reannotate and not only_missing_subtype:
+        seen = {n["note_id"] for n in notes}
+        stale_ids = [i for i in fetch_stale_essence_ids(sb, project_id) if i not in seen]
+        stale: list[dict] = []
+        for i in range(0, len(stale_ids), STALE_IDS_CHUNK):
+            stale += (sb.schema("truth_vault").table("notes").select(cols)
+                      .in_("note_id", stale_ids[i:i + STALE_IDS_CHUNK]).execute()).data or []
+        # _essence_stale 只给日志数数用 (main 截完预算就 pop), 不进 prompt (build_mode_a_prompt 只读固定几个键)
+        notes += sorted((dict(n, _essence_stale=True) for n in stale), key=lambda n: n["note_id"])
     return notes
 
 
@@ -661,6 +700,7 @@ def write_essence_back(
     parsed: dict,
     sub_dir_result: Optional[tuple[str, list[dict]]],
     dry_run: bool,
+    content_sha: Optional[str] = None,
 ) -> None:
     """Write essence + (optional) sub_direction fields back to the note.
 
@@ -669,6 +709,9 @@ def write_essence_back(
     lifted in alongside direction_subtype. Sub-direction's content_format
     overrides essence's content_format (the sub_direction config is more
     specific / project-aware).
+
+    content_sha: 取数时这一行的 notes.content_sha (LLM 这一轮看到的那份正文), 写成 essence_content_sha (D-137)。
+    None (两列还没建 / 调用方没取) → 不写这一列, 和以前一样。
     """
     e = parsed["essence"]
     a = parsed.get("audience") or {}
@@ -685,6 +728,8 @@ def write_essence_back(
         "essence_vocab_version": VOCAB_VERSION,
         "essence_annotation_mode": "prediction_feature",
     }
+    if content_sha is not None:
+        update["essence_content_sha"] = content_sha
     if sub_dir_result is not None:
         chosen_name, sub_dirs = sub_dir_result
         apply_sub_direction_to_update(update, sub_dirs, chosen_name)
@@ -880,8 +925,9 @@ def main() -> int:
                                     only_missing_subtype=args.only_missing_subtype, mapping=mapping)
     if args.limit:
         notes = notes[: args.limit]
-    logger.info("Found %d notes to annotate for project %s (model=%s, only_missing_subtype=%s)",
-                len(notes), args.project_id, model, args.only_missing_subtype)
+    n_stale = sum(1 for n in notes if n.pop("_essence_stale", False))
+    logger.info("Found %d notes to annotate for project %s (model=%s, only_missing_subtype=%s, content_changed=%d)",
+                len(notes), args.project_id, model, args.only_missing_subtype, n_stale)
 
     failed_queue_path = Path(args.failed_queue).resolve()
     stats = {"ok": 0, "ok_after_retry": 0, "failed_after_retry": 0,
@@ -966,7 +1012,7 @@ def main() -> int:
 
         try:
             write_essence_back(sb, note["note_id"], model, parsed,
-                                sub_dir_result, dry_run=False)
+                                sub_dir_result, dry_run=False, content_sha=note.get("content_sha"))
         except RuntimeError as exc:
             # write_essence_back raises on payload size cap / structural
             # post-validation failures. Route to failed_queue instead of
