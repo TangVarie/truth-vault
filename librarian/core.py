@@ -346,6 +346,8 @@ def _render_cards(cards: list[dict]) -> str:
             else:
                 speed = f"评论 {c.get('comments')}"
             shape = f"\n  结构: {c['structure']}" if c.get("structure") else ""
+            # D-140: 摘录只给遮过品牌 / 产品名的 (某品牌 / 某产品); 没遮过的卡只给结构, 不给原文
+            excerpt = excerpt or "(这张只给结构, 不给原文)"
             blocks.append(f"[{c.get('source_note_id')}] 外部参考|{c.get('category')}｜别家同品类最近涨得快的帖, "
                           f"只借结构不抄内容, 别提它的品牌\n  {speed}{shape}\n  摘要: {excerpt}")
             continue
@@ -442,7 +444,7 @@ def _ensure_external(selected: list[dict], cards: list[dict]) -> list[dict]:
     标 ``forced: true`` (进缓存的 selected[] 里也带着, 周检数得出补了几次)。
     · 不到 5 张就加在末尾, 一张内部卡都不顶; 满 5 张才顶掉 rank_score 最低的那张内部卡 (同分顶靠后的);
     · 模型一张都没挑 (no_match) 不补: 它说了这次没有合适的, 也没有内部卡可顶;
-    · 只补 X.forceable() 的卡: 别家品牌名还没有地方遮的品类 (家居家电 / 个护 / 藻油, F-10) 不补, 模型自己挑了才有;
+    · 只补 X.forceable() 的卡: 品类在 min_external_categories 里、摘录遮过品牌名 (D-140); 只给结构的卡不补, 模型自己挑了才有;
     · 书架空 (没登记品类 / 外部表里这个品类还没有帖 / 查库失败) 原样返回。"""
     need = X.min_external_for(cards)
     ext = X.forceable(cards)

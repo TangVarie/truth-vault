@@ -344,6 +344,12 @@ def load_mapping(project_id: str) -> dict:
     if aliases is not None and (not isinstance(aliases, list)
                                 or not all(isinstance(a, str) and a.strip() for a in aliases)):
         raise ValueError(f"{path}: brand_aliases 必须是非空字符串的列表")
+    # 内容层 (D-140): direction_decomposition.<方向>.layer 只能是 P / T / Q / J。写错一个字母 (如 "p" / "产品")
+    # 不会报错, 只会让这个方向静默退回 token 规则或 intent —— 所以在这里挡。
+    for dname, d in (m.get("direction_decomposition") or {}).items():
+        if isinstance(d, dict) and "layer" in d and d["layer"] not in CONTENT_LAYERS:
+            raise ValueError(f"{path}: direction_decomposition[{dname!r}].layer={d['layer']!r} "
+                             f"不在 {list(CONTENT_LAYERS)} 里 (P 产品贴 / T 流量贴 / Q 提问贴 / J 精品贴)")
     # ── 顶层键白名单 (A11, 2026-09-22)────────────────────────────────────────
     # 拼错一个顶层键, 今天的失效方式是【静默】: 上面每一处都是 m.get(...), 取不到就退成
     # 默认值, 整段校验跳过。brand_aliases 就是典型 —— 写成 brand_alias 的话 :329 拿到
@@ -753,6 +759,108 @@ def infer_direction_from_content(
         return None
     return {"direction": default, "by": "正文推断",
             "rule": "default", "matched": []}
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 内容层 notes.content_layer (D-140; schemas/notes_v1_24_external_masks_content_layer.sql)
+# ─────────────────────────────────────────────────────────────────────────
+#
+# owner 方法论里的四种帖: P 产品贴 (正文里带产品) / T 流量贴 (产品多半靠评论区种) / Q 提问贴 (和 T 同一族) /
+# J 精品贴 (产品揉进内容)。飞书「方向」列有的项目直接写着这几个词, 老项目只有 notes.intent (traffic / conversion)。
+# 判定顺序 (derive_layer):
+#   ① mapping 里写明的 direction_decomposition.<方向>.layer (先看整格, 再逐个值看);
+#   ② 严格的词规则 (_LAYER_*): 整个值就是 产品贴 / 流量贴 / 提问贴 / 精品贴, 或以 产品- / 流量- 开头, 或以 -产品贴 / -流量贴 结尾。
+#      【绝不】在题目名里找「产品」「提问」这种子串: 「方向三 产品直给型」「方向四 提问与红黑榜」「付款与签约提问帖」
+#      「极简提问」都是选题, 不是帖子的层 —— 要算哪一层, 在 mapping 里写明 layer。
+#      多选的格子: 每个值都得出同一层才给; 有分歧, 或有的值认得出、有的认不出 → NULL (不退回 intent)。
+#      一个值都认不出 → 往下看 ③;
+#   ③ notes.intent: conversion → P, traffic → T;
+#   ④ 都没有 → NULL。
+# 只认运营填的方向原值, 不认 _direction_inferred (正文推断的方向是猜的)。
+
+CONTENT_LAYERS: tuple[str, ...] = ("P", "T", "Q", "J")
+_LAYER_EXACT = {"产品贴": "P", "流量贴": "T", "提问贴": "Q", "精品贴": "J"}
+_LAYER_PREFIX = (("产品-", "P"), ("流量-", "T"))
+_LAYER_SUFFIX = (("-产品贴", "P"), ("-流量贴", "T"))
+_INTENT_LAYER = {"conversion": "P", "traffic": "T"}
+_DASHES = str.maketrans({"－": "-", "—": "-", "–": "-", "‐": "-", "‑": "-"})
+
+
+def direction_tokens(raw: Any) -> list[str]:
+    """飞书「方向」格 → 一个个值 (去首尾空白, 丢空的)。和 _direction_key 同一套展平: 字符串 / 列表 / {'text': …};
+    _direction_key 拼多选用的 ", " 在这里拆回去。库里读出来的 raw_extra 偶尔是 JSON 数组的字符串 (如 '["流量贴"]'),
+    也按数组拆。"""
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        s = raw.strip()
+        if s.startswith("[") and s.endswith("]"):
+            try:
+                parsed = json.loads(s)
+            except ValueError:
+                parsed = None
+            if isinstance(parsed, list):
+                return direction_tokens(parsed)
+        return [p.strip() for p in s.split(", ") if p.strip()]
+    if isinstance(raw, list):
+        return [t for x in raw for t in direction_tokens(x if not isinstance(x, (int, float)) else str(x))]
+    if isinstance(raw, dict):
+        return direction_tokens(str(raw.get("text", "")))
+    return direction_tokens(str(raw))
+
+
+def token_layer(token: str) -> Optional[str]:
+    """一个方向值按严格词规则 (见上) 判层; 认不出 → None。不做子串匹配。"""
+    t = (token or "").strip().translate(_DASHES)
+    if t in _LAYER_EXACT:
+        return _LAYER_EXACT[t]
+    for pre, lay in _LAYER_PREFIX:
+        if t.startswith(pre) and len(t) > len(pre):
+            return lay
+    for suf, lay in _LAYER_SUFFIX:
+        if t.endswith(suf) and len(t) > len(suf):
+            return lay
+    return None
+
+
+def derive_layer(raw_direction: Any, mapping: Optional[dict], intent: Optional[str]) -> Optional[str]:
+    """notes.content_layer: 'P' / 'T' / 'Q' / 'J' / None。顺序见上面的说明。纯函数: sync 和 backfill_content_layer 共用。"""
+    toks = direction_tokens(raw_direction)
+    if toks:
+        dd = (mapping or {}).get("direction_decomposition") or {}
+        whole = dd.get(", ".join(toks))
+        if isinstance(whole, dict) and whole.get("layer") in CONTENT_LAYERS:
+            return whole["layer"]
+        per = []
+        for t in toks:
+            e = dd.get(t)
+            per.append(e["layer"] if isinstance(e, dict) and e.get("layer") in CONTENT_LAYERS else token_layer(t))
+        got = set(per)
+        if got != {None}:
+            return per[0] if len(got) == 1 else None
+    return _INTENT_LAYER.get(intent) if isinstance(intent, str) else None
+
+
+CONTENT_LAYER_MIGRATION = "schemas/notes_v1_24_external_masks_content_layer.sql"
+_CONTENT_LAYER_WARNED: list[bool] = []
+
+
+def notes_content_layer_supported(sb) -> bool:
+    """生产库有没有 notes.content_layer (v1_24 跑没跑)。没有 → 一个进程只打一次 warning、回 False, sync 这一轮不写这一列、
+    别的照旧 (owner 跑迁移之前什么都不能坏)。同 notes_content_sha_supported: 只吞「没有这一列」, 别的错照抛;
+    回来的行里没有这个键也算没有 (假库); 0 行 (空库) 算有。故意不进 _REQUIRED_COLUMNS。"""
+    try:
+        rows = (sb.schema("truth_vault").table("notes").select("note_id, content_layer").limit(1).execute()).data or []
+        ok = not rows or "content_layer" in rows[0]
+    except Exception as exc:  # noqa: BLE001 —— 只吞「没有这一列」
+        if not _is_missing_column_error(exc, ("content_layer",)):
+            raise
+        ok = False
+    if not ok and not _CONTENT_LAYER_WARNED:
+        _CONTENT_LAYER_WARNED.append(True)
+        print(f"⚠️ notes.content_layer 还没建 (owner 在 SQL editor 跑 {CONTENT_LAYER_MIGRATION} 之前都是这样): "
+              "这一轮不写内容层, 别的照旧 (D-140)", file=sys.stderr, flush=True)
+    return ok
 
 
 def parse_numeric(value: Any) -> Optional[float]:

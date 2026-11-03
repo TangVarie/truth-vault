@@ -37,6 +37,7 @@ import re
 import sys
 import uuid
 import time
+from collections import Counter
 from typing import Any, Iterator, Optional
 
 import requests
@@ -48,6 +49,7 @@ from _common import (
     PAID_TIER_KEY,
     assert_db_schema_ready,
     classify_paid_element,
+    derive_layer,
     ensure_account_exists,
     ensure_project_exists,
     extract_tier,
@@ -57,6 +59,7 @@ from _common import (
     load_mapping,
     make_note_id,
     map_intent,
+    notes_content_layer_supported,
     paid_cell_elements,
     parse_array,
     parse_numeric,
@@ -1083,6 +1086,11 @@ def transform_row(
                 note["tier_source"] = "数据异常"
                 break
 
+    # ── 内容层 (D-140): 方向原值 → mapping 写明的 layer / 严格词规则 → intent → NULL (_common.derive_layer)。
+    # 每行都带这个键 (值可以是 None): 方向改了 / 清空了, 库里的内容层跟着变, 批量 upsert 也不会混出「有的行没带」。
+    # 库里还没有这一列 (v1_24 没跑) 时 main 在写库之前整列拿掉, 不在这里判 (transform_row 不连库)。
+    note["content_layer"] = derive_layer(intermediates.get("_direction_raw"), mapping, note.get("intent"))
+
     # ── Numeric tier fallback —— 只认评论数 (D-062) ──
     # 没有文本规则命中(tier None)或映成占位的「未知」时, 若评论数已经过线就推 爆/大爆,
     # 免得一条数据上已经达标的帖永远停在 未知、进不了飞轮。尺子见 _COMMENT_TIER_*。
@@ -1767,6 +1775,25 @@ def upsert_metrics_batch(
 # Main
 # ═════════════════════════════════════════════════════════════════════════
 
+def prepare_content_layer(sb, pending_notes: list[dict[str, Any]]) -> bool:
+    """写库之前定 content_layer 这一列写不写 (D-140)。库里有这一列 → 原样留着 (transform_row 每行都带, 值可以是 None),
+    打一行各层篇数; 没有 (v1_24 还没跑) / 探不到 → 每行拿掉这个键, 这一轮不写内容层, 别的照旧 (一行 warning)。
+    有这一列时每晚整表重写一遍 —— owner 跑完 v1_24 的下一晚 daily 项目就自己填满了; 夜跑不同步的 on_demand 项目
+    由 backfill_content_layer.py 只往空里填。回: 这一轮写不写。"""
+    try:
+        ok = bool(pending_notes) and notes_content_layer_supported(sb)
+    except Exception:  # noqa: BLE001 —— 探不到就当没有这一列: 内容层这一轮不写, 入库照旧
+        logger.warning("探 notes.content_layer 失败, 这一轮不写内容层 (D-140)", exc_info=True)
+        ok = False
+    if ok:
+        layers = Counter(n.get("content_layer") or "空" for n in pending_notes)
+        logger.info("内容层 (D-140): %s", " · ".join(f"{k} {layers[k]}" for k in ("P", "T", "Q", "J", "空") if layers[k]))
+        return True
+    for n in pending_notes:
+        n.pop("content_layer", None)
+    return False
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("project_id", help="e.g. NUC_phase1")
@@ -2240,6 +2267,9 @@ def main() -> int:
             flip["threshold"], MASS_TIER_FLIP_MIN, int(MASS_TIER_FLIP_RATIO * 100), flip["existing"],
             len(flip["flips"]), flip["upgrades"][:10],
         )
+
+    # ── 内容层 (D-140): 库里有 notes.content_layer 才写; 没有 (v1_24 还没跑) 整列拿掉, 别的照旧 (prepare_content_layer)。
+    prepare_content_layer(sb, pending_notes)
 
     failed_accounts = ensure_accounts_batch(sb, account_platforms, dry_run=args.dry_run)
     written_ids = upsert_notes_batch(sb, pending_notes, dry_run=args.dry_run)

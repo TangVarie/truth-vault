@@ -19,15 +19,21 @@
     不带这个键的老消费方 (通道 1 / 旧版写作台) 不给, 缓存键也不变;
   · 只给同品类的项目: brief 的品牌 / 项目名里出现 prompts/external_shelf_v1.json 里某品类登记的品牌名。
     写作台那边发牌也认这张表 (aw deskcore/priors.py 的 EXT_CATEGORY_BY_PROJECT 照抄, 两边各有钉表的用例)。
-  · 「至少 min_external 张」只管 min_external_categories 里的品类 (别家品牌名查过、补进了 mask_terms 的)。别的品类
-    (家居家电 / 个护 / 藻油, F-10: 本仓公开, 别家品牌名不写进来, 还没有地方遮) 照样上架、模型可以挑, 但不强塞、不补。
+  · 「至少 min_external 张」只管 min_external_categories 里的品类 (D-140 起 8 个品类全在), 且只塞摘录遮过的卡。
 
-卡长什么样: 不带外部的品牌名 —— 只收 Jev 分诊判了没带产品、不像广告的帖 (外部品牌认不全, 只能要本来就没提产品的)。
-分诊漏网、正文里仍点了别家品牌的 (配置的 mask_terms), 2026-10-19 起 (D-120) 不再整篇不收, 而是把品牌名换成「某品牌」
-再上架 —— 帖子的结构和钩子本来就跟品牌名无关, 整篇丢掉是浪费。点到我们自己登记品牌的照旧不上架: 那多半是我们自己
-铺的帖, 不是"别家的自然流量"。卡头写明「外部参考 · 只借结构不抄内容」。
+卡长什么样 (D-140, 11-03 起): 不再只收 Jev 分诊判了「没带产品」的帖 —— 那只看标题和约 60 字摘要, 11-03 核查 994 篇
+「没带产品」里 482 篇正文点了产品, 上架的卡把别家品牌名原样带了出去。现在带不带产品都收, 品牌 / 产品名靠遮:
+  · 模型只【列出】每篇里指向具体品牌 / 产品系列型号 / 店铺 / 售卖机构的专有名称 (scripts/mask_external_names.py 夜跑,
+    存在 truth_vault.external_note_masks), 代码核过这些词逐字出现在原文里才收; 上架时按 text_sha 核对原文没变,
+    把这些词换成「某品牌」/「某产品」(长的先换, 拉丁字母不分大小写), 再换配置里的 mask_terms。正文别的字一个不动 ——
+    要学的是写法 (节奏、结构), 模型从不改写正文。
+  · 没有有效遮挡行 (还没列过 / 原文变了 / 表还没建) 的帖: 卡上只给结构、不给原文摘录; 连结构都没有的不上架。
+  · 强塞 (每次至少 1 张) 只塞有遮过的摘录的卡, 从不强塞只有结构的卡。8 个品类都在 min_external_categories 里。
+  · Jev 全文答的 efficacy_promise (健康功效说法) 是「是」的不上架, 没答的也不上架 (fail-closed, 和写作台发牌一致, F-08)。
+点到我们自己登记品牌的照旧不上架: 那多半是我们自己铺的帖, 不是"别家的自然流量"。卡头写明「外部参考 · 只借结构不抄内容」。
 
-fail-open: 配置读不了 / 查库失败 / 这个品类还没有外部帖 → 这次没有外部卡, 照常选内部卡。结构题查不了 → 卡照给, 只是不带结构。
+fail-open (对内部卡): 配置读不了 / 查库失败 / 这个品类还没有外部帖 → 这次没有外部卡, 照常选内部卡。
+fail-closed (对外部卡): Jev 的答案 (功效题 + 结构题) 查不了 → 这个品类这次没有外部卡; 遮挡表读不了 → 全部只给结构。
 """
 
 from __future__ import annotations
@@ -61,6 +67,13 @@ EXCERPT_CAP = 600           # 选中卡回给消费方的摘录上限 (内部卡
 EXTERNAL_RUN_TAG = "external"   # Jev 给外部帖答题写的 run_tag (同 scripts/check_external_direction.py)
 STRUCTURE_QIDS = ("title_is_question", "opening_type", "turning_point", "ending_asks_reader",
                   "asks_for_help", "own_experience")
+EFFICACY_QID = "efficacy_promise"   # Jev 全文答的健康功效说法 (D-140 / F-08): 只有答了「否」的才上架
+ANSWER_QIDS = STRUCTURE_QIDS + (EFFICACY_QID,)
+ANSWERS_CHUNK = 100         # 一次 .in_() 带这么多个 id, URL 不会过长 (同 aw deskcore/store.py NOTE_ANSWERS_CHUNK)
+_ANSWER_MAX_PAGES = 20      # 每批 100 篇 × 7 题 × 抽取器版本, 一页 1000 行; 翻到这么多页还没到空页 = 不对劲, 当读不了 (不静默截断)
+MASK_TABLE = "external_note_masks"
+MASK_RULES = "m1"           # 遮挡规则 (clean_terms / apply_mask) 的版本, 进外部卡指纹: 规则一改, 旧缓存里的摘录全部作废
+_MASK_WARNED: list[bool] = []
 _OPENING = {
     "具体事件": "开头先讲一件具体的事",
     "身份自述": "开头先讲自己的身份",
@@ -110,18 +123,74 @@ def categories_for(brief: dict, cfg: dict) -> list[str]:
 
 
 MASK = "某品牌"
+MASK_BY_KIND = {"品牌": "某品牌", "产品": "某产品"}
+_ASCII_ALNUM = re.compile(r"[A-Za-z0-9]")
+_SHORT_LATIN = 3            # 只有拉丁字母 / 数字、不超过 3 个字符的词 (如 HA / GT) 两边不许紧挨着字母数字, 免得把 haha 里的 ha 也换掉
 
 
 def _registered_brands(cfg: dict) -> list[str]:
     return [b.lower() for bs in cfg["categories"].values() for b in bs if b]
 
 
+def mask_text_sha(title, body) -> str:
+    """遮挡行的 text_sha: sha256(标题 + 换行 + 正文)。列词那一刻的原文; 和现在对不上 = 过期 (D-140)。"""
+    return hashlib.sha256(f"{title or ''}\n{body or ''}".encode("utf-8")).hexdigest()
+
+
+def _term_regex(t: str) -> str:
+    """一个词的匹配式: 逐字 (re.escape); 短的纯拉丁词两边不许紧挨着字母数字。大小写由调用方用 re.I。"""
+    pat = re.escape(t)
+    if len(t) <= _SHORT_LATIN and all(_ASCII_ALNUM.fullmatch(ch) for ch in t):
+        pat = rf"(?<![A-Za-z0-9]){pat}(?![A-Za-z0-9])"
+    return pat
+
+
+def clean_terms(terms, text: str) -> list[dict]:
+    """模型列出来的词 → 能用的词: 只留在 ``text`` (标题 + 换行 + 正文) 里逐字出现的 (拉丁字母不分大小写, 同替换时的口径),
+    去掉空的 / 一个字的 / 带换行的, 按大小写不敏感去重 (先出现的留下)。k 只认 品牌 / 产品, 别的都当 品牌 (多遮不漏)。
+    纯函数; mask 脚本存之前用它, 馆员上架前再用一遍 (表里的行不全信)。"""
+    out: list[dict] = []
+    seen: set = set()
+    for item in terms if isinstance(terms, list) else []:
+        if isinstance(item, str):
+            t, k = item, "品牌"
+        elif isinstance(item, dict):
+            t, k = item.get("t"), item.get("k")
+        else:
+            continue
+        if not isinstance(t, str):
+            continue
+        t = t.strip()
+        if len(t) < 2 or "\n" in t or t.casefold() in seen:
+            continue
+        if not re.search(_term_regex(t), text or "", flags=re.I):
+            continue
+        seen.add(t.casefold())
+        out.append({"t": t, "k": k if k in MASK_BY_KIND else "品牌"})
+    return out
+
+
+def apply_mask(text: str, terms: list[dict], cfg: Optional[dict]) -> str:
+    """把 ``terms`` (clean_terms 过的) 和配置里的 mask_terms 一起, 一遍换掉: 长的先换 (「雅培安素」不会只换掉半截),
+    拉丁字母不分大小写, 换上去的「某品牌」/「某产品」不会再被别的词匹配到。别的字一个不动。"""
+    if not text:
+        return ""
+    kind: dict[str, str] = {}
+    for t in ((cfg or {}).get("mask_terms") or []):
+        if isinstance(t, str) and t.strip():
+            kind.setdefault(t.strip().casefold(), "品牌")
+    for it in terms or []:
+        kind[it["t"].casefold()] = it["k"]
+    if not kind:
+        return text
+    pats = sorted(kind, key=len, reverse=True)
+    rx = re.compile("|".join(f"({_term_regex(t)})" for t in pats), flags=re.I)
+    return rx.sub(lambda m: MASK_BY_KIND[kind[pats[m.lastindex - 1]]], text)
+
+
 def mask_brands(text: str, cfg: Optional[dict]) -> str:
-    """别家品牌名 (mask_terms) → 「某品牌」, 不分大小写。长的先换: 「雅培安素」不会只换掉半截。"""
-    terms = sorted({t for t in ((cfg or {}).get("mask_terms") or []) if t}, key=len, reverse=True)
-    if not text or not terms:
-        return text or ""
-    return re.sub("|".join(re.escape(t) for t in terms), MASK, text, flags=re.I)
+    """只换配置里的 mask_terms (D-120 那一层): 别家品牌名 → 「某品牌」, 不分大小写, 长的先换。"""
+    return apply_mask(text or "", [], cfg)
 
 
 # ── 发帖时间 / 日均评论 ──────────────────────────────────────────────────
@@ -172,15 +241,22 @@ def in_window(row: dict, cfg: dict, now: Optional[float] = None) -> bool:
 
 
 def qualifies(row: dict, cfg: dict, median: Optional[float], *, now: Optional[float] = None) -> bool:
-    """达标: 在窗口里 (in_window)、评论够、日均评论不低于同品类中位数 (``median``; None = 这个品类没有可比的帖, 不收)、
-    没带产品、不像广告 (has_product / ad_like 没判过 = 不收: 认不出品牌就不冒险)、标题正文里没点到【我们登记的】品牌
-    (那多半是我们自己铺的帖)。别家品牌名不挡, 上架时换成「某品牌」(D-120)。"""
+    """便宜的那几道 (不查库): 在窗口里 (in_window)、评论够、日均评论不低于同品类中位数 (``median``; None = 这个品类没有
+    可比的帖, 不收)、不像广告 (ad_like 不是 true)、标题正文里没点到【我们登记的】品牌 (那多半是我们自己铺的帖)。
+    D-140 起不看 has_product: 带不带产品都收, 别家品牌 / 产品名上架时按遮挡表换掉 (apply_mask)。
+    功效说法那道要查 Jev 的答案, 在 efficacy_ok / qualified 里。"""
     v = velocity(row)
     text = f"{row.get('title') or ''}\n{row.get('body') or ''}".lower()
     return (in_window(row, cfg, now) and v is not None and median is not None and v >= median
             and (row.get("comments") or 0) >= int(cfg["min_comments"])
-            and row.get("has_product") is False and row.get("ad_like") is not True
+            and row.get("ad_like") is not True
             and not any(t in text for t in _registered_brands(cfg)))
+
+
+def efficacy_ok(answers: Optional[dict]) -> bool:
+    """Jev 全文答的 efficacy_promise 是「否」才上架 (D-140 / F-08, 同写作台发牌的外部池子)。答了「是」不上;
+    没答 / 答空 / 答了别的也不上 (fail-closed: 戒烟、鼻炎、术后营养、藻油都是管得严的品类)。"""
+    return (answers or {}).get(EFFICACY_QID) == "否"
 
 
 def _percentile(v: float, pool: list[float]) -> float:
@@ -189,9 +265,10 @@ def _percentile(v: float, pool: list[float]) -> float:
     return (lo + hi) / 2 / len(pool)
 
 
-def qualified(rows: list[dict], cfg: dict, *, now: Optional[float] = None) -> list[tuple[dict, float, float]]:
-    """按品类算日均评论的中位数 (同品类、在窗口里的帖, 不管有没有产品), 留下达标的, 品类内按日均评论从高到低
-    (同速按 note_id)。返回 [(行, 日均评论, 百分位)]; 品类按第一次出现的顺序。纯函数, 馆员上架和方向复核报数都用它。"""
+def candidates(rows: list[dict], cfg: dict, *, now: Optional[float] = None) -> list[tuple[dict, float, float]]:
+    """按品类算日均评论的中位数 (同品类、在窗口里的帖, 不管有没有产品), 留下过了便宜那几道 (qualifies) 的, 品类内按日均评论
+    从高到低 (同速按 note_id)。返回 [(行, 日均评论, 百分位)]; 品类按第一次出现的顺序。纯函数。
+    功效说法那道要查库, 只给这一步留下来的帖查 (qualified / fetch_shelf)。"""
     now = time.time() if now is None else now
     by_cat: dict = {}
     for r in rows:
@@ -208,6 +285,12 @@ def qualified(rows: list[dict], cfg: dict, *, now: Optional[float] = None) -> li
     return out
 
 
+def qualified(rows: list[dict], cfg: dict, answers: dict, *, now: Optional[float] = None) -> list[tuple[dict, float, float]]:
+    """真正上架的口径: candidates 里 Jev 功效题答了「否」的 (``answers``: {note_id: {题: 答}}, fetch_answers 取的)。
+    纯函数, 馆员上架和方向复核报数都用它 —— 口径只有一份。``answers`` 给空 = 一篇都不收 (fail-closed)。"""
+    return [t for t in candidates(rows, cfg, now=now) if efficacy_ok(answers.get(str(t[0].get("note_id"))))]
+
+
 def describe(fq: Optional[dict]) -> Optional[str]:
     """Jev 结构题答案 → 一句人话 (「开头先讲一件具体的事；中间有一次前后转折；结尾问了读者」)。什么都没答 → None。"""
     fq = fq or {}
@@ -217,10 +300,13 @@ def describe(fq: Optional[dict]) -> Optional[str]:
 
 
 def to_card(row: dict, cfg: Optional[dict] = None, *, rate: Optional[float] = None, pct: Optional[float] = None,
-            fq: Optional[dict] = None, now: Optional[float] = None) -> dict:
+            fq: Optional[dict] = None, now: Optional[float] = None, mask: Optional[list] = None) -> dict:
     """``cfg`` 给 mask_terms 用; 不给就读默认配置 (读不了就不换, 但那时整个书架本来就不出卡)。
     ``rate`` / ``pct`` 是 qualified() 算好的日均评论和百分位 (不给就按这一行自己算日均、百分位记 0);
     ``fq`` 是 Jev 给这篇答的结构题; ``now`` 用来算现在发出几天 (posted_days_ago)。
+    ``mask`` 是这篇有效的遮挡词 (valid_mask 给的, 可以是空列表 = 查过了没有要遮的); None = 没有有效遮挡行 →
+    raw_excerpt 给空串, 卡上只有结构 (D-140: 没遮过的原文不出书架)。``masked`` 标这张卡的摘录是不是遮过的 ——
+    只有遮过的卡能被强塞 (forceable)。
 
     why_it_worked 只写抓取那一刻定下的数 (抓到时发出几天、共几条评论、那时每天几条): 写作台模型读它, 缓存行一放一周,
     写「现在发出几天」会和命中时重算的 posted_days_ago 对不上; 百分位是上架那天同品类那批帖排出来的, 也会过时,
@@ -256,7 +342,9 @@ def to_card(row: dict, cfg: Optional[dict] = None, *, rate: Optional[float] = No
         "structure": describe(fq),
         "why_it_worked": why,
         "transferable_tactic": "只借结构 / 钩子, 不抄内容, 不提它的品牌",
-        "raw_excerpt": mask_brands(f"{row.get('title') or ''} {row.get('body') or ''}".strip(), cfg),
+        "masked": mask is not None,
+        "raw_excerpt": (apply_mask(f"{row.get('title') or ''} {row.get('body') or ''}".strip(), mask, cfg)
+                        if mask is not None else ""),
     }
 
 
@@ -278,38 +366,112 @@ def _category_rows(sb, cat: str, now: float) -> list[dict]:
     return out
 
 
-def structure_answers(sb, ids: list[str]) -> dict[str, dict[str, str]]:
-    """Jev 给这几篇外部帖答的结构题 {note_id: {题: 答}}; 同一题答过几次取最新的。查不了 → {} (卡照给, 不带结构)。"""
-    ids = sorted({str(i) for i in ids if i})
-    if not ids:
-        return {}
-    try:
-        rows = (
-            sb.schema("truth_vault").table("note_feature_answers")
-            .select("subject_id, question_id, answer, extracted_at")
-            .eq("subject_type", "external_note").eq("run_tag", EXTERNAL_RUN_TAG)
-            .in_("question_id", list(STRUCTURE_QIDS)).in_("subject_id", ids)
-            .order("extracted_at").limit(_PAGE).execute()
-        ).data or []
-    except Exception:  # noqa: BLE001
-        logger.warning("外部参考卡的结构题查不了, 这次卡上不带结构", exc_info=True)
-        return {}
+def _latest(best: dict, key: tuple, row: dict) -> None:
+    """``best[key] = (抽取时间, 答案)``, 只留最后抽的那一行; 空答案不算 (同 aw deskcore/store.py _latest_answer)。"""
+    ans = str(row.get("answer") if row.get("answer") is not None else "").strip()
+    if not ans:
+        return
+    at = _epoch(row.get("extracted_at")) or 0.0
+    if key not in best or at >= best[key][0]:
+        best[key] = (at, ans)
+
+
+def fetch_answers(sb, ids: list, qids=ANSWER_QIDS) -> dict[str, dict[str, str]]:
+    """Jev 给这几篇外部帖答的题 {note_id: {题: 答}} (subject_type=external_note, run_tag=external); 同一题答过几次
+    取最后抽的那个有效答案。id 按 ANSWERS_CHUNK 个一批 .in_(), 每批按主键排序翻页, 拿到空页才收工 (服务端钳短了也不漏);
+    翻到 _ANSWER_MAX_PAGES 页还没完 → 抛 (宁可这次没有外部卡, 也不拿半截答案判功效)。查库失败照抛, 调用方决定怎么退。"""
+    want = sorted({str(i) for i in ids if i})
+    qids = list(qids)
+    best: dict = {}
+    for i in range(0, len(want), ANSWERS_CHUNK):
+        chunk = want[i:i + ANSWERS_CHUNK]
+        off = 0
+        for _ in range(_ANSWER_MAX_PAGES):
+            rows = (
+                sb.schema("truth_vault").table("note_feature_answers")
+                .select("subject_id, question_id, answer, extracted_at")
+                .eq("subject_type", "external_note").eq("run_tag", EXTERNAL_RUN_TAG)
+                .in_("question_id", qids).in_("subject_id", chunk)
+                # subject_type / run_tag 钉死了, 剩下这四列就是主键: 排序唯一, 翻页不漏不重
+                .order("subject_id").order("question_id").order("question_version").order("extractor")
+                .range(off, off + _PAGE - 1).execute()
+            ).data or []
+            if not rows:
+                break
+            for r in rows:
+                sid, qid = str(r.get("subject_id") or ""), str(r.get("question_id") or "")
+                if sid and qid in qids:
+                    _latest(best, (sid, qid), r)
+            off += len(rows)
+        else:
+            raise RuntimeError(f"外部帖答案翻了 {_ANSWER_MAX_PAGES} 页还没完 (这一批 {len(chunk)} 篇), 不拿半截答案判功效")
     out: dict[str, dict[str, str]] = {}
-    for r in rows:
-        if r.get("subject_id") is None or r.get("question_id") not in STRUCTURE_QIDS or r.get("answer") is None:
-            continue
-        out.setdefault(str(r["subject_id"]), {})[r["question_id"]] = str(r["answer"])
+    for (sid, qid), (_at, ans) in best.items():
+        out.setdefault(sid, {})[qid] = ans
     return out
 
 
+def _missing_table(exc: BaseException) -> bool:
+    s = f"{exc!r} {exc}"
+    return MASK_TABLE in s and any(m in s for m in ("PGRST205", "42P01", "does not exist", "Could not find the table"))
+
+
+def fetch_masks(sb, ids: list) -> dict[str, dict]:
+    """这几篇的遮挡行 {note_id: {terms, text_sha}}。表还没建 (v1_24 没跑) → {} 并打一次 warning; 别的读错 → {} 并 warning。
+    读不到 = 这几篇当没遮过: 卡上只给结构 (fail-closed, 借卡照常)。"""
+    want = sorted({str(i) for i in ids if i})
+    out: dict[str, dict] = {}
+    try:
+        for i in range(0, len(want), ANSWERS_CHUNK):
+            rows = (
+                sb.schema("truth_vault").table(MASK_TABLE).select("note_id, terms, text_sha")
+                .in_("note_id", want[i:i + ANSWERS_CHUNK]).execute()
+            ).data or []
+            out.update({str(r["note_id"]): r for r in rows if r.get("note_id") is not None})
+    except Exception as exc:  # noqa: BLE001
+        if _missing_table(exc):
+            if not _MASK_WARNED:
+                _MASK_WARNED.append(True)
+                logger.warning("truth_vault.%s 还没建 (owner 跑 schemas/notes_v1_24 之前都是这样): 外部卡全部只给结构、"
+                               "不给原文摘录, 也不强塞 (D-140)", MASK_TABLE)
+        else:
+            logger.warning("外部帖遮挡表读不了, 这次外部卡全部只给结构", exc_info=True)
+        return {}
+    return out
+
+
+def valid_mask(row: dict, mask_row: Optional[dict]) -> Optional[list]:
+    """遮挡行有效 (列词时的原文 = 现在的标题 + 正文) → 再过一遍 clean_terms 的词 (可以是空列表); 没有 / 过期 / 形状不对 → None。"""
+    if not isinstance(mask_row, dict) or not isinstance(mask_row.get("terms"), list):
+        return None
+    if mask_row.get("text_sha") != mask_text_sha(row.get("title"), row.get("body")):
+        return None
+    return clean_terms(mask_row["terms"], f"{row.get('title') or ''}\n{row.get('body') or ''}")
+
+
 def fetch_shelf(sb, categories: list[str], cfg: dict, *, now: Optional[float] = None) -> list[dict]:
-    """这些品类里达标的外部帖, 每个品类按日均评论取前 show_per_request 篇, 转成卡 (带结构题)。"""
+    """这些品类里上架的外部帖: 便宜那几道 (candidates) → 给留下的帖查 Jev 的答案 (功效题 + 结构题, 分批翻页) → 功效题答了
+    「否」的 → 查这些帖的遮挡行 → 按日均评论从高到低转成卡, 每个品类取前 show_per_request 张。没有有效遮挡行的卡只给结构;
+    连结构都没有的跳过、往下补 (排序不变, 还是按日均评论)。答案查不了照抛 (shelf_for 接住: 这个品类这次没有外部卡)。"""
     now = time.time() if now is None else now
     out: list[dict] = []
     for cat in categories:
-        top = qualified(_category_rows(sb, cat, now), cfg, now=now)[:int(cfg["show_per_request"])]
-        fq = structure_answers(sb, [r["note_id"] for r, _, _ in top])
-        out += [to_card(r, cfg, rate=v, pct=p, fq=fq.get(str(r["note_id"])), now=now) for r, v, p in top]
+        cands = candidates(_category_rows(sb, cat, now), cfg, now=now)
+        if not cands:
+            continue
+        answers = fetch_answers(sb, [r["note_id"] for r, _, _ in cands])
+        ok = [(r, v, p) for r, v, p in cands if efficacy_ok(answers.get(str(r["note_id"])))]
+        masks = fetch_masks(sb, [r["note_id"] for r, _, _ in ok]) if ok else {}
+        got = 0
+        for r, v, p in ok:
+            nid = str(r["note_id"])
+            card = to_card(r, cfg, rate=v, pct=p, fq=answers.get(nid), now=now, mask=valid_mask(r, masks.get(nid)))
+            if not card["raw_excerpt"] and not card["structure"]:
+                continue
+            out.append(card)
+            got += 1
+            if got >= int(cfg["show_per_request"]):
+                break
     return out
 
 
@@ -340,15 +502,16 @@ def shelf_for(sb, brief: dict, *, path: Path = CONFIG_PATH, now: Optional[float]
 
 
 def digest(cards: list[dict]) -> str:
-    """进 library_version 的外部卡指纹: 卡的 id、**卡面摘录和结构**。只认 id 的话, mask_terms 补了一个新品牌, 卡面变了
-    而版本没变, 旧缓存里没换掉品牌名的摘录会一直被命中(codex review on TV#202); 结构题晚到也一样。
+    """进 library_version 的外部卡指纹: 卡的 id、**卡面摘录、结构、摘录遮没遮过**, 再加遮挡规则的版本 (MASK_RULES)。
+    只认 id 的话, mask_terms 补了一个新品牌 / 夜跑新列了一篇的遮挡词, 卡面变了而版本没变, 旧缓存里没遮的摘录会一直被
+    命中 (codex review on TV#202); 结构题晚到也一样。遮挡规则 (clean_terms / apply_mask) 改了就升 MASK_RULES。
     现在发出几天每天都在变, 不进指纹 (命中缓存时按 id 重算, core._refresh_external); 卡上别的数 (why_it_worked 也是)
-    都是抓取那一刻定下的, 不随时间变。没有外部卡时与以前一样。"""
+    都是抓取那一刻定下的, 不随时间变。没有外部卡时与以前一样 (空串的哈希)。"""
     parts = sorted(f"{c.get('source_note_id')}\x00{c.get('raw_excerpt') or ''}\x00{c.get('structure') or ''}"
-                   for c in cards)
+                   f"\x00{int(bool(c.get('masked')))}" for c in cards)
     if not parts:
         return hashlib.sha256(b"").hexdigest()[:10]
-    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:10]
+    return hashlib.sha256((MASK_RULES + "\n" + "\n".join(parts)).encode("utf-8")).hexdigest()[:10]
 
 
 def is_external(card: dict) -> bool:
@@ -367,11 +530,12 @@ def min_external(path: Path = CONFIG_PATH) -> int:
 
 
 def forceable(cards: list[dict], path: Path = CONFIG_PATH) -> list[dict]:
-    """``cards`` 里能拿来凑「至少 min_external 张」的外部卡: 品类在 min_external_categories 里 (别家品牌名查过、
-    补进了 mask_terms)。别的品类 (F-10: 别家品牌名还没有地方遮) 的外部卡模型可以挑, 但不强塞、不补。配置读不了 → []。"""
+    """``cards`` 里能拿来凑「至少 min_external 张」的外部卡: 品类在 min_external_categories 里, 而且摘录是遮过的
+    (masked 且摘录不空, D-140)。只有结构的卡模型可以挑, 但从不强塞、不补。配置读不了 → []。"""
     cfg = load_config(path)
     cats = set((cfg or {}).get("min_external_categories") or [])
-    return [c for c in cards if is_external(c) and c.get("category") in cats]
+    return [c for c in cards if is_external(c) and c.get("category") in cats
+            and c.get("masked") and (c.get("raw_excerpt") or "").strip()]
 
 
 def min_external_for(cards: list[dict], path: Path = CONFIG_PATH) -> int:
@@ -386,7 +550,7 @@ PROMPT_NOTE = ("标了「外部参考」的卡是别家同品类最近涨得快�
 
 def prompt_note(cards: list[dict], path: Path = CONFIG_PATH) -> str:
     """候选卡前面那句外部卡用法; 配置读不了 → 空串。``cards`` 里有 forceable 的外部卡时是「至少挑 1 张、最多 2 张」,
-    只有没遮挡的品类 (F-10) 时是「最多挑 2 张」。"""
+    只有只给结构的外部卡 (没遮过) 时是「最多挑 2 张」。"""
     n, m = max_per_borrow(path), min_external_for(cards, path)
     if not n:
         return ""

@@ -87,11 +87,13 @@ field_mapping:
 # 没有 direction_from_content(phase1 那套是给「方向列写坏」兜底的, 这张表方向列是好的)。
 direction_decomposition:
   "流量贴":                         # 52 篇; 24 篇字面在问(求推荐 / 值不值 / 靠谱吗), 其余是选购纠结的场景
+    layer: T                          # 内容层 (D-140): 流量贴
     content_format: 提问求助
     target_audience: ["通用"]
     user_pain_point: 花一万多买按摩椅前拿不准(力度合不合身 / 一家几口能不能共用 / 进不进得了门 / 售后)
 
   "产品贴":                         # 19 篇; 产品已经在生活里被用起来(笔记级 essence 会再细分)
+    layer: P                          # 内容层 (D-140): 产品贴
     content_format: 场景植入
     target_audience: ["通用"]
     user_pain_point: 按摩椅买回家之后值不值、用不用得起来

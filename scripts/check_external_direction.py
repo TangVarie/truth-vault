@@ -20,7 +20,8 @@ check_external_direction.py
   · 去掉中间段之后有 / 没有 两侧各至少 30 篇才判 (MIN_N); 不够就写「样本不够」, 不判。
 
 顺带报外部参考书架 (D-117 ②, librarian/external.py) 每个品类达标几张 —— 和馆员上架用同一个 qualified (D-138: 发出 3–90 天、
-最近抓到、评论 ≥20、日均评论不低于同品类中位数), 口径只有一份。书架的评论门槛不再是这里判爆的 50: 书架看起量速度, 这里看闸二的结果标签。
+最近抓到、评论 ≥20、日均评论不低于同品类中位数; D-140: 带产品也收, Jev 功效题答「否」才收), 口径只有一份; 功效题的答案
+也用馆员同一个 X.fetch_answers 取。另报这些帖里有几篇已经有有效的遮挡行 (没有的上架时只给结构)。书架的评论门槛不再是这里判爆的 50: 书架看起量速度, 这里看闸二的结果标签。
 
 灯 (docs/29 登记, advisory): 有一条规律在够样本、品类内区间整段 < 1 时 → rc=1, 提醒这条可能只在我们自己帖子上成立,
 该拿出来议 (改下发的是批准层, 修在 TV 仓 prompts/desk_delivery_v1.json + 新 D 号)。外部表空 / 某道题的外部答案不止一个
@@ -118,15 +119,27 @@ def judge(patterns: list[dict], notes: list[dict], answers: dict[str, dict[str, 
     return rc, lines
 
 
-def shelf_counts(notes: list[dict], cfg: Optional[dict], *, now: Optional[float] = None) -> list[str]:
-    """外部参考书架每个登记品类达标几张 (纯函数; ``now`` 给 selftest 钉时间)。登记了、外部表里还没有的品类报 0。"""
+def shelf_counts(notes: list[dict], cfg: Optional[dict], answers: Optional[dict] = None, *,
+                 masks: Optional[dict] = None, now: Optional[float] = None) -> list[str]:
+    """外部参考书架每个登记品类达标几张 (纯函数; ``now`` 给 selftest 钉时间)。登记了、外部表里还没有的品类报 0。
+    ``answers``: {note_id: {题: 答}} (X.fetch_answers); None = 读不了 → 报「判不了」, 不报 0。
+    ``masks``: {note_id: 遮挡行} (X.fetch_masks); 给了就另报每个品类达标帖里有几篇有有效遮挡行。"""
     if not cfg:
         return ["  ⚠️  外部参考书架配置读不了, 馆员这次不给外部卡"]
-    got = X.qualified(notes, cfg, now=now)
+    if answers is None:
+        return ["  ⚠️  外部帖的功效题答案读不了, 书架达标数这次判不了 (馆员那边这时也不给外部卡)"]
+    cands = X.candidates(notes, cfg, now=now)
+    got = X.qualified(notes, cfg, answers, now=now)
     n = {c: sum(1 for r, _, _ in got if r.get("category") == c) for c in cfg["categories"]}
-    return ["外部参考书架达标 (发出 {}–{} 天 · 最近 {} 天抓到 · 评论 ≥{} · 日均评论不低于同品类中位数 · 没带产品 · 不像广告): "
-            .format(X.MIN_AGE_DAYS, cfg["max_age_days"], X.FRESH_DAYS, cfg["min_comments"])
-            + " · ".join(f"{c} {k}" for c, k in n.items())]
+    out = ["外部参考书架达标 (发出 {}–{} 天 · 最近 {} 天抓到 · 评论 ≥{} · 日均评论不低于同品类中位数 · 不像广告 · "
+           "功效题答「否」): ".format(X.MIN_AGE_DAYS, cfg["max_age_days"], X.FRESH_DAYS, cfg["min_comments"])
+           + " · ".join(f"{c} {k}" for c, k in n.items())
+           + f"  (功效题挡掉 {len(cands) - len(got)} 篇)"]
+    if masks is not None:
+        ok = {c: sum(1 for r, _, _ in got if r.get("category") == c
+                     and X.valid_mask(r, masks.get(str(r.get("note_id")))) is not None) for c in cfg["categories"]}
+        out.append("  其中有有效遮挡行 (上架给遮过的摘录; 没有的只给结构): " + " · ".join(f"{c} {k}" for c, k in ok.items()))
+    return out
 
 
 def _code_answers(notes: list[dict], qids: set[str]) -> dict[str, dict[str, str]]:
@@ -296,18 +309,30 @@ def selftest() -> int:
     cfg = X.load_config()
     now = 1_790_000_000.0                               # 钉时间: 都是前一天抓的
 
-    def ext(cat, comments, age_days, **kw):             # note_id 前 8 位十六进制 = 发帖时刻
+    seq = iter(range(1, 100))
+
+    def ext(cat, comments, age_days, **kw):             # note_id 前 8 位十六进制 = 发帖时刻, 后 16 位区分篇
         fetched = now - 86400
-        return {"note_id": f"{int(fetched - age_days * 86400):08x}" + "0" * 16, "category": cat, "comments": comments,
+        return {"note_id": f"{int(fetched - age_days * 86400):08x}{next(seq):016x}", "category": cat, "comments": comments,
                 "has_product": False, "fetched_at": datetime.fromtimestamp(fetched, timezone.utc).isoformat(), **kw}
     rows = [ext("鼻炎", 80, 10), ext("鼻炎", 80, 10, has_product=True), ext("鼻炎", 20, 60),   # 日均 8 / 8 / 0.33, 中位数 8
             ext("鼻炎", 300, 200),                                                            # 发出超过 90 天: 不算
             ext("戒烟", 10, 10)]                                                              # 评论不到 20
-    line = shelf_counts(rows, cfg, now=now)[0]
-    assert "鼻炎 1" in line and "戒烟 0" in line and "家居家电 0" in line, line
+    ans = {r["note_id"]: {"efficacy_promise": "否"} for r in rows}
+    line = shelf_counts(rows, cfg, ans, now=now)[0]
+    assert "鼻炎 2" in line and "戒烟 0" in line and "家居家电 0" in line and "功效题挡掉 0 篇" in line, \
+        f"D-140: 带产品的也算达标: {line}"
+    ans[rows[1]["note_id"]] = {"efficacy_promise": "是"}
+    line = shelf_counts(rows, cfg, ans, now=now)[0]
+    assert "鼻炎 1" in line and "功效题挡掉 1 篇" in line, line
+    assert "判不了" in shelf_counts(rows, cfg, None, now=now)[0], "答案读不了: 不报 0"
+    masks = {rows[0]["note_id"]: {"note_id": rows[0]["note_id"], "terms": [],
+                                  "text_sha": X.mask_text_sha(rows[0].get("title"), rows[0].get("body"))}}
+    two = shelf_counts(rows, cfg, ans, masks=masks, now=now)
+    assert "有效遮挡行" in two[1] and "鼻炎 1" in two[1], two
     _selftest_gather(d)
     print("  ✓ selftest: 同向 / 反向亮黄 / 持平不算反 / 中间段不进表 / 品类内比 / 不显著的反向不亮 / 抽取器混了不判 / "
-          "样本不够不判 / 品牌类不适用 / 表空 / 书架达标数 / 取答案只认 external、抽取器混了标出来")
+          "样本不够不判 / 品牌类不适用 / 表空 / 书架达标数 (带产品也算、功效题挡、遮挡行数) / 取答案只认 external、抽取器混了标出来")
     return 0
 
 
@@ -319,9 +344,19 @@ def main() -> int:
         return selftest()
     d = json.loads(DELIVERY.read_text(encoding="utf-8"))
     from _common import get_supabase_client
-    notes, answers, mixed = gather(get_supabase_client(), d)
+    sb = get_supabase_client()
+    notes, answers, mixed = gather(sb, d)
     rc, lines = judge(d["patterns"], notes, answers, mixed)
-    print("\n".join(lines + shelf_counts(notes, X.load_config())))
+    cfg = X.load_config()
+    shelf_ans = masks = None
+    if cfg:
+        ids = [r["note_id"] for r, _, _ in X.candidates(notes, cfg)]
+        try:
+            shelf_ans = X.fetch_answers(sb, ids)      # 和馆员同一个函数: 分批翻页、取最后抽的
+            masks = X.fetch_masks(sb, ids)
+        except Exception as exc:  # noqa: BLE001 —— 书架那行判不了不影响上面的方向判断
+            print(f"  ⚠️  书架达标数要的答案读不了: {type(exc).__name__}: {str(exc)[:160]}")
+    print("\n".join(lines + shelf_counts(notes, cfg, shelf_ans, masks=masks)))
     print(f"EXTERNAL_DIRECTION_CHECK_DONE rc={rc}")
     return rc
 

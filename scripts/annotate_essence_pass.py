@@ -504,7 +504,7 @@ def prompt_cache_summary() -> dict:
 
 
 def call_claude(prompt: str, model: str, *, cached_system: str | None = None,
-                max_attempts: int = 3) -> str:
+                max_attempts: int = 3, max_tokens: int = 2000) -> str:
     """Single Mode A call with exponential-backoff retry on transient errors.
 
     cached_system: 若给定, 作为带 `cache_control: ephemeral` 的 system 块发送(Anthropic
@@ -548,7 +548,7 @@ def call_claude(prompt: str, model: str, *, cached_system: str | None = None,
     def _run(system_payload) -> str:
         create_kwargs: dict = {
             "model": model,
-            "max_tokens": 2000,
+            "max_tokens": max_tokens,     # 默认 2000 (essence / curate 一直是这个); 外部帖遮挡词一次列好几篇, 给 4000 (D-140)
             "messages": [{"role": "user", "content": prompt}],
         }
         if system_payload is not None:
