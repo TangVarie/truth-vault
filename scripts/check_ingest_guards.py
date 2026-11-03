@@ -386,7 +386,7 @@ def check_missing_body_recovery() -> None:
     assert pid({"父记录": [{"record_ids": ["a", "b"]}]}) is None and pid({}) is None, "§9 指了两条 / 没这一列 → None"
 
     m = engine.load_mapping("BJS_phase2")
-    common = dict(project_id="BJS_phase2", content_col="笔记内容", title_col=None, url_col="反馈链接",
+    common = dict(project_id="BJS_phase2", content_col="笔记内容", title_col=None, url_cols=["反馈链接"],
                   allowed_tables={"tblBJS"})
 
     def never(_nid):
@@ -493,6 +493,33 @@ def check_missing_body_recovery() -> None:
         recovered[want[1] or want[0] if want else "none"] += 1
     assert all(recovered.values()), f"§9 穷举每条路都要走到过(不然是空跑): {recovered}"
 
+    # 两列都映 publish_url 的表(TGV_phase1 笔记链接→反馈链接、TXQ_phase1 链接→反馈链接, D-059 新名优先):
+    # 比的必须是 transform 会写进 publish_url 的那个(在场的后者), 不是第一列(自审 #267)
+    for proj in ("TXQ_phase1", "TGV_phase1"):
+        pm = engine.load_mapping(proj)
+        ucols = [k for k, v in pm["field_mapping"].items() if v == "publish_url"]
+        ccol = next(k for k, v in pm["field_mapping"].items() if v == "raw_content")
+        old_c, new_c = ucols[0], ucols[-1]
+        assert len(ucols) == 2 and new_c == "反馈链接", f"§9 前提: {proj} 两列映 publish_url {ucols}"
+        kw = dict(project_id=proj, content_col=ccol, title_col=None, url_cols=ucols, allowed_tables=frozenset())
+        OLDL, NEWL = "https://xhslink.com/o/OLD", "https://xhslink.com/o/NEW"
+        st = {f"{proj}_recK": {"raw_content": "旧帖正文", "title": None, "publish_url": OLDL}}
+        both = {old_c: {"link": OLDL, "text": OLDL}, new_c: {"link": NEWL, "text": NEWL}}
+        note, _, _ = engine.transform_row(pm, "recK", dict(both))
+        assert note["publish_url"] == NEWL, "§9 前提: transform 新名优先"
+        assert engine.recover_missing_body(dict(both), record_id="recK", pulled={}, stored=st.get, **kw)[1] is None, \
+            f"§9 {proj}: 旧名列没清、新名列换了一篇 → 不留旧正文"
+        only_new = {new_c: {"link": OLDL, "text": OLDL}}
+        got = engine.recover_missing_body(only_new, record_id="recK", pulled={}, stored=st.get, **kw)[1]
+        assert got and got["route"] == "kept", f"§9 {proj}: 改名之后只剩新名列、链接没变 → 照样留库里那份"
+        parent_row = {new_c: {"link": "https://xhslink.com/o/P", "text": "P"}, ccol: "父行正文"}
+        child_row = {old_c: {"link": "https://xhslink.com/o/C_old", "text": "x"},
+                     new_c: {"link": "https://xhslink.com/o/P", "text": "P"},
+                     "父记录": [{"type": "text", "record_ids": ["recP"], "text": "1"}]}
+        assert engine.recover_missing_body(child_row, record_id="recC", pulled={"recP": parent_row},
+                                           stored=lambda _n: None, **kw)[1] is None, \
+            f"§9 {proj}: 子行会写进去的链接和父行一样(同一篇登记两次)→ 规则 A 不补"
+
     placeholder = {"父记录": [{"type": "text", "table_id": "tblBJS", "text_arr": []}]}
     assert engine.recover_missing_body(placeholder, record_id="recE", pulled={}, stored=never, **common)[1] is None, \
         "§9 空占位行(没链接)不碰、不读库"
@@ -505,13 +532,13 @@ def check_missing_body_recovery() -> None:
 
     titled = {"标题": "title", "正文": "raw_content", "链接": "publish_url"}
     t_out, t_meta = engine.recover_missing_body(
-        {"链接": "https://x/k"}, record_id="r", project_id="T", content_col="正文", title_col="标题", url_col="链接",
+        {"链接": "https://x/k"}, record_id="r", project_id="T", content_col="正文", title_col="标题", url_cols="链接",
         pulled={}, stored={"T_r": {"raw_content": "库里正文", "title": "库里标题", "publish_url": "https://x/k"}}.get)
     assert t_out == {"链接": "https://x/k", "正文": "库里正文", "标题": "库里标题"} and t_meta["filled"] == ["正文", "标题"], \
         f"§9 有标题列的表: 标题也空就一并补 {titled}"
     t_out, _ = engine.recover_missing_body(
         {"链接": "https://x/k", "标题": "飞书里的新标题"}, record_id="r", project_id="T", content_col="正文",
-        title_col="标题", url_col="链接", pulled={}, stored={"T_r": {"raw_content": "库里正文", "title": "旧", "publish_url": "https://x/k"}}.get)
+        title_col="标题", url_cols="链接", pulled={}, stored={"T_r": {"raw_content": "库里正文", "title": "旧", "publish_url": "https://x/k"}}.get)
     assert t_out["标题"] == "飞书里的新标题", "§9 飞书里标题还在 → 不拿库里的旧标题盖"
 
     # transform 之后: 子行自己的链接 / 素人 / 指标, 父行的正文, 双留痕
@@ -541,6 +568,11 @@ def check_missing_body_recovery() -> None:
     engine.mark_recovered_body(n2, {"route": "parent", "from": "recP", "source": "db", "filled": ["正文"]}, stored_flags)
     assert n2["data_quality_flags"] == {"synthetic": True, "synthetic_reason": "伪爆贴", "content_inherited": True}, \
         "§9 以库里那份为底; 上一晚的 content_cleared_in_feishu 按这一晚的路重写"
+    n5 = dict(bare)
+    engine.mark_recovered_body(n5, kept_meta, {"synthetic": True, "publish_time_future": "2027-01-01",
+                                               "tier_unmapped": "已发布", "content_inherited": True, "paid_promoted": False})
+    assert n5["data_quality_flags"] == {"synthetic": True, "paid_promoted": False, "content_cleared_in_feishu": True}, \
+        f"§9 库里旧的每轮检出旗子(未来发布时间 / 状态没映上…)不带回来, 不然被当成这一轮的检出计数: {n5['data_quality_flags']}"
     n3 = dict(bare)
     engine.mark_recovered_body(n3, kept_meta, None)
     assert "data_quality_flags" not in n3 and n3["raw_extra"]["_content_kept_from_db"], \

@@ -567,13 +567,23 @@ def fetch_stored_body(client, note_id: str) -> dict | None:
 
 
 def _link(v: Any) -> str:
-    """链接比较用: 过一遍 publish_url 的取值规则(认 link、去首尾空白), 空 → ""。"""
+    """链接比较用: 过一遍 publish_url 的取值规则(认 link、去首尾空白), 空 → ""。
+    比的就是 transform 会写进 publish_url 的那个值(库里存的也是它)。"""
     return str(_coerce_value("publish_url", v) or "").strip()
+
+
+def _row_link(fields: dict[str, Any] | None, url_cols: list[str]) -> str:
+    """这一行【会写进 publish_url 的】链接。和 transform_row 同一个取法: 映到 publish_url 的列按声明序、
+    在场的后者覆盖前者(D-059「新名优先」: TGV_phase1 笔记链接→反馈链接、TXQ_phase1 链接→反馈链接)。
+    只看第一列的话, 旧名列没清的行会拿旧链接去比(自审 #267 穷举找到的)。"""
+    fields = fields or {}
+    present = [c for c in url_cols if c in fields]
+    return _link(fields[present[-1]]) if present else ""
 
 
 def recover_missing_body(
     raw_fields: dict[str, Any], *, record_id: str, project_id: str, content_col: str,
-    title_col: str | None, url_col: str | None, pulled: dict[str, dict[str, Any]],
+    title_col: str | None, url_cols: list[str] | str | None, pulled: dict[str, dict[str, Any]],
     stored, allowed_tables: set[str] | frozenset[str] = frozenset(),
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     """有反馈链接、缺正文的一行 → (补好的行, meta); 不是这种行 / 补不上 → (原样, None)。
@@ -589,15 +599,16 @@ def recover_missing_body(
       D. 接不上父行 → 自己库里那篇, 库里的链接得和这一行现在的一样(不一样 = 这一行被拿去登记了另一篇)。
     meta: {"route": "parent", "from": 父行 record_id, "source": "feishu"|"db", "filled": [...]}
        或 {"route": "kept", "filled": [...]}。"""
-    if not content_col or not url_col or _has_body(raw_fields, content_col):
+    url_cols = [url_cols] if isinstance(url_cols, str) else list(url_cols or [])
+    if not content_col or not url_cols or _has_body(raw_fields, content_col):
         return raw_fields, None
-    own_url = _link(raw_fields.get(url_col))
+    own_url = _row_link(raw_fields, url_cols)
     if not own_url:
         return raw_fields, None
     pid = parent_record_id(raw_fields, allowed_tables)
     if pid and pid != record_id:
         pf = pulled.get(pid)
-        pf_url = _link(pf.get(url_col)) if pf is not None else ""
+        pf_url = _row_link(pf, url_cols) if pf is not None else ""
         # 库里父行那篇: 要拿它的正文(父行这一轮没正文)或拿它的链接(父行这一轮没填链接)时才读; 两件事各自判, 不互相带
         need_pdb = not _has_body(pf, content_col) or not pf_url
         pdb = stored(make_note_id(project_id, pid)) if need_pdb else None
@@ -641,6 +652,14 @@ def recover_missing_body(
     return (out, {"route": "kept", "filled": filled}) if filled else (raw_fields, None)
 
 
+# data_quality_flags 里【每一轮现判】的检出键(这一轮没触发就不该在): 以库里旗子为底时要剥掉。
+# 其余键(synthetic / comment_maintained* / paid_*)是「判不出来就保留库里那份」的 tier 限定词, 留着。
+_PER_RUN_FLAG_KEYS = frozenset({
+    "publish_time_future", "tier_unmapped", "tier_cleared", "tier_flip_blocked", "direction_unmapped",
+    "metrics_snapshot_regressed", "content_cleared_in_feishu", "content_inherited",
+})
+
+
 def mark_recovered_body(note: dict[str, Any], meta: dict[str, Any], stored_flags=None) -> None:
     """recover_missing_body 补上的正文在 note 上留痕(raw_extra + data_quality_flags)。
 
@@ -661,8 +680,9 @@ def mark_recovered_body(note: dict[str, Any], meta: dict[str, Any], stored_flags
     if "data_quality_flags" in note:
         flags = dict(note.get("data_quality_flags") or {})
     elif isinstance(stored_flags, dict):
-        flags = dict(stored_flags)
-        flags.pop("content_cleared_in_feishu", None)   # 上一晚留下的, 这一晚按这一晚的路重写
+        # 只留「判不出来就保留」的那几族(synthetic / 控评 / 投流): 这一轮 transform 一个旗子都没写, 说明每一轮现判的
+        # 检出旗子这一轮都没触发, 库里留着的那些是旧的 —— 带回来会被当成这一轮的检出计数、告警(自审 #267)
+        flags = {k: v for k, v in stored_flags.items() if k not in _PER_RUN_FLAG_KEYS}
     else:
         return
     if meta["route"] == "parent":
@@ -2204,7 +2224,7 @@ def main() -> int:
     # D-144: 有链接、缺正文的行 —— 父记录子行接父行正文, 正文被清空的老笔记留库里那份(见 recover_missing_body)。
     # 子行可能排在父行前面, 所以这一轮先把记录拉全再逐行处理(--limit 也照样拉全, 只是处理到 N 条就停)。
     title_col = next((k for k, v in mapping["field_mapping"].items() if v == "title"), None)
-    url_col = next((k for k, v in mapping["field_mapping"].items() if v == "publish_url"), None)
+    url_cols = [k for k, v in mapping["field_mapping"].items() if v == "publish_url"]   # 多列时后者优先, 见 _row_link
     project_tables = frozenset(sp["table_id"] for sp in configured)
     all_items = list(_iter_all_records())
     pulled_fields: dict[str, dict[str, Any]] = {it.get("record_id", ""): it.get("fields", {}) for it in all_items}
@@ -2261,7 +2281,7 @@ def main() -> int:
             if content_col and not inherited_meta:
                 raw_fields, body_meta = recover_missing_body(
                     raw_fields, record_id=feishu_record_id, project_id=mapping["project_id"],
-                    content_col=content_col, title_col=title_col, url_col=url_col,
+                    content_col=content_col, title_col=title_col, url_cols=url_cols,
                     pulled=pulled_fields, stored=_stored_note, allowed_tables=project_tables)
             note, metric, undeclared = transform_row(mapping, feishu_record_id, raw_fields)
             if body_meta:
