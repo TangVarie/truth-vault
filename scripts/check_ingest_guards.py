@@ -441,6 +441,51 @@ def check_missing_body_recovery() -> None:
     assert engine.recover_missing_body(orphan["fields"], record_id="recO", pulled={}, stored=lambda _n: None,
                                        **common)[1] is None, "§9 父行哪儿都找不到、自己也不在库里 → 补不上"
 
+    # 穷举: 父行这一轮(不在 / 有无正文 × 链接)× 库里父行 × 库里自己, 每一种都按 D-144 的四条规则核结果
+    # (codex #267 连着三轮各找到一个「链接对不上却兜进了下一条」的组合 —— 按组合核, 不按点补)
+    import itertools
+    OWN = "https://xhslink.cn/o/C"
+    links = {"P": "https://xhslink.cn/o/P", "C": OWN, "NEW": "https://xhslink.cn/o/NEW", "OLD": "https://xhslink.cn/o/OLD",
+             "OTHER": "https://xhslink.cn/o/OTHER", "": ""}
+    pf_states = [None] + [(b, l) for b in (True, False) for l in ("P", "C", "NEW", "")]
+    pdb_states = [None] + [l for l in ("P", "C", "OLD", "")]
+    own_states = [None] + [l for l in ("C", "OTHER", "")]
+    recovered = {"feishu": 0, "db": 0, "kept": 0, "none": 0}
+    for pf_s, pdb_s, own_s in itertools.product(pf_states, pdb_states, own_states):
+        pulled = {}
+        if pf_s is not None:
+            f = {"反馈链接": links[pf_s[1]]} if links[pf_s[1]] else {}
+            if pf_s[0]:
+                f["笔记内容"] = "父行飞书正文"
+            pulled["recP"] = f
+        st = {}
+        if pdb_s is not None:
+            st["BJS_phase2_recP"] = {"raw_content": "库里父行正文", "title": None, "publish_url": links[pdb_s] or None}
+        if own_s is not None:
+            st["BJS_phase2_recC"] = {"raw_content": "库里自己正文", "title": None, "publish_url": links[own_s] or None}
+        row = _bjs_row("recC", url=OWN, parent="recP")["fields"]
+        out, meta = engine.recover_missing_body(row, record_id="recC", pulled=pulled, stored=st.get, **common)
+        # 规则(独立写一遍, 不调被测代码)
+        pf_body = pf_s is not None and pf_s[0]
+        pf_url = links[pf_s[1]] if pf_s is not None else ""
+        pdb_url = links[pdb_s] if pdb_s is not None else ""
+        parent_now = pf_url or ("" if pf_body else pdb_url)
+        case = f"父行飞书={pf_s} 库里父行={pdb_s} 库里自己={own_s} → {meta}"
+        if parent_now == OWN:
+            want = None                                                                  # A
+        elif pf_body:
+            want = ("parent", "feishu", "父行飞书正文")                                     # B
+        elif pdb_s is not None and (not pf_url or pdb_url == pf_url):
+            want = ("parent", "db", "库里父行正文")                                         # C
+        elif own_s is not None and links[own_s] == OWN:
+            want = ("kept", None, "库里自己正文")                                           # D
+        else:
+            want = None
+        got = None if meta is None else (meta["route"], meta.get("source"), out["笔记内容"])
+        assert got == want, f"§9 穷举: {case}, 应为 {want}"
+        recovered[want[1] or want[0] if want else "none"] += 1
+    assert all(recovered.values()), f"§9 穷举每条路都要走到过(不然是空跑): {recovered}"
+
     placeholder = {"父记录": [{"type": "text", "table_id": "tblBJS", "text_arr": []}]}
     assert engine.recover_missing_body(placeholder, record_id="recE", pulled={}, stored=never, **common)[1] is None, \
         "§9 空占位行(没链接)不碰、不读库"

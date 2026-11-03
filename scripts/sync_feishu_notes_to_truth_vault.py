@@ -566,6 +566,11 @@ def fetch_stored_body(client, note_id: str) -> dict | None:
     return row
 
 
+def _link(v: Any) -> str:
+    """链接比较用: 过一遍 publish_url 的取值规则(认 link、去首尾空白), 空 → ""。"""
+    return str(_coerce_value("publish_url", v) or "").strip()
+
+
 def recover_missing_body(
     raw_fields: dict[str, Any], *, record_id: str, project_id: str, content_col: str,
     title_col: str | None, url_col: str | None, pulled: dict[str, dict[str, Any]],
@@ -574,59 +579,57 @@ def recover_missing_body(
     """有反馈链接、缺正文的一行 → (补好的行, meta); 不是这种行 / 补不上 → (原样, None)。
 
     pulled: 这一轮飞书拉到的 {record_id: 原始格}; stored: note_id → fetch_stored_body 的结果(dry-run 传恒 None)。
-    顺序: 父行(这一轮飞书)→ 父行(库里, 只在父行这一轮没正文时; 父行这一轮还在的话库里的链接得和它现在的一样)
-    → 自己(库里, 库里的链接得和这一行现在的一样)。
+    规则(「链接对不上」一律整行不补、照旧隔离让人看, 不往下一条兜; codex / 自审 #267 逐条逼出来的):
+      A. 父行现在的链接(这一轮飞书里父行的; 父行这一轮不在或没填链接就用库里父行那篇的)和这一行一样
+         → 同一篇登记了两次, 不补。
+      B. 父行这一轮在飞书里有正文 → 接它。
+      C. 父行这一轮没正文 / 不在 → 库里父行那篇; 父行这一轮还在、填了链接时, 库里那篇的链接得和它现在的一样
+         (不一样 = 父行被拿去登记了另一篇, 库里那份是旧帖的正文, 不给)。
+      D. 接不上父行 → 自己库里那篇, 库里的链接得和这一行现在的一样(不一样 = 这一行被拿去登记了另一篇)。
     meta: {"route": "parent", "from": 父行 record_id, "source": "feishu"|"db", "filled": [...]}
        或 {"route": "kept", "filled": [...]}。"""
     if not content_col or not url_col or _has_body(raw_fields, content_col):
         return raw_fields, None
-    own_url = _coerce_value("publish_url", raw_fields.get(url_col))
+    own_url = _link(raw_fields.get(url_col))
     if not own_url:
         return raw_fields, None
     pid = parent_record_id(raw_fields, allowed_tables)
     if pid and pid != record_id:
-        candidates: list[tuple[str, dict[str, Any], Any]] = []
         pf = pulled.get(pid)
-        if _has_body(pf, content_col):
-            candidates.append(("feishu", pf, _coerce_value("publish_url", pf.get(url_col))))
-        else:
-            db = stored(make_note_id(project_id, pid))
-            pf_url = _coerce_value("publish_url", pf.get(url_col)) if pf else None
-            if db and pf_url and str(db.get("publish_url") or "").strip() != pf_url:
-                # 父行这一轮还在飞书里、换了链接、正文空了 = 父行被拿去登记了另一篇 → 库里那份是旧帖的正文,
-                # 不给子行(父行自己也会被下面「链接对不上」那条挡住; codex #267)
+        pf_url = _link(pf.get(url_col)) if pf is not None else ""
+        pdb = None if _has_body(pf, content_col) else stored(make_note_id(project_id, pid))
+        parent_now = pf_url or _link((pdb or {}).get("publish_url"))
+        if parent_now and parent_now == own_url:                                        # A
+            logger.warning("record_id=%s 的父记录 %s 和它是同一个链接(同一篇登记了两次?)→ 不补正文, 照旧隔离",
+                           record_id, pid)
+            return raw_fields, None
+        if _has_body(pf, content_col):                                                  # B
+            out, filled = fill_missing_body(raw_fields, pf, content_col, title_col)
+            if filled:
+                return out, {"route": "parent", "from": pid, "source": "feishu", "filled": filled}
+        elif pdb:                                                                        # C
+            if pf_url and _link(pdb.get("publish_url")) != pf_url:
                 logger.warning("record_id=%s 的父记录 %s 换了链接(库里那篇不是它现在这篇)→ 不接库里的旧正文",
                                record_id, pid)
-                db = None
-            if db:
-                src = {content_col: db["raw_content"]}
+            else:
+                src = {content_col: pdb["raw_content"]}
                 if title_col:
-                    src[title_col] = db.get("title")
-                candidates.append(("db", src, db.get("publish_url")))
-        for source, src, parent_url in candidates:
-            if parent_url and str(parent_url).strip() == own_url:
-                # 同一篇登记了两次 → 整行都不放宽(也不走下面「留库里那份」: codex #267), 照旧隔离让人看
-                logger.warning("record_id=%s 的父记录 %s 和它是同一个链接(同一篇登记了两次?)→ 不补正文, 照旧隔离",
-                               record_id, pid)
-                return raw_fields, None
-            out, filled = fill_missing_body(raw_fields, src, content_col, title_col)
-            if filled:
-                return out, {"route": "parent", "from": pid, "source": source, "filled": filled}
-    db = stored(make_note_id(project_id, record_id))
-    if db and str(db.get("publish_url") or "").strip() != own_url:
-        # 库里这篇的链接和这一行现在的链接对不上 = 这一行多半被拿去登记了另一篇(换了链接、正文还没写)→ 旧正文
-        # 不能配新链接的指标, 不留, 照旧隔离让人看(自审 #267)
+                    src[title_col] = pdb.get("title")
+                out, filled = fill_missing_body(raw_fields, src, content_col, title_col)
+                if filled:
+                    return out, {"route": "parent", "from": pid, "source": "db", "filled": filled}
+    db = stored(make_note_id(project_id, record_id))                                     # D
+    if not db:
+        return raw_fields, None
+    if _link(db.get("publish_url")) != own_url:
         logger.warning("record_id=%s 正文空了, 但库里那篇的链接和现在的对不上(这一行换了一篇?)→ 不留旧正文, 照旧隔离",
                        record_id)
         return raw_fields, None
-    if db:
-        src = {content_col: db["raw_content"]}
-        if title_col:
-            src[title_col] = db.get("title")
-        out, filled = fill_missing_body(raw_fields, src, content_col, title_col)
-        if filled:
-            return out, {"route": "kept", "filled": filled}
-    return raw_fields, None
+    src = {content_col: db["raw_content"]}
+    if title_col:
+        src[title_col] = db.get("title")
+    out, filled = fill_missing_body(raw_fields, src, content_col, title_col)
+    return (out, {"route": "kept", "filled": filled}) if filled else (raw_fields, None)
 
 
 def mark_recovered_body(note: dict[str, Any], meta: dict[str, Any], stored_flags=None) -> None:
