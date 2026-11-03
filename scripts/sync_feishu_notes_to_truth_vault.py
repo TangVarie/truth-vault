@@ -485,6 +485,140 @@ def reuse_previous_inheritance(
     out[content_col] = stored["raw_content"]
     return out, {"from": stored.get("from"), "overrides": overrides, "reused": True}
 
+
+# ── 有链接、缺正文的笔记行: 父记录子行接父行正文 / 正文被清空的老笔记留库里那份 (2026-11-03, D-144) ──
+# 11-02、11-03 两晚 feishu_sync 红在两类行上, 都是【有反馈链接、本该是笔记】却缺正文:
+#   ① BJS_phase2 的「精品贴」: 同一篇文案几个素人各发一次, 运营把后发的几次挂成第一篇的【子记录】(飞书「父记录」
+#      列 = 同表自关联)。子行有自己的链接 / 素人 / 发布时间 / 评论数, 正文只在父行。11-03 共 10 行, 挂在 3 篇父行下,
+#      3 篇父行都已入库。
+#   ② XIWU_phase2 一篇 10-29 入库(正文 259 字、标过 essence)的笔记, 飞书那格正文 11-02 起空了。
+# 处理(owner 11-03 定):
+#   ① 子行接父行正文(先看这一轮飞书里的父行, 父行这一轮没正文就看库里父行那篇), 留痕 raw_extra._content_from_parent
+#      + data_quality_flags.content_inherited。不用 D-052 的 _content_inherited_from: 那个键 D-052 的「沿用」要读。
+#   ② 库里已有正文的老笔记: 正文留库里那份, 打 content_cleared_in_feishu 旗子、逐条 WARNING; 不算错、照常盖戳,
+#      指标照常刷新。
+# 两条都只对【有反馈链接】的行(D-052: 判「本该是笔记」只看反馈链接非空), 空占位 / 评论碎片行照旧静默计数;
+# 两条都接不上 → 照旧隔离、计错、红。dry-run 不读库(只接得上这一轮飞书里的父行)。
+# 挡不住什么 (D-051): 子行链接和父行一样(同一篇登记了两次)→ 不接父行, 照旧隔离让人看; 父记录指到这个项目
+# 以外的表 → 不接; 父行自己也是子行 → 只看一层。正文被清空是运营有意的(比如帖子下架)→ 这里看不出来,
+# 正文照样留着, 只靠旗子和 WARNING 让人看见。
+_PARENT_LINK_COL = "父记录"
+
+
+def _has_body(fields: dict[str, Any] | None, content_col: str) -> bool:
+    """和入库闸同一把尺子: 正文那格过一遍 _coerce_value 之后非空才算有正文。"""
+    return bool(_coerce_value("raw_content", (fields or {}).get(content_col)))
+
+
+def parent_record_id(raw_fields: dict[str, Any], allowed_tables: set[str] | frozenset[str] = frozenset()) -> str | None:
+    """飞书「父记录」格 → 父行 record_id。没填 / 指了不止一条 / 指到 allowed_tables 以外的表 → None。
+
+    格的样子(11-03 BJS_phase2 实测): [{"type": "text", "table_id": "tbl…", "text_arr": ["1036"],
+    "record_ids": ["rec…"], "text": "1036"}]; 空占位行是 text_arr 空、没有 record_ids。"""
+    v = raw_fields.get(_PARENT_LINK_COL)
+    if not isinstance(v, list) or len(v) != 1 or not isinstance(v[0], dict):
+        return None
+    ids = v[0].get("record_ids") or []
+    if len(ids) != 1 or not isinstance(ids[0], str) or not ids[0]:
+        return None
+    tid = v[0].get("table_id")
+    if allowed_tables and tid and tid not in allowed_tables:
+        return None
+    return ids[0]
+
+
+def fill_missing_body(
+    raw_fields: dict[str, Any], src: dict[str, Any] | None, content_col: str, title_col: str | None = None,
+) -> tuple[dict[str, Any], list[str]]:
+    """src 有正文、这一行没有 → 补上正文(这一行标题也空、src 有标题就一并补); 返回 (行', 补了哪些列)。"""
+    if _has_body(raw_fields, content_col) or not _has_body(src, content_col):
+        return raw_fields, []
+    out = dict(raw_fields)
+    out[content_col] = src[content_col]
+    filled = [content_col]
+    if title_col and not raw_fields.get(title_col) and (src or {}).get(title_col):
+        out[title_col] = src[title_col]
+        filled.append(title_col)
+    return out, filled
+
+
+def fetch_stored_body(client, note_id: str) -> dict | None:
+    """库里这篇 note 的正文 / 标题 / 链接。没有这篇 / 正文空 / 读不到 → None(放宽的前提查不到就不放宽)。"""
+    try:
+        res = (client.schema("truth_vault").table("notes")
+               .select("raw_content, title, publish_url").eq("note_id", note_id).limit(1).execute())
+    except Exception as exc:
+        logger.warning("读库里 %s 的正文失败(%s) —— 这一行不接, 照常隔离。", note_id, exc)
+        return None
+    rows = getattr(res, "data", None) or []
+    if not rows or not rows[0].get("raw_content"):
+        return None
+    return rows[0]
+
+
+def recover_missing_body(
+    raw_fields: dict[str, Any], *, record_id: str, project_id: str, content_col: str,
+    title_col: str | None, url_col: str | None, pulled: dict[str, dict[str, Any]],
+    stored, allowed_tables: set[str] | frozenset[str] = frozenset(),
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """有反馈链接、缺正文的一行 → (补好的行, meta); 不是这种行 / 补不上 → (原样, None)。
+
+    pulled: 这一轮飞书拉到的 {record_id: 原始格}; stored: note_id → fetch_stored_body 的结果(dry-run 传恒 None)。
+    顺序: 父行(这一轮飞书)→ 父行(库里, 只在父行这一轮没正文时)→ 自己(库里)。
+    meta: {"route": "parent", "from": 父行 record_id, "source": "feishu"|"db", "filled": [...]}
+       或 {"route": "kept", "filled": [...]}。"""
+    if not content_col or not url_col or _has_body(raw_fields, content_col):
+        return raw_fields, None
+    own_url = _coerce_value("publish_url", raw_fields.get(url_col))
+    if not own_url:
+        return raw_fields, None
+    pid = parent_record_id(raw_fields, allowed_tables)
+    if pid and pid != record_id:
+        candidates: list[tuple[str, dict[str, Any], Any]] = []
+        pf = pulled.get(pid)
+        if _has_body(pf, content_col):
+            candidates.append(("feishu", pf, _coerce_value("publish_url", pf.get(url_col))))
+        else:
+            db = stored(make_note_id(project_id, pid))
+            if db:
+                src = {content_col: db["raw_content"]}
+                if title_col:
+                    src[title_col] = db.get("title")
+                candidates.append(("db", src, db.get("publish_url")))
+        for source, src, parent_url in candidates:
+            if parent_url and str(parent_url).strip() == own_url:
+                logger.warning("record_id=%s 的父记录 %s 和它是同一个链接(同一篇登记了两次?)→ 不接父行正文",
+                               record_id, pid)
+                break
+            out, filled = fill_missing_body(raw_fields, src, content_col, title_col)
+            if filled:
+                return out, {"route": "parent", "from": pid, "source": source, "filled": filled}
+    db = stored(make_note_id(project_id, record_id))
+    if db:
+        src = {content_col: db["raw_content"]}
+        if title_col:
+            src[title_col] = db.get("title")
+        out, filled = fill_missing_body(raw_fields, src, content_col, title_col)
+        if filled:
+            return out, {"route": "kept", "filled": filled}
+    return raw_fields, None
+
+
+def mark_recovered_body(note: dict[str, Any], meta: dict[str, Any]) -> None:
+    """recover_missing_body 补上的正文在 note 上留痕(raw_extra + data_quality_flags)。"""
+    extra = note.get("raw_extra")
+    if not isinstance(extra, dict):
+        extra = note["raw_extra"] = {}
+    flags = dict(note.get("data_quality_flags") or {})
+    if meta["route"] == "parent":
+        extra["_content_from_parent"] = {"record_id": meta["from"], "source": meta["source"],
+                                         "filled": meta["filled"]}
+        flags["content_inherited"] = True
+    else:
+        extra["_content_kept_from_db"] = {"filled": meta["filled"]}
+        flags["content_cleared_in_feishu"] = True
+    note["data_quality_flags"] = flags
+
 # field_mapping 的值里, `_` 开头的是【中间量】(不是 notes 的列), 要换成它真正影响的列
 # 才查得到"以前填过没有"。查不到对应列的(评论走另一张表、笔记状态只用于检测)→ 不监控,
 # 宁可漏报也不误报: 这道闸的价值全在"红了就一定是真出事", 掺了噪音就没人看了。
@@ -1908,6 +2042,8 @@ def main() -> int:
     # 所以照样挡住盖戳和对账(见下方 records_all_ok), 只是不进 errors、不把退出码变红。
     stats = {"total": 0, "upserted": 0, "quarantined": 0,
              "empty_placeholder": 0, "errors": 0, "known_backlog": 0, "inherit_reused": 0,
+             # D-144: 父记录子行接了父行正文 / 正文在飞书里空了、留库里那份
+             "body_from_parent": 0, "body_kept_from_db": 0,
              # 审计 B-15: 隔离里多少是今晚新冒的、多少是老的又冒了 (只计需要人看的那两类, 空占位不计)
              "quarantine_new": 0, "quarantine_seen_again": 0,
              "undeclared_absorbed": 0, "missing_core_columns": 0,
@@ -2013,7 +2149,24 @@ def main() -> int:
     inherit_restore = inherit_restore_keys(inherit_spec, mapping["field_mapping"])
     prev_raw: dict[str, Any] | None = None      # 【紧挨着】的上一条(不管是什么行)
     prev_id: str | None = None
-    for item in _iter_all_records():
+    # D-144: 有链接、缺正文的行 —— 父记录子行接父行正文, 正文被清空的老笔记留库里那份(见 recover_missing_body)。
+    # 子行可能排在父行前面, 所以这一轮先把记录拉全再逐行处理(--limit 也照样拉全, 只是处理到 N 条就停)。
+    title_col = next((k for k, v in mapping["field_mapping"].items() if v == "title"), None)
+    url_col = next((k for k, v in mapping["field_mapping"].items() if v == "publish_url"), None)
+    project_tables = frozenset(sp["table_id"] for sp in configured)
+    all_items = list(_iter_all_records())
+    pulled_fields: dict[str, dict[str, Any]] = {it.get("record_id", ""): it.get("fields", {}) for it in all_items}
+    stored_bodies: dict[str, dict | None] = {}
+
+    def _stored_body(note_id: str) -> dict | None:
+        if args.dry_run:      # dry-run 不读库(同 acked_quarantine)
+            return None
+        if note_id not in stored_bodies:
+            stored_bodies[note_id] = fetch_stored_body(sb, note_id)
+        return stored_bodies[note_id]
+
+    body_kept_ids: list[str] = []
+    for item in all_items:
         if args.limit and stats["total"] >= args.limit:
             truncated_by_limit = True
             break
@@ -2045,7 +2198,25 @@ def main() -> int:
                 _count_quarantined(feishu_record_id, inh_reason, fresh)
                 continue
         try:
+            body_meta = None
+            if content_col and not inherited_meta:
+                raw_fields, body_meta = recover_missing_body(
+                    raw_fields, record_id=feishu_record_id, project_id=mapping["project_id"],
+                    content_col=content_col, title_col=title_col, url_col=url_col,
+                    pulled=pulled_fields, stored=_stored_body, allowed_tables=project_tables)
             note, metric, undeclared = transform_row(mapping, feishu_record_id, raw_fields)
+            if body_meta:
+                mark_recovered_body(note, body_meta)
+                if body_meta["route"] == "parent":
+                    stats["body_from_parent"] += 1
+                    logger.info("record_id=%s 是父记录 %s 的子行(同一篇文案换素人再发), 正文接父行(%s)",
+                                feishu_record_id, body_meta["from"],
+                                "这一轮飞书" if body_meta["source"] == "feishu" else "库里那篇")
+                else:
+                    stats["body_kept_from_db"] += 1
+                    body_kept_ids.append(feishu_record_id)
+                    logger.warning("record_id=%s 飞书里正文空了, 库里这篇有正文 → 正文留库里那份、指标照常刷新"
+                                   "(打 content_cleared_in_feishu 旗子, 不算错)", feishu_record_id)
             if inherited_meta:
                 # 继承来的正文必须自带出处(同 D-048/D-049 的口径): 谁的正文、盖掉了哪些原值。
                 note.setdefault("raw_extra", {})["_content_inherited_from"] = inherited_meta["from"]
@@ -2492,6 +2663,14 @@ def main() -> int:
                 [f"{r['note_id']}(tier={r.get('tier')})" for r in vanished[:10]],
             )
 
+    if body_kept_ids:
+        # D-144: 正文留了库里那份 = 飞书那格被清空了。不算错, 但得看得见: 运营是手滑还是帖子下架, 这里分不出来。
+        msg = (f"{mapping['project_id']}: {len(body_kept_ids)} 篇已入库的笔记在飞书里正文空了, 正文留库里那份、"
+               f"指标照常刷新(data_quality_flags.content_cleared_in_feishu)。是误删就让运营补回去, 是下架就改状态: "
+               f"{body_kept_ids[:10]}")
+        logger.warning(msg)
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            print(f"::warning title=飞书正文被清空 ({mapping['project_id']})::{msg}", flush=True)
     if stats["empty_placeholder"]:
         logger.info(
             "跳过 %d 行空占位/评论碎片行(无正文、无账号/指标/链接等实质信号; 已 quarantine 留档, 未逐条告警)",

@@ -2724,7 +2724,7 @@ jobs:
           assert s.inherit_content_from_previous_row(dy, xhs, "r", None, col) == (dy, None, None)
           # 主循环里 prev 【每一条】都更新 —— 判的是紧挨着的上一条, 抖音接抖音必须能被看见
           src = pathlib.Path("sync_feishu_notes_to_truth_vault.py").read_text(encoding="utf-8")
-          loop = src.split("for item in _iter_all_records():", 1)[1]
+          loop = src.split("for item in all_items:", 1)[1]
           assert "prev_raw, prev_id = item.get(\"fields\", {}), feishu_record_id" in loop, "prev 更新没了"
           assert "is_when_row" not in loop, "prev 又变成只在非抖音行更新了 —— 抖音接抖音就看不见了"
           # 2026-09-04(D-053): 计数收敛到 _count_quarantined(认领过→known_backlog, 否则→errors),
