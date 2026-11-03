@@ -412,6 +412,11 @@ def check_missing_body_recovery() -> None:
     out, meta = engine.recover_missing_body(same["fields"], record_id="recS", pulled={"recP": parent["fields"]},
                                             stored=lambda _n: None, **common)
     assert meta is None and "笔记内容" not in out, "§9 子行和父行同一个链接(同一篇登记两次)→ 不接, 照旧隔离"
+    same_db = {"BJS_phase2_recS": {"raw_content": "这一行以前的正文", "title": None, "publish_url": "https://xhslink.cn/o/S"}}
+    out, meta = engine.recover_missing_body(same["fields"], record_id="recS", pulled={"recP": parent["fields"]},
+                                            stored=same_db.get, **common)
+    assert meta is None and "笔记内容" not in out, \
+        "§9 同链接的子行库里有旧正文也不走「留库里那份」—— 同一篇登记两次要人看(codex #267)"
 
     kept_db = {"BJS_phase2_recK": {"raw_content": "库里这篇正文", "title": None, "publish_url": "https://xhslink.cn/o/K"}}
     cleared = _bjs_row("recK", url="https://xhslink.cn/o/K")
@@ -454,14 +459,39 @@ def check_missing_body_recovery() -> None:
     assert note["data_quality_flags"]["content_inherited"] is True
     assert note["raw_extra"]["_content_from_parent"] == {"record_id": "recP", "source": "feishu", "filled": ["笔记内容"]}
     assert "_content_inherited_from" not in note["raw_extra"], "§9 不占 D-052 的键(它的「沿用」要读)"
+    kept_meta = {"route": "kept", "filled": ["笔记内容"]}
     kn = {"note_id": "x"}
-    engine.mark_recovered_body(kn, {"route": "kept", "filled": ["笔记内容"]})
+    engine.mark_recovered_body(kn, kept_meta, {})
     assert kn["data_quality_flags"] == {"content_cleared_in_feishu": True} and kn["raw_extra"]["_content_kept_from_db"]
+
+    # data_quality_flags 是 upsert 保护列: transform 这一轮一个旗子都判不出来就不写这一列(留库里旧值)。
+    # 补正文的旗子要以库里那份为底, 不能把 synthetic / 控评来路冲掉(codex #267)
+    bare, _, _ = engine.transform_row(MAPPING, "recK", {"正文": "库里正文"})
+    assert "data_quality_flags" not in bare, "§9 前提: 没有状态列 / 维护情况的行 transform 不写旗子"
+    stored_flags = {"synthetic": True, "synthetic_reason": "伪爆贴", "content_cleared_in_feishu": True}
+    n1 = dict(bare)
+    engine.mark_recovered_body(n1, kept_meta, stored_flags)
+    assert n1["data_quality_flags"] == {"synthetic": True, "synthetic_reason": "伪爆贴",
+                                        "content_cleared_in_feishu": True}, n1["data_quality_flags"]
+    n2 = dict(bare)
+    engine.mark_recovered_body(n2, {"route": "parent", "from": "recP", "source": "db", "filled": ["正文"]}, stored_flags)
+    assert n2["data_quality_flags"] == {"synthetic": True, "synthetic_reason": "伪爆贴", "content_inherited": True}, \
+        "§9 以库里那份为底; 上一晚的 content_cleared_in_feishu 按这一晚的路重写"
+    n3 = dict(bare)
+    engine.mark_recovered_body(n3, kept_meta, None)
+    assert "data_quality_flags" not in n3 and n3["raw_extra"]["_content_kept_from_db"], \
+        "§9 读不到库里的旗子 → 这一轮不写这一列(留库里旧值), 只在 raw_extra 留痕"
+    n4 = {"note_id": "y", "data_quality_flags": {"paid_promoted": False}}
+    engine.mark_recovered_body(n4, kept_meta, {"synthetic": True})
+    assert n4["data_quality_flags"] == {"paid_promoted": False, "content_cleared_in_feishu": True}, \
+        "§9 transform 这一轮写了旗子 → 用这一轮判出来的(全量), 不拿库里的旧值掺"
 
     q = _StoredQ({"N_a": {"raw_content": "a", "title": None, "publish_url": "u"}, "N_e": {"raw_content": ""}}, {"N_x"})
     assert engine.fetch_stored_body(q, "N_a")["raw_content"] == "a"
     assert engine.fetch_stored_body(q, "N_e") is None and engine.fetch_stored_body(q, "N_missing") is None
     assert engine.fetch_stored_body(q, "N_x") is None, "§9 读不到库 → None(不放宽)"
+    assert engine.read_stored_note(q, "N_x") is engine.READ_FAILED and engine.read_stored_note(q, "N_missing") is None, \
+        "§9 读不到和没有这篇要分得开(旗子: 没有 = 新篇从空开始, 读不到 = 这一轮不写)"
 
     # 端到端: 驱动真的 main()。子行排在父行前面也接得上; 正文清空的老笔记照常入库盖戳; 只有找不到父行的那条红
     import io, json, logging, os, sys

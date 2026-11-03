@@ -542,18 +542,28 @@ def fill_missing_body(
     return out, filled
 
 
-def fetch_stored_body(client, note_id: str) -> dict | None:
-    """库里这篇 note 的正文 / 标题 / 链接。没有这篇 / 正文空 / 读不到 → None(放宽的前提查不到就不放宽)。"""
+READ_FAILED = object()   # read_stored_note 读库失败的哨兵: 和「库里没有这篇」分开, 调用方据此决定放不放宽
+
+
+def read_stored_note(client, note_id: str):
+    """库里这篇 note 的 正文 / 标题 / 链接 / data_quality_flags。没有这篇 → None; 读不到 → READ_FAILED。"""
     try:
         res = (client.schema("truth_vault").table("notes")
-               .select("raw_content, title, publish_url").eq("note_id", note_id).limit(1).execute())
+               .select("raw_content, title, publish_url, data_quality_flags")
+               .eq("note_id", note_id).limit(1).execute())
     except Exception as exc:
-        logger.warning("读库里 %s 的正文失败(%s) —— 这一行不接, 照常隔离。", note_id, exc)
-        return None
+        logger.warning("读库里 %s 失败(%s) —— 这一行不放宽。", note_id, exc)
+        return READ_FAILED
     rows = getattr(res, "data", None) or []
-    if not rows or not rows[0].get("raw_content"):
+    return rows[0] if rows else None
+
+
+def fetch_stored_body(client, note_id: str) -> dict | None:
+    """库里这篇 note(有正文才算)。没有这篇 / 正文空 / 读不到 → None(放宽的前提查不到就不放宽)。"""
+    row = read_stored_note(client, note_id)
+    if row is READ_FAILED or not row or not row.get("raw_content"):
         return None
-    return rows[0]
+    return row
 
 
 def recover_missing_body(
@@ -587,9 +597,10 @@ def recover_missing_body(
                 candidates.append(("db", src, db.get("publish_url")))
         for source, src, parent_url in candidates:
             if parent_url and str(parent_url).strip() == own_url:
-                logger.warning("record_id=%s 的父记录 %s 和它是同一个链接(同一篇登记了两次?)→ 不接父行正文",
+                # 同一篇登记了两次 → 整行都不放宽(也不走下面「留库里那份」: codex #267), 照旧隔离让人看
+                logger.warning("record_id=%s 的父记录 %s 和它是同一个链接(同一篇登记了两次?)→ 不补正文, 照旧隔离",
                                record_id, pid)
-                break
+                return raw_fields, None
             out, filled = fill_missing_body(raw_fields, src, content_col, title_col)
             if filled:
                 return out, {"route": "parent", "from": pid, "source": source, "filled": filled}
@@ -604,18 +615,33 @@ def recover_missing_body(
     return raw_fields, None
 
 
-def mark_recovered_body(note: dict[str, Any], meta: dict[str, Any]) -> None:
-    """recover_missing_body 补上的正文在 note 上留痕(raw_extra + data_quality_flags)。"""
+def mark_recovered_body(note: dict[str, Any], meta: dict[str, Any], stored_flags=None) -> None:
+    """recover_missing_body 补上的正文在 note 上留痕(raw_extra + data_quality_flags)。
+
+    data_quality_flags 在 UPSERT_PROTECTED_COLS 里: transform_row 这一轮一个旗子都判不出来时故意不写这一列,
+    upsert 就留库里旧值(synthetic / 控评来路这些 tier 的限定词)。这时要加补正文的旗子, 必须以库里那份为底,
+    不然整份 JSON 被冲成只剩这一个键(codex #267)。stored_flags = 这篇在库里的那份:
+      · transform 写了这一列 → 不用它(这一轮判出来的就是全量);
+      · 没写、库里有这篇(或库里没有 = 新篇, 传 {}) → 以它为底再加;
+      · 没写、读库失败(READ_FAILED / None)→ 这一轮不写这一列(留库里旧值), 只在 raw_extra 留痕。"""
     extra = note.get("raw_extra")
     if not isinstance(extra, dict):
         extra = note["raw_extra"] = {}
-    flags = dict(note.get("data_quality_flags") or {})
     if meta["route"] == "parent":
         extra["_content_from_parent"] = {"record_id": meta["from"], "source": meta["source"],
                                          "filled": meta["filled"]}
-        flags["content_inherited"] = True
     else:
         extra["_content_kept_from_db"] = {"filled": meta["filled"]}
+    if "data_quality_flags" in note:
+        flags = dict(note.get("data_quality_flags") or {})
+    elif isinstance(stored_flags, dict):
+        flags = dict(stored_flags)
+        flags.pop("content_cleared_in_feishu", None)   # 上一晚留下的, 这一晚按这一晚的路重写
+    else:
+        return
+    if meta["route"] == "parent":
+        flags["content_inherited"] = True
+    else:
         flags["content_cleared_in_feishu"] = True
     note["data_quality_flags"] = flags
 
@@ -2156,14 +2182,25 @@ def main() -> int:
     project_tables = frozenset(sp["table_id"] for sp in configured)
     all_items = list(_iter_all_records())
     pulled_fields: dict[str, dict[str, Any]] = {it.get("record_id", ""): it.get("fields", {}) for it in all_items}
-    stored_bodies: dict[str, dict | None] = {}
+    stored_notes: dict[str, Any] = {}      # note_id → read_stored_note 的结果(None / READ_FAILED / 行), 同一篇只读一次
+
+    def _stored_note(note_id: str):
+        if args.dry_run:      # dry-run 不读库(同 acked_quarantine)
+            return READ_FAILED
+        if note_id not in stored_notes:
+            stored_notes[note_id] = read_stored_note(sb, note_id)
+        return stored_notes[note_id]
 
     def _stored_body(note_id: str) -> dict | None:
-        if args.dry_run:      # dry-run 不读库(同 acked_quarantine)
+        row = _stored_note(note_id)
+        return row if (row is not READ_FAILED and row and row.get("raw_content")) else None
+
+    def _stored_flags(note_id: str):
+        """mark_recovered_body 的 stored_flags: 库里有 → 它的旗子({} 也算); 库里没有 → {}; 读不到 → None。"""
+        row = _stored_note(note_id)
+        if row is READ_FAILED:
             return None
-        if note_id not in stored_bodies:
-            stored_bodies[note_id] = fetch_stored_body(sb, note_id)
-        return stored_bodies[note_id]
+        return dict((row or {}).get("data_quality_flags") or {})
 
     body_kept_ids: list[str] = []
     for item in all_items:
@@ -2206,7 +2243,8 @@ def main() -> int:
                     pulled=pulled_fields, stored=_stored_body, allowed_tables=project_tables)
             note, metric, undeclared = transform_row(mapping, feishu_record_id, raw_fields)
             if body_meta:
-                mark_recovered_body(note, body_meta)
+                mark_recovered_body(note, body_meta, None if "data_quality_flags" in note
+                                    else _stored_flags(note["note_id"]))
                 if body_meta["route"] == "parent":
                     stats["body_from_parent"] += 1
                     logger.info("record_id=%s 是父记录 %s 的子行(同一篇文案换素人再发), 正文接父行(%s)",
