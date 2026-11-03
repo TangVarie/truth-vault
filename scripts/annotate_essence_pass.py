@@ -911,6 +911,14 @@ def main() -> int:
                         help="只重标「已标 essence 但 direction_subtype 空且飞书给了方向原文」的篇 (审计 C-03); 收敛, 可多轮")
     parser.add_argument("--qps", type=float, default=2.0,
                         help="Rate limit (default 2 req/sec, Anthropic free tier safe)")
+    # 夜跑分两趟、给时限 (11-03): D-137 之后 OKMAN 那批真改过正文的旧篇 (268) 要几晚才消完, 项目按字母序一个接一个跑,
+    # 中转站慢的那一小时 (11-03 09:40–10:42 约 96 秒一篇) 一来, 排在后面的项目 (TUGE / XIWU) 当晚的新篇就会被时限挤掉。
+    # daily-sync 先给所有项目跑 new (没标过的), 再跑 stale (正文改过、essence 过期的), 每一篇开标前看一眼时限。
+    parser.add_argument("--pass", dest="pass_", choices=("all", "new", "stale"), default="all",
+                        help="all (默认: 没标过的在前、过期的在后) / new (只标没标过的) / stale (只重标正文改过的); "
+                             "只用于默认路径, 不能和 --reannotate / --only-missing-subtype 一起用")
+    parser.add_argument("--deadline-epoch", type=float, default=0.0,
+                        help="到这个 Unix 时间就不再开标下一篇, 剩下的留到下一晚 (幂等续标); 0 = 不限")
     parser.add_argument("--failed-queue", default="failed_essence_queue.jsonl",
                         help="JSONL file for rows that failed after retry "
                              "(default: failed_essence_queue.jsonl in cwd). "
@@ -918,6 +926,8 @@ def main() -> int:
                              "attempted_at}. Re-run this script with this file as "
                              "input later to retry; for now operators review by hand.")
     args = parser.parse_args()
+    if args.pass_ != "all" and (args.reannotate or args.only_missing_subtype):
+        parser.error("--pass new / stale 只用于默认路径, 不能和 --reannotate / --only-missing-subtype 一起用")
 
     model = os.environ.get("ESSENCE_MODEL", "claude-sonnet-5-5")
     if not args.dry_run and not os.environ.get("ANTHROPIC_API_KEY"):
@@ -927,12 +937,15 @@ def main() -> int:
     mapping = load_mapping(args.project_id)  # loaded for direction_decomposition future use
     sb = get_supabase_client()
     notes = fetch_unannotated_notes(sb, args.project_id, args.reannotate or args.only_missing_subtype,
-                                    only_missing_subtype=args.only_missing_subtype, mapping=mapping)
+                                    only_missing_subtype=args.only_missing_subtype, mapping=mapping,
+                                    include_stale=args.pass_ != "new")
+    if args.pass_ == "stale":
+        notes = [n for n in notes if n.get("_essence_stale")]
     if args.limit:
         notes = notes[: args.limit]
     n_stale = sum(1 for n in notes if n.pop("_essence_stale", False))
-    logger.info("Found %d notes to annotate for project %s (model=%s, only_missing_subtype=%s, content_changed=%d)",
-                len(notes), args.project_id, model, args.only_missing_subtype, n_stale)
+    logger.info("Found %d notes to annotate for project %s (model=%s, only_missing_subtype=%s, content_changed=%d, pass=%s)",
+                len(notes), args.project_id, model, args.only_missing_subtype, n_stale, args.pass_)
 
     failed_queue_path = Path(args.failed_queue).resolve()
     stats = {"ok": 0, "ok_after_retry": 0, "failed_after_retry": 0,
@@ -942,6 +955,10 @@ def main() -> int:
     sleep_s = 1.0 / args.qps if args.qps > 0 else 0
     filtered_ctx: Optional[tuple[dict, dict]] = None   # D-125: 最后一篇被中转站拦的 (项目信息, 笔记), 探针借它的项目上下文
     for i, note in enumerate(notes):
+        if args.deadline_epoch and time.time() >= args.deadline_epoch:
+            stats["deferred"] = len(notes) - i
+            logger.warning("到了时限: 还有 %d 篇没标, 留到下一晚 (幂等续标, 已标的不丢)", len(notes) - i)
+            break
         # Inject project info one level up so prompt builder can read it
         project_info = note.pop("projects", {}) or {}
         try:

@@ -1415,6 +1415,9 @@ jobs:
           print("  ✓ 干净成功 + no-op 空跑 → 0")
           print("\nessence exit-code tolerance: all checks passed")
           PY
+      - name: Essence nightly passes + deadline self-check (D-143)
+        working-directory: scripts
+        run: python check_essence_passes.py
       - name: Essence annotator sub_direction classification self-check
         working-directory: scripts
         run: |
