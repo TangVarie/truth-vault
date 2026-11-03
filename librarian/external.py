@@ -47,15 +47,15 @@ logger = logging.getLogger("flywheel_librarian")
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "prompts" / "external_shelf_v1.json"
 ID_PREFIX = "ext:"
-SHELF_TTL_S = 600           # 外部表一周才进一次货; 每个请求 (包括命中缓存的) 都去拉一个品类的正文太浪费, 进程里留 10 分钟
+SHELF_TTL_S = 600           # 外部表一周才进两次货 (Jev 周一、周四, D-139); 每个请求 (包括命中缓存的) 都去拉一个品类的正文太浪费, 进程里留 10 分钟
 _shelf: dict = {}           # 品类 → (卡, 取的时刻)
-_PAGE = 1000                # PostgREST 单页上限; 一个品类最近 45 天 ≤ 约 240 篇 (Jev 每月每品类最多进 160 篇), 一页就够
+_PAGE = 1000                # PostgREST 单页上限; 一个品类最近 45 天 ≤ 约 540 篇 (Jev 每月每品类最多进 360 篇, D-139), 一页就够
 _MAX_PAGES = 5
 
 DAY_S = 86400
 MIN_AGE_DAYS = 3            # 抓到时发出不到 3 天: 评论还在涨, 日均评论偏高, 不算
 VELOCITY_FLOOR_DAYS = 3     # 日均评论的分母至少 3 天 (和 MIN_AGE_DAYS 一样; 分开写是因为意思不同)
-FRESH_DAYS = 45             # 只看最近 45 天里抓到的 (Jev 每周抓; 一个多月没再抓到, 「最近涨得快」就无从说起)
+FRESH_DAYS = 45             # 只看最近 45 天里抓到的 (Jev 一周抓两次; 一个多月没再抓到, 「最近涨得快」就无从说起)
 EXCERPT_CAP = 600           # 选中卡回给消费方的摘录上限 (内部卡视图本来就截在 600 字, 外部卡是标题 + 整篇正文)
 
 EXTERNAL_RUN_TAG = "external"   # Jev 给外部帖答题写的 run_tag (同 scripts/check_external_direction.py)
