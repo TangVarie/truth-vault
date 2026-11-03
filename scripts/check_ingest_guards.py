@@ -407,6 +407,11 @@ def check_missing_body_recovery() -> None:
     assert out["笔记内容"] == "库里父行正文" and meta["source"] == "db", "§9 父行这一轮没正文 → 接库里父行那篇"
     out, meta = engine.recover_missing_body(child["fields"], record_id="recC", pulled={}, stored=db.get, **common)
     assert meta and meta["source"] == "db", "§9 父行这一轮没拉到 → 接库里父行那篇"
+    reused_parent = _bjs_row("recP", url="https://xhslink.cn/o/P_NEW")["fields"]
+    out, meta = engine.recover_missing_body(child["fields"], record_id="recC", pulled={"recP": reused_parent},
+                                            stored=db.get, **common)
+    assert meta is None and "笔记内容" not in out, \
+        "§9 父行这一轮还在、换了链接、正文空了(拿去登记了另一篇)→ 库里那份是旧帖的, 不给子行(codex #267)"
 
     same = _bjs_row("recS", url="https://xhslink.cn/o/P", parent="recP")
     out, meta = engine.recover_missing_body(same["fields"], record_id="recS", pulled={"recP": parent["fields"]},

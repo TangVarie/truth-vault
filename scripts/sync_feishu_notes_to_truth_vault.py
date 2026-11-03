@@ -574,7 +574,8 @@ def recover_missing_body(
     """有反馈链接、缺正文的一行 → (补好的行, meta); 不是这种行 / 补不上 → (原样, None)。
 
     pulled: 这一轮飞书拉到的 {record_id: 原始格}; stored: note_id → fetch_stored_body 的结果(dry-run 传恒 None)。
-    顺序: 父行(这一轮飞书)→ 父行(库里, 只在父行这一轮没正文时)→ 自己(库里, 库里的链接得和这一行现在的一样)。
+    顺序: 父行(这一轮飞书)→ 父行(库里, 只在父行这一轮没正文时; 父行这一轮还在的话库里的链接得和它现在的一样)
+    → 自己(库里, 库里的链接得和这一行现在的一样)。
     meta: {"route": "parent", "from": 父行 record_id, "source": "feishu"|"db", "filled": [...]}
        或 {"route": "kept", "filled": [...]}。"""
     if not content_col or not url_col or _has_body(raw_fields, content_col):
@@ -590,6 +591,13 @@ def recover_missing_body(
             candidates.append(("feishu", pf, _coerce_value("publish_url", pf.get(url_col))))
         else:
             db = stored(make_note_id(project_id, pid))
+            pf_url = _coerce_value("publish_url", pf.get(url_col)) if pf else None
+            if db and pf_url and str(db.get("publish_url") or "").strip() != pf_url:
+                # 父行这一轮还在飞书里、换了链接、正文空了 = 父行被拿去登记了另一篇 → 库里那份是旧帖的正文,
+                # 不给子行(父行自己也会被下面「链接对不上」那条挡住; codex #267)
+                logger.warning("record_id=%s 的父记录 %s 换了链接(库里那篇不是它现在这篇)→ 不接库里的旧正文",
+                               record_id, pid)
+                db = None
             if db:
                 src = {content_col: db["raw_content"]}
                 if title_col:
