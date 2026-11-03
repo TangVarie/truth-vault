@@ -578,7 +578,8 @@ def recover_missing_body(
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     """有反馈链接、缺正文的一行 → (补好的行, meta); 不是这种行 / 补不上 → (原样, None)。
 
-    pulled: 这一轮飞书拉到的 {record_id: 原始格}; stored: note_id → fetch_stored_body 的结果(dry-run 传恒 None)。
+    pulled: 这一轮飞书拉到的 {record_id: 原始格}; stored: note_id → read_stored_note 的结果(库里那篇的行 / None = 没有 /
+    READ_FAILED = 读不到; dry-run 传恒 READ_FAILED)。读不到一律按「查不到就不放宽」: 要靠它核链接时整行不补。
     规则(「链接对不上」一律整行不补、照旧隔离让人看, 不往下一条兜; codex / 自审 #267 逐条逼出来的):
       A. 父行现在的链接(这一轮飞书里父行的; 父行这一轮不在或没填链接就用库里父行那篇的)和这一行一样
          → 同一篇登记了两次, 不补。
@@ -597,7 +598,15 @@ def recover_missing_body(
     if pid and pid != record_id:
         pf = pulled.get(pid)
         pf_url = _link(pf.get(url_col)) if pf is not None else ""
-        pdb = None if _has_body(pf, content_col) else stored(make_note_id(project_id, pid))
+        # 库里父行那篇: 要拿它的正文(父行这一轮没正文)或拿它的链接(父行这一轮没填链接)时才读; 两件事各自判, 不互相带
+        need_pdb = not _has_body(pf, content_col) or not pf_url
+        pdb = stored(make_note_id(project_id, pid)) if need_pdb else None
+        if pdb is READ_FAILED:
+            if not pf_url:      # 规则 A 要靠库里父行的链接核, 读不到就核不了 → 不补
+                logger.warning("record_id=%s 的父记录 %s 这一轮没填链接、库里那篇又读不到 → 核不了是不是同一篇, 不补",
+                               record_id, pid)
+                return raw_fields, None
+            pdb = None
         parent_now = pf_url or _link((pdb or {}).get("publish_url"))
         if parent_now and parent_now == own_url:                                        # A
             logger.warning("record_id=%s 的父记录 %s 和它是同一个链接(同一篇登记了两次?)→ 不补正文, 照旧隔离",
@@ -607,7 +616,7 @@ def recover_missing_body(
             out, filled = fill_missing_body(raw_fields, pf, content_col, title_col)
             if filled:
                 return out, {"route": "parent", "from": pid, "source": "feishu", "filled": filled}
-        elif pdb:                                                                        # C
+        elif pdb and pdb.get("raw_content"):                                             # C
             if pf_url and _link(pdb.get("publish_url")) != pf_url:
                 logger.warning("record_id=%s 的父记录 %s 换了链接(库里那篇不是它现在这篇)→ 不接库里的旧正文",
                                record_id, pid)
@@ -619,7 +628,7 @@ def recover_missing_body(
                 if filled:
                     return out, {"route": "parent", "from": pid, "source": "db", "filled": filled}
     db = stored(make_note_id(project_id, record_id))                                     # D
-    if not db:
+    if db is READ_FAILED or not db or not db.get("raw_content"):
         return raw_fields, None
     if _link(db.get("publish_url")) != own_url:
         logger.warning("record_id=%s 正文空了, 但库里那篇的链接和现在的对不上(这一行换了一篇?)→ 不留旧正文, 照旧隔离",
@@ -2208,10 +2217,6 @@ def main() -> int:
             stored_notes[note_id] = read_stored_note(sb, note_id)
         return stored_notes[note_id]
 
-    def _stored_body(note_id: str) -> dict | None:
-        row = _stored_note(note_id)
-        return row if (row is not READ_FAILED and row and row.get("raw_content")) else None
-
     def _stored_flags(note_id: str):
         """mark_recovered_body 的 stored_flags: 库里有 → 它的旗子({} 也算); 库里没有 → {}; 读不到 → None。"""
         row = _stored_note(note_id)
@@ -2257,7 +2262,7 @@ def main() -> int:
                 raw_fields, body_meta = recover_missing_body(
                     raw_fields, record_id=feishu_record_id, project_id=mapping["project_id"],
                     content_col=content_col, title_col=title_col, url_col=url_col,
-                    pulled=pulled_fields, stored=_stored_body, allowed_tables=project_tables)
+                    pulled=pulled_fields, stored=_stored_note, allowed_tables=project_tables)
             note, metric, undeclared = transform_row(mapping, feishu_record_id, raw_fields)
             if body_meta:
                 mark_recovered_body(note, body_meta, None if "data_quality_flags" in note

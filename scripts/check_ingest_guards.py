@@ -448,8 +448,8 @@ def check_missing_body_recovery() -> None:
     links = {"P": "https://xhslink.cn/o/P", "C": OWN, "NEW": "https://xhslink.cn/o/NEW", "OLD": "https://xhslink.cn/o/OLD",
              "OTHER": "https://xhslink.cn/o/OTHER", "": ""}
     pf_states = [None] + [(b, l) for b in (True, False) for l in ("P", "C", "NEW", "")]
-    pdb_states = [None] + [l for l in ("P", "C", "OLD", "")]
-    own_states = [None] + [l for l in ("C", "OTHER", "")]
+    pdb_states = [None, "FAIL"] + [l for l in ("P", "C", "OLD", "")]     # FAIL = 读库失败(READ_FAILED)
+    own_states = [None, "FAIL"] + [l for l in ("C", "OTHER", "")]
     recovered = {"feishu": 0, "db": 0, "kept": 0, "none": 0}
     for pf_s, pdb_s, own_s in itertools.product(pf_states, pdb_states, own_states):
         pulled = {}
@@ -459,25 +459,32 @@ def check_missing_body_recovery() -> None:
                 f["笔记内容"] = "父行飞书正文"
             pulled["recP"] = f
         st = {}
-        if pdb_s is not None:
+        if pdb_s == "FAIL":
+            st["BJS_phase2_recP"] = engine.READ_FAILED
+        elif pdb_s is not None:
             st["BJS_phase2_recP"] = {"raw_content": "库里父行正文", "title": None, "publish_url": links[pdb_s] or None}
-        if own_s is not None:
+        if own_s == "FAIL":
+            st["BJS_phase2_recC"] = engine.READ_FAILED
+        elif own_s is not None:
             st["BJS_phase2_recC"] = {"raw_content": "库里自己正文", "title": None, "publish_url": links[own_s] or None}
         row = _bjs_row("recC", url=OWN, parent="recP")["fields"]
         out, meta = engine.recover_missing_body(row, record_id="recC", pulled=pulled, stored=st.get, **common)
         # 规则(独立写一遍, 不调被测代码)
         pf_body = pf_s is not None and pf_s[0]
         pf_url = links[pf_s[1]] if pf_s is not None else ""
-        pdb_url = links[pdb_s] if pdb_s is not None else ""
-        parent_now = pf_url or ("" if pf_body else pdb_url)
+        pdb_ok = pdb_s not in (None, "FAIL")
+        pdb_url = links[pdb_s] if pdb_ok else ""
+        parent_now = pf_url or pdb_url          # D-144 规则 A: 父行这一轮没填链接就看库里父行那篇的, 和有没有正文无关
         case = f"父行飞书={pf_s} 库里父行={pdb_s} 库里自己={own_s} → {meta}"
-        if parent_now == OWN:
+        if pdb_s == "FAIL" and not pf_url:
+            want = None                         # 规则 A 要靠库里父行的链接核, 读不到 → 不放宽
+        elif parent_now == OWN:
             want = None                                                                  # A
         elif pf_body:
             want = ("parent", "feishu", "父行飞书正文")                                     # B
-        elif pdb_s is not None and (not pf_url or pdb_url == pf_url):
+        elif pdb_ok and (not pf_url or pdb_url == pf_url):
             want = ("parent", "db", "库里父行正文")                                         # C
-        elif own_s is not None and links[own_s] == OWN:
+        elif own_s not in (None, "FAIL") and links[own_s] == OWN:
             want = ("kept", None, "库里自己正文")                                           # D
         else:
             want = None
