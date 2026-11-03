@@ -3,22 +3,24 @@
 check_external_corpus_fresh.py
 ═══════════════════════════════════════════════════════════════════════════
 
-外部语料 (Jev 仓的 external-corpus.yml, 每周一 03:07 UTC) 这周有没有进 TV 账本? —— 只读, 不写库。
+外部语料 (Jev 仓的 external-corpus.yml, 每周一、周四 03:07 UTC; 2026-11-03 前每周一) 最近有没有进 TV 账本? —— 只读, 不写库。
 
 2026-10-08 审计 (B-23 / A-08): 那条周跑 9-28、10-05 两次红没人收; 更坏的是"绿但空"——写库失败而 job 绿
 (10-08 已改成红, Jev#6)、或者全被分诊拒掉——在哪都看不见: TV 这边没有一盏灯看 external_notes 的新鲜度。
 本脚本就是那盏灯 (docs/29 登记为 EXTERNAL_CORPUS_CHECK_DONE)。
 
 判据只有一条 (docs/29 规矩 4: 设下限, 不做比例启发式):
-    truth_vault.external_notes 里最新一行的 fetched_at 比现在早超过 --max-age-days (默认 8) 天 → rc=1。
-    周更 + 一天余量; GitHub 定时漂几小时不该红。表是空的 → rc=2 (判不了, 从没进过货)。
+    truth_vault.external_notes 里最新一行的 fetched_at 比现在早超过 --max-age-days (默认 5) 天 → rc=1。
+    两次定时跑最多隔 4 天 (周四 → 周一) + 一天余量; GitHub 定时漂几小时 (11-02 那次 03:07 的定时 10:54 才起) 不该红,
+    漏跑一次 (周一夜跑时上周四那次没进货 → 已 7 天) 要红。2026-11-03 前一周一次, 默认是 8 (D-139)。
+    表是空的 → rc=2 (判不了, 从没进过货)。
 修在 Jev 仓 (TikHub 密钥 / UA / 详情解析 / 写库), TV 这边红了也改不好 —— 所以 advisory 不拖红。
 
 ⚠️ 和登记册里其它哨兵灯同一个约定: 正常跑完末尾必打一行 `EXTERNAL_CORPUS_CHECK_DONE rc=<码>`;
 daily-sync.yml 靠有没有这一行判定崩溃, 不靠退出码。
 
 用法:
-    python check_external_corpus_fresh.py                  # 默认 8 天
+    python check_external_corpus_fresh.py                  # 默认 5 天
     python check_external_corpus_fresh.py --max-age-days 15
     python check_external_corpus_fresh.py --selftest       # CI: report() 的四种形状 (不连库)
 """
@@ -29,7 +31,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-DEFAULT_MAX_AGE_DAYS = 8
+DEFAULT_MAX_AGE_DAYS = 5   # Jev 一周两次 (周一、周四) 的最长间隔 4 天 + 1 天余量 (D-139)
 
 
 def _parse(ts: Optional[str]) -> Optional[datetime]:
@@ -73,12 +75,14 @@ def gather(sb) -> tuple[Optional[str], int]:
 
 def selftest() -> int:
     now = datetime(2026, 10, 8, 12, 0, tzinfo=timezone.utc)
-    assert report("2026-10-06T05:13:02+00:00", 200, now, 8) == 0, "2 天前 → 新鲜"
-    assert report("2026-09-28T03:00:00Z", 200, now, 8) == 1, "10 天前 → 过期"
-    assert report("2026-10-01T03:00:00", 200, now, 8) == 0, "naive 时间按 UTC, 7 天前 → 仍新鲜 (周更 + 1 天余量)"
-    assert report(None, 0, now, 8) == 2, "表空 → 判不了"
-    assert report("not a date", 3, now, 8) == 2, "认不出 → 判不了"
-    print("  ✓ selftest: 新鲜 / 过期 / naive / 表空 / 认不出 五种形状")
+    d = DEFAULT_MAX_AGE_DAYS
+    assert report("2026-10-06T05:13:02+00:00", 200, now, d) == 0, "2 天前 → 新鲜"
+    assert report("2026-09-28T03:00:00Z", 200, now, d) == 1, "10 天前 → 过期"
+    assert report("2026-10-04T03:10:00", 200, now, d) == 0, "naive 时间按 UTC, 4.4 天前 (周四那次 → 周一夜跑) → 仍新鲜"
+    assert report("2026-10-01T03:10:00Z", 200, now, d) == 1, "7.4 天前 = 漏跑了一次 → 过期"
+    assert report(None, 0, now, d) == 2, "表空 → 判不了"
+    assert report("not a date", 3, now, d) == 2, "认不出 → 判不了"
+    print("  ✓ selftest: 新鲜 / 过期 / naive / 漏跑一次 / 表空 / 认不出 六种形状")
     return 0
 
 

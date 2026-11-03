@@ -437,12 +437,12 @@ jobs:
           上面的 traceback 是真问题 —— advisory 不拖红, 但通道 2 的监控现在是瞎的, 去修。"
           fi
 
-      - name: 外部语料新鲜度 · Jev 周跑这周有没有进账本 (advisory, 不 fail)
+      - name: 外部语料新鲜度 · Jev 定时跑 (周一、周四) 最近有没有进账本 (advisory, 不 fail)
         if: steps.check.outputs.skip != 'true' && always()
         working-directory: scripts
         run: |
           # D-094 (审计 B-23): external-corpus.yml 在 Jev 仓, 红了只发邮件给改过 cron 的人; "绿但空"在哪都看不见。
-          # 这盏灯看 truth_vault.external_notes 最新一行的 fetched_at, 超过 8 天 (周更 + 1 天余量) 就 rc=1。
+          # 这盏灯看 truth_vault.external_notes 最新一行的 fetched_at, 超过 5 天 (一周两次的最长间隔 4 天 + 1 天余量, D-139) 就 rc=1。
           # 修在 Jev 仓, advisory 不拖红; 崩了靠哨兵行判定 (同其它灯)。
           set +e
           python check_external_corpus_fresh.py 2>&1 | tee /tmp/external_corpus.log
@@ -451,7 +451,7 @@ jobs:
             echo "::warning title=外部语料新鲜度检查崩了::脚本没跑到底(没有哨兵行), \
           上面的 traceback 是真问题 —— advisory 不拖红, 但这盏灯现在是瞎的, 去修。"
           elif grep -q '^EXTERNAL_CORPUS_CHECK_DONE rc=1' /tmp/external_corpus.log; then
-            echo "::warning title=外部语料超过 8 天没进新货::去 Jev 仓看 external-corpus 最近一次 run (修在 Jev 仓)。"
+            echo "::warning title=外部语料超过 5 天没进新货::去 Jev 仓看 external-corpus 最近一次 run (修在 Jev 仓)。"
           elif grep -q '^EXTERNAL_CORPUS_CHECK_DONE rc=2' /tmp/external_corpus.log; then
             # rc=2 = 判不了 (表空 / 时间认不出): "从没进过货"正是这盏灯要抓的那种"绿但空", 不能只躺在日志里 (codex review on #169)
             echo "::warning title=外部语料新鲜度判不了::external_notes 是空的或最新时间认不出 —— 外部语料可能从没写进过 TV, 去 Jev 仓看 external-corpus 有没有成功过一次。"
