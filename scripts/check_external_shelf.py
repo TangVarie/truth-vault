@@ -14,6 +14,10 @@ check_external_shelf.py —— 外部参考书架 (D-117 ②, D-138; prompts/ext
      换成「某品牌」/「某产品」、长的先换、拉丁不分大小写、短拉丁词按词边界, 再换配置 mask_terms; 没有遮挡行 → 摘录空、只给结构; 有外部卡时
      prompt 才多那句用法 (能补的品类至少 1 张、最多 2 张, 没遮挡的品类只说最多 2 张; 不再「优先挑帆谷自己的卡」);
      「已验证爆款」只说帆谷自己的卡; 命中规律的优先只在内部卡之间比
+  §4b 分族 (D-141): Jev 全文答的 product_role 主角 / 解决方案 = P, 别的 / 没答 = O; 中位数和百分位按 (品类, 族) 算 ——
+     P 族一篇低于品类中位数、不低于 P 族中位数的照样达标; 一族不到 5 篇用整个品类的中位数和百分位; 给模型看的 6 张两族
+     各 3 张 (P 先、轮流), 一族不够另一族补; product_role 查不了 → 和 D-140 一模一样 (warning 一次); 窗口里每一篇都查
+     product_role、功效题照旧只给过了便宜那几道的查; P 卡卡头写「正文写了产品」, product_in_body 回给写作台、进指纹
   §5 缓存版本: 外部卡 (连卡面、结构、遮没遮过) 进版本串; 遮挡词变了版本跟着变; 现在发出几天不进; 没有外部卡时与以前一样
   §6 端到端 (打桩): 老消费方不给; 两臂都给; 模型挑多了截到 2 张 (不算契约失败), 截掉的不占 5 张的名额;
      一张没挑就补日均最高的那张 (forced, 进缓存); 满 5 张才顶 rank 最低的内部卡; 摘录截到 600 字;
@@ -23,7 +27,7 @@ check_external_shelf.py —— 外部参考书架 (D-117 ②, D-138; prompts/ext
      没遮挡行又没结构的不上架、往下补; 遮挡表还没建 → 全部只给结构、不强塞 (m0)、只 warning 一次、借卡照常;
      答案查不了 → 这个品类没有外部卡、内部卡照常; 答案按 100 篇一批、翻到空页 (不静默截断)
   §6b 保底: 满 5 张顶谁、不到 5 张不顶、有外部卡不动; 只补摘录遮过的卡, 只给结构的卡再快也不补
-  §7 接线: 方向复核那盏灯报书架达标数, 用的是同一个 qualified; 遮挡词夜跑、内容层补填接进夜跑
+  §7 接线: 方向复核那盏灯报书架达标数, 用的是同一个 qualified (连分族); 遮挡词夜跑、内容层补填接进夜跑
 
 跑法: cd scripts && python check_external_shelf.py
 """
@@ -289,6 +293,113 @@ def s4_order_and_card() -> None:
           "没遮挡行只给结构、不强塞 ✓")
 
 
+def s4b_families() -> None:
+    """D-141: 产品贴 (P) / 其他 (O) 分两族排。"""
+    now = time.time()
+    # 鼻炎, 都是抓到时发出 10 天: P 8 篇日均 2.5 / 3 / … / 6 (评论 25–60), O 10 篇日均 10 / 20 / … / 100。
+    # 全品类 18 篇中位数 15; P 族中位数 4.25; O 族中位数 55
+    P = [ext_row(100 + i, int((2.5 + 0.5 * i) * 10), 10, now=now) for i in range(8)]
+    O = [ext_row(200 + i, (i + 1) * 100, 10, now=now) for i in range(10)]
+    rows = P + O
+    roles = {r["note_id"]: ("主角" if k % 2 else "解决方案") for k, r in enumerate(P)}
+    roles.update({O[0]["note_id"]: "顺带一提", O[1]["note_id"]: "未出现", O[2]["note_id"]: "只暗示"})   # 别的 O 没答
+    assert [X.family(roles, r["note_id"]) for r in (P[0], P[1], O[0], O[1], O[2], O[9])] == ["P", "P", "O", "O", "O", "O"], \
+        "主角 / 解决方案 = P; 顺带一提 / 未出现 / 只暗示 / 没答 = O"
+    assert X.family(None, P[0]["note_id"]) is None, "product_role 读不了: 不分族"
+
+    nid = lambda rs: [r["note_id"] for r in rs]  # noqa: E731
+    one = X.candidates(rows, CFG, now=now)
+    assert [r["note_id"] for r, _, _ in one] == nid(O[1:][::-1]), "不分族 (D-140): 品类中位数 15, 产品贴一篇都不达标"
+    two = X.candidates(rows, CFG, now=now, roles=roles)
+    by = {r["note_id"]: (v, p) for r, v, p in two}
+    assert sorted(by) == sorted(nid(P[4:] + O[5:])), f"分族: P 族 ≥4.25、O 族 ≥55 才达标: {sorted(by)}"
+    assert P[5]["note_id"] in by and P[5]["note_id"] not in [r["note_id"] for r, _, _ in one], \
+        "日均 5 的产品贴低于品类中位数 15, 但不低于 P 族中位数 4.25 → 达标"
+    assert O[3]["note_id"] not in by, "日均 40 的 O 帖不低于品类中位数, 但低于 O 族中位数 55 → 不达标"
+    assert by[P[7]["note_id"]][1] == 7.5 / 8 and by[O[9]["note_id"]][1] == 9.5 / 10, "百分位在自己那族里排"
+    assert [r["note_id"] for r, _, _ in X.candidates(rows, CFG, now=now, roles={})] == [r["note_id"] for r, _, _ in one], \
+        "一篇都没答 = 全在 O 族, 排法和不分族一样"
+
+    # 一族不到 5 篇: 用整个品类的中位数和百分位 (小族的中位数是一两篇的数, 不算数)
+    fast = ext_row(150, 450, 10, now=now)                                   # 日均 45
+    small = [P[0], P[1], fast]                         # P 族 3 篇: 自己的中位数是 3; 整个品类 13 篇的中位数是 45
+    rs2 = small + O
+    roles2 = {r["note_id"]: "主角" for r in small}
+    got = {r["note_id"]: p for r, _, p in X.candidates(rs2, CFG, now=now, roles=roles2)}
+    assert P[1]["note_id"] not in got, "P 族只有 3 篇: 不拿自己的中位数 (3) 比, 用品类的 (45), 日均 3 不达标"
+    assert got[fast["note_id"]] == 6.5 / 13, "小族的百分位也在整个品类 (13 篇) 里排, 不是 3 篇里排"
+    assert sorted(k for k in got if k != fast["note_id"]) == sorted(nid(O[5:])), "O 族 10 篇, 照用自己的中位数 55"
+    assert X.MIN_FAMILY_N == 5
+
+    # 给模型看的 6 张: 两族轮流 (P 先), 族内按日均; 一族不够另一族补
+    sp = X.split_shown
+    assert sp({"P": ["p1", "p2", "p3", "p4"], "O": ["o1", "o2", "o3", "o4"]}, 6) == ["p1", "o1", "p2", "o2", "p3", "o3"]
+    assert sp({"P": ["p1"], "O": ["o1", "o2", "o3", "o4", "o5", "o6"]}, 6) == ["p1", "o1", "o2", "o3", "o4", "o5"], \
+        "P 只有 1 张: O 补满"
+    assert sp({"P": ["p1", "p2", "p3", "p4", "p5"], "O": ["o1"]}, 6) == ["p1", "o1", "p2", "p3", "p4", "p5"], "O 不够 P 补"
+    assert sp({"O": ["o1", "o2"]}, 6) == ["o1", "o2"] and sp({}, 6) == []
+    assert sp({None: list("abcdefg")}, 6) == list("abcdef"), "不分族: 就是前 6 张 (D-140)"
+    assert sp({"P": ["p1", "p2", "p3"], "O": ["o1", "o2", "o3"]}, 5) == ["p1", "o1", "p2", "o2", "p3"], "单数 P 多一张"
+
+    # 端到端 (假库): 窗口里每一篇查 product_role; 6 张 = 3 P + 3 O; 卡上 product_in_body; rank_score 在族里排
+    ans = ([_ans(r["note_id"], "efficacy_promise", "否") for r in rows]
+           + [_ans(k, "product_role", v) for k, v in roles.items()])
+    sb = _SB({"external_notes": rows, "note_feature_answers": ans, X.MASK_TABLE: [_mask(r, []) for r in rows]})
+    cards = X.fetch_shelf(sb, ["鼻炎"], CFG, now=now)
+    ext = lambda rs: [f"ext:{r['note_id']}" for r in rs]  # noqa: E731
+    assert [c["source_note_id"] for c in cards] == ext([P[7], O[9], P[6], O[8], P[5], O[7]]), \
+        f"两族各 3 张, P 先、轮流、族内按日均: {[c['source_note_id'] for c in cards]}"
+    assert [c["product_in_body"] for c in cards] == [True, False] * 3
+    assert cards[0]["rank_score"] == round(7.5 / 8, 3) and cards[1]["rank_score"] == round(9.5 / 10, 3)
+    role_ids = [ids for qs, ids in _answer_reads(sb.log) if qs == [X.PRODUCT_QID]]
+    assert {i for ids in role_ids for i in ids} == set(nid(rows)), "product_role 窗口里每一篇都查"
+    # P 族功效题挡掉 3 篇, 只剩 1 张: O 补满 6 张
+    ans2 = [a for a in ans if not (a["question_id"] == "efficacy_promise" and a["subject_id"] in nid(P[5:]))] \
+        + [_ans(r["note_id"], "efficacy_promise", "是") for r in P[5:]]
+    sb2 = _SB({"external_notes": rows, "note_feature_answers": ans2, X.MASK_TABLE: [_mask(r, []) for r in rows]})
+    assert [c["source_note_id"] for c in X.fetch_shelf(sb2, ["鼻炎"], CFG, now=now)] == \
+        ext([P[4], O[9], O[8], O[7], O[6], O[5]]), "P 族只剩 1 张: O 族补满"
+
+    # product_role 查不了: 和 D-140 一模一样 (不分族、前 6 张按日均), 卡上 product_in_body 是 None; warning 只打一次
+    X._FAMILY_WARNED.clear()
+    caught: list = []
+    handler = logging.Handler()
+    handler.emit = lambda rec: caught.append(rec.getMessage())
+    X.logger.addHandler(handler)
+    try:
+        bad = _SB({"external_notes": rows, "note_feature_answers": ans, X.MASK_TABLE: [_mask(r, []) for r in rows]},
+                  fail_qids={X.PRODUCT_QID})
+        down = X.fetch_shelf(bad, ["鼻炎"], CFG, now=now)
+        again = X.fetch_shelf(bad, ["鼻炎"], CFG, now=now)
+    finally:
+        X.logger.removeHandler(handler)
+    today = [f"ext:{r['note_id']}" for r, _, _ in X.qualified(rows, CFG, {r["note_id"]: {"efficacy_promise": "否"}
+                                                                          for r in rows}, now=now)][:6]
+    assert [c["source_note_id"] for c in down] == today == ext(O[4:][::-1]), \
+        "product_role 读不了: 照 D-140 排 (品类中位数、前 6 张按日均)"
+    assert all(c["product_in_body"] is None for c in down) and down == again
+    assert sum("product_role 读不了" in m for m in caught) == 1, f"product_role 读不了只 warning 一次: {caught}"
+    assert X.fetch_roles(sb, [rows[0]["note_id"]]) == {rows[0]["note_id"]: roles[rows[0]["note_id"]]} \
+        and X._FAMILY_WARNED == [], "读成功一次就重置, 下次再坏再打"
+
+    # 卡面 / 回给写作台 / 指纹
+    txt = core.build_system_blocks({}, [CARD] + cards)[0]["text"]
+    assert f"[{cards[0]['source_note_id']}] 外部参考|鼻炎｜正文写了产品｜别家同品类最近涨得快的帖" in txt, txt
+    assert f"[{cards[1]['source_note_id']}] 外部参考|鼻炎｜别家同品类最近涨得快的帖" in txt and txt.count("正文写了产品") == 3, \
+        "只有 P 卡标「正文写了产品」"
+    assert "正文写了产品" not in core.build_system_blocks({}, [CARD] + down)[0]["text"], "没分族的卡不标"
+    assert core._enrich(cards[0], "r", "b")["product_in_body"] is True and \
+        core._enrich(cards[1], "r", "b")["product_in_body"] is False and \
+        core._enrich(down[0], "r", "b")["product_in_body"] is None, "product_in_body 回给写作台"
+    assert "product_in_body" not in core._enrich(CARD, "r", "b"), "内部卡不带"
+    c0 = cards[0]
+    assert len({X.digest([c0]), X.digest([dict(c0, product_in_body=False)]), X.digest([dict(c0, product_in_body=None)])}) == 3, \
+        "正文写没写产品进指纹: 分族 / 不分族 / 族变了, 缓存都换"
+    print("  §4b 分族 (D-141): product_role 主角 / 解决方案 = P、别的 / 没答 = O; 中位数和百分位按族算 (P 帖低于品类中位数、"
+          "不低于 P 族中位数照样达标); 不到 5 篇的族用品类的; 6 张两族各 3 (P 先轮流)、不够另一族补; product_role 查不了 = "
+          "D-140 原样、warning 一次; 窗口里每一篇都查 product_role; P 卡标「正文写了产品」、回给写作台、进指纹 ✓")
+
+
 def s5_version() -> None:
     now = time.time()
     cards = [CARD]
@@ -346,6 +457,8 @@ class _Q:
 
     def in_(self, c, vs):
         vs = {str(x) for x in vs}
+        if c == "question_id":
+            self.qids = vs
         self.f.append(lambda r: str(r.get(c)) in vs)
         return self._log("in_", (c, sorted(vs)))
 
@@ -364,6 +477,8 @@ class _Q:
         tab = self.db.tables.get(self.t, [])
         if isinstance(tab, Exception):
             raise tab
+        if self.db.fail_qids & getattr(self, "qids", set()):
+            raise RuntimeError(f"{sorted(self.db.fail_qids)} down")
         rows = [r for r in tab if all(f(r) for f in self.f)]
         if self.rng:
             rows = rows[self.rng[0]:self.rng[1] + 1]
@@ -373,8 +488,8 @@ class _Q:
 
 
 class _SB:
-    def __init__(self, tables):
-        self.tables, self.log = tables, []
+    def __init__(self, tables, fail_qids=()):
+        self.tables, self.log, self.fail_qids = tables, [], set(fail_qids)   # fail_qids: 问到这几道题的读一律抛
 
     def schema(self, s):
         return self
@@ -392,6 +507,18 @@ def _ans(nid, q, a, at="2026-11-01T00:00:00+00:00"):
 def _mask(row, terms, *, stale=False):
     return {"note_id": row["note_id"], "terms": terms,
             "text_sha": "0" * 64 if stale else X.mask_text_sha(row.get("title"), row.get("body"))}
+
+
+def _answer_reads(log) -> list[tuple[list, list]]:
+    """假库日志里每一次读 note_feature_answers: (问了哪几道题, 哪些 id)。fetch_answers 先 in_ 题号再 in_ id。"""
+    out, qs = [], None
+    for t, a in log:
+        if t == "in_" and a[0] == "question_id":
+            qs = a[1]
+        elif t == "in_" and a[0] == "subject_id" and qs is not None:
+            out.append((qs, a[1]))
+            qs = None
+    return out
 
 
 def _sel(ids):
@@ -463,6 +590,8 @@ def s6_end_to_end() -> None:
             and e0["age_at_scrape_days"] == 10, "选中卡的摘录截到 600 字; 外部卡带现在发出几天、抓到时发出几天、那时日均评论"
         assert e0["fq"] == {"opening_type": "具体事件"} and e0["structure"] == "开头先讲一件具体的事", \
             "结构题和功效题一次查; 卡上只带结构题"
+        assert all(s["product_in_body"] is False for s in ext), \
+            "D-141: 这摞外部帖都没答 product_role → 都在 O 族, 选中回给写作台的行带 product_in_body false"
         e1 = next(s for s in res["selected"] if s["source_note_id"] == E[1])
         assert "某品牌" in e1["excerpt"] and "BrandX" not in e1["excerpt"], "回给写作台的摘录也是遮过的"
     assert len(set(keys[-2:])) == 2, "两臂缓存仍分开"
@@ -474,8 +603,11 @@ def s6_end_to_end() -> None:
     assert any(t == "gte" and a[0] == "fetched_at" for t, a in sb.log), "只拉最近 45 天抓到的"
     assert any(t == "table" and a == ("note_feature_answers",) for t, a in sb.log) and \
         any(t == "eq" and a == ("subject_type", "external_note") for t, a in sb.log), "上架的卡去查 Jev 给外部帖答的题"
-    asked_ids = [a[1] for t, a in sb.log if t == "in_" and a[0] == "subject_id"]
+    asked_ids = [ids for qs, ids in _answer_reads(sb.log) if X.EFFICACY_QID in qs]
     assert asked_ids and all(rows[5]["note_id"] not in ids for ids in asked_ids), "答案只给过了便宜那几道的帖查"
+    role_ids = [ids for qs, ids in _answer_reads(sb.log) if qs == [X.PRODUCT_QID]]
+    assert role_ids and any(rows[5]["note_id"] in ids for ids in role_ids), \
+        "D-141: product_role 窗口里每一篇都查 (评论不够的也算进中位数)"
     mask_ids = [a[1] for t, a in sb.log if t == "in_" and a[0] == "note_id"]
     assert mask_ids and all(rows[4]["note_id"] not in ids for ids in mask_ids), "遮挡表只给功效题过了的帖查"
 
@@ -647,13 +779,15 @@ def s7_wiring() -> None:
     src = (ROOT / "scripts" / "check_external_direction.py").read_text(encoding="utf-8")
     assert "X.qualified(" in src and "X.fetch_answers(" in src, \
         "方向复核报的书架达标数要用同一个 qualified (连功效题), 不许另抄一份口径"
+    assert "X.fetch_roles(" in src and src.count("roles=roles") >= 3, \
+        "D-141: 方向复核报的达标数也要分族 (同一个 fetch_roles, candidates / qualified 都带 roles)"
     wf = (ROOT / ".github" / "workflows" / "daily-sync.yml").read_text(encoding="utf-8")
     assert "python check_external_direction.py" in wf, "每周方向复核没接进夜跑"
     assert "python mask_external_names.py" in wf and "python backfill_content_layer.py" in wf, \
         "遮挡词 / 内容层补填没接进夜跑"
     lib = (ROOT / "librarian" / "external.py").read_text(encoding="utf-8")
     assert 'get("has_product") is False' not in lib, "D-140: has_product 不再当上架条件"
-    print("  §7 接线: 方向复核报书架达标数 (同一个 qualified, 连功效题)、遮挡词和内容层补填接进夜跑 ✓")
+    print("  §7 接线: 方向复核报书架达标数 (同一个 qualified, 连功效题、连分族)、遮挡词和内容层补填接进夜跑 ✓")
 
 
 def main() -> int:
@@ -661,11 +795,12 @@ def main() -> int:
     s2_match()
     s3_qualifies()
     s4_order_and_card()
+    s4b_families()
     s5_version()
     s6_end_to_end()
     s6b_ensure_external()
     s7_wiring()
-    print("\ncheck_external_shelf: 8 节全过")
+    print("\ncheck_external_shelf: 9 节全过")
     return 0
 
 

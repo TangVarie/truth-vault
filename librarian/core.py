@@ -348,7 +348,9 @@ def _render_cards(cards: list[dict]) -> str:
             shape = f"\n  结构: {c['structure']}" if c.get("structure") else ""
             # D-140: 摘录只给遮过品牌 / 产品名的 (某品牌 / 某产品); 没遮过的卡只给结构, 不给原文
             excerpt = excerpt or "(这张只给结构, 不给原文)"
-            blocks.append(f"[{c.get('source_note_id')}] 外部参考|{c.get('category')}｜别家同品类最近涨得快的帖, "
+            # D-141: 正文里把产品当主角 / 解决方案写的帖 (P 族) 卡头标一句; O 族 / 没分族的不标
+            pib = "正文写了产品｜" if c.get("product_in_body") is True else ""
+            blocks.append(f"[{c.get('source_note_id')}] 外部参考|{c.get('category')}｜{pib}别家同品类最近涨得快的帖, "
                           f"只借结构不抄内容, 别提它的品牌\n  {speed}{shape}\n  摘要: {excerpt}")
             continue
         head = f"[{c.get('source_note_id')}] {c.get('tier')}|{c.get('brand')}|{c.get('category')}"
@@ -428,9 +430,10 @@ def _enrich(card: dict, why_relevant, borrow_what) -> dict:
         "validated_hits": list(card.get("validated_hits") or []),   # P4: 这张卡命中了哪几条已验证规律
         "external": X.is_external(card),   # D-117: 外部参考卡 (别家同品类帖, 不是帆谷投的)
     }
-    if row["external"]:   # D-138: 现在发出几天、抓到时发出几天和那时每天多少条评论、Jev 答的结构题
+    if row["external"]:   # D-138: 现在发出几天、抓到时发出几天和那时每天多少条评论、Jev 答的结构题; D-141: 正文写没写产品
         row.update(posted_days_ago=card.get("posted_days_ago"), age_at_scrape_days=card.get("age_at_scrape_days"),
-                   comments_per_day=card.get("comments_per_day"), fq=dict(card.get("fq") or {}))
+                   comments_per_day=card.get("comments_per_day"), fq=dict(card.get("fq") or {}),
+                   product_in_body=card.get("product_in_body"))
     return row
 
 

@@ -22,6 +22,8 @@ check_external_direction.py
 顺带报外部参考书架 (D-117 ②, librarian/external.py) 每个品类达标几张 —— 和馆员上架用同一个 qualified (D-138: 发出 3–90 天、
 最近抓到、评论 ≥20、日均评论不低于同品类中位数; D-140: 带产品也收, Jev 功效题答「否」才收), 口径只有一份; 功效题的答案
 也用馆员同一个 X.fetch_answers 取。另报这些帖里有几篇已经有有效的遮挡行 (没有的上架时只给结构)。书架的评论门槛不再是这里判爆的 50: 书架看起量速度, 这里看闸二的结果标签。
+D-141 起书架分产品贴 (P: Jev 全文答 product_role 主角 / 解决方案) 和其他 (O) 两族, 每篇和自己那族的中位数比; 这里也用馆员
+同一个 X.fetch_roles 分族, 每个品类后面括号里报两族各几篇; product_role 读不了就照 D-140 不分族报, 并写明。
 
 灯 (docs/29 登记, advisory): 有一条规律在够样本、品类内区间整段 < 1 时 → rc=1, 提醒这条可能只在我们自己帖子上成立,
 该拿出来议 (改下发的是批准层, 修在 TV 仓 prompts/desk_delivery_v1.json + 新 D 号)。外部表空 / 某道题的外部答案不止一个
@@ -120,20 +122,29 @@ def judge(patterns: list[dict], notes: list[dict], answers: dict[str, dict[str, 
 
 
 def shelf_counts(notes: list[dict], cfg: Optional[dict], answers: Optional[dict] = None, *,
-                 masks: Optional[dict] = None, now: Optional[float] = None) -> list[str]:
+                 masks: Optional[dict] = None, now: Optional[float] = None, roles: Optional[dict] = None) -> list[str]:
     """外部参考书架每个登记品类达标几张 (纯函数; ``now`` 给 selftest 钉时间)。登记了、外部表里还没有的品类报 0。
     ``answers``: {note_id: {题: 答}} (X.fetch_answers); None = 读不了 → 报「判不了」, 不报 0。
-    ``masks``: {note_id: 遮挡行} (X.fetch_masks); 给了就另报每个品类达标帖里有几篇有有效遮挡行。"""
+    ``masks``: {note_id: 遮挡行} (X.fetch_masks); 给了就另报每个品类达标帖里有几篇有有效遮挡行。
+    ``roles``: {note_id: product_role} (X.fetch_roles, D-141); 给了就按族比中位数、每个品类括号里报 产品贴 / 其他 各几篇;
+    None = 读不了 → 照 D-140 不分族, 行里写明。"""
     if not cfg:
         return ["  ⚠️  外部参考书架配置读不了, 馆员这次不给外部卡"]
     if answers is None:
         return ["  ⚠️  外部帖的功效题答案读不了, 书架达标数这次判不了 (馆员那边这时也不给外部卡)"]
-    cands = X.candidates(notes, cfg, now=now)
-    got = X.qualified(notes, cfg, answers, now=now)
-    n = {c: sum(1 for r, _, _ in got if r.get("category") == c) for c in cfg["categories"]}
-    out = ["外部参考书架达标 (发出 {}–{} 天 · 最近 {} 天抓到 · 评论 ≥{} · 日均评论不低于同品类中位数 · 不像广告 · "
-           "功效题答「否」): ".format(X.MIN_AGE_DAYS, cfg["max_age_days"], X.FRESH_DAYS, cfg["min_comments"])
-           + " · ".join(f"{c} {k}" for c, k in n.items())
+    cands = X.candidates(notes, cfg, now=now, roles=roles)
+    got = X.qualified(notes, cfg, answers, now=now, roles=roles)
+
+    def per_cat(c: str) -> str:
+        rs = [r for r, _, _ in got if r.get("category") == c]
+        if roles is None:
+            return f"{c} {len(rs)}"
+        p = sum(1 for r in rs if X.family(roles, r.get("note_id")) == X.FAMILY_P)
+        return f"{c} {len(rs)} (产品贴 {p} · 其他 {len(rs) - p})"
+    med = "同品类同一族 (产品贴 / 其他) 的中位数" if roles is not None else "同品类中位数 (product_role 读不了, 这次不分族)"
+    out = ["外部参考书架达标 (发出 {}–{} 天 · 最近 {} 天抓到 · 评论 ≥{} · 日均评论不低于{} · 不像广告 · "
+           "功效题答「否」): ".format(X.MIN_AGE_DAYS, cfg["max_age_days"], X.FRESH_DAYS, cfg["min_comments"], med)
+           + " · ".join(per_cat(c) for c in cfg["categories"])
            + f"  (功效题挡掉 {len(cands) - len(got)} 篇)"]
     if masks is not None:
         ok = {c: sum(1 for r, _, _ in got if r.get("category") == c
@@ -330,9 +341,21 @@ def selftest() -> int:
                                   "text_sha": X.mask_text_sha(rows[0].get("title"), rows[0].get("body"))}}
     two = shelf_counts(rows, cfg, ans, masks=masks, now=now)
     assert "有效遮挡行" in two[1] and "鼻炎 1" in two[1], two
+    assert "不分族" in line, "没给 product_role: 照 D-140 不分族, 行里写明"
+    # D-141 分族: 戒烟 P 6 篇日均 2 / 4 / … / 12 (P 族中位数 7), O 6 篇日均 20 / 40 / … / 120 (O 族中位数 70);
+    # 品类 12 篇中位数 16 —— 不分族达标的 6 篇全是 O; 分族后两族各 3 篇
+    p = [ext("戒烟", 20 * k, 10) for k in range(1, 7)]
+    o = [ext("戒烟", 200 * k, 10) for k in range(1, 7)]
+    fam = p + o
+    fans = {r["note_id"]: {"efficacy_promise": "否"} for r in fam}
+    assert "戒烟 6 · " in shelf_counts(fam, cfg, fans, now=now)[0], shelf_counts(fam, cfg, fans, now=now)
+    roles = {r["note_id"]: "解决方案" for r in p}
+    line = shelf_counts(fam, cfg, fans, now=now, roles=roles)[0]
+    assert "戒烟 6 (产品贴 3 · 其他 3)" in line and "同一族" in line and "鼻炎 0 (产品贴 0 · 其他 0)" in line, line
     _selftest_gather(d)
     print("  ✓ selftest: 同向 / 反向亮黄 / 持平不算反 / 中间段不进表 / 品类内比 / 不显著的反向不亮 / 抽取器混了不判 / "
-          "样本不够不判 / 品牌类不适用 / 表空 / 书架达标数 (带产品也算、功效题挡、遮挡行数) / 取答案只认 external、抽取器混了标出来")
+          "样本不够不判 / 品牌类不适用 / 表空 / 书架达标数 (带产品也算、功效题挡、遮挡行数、分族报两族各几篇) / 取答案只认 external、"
+          "抽取器混了标出来")
     return 0
 
 
@@ -348,15 +371,16 @@ def main() -> int:
     notes, answers, mixed = gather(sb, d)
     rc, lines = judge(d["patterns"], notes, answers, mixed)
     cfg = X.load_config()
-    shelf_ans = masks = None
+    shelf_ans = masks = roles = None
     if cfg:
-        ids = [r["note_id"] for r, _, _ in X.candidates(notes, cfg)]
+        roles = X.fetch_roles(sb, X.window_ids(notes, cfg))   # 和馆员同一个函数 (D-141); 读不了 = None, 不分族报
+        ids = [r["note_id"] for r, _, _ in X.candidates(notes, cfg, roles=roles)]
         try:
             shelf_ans = X.fetch_answers(sb, ids)      # 和馆员同一个函数: 分批翻页、取最后抽的
             masks = X.fetch_masks(sb, ids)
         except Exception as exc:  # noqa: BLE001 —— 书架那行判不了不影响上面的方向判断
             print(f"  ⚠️  书架达标数要的答案读不了: {type(exc).__name__}: {str(exc)[:160]}")
-    print("\n".join(lines + shelf_counts(notes, cfg, shelf_ans, masks=masks)))
+    print("\n".join(lines + shelf_counts(notes, cfg, shelf_ans, masks=masks, roles=roles)))
     print(f"EXTERNAL_DIRECTION_CHECK_DONE rc={rc}")
     return rc
 

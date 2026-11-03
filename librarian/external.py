@@ -9,7 +9,8 @@
   · 抓到时发出 3–max_age_days 天 (不到 3 天的评论还没涨完), 且是最近 FRESH_DAYS 天里抓到的;
   · 评论 ≥ min_comments;
   · 日均评论 = 评论 / max(发出天数, 3) 不低于同品类这批帖 (同样 3–max_age_days 天、最近抓到的, 不管有没有产品) 的中位数;
-  · 每个品类按日均评论从高到低给模型看前 show_per_request 张。卡的 rank_score 是日均评论在同品类这批帖里的百分位,
+  · 每个品类按日均评论从高到低给模型看前 show_per_request 张 (D-141 起两族各一半, 见下)。卡的 rank_score 是日均评论在同品类
+    (D-141 起: 同品类同一族) 这批帖里的百分位,
     卡上带抓到时发出几天、共几条评论、那时每天几条 (三个数是同一次抓取量的, 乘得回去), 另带现在发出几天
     (posted_days_ago, 命中缓存时按 id 重算; 不和日均评论挨着写, 免得读的人拿现在的天数去乘), 和 Jev 给这篇答的结构题
     (开头怎么起、有没有转折、结尾问没问读者……)。why_it_worked 只写抓取那一刻定下的数, 缓存放多久都不过时。
@@ -32,8 +33,21 @@
   · Jev 全文答的 efficacy_promise (健康功效说法) 是「是」的不上架, 没答的也不上架 (fail-closed, 和写作台发牌一致, F-08)。
 点到我们自己登记品牌的照旧不上架: 那多半是我们自己铺的帖, 不是"别家的自然流量"。卡头写明「外部参考 · 只借结构不抄内容」。
 
+产品贴 / 其他分两族排 (D-141, 11-03 起): 正文里把产品当主角 / 解决方案写的帖起量天然慢 —— 11-03 只读, 近 45 天抓到、
+抓到时发出 3–90 天、不像广告: 产品贴 220 篇日均评论中位数 0.71, 提问 / 求助 54 篇 4.65, 其他 212 篇 2.84。混在一起排,
+戒烟、求职留学给模型看的 6 张里一张产品贴都没有, 写产品贴时没有外部的样子可看。外部参考不许因为写了产品就被压下去:
+  · 族看 Jev 全文答的 product_role (最新的有效答案): 主角 / 解决方案 = P; 别的 (顺带一提、只暗示、未出现、没答) = O,
+    提问 / 求助的帖也在 O 里。窗口里每一篇都要查 (中位数要全体), 同 fetch_answers 100 篇一批、翻到空页;
+  · 中位数按 (品类, 族) 算, 每篇只和自己那族比; 百分位 (rank_score) 也在自己那族里排。一族在窗口里不到 MIN_FAMILY_N 篇,
+    这一族的中位数和百分位用整个品类的;
+  · 给模型看的 show_per_request 张两族各一半: P 先, 两族轮流, 族内按日均评论从高到低; 一族不够, 另一族接着补满;
+  · 卡上 product_in_body: P 是 true、O 是 false, 馆员 prompt 的卡头写「正文写了产品」; 进外部卡指纹 (digest)。
+    强塞那张 (D-140 规则) 不看族, 照旧是遮过的卡里日均最高的;
+  · product_role 读不了 → 这次当一族排 (D-140 的老样子), 卡上 product_in_body 是 None, warning 只打一次 (恢复了再坏再打)。
+
 fail-open (对内部卡): 配置读不了 / 查库失败 / 这个品类还没有外部帖 → 这次没有外部卡, 照常选内部卡。
 fail-closed (对外部卡): Jev 的答案 (功效题 + 结构题) 查不了 → 这个品类这次没有外部卡; 遮挡表读不了 → 全部只给结构。
+fail-soft (D-141): product_role 查不了 → 不分族, 照 D-140 排。
 """
 
 from __future__ import annotations
@@ -71,6 +85,13 @@ EFFICACY_QID = "efficacy_promise"   # Jev 全文答的健康功效说法 (D-140 
 ANSWER_QIDS = STRUCTURE_QIDS + (EFFICACY_QID,)
 ANSWERS_CHUNK = 100         # 一次 .in_() 带这么多个 id, URL 不会过长 (同 aw deskcore/store.py NOTE_ANSWERS_CHUNK)
 _ANSWER_MAX_PAGES = 20      # 每批 100 篇 × 7 题 × 抽取器版本, 一页 1000 行; 翻到这么多页还没到空页 = 不对劲, 当读不了 (不静默截断)
+PRODUCT_QID = "product_role"        # Jev 全文答的「正文里产品是什么角色」(D-141 分族用)
+PRODUCT_ROLES = ("主角", "解决方案")  # 这两个算产品贴 (P); 顺带一提 / 只暗示 / 未出现 / 没答 都算 O
+FAMILY_P, FAMILY_O = "P", "O"
+FAMILY_ORDER = (FAMILY_P, FAMILY_O, None)   # 轮流放的顺序; None = product_role 读不了, 不分族 (只有这一族)
+MIN_FAMILY_N = 5            # 一族在窗口里不到 5 篇: 中位数就是一两篇的数 (4 篇是中间两篇的平均), 下一次抓取进一两篇就换个样,
+                            # 达标的最多也就两篇; 这时用整个品类的中位数和百分位。11-03 只读只有个护的 O 族 (4 篇) 落在这里
+_FAMILY_WARNED: list[bool] = []
 MASK_TABLE = "external_note_masks"
 MASK_RULES = "m1"           # 遮挡规则 (clean_terms / apply_mask) 的版本, 进外部卡指纹: 规则一改, 旧缓存里的摘录全部作废
 _MASK_WARNED: list[bool] = []
@@ -260,9 +281,23 @@ def in_window(row: dict, cfg: dict, now: Optional[float] = None) -> bool:
             and fetched is not None and now - fetched <= FRESH_DAYS * DAY_S)
 
 
+def window_ids(rows: list[dict], cfg: dict, *, now: Optional[float] = None) -> list[str]:
+    """在窗口里的帖的 id (算中位数的那一批) —— 分族要给它们每一篇查 product_role (D-141)。"""
+    now = time.time() if now is None else now
+    return [str(r["note_id"]) for r in rows if r.get("note_id") and in_window(r, cfg, now)]
+
+
+def family(roles: Optional[dict], note_id) -> Optional[str]:
+    """``roles`` ({note_id: product_role}, fetch_roles 给的) 里这篇算哪一族: 主角 / 解决方案 → P, 别的 / 没答 → O。
+    ``roles`` 是 None (读不了) → None: 不分族, 整个品类一族 (D-140 的老样子)。"""
+    if roles is None:
+        return None
+    return FAMILY_P if roles.get(str(note_id)) in PRODUCT_ROLES else FAMILY_O
+
+
 def qualifies(row: dict, cfg: dict, median: Optional[float], *, now: Optional[float] = None) -> bool:
-    """便宜的那几道 (不查库): 在窗口里 (in_window)、评论够、日均评论不低于同品类中位数 (``median``; None = 这个品类没有
-    可比的帖, 不收)、不像广告 (ad_like 不是 true)、标题正文里没点到【我们登记的】品牌 (那多半是我们自己铺的帖)。
+    """便宜的那几道 (不查库): 在窗口里 (in_window)、评论够、日均评论不低于同品类 (D-141 起: 同品类同一族) 的中位数
+    (``median``; None = 没有可比的帖, 不收)、不像广告 (ad_like 不是 true)、标题正文里没点到【我们登记的】品牌 (那多半是我们自己铺的帖)。
     D-140 起不看 has_product: 带不带产品都收, 别家品牌 / 产品名上架时按遮挡表换掉 (apply_mask)。
     功效说法那道要查 Jev 的答案, 在 efficacy_ok / qualified 里。"""
     v = velocity(row)
@@ -285,30 +320,58 @@ def _percentile(v: float, pool: list[float]) -> float:
     return (lo + hi) / 2 / len(pool)
 
 
-def candidates(rows: list[dict], cfg: dict, *, now: Optional[float] = None) -> list[tuple[dict, float, float]]:
-    """按品类算日均评论的中位数 (同品类、在窗口里的帖, 不管有没有产品), 留下过了便宜那几道 (qualifies) 的, 品类内按日均评论
-    从高到低 (同速按 note_id)。返回 [(行, 日均评论, 百分位)]; 品类按第一次出现的顺序。纯函数。
-    功效说法那道要查库, 只给这一步留下来的帖查 (qualified / fetch_shelf)。"""
+def candidates(rows: list[dict], cfg: dict, *, now: Optional[float] = None,
+               roles: Optional[dict] = None) -> list[tuple[dict, float, float]]:
+    """按 (品类, 族) 算日均评论的中位数 (在窗口里的帖, 不管有没有产品), 留下过了便宜那几道 (qualifies) 的, 品类内按日均评论
+    从高到低 (同速按 note_id; 两族混着排, 给模型看哪几张由 split_shown 定)。返回 [(行, 日均评论, 百分位)]; 品类按第一次
+    出现的顺序。纯函数。功效说法那道要查库, 只给这一步留下来的帖查 (qualified / fetch_shelf)。
+    ``roles``: {note_id: product_role} (fetch_roles 给的, D-141); 每篇只和自己那族比, 百分位也在自己那族里排; 一族在窗口里
+    不到 MIN_FAMILY_N 篇就用整个品类的中位数和百分位。``roles`` 是 None (读不了 / 不给) → 不分族, 和 D-140 一模一样。"""
     now = time.time() if now is None else now
     by_cat: dict = {}
     for r in rows:
         by_cat.setdefault(r.get("category"), []).append(r)
     out: list[tuple[dict, float, float]] = []
     for rs in by_cat.values():
-        pool = sorted(v for r in rs if in_window(r, cfg, now) and (v := velocity(r)) is not None)
-        if not pool:
+        win = [(r, v) for r in rs if in_window(r, cfg, now) and (v := velocity(r)) is not None]
+        if not win:
             continue
-        med = statistics.median(pool)
-        got = [(r, velocity(r)) for r in rs if qualifies(r, cfg, med, now=now)]
+        whole = sorted(v for _, v in win)
+        by_fam: dict = {}
+        for r, v in win:
+            by_fam.setdefault(family(roles, r.get("note_id")), []).append(v)
+        # 族 → (中位数, 排百分位的那一池); 小族用整个品类的
+        pools = {f: sorted(vs) if f is None or len(vs) >= MIN_FAMILY_N else whole for f, vs in by_fam.items()}
+        meds = {f: statistics.median(p) for f, p in pools.items()}
+        got = []
+        for r in rs:
+            f = family(roles, r.get("note_id"))
+            if f in pools and qualifies(r, cfg, meds[f], now=now):
+                got.append((r, velocity(r), pools[f]))
         got.sort(key=lambda t: (-t[1], str(t[0].get("note_id"))))
-        out += [(r, v, _percentile(v, pool)) for r, v in got]
+        out += [(r, v, _percentile(v, pool)) for r, v, pool in got]
     return out
 
 
-def qualified(rows: list[dict], cfg: dict, answers: dict, *, now: Optional[float] = None) -> list[tuple[dict, float, float]]:
-    """真正上架的口径: candidates 里 Jev 功效题答了「否」的 (``answers``: {note_id: {题: 答}}, fetch_answers 取的)。
-    纯函数, 馆员上架和方向复核报数都用它 —— 口径只有一份。``answers`` 给空 = 一篇都不收 (fail-closed)。"""
-    return [t for t in candidates(rows, cfg, now=now) if efficacy_ok(answers.get(str(t[0].get("note_id"))))]
+def qualified(rows: list[dict], cfg: dict, answers: dict, *, now: Optional[float] = None,
+              roles: Optional[dict] = None) -> list[tuple[dict, float, float]]:
+    """真正上架的口径: candidates 里 Jev 功效题答了「否」的 (``answers``: {note_id: {题: 答}}, fetch_answers 取的;
+    ``roles`` 同 candidates)。纯函数, 馆员上架和方向复核报数都用它 —— 口径只有一份。``answers`` 给空 = 一篇都不收 (fail-closed)。"""
+    return [t for t in candidates(rows, cfg, now=now, roles=roles)
+            if efficacy_ok(answers.get(str(t[0].get("note_id"))))]
+
+
+def split_shown(by_family: dict, n: int) -> list:
+    """给模型看的那 ``n`` 张 (D-141): 两族轮流放, P 先 (FAMILY_ORDER), 族内照原来的顺序 (日均评论从高到低); 一族放完了,
+    另一族接着补, 放满 ``n`` 张或两族都放完为止。``by_family`` 的键是 P / O / None (None = product_role 读不了, 只有这一族,
+    结果就是前 ``n`` 张, 和 D-140 一样)。``n`` 是奇数时 P 多一张。纯函数。"""
+    queues = [list(by_family.get(f) or []) for f in FAMILY_ORDER]
+    out: list = []
+    while len(out) < n and any(queues):
+        for q in queues:
+            if q and len(out) < n:
+                out.append(q.pop(0))
+    return out
 
 
 def describe(fq: Optional[dict]) -> Optional[str]:
@@ -320,13 +383,15 @@ def describe(fq: Optional[dict]) -> Optional[str]:
 
 
 def to_card(row: dict, cfg: Optional[dict] = None, *, rate: Optional[float] = None, pct: Optional[float] = None,
-            fq: Optional[dict] = None, now: Optional[float] = None, mask: Optional[list] = None) -> dict:
+            fq: Optional[dict] = None, now: Optional[float] = None, mask: Optional[list] = None,
+            fam: Optional[str] = None) -> dict:
     """``cfg`` 给 mask_terms 用; 不给就读默认配置 (读不了就不换, 但那时整个书架本来就不出卡)。
     ``rate`` / ``pct`` 是 qualified() 算好的日均评论和百分位 (不给就按这一行自己算日均、百分位记 0);
     ``fq`` 是 Jev 给这篇答的结构题; ``now`` 用来算现在发出几天 (posted_days_ago)。
     ``mask`` 是这篇有效的遮挡词 (valid_mask 给的, 可以是空列表 = 查过了没有要遮的); None = 没有有效遮挡行 →
     raw_excerpt 给空串, 卡上只有结构 (D-140: 没遮过的原文不出书架)。``masked`` 标这张卡的摘录是不是遮过的 ——
-    只有遮过的卡能被强塞 (forceable)。
+    只有遮过的卡能被强塞 (forceable)。``fam`` 是这篇的族 (family 给的, D-141): P → product_in_body true (卡头写
+    「正文写了产品」), O → false, None (product_role 读不了) → None。
 
     why_it_worked 只写抓取那一刻定下的数 (抓到时发出几天、共几条评论、那时每天几条): 写作台模型读它, 缓存行一放一周,
     写「现在发出几天」会和命中时重算的 posted_days_ago 对不上; 百分位是上架那天同品类那批帖排出来的, 也会过时,
@@ -362,6 +427,7 @@ def to_card(row: dict, cfg: Optional[dict] = None, *, rate: Optional[float] = No
         "structure": describe(fq),
         "why_it_worked": why,
         "transferable_tactic": "只借结构 / 钩子, 不抄内容, 不提它的品牌",
+        "product_in_body": None if fam is None else fam == FAMILY_P,   # D-141: 正文里产品是主角 / 解决方案
         "masked": mask is not None,
         "raw_excerpt": (apply_mask(f"{row.get('title') or ''} {row.get('body') or ''}".strip(), mask, cfg)
                         if mask is not None else ""),
@@ -431,6 +497,22 @@ def fetch_answers(sb, ids: list, qids=ANSWER_QIDS) -> dict[str, dict[str, str]]:
     return out
 
 
+def fetch_roles(sb, ids: list) -> Optional[dict[str, str]]:
+    """这几篇 Jev 全文答的 product_role {note_id: 答} (D-141 分族用): 走 fetch_answers 同一条路 (100 篇一批、每批翻到空页、
+    同一题取最后抽的有效答案), 没答的不在里面 (算 O)。读不了 → None: 调用方这次不分族 (D-140 的老样子), 不抛;
+    warning 只打一次, 读成功一次之后再坏再打。"""
+    try:
+        got = fetch_answers(sb, ids, qids=(PRODUCT_QID,))
+    except Exception:  # noqa: BLE001
+        if not _FAMILY_WARNED:
+            _FAMILY_WARNED.append(True)
+            logger.warning("外部帖 product_role 读不了: 这次不分产品贴 / 其他两族, 整个品类一起排 (D-141 之前的样子)",
+                           exc_info=True)
+        return None
+    _FAMILY_WARNED.clear()
+    return {nid: a[PRODUCT_QID] for nid, a in got.items() if a.get(PRODUCT_QID)}
+
+
 def _missing_table(exc: BaseException) -> bool:
     s = f"{exc!r} {exc}"
     return MASK_TABLE in s and any(m in s for m in ("PGRST205", "42P01", "does not exist", "Could not find the table"))
@@ -470,28 +552,32 @@ def valid_mask(row: dict, mask_row: Optional[dict]) -> Optional[list]:
 
 
 def fetch_shelf(sb, categories: list[str], cfg: dict, *, now: Optional[float] = None) -> list[dict]:
-    """这些品类里上架的外部帖: 便宜那几道 (candidates) → 给留下的帖查 Jev 的答案 (功效题 + 结构题, 分批翻页) → 功效题答了
-    「否」的 → 查这些帖的遮挡行 → 按日均评论从高到低转成卡, 每个品类取前 show_per_request 张。没有有效遮挡行的卡只给结构;
-    连结构都没有的跳过、往下补 (排序不变, 还是按日均评论)。答案查不了照抛 (shelf_for 接住: 这个品类这次没有外部卡)。"""
+    """这些品类里上架的外部帖: 窗口里每一篇查 product_role 分族 (fetch_roles; 读不了就不分族) → 便宜那几道 (candidates,
+    每篇和自己那族的中位数比) → 给留下的帖查 Jev 的答案 (功效题 + 结构题, 分批翻页) → 功效题答了「否」的 → 查这些帖的
+    遮挡行 → 转成卡, 每个品类给模型看 show_per_request 张, 两族各一半、轮流放 (split_shown, D-141)。没有有效遮挡行的卡
+    只给结构; 连结构都没有的跳过、由同一族的下一张补 (族内还是按日均评论)。答案查不了照抛 (shelf_for 接住: 这个品类
+    这次没有外部卡); product_role 查不了不抛 (不分族, 照 D-140 排, 照样进缓存)。"""
     now = time.time() if now is None else now
     out: list[dict] = []
     for cat in categories:
-        cands = candidates(_category_rows(sb, cat, now), cfg, now=now)
+        rows = _category_rows(sb, cat, now)
+        roles = fetch_roles(sb, window_ids(rows, cfg, now=now))
+        cands = candidates(rows, cfg, now=now, roles=roles)
         if not cands:
             continue
         answers = fetch_answers(sb, [r["note_id"] for r, _, _ in cands])
         ok = [(r, v, p) for r, v, p in cands if efficacy_ok(answers.get(str(r["note_id"])))]
         masks = fetch_masks(sb, [r["note_id"] for r, _, _ in ok]) if ok else {}
-        got = 0
+        by_fam: dict = {}
         for r, v, p in ok:
             nid = str(r["note_id"])
-            card = to_card(r, cfg, rate=v, pct=p, fq=answers.get(nid), now=now, mask=valid_mask(r, masks.get(nid)))
+            fam = family(roles, nid)
+            card = to_card(r, cfg, rate=v, pct=p, fq=answers.get(nid), now=now, mask=valid_mask(r, masks.get(nid)),
+                           fam=fam)
             if not card["raw_excerpt"] and not card["structure"]:
                 continue
-            out.append(card)
-            got += 1
-            if got >= int(cfg["show_per_request"]):
-                break
+            by_fam.setdefault(fam, []).append(card)
+        out += split_shown(by_fam, int(cfg["show_per_request"]))
     return out
 
 
@@ -521,14 +607,18 @@ def shelf_for(sb, brief: dict, *, path: Path = CONFIG_PATH, now: Optional[float]
     return out
 
 
+_PIB = {True: "P", False: "O"}      # product_in_body 进指纹的写法; None (没分族) → "-"
+
+
 def digest(cards: list[dict]) -> str:
-    """进 library_version 的外部卡指纹: 卡的 id、**卡面摘录、结构、摘录遮没遮过**, 再加遮挡规则的版本 (MASK_RULES)。
+    """进 library_version 的外部卡指纹: 卡的 id、**卡面摘录、结构、摘录遮没遮过、正文写没写产品 (D-141)**, 再加遮挡规则的
+    版本 (MASK_RULES)。
     只认 id 的话, mask_terms 补了一个新品牌 / 夜跑新列了一篇的遮挡词, 卡面变了而版本没变, 旧缓存里没遮的摘录会一直被
     命中 (codex review on TV#202); 结构题晚到也一样。遮挡规则 (clean_terms / apply_mask) 改了就升 MASK_RULES。
     现在发出几天每天都在变, 不进指纹 (命中缓存时按 id 重算, core._refresh_external); 卡上别的数 (why_it_worked 也是)
     都是抓取那一刻定下的, 不随时间变。没有外部卡时与以前一样 (空串的哈希)。"""
     parts = sorted(f"{c.get('source_note_id')}\x00{c.get('raw_excerpt') or ''}\x00{c.get('structure') or ''}"
-                   f"\x00{int(bool(c.get('masked')))}" for c in cards)
+                   f"\x00{int(bool(c.get('masked')))}\x00{_PIB.get(c.get('product_in_body'), '-')}" for c in cards)
     if not parts:
         return hashlib.sha256(b"").hexdigest()[:10]
     return hashlib.sha256((MASK_RULES + "\n" + "\n".join(parts)).encode("utf-8")).hexdigest()[:10]
