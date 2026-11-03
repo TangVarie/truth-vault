@@ -120,6 +120,10 @@ CI 和 daily-sync workflow 都优先读 `.lock`; `.txt` 仅作为 "high-level in
 #         essence 标注那一刻的指纹 (只有 essence 之后正文真改过的篇过期, 11-02 预演 508 篇); 夜跑 essence 先标没标过的再重标过期的,
 #         夜跑策展分两遍: 先每个项目策展新卡, 再拿剩下的预算重策展 essence 比卡新的 (--daily-pass new / stale)。
 #         代码宽容: 没跑之前照旧 (essence 只标没标过的、策展只策展新卡), 打一行 warning (D-137, 外部审计 11-02 F02)
+#   - schemas/notes_v1_24_external_masks_content_layer.sql → 外部帖遮挡词表 external_note_masks (外键到 external_notes, 级联删) +
+#         notes.content_layer (P 产品贴 / T 流量贴 / Q 提问贴 / J 精品贴, CHECK)。daily 项目由 feishu 同步每晚整行重写时填,
+#         on_demand 项目由 backfill_content_layer.py 只往空里填; 遮挡词由 mask_external_names.py 夜跑列。
+#         代码宽容: 没跑之前外部卡只给结构、sync 不写内容层, 别的照旧 (在 v1_18 之后; D-140)
 #   - autowriter-migrations/001_create_autowriter_schema.sql → 把 autowriter 表从 public 迁到 autowriter schema
 #   - autowriter-migrations/002_add_external_source.sql     → items 加 (external_source, external_source_id) 列
 #         + per-user partial UNIQUE (user_id, external_source, external_source_id) WHERE external_source IS NOT NULL.

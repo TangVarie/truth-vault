@@ -98,6 +98,7 @@ direction_decomposition:
     user_pain_point: 被伴侣/前任评价表现差的自尊焦虑
 
   "D10-产品贴":                       # 33 条; 直接产品介绍/科普
+    layer: P                          # 内容层 (D-140): 产品贴
     content_format: 直给推荐          # 产品直给
     target_audience: ["年轻男性", "中年男性"]
     user_pain_point: "直接产品认知(口溶膜剂型优势: 15分钟起效/不用等)"

@@ -82,41 +82,49 @@ field_mapping:
 direction_decomposition:
 
   "产品-全家桶":                    # 35 条(最多); 粉色+深蓝+浅蓝三盒组合
+    layer: P                          # 内容层 (D-140): 产品贴
     content_format: 直给推荐        # [待确认] 产品组合推荐
     target_audience: ["通用"]       # [待确认]
     user_pain_point: 不同阶段痘痘需要不同处理方案, 一次备齐   # [待确认]
 
   "产品-76贴囤货":                  # 34 条; 浅蓝76片组合装(圆形+方形双尺寸)
+    layer: P                          # 内容层 (D-140): 产品贴
     content_format: 直给推荐        # [待确认] 囤货方案
     target_audience: ["通用"]       # [待确认]
     user_pain_point: 小包装用着用着就没了, 需要大包量囤货   # [待确认]
 
   "产品-功能说明":                  # 31 条
+    layer: P                          # 内容层 (D-140): 产品贴
     content_format: 教程攻略        # [待确认] 产品功能说明/使用方法
     target_audience: ["通用"]       # [待确认]
     user_pain_point: 不知道痘痘贴怎么分场景使用   # [待确认]
 
   "流量-不破皮痘":                  # 31 条; 粉色款(没破痘专用, 催熟)
+    layer: T                          # 内容层 (D-140): 流量贴
     content_format: 场景植入        # [待确认] 未破痘急救场景
     target_audience: ["通用"]       # [待确认]
     user_pain_point: 红肿硬块痘, 需要催熟不能闷   # [待确认]
 
   "产品-微针":                      # 27 条
+    layer: P                          # 内容层 (D-140): 产品贴
     content_format: 直给推荐        # [待确认] 微针型痘痘贴产品推荐
     target_audience: ["通用"]       # [待确认]
     user_pain_point: 需要促进吸收的微针痘痘贴   # [待确认]
 
   "产品-oly上架":                   # 19 条; Olive Young 上架/测评
+    layer: P                          # 内容层 (D-140): 产品贴
     content_format: 横评对比        # [待确认] OliveYoung 店内横评对比
     target_audience: ["通用"]       # [待确认]
     user_pain_point: Olive Young 里痘痘贴选择困难   # [待确认]
 
   "流量-破皮痘":                    # 11 条; 深蓝款(破痘专用, 吸液隔菌)
+    layer: T                          # 内容层 (D-140): 流量贴
     content_format: 场景植入        # [待确认] 已破痘急救场景
     target_audience: ["通用"]       # [待确认]
     user_pain_point: 破痘有渗液, 需要封口防感染   # [待确认]
 
   "产品-对比":                      # 7 条; 与竞品对比
+    layer: P                          # 内容层 (D-140): 产品贴
     content_format: 横评对比        # [待确认] 竞品对比
     target_audience: ["通用"]       # [待确认]
     user_pain_point: 不知道选哪个品牌的痘痘贴   # [待确认]

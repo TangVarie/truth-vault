@@ -44,11 +44,13 @@ field_mapping:
 # 叙述者身份是确定的, 不是 D-010 意义上的"臆造"。
 direction_decomposition:
   "好物分享-产品贴":
+    layer: P                          # 内容层 (D-140): 产品贴
     content_format: 场景植入                      # 家庭场景切入 + 成分/选购判断落点
     target_audience: ["宝妈"]
     user_pain_point: 儿童DHA+叶黄素选购中怕踩坑(成分表看不懂/怕交智商税/怕买到杂牌)
 
   "提问贴":
+    layer: Q                          # 内容层 (D-140): 提问贴
     content_format: 情感叙事                      # 关系冲突(婆婆/老公/亲戚/同学)作钩子, 落到营养认知
     target_audience: ["宝妈"]
     user_pain_point: 家人在儿童营养上认知不一致, 沟通受挫

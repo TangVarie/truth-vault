@@ -408,6 +408,25 @@ jobs:
       #  那条路, 而那条路没人写(push 没跑过、deskcore 明说不碰), 所以从上线起每晚 rc=2 "无法评估"。
       #  步骤、脚本、登记册行、CI 冒烟一起摘掉; v1_8 的视图留着不碍事。)
 
+      - name: 内容层补填 · 夜跑不同步的 on_demand 项目按库里的方向原值和 intent 填 content_layer (advisory, 不 fail · D-140)
+        if: steps.check.outputs.skip != 'true' && always()
+        working-directory: scripts
+        run: |
+          # D-140: daily 项目的 content_layer 由上面 feishu → TV 那一步每晚整行重写时带上; 夜跑跳过的 on_demand 项目
+          # (HXZ / NRT / NUC / TGV / TXQ) 不会再被重写, 这一步按同一个 _common.derive_layer 只往空里填。可以重跑, 填过的 0 行。
+          # notes.content_layer 还没建 (v1_24 没跑) → rc=2, 什么都不写。dry_run 只算不写。崩了靠哨兵行判 (docs/29)。
+          DRY_FLAG=""; [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY_FLAG="--dry-run"
+          set +e
+          python backfill_content_layer.py $DRY_FLAG 2>&1 | tee /tmp/content_layer.log
+          set -e
+          if ! grep -q '^CONTENT_LAYER_BACKFILL_CHECK_DONE rc=' /tmp/content_layer.log; then
+            echo "::warning title=内容层补填崩了::脚本没跑到底(没有哨兵行), 上面的 traceback 是真问题 —— advisory 不拖红, 去修。"
+          elif grep -q '^CONTENT_LAYER_BACKFILL_CHECK_DONE rc=1' /tmp/content_layer.log; then
+            echo "::warning title=内容层补填有写失败的::见上面 ⚠️ 那几行; 没填上的下一晚接着填 (只往空里填)。"
+          elif grep -q '^CONTENT_LAYER_BACKFILL_CHECK_DONE rc=2' /tmp/content_layer.log; then
+            echo "::notice title=内容层这一晚没填::notes.content_layer 还没建 (owner 在 SQL editor 跑 schemas/notes_v1_24_external_masks_content_layer.sql)。"
+          fi
+
       - name: prune 馆员旧缓存 (advisory, 不 fail)
         if: steps.check.outputs.skip != 'true' && always()
         working-directory: scripts
@@ -455,6 +474,31 @@ jobs:
           elif grep -q '^EXTERNAL_CORPUS_CHECK_DONE rc=2' /tmp/external_corpus.log; then
             # rc=2 = 判不了 (表空 / 时间认不出): "从没进过货"正是这盏灯要抓的那种"绿但空", 不能只躺在日志里 (codex review on #169)
             echo "::warning title=外部语料新鲜度判不了::external_notes 是空的或最新时间认不出 —— 外部语料可能从没写进过 TV, 去 Jev 仓看 external-corpus 有没有成功过一次。"
+          fi
+
+      - name: 外部帖遮挡词 · 模型只列品牌 / 产品名, 代码核过逐字出现才存 (advisory, 不 fail · D-140)
+        if: steps.check.outputs.skip != 'true' && always() && github.event.inputs.skip_essence != 'true'
+        working-directory: scripts
+        env:
+          MASK_MODEL: ${{ vars.MASK_MODEL }}
+        run: |
+          # D-140: 外部参考书架不再只收「没带产品」的帖, 别家品牌 / 产品名靠遮。这一步给没列过的、正文变过的外部帖列词
+          # (truth_vault.external_note_masks), 馆员上架时代码替换成「某品牌」/「某产品」, 模型从不改写正文。每晚最多 1500 篇
+          # (第一晚把现有约 1,419 篇一次列完), 25 分钟到点不再开新批; 之后每晚只有新进的。跟 essence 同一份中转站密钥,
+          # 模型 repo variable MASK_MODEL, 没设 = claude-haiku-5-5。dry_run 照常调模型、不写库。
+          # advisory 不拖红: 没列上的只是那几篇这几天卡上只给结构 (fail-closed)。崩了靠哨兵行判 (docs/29)。
+          [ -n "$MASK_MODEL" ] || unset MASK_MODEL
+          DRY_FLAG=""; [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY_FLAG="--dry-run"
+          set +e
+          python mask_external_names.py $DRY_FLAG 2>&1 | tee /tmp/external_mask.log
+          set -e
+          if ! grep -q '^EXTERNAL_MASK_CHECK_DONE rc=' /tmp/external_mask.log; then
+            echo "::warning title=外部帖遮挡词崩了::脚本没跑到底(没有哨兵行), \
+          上面的 traceback 是真问题 —— advisory 不拖红, 但新进的外部帖这几天都只能给结构, 去修。"
+          elif grep -q '^EXTERNAL_MASK_CHECK_DONE rc=1' /tmp/external_mask.log; then
+            echo "::warning title=外部帖遮挡词有批次失败::见上面 ⚠️ 那几行: 调用失败 (余额 / 中转站) / 拆到一篇还回的不是 JSON (带 stop_reason) / 写库失败。没列上的下一晚接着列, 这期间那几篇卡上只给结构。"
+          elif grep -q '^EXTERNAL_MASK_CHECK_DONE rc=2' /tmp/external_mask.log; then
+            echo "::notice title=外部帖遮挡词这一晚没列::遮挡表还没建 (owner 在 SQL editor 跑 schemas/notes_v1_24_external_masks_content_layer.sql) / 外部表读不了 / 没有 ANTHROPIC_API_KEY。外部卡这期间只给结构。"
           fi
 
       - name: 外部方向复核 · 下发的规律在别家帖子上方向还对不对 (每周一, advisory, 不 fail)

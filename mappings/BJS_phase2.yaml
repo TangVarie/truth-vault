@@ -66,14 +66,22 @@ field_mapping:
 # 这四个字段在 sync 的 UPSERT_PROTECTED_COLS 里: 送了就写, 以后改名或删键都清不掉旧值(I-17), 措辞定了再动。
 direction_decomposition:
   "好物分享-产品贴":                 # 15 篇; 全部点名品牌、先给生活场景再带出产品
+    layer: P                          # 内容层 (D-140): 产品贴
     content_format: 场景植入
     target_audience: ["宝妈", "通用"]
     user_pain_point: 补剂要吃好几样、颗粒大不好吞(孩子不配合 / 鱼油反腥), 想精简成每天吃得下去的一颗 DHA(给上学的孩子 / 自己久坐用脑、备考)
 
   "提问贴":                         # 55 篇; 45 篇结尾真在问(求推荐 / 怎么选), 只有 2 篇已发布的点名品牌
+    layer: Q                          # 内容层 (D-140): 提问贴
     content_format: 提问求助
     target_audience: ["宝妈", "通用"]
     user_pain_point: 想给孩子、自己或爸妈补 DHA 又拿不准(藻油 / 鱼油 / 磷虾油怎么选、难咽反腥、成分和来源看不懂)
+
+  # 精品贴 (D-140, 11-03 只读 3 篇): 只写内容层, 不写 content_format / 人群 / 痛点 —— 这几列在 UPSERT_PROTECTED_COLS 里,
+  # 送了就清不掉 (I-17), 篇数太少、还没看过文案, 先不定; 这 3 篇照旧由 essence 标 content_format。
+  # 只有 layer 的方向在 sync 里什么都不抬 (和没登记一样), 只是不再算「没映上的方向」。
+  "精品贴":
+    layer: J                          # 内容层 (D-140): 精品贴
 
 tier_extraction:
   source: 状态字段

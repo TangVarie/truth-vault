@@ -100,6 +100,9 @@ jobs:
             librarian/external.py \
             scripts/check_external_shelf.py \
             scripts/check_external_direction.py \
+            scripts/mask_external_names.py \
+            scripts/backfill_content_layer.py \
+            scripts/check_content_layer.py \
             scripts/discover_feature_candidates.py \
             scripts/check_sync_watchdog.py \
             librarian/cli.py \
@@ -3748,6 +3751,9 @@ jobs:
       - name: 外部语料新鲜度灯 · report() 五种形状 (D-094)
         working-directory: scripts
         run: python check_external_corpus_fresh.py --selftest
+      - name: 外部帖遮挡词 + 内容层 (D-140)
+        working-directory: scripts
+        run: python mask_external_names.py --selftest && python check_content_layer.py && python backfill_content_layer.py --selftest
       - name: secret 掩码挂在 logger 出口 (B-11, RISKS R-023 后记) · 消息 / %-参数 / traceback / 源码引用 / 边界
         working-directory: scripts
         run: python check_secret_masking.py
@@ -7197,6 +7203,11 @@ jobs:
           [ "$GOT" = "$WANT" ] || { echo "❌ v1.23 生成列 / 写回之后的过期集合不对。期望 [$WANT] 实得 [$GOT]"; exit 1; }
           psql -v ON_ERROR_STOP=1 -q -c "DROP TABLE public.ci_v23_before; DELETE FROM truth_vault.notes WHERE project_id = 'CI_V23'; DELETE FROM truth_vault.projects WHERE project_id = 'CI_V23';"
           echo "✓ v1.23: SQL 指纹 = Python 指纹; 回填只让 essence 之后真改过的篇过期 (改回来 / 先改后标 / 只改空白话题都不算); 回填不写审计不动 updated_at; 生成列跟着正文走"
+      - name: Apply v1.24 遮挡词表 + notes.content_layer (+ idempotency; 夹具与反证 scripts/check_masks_content_layer.sql, D-140)
+        run: |
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_24_external_masks_content_layer.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_24_external_masks_content_layer.sql
+          psql -v ON_ERROR_STOP=1 -q -f scripts/check_masks_content_layer.sql
       - name: Apply security revoke (anon/authenticated write on public.* ) (+ idempotency)
         # 撤 anon/authenticated 对 5 张 public 表的写权限(读保留,不开 RLS)。
         # guarded:表/角色不存在则跳过 → 裸 PG / CI 为 no-op。REVOKE 幂等,两遍验。

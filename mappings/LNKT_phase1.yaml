@@ -156,6 +156,7 @@ field_mapping:
 direction_decomposition:
 
   "流量贴":                          # 74 条(最多)
+    layer: T                          # 内容层 (D-140): 流量贴
     # 实测标题: 被医生批评偏方不能乱用 / 打喷嚏把crush的咖啡吹飞了 / 老公把猫接回来我躲进卧室
     content_format: 情感叙事
     target_audience: ["通用", "宝妈"]
