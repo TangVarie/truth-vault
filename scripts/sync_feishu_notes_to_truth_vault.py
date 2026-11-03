@@ -574,7 +574,7 @@ def recover_missing_body(
     """有反馈链接、缺正文的一行 → (补好的行, meta); 不是这种行 / 补不上 → (原样, None)。
 
     pulled: 这一轮飞书拉到的 {record_id: 原始格}; stored: note_id → fetch_stored_body 的结果(dry-run 传恒 None)。
-    顺序: 父行(这一轮飞书)→ 父行(库里, 只在父行这一轮没正文时)→ 自己(库里)。
+    顺序: 父行(这一轮飞书)→ 父行(库里, 只在父行这一轮没正文时)→ 自己(库里, 库里的链接得和这一行现在的一样)。
     meta: {"route": "parent", "from": 父行 record_id, "source": "feishu"|"db", "filled": [...]}
        或 {"route": "kept", "filled": [...]}。"""
     if not content_col or not url_col or _has_body(raw_fields, content_col):
@@ -605,6 +605,12 @@ def recover_missing_body(
             if filled:
                 return out, {"route": "parent", "from": pid, "source": source, "filled": filled}
     db = stored(make_note_id(project_id, record_id))
+    if db and str(db.get("publish_url") or "").strip() != own_url:
+        # 库里这篇的链接和这一行现在的链接对不上 = 这一行多半被拿去登记了另一篇(换了链接、正文还没写)→ 旧正文
+        # 不能配新链接的指标, 不留, 照旧隔离让人看(自审 #267)
+        logger.warning("record_id=%s 正文空了, 但库里那篇的链接和现在的对不上(这一行换了一篇?)→ 不留旧正文, 照旧隔离",
+                       record_id)
+        return raw_fields, None
     if db:
         src = {content_col: db["raw_content"]}
         if title_col:

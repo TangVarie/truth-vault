@@ -2732,7 +2732,9 @@ jobs:
           assert 'reason=inh_reason' in src and '_count_quarantined(' in src.split("reason=inh_reason", 1)[1][:400], "判不了必须隔离且走计数"
           # 继承后的行: platform 覆写 + 双留痕
           assert 'note["platform"] = inherit_spec["platform_override"]' in src
-          assert '"_content_inherited_from"' in src and '"content_inherited"' in src
+          # 只看 D-052 那一段(D-144 的 mark_recovered_body 也写 "content_inherited", 整文件搜会空跑)
+          d052 = src.split('["_content_inherited_from"] = inherited_meta["from"]', 1)[1][:600]
+          assert 'flags["content_inherited"] = True' in d052 and 'note["data_quality_flags"] = flags' in d052
           print("  ✓ 只看挨不挨着: 上一条小红书→沿用(素人编号无关); 上一条抖音→判不了点名; 空行→点名; 留痕+platform")
 
           # ③ ssll: 平台先看笔记自己的 —— 继承来的抖音行是 douyin, 项目是小红书

@@ -425,6 +425,13 @@ def check_missing_body_recovery() -> None:
         "§9 已入库的笔记飞书正文空了 → 正文留库里那份"
     assert engine.recover_missing_body(cleared["fields"], record_id="recK", pulled={}, stored=lambda _n: None,
                                        **common)[1] is None, "§9 库里也没有 → 补不上(照旧隔离)"
+    moved = {"BJS_phase2_recK": dict(kept_db["BJS_phase2_recK"], publish_url="https://xhslink.cn/o/OLD")}
+    assert engine.recover_missing_body(cleared["fields"], record_id="recK", pulled={}, stored=moved.get,
+                                       **common)[1] is None, \
+        "§9 库里那篇的链接和这一行现在的对不上(这一行换登记了另一篇)→ 不留旧正文, 照旧隔离(自审 #267)"
+    spaced = {"BJS_phase2_recK": dict(kept_db["BJS_phase2_recK"], publish_url=" https://xhslink.cn/o/K ")}
+    assert engine.recover_missing_body(cleared["fields"], record_id="recK", pulled={}, stored=spaced.get,
+                                       **common)[1], "§9 库里老链接带首尾空白也算同一篇"
     orphan = _bjs_row("recO", url="https://xhslink.cn/o/O", parent="recGONE")
     assert engine.recover_missing_body(orphan["fields"], record_id="recO", pulled={}, stored=lambda _n: None,
                                        **common)[1] is None, "§9 父行哪儿都找不到、自己也不在库里 → 补不上"
@@ -442,12 +449,12 @@ def check_missing_body_recovery() -> None:
     titled = {"标题": "title", "正文": "raw_content", "链接": "publish_url"}
     t_out, t_meta = engine.recover_missing_body(
         {"链接": "https://x/k"}, record_id="r", project_id="T", content_col="正文", title_col="标题", url_col="链接",
-        pulled={}, stored={"T_r": {"raw_content": "库里正文", "title": "库里标题"}}.get)
+        pulled={}, stored={"T_r": {"raw_content": "库里正文", "title": "库里标题", "publish_url": "https://x/k"}}.get)
     assert t_out == {"链接": "https://x/k", "正文": "库里正文", "标题": "库里标题"} and t_meta["filled"] == ["正文", "标题"], \
         f"§9 有标题列的表: 标题也空就一并补 {titled}"
     t_out, _ = engine.recover_missing_body(
         {"链接": "https://x/k", "标题": "飞书里的新标题"}, record_id="r", project_id="T", content_col="正文",
-        title_col="标题", url_col="链接", pulled={}, stored={"T_r": {"raw_content": "库里正文", "title": "旧"}}.get)
+        title_col="标题", url_col="链接", pulled={}, stored={"T_r": {"raw_content": "库里正文", "title": "旧", "publish_url": "https://x/k"}}.get)
     assert t_out["标题"] == "飞书里的新标题", "§9 飞书里标题还在 → 不拿库里的旧标题盖"
 
     # transform 之后: 子行自己的链接 / 素人 / 指标, 父行的正文, 双留痕
@@ -531,9 +538,9 @@ def check_missing_body_recovery() -> None:
 
             def pages(b, order_by=None):
                 asked = getattr(b, "asked", None)
-                if asked is not None:
+                if asked is not None:      # D-058「没处理成的行库里有没有 note」: 照库里真有的答, 不然盖戳断言空跑
                     b.asked = None
-                    return []
+                    return [{"note_id": i} for i in asked if i in kept_db]
                 return []
             engine.fetch_all_pages = pages
 
