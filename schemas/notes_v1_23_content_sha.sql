@@ -37,7 +37,8 @@
 -- 怎么跑: owner 在 Supabase SQL editor 整份跑一次 (或 MCP apply_migration, 文件与 main 一字不差)。可以重跑: 函数 CREATE OR
 --   REPLACE、两列 IF NOT EXISTS、回填只碰 essence_content_sha 还是空的已标篇。加生成列会把 notes 整表重写一遍 (6838 行,
 --   几秒, 期间锁表), 别和 daily-sync 撞 (11-03 更正: daily-sync 约 09:30 UTC 开跑、要跑两三个小时, 11-03 那晚 essence
---   跑到 11:30 以后; 在 09:00–13:30 UTC 之外跑。11-02 就是撞上了: 迁移跑完时夜跑还在用旧代码标 essence, 75 篇没写指纹)。
+--   跑到 11:30 以后; cron 是 02:17 UTC, GitHub 常拖到 07:30–09:30 才开跑, 所以跑之前先在 Actions 页看一眼 daily-sync 没在跑。
+--   11-02 就是撞上了: 迁移跑完时夜跑还在用旧代码标 essence, 75 篇没写指纹)。
 --   回填那一段临时关掉 notes 上的审计触发器和 updated_at 触发器 (同一个事务里关、写、开, 中途出错整段回滚、触发器不会停在关着):
 --   6835 行只写一个派生列, 不该往 audit_log 灌 6835 行噪声, 也不该把每篇的 updated_at 都改成今天。
 -- 跑完看最后那行 SELECT (预期: 已标 6835 左右、回填 6835 左右、过期几百 —— 11-02 预演是 508; 如果过期接近已标总数,

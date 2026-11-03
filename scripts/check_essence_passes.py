@@ -48,5 +48,7 @@ assert "TV_JOB_STARTED_AT" in code and "180 * 60" in code, "时限按开工时�
 assert "--pass new" in code and "--pass stale" in code
 assert code.index("--pass new") > code.index("skip_on_cron.py"), "新篇那一趟也要过 on_demand 闸"
 assert "WORKER_LIMIT - ${ESS_NEW_FOUND[$p]:-0}" in code, "两趟加起来不超过每项目的日上限"
+assert code.index("ESS_REM[$p]:-") < code.rindex("ESS_DEADLINE\" ]"), "第二趟先看有没有活, 再看时限 (没活的不记成留到下一晚)"
+assert "ESS_FAILED[$p]=1" in code and "${#ESS_FAILED[@]}" in code, "按项目记失败, 第一趟失败的第二趟不再跑"
 print("  ✓ daily-sync 的 essence 两趟 + 时限已接上, 每项目上限两趟合计")
 print("\nessence passes + deadline: all checks passed")
