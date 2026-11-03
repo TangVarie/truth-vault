@@ -221,17 +221,31 @@ jobs:
           # worker_fail_kind 的瞬时/系统性分类、409 锁, 都是 Railway 边缘 ~5 min 超时和跨 run 共用一个 worker 才有的
           # 东西 —— 直跑没有那道墙: 每项目【一次】调用, --limit 给整份日预算; 脚本自己按 essence_annotated_at IS NULL
           # 续作、单条失败各重试一次、只有全军覆没 / hygiene 漂移才退非零 (_exit_code_for_stats, 可单测)。
-          # 跨 workflow 的互斥改由 concurrency.group 兜: backfill-essence / recurate-lessons 和本 workflow 同一个组,
-          # 排队不并跑 (以前靠 worker 的每脚本锁)。
+          # ⚠️ 跨 workflow 没有互斥 (11-03 更正; 原注释说三者同一个 concurrency.group, 不对): backfill-essence 的组是
+          # backfill-essence-<项目>、recurate-lessons 的组是 recurate-lessons, 和本 workflow 不同组, 会并跑。手动起那两个时
+          # 避开 daily-sync 的时段; 撞上了也只是同一篇被标两次 (幂等, 后写的赢), 不坏数据。
+          # 两趟 + 时限 (11-03): 先给所有项目标没标过的 (pass new), 再回头重标正文改过的 (pass stale, D-137);
+          # 每个项目两趟加起来照旧不超过 $WORKER_LIMIT 篇。essence 最晚到开工后 180 分钟 (job 上限 240, 后面 gate3 /
+          # 策展 / ssll / 内容层 / 外部帖遮名字还要 ~35 分钟): 到点之后不再开新项目, 正在标的那个项目标完手上这一篇就停,
+          # 剩下的下一晚幂等续标。起因: D-137 之后 OKMAN 268 篇真改过正文的旧篇要几晚才消完, 中转站慢的那一小时
+          # (11-03 09:40–10:42 约 96 秒一篇) 赶上的话, 按字母序排在后面的 TUGE / XIWU 当晚的新篇会被挤掉。
           # 模型: repo variable ESSENCE_MODEL 覆盖; 没设 = 代码默认 claude-sonnet-5-5 (D-098)。GitHub 会把没设的
           # variable 注成空串, 而 os.environ.get(..., default) 对空串不回默认 —— 所以空就 unset。
           [ -n "$ESSENCE_MODEL" ] || unset ESSENCE_MODEL
           DRY_FLAG=""; [ "${{ github.event.inputs.dry_run }}" = "true" ] && DRY_FLAG="--dry-run"
+          ESS_DEADLINE=$(( ${TV_JOB_STARTED_AT:-$(date +%s)} + 180 * 60 ))
+          declare -A ESS_REM=() ESS_NEW_FOUND=()
           fail_count=0
+          for pass in new stale; do
           for f in ../mappings/*.yaml; do
             p=$(basename "$f" .yaml)
             [ "$p" = "_template" ] && continue
             [ -n "$PROJECT_FILTER" ] && [ "$p" != "$PROJECT_FILTER" ] && continue
+            if [ "$(date +%s)" -ge "$ESS_DEADLINE" ]; then
+              echo "  ⏭  $p (pass=$pass) 到了 essence 时限 (开工后 180 分钟), 留到下一晚"
+              continue
+            fi
+            if [ "$pass" = "new" ]; then
             # ── on_demand 闸 (D-047) ──
             # 入库那一步早就跳过 on_demand 项目了(防没验证过的表被自动灌), 但这一步
             # 以前是裸遍历 —— 于是笔记一落库, 当晚就被 LLM 按【还没拍板】的方向拆解标注,
@@ -248,10 +262,13 @@ jobs:
             fi
             rem=$(python count_unannotated_essence.py "$p" 2>/dev/null || echo "?")
             [ "$rem" = "0" ] && { echo "  ✅ $p essence 已全部标完"; continue; }
-            echo "─── essence annotate (直连) · project=$p · 待标=$rem · 每日上限=$WORKER_LIMIT ───"
-            rc=0; python annotate_essence_pass.py "$p" --limit "$WORKER_LIMIT" $DRY_FLAG > /tmp/ess.log 2>&1 || rc=$?
-            # 「待标」里也数正文改过、essence 过期的篇 (D-137); 「content_sha 还没建」= v1_23 没跑, 这一轮照旧只标没标过的
-            grep -E 'Found [0-9]+ notes|Done:|全部失败|卫生断言|有 [0-9]+ 条失败|· gateway_filtered[ :]|content_sha 还没建' /tmp/ess.log | tail -6 || true
+            ESS_REM[$p]="$rem"
+            echo "─── essence annotate (直连) · pass=new · project=$p · 待标=$rem (含正文改过的) · 每日上限=$WORKER_LIMIT ───"
+            rc=0; python annotate_essence_pass.py "$p" --limit "$WORKER_LIMIT" --pass new --deadline-epoch "$ESS_DEADLINE" $DRY_FLAG > /tmp/ess.log 2>&1 || rc=$?
+            # 「待标」里也数正文改过、essence 过期的篇 (D-137, 第二趟再标); 「content_sha 还没建」= v1_23 没跑, 只标没标过的
+            n_new=$(sed -nE 's/.*Found ([0-9]+) notes.*/\1/p' /tmp/ess.log | tail -n 1)
+            ESS_NEW_FOUND[$p]="${n_new:-0}"
+            grep -E 'Found [0-9]+ notes|Done:|全部失败|卫生断言|有 [0-9]+ 条失败|· gateway_filtered[ :]|content_sha 还没建|到了时限' /tmp/ess.log | tail -6 || true
             if [ "$rc" != "0" ]; then
               tail -n 12 /tmp/ess.log
               # 脚本退非零 = 全军覆没 / hygiene 漂移 / 参数错 —— 多半是模型名 · 中转站 · 余额这类系统性问题, 判红排查。
@@ -259,6 +276,24 @@ jobs:
               echo "::error::essence $p 退出码 $rc —— 全军覆没 / hygiene 漂移 / 配置 (模型名 · 中转站 · 余额), 需排查; 已标的不丢, 下轮幂等续标。"
               fail_count=$((fail_count + 1))
             fi
+            continue
+            fi
+              # 第二趟: 第一趟判过跳过 / 没东西标的不再问一遍库; 新篇已经用满上限的今天不重标
+              [ -n "${ESS_REM[$p]:-}" ] || continue
+              lim=$(( WORKER_LIMIT - ${ESS_NEW_FOUND[$p]:-0} ))
+              if [ "$lim" -le 0 ]; then
+                echo "  ⏭  $p 今天新篇已用满上限 $WORKER_LIMIT, 正文改过的留到下一晚"
+                continue
+              fi
+              echo "─── essence annotate (直连) · pass=stale · project=$p · 上限=$lim ───"
+              rc=0; python annotate_essence_pass.py "$p" --limit "$lim" --pass stale --deadline-epoch "$ESS_DEADLINE" $DRY_FLAG > /tmp/ess.log 2>&1 || rc=$?
+              grep -E 'Found [0-9]+ notes|Done:|全部失败|卫生断言|有 [0-9]+ 条失败|· gateway_filtered[ :]|到了时限' /tmp/ess.log | tail -6 || true
+              if [ "$rc" != "0" ]; then
+                tail -n 12 /tmp/ess.log
+                echo "::error::essence $p (pass=stale) 退出码 $rc —— 全军覆没 / hygiene 漂移 / 配置 (模型名 · 中转站 · 余额), 需排查; 已标的不丢, 下轮幂等续标。"
+                fail_count=$((fail_count + 1))
+              fi
+          done
           done
           if [ $fail_count -gt 0 ]; then
             echo "::error::essence annotation failed for $fail_count project(s)"
