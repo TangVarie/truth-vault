@@ -182,7 +182,7 @@ def clean_terms(terms, text: str) -> list[dict]:
 
 
 def apply_mask(text: str, terms: list[dict], cfg: Optional[dict]) -> str:
-    """把 ``terms`` (clean_terms 过的) 和配置里的 mask_terms 一起, 一遍换掉: 长的先换 (「雅培安素」不会只换掉半截),
+    """把 ``terms`` (clean_terms 过的) 和配置里的 mask_terms 一起, 一遍换掉: 长的先换 (「某牌甲某系列」不会只换掉半截),
     拉丁字母不分大小写, 换上去的「某品牌」/「某产品」不会再被别的词匹配到。别的字一个不动。
     匹配式按每个词的【原样】编 (和 clean_terms 核对时同一个口径); 去重用 _same_term, 不用 casefold。"""
     if not text:
