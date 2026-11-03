@@ -137,20 +137,32 @@ def mask_text_sha(title, body) -> str:
     return hashlib.sha256(f"{title or ''}\n{body or ''}".encode("utf-8")).hexdigest()
 
 
+def _short_latin(t: str) -> bool:
+    return len(t) <= _SHORT_LATIN and all(_ASCII_ALNUM.fullmatch(ch) for ch in t)
+
+
 def _term_regex(t: str) -> str:
-    """一个词的匹配式: 逐字 (re.escape); 短的纯拉丁词两边不许紧挨着字母数字。大小写由调用方用 re.I。"""
+    """一个词的匹配式: 按【原样】逐字 (re.escape); 短的纯拉丁词两边不许紧挨着字母数字。大小写由调用方用 re.I。"""
     pat = re.escape(t)
-    if len(t) <= _SHORT_LATIN and all(_ASCII_ALNUM.fullmatch(ch) for ch in t):
+    if _short_latin(t):
         pat = rf"(?<![A-Za-z0-9]){pat}(?![A-Za-z0-9])"
     return pat
 
 
+def _same_term(a: str, b: str) -> bool:
+    """替换时算不算同一个词: 按各自原样编的匹配式 (re.I) 互相整串匹配得上, 词边界规则也一样 —— 和替换同一个口径。
+    不能拿 casefold 去重 / 编正则: ß、İ、ﬁ 这类字 casefold 之后变了样 (Straße → strasse), re.I 并不认,
+    词核过了却换不掉, 名字就漏出去了 (D-140 review)。"""
+    return (_short_latin(a) == _short_latin(b)
+            and re.fullmatch(_term_regex(a), b, flags=re.I) is not None
+            and re.fullmatch(_term_regex(b), a, flags=re.I) is not None)
+
+
 def clean_terms(terms, text: str) -> list[dict]:
     """模型列出来的词 → 能用的词: 只留在 ``text`` (标题 + 换行 + 正文) 里逐字出现的 (拉丁字母不分大小写, 同替换时的口径),
-    去掉空的 / 一个字的 / 带换行的, 按大小写不敏感去重 (先出现的留下)。k 只认 品牌 / 产品, 别的都当 品牌 (多遮不漏)。
-    纯函数; mask 脚本存之前用它, 馆员上架前再用一遍 (表里的行不全信)。"""
+    去掉空的 / 一个字的 / 带换行的, 按大小写不敏感去重 (先出现的留下; 口径见 _same_term)。k 只认 品牌 / 产品, 别的都当
+    品牌 (多遮不漏)。纯函数; mask 脚本存之前用它, 馆员上架前再用一遍 (表里的行不全信)。"""
     out: list[dict] = []
-    seen: set = set()
     for item in terms if isinstance(terms, list) else []:
         if isinstance(item, str):
             t, k = item, "品牌"
@@ -161,31 +173,39 @@ def clean_terms(terms, text: str) -> list[dict]:
         if not isinstance(t, str):
             continue
         t = t.strip()
-        if len(t) < 2 or "\n" in t or t.casefold() in seen:
+        if len(t) < 2 or "\n" in t or any(_same_term(t, o["t"]) for o in out):
             continue
         if not re.search(_term_regex(t), text or "", flags=re.I):
             continue
-        seen.add(t.casefold())
         out.append({"t": t, "k": k if k in MASK_BY_KIND else "品牌"})
     return out
 
 
 def apply_mask(text: str, terms: list[dict], cfg: Optional[dict]) -> str:
     """把 ``terms`` (clean_terms 过的) 和配置里的 mask_terms 一起, 一遍换掉: 长的先换 (「雅培安素」不会只换掉半截),
-    拉丁字母不分大小写, 换上去的「某品牌」/「某产品」不会再被别的词匹配到。别的字一个不动。"""
+    拉丁字母不分大小写, 换上去的「某品牌」/「某产品」不会再被别的词匹配到。别的字一个不动。
+    匹配式按每个词的【原样】编 (和 clean_terms 核对时同一个口径); 去重用 _same_term, 不用 casefold。"""
     if not text:
         return ""
-    kind: dict[str, str] = {}
+    entries: list[list[str]] = []        # [原样的词, 品牌 / 产品]
+
+    def put(t: str, k: str, override: bool) -> None:
+        for e in entries:
+            if _same_term(e[0], t):
+                if override:
+                    e[1] = k
+                return
+        entries.append([t, k])
     for t in ((cfg or {}).get("mask_terms") or []):
         if isinstance(t, str) and t.strip():
-            kind.setdefault(t.strip().casefold(), "品牌")
+            put(t.strip(), "品牌", False)
     for it in terms or []:
-        kind[it["t"].casefold()] = it["k"]
-    if not kind:
+        put(it["t"], it["k"], True)
+    if not entries:
         return text
-    pats = sorted(kind, key=len, reverse=True)
-    rx = re.compile("|".join(f"({_term_regex(t)})" for t in pats), flags=re.I)
-    return rx.sub(lambda m: MASK_BY_KIND[kind[pats[m.lastindex - 1]]], text)
+    entries.sort(key=lambda e: len(e[0]), reverse=True)
+    rx = re.compile("|".join(f"({_term_regex(t)})" for t, _ in entries), flags=re.I)
+    return rx.sub(lambda m: MASK_BY_KIND[entries[m.lastindex - 1][1]], text)
 
 
 def mask_brands(text: str, cfg: Optional[dict]) -> str:

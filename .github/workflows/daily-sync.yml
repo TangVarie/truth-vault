@@ -496,7 +496,7 @@ jobs:
             echo "::warning title=外部帖遮挡词崩了::脚本没跑到底(没有哨兵行), \
           上面的 traceback 是真问题 —— advisory 不拖红, 但新进的外部帖这几天都只能给结构, 去修。"
           elif grep -q '^EXTERNAL_MASK_CHECK_DONE rc=1' /tmp/external_mask.log; then
-            echo "::warning title=外部帖遮挡词有批次失败::见上面 ⚠️ 那几行: 调用失败 (余额 / 中转站) / 回的不是 JSON / 写库失败。没列上的下一晚接着列, 这期间那几篇卡上只给结构。"
+            echo "::warning title=外部帖遮挡词有批次失败::见上面 ⚠️ 那几行: 调用失败 (余额 / 中转站) / 拆到一篇还回的不是 JSON (带 stop_reason) / 写库失败。没列上的下一晚接着列, 这期间那几篇卡上只给结构。"
           elif grep -q '^EXTERNAL_MASK_CHECK_DONE rc=2' /tmp/external_mask.log; then
             echo "::notice title=外部帖遮挡词这一晚没列::遮挡表还没建 (owner 在 SQL editor 跑 schemas/notes_v1_24_external_masks_content_layer.sql) / 外部表读不了 / 没有 ANTHROPIC_API_KEY。外部卡这期间只给结构。"
           fi

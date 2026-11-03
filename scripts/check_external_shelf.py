@@ -274,6 +274,15 @@ def s4_order_and_card() -> None:
         "长拉丁词贴着别的字母也换 (漏遮比多遮坏)"
     assert X.apply_mask("某牌A和某牌A加强", [{"t": "某牌A", "k": "品牌"}, {"t": "某牌A加强", "k": "产品"}], None) \
         == "某品牌和某产品", "长的先换, 换上去的字不会再被匹配"
+    # review: casefold 之后变样的字 (ß / İ / ﬁ): 核对和替换同一个口径, 核过的词一定换得掉; 去重不拿 casefold 合并
+    for odd in ("Straße", "İpek", "ﬁt"):
+        kept = X.clean_terms([{"t": odd, "k": "品牌"}], f"{odd}牌")
+        assert kept == [{"t": odd, "k": "品牌"}] and X.apply_mask(f"{odd}牌", kept, None) == "某品牌牌", (odd, kept)
+        assert X.apply_mask(f"{odd}牌", [], {"mask_terms": [odd]}) == "某品牌牌", f"配置名单同一个口径: {odd}"
+    both = X.clean_terms([{"t": "Straße", "k": "品牌"}, {"t": "STRASSE", "k": "品牌"}, {"t": "STRASSE", "k": "产品"}],
+                         "Straße 和 STRASSE")
+    assert [t["t"] for t in both] == ["Straße", "STRASSE"], f"re.I 认不出是同一个词的两种写法都留: {both}"
+    assert X.apply_mask("Straße 和 STRASSE", both, None) == "某品牌 和 某品牌"
     print("  §4 排序和卡面: 按日均评论排、中位数算全体、百分位当 rank_score; 卡上抓到时天数 / 共几条 / 那时日均挨着写、"
           "现在发出几天另起; why_it_worked 只写抓取时的数; 结构; 能补的品类至少 1 张最多 2 张、没遮挡的品类只说最多; "
           "不再优先内部卡; 「已验证爆款」只说内部卡; 遮挡词逐字核对后换成「某品牌」/「某产品」、配置名单照换; "

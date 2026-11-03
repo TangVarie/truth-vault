@@ -504,8 +504,11 @@ def prompt_cache_summary() -> dict:
 
 
 def call_claude(prompt: str, model: str, *, cached_system: str | None = None,
-                max_attempts: int = 3, max_tokens: int = 2000) -> str:
+                max_attempts: int = 3, max_tokens: int = 2000, meta: dict | None = None) -> str:
     """Single Mode A call with exponential-backoff retry on transient errors.
+
+    meta: 若给定 (一个 dict), 成功那次的 ``stop_reason`` 写进 meta["stop_reason"] —— 调用方据此分得清「回到一半被
+      max_tokens 截断」和「回的就是垃圾」(外部帖遮挡词截断了就拆批重列, D-140 review)。不给 → 行为不变。
 
     cached_system: 若给定, 作为带 `cache_control: ephemeral` 的 system 块发送(Anthropic
       prompt caching), `prompt` 作 user message —— 稳定大前缀(essence 词表/schema)跨请求命中
@@ -548,7 +551,7 @@ def call_claude(prompt: str, model: str, *, cached_system: str | None = None,
     def _run(system_payload) -> str:
         create_kwargs: dict = {
             "model": model,
-            "max_tokens": max_tokens,     # 默认 2000 (essence / curate 一直是这个); 外部帖遮挡词一次列好几篇, 给 4000 (D-140)
+            "max_tokens": max_tokens,     # 默认 2000 (essence / curate 一直是这个); 外部帖遮挡词一次列好几篇, 给 8000 (D-140)
             "messages": [{"role": "user", "content": prompt}],
         }
         if system_payload is not None:
@@ -557,6 +560,8 @@ def call_claude(prompt: str, model: str, *, cached_system: str | None = None,
             try:
                 msg = client.messages.create(**create_kwargs)
                 _record_usage(msg)
+                if meta is not None:
+                    meta["stop_reason"] = getattr(msg, "stop_reason", None)
                 # Concatenate text blocks. Mode A responses are JSON, never tool calls.
                 parts = [b.text for b in msg.content if getattr(b, "type", None) == "text"]
                 return "".join(parts)

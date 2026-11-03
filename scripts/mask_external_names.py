@@ -16,11 +16,14 @@ mask_external_names.py
 
 模型: 环境变量 MASK_MODEL, 默认 claude-haiku-5-5 (本仓的小模型)。调用走 annotate_essence_pass.call_claude
 (ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL 中转站, 瞬时错误自带重试)。一次送 --batch 篇 (默认 8), 要严格 JSON。
-回的不是 JSON / 形状不对 → 这一批跳过、记一次错, 下一晚重列; 回里漏了某篇 → 那篇不写、下一晚重列。
+回的不是 JSON / 形状不对, 或回到一半被 max_tokens 截断 (stop_reason; 小模型默认带思考, 思考也占 max_tokens) →
+先把这一批对半拆开重列, 拆到一篇还不行才跳过、记一次错 (日志带 stop_reason), 下一晚重列 —— 不会因为同一批 8 篇
+每晚一起截断而永远列不上; 回里漏了某篇 → 那篇不写、下一晚重列。
 连着 3 批调用本身失败 (余额 / 鉴权 / 中转站挂了) → 这一晚不再往下调。
 
 灯 (docs/29 登记, advisory, 不拖红): 末行哨兵 EXTERNAL_MASK_CHECK_DONE rc=<码>; daily-sync 靠有没有这一行判崩溃。
-  rc=0 列完 (或没有要列的); rc=1 有批次失败 (调用失败 / 回的不是 JSON / 漏篇 / 写库失败), 没列完的下一晚接着;
+  rc=0 列完 (或没有要列的; 拆批重列成功不算失败);
+  rc=1 有批次失败 (调用失败 / 拆到一篇还回的不是 JSON / 漏篇 / 写库失败), 没列完的下一晚接着;
   rc=2 判不了: 遮挡表还没建 (owner 没跑 v1_24) / 读不了外部表 / 没有 ANTHROPIC_API_KEY。
 倒数第二行打用量: 调用次数、输入 / 输出 token, 按标价估的美元数 (中转站实价可能不同)。
 
@@ -49,7 +52,7 @@ DEFAULT_MODEL = "claude-haiku-5-5"
 DEFAULT_LIMIT = 1500        # 第一晚把现有的约 1,419 篇一次列完 (11-03)
 DEFAULT_BATCH = 8
 DEFAULT_MAX_MINUTES = 25    # 到点不再开新批 (夜跑总时长有灯盯着, D-073); 没列完的下一晚接着
-MAX_TOKENS = 4000
+MAX_TOKENS = 8000           # 一批 8 篇的词表 + 小模型默认带的思考 (思考也占 max_tokens); 还是截断了就拆批重列
 MAX_CONSECUTIVE_API_FAILS = 3
 PAGE = 1000
 UPSERT_CHUNK = 100
@@ -159,11 +162,19 @@ def upsert(sb, rows: list[dict]) -> None:
         sb.schema("truth_vault").table(X.MASK_TABLE).upsert(rows[i:i + UPSERT_CHUNK], on_conflict="note_id").execute()
 
 
-def run(sb, ask: Callable[[str], str], *, model: str, limit: int, batch_size: int, dry_run: bool,
+def _reply(r) -> tuple[str, Optional[str]]:
+    """``ask`` 回的: (原文, stop_reason) 或只有原文 (selftest 的假模型)。"""
+    if isinstance(r, tuple):
+        return str(r[0] or ""), (r[1] if len(r) > 1 else None)
+    return str(r or ""), None
+
+
+def run(sb, ask: Callable[[str], object], *, model: str, limit: int, batch_size: int, dry_run: bool,
         max_seconds: float, clock: Callable[[], float] = time.monotonic) -> tuple[int, dict]:
-    """主流程。``ask(prompt) -> 模型回的原文`` (真跑是 call_claude, selftest 是假的)。返回 (rc, 统计)。不抛。"""
+    """主流程。``ask(prompt) -> (模型回的原文, stop_reason)`` 或只回原文 (真跑是 call_claude, selftest 是假的)。
+    返回 (rc, 统计)。不抛。回的不是要的 JSON 或被 max_tokens 截断: 对半拆开重列, 拆到一篇还不行才算一次错。"""
     st = {"notes": 0, "todo": 0, "sent": 0, "written": 0, "with_terms": 0, "terms": 0, "batches": 0,
-          "api_errors": 0, "junk": 0, "missing": 0, "write_errors": 0, "left": 0}
+          "api_errors": 0, "junk": 0, "missing": 0, "write_errors": 0, "left": 0, "splits": 0}
     try:
         masks = fetch_mask_shas(sb)
     except Exception as exc:  # noqa: BLE001
@@ -196,33 +207,44 @@ def run(sb, ask: Callable[[str], str], *, model: str, limit: int, batch_size: in
             break
         st["batches"] += 1
         st["sent"] += len(batch)
-        try:
-            raw = ask(build_prompt(batch))
-        except Exception as exc:  # noqa: BLE001 —— 调用失败: 记一次, 下一晚重列
-            st["api_errors"] += 1
-            fails += 1
-            print(f"  ⚠️  第 {st['batches']} 批调用失败: {type(exc).__name__}: {str(exc)[:160]}")
-            continue
-        fails = 0
-        got = parse_reply(raw, batch)
-        if got is None:
-            st["junk"] += 1
-            print(f"  ⚠️  第 {st['batches']} 批回的不是要的 JSON, 跳过 (下一晚重列): {str(raw)[:120]!r}")
-            continue
-        rows = mask_rows(batch, got, model, now_iso)
-        st["missing"] += len(batch) - len(rows)
-        if dry_run:
-            st["written"] += len(rows)
-        else:
+        parts = [batch]
+        while parts and fails < MAX_CONSECUTIVE_API_FAILS:
+            part = parts.pop(0)
             try:
-                upsert(sb, rows)
-                st["written"] += len(rows)
-            except Exception as exc:  # noqa: BLE001
-                st["write_errors"] += 1
-                print(f"  ⚠️  第 {st['batches']} 批写库失败: {type(exc).__name__}: {str(exc)[:160]}")
+                raw, stop = _reply(ask(build_prompt(part)))
+            except Exception as exc:  # noqa: BLE001 —— 调用失败: 记一次, 下一晚重列
+                st["api_errors"] += 1
+                fails += 1
+                print(f"  ⚠️  第 {st['batches']} 批调用失败: {type(exc).__name__}: {str(exc)[:160]}")
                 continue
-        st["with_terms"] += sum(1 for r in rows if r["terms"])
-        st["terms"] += sum(len(r["terms"]) for r in rows)
+            fails = 0
+            got = None if stop == "max_tokens" else parse_reply(raw, part)
+            if got is None:
+                why = "回到一半被 max_tokens 截断" if stop == "max_tokens" else "回的不是要的 JSON"
+                if len(part) > 1:
+                    half = len(part) // 2
+                    parts[:0] = [part[:half], part[half:]]
+                    st["splits"] += 1
+                    print(f"  第 {st['batches']} 批 ({len(part)} 篇) {why}, 拆成 {half} + {len(part) - half} 篇重列")
+                    continue
+                st["junk"] += 1
+                print(f"  ⚠️  第 {st['batches']} 批拆到一篇还{why} (stop_reason={stop}), 跳过 (下一晚重列): "
+                      f"{raw[:120]!r}")
+                continue
+            rows = mask_rows(part, got, model, now_iso)
+            st["missing"] += len(part) - len(rows)
+            if dry_run:
+                st["written"] += len(rows)
+            else:
+                try:
+                    upsert(sb, rows)
+                    st["written"] += len(rows)
+                except Exception as exc:  # noqa: BLE001
+                    st["write_errors"] += 1
+                    print(f"  ⚠️  第 {st['batches']} 批写库失败: {type(exc).__name__}: {str(exc)[:160]}")
+                    continue
+            st["with_terms"] += sum(1 for r in rows if r["terms"])
+            st["terms"] += sum(len(r["terms"]) for r in rows)
     bad = st["api_errors"] + st["junk"] + st["write_errors"] + (1 if st["missing"] else 0)
     return (1 if bad else 0), st
 
@@ -287,6 +309,32 @@ class _DB:
         return _Q(self, t)
 
 
+def _selftest_stop_reason() -> None:
+    """call_claude(meta=...) 把 stop_reason 带出来 (假 anthropic 模块, 不连网); 不给 meta 行为不变。"""
+    import types
+    import annotate_essence_pass as E
+
+    class _Messages:
+        def create(self, **kw):
+            assert kw["max_tokens"] == MAX_TOKENS and kw.get("system") == "S", kw
+            return types.SimpleNamespace(content=[types.SimpleNamespace(type="text", text='{"notes": [')],
+                                         usage=None, stop_reason="max_tokens")
+    fake = types.ModuleType("anthropic")
+    fake.Anthropic = lambda **kw: types.SimpleNamespace(messages=_Messages())
+    real = sys.modules.get("anthropic")
+    sys.modules["anthropic"] = fake
+    try:
+        meta: dict = {}
+        assert E.call_claude("p", "m", cached_system="S", max_tokens=MAX_TOKENS, meta=meta) == '{"notes": ['
+        assert meta == {"stop_reason": "max_tokens"}, meta
+        assert E.call_claude("p", "m", cached_system="S", max_tokens=MAX_TOKENS) == '{"notes": ['
+    finally:
+        if real is None:
+            sys.modules.pop("anthropic", None)
+        else:
+            sys.modules["anthropic"] = real
+
+
 def selftest() -> int:
     notes = [
         {"note_id": "e1", "title": "鼻子又罢工了", "body": "后来换了某某喷雾 X1 系列, 药店说 BrandX 也行。HA 也有人推", "fetched_at": "2026-11-03"},
@@ -314,6 +362,8 @@ def selftest() -> int:
     assert masked == "鼻子又罢工了 后来换了某品牌 某产品, 药店说 某品牌 也行。某品牌 也有人推", masked
     assert X.apply_mask("haha 真好用", [{"t": "HA", "k": "品牌"}], None) == "haha 真好用", "短拉丁词不换掉单词里的半截"
     assert X.clean_terms([{"t": "ha", "k": "品牌"}], "hahaha") == [], "短拉丁词在原文里只是半截 → 不算出现过"
+    sz = X.clean_terms([{"t": "Straße", "k": "品牌"}], "Straße牌")
+    assert sz and X.apply_mask("Straße牌", sz, None) == "某品牌牌", "核过的词一定换得掉 (ß 这类 casefold 会变样的字)"
     # ② 垃圾回复: 不是 JSON / 形状不对 → None, 那一批跳过、计一次错, 不崩
     for junk in ("我觉得这篇没有品牌", "```json\n{\"notes\": \"x\"}\n```", "[]", "", "{\"notes\": [{\"id\": \"n1\"}]}"):
         g = parse_reply(junk, notes[:1])
@@ -341,7 +391,33 @@ def selftest() -> int:
         db.tables["external_notes"][1]["title"], db.tables["external_notes"][1]["body"])
     db2 = _DB({"external_notes": [dict(n) for n in notes], X.MASK_TABLE: []})
     rc, st = run(db2, lambda p: "不是 JSON", model="m", limit=10, batch_size=2, dry_run=False, max_seconds=60)
-    assert rc == 1 and st["junk"] == 2 and db2.tables[X.MASK_TABLE] == [], "垃圾回复: 跳过、计错、不写"
+    assert rc == 1 and st["junk"] == 3 and st["splits"] == 1 and db2.tables[X.MASK_TABLE] == [], \
+        "垃圾回复: 先拆开重列, 拆到一篇还是垃圾才跳过、按篇计错、不写"
+    # ③b review: 回到一半被 max_tokens 截断 (小模型默认带思考) → 拆批重列, 小批能回全就都写上、不算失败;
+    #     一篇怎么都回不好 → 只丢那一篇, 同批别的照写 (以前整批每晚一起失败, 永远列不上)
+    eight = [{"note_id": f"k{i}", "title": f"第{i}篇", "body": f"用了 BrandX 第{i}次", "fetched_at": "2026-11-03"}
+             for i in range(8)]
+    sizes: list = []
+
+    def ask_cut(prompt):
+        k = prompt.count("<note id=")
+        sizes.append(k)
+        full = ask_ok(prompt)
+        return (full[: len(full) // 2], "max_tokens") if k > 2 else (full, "end_turn")
+    db3 = _DB({"external_notes": [dict(n) for n in eight], X.MASK_TABLE: []})
+    rc, st = run(db3, ask_cut, model="m", limit=10, batch_size=8, dry_run=False, max_seconds=60)
+    assert rc == 0 and st["written"] == 8 and st["junk"] == 0 and st["splits"] == 3 and sizes == [8, 4, 2, 2, 4, 2, 2], \
+        (rc, st, sizes)
+    assert all(r["terms"] == [{"t": "BrandX", "k": "品牌"}] for r in db3.tables[X.MASK_TABLE])
+
+    def ask_poison(prompt):
+        return "{\"notes\": [" if "第5篇" in prompt else ask_ok(prompt)
+    db4 = _DB({"external_notes": [dict(n) for n in eight], X.MASK_TABLE: []})
+    rc, st = run(db4, ask_poison, model="m", limit=10, batch_size=8, dry_run=False, max_seconds=60)
+    assert rc == 1 and st["junk"] == 1 and st["written"] == 7 and \
+        sorted(r["note_id"] for r in db4.tables[X.MASK_TABLE]) == [f"k{i}" for i in range(8) if i != 5], st
+    assert _reply(("x", "max_tokens")) == ("x", "max_tokens") and _reply("x") == ("x", None) and _reply(None) == ("", None)
+    _selftest_stop_reason()
     # ④ 调用失败: 连着 3 批失败就停; 表没建 rc=2; 读不了外部表 rc=2; 写库失败 rc=1; dry-run 不写; limit / 时间到点
     many = [{"note_id": f"z{i:02d}", "title": "t", "body": "b", "fetched_at": "2026-11-03"} for i in range(20)]
     calls: list = []
@@ -372,6 +448,7 @@ def selftest() -> int:
                                              {"note_id": "b", "fetched_at": "2026-11-01"}], {})]
     assert order == ["b", "a"]
     print("  ✓ selftest: 只留原文里逐字出现的词 / 去重 / k 兜底 / 短拉丁词按词边界; 漏篇不写; 垃圾回复跳过计错不崩; "
+          "截断 / 垃圾回复先拆批重列、拆到一篇还不行只丢那一篇; call_claude 把 stop_reason 带出来; "
           "列过的不再送、正文变了重列; 连着 3 批调用失败就停; 表没建 / 外部表读不了 rc=2; 写库失败 rc=1; dry-run 不写; "
           "limit / 时间到点留到下一晚; 最近抓到的先列")
     return 0
@@ -398,14 +475,17 @@ def main() -> int:
             from _common import get_supabase_client
             from annotate_essence_pass import call_claude
 
-            def ask(prompt: str) -> str:
-                return call_claude(prompt, model, cached_system=SYSTEM, max_tokens=MAX_TOKENS)
+            def ask(prompt: str) -> tuple[str, Optional[str]]:
+                meta: dict = {}
+                text = call_claude(prompt, model, cached_system=SYSTEM, max_tokens=MAX_TOKENS, meta=meta)
+                return text, meta.get("stop_reason")
             rc, st = run(get_supabase_client(), ask, model=model, limit=args.limit, batch_size=max(args.batch, 1),
                          dry_run=args.dry_run, max_seconds=args.max_minutes * 60)
             if st["notes"]:
                 print(f"  外部帖 {st['notes']} 篇 · 要列 {st['todo']} 篇 · 这一晚送了 {st['sent']} 篇 ({st['batches']} 批) · "
                       f"写了 {st['written']} 篇 (其中 {st['with_terms']} 篇有要遮的词, 共 {st['terms']} 个) · "
-                      f"调用失败 {st['api_errors']} 批 · 回的不是 JSON {st['junk']} 批 · 回里漏了 {st['missing']} 篇 · "
+                      f"调用失败 {st['api_errors']} 批 · 拆批重列 {st['splits']} 次 · 拆到一篇还回的不是 JSON {st['junk']} 篇 · "
+                      f"回里漏了 {st['missing']} 篇 · "
                       f"写库失败 {st['write_errors']} 批 · 留到下一晚 {st['left']} 篇")
             print(usage_line(model))
     except Exception as exc:  # noqa: BLE001 —— advisory: 不让夜跑崩, 但哨兵照打
