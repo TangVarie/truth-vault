@@ -7989,6 +7989,7 @@ owner 10-27 填回裁决表：83 格（不一致 43 + 复核 40），每一格�
 5. **协议 `38270db04ea0` → `30daa73b0535`**（aw#144 改了 SKILL.md 的版本标记和协议里评论那一段）。写手（写稿的和写评论的）都要重导一次 skill；旧版 skill 调 `open_project` / `comments_for` / `get_protocol` 时服务端回 `skill_update` 提醒，末尾带「更新技能/bywood-writing-desk」。
 6. **部署要先 Jev 后 aw**（旧 Jev 的 `max_named` 不收 `null`，先上 aw 的话评论检查会报错）。两边合并只差 81 秒（Jev 12:37:32、aw 12:38:53 UTC），从合并时间证实不了先后；`score_comments` 不落库，那几分钟里有没有报错也查不到。11-04 只读核过两边都已上线：Jev 线上 openapi 里 `ThreadRequest.max_named` 是「0–20 的整数或 null」，`/health` 的 `comment_tools_enabled` 为 true；aw `/health` build `d3618e82d7c2`、协议 `30daa73b0535`、4 把钥匙。部署之后到 11-04 02:40 UTC 写作台没有一场会话（`open_project` 0、发牌 0、底稿 0），可以认为还没有写手导过新版。
 7. **下一版协议提前做，不等 11-16**：D-136 第 2 条定的「换版后两周不动协议，最早 11-16 之后」，是为了不让写手几天里重导好几次；aw#144 已经让写手这次必须重导，所以 W-42（合规问题 AI 自己改）、W-45（念 `project_now.message`、外部参考卡换说法、新卡面）、W-50（贴型那一句）连同 AU-F07、W-18 并成一个 aw PR 现在做，赶在写手下一场之前再升一次版，写手只重导一次（OPEN-ITEMS §0）。1–2 天内发不出去的话，下一个窗口按 11-03 起算两周（约 11-17）。
+   - 11-04 补：aw#145 已合并上线（11-04 06:26 UTC，协议 `2d357c4b6075`）。
 
 ### 这一轮不做 / 代价
 
