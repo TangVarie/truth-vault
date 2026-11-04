@@ -382,6 +382,32 @@ rc, err, st, cap = _run14([("r1", {"流量状态": "大爆"}), ("r2", {"流量�
 assert "data_quality_flags" not in cap["notes"]["T_CM14_r1"] and err == 0, \
     f"⑭H --limit + 读不到库: 不写这一列、不红: {err} {st} {cap['notes']}"
 
+# J) 沿用是「合」不是「换」(codex #269): 维护情况 不见了(库里只判出 起量后干预), 维护评论50条 这一轮新填了
+#    → 这一轮判出的 铺评工单 + 已铺 50 要留着, 库里的 起量后干预 也要留着; 下游照挡。
+#    反证: carry_risk_flags 退回整族替换 → 铺评工单 和 seeded 被换掉, metric_tier_untrustworthy_reason 回 None。
+st_j = _stored({"流量状态": "爆贴", "评论数": 55, "维护情况": ["控评&置顶✅"]})
+assert st_j["comment_maintained_routes"] == [POSTHOC], f"前提: 库里只有 起量后干预: {st_j}"
+_saved_extra = list(M14["project_specific_fields_to_raw_extra"])
+M14["project_specific_fields_to_raw_extra"] = _saved_extra + ["维护评论50条"]
+try:
+    rc, err, st, cap = _run14([("r1", {"流量状态": "爆贴", "评论数": 55, "维护评论50条": "已铺"})], {"r1": st_j},
+                              schema=SCHEMA14 - {"维护情况"} | {"维护评论50条"})
+finally:
+    M14["project_specific_fields_to_raw_extra"] = _saved_extra
+fj = cap["notes"]["T_CM14_r1"]["data_quality_flags"]
+assert set(fj.get("comment_maintained_routes") or []) == {TICKET, POSTHOC} and fj.get("comment_maintained_seeded") == 50, \
+    f"⑭J 这一轮新判出的 铺评工单 / 已铺 50 被库里旧的整族换掉了: {fj}"
+assert "维护评论50条" in fj.get("comment_maintained_reason", "") and "控评&置顶✅" in fj.get("comment_maintained_reason", ""), fj
+assert fj.get("risk_flags_carried_from_db") == ["维护情况"] and rc == 1 and err == 1, f"⑭J 照旧红: rc={rc} {st}"
+assert ssll14.metric_tier_untrustworthy_reason({"tier": "爆", "data_quality_flags": fj}) == TICKET, "⑭J 下游要挡"
+# J2) 纯函数: 布尔任一为 true; 库里有、这一轮没有的键补上; 这一轮有的键不被库里的覆盖
+_m = s._merge_risk_family({"synthetic": False, "paid_promoted": False}, {"synthetic": True, "synthetic_reason": "x"},
+                          "synthetic")
+assert _m == {"synthetic": True, "synthetic_reason": "x"}, _m
+_m = s._merge_risk_family({"paid_promoted": True, "paid_promoted_reason": "new"},
+                          {"paid_promoted": True, "paid_promoted_reason": "old; new"}, "paid_promoted")
+assert _m == {"paid_promoted": True, "paid_promoted_reason": "new; old"}, _m
+
 # I) 沿用标记是每一轮现判的键: 以库里旗子为底补正文时剥掉, 不会在列修好之后还挂着
 _n14 = {"note_id": "T_CM14_r9", "raw_extra": {}}
 s.mark_recovered_body(_n14, {"route": "kept", "filled": ["raw_content"]},

@@ -1090,6 +1090,39 @@ def stored_flags_batch(client, project_id: str, note_ids: list[str]) -> dict[str
     return out
 
 
+def _merge_risk_family(cur: dict, stored: dict, fam: str) -> dict:
+    """库里这一族的证据 和 这一轮还在的列现判出来的证据 合起来, 只往「更挡」的方向合(codex #269)。
+
+    不能拿库里的整族替换这一轮的: 别的来源列这一轮新判出来的证据(比如 维护情况 不见了、维护评论50条 这一轮
+    新填了 → 铺评工单 + 已铺 50)会被换掉, 下游反而放行。合法: 布尔取「任一为 true」; reason 去重拼接(这一轮的在前);
+    routes 取并集; seeded 取大; 其余键这一轮有就用这一轮的。并集偏保守(库里旧的 铺评工单 和这一轮的 铺评未跨线
+    同时在时照旧挡) —— 这一轮本来就红着等人修列名, 修好之后下一轮整族重算。"""
+    out = {k: v for k, v in cur.items() if k.startswith(fam)}
+    old = {k: v for k, v in stored.items() if k.startswith(fam)}
+    if cur.get(fam) is True or old.get(fam) is True:
+        out[fam] = True
+    reasons: list[str] = []
+    for src in (cur.get(f"{fam}_reason"), old.get(f"{fam}_reason")):
+        for part in str(src or "").split("; "):
+            if part and part not in reasons:
+                reasons.append(part)
+    if reasons:
+        out[f"{fam}_reason"] = "; ".join(reasons)
+    for k, v in old.items():
+        if k in (fam, f"{fam}_reason"):
+            continue
+        if k == "comment_maintained_routes":
+            out[k] = sorted(set(out.get(k) or []) | set(v or []))
+        elif k == "comment_maintained_seeded":
+            nums = [x for x in (out.get(k), v)
+                    if isinstance(x, (int, float)) and not isinstance(x, bool)]
+            if nums:
+                out[k] = max(nums)
+        else:
+            out.setdefault(k, v)
+    return out
+
+
 def carry_risk_flags(pending_notes: list[dict], missing: dict[str, list[tuple[str, str]]],
                      stored: dict[str, dict]) -> dict[str, list[str]]:
     """来源列不见了的那一族, 库里 reason 点名这一列且旗子为 true 的篇 → 这一族的键换成库里的。
@@ -1113,9 +1146,10 @@ def carry_risk_flags(pending_notes: list[dict], missing: dict[str, list[tuple[st
             continue
         flags = dict(note.get("data_quality_flags") or {})
         for fam in fams:
+            merged = _merge_risk_family(flags, sf, fam)
             for k in [k for k in flags if k.startswith(fam)]:
                 del flags[k]
-            flags.update({k: v for k, v in sf.items() if k.startswith(fam)})
+            flags.update(merged)
         flags["risk_flags_carried_from_db"] = sorted(cols)
         note["data_quality_flags"] = flags
         for col in cols:
