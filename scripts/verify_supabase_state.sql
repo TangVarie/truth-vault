@@ -635,6 +635,27 @@ SELECT '103', 'I · 数据一致性',
     '没跑之前夜跑不碰它们, 和以前一样). essence 因正文改过重标之后这里会先涨、'
     '再被夜跑消掉 (11-02: 正文改过的篇上有卡 42 张, OKMAN 33). 一周不降 = 夜跑策展预算被新卡占满, 手动跑 recurate-lessons.yml (stale).'
 
+UNION ALL
+SELECT '104', 'H · 跨 schema 孤儿',
+    'aw 判稿记成 ok、账本却一行都没有的稿件版本数 (batch_metrics meta.judge 里 status=ok 的 version_id, 在 note_feature_answers 里 aw_version × primary 0 行; #87 的盲区: 它只看已有行的 subject)',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(*) FROM (
+            SELECT DISTINCT e->>'version_id' AS version_id
+            FROM autowriter.batch_metrics m,
+                 jsonb_array_elements(CASE WHEN jsonb_typeof(m.meta->'judge') = 'array'
+                                           THEN m.meta->'judge' ELSE '[]'::jsonb END) e
+            WHERE m.meta->>'mode' = 'deskcore_commit'
+              AND e->>'status' = 'ok' AND e->>'version_id' IS NOT NULL
+        ) j
+        WHERE NOT EXISTS (SELECT 1 FROM truth_vault.note_feature_answers a
+                          WHERE a.subject_type = 'aw_version' AND a.subject_id = j.version_id
+                            AND a.run_tag = 'primary')$q$
+    )::TEXT, 'N/A'),
+    '0',
+    '外部评审 11-04 F04: Jev /judge_draft 判成功、写账本失败时回 200 + written=0 + write_error, aw 照样记 judge_status=ok, 不报警. '
+    '分母取 batch_metrics (aw 记的每次判稿), 不取账本已有行, 所以「一行都没写进去」的也数得到. 11-04 生产 338 个 ok 版本、0 个没账本. '
+    '> 0 = 这些版本的账本缺了: aw 拿不到待写行, 只能按 version_id 重判一次 (约 1 次 Jev 调用一篇); 记判稿超时 (timeout) 的不算在这里 (deskcore.md 认的缺口).'
+
 -- ── I · 数据一致性副作用 ──────────────────────────────────────────────
 UNION ALL
 SELECT '90', 'I · 数据一致性',
