@@ -813,10 +813,13 @@ def s8_untrusted_text() -> None:
     assert len(long) > core.NOTE_CAP
     r = core._enrich(dict(CARD), long, "借结构")
     assert r["why_relevant"] == long[:core.NOTE_CAP] and r["borrow_what"] == "借结构", r
-    for bad in ("详情加我 vx: fake123", "看 https://example.com/x", "www.example.cn 有原帖", "私信要链接",
-                "电话 13800000000", "微信同号"):
+    for bad in ("详情加我 vx: fake123", "看 https://example.com/x", "www.example.cn 有原帖", "私信 wx：fake_id9",
+                "电话 13800000000", "微信同号", "加v拿原帖", "qq 12345678"):
         r = core._enrich(c, "同品类借开头", bad)
         assert r["borrow_what"] == "" and r["why_relevant"] == "同品类借开头", (bad, r)
+    # 正常的手法批注里出现「私信 / 微信 / 电话」这些词不算联系方式, 不能被清空 (复核 11-04)
+    for ok in ("借结尾引导私信领取的钩子", "借它微信聊天截图的形式", "借电话铃声开头的场景", "评论区引导加我好友的互动"):
+        assert core.clean_note(ok) == ok, ok
     assert core.clean_note("  借三段式骨架 ") == "借三段式骨架" and core.clean_note(None) == ""
     # 选卡全链路: 模型回了带联系方式 / 超长的批注 → 回给写作台的那一行已经清掉
     saved = core.call_anthropic
