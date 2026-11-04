@@ -278,6 +278,75 @@ def check_essence_main_canary() -> None:
     print("  ✓ essence main(): 3 篇被拦 → 探一次; 探针过不红、被拦红; dry-run 不调; 混着 systemic 不探照红")
 
 
+def check_essence_validation_canary() -> None:
+    """外部评审 11-04 F06: 整批纯校验类失败 (回散文 / 空回复 / 词表外) 一篇没成 → 无害探针要解析 + 校验都过, 过不了就红。
+    单篇卡壳 (#55 / D-100) 照旧不红; 探针过了 (是那几篇自己的) 不红。反证: 去掉 _exit_code_for_stats 的新条件 → A / B 两条红。"""
+    f = ess._exit_code_for_stats
+    assert f({"ok": 0, "failed_after_retry": 1, "validation_failed": 1}) == 0          # 单篇卡壳: 不红 (#55)
+    assert f({"ok": 0, "failed_after_retry": 2, "validation_failed": 2}) == 0
+    assert f({"ok": 0, "failed_after_retry": 15, "validation_failed": 15}) == 1        # 整批零产出、没探: 红
+    assert f({"ok": 0, "validation_failed": 15, "validation_canary_ok": False}) == 1
+    assert f({"ok": 0, "validation_failed": 15, "validation_canary_ok": True}) == 0     # 探针过了: 各篇自己的
+    assert f({"ok": 1, "failed_after_retry": 14, "validation_failed": 14}) == 0         # 有一篇成了: 不红 (D-100 容错)
+
+    good = json.dumps({"essence": {"emotional_lever": "焦虑撬动", "emotional_valence": "negative",
+                                   "emotional_intensity": "high", "human_truth_archetype": ["健康焦虑"],
+                                   "trend_dependencies": ["通用"], "content_format": "情感叙事"}, "audience": {}})
+    out_of_vocab = json.dumps({"essence": {"emotional_lever": "不存在的杠杆", "emotional_valence": "negative",
+                                           "emotional_intensity": "high", "human_truth_archetype": ["健康焦虑"],
+                                           "trend_dependencies": ["通用"], "content_format": "情感叙事"}, "audience": {}})
+    assert ess.validate_essence(json.loads(good)) == [] and ess.validate_essence(json.loads(out_of_vocab)), "夹具前提"
+
+    def run(reply, n_notes=15, extra=()):
+        notes = [{"note_id": f"P_{i}", "project_id": "P", "title": f"t{i}", "body": f"STUCK{i}",
+                  "raw_content": f"【标题】t{i}\n【正文】STUCK{i}", "hashtags": [], "intent": "种草",
+                  "target_blue_keywords": ["推车"], "raw_extra": {"_direction_raw": "带娃出行"},
+                  "projects": {"brand": "某牌", "product": "推车"}} for i in range(n_notes)]
+        calls, written = [], []
+
+        def call(prompt, model, *, cached_system=None):
+            calls.append(prompt)
+            return reply(prompt)
+        buf = io.StringIO(); h = logging.StreamHandler(buf); ess.logger.addHandler(h)
+        try:
+            with tempfile.TemporaryDirectory() as td, \
+                    patch.object(sys, "argv", ["x", "P", "--qps", "0", "--pass", "new", "--limit", "15",
+                                               "--failed-queue", f"{td}/q.jsonl", *extra]), \
+                    patch.dict(os.environ, {"ANTHROPIC_API_KEY": "fake"}), \
+                    patch.object(ess, "load_mapping", return_value={}), \
+                    patch.object(ess, "get_supabase_client", return_value=object()), \
+                    patch.object(ess, "fetch_unannotated_notes", return_value=notes), \
+                    patch.object(ess, "get_sub_directions_for_note", return_value=None), \
+                    patch.object(ess, "write_essence_back", side_effect=lambda *a, **k: written.append(a[1])), \
+                    patch.object(ess, "call_claude", side_effect=call):
+                rc = ess.main()
+        finally:
+            ess.logger.removeHandler(h)
+        return rc, len(calls), written, buf.getvalue()
+
+    canary = ess._CANARY_TEXT[1]
+    # A) 回散文 (整批): 30 次调用、0 篇写入 → 探针 (2 次) 也回散文 → 红
+    rc, n, w, log = run(lambda p: "好的，这篇笔记讲的是带娃出行。")
+    assert rc == 1 and n == 32 and not w and '"validation_failed": 15' in log and "全部失败" in log, (rc, n, len(w))
+    # B) 中转站回 200 空文本 / 词表外 JSON (模型换了): 同样红
+    for reply in (lambda p: "", lambda p: out_of_vocab):
+        rc, n, w, _ = run(reply)
+        assert rc == 1 and n == 32 and not w, (rc, n)
+    # C) 15 篇各自卡壳、探针能过 → 不红 (一篇没写也不红: 是内容问题)
+    rc, n, w, log = run(lambda p: good if canary in p else "不是 JSON")
+    assert rc == 0 and n == 31 and not w and "无害探针能解析且过词表" in log, (rc, n)
+    # D) 只剩 1 篇卡壳 (#55 / D-100) → 不探、不红
+    rc, n, w, _ = run(lambda p: "不是 JSON", n_notes=1)
+    assert rc == 0 and n == 2, (rc, n)
+    # E) 混着成的 (14 好 1 坏) → 不探、不红; dry-run 不调
+    rc, n, w, _ = run(lambda p: "不是 JSON" if "STUCK0" in p else good)
+    assert rc == 0 and n == 16 and len(w) == 14, (rc, n, len(w))
+    rc, n, _, _ = run(lambda p: "", extra=["--dry-run"])
+    assert rc == 0 and n == 0, (rc, n)
+    print("  ✓ essence 整批校验类失败 (F06): 散文 / 空回复 / 词表外 ≥3 篇一篇没成 → 探针要解析 + 校验都过, 过不了红;"
+          " 探针过了不红; 单篇卡壳 / 有成的 / dry-run 不探不红")
+
+
 def _gf_line(wf: str) -> str:
     lines = [ln.strip() for ln in wf.splitlines() if ln.rstrip().endswith("# D-125 gf")]
     assert lines, "workflow 里找不到 # D-125 gf 那行"
@@ -326,6 +395,7 @@ def main() -> int:
     check_features(fb.load_bank())
     check_essence()
     check_essence_main_canary()
+    check_essence_validation_canary()
     check_workflows()
     print("✓ 中转站敏感词拦截 (D-125): 按单篇内容问题计, 不拖住队列、不误判红; 全拦 / 整体拦截仍红")
     return 0

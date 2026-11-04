@@ -864,6 +864,9 @@ def _exit_code_for_stats(stats: dict) -> int:
       幂等续标, 不计 systemic。但一轮里 ≥3 篇被拦且一篇没成 → 先拿无害假笔记探一次(_gateway_canary):
       探针也过不去 = 中转站整体开了/收紧了拦截 → 判红; 探针过了 = 是这几篇各自的内容(被拦的篇夜夜回来,
       一个项目攒到 3 篇、又赶上没有新篇的晚上就会凑成这种轮次)→ 不判红。没探(gateway_canary_ok 缺省)按红。
+    - 纯校验类整批零产出(外部评审 11-04 F06): 一轮里 ≥3 篇校验类失败(validation_failed)且一篇没成 → 同样先拿
+      无害假笔记探一次(_validation_canary), 但要它的回复【解析 + 词表校验都过】: 过不了 = 中转站回空 / 回散文 /
+      模型换了词表, 整批都会这样 → 判红; 过了 = 这几篇各自卡壳 → 不判红。只剩 1~2 篇卡壳的照旧不红(#55、D-100)。
     - 其余(含 no-op 空跑)→ 0。
     """
     if stats.get("hygiene_failed"):
@@ -873,22 +876,30 @@ def _exit_code_for_stats(stats: dict) -> int:
     if (stats.get("gateway_filtered", 0) >= 3 and stats.get("ok", 0) == 0
             and not stats.get("gateway_canary_ok")):
         return 1
+    if (stats.get("validation_failed", 0) >= 3 and stats.get("ok", 0) == 0
+            and not stats.get("validation_canary_ok")):
+        return 1
     return 0
 
 
 _CANARY_TEXT = ("周末带娃去哪儿", "上周六早上九点去了公园，孩子玩得很开心，回家路上就睡着了。")
 
 
-def _gateway_canary(model: str, project_info: dict, note_like: dict) -> bool:
-    """一轮里 ≥3 篇被中转站拦、一篇没成时探一次: 项目上下文照旧 (品牌 / 蓝词 / 意图 / 方向), 正文换成无害的
-    假笔记, 走同一条 call_claude 路径。过了 = 中转站没有整体拦, 是那几篇各自的内容; 被拦 / 挂了 = 整体问题。
-    只看调用通不通, 不看回复对不对。"""
+def _canary_note(note_like: dict) -> dict:
+    """探针用的假笔记: 项目上下文照旧 (意图 / 蓝词 / 方向), 标题正文换成无害的, 原笔记的字一个都不带。"""
     title, body = _CANARY_TEXT
-    fake = {"note_id": "canary", "title": title, "body": body,
+    return {"note_id": "canary", "title": title, "body": body,
             "raw_content": f"【标题】{title}\n【正文】{body}", "hashtags": [],
             "intent": note_like.get("intent"),
             "target_blue_keywords": note_like.get("target_blue_keywords") or [],
             "raw_extra": {"_direction_raw": (note_like.get("raw_extra") or {}).get("_direction_raw")}}
+
+
+def _gateway_canary(model: str, project_info: dict, note_like: dict) -> bool:
+    """一轮里 ≥3 篇被中转站拦、一篇没成时探一次: 项目上下文照旧 (品牌 / 蓝词 / 意图 / 方向), 正文换成无害的
+    假笔记, 走同一条 call_claude 路径。过了 = 中转站没有整体拦, 是那几篇各自的内容; 被拦 / 挂了 = 整体问题。
+    只看调用通不通, 不看回复对不对。"""
+    fake = _canary_note(note_like)
     try:
         system_prompt, user_prompt = build_mode_a_prompt(project_info, fake)
         call_claude(user_prompt, model, cached_system=system_prompt)
@@ -896,6 +907,22 @@ def _gateway_canary(model: str, project_info: dict, note_like: dict) -> bool:
     except Exception as exc:  # noqa: BLE001
         logger.error("gateway canary failed: %r", exc)
         return False
+
+
+def _validation_canary(model: str, project_info: dict, note_like: dict) -> bool:
+    """一轮里 ≥3 篇校验类失败、一篇没成时探一次 (外部评审 11-04 F06): 同一张无害假笔记, 走和正式标注一样的
+    _annotate_with_retry (含一次纠错重试), 回复要解析得出来、词表校验也要过才算过。过了 = 那几篇各自卡壳;
+    过不了 (空回复 / 散文 / 词表外 / 调用挂了) = 整批输出出了问题。"""
+    try:
+        system_prompt, user_prompt = build_mode_a_prompt(project_info, _canary_note(note_like))
+        parsed, errors, _raw, _retry = _annotate_with_retry(user_prompt, model, cached_system=system_prompt)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("validation canary failed: %r", exc)
+        return False
+    if parsed is None:
+        logger.error("validation canary failed: %s", errors[:3])
+        return False
+    return True
 
 
 def main() -> int:
@@ -949,11 +976,12 @@ def main() -> int:
 
     failed_queue_path = Path(args.failed_queue).resolve()
     stats = {"ok": 0, "ok_after_retry": 0, "failed_after_retry": 0,
-             "systemic_failed": 0, "gateway_filtered": 0,
+             "systemic_failed": 0, "gateway_filtered": 0, "validation_failed": 0,
              "hygiene_failed": 0,
              "sub_dir_ok": 0, "sub_dir_failed": 0, "sub_dir_not_applicable": 0}
     sleep_s = 1.0 / args.qps if args.qps > 0 else 0
     filtered_ctx: Optional[tuple[dict, dict]] = None   # D-125: 最后一篇被中转站拦的 (项目信息, 笔记), 探针借它的项目上下文
+    invalid_ctx: Optional[tuple[dict, dict]] = None    # F06: 最后一篇校验类失败的, 同上
     for i, note in enumerate(notes):
         if args.deadline_epoch and time.time() >= args.deadline_epoch:
             stats["deferred"] = len(notes) - i
@@ -1027,6 +1055,9 @@ def main() -> int:
                                note["note_id"])
             elif kind == "systemic":
                 stats["systemic_failed"] += 1
+            else:
+                stats["validation_failed"] += 1
+                invalid_ctx = (project_info, note)
             _append_failed_queue(
                 failed_queue_path, note, args.project_id, errors, last_raw
             )
@@ -1082,11 +1113,22 @@ def main() -> int:
         if stats["gateway_canary_ok"]:
             logger.warning("gateway_filtered: %d 篇被中转站拦, 但无害探针能过 —— 是这几篇各自的内容问题, 不判红 (D-125)",
                            stats["gateway_filtered"])
+    if (stats["validation_failed"] >= 3 and stats["ok"] == 0 and not stats["systemic_failed"]
+            and not stats["hygiene_failed"] and invalid_ctx is not None and not args.dry_run):
+        stats["validation_canary_ok"] = _validation_canary(model, *invalid_ctx)
+        if stats["validation_canary_ok"]:
+            logger.warning("essence: %d 篇校验类失败、一篇没成, 但无害探针能解析且过词表 —— 是这几篇各自卡壳, 不判红",
+                           stats["validation_failed"])
     code = _exit_code_for_stats(stats)
     if code != 0:
         if stats["hygiene_failed"]:
             logger.error("essence 卫生断言失败 %d 条 —— prompt/project context 漂移"
                          "(label-leakage 风险), 需排查。", stats["hygiene_failed"])
+        elif (not stats["systemic_failed"] and stats["validation_failed"] >= 3
+              and not stats.get("validation_canary_ok") and stats["gateway_filtered"] < 3):
+            logger.error("essence 全部失败: 一篇没成, %d 篇都是校验类失败(空回复 / 不是 JSON / 词表外), 无害探针也过不了 —— "
+                         "像是中转站或模型的输出整体变了, 这一晚的调用白付了, 需排查 (外部评审 11-04 F06)。",
+                         stats["validation_failed"])
         elif not stats["systemic_failed"]:
             logger.error("essence 全部失败, 其中 %d 篇被中转站敏感词拦截 —— 像是中转站整体开了/收紧了"
                          "拦截, 找中转站 (D-125)。", stats["gateway_filtered"])
