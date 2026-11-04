@@ -1124,14 +1124,17 @@ def main() -> int:
         if stats["hygiene_failed"]:
             logger.error("essence 卫生断言失败 %d 条 —— prompt/project context 漂移"
                          "(label-leakage 风险), 需排查。", stats["hygiene_failed"])
-        elif (not stats["systemic_failed"] and stats["validation_failed"] >= 3
-              and not stats.get("validation_canary_ok") and stats["gateway_filtered"] < 3):
-            logger.error("essence 全部失败: 一篇没成, %d 篇都是校验类失败(空回复 / 不是 JSON / 词表外), 无害探针也过不了 —— "
-                         "像是中转站或模型的输出整体变了, 这一晚的调用白付了, 需排查 (外部评审 11-04 F06)。",
-                         stats["validation_failed"])
         elif not stats["systemic_failed"]:
-            logger.error("essence 全部失败, 其中 %d 篇被中转站敏感词拦截 —— 像是中转站整体开了/收紧了"
-                         "拦截, 找中转站 (D-125)。", stats["gateway_filtered"])
+            # 哪个探针没过就报哪个原因; 两个都没过就两条都报 (两种失败可以同一轮出现)
+            validation_red = stats["validation_failed"] >= 3 and not stats.get("validation_canary_ok")
+            gateway_red = stats["gateway_filtered"] >= 3 and not stats.get("gateway_canary_ok")
+            if validation_red:
+                logger.error("essence 全部失败: 一篇没成, %d 篇是校验类失败(空回复 / 不是 JSON / 词表外), 无害探针也过不了 —— "
+                             "像是中转站或模型的输出整体变了, 这一晚的调用白付了, 需排查 (外部评审 11-04 F06)。",
+                             stats["validation_failed"])
+            if gateway_red or not validation_red:
+                logger.error("essence 全部失败, 其中 %d 篇被中转站敏感词拦截 —— 像是中转站整体开了/收紧了"
+                             "拦截, 找中转站 (D-125)。", stats["gateway_filtered"])
         else:
             logger.error("essence 全部失败 (%d 条) —— 多半系统性(模型 env / 余额 / 限流), 需排查。",
                          stats["failed_after_retry"])

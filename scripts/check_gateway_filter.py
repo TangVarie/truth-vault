@@ -343,6 +343,40 @@ def check_essence_validation_canary() -> None:
     assert rc == 0 and n == 16 and len(w) == 14, (rc, n, len(w))
     rc, n, _, _ = run(lambda p: "", extra=["--dry-run"])
     assert rc == 0 and n == 0, (rc, n)
+    # F) 同一轮 3 篇被中转站拦 (调用探针能过) + 5 篇回散文 (校验探针过不了): 红, 报的是校验类那条原因, 不叫人去找中转站
+    def mixed(p):
+        if "GATEWAY_BLOCKED" in p:
+            raise FakeInternalServerError(FILTERED_MSG)
+        return "好的，这篇笔记讲的是带娃出行。"
+    notes_f = 8
+
+    def run_mixed():
+        rows = [{"note_id": f"P_{i}", "project_id": "P", "title": f"t{i}",
+                 "body": ("GATEWAY_BLOCKED" if i < 3 else "STUCK") + str(i),
+                 "raw_content": f"【标题】t{i}\n【正文】" + ("GATEWAY_BLOCKED" if i < 3 else "STUCK") + str(i),
+                 "hashtags": [], "intent": "种草", "target_blue_keywords": ["推车"],
+                 "raw_extra": {"_direction_raw": "带娃出行"}, "projects": {"brand": "某牌", "product": "推车"}}
+                for i in range(notes_f)]
+        buf = io.StringIO(); h = logging.StreamHandler(buf); ess.logger.addHandler(h)
+        try:
+            with tempfile.TemporaryDirectory() as td, \
+                    patch.object(sys, "argv", ["x", "P", "--qps", "0", "--pass", "new", "--limit", "15",
+                                               "--failed-queue", f"{td}/q.jsonl"]), \
+                    patch.dict(os.environ, {"ANTHROPIC_API_KEY": "fake"}), \
+                    patch.object(ess, "load_mapping", return_value={}), \
+                    patch.object(ess, "get_supabase_client", return_value=object()), \
+                    patch.object(ess, "fetch_unannotated_notes", return_value=rows), \
+                    patch.object(ess, "get_sub_directions_for_note", return_value=None), \
+                    patch.object(ess, "write_essence_back"), \
+                    patch.object(ess, "call_claude", side_effect=lambda prompt, model, *, cached_system=None: mixed(prompt)):
+                code = ess.main()
+        finally:
+            ess.logger.removeHandler(h)
+        return code, buf.getvalue()
+    rc, log = run_mixed()
+    assert rc == 1 and '"gateway_filtered": 3' in log and '"validation_failed": 5' in log, (rc, log[-400:])
+    assert "无害探针能过" in log and "validation canary failed" in log, log[-400:]   # 调用探针过了, 校验探针没过
+    assert "校验类失败" in log and "找中转站" not in log, "两个探针一过一不过: 只报没过的那个原因 (校验类), 别叫人去找中转站"
     print("  ✓ essence 整批校验类失败 (F06): 散文 / 空回复 / 词表外 ≥3 篇一篇没成 → 探针要解析 + 校验都过, 过不了红;"
           " 探针过了不红; 单篇卡壳 / 有成的 / dry-run 不探不红")
 
