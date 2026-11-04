@@ -98,6 +98,10 @@ class FeishuClient:
         "https://open.feishu.cn/open-apis/bitable/v1/apps/"
         "{app_token}/tables/{table_id}/records"
     )
+    BITABLE_FIELDS_URL = (
+        "https://open.feishu.cn/open-apis/bitable/v1/apps/"
+        "{app_token}/tables/{table_id}/fields"
+    )
 
     def __init__(self, app_id: str, app_secret: str):
         self.app_id = app_id
@@ -213,6 +217,31 @@ class FeishuClient:
             params["page_token"] = data["data"]["page_token"]
             # gentle rate limit
             time.sleep(0.1)
+
+    def list_field_names(self, app_token: str, table_id: str, view_id: str | None = None,
+                         page_size: int = 100) -> set[str]:
+        """这张表(给了视图就按视图)现在有哪些列名。只读, 只在风控来源列闸那条路上调(外部评审 11-04 F01 复核)。
+
+        list_records 不返回空格子, 所以「这一轮一行都没返回这一列」分不出「列改名了」和「列还在、格子全空了」;
+        表结构分得出。"""
+        token = self._ensure_token()
+        url = self.BITABLE_FIELDS_URL.format(app_token=app_token, table_id=table_id)
+        headers = {"Authorization": f"Bearer {token}"}
+        params: dict[str, Any] = {"page_size": page_size}
+        if view_id:
+            params["view_id"] = view_id
+        names: set[str] = set()
+        while True:
+            r = self._get_with_retry(url, headers, params)
+            r.raise_for_status()
+            data = r.json()
+            if data.get("code") != 0:
+                raise RuntimeError(f"Feishu list_fields error: {data}")
+            names.update(f["field_name"] for f in data["data"].get("items") or [] if f.get("field_name"))
+            if not data["data"].get("has_more"):
+                break
+            params["page_token"] = data["data"]["page_token"]
+        return names
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -657,6 +686,7 @@ def recover_missing_body(
 _PER_RUN_FLAG_KEYS = frozenset({
     "publish_time_future", "tier_unmapped", "tier_cleared", "tier_flip_blocked", "direction_unmapped",
     "metrics_snapshot_regressed", "content_cleared_in_feishu", "content_inherited",
+    "risk_flags_carried_from_db",
 })
 
 
@@ -1006,8 +1036,10 @@ def apply_tier_flip_block(pending_notes: list[dict], plan: dict) -> int:
 # 关注情况)不在 _detect_missing_core_columns 的视野里。运营把其中一列改名 → transform_row 判不出那一路,
 # 而 data_quality_flags 照样整份写(synthetic 显式 false、维护情况 声明了就写 paid_promoted false),
 # 于是库里的 true 被静默冲掉, 被挡的帖子第二天就回到爆款池。
-# 判据: 声明了的来源列这一轮一行都没返回, 且这一轮要写的篇里有库里旗子的 reason 点名这一列 → 那几篇
-# 这一族的键沿用库里的值、整轮红。列还在(哪怕这一格空了)照常重算, 运营清标记照样清得掉。
+# 判据: 声明了的来源列这一轮一行都没返回, 表结构里也没有它了, 且这一轮要写的篇里有库里旗子的 reason 点名这一列
+# → 那几篇这一族的键沿用库里的值、整轮红。列还在(哪怕这一格空了, 哪怕整列的格子都空了)照常重算, 运营清标记照样
+# 清得掉。飞书 list_records 不返回空格子: 运营清掉一列里最后一个标记之后, 这一列一行都不会返回, 和改名长得一样,
+# 所以「一行都没返回」之后再拿表结构核一次(table_field_names, 只在这条路上调); 表结构读不到 → 按不见了处理。
 _SYN_NOTE_STATUS_REASON = "笔记状态含「关注」"
 _RISK_FLAG_FAMILIES = ("synthetic", "comment_maintained", "paid_promoted")
 
@@ -1026,6 +1058,18 @@ def risk_source_columns(mapping: dict) -> dict[str, list[tuple[str, str]]]:
         if col in extra:
             out.setdefault(col, []).append(("paid_promoted", f"「{col}」"))
     return out
+
+
+def table_field_names(fs, specs: list[dict]) -> set[str] | None:
+    """这几张飞书表(按同步用的视图)现在的列名并集。读不到 → None(调用方按「列不见了」处理, 即核之前的行为)。"""
+    names: set[str] = set()
+    try:
+        for sp in specs:
+            names |= set(fs.list_field_names(sp["app_token"], sp["table_id"], sp.get("view_id")))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("风控来源列闸: 读飞书表结构失败(%s), 按列不见了处理", exc)
+        return None
+    return names
 
 
 def stored_flags_batch(client, project_id: str, note_ids: list[str]) -> dict[str, dict] | None:
@@ -2606,13 +2650,23 @@ def main() -> int:
     risk_missing = {c: v for c, v in risk_source_columns(mapping).items() if c not in seen_cols} \
         if pending_notes else {}
     if risk_missing:
+        # 一行都没返回 ≠ 列没了: 飞书不返回空格子, 整列格子都空了也是这样。拿表结构核一次, 还在的照常重算。
+        present = table_field_names(fs, configured)
+        if present is not None:
+            still_there = sorted(c for c in risk_missing if c in present)
+            if still_there:
+                logger.info("风控来源列 %s 这一轮没有一行有值, 但表结构里还在 → 是格子都空了, 不是改名: 照常重算",
+                            still_there)
+            risk_missing = {c: v for c, v in risk_missing.items() if c not in present}
+    if risk_missing:
         stored_risk = stored_flags_batch(sb, mapping["project_id"], [n["note_id"] for n in pending_notes])
         complete = not truncated_by_limit and not fetch_failed
         if stored_risk is None:
             # 读不到库里的旗子 → 分不出哪几篇会被冲掉, 这一轮整列不写(upsert 留库里旧 JSON)
             for n in pending_notes:
                 n.pop("data_quality_flags", None)
-            stats["errors"] += 1
+            if complete:            # 同下面沿用那一支: --limit / 有表没抓到时少返回一列不算证据
+                stats["errors"] += 1
             stats["risk_source_columns_missing"] = sorted(risk_missing)
             logger.error("【风控来源列不见了】%s 这一轮飞书一行都没返回 %s, 又读不到库里的旗子 —— "
                          "本轮 data_quality_flags 整列不写(留库里旧值)。", mapping["project_id"], sorted(risk_missing))

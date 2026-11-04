@@ -256,8 +256,9 @@ def _stored(row):     # 库里这篇的旗子 = 改名之前那一晚 transform_
     n, _, _ = s.transform_row(M14, "r1", {"文案": "c", "标题": "t", **row})
     return n["data_quality_flags"]
 
-def _run14(rows, stored, read_ok=True):
-    cap = {"read": 0}
+def _run14(rows, stored, read_ok=True, schema=None, argv_extra=()):
+    """schema = 飞书表结构里的列名(None = 读表结构失败)。"""
+    cap = {"read": 0, "schema": 0}
     saved = {k: getattr(s14, k) for k in (
         "FeishuClient", "get_supabase_client", "assert_db_schema_ready", "ensure_project_exists",
         "quarantine_record", "fetch_acknowledged_quarantine", "ensure_accounts_batch", "upsert_metrics_batch",
@@ -268,6 +269,11 @@ def _run14(rows, stored, read_ok=True):
         def __init__(self, *a, **k): pass
         def list_records(self, *a, **k):
             return iter([{"record_id": rid, "fields": {"文案": "正文正文", "标题": "t", **fl}} for rid, fl in rows])
+        def list_field_names(self, *a, **k):
+            cap["schema"] += 1
+            if schema is None:
+                raise RuntimeError("读表结构失败")
+            return set(schema)
     def read(sb, pid, ids):
         cap["read"] += 1
         return {f"T_CM14_{k}": v for k, v in stored.items()} if read_ok else None
@@ -294,7 +300,7 @@ def _run14(rows, stored, read_ok=True):
         os.environ.setdefault("FEISHU_APP_ID", "x"); os.environ.setdefault("FEISHU_APP_SECRET", "y")
         buf = io.StringIO(); h = logging.StreamHandler(buf)
         handlers, s14.logger.handlers = s14.logger.handlers, [h]     # 日志只进 buf, 不刷 CI
-        sys.argv = ["x", "T_CM14"]
+        sys.argv = ["x", "T_CM14", *argv_extra]
         try:
             rc = s14.main()
         finally:
@@ -310,8 +316,10 @@ def _run14(rows, stored, read_ok=True):
 # A) 维护情况 改名(新名落进 _undeclared): 库里 铺评工单 routes 沿用, 红, 点名这一列
 st_a = _stored({"流量状态": "爆贴", "评论数": 55, "维护情况": ["关注"]})
 assert st_a["comment_maintained_routes"] == [TICKET], f"前提: 改名前库里是 铺评工单: {st_a}"
+SCHEMA14 = {"文案", "标题", "流量状态", "笔记状态", "评论数", "维护情况"}
 rc, err, st, cap = _run14([("r1", {"流量状态": "爆贴", "评论数": 55, "维护情况（新）": ["关注"]}),
-                           ("r2", {"流量状态": "无水花"})], {"r1": st_a})
+                           ("r2", {"流量状态": "无水花"})], {"r1": st_a},
+                          schema=SCHEMA14 - {"维护情况"} | {"维护情况（新）"})
 fa = cap["notes"]["T_CM14_r1"]["data_quality_flags"]
 assert fa.get("comment_maintained") is True and fa.get("comment_maintained_routes") == [TICKET] \
     and fa.get("comment_maintained_seeded") == 20, f"⑭A 维护情况改名后库里的 铺评工单 被冲掉了: {fa}"
@@ -326,7 +334,8 @@ assert ssll14.metric_tier_untrustworthy_reason({"tier": "爆", "data_quality_fla
 st_b = _stored({"流量状态": "大爆", "笔记状态": "关注"})
 assert st_b["synthetic"] is True, f"前提: 改名前库里是伪爆: {st_b}"
 rc, err, st, cap = _run14([("r1", {"流量状态": "大爆", "笔记状态（新）": "关注"}),
-                           ("r2", {"流量状态": "爆贴"})], {"r1": st_b})
+                           ("r2", {"流量状态": "爆贴"})], {"r1": st_b},
+                          schema=SCHEMA14 - {"笔记状态"} | {"笔记状态（新）"})
 fb = cap["notes"]["T_CM14_r1"]["data_quality_flags"]
 assert fb.get("synthetic") is True and s._SYN_NOTE_STATUS_REASON in fb.get("synthetic_reason", ""), \
     f"⑭B 笔记状态改名后 synthetic 被写成 false: {fb}"
@@ -340,8 +349,8 @@ rc, err, st, cap = _run14([("r1", {"流量状态": "大爆"}),
 fc = cap["notes"]["T_CM14_r1"]["data_quality_flags"]
 assert "comment_maintained" not in fc and fc.get("synthetic") is False and fc.get("paid_promoted") is False, \
     f"⑭C 列还在时运营清空格子要清得掉: {fc}"
-assert err == 0 and cap["read"] == 0 and st["risk_source_columns_missing"] == [], \
-    f"⑭C 正常路径: 不红、不读库: rc={rc} read={cap['read']} {st}"
+assert err == 0 and cap["read"] == 0 and cap["schema"] == 0 and st["risk_source_columns_missing"] == [], \
+    f"⑭C 正常路径: 不红、不读库、不读表结构: rc={rc} read={cap['read']} schema={cap['schema']} {st}"
 
 # D) 列不见了又读不到库 → 这一轮 data_quality_flags 整列不写(留库里旧 JSON), 红
 rc, err, st, cap = _run14([("r1", {"流量状态": "大爆"})], {}, read_ok=False)
@@ -351,6 +360,34 @@ assert "data_quality_flags" not in cap["notes"]["T_CM14_r1"] and rc == 1 and err
 # E) 声明了但从来没值、库里也没有它判出来的旗子 → 不红(不会每晚误报)
 rc, err, st, cap = _run14([("r1", {"流量状态": "爆贴"})], {"r1": {"synthetic": False, "paid_promoted": False}})
 assert err == 0 and cap["read"] == 1, f"⑭E 没有证据就不红: rc={rc} {st}"
+
+# G) 列还在表结构里, 只是这一轮整列格子都空了(飞书不返回空格子, 一行都没返回这一列): 运营清掉了最后一个标记
+#    → 照常清掉、不红、不读库(复核 11-04: SPX 关注情况 整列只有 1 格有值, 清掉它不能每晚红、清不掉)
+rc, err, st, cap = _run14([("r1", {"流量状态": "大爆"}), ("r2", {"流量状态": "爆贴"})],
+                          {"r1": {**st_a, **st_b}}, schema=SCHEMA14)
+fg = cap["notes"]["T_CM14_r1"]["data_quality_flags"]
+assert "comment_maintained" not in fg and fg.get("synthetic") is False and "risk_flags_carried_from_db" not in fg, \
+    f"⑭G 整列格子清空(列还在)要清得掉: {fg}"
+assert err == 0 and cap["schema"] == 1 and cap["read"] == 0 and st["risk_source_columns_missing"] == [], \
+    f"⑭G 列还在: 不红、不读库: rc={rc} {st} {cap['schema']} {cap['read']}"
+# G2) 表结构读不到 → 按不见了处理(核之前的行为): 沿用 + 红
+rc, err, st, cap = _run14([("r1", {"流量状态": "大爆"}), ("r2", {"流量状态": "爆贴"})],
+                          {"r1": {**st_a, **st_b}}, schema=None)
+assert cap["notes"]["T_CM14_r1"]["data_quality_flags"].get("synthetic") is True and err == 2, \
+    f"⑭G2 表结构读不到: 沿用 + 红: {err} {st}"
+
+# H) --limit 跑(不完整)又读不到库: 整列不写照旧, 但不红(同沿用那一支: 不完整的一轮少返回一列不算证据)
+rc, err, st, cap = _run14([("r1", {"流量状态": "大爆"}), ("r2", {"流量状态": "爆贴"})], {}, read_ok=False,
+                          argv_extra=("--limit", "1"))
+assert "data_quality_flags" not in cap["notes"]["T_CM14_r1"] and err == 0, \
+    f"⑭H --limit + 读不到库: 不写这一列、不红: {err} {st} {cap['notes']}"
+
+# I) 沿用标记是每一轮现判的键: 以库里旗子为底补正文时剥掉, 不会在列修好之后还挂着
+_n14 = {"note_id": "T_CM14_r9", "raw_extra": {}}
+s.mark_recovered_body(_n14, {"route": "kept", "filled": ["raw_content"]},
+                      stored_flags={**st_b, "risk_flags_carried_from_db": ["笔记状态"]})
+assert "risk_flags_carried_from_db" not in _n14["data_quality_flags"] and _n14["data_quality_flags"]["synthetic"] is True, \
+    f"⑭I 补正文以库里旗子为底时, 旧的沿用标记要剥掉: {_n14['data_quality_flags']}"
 
 # F) 读库分批(in_ 走 URL, 每批 ≤ 100), 读不到回 None
 class _Q14:
@@ -370,6 +407,7 @@ try:
 finally:
     s.fetch_all_pages = _saved_fap
 
-print("  ⑭ 风控来源列整轮不见: 维护情况改名留 routes + 红 · 笔记状态改名留 synthetic + 红 · 格子清空照常清 · 读不到不写 · 无证据不红 ✓")
+print("  ⑭ 风控来源列整轮不见: 维护情况改名留 routes + 红 · 笔记状态改名留 synthetic + 红 · 格子清空照常清 · "
+      "整列清空但表结构还在照常清 · 读不到不写 · 无证据不红 · 不完整的一轮不红 ✓")
 
 print("comment_maintained 分来路 × synthetic 正交 × 维护情况取值 × 投流三态 × 减法重判 × 来源列消失: all checks passed")
