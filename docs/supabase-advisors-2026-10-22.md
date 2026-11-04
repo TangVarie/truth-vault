@@ -8,7 +8,7 @@
 |---|---|---|---|
 | `security_definer_view`（ERROR） | 18，全是 `public.v_dash_*` | 维持 D-101 的已接受例外，理由补正（见 §3） | 不改视图。旧 anon 随 S-12 停用后，泄露出去的那把就读不了 |
 | 登录用户能读 5 张 ssll 表（advisor 没报） | 5 | 真暴露面，见 §2 | owner 10-22 定：关注册、去 policy 都不做，目前没有必要；日志巡检盯注册 / 登录 |
-| 10-30 public 授权变更（邮件） | — | 我们不用改任何东西 | 10-31 复查一次（§4） |
+| 10-30 public 授权变更（邮件） | — | 我们不用改任何东西 | 11-04 复查过：本项目 public 的默认授权没变（§4） |
 | `rls_enabled_no_policy`（INFO） | 32（9 autowriter + 23 truth_vault） | 有意设计：只给 service_role，anon / authenticated 没有任何表权限 | 不动 |
 | `unindexed_foreign_keys`（INFO） | 3 | 都不在热路径上 | 不动 |
 | `no_primary_key`（INFO） | 19 | 全是一次性备份 / 修复表 | 按 S-01 / S-02 到期删；S-01 两张今天到期（11-02 D-136：都不删，留着，S-02 改成备份登记） |
@@ -84,7 +84,7 @@ Supabase 邮件：10-30 起，在 `public` 新建的表不再自动授权给 ano
   - `sanshengliubu-patches/004_jobs_table.sql`、`005_multi_tenant_workspaces.sql` 会在 public 新建表，却没有表级 GRANT。这两个文件从没跑过；真要跑，先补 GRANT（README 已注明）。
   - 三省六部自己以后在 public 建表，要自己 GRANT（S-06）。
   - 预览分支会重放生产记录在案的迁移，现在就重放不通（没有哪条记录在案的迁移建了那 5 张 ssll 表）；10-30 之后，06-07～06-10 那 5 条看板视图迁移没有 GRANT（06-06 最早的 v1～v3 三条有），其中 11 个视图第一次就是在这几条里建的，重放出来 anon 读不到；`v_dash_system_pulse`、`v_dash_pub_activity` 连迁移记录都没有，重放根本建不出来。重放出来的看板会静默缺数据。不开预览分支就没事。
-- **10-31 复查**：public 的默认授权确实变了；23 个对象的授权没变；看板照常有数。
+- **11-04 复查**（10-31 那次没做；11-02 这里写过「10-31 复查：public 的默认授权确实变了」，不对，改成下面这句）：public 的默认授权**没变**。`pg_default_acl` 里 postgres、supabase_admin 在 public 建的表 / 序列 / 函数仍自动授给 anon / authenticated（表全部权限、序列 SELECT / UPDATE / USAGE、函数 EXECUTE），平台 10-30 的收回在本项目没生效。23 个对象的授权和 10-26 基线一样（5 张 ssll 表 anon 0 / authenticated 15，18 个看板视图 54 / 54）；public 没有多出对象，也没有函数和序列；看板照常有数。所以上面「三省六部以后在 public 建表要自己 GRANT」眼下反过来：它新建的表照旧会自动授给 anon / authenticated（D-101 第 4 条说的隐患还在）。要不要自己跑 `ALTER DEFAULT PRIVILEGES … REVOKE` 收掉，可选、没排（OPEN-ITEMS S-13）。
 
 ## 5. autowriter 两个没用的索引
 
