@@ -1000,6 +1000,85 @@ def apply_tier_flip_block(pending_notes: list[dict], plan: dict) -> int:
     return n
 
 
+# ── 风控旗子的来源列整轮不见了 (外部评审 11-04 F01, D-146 前置) ──────────────────────
+# synthetic / comment_maintained / paid_promoted 这三个旗子决定一篇 爆 能不能进通道 1、书架、L2 正例。
+# 它们的来源列(笔记状态, 和 raw_extra 里声明的 维护情况 / 维护评论50条 / 爆帖控评置顶 / 爆帖置顶评论 /
+# 关注情况)不在 _detect_missing_core_columns 的视野里。运营把其中一列改名 → transform_row 判不出那一路,
+# 而 data_quality_flags 照样整份写(synthetic 显式 false、维护情况 声明了就写 paid_promoted false),
+# 于是库里的 true 被静默冲掉, 被挡的帖子第二天就回到爆款池。
+# 判据: 声明了的来源列这一轮一行都没返回, 且这一轮要写的篇里有库里旗子的 reason 点名这一列 → 那几篇
+# 这一族的键沿用库里的值、整轮红。列还在(哪怕这一格空了)照常重算, 运营清标记照样清得掉。
+_SYN_NOTE_STATUS_REASON = "笔记状态含「关注」"
+_RISK_FLAG_FAMILIES = ("synthetic", "comment_maintained", "paid_promoted")
+
+
+def risk_source_columns(mapping: dict) -> dict[str, list[tuple[str, str]]]:
+    """{声明了的飞书来源列: [(旗子族, 库里 <族>_reason 里认这一列的子串), ...]}。"""
+    out: dict[str, list[tuple[str, str]]] = {}
+    for col, tgt in (mapping.get("field_mapping") or {}).items():
+        if tgt == "_note_status_raw":
+            out.setdefault(col, []).append(("synthetic", _SYN_NOTE_STATUS_REASON))
+    extra = set(mapping.get("project_specific_fields_to_raw_extra") or [])
+    for col in (*_CM_TICKET_COLS, _CM_MULTISELECT_COL, *_CM_POSTHOC_COLS):
+        if col in extra:
+            out.setdefault(col, []).append(("comment_maintained", f"「{col}」"))
+    for col in PAID_COLS:
+        if col in extra:
+            out.setdefault(col, []).append(("paid_promoted", f"「{col}」"))
+    return out
+
+
+def stored_flags_batch(client, project_id: str, note_ids: list[str]) -> dict[str, dict] | None:
+    """库里这些 note 的 data_quality_flags({note_id: flags}, 不在库里的不出现)。读不到 → None。"""
+    out: dict[str, dict] = {}
+    ids = sorted(set(note_ids))
+    try:
+        for i in range(0, len(ids), 100):          # 同 _current_tiers: in_() 走 URL, 分批
+            rows = fetch_all_pages(
+                client.schema("truth_vault").table("notes").select("note_id, data_quality_flags")
+                .eq("project_id", project_id).in_("note_id", ids[i:i + 100]),
+                order_by="note_id",
+            )
+            out.update({r["note_id"]: dict(r.get("data_quality_flags") or {}) for r in rows})
+    except Exception as exc:
+        logger.warning("风控来源列闸: 读 notes.data_quality_flags 失败(%s)", exc)
+        return None
+    return out
+
+
+def carry_risk_flags(pending_notes: list[dict], missing: dict[str, list[tuple[str, str]]],
+                     stored: dict[str, dict]) -> dict[str, list[str]]:
+    """来源列不见了的那一族, 库里 reason 点名这一列且旗子为 true 的篇 → 这一族的键换成库里的。
+
+    只动 payload 里本来就带 data_quality_flags 的篇(不带的 upsert 本来就留库里旧 JSON)。
+    回 {列: [沿用了的 note_id, ...]}(只列真有沿用的列)。"""
+    hits: dict[str, list[str]] = {}
+    for note in pending_notes:
+        nid = note.get("note_id")
+        sf = stored.get(nid) or {}
+        if "data_quality_flags" not in note or not sf:
+            continue
+        fams: set[str] = set()
+        cols: set[str] = set()
+        for col, specs in missing.items():
+            for fam, needle in specs:
+                if sf.get(fam) is True and needle in str(sf.get(f"{fam}_reason") or ""):
+                    fams.add(fam)
+                    cols.add(col)
+        if not fams:
+            continue
+        flags = dict(note.get("data_quality_flags") or {})
+        for fam in fams:
+            for k in [k for k in flags if k.startswith(fam)]:
+                del flags[k]
+            flags.update({k: v for k, v in sf.items() if k.startswith(fam)})
+        flags["risk_flags_carried_from_db"] = sorted(cols)
+        note["data_quality_flags"] = flags
+        for col in cols:
+            hits.setdefault(col, []).append(nid)
+    return hits
+
+
 def _failed_rows_already_in_db(
     client, project_id: str, record_ids: set[str],
 ) -> set[str]:
@@ -1348,7 +1427,7 @@ def transform_row(
         note.setdefault("raw_extra", {})["_note_status_raw"] = nsr
         consumed_intermediates.add("_note_status_raw")
         if "关注" in nsr:
-            syn_reasons.append("笔记状态含「关注」= 人工伪爆贴; 指标不可信")
+            syn_reasons.append(f"{_SYN_NOTE_STATUS_REASON}= 人工伪爆贴; 指标不可信")
     # tier 源原始字串(流量状态/状态/备注): 留痕进 raw_extra(此前被 tier 消费掉、库里不可见,
     # 排查伪爆贴困难)+ 用于「伪爆贴」检测。tier_intermediate_key 见上方 tier_extraction 段。
     tier_src_seen = tier_intermediate_key in intermediates
@@ -2122,6 +2201,8 @@ def main() -> int:
              # D-091: 未来发布时间夹掉 / 状态格清空写回默认 / 状态值没映上 / 整批翻转被挡
              "publish_time_future": 0, "tier_cleared": 0, "tier_unmapped": 0,
              "tier_flip_blocked": 0, "tier_flip_guard_skipped": 0,
+             # 外部评审 11-04 F01: 风控旗子的来源列整轮不见了 → 沿用库里旗子的篇数 + 红
+             "risk_source_columns_missing": [], "risk_flags_carried": 0,
              "missing_capabilities": [],
              "missing_capabilities_exempt": [], "stale_capability_exemptions": [],
              "metrics_written": 0, "metrics_failed": 0,
@@ -2518,6 +2599,38 @@ def main() -> int:
             flip["threshold"], MASS_TIER_FLIP_MIN, int(MASS_TIER_FLIP_RATIO * 100), flip["existing"],
             len(flip["flips"]), flip["upgrades"][:10],
         )
+
+    # ── 风控旗子的来源列整轮不见了 (外部评审 11-04 F01) ─────────────────────────────
+    # 放在所有写旗子的步骤(清空 / 翻转挡)之后、upsert 之前: 只换这一族的键, 别的键照这一轮。
+    # 列都在 → 什么都不读、什么都不改(正常路径不变)。
+    risk_missing = {c: v for c, v in risk_source_columns(mapping).items() if c not in seen_cols} \
+        if pending_notes else {}
+    if risk_missing:
+        stored_risk = stored_flags_batch(sb, mapping["project_id"], [n["note_id"] for n in pending_notes])
+        complete = not truncated_by_limit and not fetch_failed
+        if stored_risk is None:
+            # 读不到库里的旗子 → 分不出哪几篇会被冲掉, 这一轮整列不写(upsert 留库里旧 JSON)
+            for n in pending_notes:
+                n.pop("data_quality_flags", None)
+            stats["errors"] += 1
+            stats["risk_source_columns_missing"] = sorted(risk_missing)
+            logger.error("【风控来源列不见了】%s 这一轮飞书一行都没返回 %s, 又读不到库里的旗子 —— "
+                         "本轮 data_quality_flags 整列不写(留库里旧值)。", mapping["project_id"], sorted(risk_missing))
+        else:
+            carried = carry_risk_flags(pending_notes, risk_missing, stored_risk)
+            if carried:
+                stats["risk_source_columns_missing"] = sorted(carried)
+                stats["risk_flags_carried"] = sum(len(v) for v in carried.values())
+                if complete:
+                    stats["errors"] += len(carried)
+                msg = (f"{mapping['project_id']}: 这些风控来源列这一轮飞书一行都没返回: "
+                       f"{'、'.join(f'{c}({len(v)} 篇库里的旗子来自它)' for c, v in sorted(carried.items()))}。"
+                       f"这几篇的伪爆 / 铺评 / 投流旗子本轮沿用库里的值(data_quality_flags.risk_flags_carried_from_db), "
+                       f"不然会被静默清掉、帖子回到爆款池。改名了 → 改 mapping 的列名; 真删了 → 从 mapping 摘掉"
+                       f"(之后这一路不再判)。新冒出来的未声明列: {sorted(undeclared_seen)[:10]}")
+                logger.error("【风控来源列不见了】%s", msg)
+                if complete and os.environ.get("GITHUB_ACTIONS") == "true":
+                    print(f"::error title=风控来源列不见了 ({mapping['project_id']})::{msg}", flush=True)
 
     # ── 内容层 (D-140): 库里有 notes.content_layer 才写; 没有 (v1_24 还没跑) 整列拿掉, 别的照旧 (prepare_content_layer)。
     prepare_content_layer(sb, pending_notes)
