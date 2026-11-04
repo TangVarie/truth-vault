@@ -873,10 +873,19 @@ def selftest() -> int:
     assert "TZ=Asia/Shanghai date +%u" in step and "workflow_dispatch" in step, "要每周一跑、手动触发照跑"
     assert "--window-days" not in step and "--delay-days" not in step, "夜跑不该自己传窗口 —— 默认值由脚本钉着"
     assert "set +e" in step, "advisory: 脚本 rc=1/2 不能把这一步判红"
+
+    # ── verify #104 (外部评审 11-04 F04): 判稿记 ok、账本一行都没有的版本数。verify 不进 CI, 这里只钉住它在、形状对 ──
+    import re
+    verify = (Path(__file__).resolve().parent / "verify_supabase_state.sql").read_text(encoding="utf-8")
+    m = re.search(r"SELECT '104',.*?(?=\nUNION ALL|\n\))", verify, re.S)
+    assert m, "verify_supabase_state.sql 要有 #104 (判稿 ok 却没账本的版本数)"
+    for needle in ("autowriter.batch_metrics", "'deskcore_commit'", "e->>'status' = 'ok'",
+                   "truth_vault.note_feature_answers", "subject_type = 'aw_version'", "run_tag = 'primary'", "NOT EXISTS"):
+        assert needle in m.group(0), f"verify #104 少了 {needle} —— 分母要取 batch_metrics 的 ok 判稿, 数账本里 aw_version × primary 0 行的"
     print("  ✓ 写作台用上率灯: 接住只认发布前那版 / 未改动只认 diff_rev ≥2 且没有时打待重算 / 下限与分母 / "
           "够格判与判据同一条 / 判不了 rc=2(整窗或在用期对账不全) / 发牌回看 7 天 + 在用期 / 北京日 + 存稿日按版本时间 / "
           "已删的篇不算 / "
-          "取数窗口按 publish_time、分批、翻页键唯一 / 哨兵行 / 每周一接线")
+          "取数窗口按 publish_time、分批、翻页键唯一 / 哨兵行 / 每周一接线 / verify #104 在")
     return 0
 
 

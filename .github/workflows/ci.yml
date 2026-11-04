@@ -2849,6 +2849,9 @@ jobs:
               class FakeFeishu:
                   def __init__(self, *a, **k): pass
                   def list_records(self, *a, **k): return iter([XHS, DY1, DY2])
+                  def list_field_names(self, *a, **k):   # 表结构: SPX 声明的列都在, 这几行只是空着 (风控来源列闸不开火)
+                      m = s.load_mapping("SPX_phase1")
+                      return set(m["field_mapping"]) | set(m.get("project_specific_fields_to_raw_extra") or [])
               s.FeishuClient = FakeFeishu
               s.get_supabase_client = lambda *a, **k: object()
               s.assert_db_schema_ready = lambda *a, **k: None

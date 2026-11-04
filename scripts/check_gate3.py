@@ -161,6 +161,52 @@ def s7_verdict(sc: dict) -> None:
     print("  §7 判定: accumulating / pass / fail(比值) / fail(p) / 全 0 ✓")
 
 
+def s7b_side_reads(sc: dict) -> None:
+    """D-146 (外部评审 11-04 F08): 主判定一个字不改, 旁边并排报分层 MH / 分层精确 p / Fisher + mid-p / 各项目 2×2。
+    反证: 把 side_reads 的分层换成一层 → 辛普森那条的 pass_read 变 clean, 红。"""
+    def rows(n, pos, pct, proj):
+        return [{"pct_in_project": pct, "y": 1 if i < pos else 0, "project_id": proj} for i in range(n)]
+    # 精确检验对上手算: 品茶 2×2 [[3,1],[1,3]] 单侧 Fisher = 17/70; 一层时分层 p = Fisher
+    p, midp = G.exact_lower_p([(1, 4, 3, 4)])
+    assert abs(p - 17 / 70) < 1e-12 and abs(midp - (1 / 70 + 0.5 * 16 / 70)) < 1e-12, (p, midp)
+    # 辛普森: 两个项目内最低档与其余爆率都相同, 只是最低档偏集中在少爆的项目 → 合并 pass, 分层不过
+    v = G.verdict(rows(200, 2, 0.1, "A") + rows(100, 1, 0.6, "A") + rows(20, 2, 0.1, "B") + rows(800, 80, 0.6, "B"), sc)
+    sd = v["side"]
+    assert v["status"] == "pass" and v["ratio"] < 0.25 and v["p"] < 0.001, ("主判定照 D-118 不变", v)
+    assert abs(sd["mh_ratio"] - 1.0) < 1e-9 and sd["p_strat"] > 0.4 and not sd["strat_ok"], sd
+    assert v["pass_read"] == "depends_on_project_mix", v["pass_read"]
+    a_, b_ = sd["per_project"]
+    assert (a_["project_id"], a_["bottom_pos"], a_["bottom_n"], a_["rest_pos"], a_["rest_n"]) == ("A", 2, 200, 1, 100)
+    assert abs(a_["bottom_share"] - 2 / 3) < 1e-9 and abs(b_["bottom_share"] - 20 / 820) < 1e-9, sd["per_project"]
+    # 事件少: 0/212 vs 11/847 —— z 过 (p≈0.048), Fisher 不过 (≈0.0846), mid-p 过 (≈0.042, 只报不判)
+    v = G.verdict(rows(212, 0, 0.1, "A") + rows(847, 11, 0.6, "A"), sc)
+    sd = v["side"]
+    assert v["status"] == "pass" and 0.04 < v["p"] < 0.05, v
+    assert abs(sd["p_fisher"] - 0.0846) < 5e-4 and sd["midp_fisher"] < 0.05 and not sd["fisher_ok"], sd
+    assert sd["strat_ok"] is False and v["pass_read"] == "depends_on_project_mix", (sd, v["pass_read"])
+    # 干净的通过: 一个项目、事件够多 → 三样都过
+    v = G.verdict(rows(212, 2, 0.1, "A") + rows(847, 60, 0.6, "A"), sc)
+    assert v["status"] == "pass" and v["pass_read"] == "clean", (v["side"], v["pass_read"])
+    # 没过主判定时不给 pass_read (并排读数不能把 fail 读成 pass)
+    v = G.verdict(rows(212, 12, 0.1, "A") + rows(847, 60, 0.6, "B"), sc)
+    assert v["status"] == "fail" and v["pass_read"] is None
+    # 旧形状 (行里没有 project_id) 照跑: 归一层, 分层 = 合并
+    v = G.verdict([{"pct_in_project": 0.1, "y": 0}] * 212 + [{"pct_in_project": 0.6, "y": 1}] * 60
+                  + [{"pct_in_project": 0.6, "y": 0}] * 787, sc)
+    assert v["side"]["per_project"][0]["project_id"] == "?" and v["side"]["p_strat"] == v["side"]["p_fisher"]
+    # 报告里看得见; 取数带上 project_id
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        G.report(G.plan([], set(), sc, datetime(2026, 10, 25, tzinfo=timezone.utc)),
+                 G.verdict(rows(200, 2, 0.1, "A") + rows(100, 1, 0.6, "A") + rows(20, 2, 0.1, "B") + rows(800, 80, 0.6, "B"), sc), sc)
+    out = buf.getvalue()
+    assert "并排 (D-146" in out and "分层 MH 比值 1.00" in out and "A: 最低档 2/200" in out and "取决于项目构成" in out, out
+    src = (ROOT / "scripts/gate3_score.py").read_text(encoding="utf-8")
+    assert '.select("subject_id, pct_in_project, project_id")' in src, "fetch_labeled 要带 project_id, 不然分不了层"
+    print("  §7b 并排读数 (D-146): 品茶 Fisher 对上 · 辛普森 → 主判定 pass 但取决于项目构成 · 0/212 vs 11/847 Fisher 不过"
+          " · 干净通过 · fail 不给 pass_read · 旧形状一层 · 报告与取数 ✓")
+
+
 def s8_report(sc: dict) -> None:
     now = datetime(2026, 10, 25, tzinfo=timezone.utc)
     v = G.verdict([], sc)
@@ -211,9 +257,10 @@ def main() -> int:
     s5_cut(sc)
     s6_plan(sc)
     s7_verdict(sc)
+    s7b_side_reads(sc)
     s8_report(sc)
     s9_wiring()
-    print("\ncheck_gate3: 9 节全过")
+    print("\ncheck_gate3: 9 节 + §7b 全过")
     return 0
 
 
