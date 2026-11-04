@@ -72,7 +72,7 @@
 | owner 跑完 `schemas/notes_v1_23_content_sha.sql` 之后的那一晚 | essence 步 Found 行 `content_changed=N`、策展 Found 行 `daily_stale=N`；verify #101 = 0、#102 几百且逐日下降、#103 涨了再被消掉；daily-sync 不因此变红 | AU-F02（D-137） |
 | TV D-138 部署后第一次写作台借卡（有外部品类的项目：sportsix、途鸽） | 借到的卡里至少 1 张外部卡；外部卡带发出几天、日均评论、结构；缓存 `selected[]` 里 `forced: true` 开始有数（周检记比例）；Jev 加的家居家电 / 个护 / 藻油：11-03 手动跑之后只读已 >0（3 / 2 / 3，J-16 已关），11-09 周一方向复核灯那行再核一次 | F-11、J-16 |
 | **11-09 周一 daily-sync**（用上率灯第一次按北京日） | `DESK_USE_RATE` 的在用期按北京日历日算（AU-F12）：TUGE_phase1 多半转黄（10-12～10-26 那周按北京日是 0/17，以前被读成「判不了」），这是要的修正；在用期内的数和之前各周不可比，记进 docs/32 §4 那张表时标明 | AU-F12、L-07 |
-| 11-04 daily-sync（D-143 第一晚） | essence 日志先出现所有项目的 `pass=new`、再出现 `pass=stale`；没有项目因为时限被跳过（有的话那一行写「到了 essence 时限」）；内容层、外部帖遮名字两步跑到；owner 跑了 `backfill_essence_sha_1103.sql` 的话 verify #101 = 0 | D-143、S-14 |
+| 11-04 daily-sync（D-143、D-144 第一晚） | essence 日志先出现所有项目的 `pass=new`、再出现 `pass=stale`；没有项目因为时限被跳过（有的话那一行写「到了 essence 时限」）；内容层、外部帖遮名字两步跑到；owner 跑了 `backfill_essence_sha_1103.sql` 的话 verify #101 = 0。飞书同步（D-144）：BJS_phase2 Done 行 `body_from_parent` 约 10（11-03 隔离的那 10 行父记录子行进库）、XIWU_phase2 `body_kept_from_db = 1` 并有一行「飞书正文被清空」的 `::warning::`；这两个项目不再因为缺正文红；两张表不再报「父记录」等未声明列 | D-143、S-14、D-144 |
 | 写作台下一场发牌（aw#141 部署后） | 写手说了贴型的那几张牌，`angle_ledger` 的 `_draw` 里有 `ly`（P / T / Q / J）；没说贴型的牌没有这个键、卡面和以前一样；sportsix 那 4 条改成「流量向」的规则（`retag_spx_rules_1103.sql`，owner 11-03 跑了）在产品贴的简报里注「只管流量贴 / 提问贴的稿」 | W-50 |
 | 评论写手头一回上手之后 | 问 owner 她卡在入门指南哪一步；指南里 WorkBuddy 的按钮名（连接器、自定义连接器、配置 MCP、添加技能）没对着截图核过，按她看到的改；第三步的配置没加 `type` 能不能连上也一起记下 | W-49 |
 | 11-16 之后的某个周中晚上（换版后两周不动协议） | 下一次协议更新：AI 指出合规问题时自己改掉，写手不用再说「第 N 篇按这条改」；同一次带上发牌改版（aw#140）的协议跟进：开场念 `project_now.message`、外部参考卡不再说「数据验证过」、新卡面和 `pin` / `repeat_of` 的说明；贴型那一句（aw#141） | W-42、W-45、W-50 |

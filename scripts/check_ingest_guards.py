@@ -330,6 +330,360 @@ def check_reuse_previous_inheritance() -> None:
     print("  §8 抖音行: 以前继承成功的沿用库里那份(方向一并复原, 形态/人群/痛点不丢), 其它照旧隔离, 读不到库不放宽 ✓")
 
 
+
+# ── §9 有链接、缺正文的行: 父记录子行接父行正文 / 正文被清空的老笔记留库里那份 (2026-11-03, D-144) ─────────
+_BODY = "【标题】藻油到底怎么挑【正文】颗粒小、没腥味, 早饭后一粒"
+
+
+def _bjs_row(rid: str, *, body: str | None = None, url: str | None = None, parent: str | None = None,
+             kol: str = "LX02", table: str = "tblBJS") -> dict:
+    f: dict = {"素人编号": kol, "发布时间": 1793635200000, "流量状态": ["观察中"], "实时数据.评论数": 3}
+    if body is not None:
+        f["笔记内容"] = body
+    if url is not None:
+        f["反馈链接"] = {"link": url, "text": url}
+    if parent is not None:
+        f["父记录"] = [{"type": "text", "table_id": table, "text_arr": ["1091"], "record_ids": [parent], "text": "1091"}]
+    return {"record_id": rid, "fields": f}
+
+
+class _StoredQ:
+    """supabase 查询链的桩: schema/table/select/eq/limit/execute 读 note_id → 库里那篇; 其余查询走 fetch_all_pages 桩。"""
+    def __init__(self, notes: dict, raise_on: set = frozenset()):
+        self.notes, self.raise_on, self.asked_ids, self._id = notes, raise_on, [], None
+
+    def schema(self, *a): return self
+    def table(self, *a): return self
+    def select(self, *a, **k): return self
+    def or_(self, *a, **k): return self
+    def limit(self, *a, **k): return self
+
+    def eq(self, col, val):
+        if col == "note_id":
+            self._id = val
+        return self
+
+    def in_(self, col, vals):
+        self.asked = list(vals)
+        return self
+
+    def execute(self):
+        nid, self._id = self._id, None
+        self.asked_ids.append(nid)
+        if nid in self.raise_on:
+            raise RuntimeError("db down")
+        row = self.notes.get(nid)
+        return type("R", (), {"data": [row] if row else []})()
+
+
+def check_missing_body_recovery() -> None:
+    pid = engine.parent_record_id
+    assert pid(_bjs_row("c", url="u", parent="recP")["fields"]) == "recP", "§9 父记录格 → 父行 record_id"
+    assert pid(_bjs_row("c", url="u", parent="recP")["fields"], {"tblBJS"}) == "recP"
+    assert pid(_bjs_row("c", url="u", parent="recP", table="tblOTHER")["fields"], {"tblBJS"}) is None, \
+        "§9 父记录指到这个项目以外的表 → 不接"
+    assert pid({"父记录": [{"type": "text", "table_id": "tblBJS", "text_arr": []}]}) is None, "§9 空占位行的父记录格 → None"
+    assert pid({"父记录": [{"record_ids": ["a", "b"]}]}) is None and pid({}) is None, "§9 指了两条 / 没这一列 → None"
+
+    m = engine.load_mapping("BJS_phase2")
+    common = dict(project_id="BJS_phase2", content_col="笔记内容", title_col=None, url_cols=["反馈链接"],
+                  allowed_tables={"tblBJS"})
+
+    def never(_nid):
+        raise AssertionError("§9 这种行不该读库")
+
+    parent = _bjs_row("recP", body=_BODY, url="https://xhslink.cn/o/P", kol="1091")
+    child = _bjs_row("recC", url="https://xhslink.cn/o/C", parent="recP")
+    out, meta = engine.recover_missing_body(child["fields"], record_id="recC", pulled={"recP": parent["fields"]},
+                                            stored=never, **common)
+    assert out["笔记内容"] == _BODY and meta == {"route": "parent", "from": "recP", "source": "feishu",
+                                                "filled": ["笔记内容"]}, f"§9 子行接这一轮飞书里的父行: {meta}"
+    assert "笔记内容" not in child["fields"], "§9 不能改调用方手里的原始行"
+
+    db = {"BJS_phase2_recP": {"raw_content": "库里父行正文", "title": None, "publish_url": "https://xhslink.cn/o/P"}}
+    out, meta = engine.recover_missing_body(child["fields"], record_id="recC",
+                                            pulled={"recP": _bjs_row("recP", url="https://xhslink.cn/o/P")["fields"]},
+                                            stored=db.get, **common)
+    assert out["笔记内容"] == "库里父行正文" and meta["source"] == "db", "§9 父行这一轮没正文 → 接库里父行那篇"
+    out, meta = engine.recover_missing_body(child["fields"], record_id="recC", pulled={}, stored=db.get, **common)
+    assert meta and meta["source"] == "db", "§9 父行这一轮没拉到 → 接库里父行那篇"
+    reused_parent = _bjs_row("recP", url="https://xhslink.cn/o/P_NEW")["fields"]
+    out, meta = engine.recover_missing_body(child["fields"], record_id="recC", pulled={"recP": reused_parent},
+                                            stored=db.get, **common)
+    assert meta is None and "笔记内容" not in out, \
+        "§9 父行这一轮还在、换了链接、正文空了(拿去登记了另一篇)→ 库里那份是旧帖的, 不给子行(codex #267)"
+
+    same = _bjs_row("recS", url="https://xhslink.cn/o/P", parent="recP")
+    out, meta = engine.recover_missing_body(same["fields"], record_id="recS", pulled={"recP": parent["fields"]},
+                                            stored=lambda _n: None, **common)
+    assert meta is None and "笔记内容" not in out, "§9 子行和父行同一个链接(同一篇登记两次)→ 不接, 照旧隔离"
+    same_db = {"BJS_phase2_recS": {"raw_content": "这一行以前的正文", "title": None, "publish_url": "https://xhslink.cn/o/S"}}
+    out, meta = engine.recover_missing_body(same["fields"], record_id="recS", pulled={"recP": parent["fields"]},
+                                            stored=same_db.get, **common)
+    assert meta is None and "笔记内容" not in out, \
+        "§9 同链接的子行库里有旧正文也不走「留库里那份」—— 同一篇登记两次要人看(codex #267)"
+
+    kept_db = {"BJS_phase2_recK": {"raw_content": "库里这篇正文", "title": None, "publish_url": "https://xhslink.cn/o/K"}}
+    cleared = _bjs_row("recK", url="https://xhslink.cn/o/K")
+    out, meta = engine.recover_missing_body(cleared["fields"], record_id="recK", pulled={}, stored=kept_db.get, **common)
+    assert out["笔记内容"] == "库里这篇正文" and meta == {"route": "kept", "filled": ["笔记内容"]}, \
+        "§9 已入库的笔记飞书正文空了 → 正文留库里那份"
+    assert engine.recover_missing_body(cleared["fields"], record_id="recK", pulled={}, stored=lambda _n: None,
+                                       **common)[1] is None, "§9 库里也没有 → 补不上(照旧隔离)"
+    moved = {"BJS_phase2_recK": dict(kept_db["BJS_phase2_recK"], publish_url="https://xhslink.cn/o/OLD")}
+    assert engine.recover_missing_body(cleared["fields"], record_id="recK", pulled={}, stored=moved.get,
+                                       **common)[1] is None, \
+        "§9 库里那篇的链接和这一行现在的对不上(这一行换登记了另一篇)→ 不留旧正文, 照旧隔离(自审 #267)"
+    spaced = {"BJS_phase2_recK": dict(kept_db["BJS_phase2_recK"], publish_url=" https://xhslink.cn/o/K ")}
+    assert engine.recover_missing_body(cleared["fields"], record_id="recK", pulled={}, stored=spaced.get,
+                                       **common)[1], "§9 库里老链接带首尾空白也算同一篇"
+    orphan = _bjs_row("recO", url="https://xhslink.cn/o/O", parent="recGONE")
+    assert engine.recover_missing_body(orphan["fields"], record_id="recO", pulled={}, stored=lambda _n: None,
+                                       **common)[1] is None, "§9 父行哪儿都找不到、自己也不在库里 → 补不上"
+
+    # 穷举: 父行这一轮(不在 / 有无正文 × 链接)× 库里父行 × 库里自己, 每一种都按 D-144 的四条规则核结果
+    # (codex #267 连着三轮各找到一个「链接对不上却兜进了下一条」的组合 —— 按组合核, 不按点补)
+    import itertools
+    OWN = "https://xhslink.cn/o/C"
+    links = {"P": "https://xhslink.cn/o/P", "C": OWN, "NEW": "https://xhslink.cn/o/NEW", "OLD": "https://xhslink.cn/o/OLD",
+             "OTHER": "https://xhslink.cn/o/OTHER", "": ""}
+    pf_states = [None] + [(b, l) for b in (True, False) for l in ("P", "C", "NEW", "")]
+    pdb_states = [None, "FAIL"] + [l for l in ("P", "C", "OLD", "")]     # FAIL = 读库失败(READ_FAILED)
+    own_states = [None, "FAIL"] + [l for l in ("C", "OTHER", "")]
+    recovered = {"feishu": 0, "db": 0, "kept": 0, "none": 0}
+    for pf_s, pdb_s, own_s in itertools.product(pf_states, pdb_states, own_states):
+        pulled = {}
+        if pf_s is not None:
+            f = {"反馈链接": links[pf_s[1]]} if links[pf_s[1]] else {}
+            if pf_s[0]:
+                f["笔记内容"] = "父行飞书正文"
+            pulled["recP"] = f
+        st = {}
+        if pdb_s == "FAIL":
+            st["BJS_phase2_recP"] = engine.READ_FAILED
+        elif pdb_s is not None:
+            st["BJS_phase2_recP"] = {"raw_content": "库里父行正文", "title": None, "publish_url": links[pdb_s] or None}
+        if own_s == "FAIL":
+            st["BJS_phase2_recC"] = engine.READ_FAILED
+        elif own_s is not None:
+            st["BJS_phase2_recC"] = {"raw_content": "库里自己正文", "title": None, "publish_url": links[own_s] or None}
+        row = _bjs_row("recC", url=OWN, parent="recP")["fields"]
+        out, meta = engine.recover_missing_body(row, record_id="recC", pulled=pulled, stored=st.get, **common)
+        # 规则(独立写一遍, 不调被测代码)
+        pf_body = pf_s is not None and pf_s[0]
+        pf_url = links[pf_s[1]] if pf_s is not None else ""
+        pdb_ok = pdb_s not in (None, "FAIL")
+        pdb_url = links[pdb_s] if pdb_ok else ""
+        parent_now = pf_url or pdb_url          # D-144 规则 A: 父行这一轮没填链接就看库里父行那篇的, 和有没有正文无关
+        case = f"父行飞书={pf_s} 库里父行={pdb_s} 库里自己={own_s} → {meta}"
+        if pdb_s == "FAIL" and not pf_url:
+            want = None                         # 规则 A 要靠库里父行的链接核, 读不到 → 不放宽
+        elif parent_now == OWN:
+            want = None                                                                  # A
+        elif pf_body:
+            want = ("parent", "feishu", "父行飞书正文")                                     # B
+        elif pdb_ok and (not pf_url or pdb_url == pf_url):
+            want = ("parent", "db", "库里父行正文")                                         # C
+        elif own_s not in (None, "FAIL") and links[own_s] == OWN:
+            want = ("kept", None, "库里自己正文")                                           # D
+        else:
+            want = None
+        got = None if meta is None else (meta["route"], meta.get("source"), out["笔记内容"])
+        assert got == want, f"§9 穷举: {case}, 应为 {want}"
+        recovered[want[1] or want[0] if want else "none"] += 1
+    assert all(recovered.values()), f"§9 穷举每条路都要走到过(不然是空跑): {recovered}"
+
+    # 两列都映 publish_url 的表(TGV_phase1 笔记链接→反馈链接、TXQ_phase1 链接→反馈链接, D-059 新名优先):
+    # 比的必须是 transform 会写进 publish_url 的那个(在场的后者), 不是第一列(自审 #267)
+    for proj in ("TXQ_phase1", "TGV_phase1"):
+        pm = engine.load_mapping(proj)
+        ucols = [k for k, v in pm["field_mapping"].items() if v == "publish_url"]
+        ccol = next(k for k, v in pm["field_mapping"].items() if v == "raw_content")
+        old_c, new_c = ucols[0], ucols[-1]
+        assert len(ucols) == 2 and new_c == "反馈链接", f"§9 前提: {proj} 两列映 publish_url {ucols}"
+        kw = dict(project_id=proj, content_col=ccol, title_col=None, url_cols=ucols, allowed_tables=frozenset())
+        OLDL, NEWL = "https://xhslink.com/o/OLD", "https://xhslink.com/o/NEW"
+        st = {f"{proj}_recK": {"raw_content": "旧帖正文", "title": None, "publish_url": OLDL}}
+        both = {old_c: {"link": OLDL, "text": OLDL}, new_c: {"link": NEWL, "text": NEWL}}
+        note, _, _ = engine.transform_row(pm, "recK", dict(both))
+        assert note["publish_url"] == NEWL, "§9 前提: transform 新名优先"
+        assert engine.recover_missing_body(dict(both), record_id="recK", pulled={}, stored=st.get, **kw)[1] is None, \
+            f"§9 {proj}: 旧名列没清、新名列换了一篇 → 不留旧正文"
+        only_new = {new_c: {"link": OLDL, "text": OLDL}}
+        got = engine.recover_missing_body(only_new, record_id="recK", pulled={}, stored=st.get, **kw)[1]
+        assert got and got["route"] == "kept", f"§9 {proj}: 改名之后只剩新名列、链接没变 → 照样留库里那份"
+        parent_row = {new_c: {"link": "https://xhslink.com/o/P", "text": "P"}, ccol: "父行正文"}
+        child_row = {old_c: {"link": "https://xhslink.com/o/C_old", "text": "x"},
+                     new_c: {"link": "https://xhslink.com/o/P", "text": "P"},
+                     "父记录": [{"type": "text", "record_ids": ["recP"], "text": "1"}]}
+        assert engine.recover_missing_body(child_row, record_id="recC", pulled={"recP": parent_row},
+                                           stored=lambda _n: None, **kw)[1] is None, \
+            f"§9 {proj}: 子行会写进去的链接和父行一样(同一篇登记两次)→ 规则 A 不补"
+
+    placeholder = {"父记录": [{"type": "text", "table_id": "tblBJS", "text_arr": []}]}
+    assert engine.recover_missing_body(placeholder, record_id="recE", pulled={}, stored=never, **common)[1] is None, \
+        "§9 空占位行(没链接)不碰、不读库"
+    linked_no_url = _bjs_row("recN", parent="recP")["fields"]
+    assert engine.recover_missing_body(linked_no_url, record_id="recN", pulled={"recP": parent["fields"]},
+                                       stored=never, **common)[1] is None, \
+        "§9 有父记录但没反馈链接(评论碎片之类)→ 不接: 判「本该是笔记」只看反馈链接(D-052)"
+    assert engine.recover_missing_body(parent["fields"], record_id="recP", pulled={}, stored=never, **common)[1] is None, \
+        "§9 自己有正文 → 不碰"
+
+    titled = {"标题": "title", "正文": "raw_content", "链接": "publish_url"}
+    t_out, t_meta = engine.recover_missing_body(
+        {"链接": "https://x/k"}, record_id="r", project_id="T", content_col="正文", title_col="标题", url_cols="链接",
+        pulled={}, stored={"T_r": {"raw_content": "库里正文", "title": "库里标题", "publish_url": "https://x/k"}}.get)
+    assert t_out == {"链接": "https://x/k", "正文": "库里正文", "标题": "库里标题"} and t_meta["filled"] == ["正文", "标题"], \
+        f"§9 有标题列的表: 标题也空就一并补 {titled}"
+    t_out, _ = engine.recover_missing_body(
+        {"链接": "https://x/k", "标题": "飞书里的新标题"}, record_id="r", project_id="T", content_col="正文",
+        title_col="标题", url_cols="链接", pulled={}, stored={"T_r": {"raw_content": "库里正文", "title": "旧", "publish_url": "https://x/k"}}.get)
+    assert t_out["标题"] == "飞书里的新标题", "§9 飞书里标题还在 → 不拿库里的旧标题盖"
+
+    # transform 之后: 子行自己的链接 / 素人 / 指标, 父行的正文, 双留痕
+    out, meta = engine.recover_missing_body(child["fields"], record_id="recC", pulled={"recP": parent["fields"]},
+                                            stored=never, **common)
+    note, metric, _ = engine.transform_row(m, "recC", out)
+    engine.mark_recovered_body(note, meta)
+    assert note["raw_content"] == _BODY and note["publish_url"] == "https://xhslink.cn/o/C" and note["account_id"] == "LX02"
+    assert note["data_quality_flags"]["content_inherited"] is True
+    assert note["raw_extra"]["_content_from_parent"] == {"record_id": "recP", "source": "feishu", "filled": ["笔记内容"]}
+    assert "_content_inherited_from" not in note["raw_extra"], "§9 不占 D-052 的键(它的「沿用」要读)"
+    kept_meta = {"route": "kept", "filled": ["笔记内容"]}
+    kn = {"note_id": "x"}
+    engine.mark_recovered_body(kn, kept_meta, {})
+    assert kn["data_quality_flags"] == {"content_cleared_in_feishu": True} and kn["raw_extra"]["_content_kept_from_db"]
+
+    # data_quality_flags 是 upsert 保护列: transform 这一轮一个旗子都判不出来就不写这一列(留库里旧值)。
+    # 补正文的旗子要以库里那份为底, 不能把 synthetic / 控评来路冲掉(codex #267)
+    bare, _, _ = engine.transform_row(MAPPING, "recK", {"正文": "库里正文"})
+    assert "data_quality_flags" not in bare, "§9 前提: 没有状态列 / 维护情况的行 transform 不写旗子"
+    stored_flags = {"synthetic": True, "synthetic_reason": "伪爆贴", "content_cleared_in_feishu": True}
+    n1 = dict(bare)
+    engine.mark_recovered_body(n1, kept_meta, stored_flags)
+    assert n1["data_quality_flags"] == {"synthetic": True, "synthetic_reason": "伪爆贴",
+                                        "content_cleared_in_feishu": True}, n1["data_quality_flags"]
+    n2 = dict(bare)
+    engine.mark_recovered_body(n2, {"route": "parent", "from": "recP", "source": "db", "filled": ["正文"]}, stored_flags)
+    assert n2["data_quality_flags"] == {"synthetic": True, "synthetic_reason": "伪爆贴", "content_inherited": True}, \
+        "§9 以库里那份为底; 上一晚的 content_cleared_in_feishu 按这一晚的路重写"
+    n5 = dict(bare)
+    engine.mark_recovered_body(n5, kept_meta, {"synthetic": True, "publish_time_future": "2027-01-01",
+                                               "tier_unmapped": "已发布", "content_inherited": True, "paid_promoted": False})
+    assert n5["data_quality_flags"] == {"synthetic": True, "paid_promoted": False, "content_cleared_in_feishu": True}, \
+        f"§9 库里旧的每轮检出旗子(未来发布时间 / 状态没映上…)不带回来, 不然被当成这一轮的检出计数: {n5['data_quality_flags']}"
+    n3 = dict(bare)
+    engine.mark_recovered_body(n3, kept_meta, None)
+    assert "data_quality_flags" not in n3 and n3["raw_extra"]["_content_kept_from_db"], \
+        "§9 读不到库里的旗子 → 这一轮不写这一列(留库里旧值), 只在 raw_extra 留痕"
+    n4 = {"note_id": "y", "data_quality_flags": {"paid_promoted": False}}
+    engine.mark_recovered_body(n4, kept_meta, {"synthetic": True})
+    assert n4["data_quality_flags"] == {"paid_promoted": False, "content_cleared_in_feishu": True}, \
+        "§9 transform 这一轮写了旗子 → 用这一轮判出来的(全量), 不拿库里的旧值掺"
+
+    q = _StoredQ({"N_a": {"raw_content": "a", "title": None, "publish_url": "u"}, "N_e": {"raw_content": ""}}, {"N_x"})
+    assert engine.fetch_stored_body(q, "N_a")["raw_content"] == "a"
+    assert engine.fetch_stored_body(q, "N_e") is None and engine.fetch_stored_body(q, "N_missing") is None
+    assert engine.fetch_stored_body(q, "N_x") is None, "§9 读不到库 → None(不放宽)"
+    assert engine.read_stored_note(q, "N_x") is engine.READ_FAILED and engine.read_stored_note(q, "N_missing") is None, \
+        "§9 读不到和没有这篇要分得开(旗子: 没有 = 新篇从空开始, 读不到 = 这一轮不写)"
+
+    # 端到端: 驱动真的 main()。子行排在父行前面也接得上; 正文清空的老笔记照常入库盖戳; 只有找不到父行的那条红
+    import io, json, logging, os, sys
+    os.environ.setdefault("FEISHU_APP_ID", "x")
+    os.environ.setdefault("FEISHU_APP_SECRET", "y")
+    rows = [_bjs_row("recC2", url="https://xhslink.cn/o/C2", parent="recP", kol="YQ04"),   # 父行之前
+            parent,
+            child,
+            {"record_id": "recE", "fields": {"父记录": [{"type": "text", "table_id": "tblBJS", "text_arr": []}]}},
+            cleared,
+            orphan]
+    saved = {k: getattr(engine, k) for k in (
+        "FeishuClient", "get_supabase_client", "assert_db_schema_ready", "ensure_project_exists", "quarantine_record",
+        "fetch_acknowledged_quarantine", "ensure_accounts_batch", "upsert_metrics_batch", "update_project_date_range",
+        "fetch_all_pages", "upsert_notes_batch", "load_mapping")}
+    saved_argv = sys.argv
+    try:
+        m2 = dict(m)
+        m2["sync_config"] = dict(m["sync_config"], feishu_table_id="tblBJS")
+        cap: dict = {"quarantined": []}
+
+        def run(dry: bool):
+            qb = _StoredQ(dict(kept_db))
+            class F:
+                def __init__(self, *a, **k): pass
+                def list_records(self, *a, **k): return iter(rows)
+            engine.FeishuClient = F
+            engine.get_supabase_client = lambda *a, **k: qb
+            engine.assert_db_schema_ready = lambda *a, **k: None
+            engine.ensure_project_exists = lambda *a, **k: None
+            engine.quarantine_record = lambda sb, p, rid, *a, **k: cap["quarantined"].append(rid)
+            engine.fetch_acknowledged_quarantine = lambda sb, p: set()
+            engine.ensure_accounts_batch = lambda *a, **k: []
+            engine.upsert_metrics_batch = lambda *a, **k: (0, [])
+            engine.update_project_date_range = lambda *a, **k: None
+            engine.load_mapping = lambda _p: m2
+
+            def pages(b, order_by=None):
+                asked = getattr(b, "asked", None)
+                if asked is not None:      # D-058「没处理成的行库里有没有 note」: 照库里真有的答, 不然盖戳断言空跑
+                    b.asked = None
+                    return [{"note_id": i} for i in asked if i in kept_db]
+                return []
+            engine.fetch_all_pages = pages
+
+            def up(sb, notes, dry_run=False):
+                cap["notes"] = notes
+                return [n["note_id"] for n in notes]
+            engine.upsert_notes_batch = up
+            buf = io.StringIO()
+            h = logging.StreamHandler(buf)
+            engine.logger.addHandler(h)
+            sys.argv = ["x", "BJS_phase2"] + (["--dry-run"] if dry else [])
+            cap["notes"] = []
+            rc = engine.main()
+            engine.logger.removeHandler(h)
+            log = buf.getvalue()
+            return rc, json.loads(log.split("Done: ")[1].split("\n")[0]), cap["notes"], log, qb
+
+        rc, st, notes, log, qb = run(dry=False)
+        by = {n["note_id"]: n for n in notes}
+        assert st["body_from_parent"] == 2 and st["body_kept_from_db"] == 1, st
+        # 合成行没填曝光 / 阅读 / 互动 / 档位, 「要害字段整列空」那道闸每列各计一次错(D-056), 和本节无关, 扣掉再看
+        assert st["errors"] - len(st["missing_capabilities"]) == 1 and st["quarantined"] == 2 and rc == 1, \
+            f"§9 只剩找不到父行的那条计错(空占位不计): {st}"
+        assert st["empty_placeholder"] == 1 and st["undeclared_absorbed"] == 0, f"§9 父记录已在 mapping 里声明: {st}"
+        assert set(by) == {"BJS_phase2_recC2", "BJS_phase2_recP", "BJS_phase2_recC", "BJS_phase2_recK"}, sorted(by)
+        assert by["BJS_phase2_recC2"]["raw_content"] == _BODY, "§9 子行排在父行前面也接得上(先拉全再处理)"
+        assert by["BJS_phase2_recC2"]["account_id"] == "YQ04" and by["BJS_phase2_recC2"]["publish_url"].endswith("/C2")
+        assert by["BJS_phase2_recK"]["raw_content"] == "库里这篇正文"
+        assert by["BJS_phase2_recK"]["data_quality_flags"]["content_cleared_in_feishu"] is True
+        assert all(n.get("last_seen_at") for n in notes), "§9 接上的 / 留库里那份的都照常盖戳(找不到父行的那条库里没有, 不挡对账)"
+        assert sorted(cap["quarantined"]) == ["recE", "recO"], cap["quarantined"]
+        assert "BJS_phase2_recK" in qb.asked_ids and "BJS_phase2_recP" not in qb.asked_ids, \
+            f"§9 父行这一轮飞书里有正文就不读库: {qb.asked_ids}"
+        assert "飞书里正文空了" in log
+
+        cap["quarantined"] = []
+        rc, st, notes, log, qb = run(dry=True)
+        assert st["body_from_parent"] == 2 and st["body_kept_from_db"] == 0 and not [i for i in qb.asked_ids if i], \
+            f"§9 dry-run 不读库: 只接得上这一轮飞书里的父行 {st} {qb.asked_ids}"
+    finally:
+        for k, v in saved.items():
+            setattr(engine, k, v)
+        sys.argv = saved_argv
+
+    src = Path(engine.__file__).read_text(encoding="utf-8")
+    body = src[src.index("def main("):]
+    i_rec = body.index("recover_missing_body(")
+    i_tr = body.index("note, metric, undeclared = transform_row(")
+    i_req = body.index("REQUIRED_NOTE_FIELDS =")
+    assert i_rec < i_tr < i_req, "§9 先补正文、再 transform、再过缺必填闸"
+    print("  §9 有链接缺正文: 父记录子行接父行正文(飞书优先、库里兜底, 同链接不接), 老笔记正文空了留库里那份、"
+          "不计错照常盖戳; 空占位 / 没链接的不碰; dry-run 不读库 ✓")
+
+
 def main() -> int:
     check_future_publish_time()
     check_cleared_status()
@@ -339,7 +693,8 @@ def main() -> int:
     check_current_tiers_batched()
     check_wiring()
     check_reuse_previous_inheritance()
-    print("\ncheck_ingest_guards: 8 节全过")
+    check_missing_body_recovery()
+    print("\ncheck_ingest_guards: 9 节全过")
     return 0
 
 
