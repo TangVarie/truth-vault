@@ -75,16 +75,16 @@ D-101 的理由要补一句：视图虽然没有正文，但有
 
 ## 4. 10-30 public 授权变更
 
-Supabase 邮件：10-30 起，在 `public` 新建的表不再自动授权给 anon / authenticated / service_role，已有对象不变。邮件只说了表；Supabase 文档里对应的 SQL 还会收 postgres 在 public 新建的函数 EXECUTE、序列 USAGE / SELECT，视图走表的默认权限、同样受影响，而且表只收 SELECT / INSERT / UPDATE / DELETE。10-30 实际收了哪些，以 10-31 复查为准。
+Supabase 邮件：10-30 起，在 `public` 新建的表不再自动授权给 anon / authenticated / service_role，已有对象不变。邮件只说了表；Supabase 文档里对应的 SQL 还会收 postgres 在 public 新建的函数 EXECUTE、序列 USAGE / SELECT，视图走表的默认权限、同样受影响，而且表只收 SELECT / INSERT / UPDATE / DELETE。10-30 实际收了哪些，以复查为准（10-31 那次没做，11-04 补查：本项目一样都没收，见本节末）。
 
 - 我们现在 public 里的 23 个对象（5 张 ssll 表 + 18 个看板视图）都保留现有授权。public 里没有函数、序列和物化视图。
 - 四个仓都不会在 public 新建对象：看板视图的 SQL 文件自带 GRANT（重建也覆盖）；TV CI 跑在普通 Postgres 16 上；没有 Supabase CLI 配置、`db reset`，也没有预览分支。
 - truth_vault、autowriter 不受影响：truth_vault 自己有给 service_role 的默认授权，autowriter 每个迁移都显式 GRANT，CI 也查这一点。Jev 只读写 truth_vault；linkcheck 不用 Supabase。
 - 要记住的三件事：
-  - `sanshengliubu-patches/004_jobs_table.sql`、`005_multi_tenant_workspaces.sql` 会在 public 新建表，却没有表级 GRANT。这两个文件从没跑过；真要跑，先补 GRANT（README 已注明）。
+  - `sanshengliubu-patches/004_jobs_table.sql`、`005_multi_tenant_workspaces.sql` 会在 public 新建表，却没有表级 GRANT。这两个文件从没跑过。原来这里写「真要跑，先补 GRANT」，是按平台 10-30 真收了授权写的；11-04 查过本项目没收（本节末），眼下跑的话这几张表照旧自动授给 anon / authenticated / service_role（全部表权限），只靠文件里的 RLS policy 挡，`jobs` 的读 policy 放过 `user_id` 为空的行，anon 也读得到。真要跑，先看一眼 `pg_default_acl`：还在自动授权，就跑完把 anon 的表权限 REVOKE 掉；已经不自动授权了，再先补 GRANT（至少给 service_role，别给 anon）。README 已按这个改。
   - 三省六部自己以后在 public 建表，要自己 GRANT（S-06）。
   - 预览分支会重放生产记录在案的迁移，现在就重放不通（没有哪条记录在案的迁移建了那 5 张 ssll 表）；10-30 之后，06-07～06-10 那 5 条看板视图迁移没有 GRANT（06-06 最早的 v1～v3 三条有），其中 11 个视图第一次就是在这几条里建的，重放出来 anon 读不到；`v_dash_system_pulse`、`v_dash_pub_activity` 连迁移记录都没有，重放根本建不出来。重放出来的看板会静默缺数据。不开预览分支就没事。
-- **11-04 复查**（10-31 那次没做；11-02 这里写过「10-31 复查：public 的默认授权确实变了」，不对，改成下面这句）：public 的默认授权**没变**。`pg_default_acl` 里 postgres、supabase_admin 在 public 建的表 / 序列 / 函数仍自动授给 anon / authenticated（表全部权限、序列 SELECT / UPDATE / USAGE、函数 EXECUTE），平台 10-30 的收回在本项目没生效。23 个对象的授权和 10-26 基线一样（5 张 ssll 表 anon 0 / authenticated 15，18 个看板视图 54 / 54）；public 没有多出对象，也没有函数和序列；看板照常有数。所以上面「三省六部以后在 public 建表要自己 GRANT」眼下反过来：它新建的表照旧会自动授给 anon / authenticated（D-101 第 4 条说的隐患还在）。要不要自己跑 `ALTER DEFAULT PRIVILEGES … REVOKE` 收掉，可选、没排（OPEN-ITEMS S-13）。
+- **11-04 复查**（10-31 那次没做；这里原有一句「10-31 复查：public 的默认授权确实变了」，是 10-22 写这份文档时（PR #219）预先填好的结果，不对，改成下面这句）：public 的默认授权**没变**。`pg_default_acl` 里 postgres、supabase_admin 在 public 建的表 / 序列 / 函数仍自动授给 anon / authenticated（表全部权限、序列 SELECT / UPDATE / USAGE、函数 EXECUTE），平台 10-30 的收回在本项目没生效。23 个对象的授权和 10-26 基线一样（5 张 ssll 表 anon 0 / authenticated 15，18 个看板视图 54 / 54）；public 没有多出对象，也没有函数和序列；看板照常有数。所以上面「三省六部以后在 public 建表要自己 GRANT」眼下反过来：它新建的表照旧会自动授给 anon / authenticated（D-101 第 4 条说的隐患还在）。要不要自己跑 `ALTER DEFAULT PRIVILEGES … REVOKE` 收掉，可选、没排（OPEN-ITEMS S-13）。
 
 ## 5. autowriter 两个没用的索引
 
