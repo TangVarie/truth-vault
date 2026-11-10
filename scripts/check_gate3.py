@@ -10,6 +10,8 @@ check_gate3.py —— 闸三第一轨 (D-118, scripts/gate3_score.py) 的离线�
   §5 切点: 有项目切点用项目的, 没有用全库
   §6 计划: 冻结日前不打、没 essence 不打 (久了单独计)、打过的不重打 (幂等)、标注器对不上不打并计数
   §7 判定: 样本不够 = accumulating; 够了按「比值 ≤ 0.5 且单侧 p < 0.05」判 pass / fail
+  §7b 并排读数 (D-146): 分层 MH / 分层精确 p / Fisher; 主判定 pass 但并排不过 → depends_on_project_mix
+  §7c 删帖回算 (D-149): 飞书里已删的不进主读数、回算带最后的标签; 主判定 pass 但回算不过 → depends_on_deleted_posts
   §8 报告: 标注器对不上 → rc=1 并点名修在哪; 其余 rc=0
   §9 接线: daily-sync 有这一步、在 essence 之后策展之前、进失败聚合、靠哨兵判崩溃; CI 编译并跑本文件
 """
@@ -207,6 +209,173 @@ def s7b_side_reads(sc: dict) -> None:
           " · 干净通过 · fail 不给 pass_read · 旧形状一层 · 报告与取数 ✓")
 
 
+class _FakeQ:
+    """够 fetch_all_pages 用的假 query: 记 eq / gte / in_ 过滤, 第一页给全部, 第二页空。"""
+
+    def __init__(self, rows):
+        self.rows, self.filters, self.done = rows, [], False
+
+    def select(self, *_a, **_k): return self
+    def order(self, *_a, **_k): return self
+    def range(self, *_a, **_k): return self
+
+    def eq(self, col, val):
+        self.filters.append(lambda r: r.get(col) == val); return self
+
+    def gte(self, col, val):
+        self.filters.append(lambda r: r.get(col) is not None and str(r[col]) >= val); return self
+
+    def in_(self, col, vals):
+        vals = set(vals)
+        self.filters.append(lambda r: r.get(col) in vals); return self
+
+    def execute(self):
+        out = [] if self.done else [r for r in self.rows if all(f(r) for f in self.filters)]
+        self.done = True
+        return type("R", (), {"data": out})()
+
+
+class _FakeSB:
+    def __init__(self, tables): self.tables = tables
+    def schema(self, _s): return self
+    def table(self, name): return _FakeQ(self.tables[name])
+
+
+def s7c_deleted_posts(sc: dict) -> None:
+    """D-149 (owner 11-10: 运营把流量太差的帖从飞书里删掉): 主读数照附录 C 剔掉飞书里已删的, 一个字不改; 旁边并排报
+    「删帖回算」—— 已删的不剔、用它最后的标签, 同样的统计 + 加回了哪一档、哪个项目几篇; 主判定 pass、回算不过 →
+    depends_on_deleted_posts。反证: 回算也剔已删的 → 33 篇那条读成 clean; 主读数不剔 → 主判定变了; 取数照旧剔 → 回算没东西加。"""
+    def rows(n, pos, pct, proj, van=None):
+        out = [{"pct_in_project": pct, "y": 1 if i < pos else 0, "project_id": proj} for i in range(n)]
+        if van is not None:
+            for r in out:
+                r["vanished"] = van
+        return out
+    primary_keys = ("bottom_n", "bottom_pos", "rest_n", "rest_pos", "bottom_rate", "rest_rate", "p", "ratio", "status",
+                    "side", "pass_read")
+    # ① 已删的: 主读数里没有, 回算里有 (带最后的标签); 按档 / 按项目数清; 算不回来的计数原样挂着
+    live = rows(30, 1, 0.1, "A", False) + rows(100, 5, 0.6, "A", False) + rows(10, 0, 0.6, "B", False)
+    gone = rows(4, 0, 0.1, "A", True) + rows(20, 1, 0.6, "B", True)
+    lo = {"no_score": 1, "no_label": 2, "short_body": 0, "by_project": {"B": 3}}
+    v = G.verdict(live + gone, sc, lo)
+    assert (v["bottom_n"], v["bottom_pos"], v["rest_n"], v["rest_pos"]) == (30, 1, 110, 5), v
+    assert {k: v[k] for k in primary_keys} == {k: G.verdict(live, sc)[k] for k in primary_keys}, "§7c 已删的行不许动主读数"
+    k = v["kept"]
+    assert (k["bottom_n"], k["bottom_pos"], k["rest_n"], k["rest_pos"]) == (34, 1, 130, 6), k
+    ad = k["added"]
+    assert (ad["bottom_n"], ad["bottom_pos"], ad["rest_n"], ad["rest_pos"]) == (4, 0, 20, 1), ad
+    assert [(t["project_id"], t["bottom_pos"], t["bottom_n"], t["rest_pos"], t["rest_n"]) for t in ad["per_project"]] == \
+        [("A", 0, 4, 0, 0), ("B", 0, 0, 1, 20)], ad["per_project"]
+    assert [(t["project_id"], t["bottom_n"], t["rest_n"]) for t in k["side"]["per_project"]] == [("A", 34, 100), ("B", 0, 30)]
+    assert k["left_out"] == lo and v["status"] == k["status"] == "accumulating" and v["deleted_read"] is None
+    # ② 11-09 的样子: 0/212 vs 11/847 主判定 z 过 (p ≈ 0.048); 运营删掉的 33 篇其余档趴算回来 → 0/212 vs 11/880, p ≈ 0.051 不过
+    base = rows(212, 0, 0.1, "SPX", False) + rows(847, 11, 0.6, "XIWU", False)
+    v = G.verdict(base + rows(33, 0, 0.6, "XIWU", True), sc)
+    assert v["status"] == "pass" and 0.04 < v["p"] < 0.05, v
+    assert {k_: v[k_] for k_ in primary_keys} == {k_: G.verdict(base, sc)[k_] for k_ in primary_keys}
+    assert v["pass_read"] == "depends_on_project_mix", "D-146 那一条照旧 (Fisher 0.085 不过)"
+    k = v["kept"]
+    assert (k["bottom_n"], k["rest_n"], k["rest_pos"]) == (212, 880, 11) and k["status"] == "fail" and 0.05 < k["p"] < 0.052, k
+    assert v["deleted_read"] == "depends_on_deleted_posts", v["deleted_read"]
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        G.report(G.plan([], set(), sc, datetime(2026, 11, 10, tzinfo=timezone.utc)), v, sc)
+    out = buf.getvalue()
+    assert "删帖回算 (D-149" in out and "加回 33 篇 (最低档 +0 爆 0、其余 +33 爆 0)" in out and "其余 880 篇 (爆 11" in out, out
+    assert "加回 XIWU: 最低档 +0 (爆 0) · 其余 +33 (爆 0)" in out and "取决于被删的帖" in out and "取决于项目构成" in out, out
+    assert "已落标签: 最低20% 212 篇 (爆 0, 0.00%) · 其余 847 篇 (爆 11, 1.30%)" in out, "主读数那一行不变"
+    assert "合起来 (D-146 + D-149): 不算干净的通过 —— 取决于项目构成 / 样本少、取决于被删的帖" in out, out
+    #   加回的 34 篇里有 1 篇爆 (11-10 生产就是这样) → 回算 0/212 vs 12/881, p ≈ 0.044 过 → clean;
+    #   回算自己的 Fisher (≈ 0.074) 不过只报不判 —— 项目构成 / 样本少那一条归 D-146 管主读数
+    v = G.verdict(base + rows(33, 0, 0.6, "XIWU", True) + rows(1, 1, 0.6, "XIWU", True), sc)
+    k = v["kept"]
+    assert k["status"] == "pass" and 0.04 < k["p"] < 0.045 and not k["side"]["fisher_ok"], k
+    assert v["deleted_read"] == "clean" and v["pass_read"] == "depends_on_project_mix", (v["deleted_read"], v["pass_read"])
+    # ③ D-146 干净的通过 (一个项目 2/212 vs 30/847, Fisher 0.030) —— 算回其余档 200 篇趴就不过 (p ≈ 0.053): 只有 D-149 那一条
+    v = G.verdict(rows(212, 2, 0.1, "A", False) + rows(847, 30, 0.6, "A", False) + rows(200, 0, 0.6, "A", True), sc)
+    assert v["status"] == "pass" and v["pass_read"] == "clean" and v["kept"]["status"] == "fail", (v["side"], v["kept"])
+    assert v["deleted_read"] == "depends_on_deleted_posts"
+    #   日志: D-146 那行照旧说它自己那条干净, 末了合起来那行说不算干净的通过 (只因为被删的帖)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        G.report(G.plan([], set(), sc, datetime(2026, 11, 10, tzinfo=timezone.utc)), v, sc)
+    out = buf.getvalue()
+    assert "✓ D-146" in out and out.rstrip().endswith("合起来 (D-146 + D-149): 不算干净的通过 —— 取决于被删的帖"), out
+    # ④ 没有已删的: 两遍读数一样, 结论和以前一样 (行里没有 vanished 键 = 以前的形状, 也一样)
+    old_shape = rows(212, 2, 0.1, "A") + rows(847, 60, 0.6, "A")
+    for labeled in (old_shape, rows(212, 2, 0.1, "A", False) + rows(847, 60, 0.6, "A", False)):
+        v = G.verdict(labeled, sc)
+        assert v["status"] == "pass" and v["pass_read"] == "clean" and v["deleted_read"] == "clean", v
+        assert {k_: v["kept"][k_] for k_ in primary_keys if k_ != "pass_read"} == \
+            {k_: v[k_] for k_ in primary_keys if k_ != "pass_read"}, "没有已删的, 回算 = 主读数"
+        assert v["kept"]["added"]["bottom_n"] == v["kept"]["added"]["rest_n"] == 0 and v["kept"]["added"]["per_project"] == []
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        G.report(G.plan([], set(), sc, datetime(2026, 11, 10, tzinfo=timezone.utc)), v, sc)
+    assert "加回 0 篇" in buf.getvalue() and "✓ D-146" in buf.getvalue() and "✓ D-149" in buf.getvalue(), buf.getvalue()
+    assert "✓ 合起来 (D-146 + D-149): 干净的通过" in buf.getvalue(), buf.getvalue()
+    assert "算不回来" not in buf.getvalue(), "没有算不回来的就不打那一行"
+    # ⑤ 反方向: 删在最低档 → 主判定 fail (3/212 vs 30/847, p ≈ 0.056), 回算 3/262 过 —— 只报, 闸三不因此算过
+    v = G.verdict(rows(212, 3, 0.1, "A", False) + rows(50, 0, 0.1, "A", True) + rows(847, 30, 0.6, "A", False), sc)
+    assert v["status"] == "fail" and v["kept"]["status"] == "pass" and v["deleted_read"] is None and v["pass_read"] is None, v
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        G.report(G.plan([], set(), sc, datetime(2026, 11, 10, tzinfo=timezone.utc)), v, sc)
+    assert "删帖回算过线, 但主判定是 fail" in buf.getvalue() and "不因此算过" in buf.getvalue(), buf.getvalue()
+    assert "合起来" not in buf.getvalue(), "主判定没过就没有「合起来」那行"
+    # ⑥ 取数: 已删的带 vanished=True 回来 (正文短的照旧剔); 冻结后已删、没打分 / 没标签 / 正文短的分开计数, 冻结前的不计;
+    #    fetch_labeled (主读数那批) 和以前一样不含已删的
+    pub, old = "2026-10-20T10:00:00", "2026-09-01T10:00:00"
+    sb = _FakeSB({
+        "content_scores": [{"subject_id": i, "subject_type": "note", "scorer_version": sc["scorer_version"],
+                            "pct_in_project": pct, "project_id": p}
+                           for i, pct, p in (("a", 0.1, "P1"), ("b", 0.6, "P1"), ("c", 0.6, "P2"), ("d", 0.1, "P2"),
+                                             ("e", 0.6, "P2"), ("f", 0.6, "P2"), ("s", 0.6, "P1"))]
+        + [{"subject_id": "z", "subject_type": "note", "scorer_version": "essence-v1-322f02c9465f", "pct_in_project": 0.1,
+            "project_id": "P1"}],
+        "v_l2_labels": [{"note_id": i, "y": y, "publish_time": pub}
+                        for i, y in (("a", 0), ("b", 1), ("c", 1), ("d", 0), ("e", 0), ("g", 0), ("s", 0), ("x", 0), ("z", 0))],
+        "note_features": [{"note_id": "a", "body_len": 300}, {"note_id": "c", "body_len": None},
+                          {"note_id": "e", "body_len": 12}, {"note_id": "s", "body_len": 20}],
+        "v_notes_vanished": [{"note_id": i} for i in ("c", "d", "e", "f", "g", "h")],
+        "notes": [{"note_id": i, "project_id": "P2", "publish_time": old if i == "h" else pub} for i in "cdefgh"],
+    })
+    got, left = G.fetch_labeled_all(sb, sc)
+    assert {r["note_id"]: (r["vanished"], r["y"], r["project_id"]) for r in got} == \
+        {"a": (False, 0, "P1"), "b": (False, 1, "P1"), "c": (True, 1, "P2"), "d": (True, 0, "P2")}, got
+    assert left == {"no_score": 1, "no_label": 1, "short_body": 1, "by_project": {"P2": 3}}, left
+    assert sorted(r["note_id"] for r in G.fetch_labeled(sb, sc)) == ["a", "b"], "主读数那批不含已删的"
+    #    main 整条跑一遍 (假库, --dry-run): 要用带已删的那份取数, 不然回算永远 = 主读数; step summary 原来那行一字不改,
+    #    删帖回算另起一行; 哨兵照旧是末行
+    import os
+    import tempfile
+    import _common
+    orig_client, orig_summary = _common.get_supabase_client, os.environ.get("GITHUB_STEP_SUMMARY")
+    with tempfile.TemporaryDirectory() as td:
+        summ = Path(td) / "summary.md"
+        _common.get_supabase_client = lambda: sb
+        os.environ["GITHUB_STEP_SUMMARY"] = str(summ)
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                rc = G.main(["--dry-run"])
+        finally:
+            _common.get_supabase_client = orig_client
+            if orig_summary is None:
+                os.environ.pop("GITHUB_STEP_SUMMARY", None)
+            else:
+                os.environ["GITHUB_STEP_SUMMARY"] = orig_summary
+        out, summary = buf.getvalue(), summ.read_text(encoding="utf-8")
+    assert rc == 0 and out.rstrip().splitlines()[-1] == "GATE3_SCORE_CHECK_DONE" + " rc=0", out
+    assert "已落标签: 最低20% 1 篇 (爆 0, 0.00%) · 其余 1 篇 (爆 1, 100.00%)" in out, out
+    assert "飞书里已删的加回 2 篇 (最低档 +1 爆 0、其余 +1 爆 1)" in out and "加回 P2: 最低档 +1 (爆 0) · 其余 +1 (爆 1)" in out, out
+    assert "算不回来: 没打分 1 · 没标签 1 · 正文 < 50 字 1 (P2 3)" in out, out
+    assert "最低20% 1 / 其余 1 (目标 212 / 847); 状态 accumulating\n\n删帖回算 (D-149, 不改主判定): 最低20% 2 / 其余 2; " \
+           "状态 accumulating\n\n" in summary, summary
+    print("  §7c 删帖回算 (D-149): 已删的不进主读数、回算带最后的标签 · 按档 / 项目计数 · 0/212 vs 11/847 + 33 篇趴 →"
+          " 取决于被删的帖 · D-146 干净也照判 · 没删的两遍一样 · 删在最低档只报 · 取数与算不回来的计数 ✓")
+
+
 def s8_report(sc: dict) -> None:
     now = datetime(2026, 10, 25, tzinfo=timezone.utc)
     v = G.verdict([], sc)
@@ -258,9 +427,10 @@ def main() -> int:
     s6_plan(sc)
     s7_verdict(sc)
     s7b_side_reads(sc)
+    s7c_deleted_posts(sc)
     s8_report(sc)
     s9_wiring()
-    print("\ncheck_gate3: 9 节 + §7b 全过")
+    print("\ncheck_gate3: 9 节 + §7b / §7c 全过")
     return 0
 
 
