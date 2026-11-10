@@ -5,7 +5,8 @@ gate3_score.py
 
 闸三第一轨 (docs/28 §6.3, D-118): 用【冻结的】essence 打分器, 给冻结日之后发布的每条笔记打分, 写
 truth_vault.content_scores; 再按附录 C 报一次进度 (两档爆率、单侧两比例检验、离样本量还差多少);
-旁边并排报按项目分层的 MH 比值 / 分层精确 p、Fisher 单侧 p 和 mid-p、每个项目的 2×2 (D-146, 不改主判定)。
+旁边并排报按项目分层的 MH 比值 / 分层精确 p、Fisher 单侧 p 和 mid-p、每个项目的 2×2 (D-146, 不改主判定);
+再并排报一遍「删帖回算」: 飞书里已删的帖不剔、用它最后的标签, 同样的统计, 加回了哪一档、哪个项目几篇 (D-149, 不改主判定)。
 
 冻结的东西全在 data-analysis/gate3/scorer-essence-v1-93035a562b2e.json (D-123), 由 freeze-essence-v1.sql 在生产只读算出
 (D-118 定的口径; 10-20 D-122 恢复了被夜跑冲掉的 F / U token 之后按同一 SQL 重冻, 冻结日不动, 10-17 起的分按新版重打。
@@ -252,11 +253,8 @@ def side_reads(b: list[dict], rest: list[dict], cr: dict) -> dict:
                             for p, t in sorted(per.items())]}
 
 
-def verdict(labeled: list[dict], sc: dict) -> dict:
-    """labeled: [{pct_in_project, y, project_id}] —— 已打分、已落标签 (v_l2_labels)、在分析口径内的冻结后笔记。
-
-    status 只按 D-118 的主判定 (合并两比例 z) 定, 一个字不改; side / pass_read 是 D-146 并排报的。"""
-    cr = sc["criteria"]
+def _band_read(labeled: list[dict], cr: dict) -> dict:
+    """两档爆率 + 合并两比例 z + 样本量线 → status (D-118 / 附录 C), 再挂 D-146 并排读数。主读数和删帖回算共用这一个。"""
     b = [r for r in labeled if float(r["pct_in_project"]) < cr["bottom_pct"]]
     rest = [r for r in labeled if float(r["pct_in_project"]) >= cr["bottom_pct"]]
     b_pos, r_pos = sum(int(r["y"]) for r in b), sum(int(r["y"]) for r in rest)
@@ -271,8 +269,49 @@ def verdict(labeled: list[dict], sc: dict) -> dict:
     else:
         out["status"] = "fail"
     out["side"] = side_reads(b, rest, cr)
+    return out
+
+
+# ── 删帖回算 (D-149, owner 11-10): 不改 D-118 的主判定, 只在旁边报 ─────────────────────────────────
+# 运营会把流量太差的帖从飞书里删掉 (11-09 XIWU_phase2 一晚删了 51 篇趴; owner 11-10:「因为流量太差了」)。主读数照附录 C
+# 剔掉已删的 (v_notes_vanished), 删掉的又几乎都是趴 → 哪一档被删得多, 哪一档的爆率就虚高: 删在其余档偏向「过」, 删在最低档
+# 偏向「不过」, 主读数量的不再是全部发出去的帖 (幸存者偏差)。所以并排报一遍「删帖回算」: 同一个已落标签集合, 已删的不剔,
+# 用它在 v_l2_labels 里最后的标签; 已删却没打分 / 没标签行 / 正文 < 50 字的照旧进不来, 单独计数。统计和主读数 + D-146 一样。
+# D-149 事先定的规矩: 主判定 pass、删帖回算没过 (同一条线: 比值 ≤ 0.5 且合并单侧 p < 0.05) → 结论写「取决于被删的帖」, 不算
+# 干净的通过; 主判定没过、删帖回算过了 → 照报, 闸三不因此算过。删帖回算自己的分层 / Fisher 只报不判 (项目构成由 D-146 管)。
+
+def vanished_added(labeled: list[dict], cr: dict) -> dict:
+    """删帖回算比主读数多出来的行 (vanished=True): 按档、按项目数篇数和爆数。"""
+    per: dict[str, list[int]] = {}
+    for r in labeled:
+        if r.get("vanished"):
+            t = per.setdefault(str(r.get("project_id") or "?"), [0, 0, 0, 0])
+            i = 0 if float(r["pct_in_project"]) < cr["bottom_pct"] else 2
+            t[i] += int(r["y"])
+            t[i + 1] += 1
+    return {"bottom_pos": sum(t[0] for t in per.values()), "bottom_n": sum(t[1] for t in per.values()),
+            "rest_pos": sum(t[2] for t in per.values()), "rest_n": sum(t[3] for t in per.values()),
+            "per_project": [{"project_id": p, "bottom_pos": t[0], "bottom_n": t[1], "rest_pos": t[2], "rest_n": t[3]}
+                            for p, t in sorted(per.items())]}
+
+
+def verdict(labeled: list[dict], sc: dict, vanished_out: Optional[dict] = None) -> dict:
+    """labeled: [{pct_in_project, y, project_id, vanished}] —— 已打分、已落标签 (v_l2_labels)、在分析口径内的冻结后笔记;
+    vanished=True 是飞书里已删的 (D-149 起取数带回来; 没这个键 = 没删)。
+
+    主读数 = 去掉 vanished 的行 (附录 C「飞书里没删」, 和以前取数时剔掉的是同一批): status 只按 D-118 的主判定定, 一个字
+    不改; side / pass_read 是 D-146 并排报的。kept / deleted_read 是 D-149 删帖回算 (全部行, 已删的不剔)。
+    vanished_out: 取数时数出来的、冻结后发布、飞书里已删、却进不了回算的篇数, 原样挂在 kept["left_out"] 里报。"""
+    cr = sc["criteria"]
+    out = _band_read([r for r in labeled if not r.get("vanished")], cr)
     out["pass_read"] = None if out["status"] != "pass" else (
         "clean" if out["side"]["strat_ok"] and out["side"]["fisher_ok"] else "depends_on_project_mix")
+    kept = _band_read(labeled, cr)
+    kept["added"] = vanished_added(labeled, cr)
+    kept["left_out"] = dict(vanished_out or {})
+    out["kept"] = kept
+    out["deleted_read"] = None if out["status"] != "pass" else (
+        "clean" if kept["status"] == "pass" else "depends_on_deleted_posts")
     return out
 
 
@@ -290,16 +329,35 @@ def report(res: dict, v: dict, sc: dict) -> int:
     pval = "—" if v["p"] is None else f"{v['p']:.4f}"
     print(f"  已落标签: 最低20% {v['bottom_n']} 篇 (爆 {v['bottom_pos']}, {_r(v['bottom_rate'])}) · "
           f"其余 {v['rest_n']} 篇 (爆 {v['rest_pos']}, {_r(v['rest_rate'])}) · 比值 {ratio} · 单侧 p {pval}")
+    def _p(x):
+        return "—" if x is None else f"{x:.4f}"
     sd = v.get("side")
     if sd and (v["bottom_n"] or v["rest_n"]):
-        def _p(x):
-            return "—" if x is None else f"{x:.4f}"
         mh = "—" if sd["mh_ratio"] is None else f"{sd['mh_ratio']:.2f}"
         print(f"  并排 (D-146, 不改主判定): 按项目分层 MH 比值 {mh} · 分层精确 p {_p(sd['p_strat'])} (mid-p {_p(sd['midp_strat'])})"
               f" · Fisher 单侧 p {_p(sd['p_fisher'])} (mid-p {_p(sd['midp_fisher'])})")
         for t in sd["per_project"]:
             share = "—" if t["bottom_share"] is None else f"{t['bottom_share']:.1%}"
             print(f"    {t['project_id']}: 最低档 {t['bottom_pos']}/{t['bottom_n']} · 其余 {t['rest_pos']}/{t['rest_n']} · 落档率 {share}")
+    kp = v.get("kept")
+    lo = (kp or {}).get("left_out") or {}
+    lo_any = any(lo.get(k) for k in ("no_score", "no_label", "short_body"))
+    if kp and (kp["bottom_n"] or kp["rest_n"] or lo_any):
+        ad, ks = kp["added"], kp["side"]
+        kratio = "—" if kp["ratio"] is None else f"{kp['ratio']:.2f}"
+        kmh = "—" if ks["mh_ratio"] is None else f"{ks['mh_ratio']:.2f}"
+        print(f"  删帖回算 (D-149, 不改主判定): 飞书里已删的加回 {ad['bottom_n'] + ad['rest_n']} 篇 (最低档 +{ad['bottom_n']} 爆 "
+              f"{ad['bottom_pos']}、其余 +{ad['rest_n']} 爆 {ad['rest_pos']}) → 最低20% {kp['bottom_n']} 篇 (爆 {kp['bottom_pos']}, "
+              f"{_r(kp['bottom_rate'])}) · 其余 {kp['rest_n']} 篇 (爆 {kp['rest_pos']}, {_r(kp['rest_rate'])}) · 比值 {kratio}"
+              f" · 单侧 p {_p(kp['p'])}")
+        print(f"    分层 MH 比值 {kmh} · 分层精确 p {_p(ks['p_strat'])} (mid-p {_p(ks['midp_strat'])})"
+              f" · Fisher 单侧 p {_p(ks['p_fisher'])} (mid-p {_p(ks['midp_fisher'])})")
+        for t in ad["per_project"]:
+            print(f"    加回 {t['project_id']}: 最低档 +{t['bottom_n']} (爆 {t['bottom_pos']}) · 其余 +{t['rest_n']} (爆 {t['rest_pos']})")
+        if lo_any:
+            byp = "、".join(f"{p} {n}" for p, n in (lo.get("by_project") or {}).items())
+            print(f"    已删、冻结后发布、算不回来: 没打分 {lo.get('no_score', 0)} · 没标签 {lo.get('no_label', 0)}"
+                  f" · 正文 < 50 字 {lo.get('short_body', 0)}" + (f" ({byp})" if byp else ""))
     need_b, need_r = max(0, cr["min_bottom"] - v["bottom_n"]), max(0, cr["min_rest"] - v["rest_n"])
     if v["status"] == "accumulating":
         print(f"  进度: 还差最低档 {need_b} 篇、其余 {need_r} 篇 (目标 {cr['min_bottom']} / {cr['min_rest']}), 不出结论")
@@ -315,6 +373,18 @@ def report(res: dict, v: dict, sc: dict) -> int:
             print("  ✓ D-146: 分层读数和 Fisher 也过线 —— 干净的通过")
         elif v.get("pass_read"):
             print("  ⚠️  D-146: 主判定过了, 但分层读数或 Fisher 没过 —— 结论写「取决于项目构成 / 样本少」, 不算干净的通过")
+        if v.get("deleted_read") == "clean":
+            print("  ✓ D-149: 把飞书里删掉的帖算回来也过线 —— 不取决于被删的帖")
+        elif v.get("deleted_read"):
+            print("  ⚠️  D-149: 主判定过了, 但把飞书里删掉的帖算回来就不过 —— 结论写「取决于被删的帖」, 不算干净的通过")
+        if v.get("pass_read") and v.get("deleted_read"):
+            # 合起来 (D-149 第 3 条): 干净的通过 = 主判定 pass + D-146 clean + D-149 clean; 上面 D-146 那行的「干净」只管它自己那条
+            why = [t for ok, t in ((v["pass_read"] == "clean", "取决于项目构成 / 样本少"),
+                                   (v["deleted_read"] == "clean", "取决于被删的帖")) if not ok]
+            print("  ✓ 合起来 (D-146 + D-149): 干净的通过" if not why else
+                  f"  ⚠️  合起来 (D-146 + D-149): 不算干净的通过 —— {'、'.join(why)}")
+    if v["status"] != "pass" and kp and kp["status"] == "pass":
+        print(f"  ℹ️  D-149: 删帖回算过线, 但主判定是 {v['status']} —— 只报, 闸三不因此算过")
     rc = 0
     if c["annotator_mismatch"]:
         fa = sc["frozen_annotator"]
@@ -345,14 +415,17 @@ def write(sb, rows: list[dict]) -> int:
     return len(rows)
 
 
-def fetch_labeled(sb, sc: dict) -> list[dict]:
-    """附录 C: 已打分 ∩ v_l2_labels, 口径同训练集 (正文 ≥ 50 字或未知、飞书里没删)。"""
+def fetch_labeled_all(sb, sc: dict) -> tuple[list[dict], dict]:
+    """附录 C 的已落标签集合: 已打分 ∩ v_l2_labels, 正文 ≥ 50 字或未知。飞书里已删的 (v_notes_vanished) 不在这里剔,
+    带 vanished=True 回来: 主读数在 verdict 里剔 (同以前), 删帖回算 (D-149) 留着, 用它在 v_l2_labels 里最后的标签。
+    第二个返回值: 冻结后发布、飞书里已删、却算不回来的篇数 —— no_score 没打分 / no_label 没有标签行 (评估中、没判档、
+    被 v_l2_labels 的清洗挡掉) / short_body 正文 < 50 字, by_project 是这几类按项目合计。"""
     from _common import fetch_all_pages, fetch_vanished_note_ids
     scores = {r["subject_id"]: r for r in fetch_all_pages(
         sb.schema("truth_vault").table("content_scores").select("subject_id, pct_in_project, project_id")
         .eq("subject_type", "note").eq("scorer_version", sc["scorer_version"]), order_by="subject_id")}
     if not scores:
-        return []
+        return [], {}
     labels = fetch_all_pages(sb.schema("truth_vault").table("v_l2_labels").select("note_id, y")
                              .gte("publish_time", sc["freeze_publish_time"]), order_by="note_id")
     ids = [r["note_id"] for r in labels if r["note_id"] in scores]
@@ -363,9 +436,33 @@ def fetch_labeled(sb, sc: dict) -> list[dict]:
             if r.get("body_len") is not None and int(r["body_len"]) < 50:
                 short.add(r["note_id"])
     vanished = fetch_vanished_note_ids(sb)
-    return [{"note_id": r["note_id"], "y": r["y"], "pct_in_project": scores[r["note_id"]]["pct_in_project"],
-             "project_id": scores[r["note_id"]].get("project_id")}
-            for r in labels if r["note_id"] in scores and r["note_id"] not in short and r["note_id"] not in vanished]
+    # 已删的哪些是冻结后发布的 (v_notes_vanished 没有发布时间, 回 notes 查; in_ 走 URL, 分批)
+    gone = sorted(vanished)
+    post: dict[str, str] = {}
+    for i in range(0, len(gone), 100):
+        for r in fetch_all_pages(sb.schema("truth_vault").table("notes").select("note_id, project_id, publish_time")
+                                 .gte("publish_time", sc["freeze_publish_time"]).in_("note_id", gone[i:i + 100]),
+                                 order_by="note_id"):
+            post[r["note_id"]] = str(r.get("project_id") or "?")
+    labelled = {r["note_id"] for r in labels}
+    left: Counter = Counter()
+    by_project: Counter = Counter()
+    for nid, pid in sorted(post.items()):
+        why = ("no_score" if nid not in scores else "no_label" if nid not in labelled
+               else "short_body" if nid in short else None)
+        if why:
+            left[why] += 1
+            by_project[pid] += 1
+    rows = [{"note_id": r["note_id"], "y": r["y"], "pct_in_project": scores[r["note_id"]]["pct_in_project"],
+             "project_id": scores[r["note_id"]].get("project_id"), "vanished": r["note_id"] in vanished}
+            for r in labels if r["note_id"] in scores and r["note_id"] not in short]
+    return rows, {"no_score": left["no_score"], "no_label": left["no_label"], "short_body": left["short_body"],
+                  "by_project": dict(sorted(by_project.items()))}
+
+
+def fetch_labeled(sb, sc: dict) -> list[dict]:
+    """附录 C: 已打分 ∩ v_l2_labels, 口径同训练集 (正文 ≥ 50 字或未知、飞书里没删)。= 主读数用的那批 (D-149 不改它)。"""
+    return [r for r in fetch_labeled_all(sb, sc)[0] if not r["vanished"]]
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -390,7 +487,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         if lost:
             print(f"  🔴 写完回读少了 {len(lost)} 篇 (例 {lost[:3]}): content_scores 没写进去, 闸三在漏数。")
             rc = 1
-    v = verdict(fetch_labeled(sb, sc), sc)
+    labeled, vanished_out = fetch_labeled_all(sb, sc)
+    v = verdict(labeled, sc, vanished_out)
     rc = max(rc, report(res, v, sc))
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
@@ -399,6 +497,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                     f"最低20% {v['bottom_n']} / 其余 {v['rest_n']} (目标 {sc['criteria']['min_bottom']} / "
                     f"{sc['criteria']['min_rest']}); 状态 {v['status']}"
                     f"{'' if not v.get('pass_read') else ' · D-146 并排: ' + v['pass_read']}\n\n")
+            f.write(f"删帖回算 (D-149, 不改主判定): 最低20% {v['kept']['bottom_n']} / 其余 {v['kept']['rest_n']}; "
+                    f"状态 {v['kept']['status']}{'' if not v.get('deleted_read') else ' · ' + v['deleted_read']}\n\n")
     print(f"GATE3_SCORE_CHECK_DONE rc={rc}")
     return rc
 
