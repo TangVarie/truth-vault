@@ -509,6 +509,21 @@ def prompt_cache_summary() -> dict:
     return out
 
 
+def _backup_client_for_model(anthropic_module, model: str):
+    """备用站客户端 (D-148)。11-10 补: 备用站的 Haiku 走单独的通道钥匙 (和通用钥匙不通用), 设了
+    ANTHROPIC_API_KEY_BACKUP_HAIKU 且模型名里带 haiku 时用它, 地址照旧是 ANTHROPIC_BASE_URL_BACKUP;
+    其它模型、或没设这把钥匙时, 和 relay_failover.sdk_backup_client 一模一样。只在这里换钥匙, 共享核心不动。"""
+    haiku_key = (os.environ.get("ANTHROPIC_API_KEY_BACKUP_HAIKU") or "").strip()
+    if not haiku_key or "haiku" not in (model or "").lower():
+        return relay_failover.sdk_backup_client(anthropic_module)
+    client = anthropic_module.Anthropic(api_key=haiku_key, base_url=relay_failover.backup_base_url())
+    try:
+        client.auth_token = None   # 同 sdk_backup_client: 有的 SDK 版本给了 api_key 也会读 ANTHROPIC_AUTH_TOKEN
+    except Exception:  # noqa: BLE001
+        pass
+    return client
+
+
 def call_claude(prompt: str, model: str, *, cached_system: str | None = None,
                 max_attempts: int = 3, max_tokens: int = 2000, meta: dict | None = None) -> str:
     """Single Mode A call with exponential-backoff retry on transient errors.
@@ -561,7 +576,7 @@ def call_claude(prompt: str, model: str, *, cached_system: str | None = None,
         def _client(target: str):
             if target not in _built:
                 _built[target] = (anthropic.Anthropic(**_kwargs, max_retries=0, timeout=_primary_timeout)
-                                  if target == "primary" else relay_failover.sdk_backup_client(anthropic))
+                                  if target == "primary" else _backup_client_for_model(anthropic, model))
             return _built[target]
 
         def _create(kw: dict):
