@@ -35,6 +35,10 @@ jobs:
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+      # D-148 备用中转站 (可选): 两个 secret 都配了才启用, 没配 = 行为不变; RELAY_FORCE 是 repo variable (backup / primary / 空)
+      ANTHROPIC_BASE_URL_BACKUP: ${{ secrets.ANTHROPIC_BASE_URL_BACKUP }}
+      ANTHROPIC_API_KEY_BACKUP: ${{ secrets.ANTHROPIC_API_KEY_BACKUP }}
+      RELAY_FORCE: ${{ vars.RELAY_FORCE }}
       # 仓库变量不会自己进环境; 没配时是空串, 脚本按空串当没配、用默认模型(codex review on TV#202)
       FEATURE_DISCOVERY_MODEL: ${{ vars.FEATURE_DISCOVERY_MODEL }}
       IN_DRY_RUN: ${{ github.event.inputs.dry_run }}

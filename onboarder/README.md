@@ -49,7 +49,11 @@ GitHub「Run workflow」填表 ──HTTP──▶ Railway /onboard/jobs(后台�
   start `uvicorn onboarder.app:app --host 0.0.0.0 --port $PORT`;healthcheck `/health`
 - env:`ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY`(**用能跑通的那条通道**)、
   `FEISHU_APP_ID` + `FEISHU_APP_SECRET`、**`ONBOARDER_API_KEY`**(自己定个口令,
-  **必填** —— 见下)、可选 `ONBOARDER_MODEL`
+  **必填** —— 见下)、可选 `ONBOARDER_MODEL`、可选的**备用中转站** `ANTHROPIC_BASE_URL_BACKUP` +
+  `ANTHROPIC_API_KEY_BACKUP`(D-148, 两个都配才启用)与 `RELAY_FORCE`(`backup` / `primary` / 空 = 自动)。
+  配了以后每次起草先打主站 (流式 90 秒没有新字节就算超时; `ONBOARDER_STREAM=0` 时 600 秒), 主站超时 / 524 / 5xx /
+  401-404 → 这次整段改打备用站; 连续 2 次失败 → 熔断 20 分钟直接走备用站。`/health` 的 `relay` 块带模式、熔断状态和计数。
+  运行手册: `docs/12-daily-sync-troubleshooting.md`「备用中转站 (D-148)」
 
   > ⚠️ **`ONBOARDER_API_KEY` 不设 = 所有业务请求 401**(2026-08-26,跨库审计
   > SUP-001)。服务照常起、`/health` 照常 200,但接口全锁 —— 因为它把**未信任

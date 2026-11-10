@@ -13,6 +13,9 @@ name: Daily TV sync
 #        SUPABASE_SERVICE_ROLE_KEY
 #        FEISHU_APP_ID, FEISHU_APP_SECRET
 #        ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL   (essence / curate 直连中转站; D-100)
+#        (可选, D-148) ANTHROPIC_BASE_URL_BACKUP, ANTHROPIC_API_KEY_BACKUP   备用中转站, 两个都配才启用; 地址也放 secret
+#        (可选, D-148) repo variable RELAY_FORCE = backup (只走备用) / primary (只走主站) / 空 (自动切换)
+#         运行手册: docs/12-daily-sync-troubleshooting.md「备用中转站 (D-148)」
 #        (注: 2026-06 曾因旧中转站 GitHub 连不上把 essence/curate 搬去 Railway worker (docs/17 §7-D), 2026-10-09 换站后
 #         runner 直连得上, D-100 搬回; Railway worker 现在只跑特征层 (features-sync.yml 带 WORKER_URL)。
 #         模型用 repo variable ESSENCE_MODEL / FLYWHEEL_CURATOR_MODEL 覆盖, 不设 = 代码默认 claude-sonnet-5-5)
@@ -95,6 +98,10 @@ jobs:
       # D-100: essence / curate 直连中转站 (worker 只剩特征层, 在 features-sync.yml)
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+      # D-148 备用中转站 (可选): 两个 secret 都配了才启用, 没配 = 行为不变; RELAY_FORCE 是 repo variable (backup / primary / 空)
+      ANTHROPIC_BASE_URL_BACKUP: ${{ secrets.ANTHROPIC_BASE_URL_BACKUP }}
+      ANTHROPIC_API_KEY_BACKUP: ${{ secrets.ANTHROPIC_API_KEY_BACKUP }}
+      RELAY_FORCE: ${{ vars.RELAY_FORCE }}
       # essence 每日上限/项目。essence 步骤会【循环多个 ≤15 的子批】凑够这个数 —— 因为单个
       # worker 请求受 Railway 边缘【~5min 超时】约束,每请求最多 ~15 条(≈3.5min;>15 会 502)。
       # 想每天标更多就在 repo Variables 调大 WORKER_LIMIT(如 50 = 每天每项目最多 50,内部

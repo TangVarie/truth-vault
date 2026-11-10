@@ -432,6 +432,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                         stats["ok"], stats["failed"])
         time.sleep(sleep_s)
 
+    _rf = sys.modules.get("relay_failover")   # D-148 备用中转站: 只在配了备用站 (mode 不是 primary_only) 时进 Done 行
+    if _rf is not None and _rf.mode() != _rf.MODE_PRIMARY_ONLY:
+        stats["relay"] = _rf.summary()
     logger.info("Done: %s", json.dumps(stats, ensure_ascii=False))
     if note_ids is not None and failed_ids:
         # 点名模式的失败卡单独一行点名 (workflow 原样打出来): 逐卡的 validation failed 行会被过滤掉,

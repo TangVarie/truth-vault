@@ -156,3 +156,42 @@ ssll 真写过稿后才有。所以新部署的正常节奏: 标爆款 → Check
 > **2026-06-01 现场快照**: Check 1 = 1(参考笔记 `WTG_phase1_recvk9VPCTNG1b` 已上架,
 > 写入路径实锤); Check 2 = 0 审计行(ssll 还没跑过 vibe_loop, 消费侧待验)。即"货上架了、
 > 还没人来借过"。
+
+---
+
+## 8. 备用中转站 (D-148)
+
+> 2026-11-10 加。起因: 11-09 起主中转站慢了约 5 倍、时不时不回话 (1 个 token 的 ping 25 秒没回; 两篇特征层超过
+> Railway 边缘 300 秒 → 502, 之后 worker 锁 409; 夜跑 essence 一篇 81 秒, 平时 13–16 秒)。配一个备用站, 主站出事时
+> 自动临时改走备用站, 不至于一直卡着。代码在仓库根 `relay_failover.py` (autowriter `relay_failover.py`、
+> Jev `judge/relay.py` 是同一份); CI 守卫 `scripts/check_relay_failover.py` (由 `check_prompt_cache_fallback.py` 带着跑)。
+
+**启用**：在每个调 Claude 的地方加两个变量（三个仓同名）：`ANTHROPIC_BASE_URL_BACKUP`（备用站地址）和 `ANTHROPIC_API_KEY_BACKUP`（备用站 key）。两个都填了才算启用，缺一个等于没配，行为和现在完全一样。GitHub（truth-vault）：Settings → Secrets and variables → Actions → **Secrets** 新建这两个（地址也放 secret，别放 variable，variable 会原样出现在公开日志里）。Railway：truth-vault 的 tv-worker / librarian / onboarder、Jev 的 judge，各自 Variables 里加这两个（改变量会自动重新部署）。autowriter 的 Streamlit / worker 以后开起来时同样加。加完跑一次 Actions → gateway-probe，`target` 选 `backup`（或 `both`），看备用站 `http=200`。备用站必须认同样的模型名（claude-sonnet-5-5 / claude-haiku-5-5），不认会回 404/503。
+
+**自动切换**：配好后每次调用先打主站，但主站只给一次机会且限时（夜跑标注 60 秒、遮挡词 150 秒、馆员 30 秒、上表流式 90 秒没有新字节、Jev 规则编译沿用 JUDGE_COMPILE_TIMEOUT_SEC）。主站超时、连不上、429、5xx（含 520/522/524/529）、401/402/403（多半是余额或 key 失效）、404（多半是不认模型名）→ 这次立刻改打备用站。400 这类请求本身有问题的不切；中转站敏感词拦截（sensitive_words_detected）也不切，照旧按 D-125 记 NULL。主站连续 2 次失败，或连续 2 次慢得离谱（单次超过 25 秒；遮挡词 60 秒、馆员 25 秒）→ 熔断 20 分钟：这期间所有调用直接走备用站；到点放一个调用去试主站，好了切回，不行再熔断 20 分钟。同一台机器上的进程共用熔断状态（夜跑一个项目熔断了，下一个项目直接走备用）。
+
+**手动切换**：变量 `RELAY_FORCE`：`backup` = 只走备用站；`primary` = 只走主站、不切换，和没配备用站时一模一样；留空或删掉 = 自动。GitHub 在 Settings → Secrets and variables → Actions → **Variables** 设；Railway 在对应服务的 Variables 设（会重新部署）。备用站没配时设 `backup` 不生效，日志会提示一行。
+
+**怎么看走的是哪条**：夜跑日志里 essence / 特征层 / 策展的 `Done:` 行多一个 `"relay": {...}`（只在配了备用站时出现）：`mode`、`primary_ok` / `primary_slow` / `primary_fail`、`backup_ok` / `backup_fail`、`breaker_open_skips`（熔断期间直接走备用的次数）、`breaker`（closed 正常 / open 熔断中 / half_open 该试主站了）。第一次切换打一行 `relay: primary failed (HTTP 503); failing over to backup`，熔断打 `relay: breaker open for 1200s ...`，进程结束打 `relay summary: {...}`。Railway 各服务和 Jev 的 `/health` 有 `relay` 字段：`relay_mode`（primary_only / auto / backup_only）、`relay_backup_configured`、`relay_force`、`relay_breaker`（off / closed / open / half_open），馆员 / 上表 / Jev 还带本进程计数 `relay_counts`。日志和 /health 只出现 primary / backup、状态码、错误类型、耗时和次数，从不出现地址、key 或中转站返回的报错原文。
+
+> 在哪看得到这几行：GitHub 夜跑（daily-sync / backfill-essence / recurate-lessons）的 essence、策展步骤只把 `Done:` 等几行过滤出来打进 Actions 日志，上面那三种 `relay:` 单行平时看不到，只有脚本退非零时才跟着最后十来行一起出来。所以平时**看 `Done:` 行里的 `relay` 就够**：`primary_fail` / `primary_slow` 大于 0 = 主站出过事，`breaker` 是 `open` = 这会儿在走备用站。特征层（features-sync → Railway worker）同理，看它打出来的 `Done:` 行。Railway 的 librarian / onboarder 在服务自己的日志里能看到这几行单行。
+
+**备用站自己坏了怎么办**：熔断期间所有调用只打备用站，备用站报错就算这次失败，不会回头再打主站（主站只是慢、其实还能用的时候也一样）。所以 `Done:` 行里 `backup_fail` 多、`breaker` 是 `open` 时，先跑 gateway-probe（`target` 选 `backup`）看备用站；一时修不好就把 `RELAY_FORCE` 设成 `primary`（回到没配备用站的老样子，GitHub variable 和 Railway 各服务都要设），修好再清空。备用站平时几乎用不上，余额用完或 key 过期很难自己发现，建议隔一阵用 gateway-probe 的 `backup` 测一次。
+
+**代价**：备用站另外计费；主站超时那次主站可能已经扣了钱；两个站的 prompt cache 不通用，切过去后头几次没有缓存命中。可调（一般不用动）：`RELAY_PRIMARY_TIMEOUT_S`、`RELAY_SLOW_S`（0 = 不按慢判）、`RELAY_BREAKER_FAILS`、`RELAY_BREAKER_COOLDOWN_S`。
+
+本仓接在哪 (truth-vault):
+
+| 调用点 | 主站限时 / 慢门槛 | 备用站客户端 |
+|---|---|---|
+| `scripts/annotate_essence_pass.call_claude` (essence、子方向、canary、策展、特征层 `_llm`、评论归线、外部候选; 遮挡词 `mask_external_names` 走 max_tokens 8000 那档) | 60 秒 / 25 秒 (max_tokens > 4000: 150 / 60) | SDK 默认重试与超时 (同老主站) |
+| `librarian/clients.call_anthropic` | 30 秒 / 25 秒 | 同上 |
+| `onboarder/clients.call_anthropic` | 流式 90 秒没有新字节 / 不按慢判; 非流式 600 秒 | `max_retries=0` (同老主站, 重试只留外面一层) |
+| `worker/app.py` | 自己不调; 子进程继承 env; `/health` 只回显模式与熔断 | — |
+
+GitHub: daily-sync / backfill-essence / recurate-lessons / feature-discovery 的 job env 带这两个 secret 和 `RELAY_FORCE`;
+features-sync / backfill-features / onboard-table 的模型调用在 Railway, 变量配在 Railway。
+
+已知没改的 (另开一单): 几条老日志会把**一个**异常的原文打出来 (特征层 `systemic` 行、essence `api_error: {exc!r}`、
+策展 `%r`、遮挡词 `str(exc)[:160]`、馆员缓存降级 warning), 配了备用站后那个异常可能是备用站的。改它们会让没配备用站时的
+日志也变、还要动 ci.yml 的钉子, 不在这次。

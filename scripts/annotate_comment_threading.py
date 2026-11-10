@@ -325,6 +325,9 @@ def main() -> int:
                                   [f"write_error: {exc!r}"], raw)
         time.sleep(sleep_s)
 
+    _rf = sys.modules.get("relay_failover")   # D-148 备用中转站: 只在配了备用站 (mode 不是 primary_only) 时进 Done 行
+    if _rf is not None and _rf.mode() != _rf.MODE_PRIMARY_ONLY:
+        stats["relay"] = _rf.summary()
     logger.info("Done: %s", json.dumps(stats, ensure_ascii=False))
     if stats["failed"]:
         logger.info("Failed rows appended to %s — review then either fix the "

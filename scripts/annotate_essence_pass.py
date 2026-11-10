@@ -55,6 +55,12 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+try:
+    import relay_failover  # repo root, stdlib only (same home and reason as service_auth.py)
+except ImportError:        # run as a script: sys.path[0] is the script's dir, the repo root is not on sys.path
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+    import relay_failover  # noqa: E402
+
 from _common import (
     fetch_all_pages,
     get_supabase_client,
@@ -518,6 +524,12 @@ def call_claude(prompt: str, model: str, *, cached_system: str | None = None,
 
     Lazy-imports anthropic so --dry-run works without the SDK installed.
 
+    备用中转站 (D-148, relay_failover.py): 只有 ANTHROPIC_BASE_URL_BACKUP + ANTHROPIC_API_KEY_BACKUP 都配了才生效;
+      没配 (或 RELAY_FORCE=primary) → 下面的客户端构造 / 重试一字不变。配了 → 下面重试循环的每一次尝试先打主站
+      (只给一次机会: SDK max_retries=0, 限时 60 秒, max_tokens>4000 的遮挡词 150 秒), 主站超时 / 连不上 / 429 /
+      5xx / 401-404 → 这一次改打备用站 (SDK 默认重试与超时); 主站连续 2 次失败或慢 (>25 秒, 遮挡词 >60 秒) → 熔断
+      20 分钟直接走备用站。400 这类请求本身的问题、中转站敏感词拦截 (D-125) 不切。日志只出 primary/backup 与状态码。
+
     Retry policy: up to `max_attempts` total, with 2s/4s/8s backoff between
     attempts. Retries only on transient classes (rate limit, network blip,
     5xx). Validation or permission errors fail fast — they'd repeat the
@@ -534,7 +546,27 @@ def call_claude(prompt: str, model: str, *, cached_system: str | None = None,
     _base_url = os.environ.get("ANTHROPIC_BASE_URL")
     if _base_url:
         _kwargs["base_url"] = _base_url
-    client = anthropic.Anthropic(**_kwargs)
+    _relay_mode = relay_failover.mode()
+    if _relay_mode == relay_failover.MODE_PRIMARY_ONLY:
+        client = anthropic.Anthropic(**_kwargs)            # unchanged
+
+        def _create(kw: dict):
+            return client.messages.create(**kw)
+    else:
+        _long = max_tokens > 4000                           # mask_external_names (8000)
+        _primary_timeout = relay_failover.primary_timeout_s(150.0 if _long else 60.0)
+        _slow = relay_failover.slow_s(60.0 if _long else 25.0)
+        _built: dict = {}
+
+        def _client(target: str):
+            if target not in _built:
+                _built[target] = (anthropic.Anthropic(**_kwargs, max_retries=0, timeout=_primary_timeout)
+                                  if target == "primary" else relay_failover.sdk_backup_client(anthropic))
+            return _built[target]
+
+        def _create(kw: dict):
+            return relay_failover.call(lambda target: _client(target).messages.create(**kw),
+                                       relay_mode=_relay_mode, primary_url=_base_url or "", slow_after_s=_slow)
     # Exception types we want to retry. getattr with default () means the
     # isinstance check evaluates to False on any anthropic SDK version that
     # doesn't expose that exception name — safer than a hard import.
@@ -558,7 +590,7 @@ def call_claude(prompt: str, model: str, *, cached_system: str | None = None,
             create_kwargs["system"] = system_payload
         for attempt in range(max_attempts):
             try:
-                msg = client.messages.create(**create_kwargs)
+                msg = _create(create_kwargs)
                 _record_usage(msg)
                 if meta is not None:
                     meta["stop_reason"] = getattr(msg, "stop_reason", None)
@@ -1098,6 +1130,8 @@ def main() -> int:
 
     stats["prompt_cache_fallbacks"] = PROMPT_CACHE_FALLBACKS["count"]   # 审计 C-02: 降级次数进 Done 行
     stats["prompt_cache"] = prompt_cache_summary()   # 2026-10-12: 实际缓存读写进 Done 行
+    if relay_failover.mode() != relay_failover.MODE_PRIMARY_ONLY:   # D-148: 只在配了备用中转站时多这一项
+        stats["relay"] = relay_failover.summary()
     logger.info("Done: %s", json.dumps(stats, ensure_ascii=False))
     if stats["failed_after_retry"] or stats["hygiene_failed"]:
         logger.info("Failed rows appended to %s — review then either fix the "

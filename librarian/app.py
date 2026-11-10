@@ -19,7 +19,9 @@
   env:    SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY / ANTHROPIC_API_KEY /
           ANTHROPIC_BASE_URL(中转站/第三方网关, 可选; 不设走官方) /
           FLYWHEEL_LIBRARIAN_MODEL(可选, 默认 claude-sonnet-5-5) /
-          LIBRARIAN_API_KEY(鉴权, 生产建议设)
+          LIBRARIAN_API_KEY(鉴权, 生产建议设) /
+          ANTHROPIC_BASE_URL_BACKUP + ANTHROPIC_API_KEY_BACKUP(备用中转站, 可选, 两个都配才启用, D-148) /
+          RELAY_FORCE(可选, backup / primary / 空=自动)
   见 repo 根 railway.json。
 """
 
@@ -40,6 +42,8 @@ STATUS_ERROR = "error"   # 应用层崩溃(core 之外), 与 core 的 degraded �
 # 根(见各自 railway.json 的 startCommand `uvicorn <svc>.app:app`), 所以顶层
 # 模块对三边都可导入; 它只用标准库, 不给任何一个服务加依赖。
 import service_auth
+# 仓库根的备用中转站 (D-148) 共享核心, 同 service_auth 只用标准库。
+import relay_failover
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("librarian")
@@ -58,6 +62,14 @@ def _check_auth(provided: str | None) -> None:
         service_auth.resolve("LIBRARIAN", provided, header="X-Librarian-Key")
     except service_auth.AuthError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+
+def _relay_health(include_counts: bool) -> dict:
+    """备用中转站 (D-148) 的模式 / 熔断 / 计数: 只有布尔、枚举字符串和整数, 绝不回显地址或 key。出错也不让 /health 500。"""
+    try:
+        return relay_failover.health(include_counts=include_counts)
+    except Exception as exc:  # noqa: BLE001
+        return {"relay_error": type(exc).__name__}
 
 
 @app.get("/health")
@@ -84,6 +96,8 @@ def health() -> dict:
                    "prompt_cache_fallbacks": dict(_clients.PROMPT_CACHE_FALLBACKS),
                    # 2026-10-12: 实际缓存读写 (cache_write / cache_read 都是 0 = 缓存标记没到上游)
                    "prompt_cache_usage": dict(_clients.PROMPT_CACHE_USAGE)},
+        # D-148 备用中转站: 模式 / 是否配了 / RELAY_FORCE / 熔断 + 本进程计数。只有布尔、枚举和整数, 从不回显地址或 key。
+        "relay": _relay_health(True),
     }
 
 

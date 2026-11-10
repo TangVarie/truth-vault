@@ -10,8 +10,16 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import time
 from datetime import datetime, timezone
+from pathlib import Path
+
+try:
+    import relay_failover  # repo root, stdlib only (same home and reason as service_auth.py)
+except ImportError:        # run as a script: sys.path[0] is the script's dir, the repo root is not on sys.path
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+    import relay_failover  # noqa: E402
 
 logger = logging.getLogger("flywheel_librarian")
 
@@ -97,6 +105,10 @@ def call_anthropic(prompt: str, model: str, *, system=None, max_tokens: int = 15
     支持中转站 / 第三方 API 网关: 若设了环境变量 ANTHROPIC_BASE_URL, 就作为 base_url
     传给 SDK(api_key 用 ANTHROPIC_API_KEY)。这跟 autowriter 的
     clients.get_anthropic_client 同一约定 —— 帆谷用中转站访问 Claude; 不设则走官方 endpoint。
+
+    备用中转站 (D-148, relay_failover.py): ANTHROPIC_BASE_URL_BACKUP + ANTHROPIC_API_KEY_BACKUP 都配了才生效; 没配
+    (或 RELAY_FORCE=primary) → 客户端构造 / 重试一字不变。配了 → 每次尝试先打主站 (只给一次机会、限时 30 秒),
+    超时 / 连不上 / 429 / 5xx / 401-404 → 这一次改打备用站; 慢 (>25 秒) 或连续失败 → 熔断直接走备用站。
     """
     import anthropic  # lazy import
 
@@ -107,7 +119,26 @@ def call_anthropic(prompt: str, model: str, *, system=None, max_tokens: int = 15
     base_url = os.environ.get("ANTHROPIC_BASE_URL")  # 中转站; 空 = 官方 endpoint
     if base_url:
         kwargs["base_url"] = base_url
-    client = anthropic.Anthropic(**kwargs)
+    relay_mode = relay_failover.mode()
+    if relay_mode == relay_failover.MODE_PRIMARY_ONLY:
+        client = anthropic.Anthropic(**kwargs)            # unchanged
+
+        def _create(kw: dict):
+            return client.messages.create(**kw)
+    else:
+        primary_timeout = relay_failover.primary_timeout_s(30.0)
+        slow = relay_failover.slow_s(25.0)
+        built: dict = {}
+
+        def _client(target: str):
+            if target not in built:
+                built[target] = (anthropic.Anthropic(**kwargs, max_retries=0, timeout=primary_timeout)
+                                 if target == "primary" else relay_failover.sdk_backup_client(anthropic))
+            return built[target]
+
+        def _create(kw: dict):
+            return relay_failover.call(lambda target: _client(target).messages.create(**kw),
+                                       relay_mode=relay_mode, primary_url=base_url or "", slow_after_s=slow)
     retryable = tuple(
         c for c in (
             getattr(anthropic, "RateLimitError", None),
@@ -127,7 +158,7 @@ def call_anthropic(prompt: str, model: str, *, system=None, max_tokens: int = 15
                 }
                 if sys_val is not None:   # str 或带 cache_control 的 block 列表 → prompt caching
                     create_kwargs["system"] = sys_val
-                msg = client.messages.create(**create_kwargs)
+                msg = _create(create_kwargs)
                 _record_usage(msg)
                 return "".join(
                     b.text for b in msg.content if getattr(b, "type", None) == "text"

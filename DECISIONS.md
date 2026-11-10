@@ -8044,3 +8044,27 @@ owner 10-27 填回裁决表：83 格（不一致 43 + 复核 40），每一格�
 - 途鸽的评论会在规则和上限之间来回：模型照规则写，上限再打回超出的，多一轮改。拉扯得多不多工程每周数（OPEN-ITEMS W-51），多了把例子（不进仓）拿给 owner 再定。
 - `score_comments` 不写库（D-145 代价第 2 条），后台数不出上限打回了几条：会话看 Supabase 网关日志，打回几条看 Railway deskcore 日志（W-51）。11-09 12:40 UTC 前部署之后还没有评论打分的调用。
 - 随笔记交付的评论只提示，品牌结尾多了也照样交付。
+
+## D-148 · 备用中转站：配了就自动切，主站只给一次限时机会，连续失败或连续慢就熔断 20 分钟；没配一字不变（2026-11-10，owner 11-10）
+
+来源：11-09 约 10:00 UTC 起主中转站慢了约 5 倍、时不时不回话（1 个 token 的 ping 25 秒没回；两篇特征层超过 Railway 边缘 300 秒 → 502，接着 worker 锁 409；夜跑 essence 一篇 81 秒，平时 13–16 秒）。owner 11-10：接一个备用中转站，主站出这种问题时临时改走备用的，不至于一直卡着。三个仓（truth-vault / autowriter / Jev）同一套做法、同一份核心代码（本仓 `relay_failover.py`，aw `relay_failover.py`，Jev `judge/relay.py`，逐字节相同）。
+
+### 定了什么
+
+1. **两个新的可选 secret，三仓同名**：`ANTHROPIC_BASE_URL_BACKUP` + `ANTHROPIC_API_KEY_BACKUP`，两个都非空才算配了。地址也放 secret（variable 会原样进公开日志）。没配、或 repo variable `RELAY_FORCE=primary` → 每个调用点走原来的代码，客户端构造、请求参数、重试、超时一字不变，不碰熔断文件、不多打日志、Done 行不多字段（CI `scripts/check_relay_failover.py` §2 钉着）。
+2. **配了 = 自动**：重试循环原样套在外面，每一次尝试先打主站，主站只给一次机会（SDK `max_retries=0`）并限时（essence 等 60 秒、遮挡词 150 秒、馆员 30 秒、上表流式 90 秒没有新字节）；出了该切的错，这一次改打备用站，备用站用这个调用点原来的重试 / 超时设置。一次尝试里只切一次，不来回。
+3. **哪些切**：超时、连不上、429、所有 5xx（含 520–524 / 529）、中转站回的 `overloaded_error` / `api_error` / `rate_limit_error` / `timeout_error`，还有 **401/402/403/404**（中转站上这几个多半是余额、key 失效、分组不给这个模型、不认模型名，不是我们请求写错；4xx 不计费；备用站有自己的 key）。**不切**：400/405/413/415/422 这类请求本身的问题；中转站敏感词拦截（`sensitive_words_detected`，D-125）—— 那是对内容的判定不是故障，照旧原样抛、记 NULL，也不算熔断失败。只看状态码、错误类型和异常类名，不按报错文字猜。
+4. **熔断**：主站连续 2 次失败，或成功但慢（单次超过 25 秒；遮挡词 60 秒、馆员 25 秒）连续 2 次 → 20 分钟内所有调用直接走备用站；到点放一个调用去试主站，好了合上，不好再熔断 20 分钟。状态放临时目录下的一个小 JSON（文件名是主站地址的哈希，内容只有次数和时间），同一台机器的进程共用（夜跑一个项目熔断了，下一个项目直接走备用）。11-09 那种「慢而不挂」只有按慢判才切得过去。
+5. **手动**：repo variable / Railway 变量 `RELAY_FORCE`：`backup` 只走备用站，`primary` 只走主站（= 没配），空 = 自动；备用站没配时 `backup` 不生效、提示一行。
+6. **看得见、不漏**：Done 行（essence / 特征层 / 策展 / 评论归线）在配了备用站时多一个 `relay`（各路次数 + 熔断状态，没有叫 `ok` / `failed` 的键，workflow 的 grep 不会误中）；第一次切换、熔断开 / 合各打一行，进程结束打一行汇总；worker / librarian / onboarder 的 `/health` 多一个 `relay` 块（模式、配没配、`RELAY_FORCE`、熔断状态；librarian / onboarder 带本进程计数）。日志、`/health`、熔断文件里只有 primary / backup、状态码、错误类型、耗时和次数，从不出现地址、key 或中转站返回的报错原文。gateway-probe 加了 `target`（primary / backup / both）能单独测备用站。
+7. 运行手册：`docs/12-daily-sync-troubleshooting.md` §8「备用中转站 (D-148)」。
+
+### 这一轮不做 / 代价
+
+- 备用站另外计费；主站超时的那次主站可能已经扣了钱、备用站再生成一遍；两个站的 prompt cache 不通，`PROMPT_CACHE_USAGE` 混着两边算。
+- canary（D-125 的 `_gateway_canary` / `_validation_canary`）可能经由备用站通过；退出码规则不变。
+- 熔断开着时只打备用站，备用站的错误原样抛、不回头再打主站。备用站自己坏了（余额用完、key 过期、不认模型名）而主站只是慢的那种晚上，会比没配备用站还差。应对：看 `Done:` 行的 `backup_fail` / `breaker`，`RELAY_FORCE=primary` 手动退回（运行手册 §8）；「备用站也该切时回头试一次主站」要改共享核心，三仓一起改，另开一单。
+- onboarder 流式：主站流开了之后读到一半卡住 / 断开，anthropic SDK 抛的是 httpx 原样异常（`ReadTimeout` / `RemoteProtocolError`，实测 0.103.1），核心按类名认不出。`onboarder/clients.py` 只在自动模式主站那一路把它们换成内置 `TimeoutError` / `ConnectionError`，让核心切到备用站（换出来的异常不会抛给调用方）；没配备用站和备用站那一路不动。核心不改（三仓逐字节相同）；autowriter 的流式单元有同样的缺口，核心 v2 把这两个类名加进切换表时一起收掉。
+- 几条老日志会把一个异常原文打出来（特征层 `systemic` 行、essence `api_error`、策展 `%r`、遮挡词 `str(exc)[:160]`、馆员缓存降级 warning），配了备用站后那个异常可能是备用站的。改它们会让没配时的日志也变、还要动 ci.yml 的钉子，另开一单。
+- features-sync / backfill-features / onboard-table 的模型调用在 Railway，GitHub 那几个 workflow 不加变量；ci.yml 一行没动（新测试由已有的 `check_prompt_cache_fallback.py` 用子进程带着跑）。
+- 可调但一般不动：`RELAY_PRIMARY_TIMEOUT_S`、`RELAY_SLOW_S`（0 = 不按慢判）、`RELAY_BREAKER_FAILS`、`RELAY_BREAKER_COOLDOWN_S`，只在 Railway / 本地设，GitHub workflow 不接。
