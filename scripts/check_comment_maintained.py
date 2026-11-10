@@ -220,8 +220,10 @@ assert n13b["tier"] == "爆", "减法只决定挡不挡, 不动 tier"
 n13c = _cm("r13c", {"维护情况": ["关注"], "评论数": 70});  assert rt(n13c) == [SEEDED_OK], f"边界 70−20=50 含等号: {rt(n13c)}"
 n13d = _cm("r13d", {"维护情况": ["关注"], "评论数": 69});  assert rt(n13d) == [TICKET], f"69−20=49 不够: {rt(n13d)}"
 n13e = _cm("r13e", {"维护情况": ["关注"]});                 assert rt(n13e) == [TICKET], f"没评论数不减、照旧剔: {rt(n13e)}"
-n13f = _cm("r13f", {"维护评论50条": "x", "评论数": 100});   assert rt(n13f) == [SEEDED_OK], f"工单列 50 条: 100−50=50 过线: {rt(n13f)}"
-n13g = _cm("r13g", {"维护评论50条": "x", "评论数": 99});    assert rt(n13g) == [TICKET], f"99−50=49 不够: {rt(n13g)}"
+# 工单列: D-150 起减格子里的行数, 封顶 50 (逐条见 ⑮); 这里用 60 行的格子钉住封顶那一头
+_CELL60 = "\n".join(f"示例评论{i}" for i in range(60))
+n13f = _cm("r13f", {"维护评论50条": _CELL60, "评论数": 100}); assert rt(n13f) == [SEEDED_OK], f"工单列封顶 50 条: 100−50=50 过线: {rt(n13f)}"
+n13g = _cm("r13g", {"维护评论50条": _CELL60, "评论数": 99});  assert rt(n13g) == [TICKET], f"99−50=49 不够: {rt(n13g)}"
 n13h = _cm("r13h", {"维护情况": ["关注", "控评&置顶✅"], "评论数": 205})
 assert set(rt(n13h)) == {SEEDED_OK, POSTHOC}, f"真赢家 + 起量后干预 两路都在: {rt(n13h)}"
 # 下游只认「铺评工单」: 通道 1 的共用判据对 铺评未跨线 放行、对 铺评工单 仍挡 (书架 v1.14 / L2 v1.15 的 SQL 同样只 ? '铺评工单')
@@ -382,21 +384,22 @@ rc, err, st, cap = _run14([("r1", {"流量状态": "大爆"}), ("r2", {"流量�
 assert "data_quality_flags" not in cap["notes"]["T_CM14_r1"] and err == 0, \
     f"⑭H --limit + 读不到库: 不写这一列、不红: {err} {st} {cap['notes']}"
 
-# J) 沿用是「合」不是「换」(codex #269): 维护情况 不见了(库里只判出 起量后干预), 维护评论50条 这一轮新填了
-#    → 这一轮判出的 铺评工单 + 已铺 50 要留着, 库里的 起量后干预 也要留着; 下游照挡。
+# J) 沿用是「合」不是「换」(codex #269): 维护情况 不见了(库里只判出 起量后干预), 维护评论50条 这一轮新填了 20 行
+#    → 这一轮判出的 铺评工单 + 已铺 20 (D-150: 按行数, 55−20=35 不够线) 要留着, 库里的 起量后干预 也要留着; 下游照挡。
 #    反证: carry_risk_flags 退回整族替换 → 铺评工单 和 seeded 被换掉, metric_tier_untrustworthy_reason 回 None。
 st_j = _stored({"流量状态": "爆贴", "评论数": 55, "维护情况": ["控评&置顶✅"]})
 assert st_j["comment_maintained_routes"] == [POSTHOC], f"前提: 库里只有 起量后干预: {st_j}"
 _saved_extra = list(M14["project_specific_fields_to_raw_extra"])
 M14["project_specific_fields_to_raw_extra"] = _saved_extra + ["维护评论50条"]
 try:
-    rc, err, st, cap = _run14([("r1", {"流量状态": "爆贴", "评论数": 55, "维护评论50条": "已铺"})], {"r1": st_j},
+    rc, err, st, cap = _run14([("r1", {"流量状态": "爆贴", "评论数": 55,
+                                       "维护评论50条": "\n".join(f"示例评论{i}" for i in range(20))})], {"r1": st_j},
                               schema=SCHEMA14 - {"维护情况"} | {"维护评论50条"})
 finally:
     M14["project_specific_fields_to_raw_extra"] = _saved_extra
 fj = cap["notes"]["T_CM14_r1"]["data_quality_flags"]
-assert set(fj.get("comment_maintained_routes") or []) == {TICKET, POSTHOC} and fj.get("comment_maintained_seeded") == 50, \
-    f"⑭J 这一轮新判出的 铺评工单 / 已铺 50 被库里旧的整族换掉了: {fj}"
+assert set(fj.get("comment_maintained_routes") or []) == {TICKET, POSTHOC} and fj.get("comment_maintained_seeded") == 20, \
+    f"⑭J 这一轮新判出的 铺评工单 / 已铺 20 (按行数) 没留住 (被库里旧的整族换掉, 或没按行数减): {fj}"
 assert "维护评论50条" in fj.get("comment_maintained_reason", "") and "控评&置顶✅" in fj.get("comment_maintained_reason", ""), fj
 assert fj.get("risk_flags_carried_from_db") == ["维护情况"] and rc == 1 and err == 1, f"⑭J 照旧红: rc={rc} {st}"
 assert ssll14.metric_tier_untrustworthy_reason({"tier": "爆", "data_quality_flags": fj}) == TICKET, "⑭J 下游要挡"
@@ -436,4 +439,99 @@ finally:
 print("  ⑭ 风控来源列整轮不见: 维护情况改名留 routes + 红 · 笔记状态改名留 synthetic + 红 · 格子清空照常清 · "
       "整列清空但表结构还在照常清 · 读不到不写 · 无证据不红 · 不完整的一轮不红 ✓")
 
-print("comment_maintained 分来路 × synthetic 正交 × 维护情况取值 × 投流三态 × 减法重判 × 来源列消失: all checks passed")
+# ⑮ 工单列减的是格子里的行数 (D-150, owner 2026-11-10「贴几条就是发了几条」): 已铺 = 行数, 封顶 50; 数不出行数
+#    (不是文本 / 有一行是好几条用空格接成的一长串 / 一条都不剩) 照旧按 50。「维护情况」那几档不变。夹具里的评论都是编的。
+#    ⚠️ 先走 transform_row 断行为, 纯函数放后面: 拿 D-150 之前的引擎跑, 第一条 (⑮a) 就红在断言上, 不是红在缺函数上。
+#    反证: 退回一律 50 → ⑮a 红 (80−50=30 不够线, 照旧剔); 拿掉封顶 → ⑮c 红; 不切同一行的编号 → ⑮d 红;
+#    拿掉「一长串」那条 → ⑮e 红 (12 段算 1 条, 80−1 过线放出去); 空行 / 编号行 / 【…】行也算 → ⑮f 红。
+def _lines(k, fmt="示例评论{}"):
+    return "\n".join(fmt.format(i) for i in range(1, k + 1))
+def _cm15(cell, cc, rid="r15"):
+    n = _cm(rid, {"维护评论50条": cell, "评论数": cc})
+    return rt(n), f(n).get("comment_maintained_seeded"), f(n).get("comment_maintained_reason", "")
+# a) 20 行 + 评论数 80 → 80−20=60 过线 → 铺评未跨线, 记已铺 20; reason 写数到几行
+r15, sd15, why15 = _cm15(_lines(20), 80)
+assert r15 == [SEEDED_OK] and sd15 == 20, f"⑮a 20 行该减 20, 80−20=60 ≥ 50 放行: {r15} {sd15} {why15}"
+assert "数到 20 行" in why15 and "80 − 已铺 20 = 60" in why15, f"⑮a reason 要写数到几行、减完多少: {why15}"
+assert ssll.metric_tier_untrustworthy_reason({"tier": "爆", "data_quality_flags": {"comment_maintained_routes": r15}}) is None
+# b) 20 行 + 评论数 60 → 60−20=40 不够 → 铺评工单; 边界 70 含等号
+r15, sd15, _w = _cm15(_lines(20), 60)
+assert r15 == [TICKET] and sd15 == 20, f"⑮b 60−20=40 < 50 照剔: {r15} {sd15}"
+assert ssll.metric_tier_untrustworthy_reason({"tier": "爆", "data_quality_flags": {"comment_maintained_routes": r15}}) == TICKET
+assert _cm15(_lines(20), 70)[0] == [SEEDED_OK] and _cm15(_lines(20), 69)[0] == [TICKET], "⑮b 边界 70−20=50 放 / 69 剔"
+# c) 50 行以上封顶 50
+for k15 in (50, 51, 87):
+    r15, sd15, why15 = _cm15(_lines(k15), 99)
+    assert r15 == [TICKET] and sd15 == 50, f"⑮c {k15} 行封顶 50, 99−50=49 不够: {r15} {sd15}"
+    assert ("封顶 50 条" in why15) == (k15 > 50) and f"数到 {k15} 行" in why15, why15
+assert _cm15(_lines(87), 100)[0] == [SEEDED_OK], "⑮c 封顶之后 100−50=50 过线"
+# d) 一行写了好几条带编号的要切开数: 「1. … 2. …」(编号前有空白, D-085 那套) 和「1、…。2、…」(紧贴前文)
+sp15 = " ".join(f"{i}. 示例评论{i}" for i in range(1, 21))
+gl15 = "".join(f"{i}、示例评论{i}。" for i in range(1, 21))
+for cell15, want15 in ((sp15, 20), (gl15, 20), (sp15 + "\n" + _lines(5, "示例补充{}"), 25)):
+    r15, sd15, _w = _cm15(cell15, 60)
+    assert sd15 == want15 and r15 == [TICKET], f"⑮d 编号写在同一行要切开数: {cell15[:24]}… → {sd15} {r15}"
+assert _cm15(gl15, 70)[0] == [SEEDED_OK], "⑮d 切开数成 20 条, 70−20=50 放"
+assert s.count_ticket_lines("1. 示例评论花了2.5万\n2. 示例评论约在11.10\n3. 示例评论3.0版本")[0] == 3, "小数、日期、版本号不是编号, 不切"
+# 两种写法混在同一行 (Codex TV#276): 先紧贴后空白、先空白后紧贴, 都要一遍数全; 少数一条就会把 52 条的帖放出去
+mx15 = "1、示例评论一。2、示例评论二。 3、示例评论三"
+assert s.count_ticket_lines(mx15)[0] == 3 and s.count_ticket_lines("1. 示例评论一 2. 示例评论二。3、示例评论三")[0] == 3, "⑮d 混写也切开"
+assert _cm15(mx15, 52)[:2] == ([TICKET], 3), "⑮d 混写数成 3 条: 52−3=49 不够线, 照剔"
+assert s.count_ticket_lines("12、示例评论十二 13、示例评论十三")[0] == 2 and s.count_ticket_lines("1、示例评论涨了123、456个")[0] == 1, \
+    "⑮d 数字中间的「2、」「23、」不是编号"
+# 行首是编号的一行, 后面每个编号都切 (不要求连号): 跳号、重新从 1 数、某一条正文以数字开头、行首有【…】标签、
+# 括号编号都数得全。以前要求 n+1 连号, 断一次后面就粘成一条 (20 条数成 1–2 条, 还会绕过「一长串按 50」那条)。
+# 反证: 退回连号 → 跳号 / 重数 / 「2、666」这几条红; 不跳过行首标签 → 【素人评论】那条红。
+for txt15, want15 in (
+        ("1. 示例评论一 2. 示例评论二 4. 示例评论四 5. 示例评论五 6. 示例评论六", 5),        # 跳号
+        ("1. 示例评论一 2. 示例评论二 3. 示例评论三 1. 示例评论四 2. 示例评论五", 5),        # 两批接在一行, 重新从 1 数
+        ("1、示例评论一。2、666。3、示例评论三。4、示例评论四", 4),                          # 正文是数字
+        ("1、示例评论一。2、3天就到了。3、示例评论三", 3),                                   # 正文以数字开头
+        ("【示例角色】1、示例评论一。2、示例评论二。3、示例评论三", 3),                      # 行首标签
+        ("(1)示例评论一 (2)示例评论二 （3）示例评论三 4)示例评论四", 4),                     # 括号编号
+):
+    assert s.count_ticket_lines(txt15)[0] == want15, f"⑮d {txt15[:20]}… → {s.count_ticket_lines(txt15)} ≠ {want15}"
+gap15 = "。".join(f"{i}、示例评论{i}" for i in range(1, 21) if i != 3)       # 20 条紧贴着写、跳了 3
+assert _cm15(gap15, 68)[:2] == ([TICKET], 19), "⑮d 跳号之后照样往下数: 19 条, 68−19=49 照剔"
+# 代价: 正文里的「3、4 家」「12、13 家」也切 —— 只会多算 (更挡)
+assert s.count_ticket_lines("1、示例评论面了3、4家")[0] == 2 and s.count_ticket_lines("1、示例评论面了12、13家")[0] == 2
+# 切开之后哪一段还是 ≥ 10 段空白接成的一长串, 照旧数不出、按 50
+assert s.count_ticket_lines("1. " + " ".join(f"示例{i}" for i in range(12)) + " 2. 示例评论二")[0] is None
+assert s.count_ticket_lines("1.\n2)\n(3)\n示例评论")[0] == 1, "只有编号的行 (含「2)」) 不算"
+# e) 数不出 → 照旧按 50: 不是文本 / 一行是 ≥ 10 段空白接成的一长串 (哪怕前面有正常的行) / 只有【…】标签 / 只有空白
+blob15 = " ".join(f"示例评论{i}" for i in range(1, 13))          # 12 条用空格接成一行
+for cell15 in (["示例评论1", "示例评论2"], blob15, _lines(19) + "\n" + blob15, "【示例配图说明】", "   \n  "):
+    r15, sd15, why15 = _cm15(cell15, 80)
+    assert r15 == [TICKET] and sd15 == 50, f"⑮e 数不出该按 50 (80−50=30 照剔): {cell15!r:.40} → {r15} {sd15} {why15}"
+    assert "数不出条数, 按 50 条算" in why15, why15
+assert s.count_ticket_lines("示例 评论 夹了 几个 空格 one two three four")[0] == 1, "9 段以内照常算 1 条"
+# f) 空行、只有编号的行、只有【…】的行不算; 「666」这种光数字是一条评论, 算
+cell15 = "\n\n" + "\n\n  \n".join(f"示例评论{i}" for i in range(1, 21)) + "\n\n"
+assert _cm15(cell15, 70)[1] == 20, "⑮f 空行不算"
+cell15 = "\n".join(f"{i}.\n示例评论{i}" for i in range(1, 21)) + "\n【示例配图】\n(21)\n666"
+assert s.count_ticket_lines(cell15)[0] == 21, f"⑮f 编号行 / 标签行不算, 666 算: {s.count_ticket_lines(cell15)}"
+# g) 列没声明 (落进 _undeclared) 同样按行数
+M15 = dict(M13, project_specific_fields_to_raw_extra=[
+    c for c in M13["project_specific_fields_to_raw_extra"] if c != "维护评论50条"])
+n15g, _, und15 = s.transform_row(M15, "r15g", {"文案": "c", "状态": "爆贴", "维护评论50条": _lines(20), "评论数": 80})
+assert "维护评论50条" in und15 and rt(n15g) == [SEEDED_OK] and f(n15g)["comment_maintained_seeded"] == 20, f(n15g)
+# h) 和「维护情况」的档同在 → 取大 (同一批评论, 不求和)
+n15h = _cm("r15h", {"维护评论50条": _lines(20), "维护情况": ["重点关注⭐️"], "评论数": 80})
+assert rt(n15h) == [TICKET] and f(n15h)["comment_maintained_seeded"] == 50, f(n15h)
+n15h = _cm("r15h2", {"维护评论50条": _lines(30), "维护情况": ["关注"], "评论数": 79})
+assert rt(n15h) == [TICKET] and f(n15h)["comment_maintained_seeded"] == 30, f(n15h)
+# i) 来源列不见了那一轮 (F01) 沿用库里旗子: seeded 现在能 < 50, 合并仍只往更挡的方向 ——
+#    库里 D-150 之前的 铺评工单 / 50, 这一轮按行数判成 铺评未跨线 / 20 → routes 两个都在 (照挡), seeded 记 50
+_m = s._merge_risk_family(
+    {"comment_maintained": True, "comment_maintained_routes": [SEEDED_OK], "comment_maintained_seeded": 20},
+    {"comment_maintained": True, "comment_maintained_routes": [TICKET], "comment_maintained_seeded": 50},
+    "comment_maintained")
+assert _m["comment_maintained_routes"] == sorted([SEEDED_OK, TICKET]) and _m["comment_maintained_seeded"] == 50, _m
+assert ssll.metric_tier_untrustworthy_reason({"tier": "爆", "data_quality_flags": _m}) == TICKET, "⑮i 合并后照挡"
+_m = s._merge_risk_family({"comment_maintained": True, "comment_maintained_seeded": 30},
+                          {"comment_maintained": True, "comment_maintained_seeded": 20}, "comment_maintained")
+assert _m["comment_maintained_seeded"] == 30, f"⑮i 这一轮多也记大的: {_m}"
+print("  ⑮ 工单列按行数减 (D-150): 20 行 80 放 / 60 剔 · 封顶 50 · 同一行的编号切开 · 数不出按 50 · "
+      "空行 / 编号行 / 标签行不算 · 和维护情况取大 · 沿用时只往更挡合 ✓")
+
+print("comment_maintained 分来路 × synthetic 正交 × 维护情况取值 × 投流三态 × 减法重判 × 来源列消失 × 按行数减: all checks passed")
