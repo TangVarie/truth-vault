@@ -77,7 +77,7 @@ from _common import (
     _iso_now_tz,
 )
 # 「1. … 2. …」写在同一行的切法 (D-085), 数铺评工单列有几条时复用 (D-150)
-from sync_comments_from_raw_extra import _ITEM_NO_RE, _split_inline_items
+from sync_comments_from_raw_extra import _split_inline_items
 
 
 logger = setup_logger("sync_feishu_notes")
@@ -353,23 +353,23 @@ _CM_TICKET_SEEDED = {"维护评论50条": 50}
 _CM_LINE_MAX_PIECES = 10
 _CM_LABEL_LINE_RE = re.compile(r"(?:【[^】]*】\s*)+")     # 整行只有【…】标签 (配图说明之类), 不是评论
 # 整行只有编号 (「3.」「12、」「(4)」)。光秃秃的数字不算编号: 「666」是一条评论。
-_CM_NUM_ONLY_RE = re.compile(r"[(（]?\d{1,3}[)）]?[.、．]|[(（]\d{1,3}[)）]")
-# 行首之后的编号: 前面是空白 (「1. … 2. …」) 还是紧贴前文 (「1、…。2、…」) 都认; 前面是数字的不认 (「12、」里的「2、」)
-_CM_NUM_NEXT_RE = re.compile(r"(?<=\D)\(?(\d{1,2})\)?[.、](?!\d)")
+_CM_NUM_ONLY_RE = re.compile(r"[(（]?\d{1,3}(?:[)）][.、．]?|[.、．])|[(（]\d{1,3}[)）]")
+# 编号: 「3.」「3、」「3．」「(3)」「（3）」「3)」, 数字前面不能是数字 (「12、」里的「2、」不算); 点号后面跟数字的是小数 (「2.5 万」「11.10」),
+# 不是编号; 顿号后面跟数字照样算编号 (「2、3 天就到了」是第 2 条)。
+_CM_NUM_MARK_RE = re.compile(r"(?<!\d)[(（]?\d{1,2}(?:[)）][.、．]?|[、．]|\.(?!\d))")
+_CM_LEAD_LABEL_RE = re.compile(r"(?:【[^】]*】\s*)+")    # 行首的【…】标签 (「【素人评论】1、…」), 跳过再看编号
 
 
 def _cm_split_numbered(line: str) -> list[str]:
-    """一行 → 一条或多条。行首有编号 n 时, 按 n+1、n+2… 依次往后找编号切, 编号前是空白还是紧贴前文都认,
-    两种写法混在一行 (「1、…。2、…。 3、…」) 也一遍数完 (Codex TV#276); 行首没编号的走 D-085 的切法
-    (「… 1. … 2. …」编号前有空白、连号)。多切了只是多算 (更挡), 不会放出去。"""
-    lead = _ITEM_NO_RE.match(line)
+    """一行 → 一条或多条。行首 (跳过【…】标签) 是编号的, 后面每碰到一个编号就切一刀, 不管连不连号、编号前是空白
+    还是紧贴前文: 跳号、重新从 1 数、两种写法混在一行、某一条正文以数字开头都数得全 (Codex TV#276 和之后的对抗测试:
+    以前要求 n+1 连号, 断一次后面就全粘成一条, 20 条能数成 1、2 条)。代价是正文里的「面了 3、4 家」也会切成两条 ——
+    只会多算 (更挡), 不会放出去。行首没编号的走 D-085 的切法 (「… 1. … 2. …」编号前有空白、连号)。"""
+    lab = _CM_LEAD_LABEL_RE.match(line)
+    lead = _CM_NUM_MARK_RE.match(line, lab.end() if lab else 0)
     if not lead:
         return _split_inline_items(line)
-    cuts, nxt = [], int(lead.group(1)) + 1
-    for m in _CM_NUM_NEXT_RE.finditer(line, lead.end()):
-        if int(m.group(1)) == nxt:
-            cuts.append(m.start())
-            nxt += 1
+    cuts = [m.start() for m in _CM_NUM_MARK_RE.finditer(line, lead.end())]
     if not cuts:
         return [line]
     bounds = [0, *cuts, len(line)]
