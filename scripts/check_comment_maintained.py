@@ -473,6 +473,11 @@ for cell15, want15 in ((sp15, 20), (gl15, 20), (sp15 + "\n" + _lines(5, "示例�
     assert sd15 == want15 and r15 == [TICKET], f"⑮d 编号写在同一行要切开数: {cell15[:24]}… → {sd15} {r15}"
 assert _cm15(gl15, 70)[0] == [SEEDED_OK], "⑮d 切开数成 20 条, 70−20=50 放"
 assert s.count_ticket_lines("1. 示例评论花了2.5万\n2. 示例评论面了3、4家")[0] == 2, "小数、「3、4 家」不是编号, 不切"
+# 两种写法混在同一行 (Codex TV#276): 先紧贴后空白、先空白后紧贴, 都要一遍数全; 少数一条就会把 52 条的帖放出去
+mx15 = "1、示例评论一。2、示例评论二。 3、示例评论三"
+assert s.count_ticket_lines(mx15)[0] == 3 and s.count_ticket_lines("1. 示例评论一 2. 示例评论二。3、示例评论三")[0] == 3, "⑮d 混写也切开"
+assert _cm15(mx15, 52)[:2] == ([TICKET], 3), "⑮d 混写数成 3 条: 52−3=49 不够线, 照剔"
+assert s.count_ticket_lines("12、示例评论十二 13、示例评论十三")[0] == 2 and s.count_ticket_lines("1、示例评论面了12、13家")[0] == 1, "⑮d 「12、」里的「2、」不是编号"
 # 紧贴的编号要接着行首往下数 (1 → 2 → 3…): 行首 1、正文里一个「3、」不是第 2 条, 不切 (反证: 拿掉连号那条 → 切成 2 条)
 assert s.count_ticket_lines("1、示例评论面了3、四家")[0] == 1, s.count_ticket_lines("1、示例评论面了3、四家")
 assert s.count_ticket_lines("1、示例评论一。2、示例评论二。4、示例评论四")[0] == 2, "连号断在 4: 只切到 2"

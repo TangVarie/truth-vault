@@ -354,20 +354,19 @@ _CM_LINE_MAX_PIECES = 10
 _CM_LABEL_LINE_RE = re.compile(r"(?:【[^】]*】\s*)+")     # 整行只有【…】标签 (配图说明之类), 不是评论
 # 整行只有编号 (「3.」「12、」「(4)」)。光秃秃的数字不算编号: 「666」是一条评论。
 _CM_NUM_ONLY_RE = re.compile(r"[(（]?\d{1,3}[)）]?[.、．]|[(（]\d{1,3}[)）]")
-_CM_NUM_GLUED_RE = re.compile(r"(?<=[^\d\s])\(?(\d{1,2})\)?[.、](?!\d)")   # 紧贴前文的编号「…。2、…」
+# 行首之后的编号: 前面是空白 (「1. … 2. …」) 还是紧贴前文 (「1、…。2、…」) 都认; 前面是数字的不认 (「12、」里的「2、」)
+_CM_NUM_NEXT_RE = re.compile(r"(?<=\D)\(?(\d{1,2})\)?[.、](?!\d)")
 
 
 def _cm_split_numbered(line: str) -> list[str]:
-    """一行 → 一条或多条。先走 D-085 的切法 (「1. … 2. …」编号前有空白、连号); 切不开、行首又有编号 n 时,
-    再按 n+1、n+2… 依次找紧贴前文的编号切 (「1、…。2、…」)。多切了只是多算 (更挡), 不会放出去。"""
-    items = _split_inline_items(line)
-    if len(items) > 1:
-        return items
+    """一行 → 一条或多条。行首有编号 n 时, 按 n+1、n+2… 依次往后找编号切, 编号前是空白还是紧贴前文都认,
+    两种写法混在一行 (「1、…。2、…。 3、…」) 也一遍数完 (Codex TV#276); 行首没编号的走 D-085 的切法
+    (「… 1. … 2. …」编号前有空白、连号)。多切了只是多算 (更挡), 不会放出去。"""
     lead = _ITEM_NO_RE.match(line)
     if not lead:
-        return [line]
+        return _split_inline_items(line)
     cuts, nxt = [], int(lead.group(1)) + 1
-    for m in _CM_NUM_GLUED_RE.finditer(line, lead.end()):
+    for m in _CM_NUM_NEXT_RE.finditer(line, lead.end()):
         if int(m.group(1)) == nxt:
             cuts.append(m.start())
             nxt += 1
