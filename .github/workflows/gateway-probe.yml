@@ -45,6 +45,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ANTHROPIC_BASE_URL_BACKUP: ${{ secrets.ANTHROPIC_BASE_URL_BACKUP }}
           ANTHROPIC_API_KEY_BACKUP: ${{ secrets.ANTHROPIC_API_KEY_BACKUP }}
+          ANTHROPIC_API_KEY_BACKUP_HAIKU: ${{ secrets.ANTHROPIC_API_KEY_BACKUP_HAIKU }}
           PROBE_MODELS: ${{ github.event.inputs.models || 'claude-sonnet-5-5' }}
           PROBE_MAX_TIME: ${{ github.event.inputs.max_time || '25' }}
           PROBE_TARGET: ${{ github.event.inputs.target || 'primary' }}
@@ -92,18 +93,23 @@ jobs:
             echo "[$label] ── ④ 按模型测速 (每次最多 ${PROBE_MAX_TIME}s; 只打 http 码 / 耗时 / error.type) ──"
             for m in $PROBE_MODELS; do
               case "$m" in *[!A-Za-z0-9._-]*) echo "[$label] 跳过不像模型名的输入"; continue;; esac
+              # 备用站的 Haiku 走单独的通道钥匙 (D-148 补): 设了就用它测, 和夜跑的选法一样
+              mkey="$key"; mnote=""
+              case "$m" in *[Hh]aiku*)
+                if [ "$label" = backup ] && [ -n "$ANTHROPIC_API_KEY_BACKUP_HAIKU" ]; then mkey="$ANTHROPIC_API_KEY_BACKUP_HAIKU"; mnote=" (haiku 专用钥匙)"; fi;;
+              esac
               for kind in ping gen; do
                 if [ "$kind" = ping ]; then mt=1; msg='ping'; else mt=200; msg='从 1 数到 80, 用逗号隔开'; fi
                 body=$(printf '{"model":"%s","max_tokens":%s,"messages":[{"role":"user","content":"%s"}]}' "$m" "$mt" "$msg")
                 resp=$(mktemp)
                 out=$(curl -sS -o "$resp" --connect-timeout 10 --max-time "$PROBE_MAX_TIME" \
                   -w "total=%{time_total}s http=%{http_code}" "$base/v1/messages" \
-                  -H "x-api-key: $key" -H "anthropic-version: 2023-06-01" \
+                  -H "x-api-key: $mkey" -H "anthropic-version: 2023-06-01" \
                   -H "content-type: application/json" -d "$body" 2>/dev/null)
                 rc=$?
                 extra=$(jq -r 'if .type == "error" then "error.type=\(.error.type // "?")" else "out_tokens=\(.usage.output_tokens) stop=\(.stop_reason)" end' "$resp" 2>/dev/null || echo "body=不是 JSON")
                 rm -f "$resp"
-                echo "[$label] $m · $kind · curl=$rc · $out · $extra"
+                echo "[$label] $m$mnote · $kind · curl=$rc · $out · $extra"
               done
             done
           }

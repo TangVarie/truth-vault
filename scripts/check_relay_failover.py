@@ -48,8 +48,9 @@ P = "https://primary-host.invalid"
 BU = "https://backup-host.invalid"
 K = "sk-test-primary-0123456789"
 BK = "sk-test-backup-0123456789"
+HK = "sk-test-backup-haiku-0123456789"   # 备用站 Haiku 专用通道钥匙 (D-148 补)
 SENTINEL = "BALANCE-SENTINEL-余额"
-LEAKS = ("primary-host.invalid", "backup-host.invalid", K, BK, "BALANCE-SENTINEL")
+LEAKS = ("primary-host.invalid", "backup-host.invalid", K, BK, HK, "BALANCE-SENTINEL")
 BASE = {"ANTHROPIC_API_KEY": K, "ANTHROPIC_BASE_URL": P}
 BOTH = {"ANTHROPIC_BASE_URL_BACKUP": BU, "ANTHROPIC_API_KEY_BACKUP": BK}
 
@@ -303,7 +304,7 @@ FAILS: list[str] = []
 
 def _show(msg: str) -> str:
     """打到 CI 输出的说明里也不带假地址 / 假 key 原文 (换成 P / BU / K / BK), 免得被当成真值看。"""
-    for raw, alias in ((K, "K"), (BK, "BK"), (P, "P"), (BU, "BU")):
+    for raw, alias in ((HK, "HK"), (K, "K"), (BK, "BK"), (P, "P"), (BU, "BU")):
         msg = msg.replace(raw, alias)
     return msg
 
@@ -1053,6 +1054,41 @@ def sec12_import_guard() -> None:
               f"{cwd.name}/{mod}.py (仓库根不在 sys.path): rc={p.returncode}")
 
 
+# ── §13 备用站 Haiku 专用钥匙 (D-148 补, 11-10) ─────────────────────────────
+
+def sec13_haiku_key() -> None:
+    print("§13 备用站 Haiku 专用钥匙")
+    H = {"ANTHROPIC_API_KEY_BACKUP_HAIKU": HK}
+    fresh(**BASE, **BOTH, **H)
+    SCRIPT["primary"].append(APITimeoutError())
+    out = E.call_claude("p", "claude-haiku-5-5")
+    check(out == "text-from-backup" and BUILT[1:] == [{"api_key": HK, "base_url": BU}],
+          f"haiku 模型主站超时 → 备用站用 Haiku 专用钥匙, 地址照旧 ({BUILT[1:]})")
+    check(INSTANCES[1].auth_token is None, "Haiku 专用钥匙的客户端也清掉 auth_token")
+    check(CALLS[1][2].get("model") == "claude-haiku-5-5", "发到备用站的模型名不变")
+
+    fresh(**BASE, **BOTH, **H)
+    SCRIPT["primary"].append(APITimeoutError())
+    E.call_claude("p", "claude-sonnet-5-5")
+    check(BUILT[1:] == [{"api_key": BK, "base_url": BU}], f"非 haiku 模型照旧用通用备用钥匙 ({BUILT[1:]})")
+
+    for env, why in (({}, "没设 Haiku 专用钥匙"), ({"ANTHROPIC_API_KEY_BACKUP_HAIKU": "  "}, "只填了空白")):
+        fresh(**BASE, **BOTH, **env)
+        SCRIPT["primary"].append(APITimeoutError())
+        E.call_claude("p", "claude-haiku-5-5")
+        check(BUILT[1:] == [{"api_key": BK, "base_url": BU}], f"{why} → haiku 也用通用备用钥匙 ({BUILT[1:]})")
+
+    fresh(**BASE, **BOTH, **H, RELAY_FORCE="backup")
+    out = E.call_claude("p", "claude-haiku-5-5")
+    check(out == "text-from-backup" and BUILT == [{"api_key": HK, "base_url": BU}] and relays_built() == ["backup"],
+          f"RELAY_FORCE=backup + haiku → 只建备用站客户端, 用专用钥匙 ({BUILT})")
+
+    fresh(**BASE, **H)
+    out = E.call_claude("p", "claude-haiku-5-5")
+    check(out == "text-from-primary" and BUILT == [{"base_url": P}],
+          f"只设 Haiku 专用钥匙、没配备用站 = 老路, 不碰这把钥匙 ({BUILT})")
+
+
 def main() -> int:
     with contextlib.redirect_stderr(STDERR):
         sec1_core()
@@ -1064,6 +1100,7 @@ def main() -> int:
         sec7_librarian()
         sec8_onboarder()
         sec9_health()
+        sec13_haiku_key()
     sec10_hygiene()
     sec11_done_lines()
     sec12_import_guard()
@@ -1076,7 +1113,7 @@ def main() -> int:
             print("  ❌", f)
         return 1
     print("✅ 备用中转站 (D-148): §1 核心 · §2 没配=老路 · §3 essence 切换 · §4 D-125 不切 · §5 熔断 · §6 RELAY_FORCE · "
-          "§7 馆员 · §8 上表 · §9 /health · §10 日志卫生 · §11 Done 行 · §12 import 全过")
+          "§7 馆员 · §8 上表 · §9 /health · §10 日志卫生 · §11 Done 行 · §12 import · §13 Haiku 专用钥匙 全过")
     return 0
 
 

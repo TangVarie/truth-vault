@@ -8058,6 +8058,7 @@ owner 10-27 填回裁决表：83 格（不一致 43 + 复核 40），每一格�
 5. **手动**：repo variable / Railway 变量 `RELAY_FORCE`：`backup` 只走备用站，`primary` 只走主站（= 没配），空 = 自动；备用站没配时 `backup` 不生效、提示一行。
 6. **看得见、不漏**：Done 行（essence / 特征层 / 策展 / 评论归线）在配了备用站时多一个 `relay`（各路次数 + 熔断状态，没有叫 `ok` / `failed` 的键，workflow 的 grep 不会误中）；第一次切换、熔断开 / 合各打一行，进程结束打一行汇总；worker / librarian / onboarder 的 `/health` 多一个 `relay` 块（模式、配没配、`RELAY_FORCE`、熔断状态；librarian / onboarder 带本进程计数）。日志、`/health`、熔断文件里只有 primary / backup、状态码、错误类型、耗时和次数，从不出现地址、key 或中转站返回的报错原文。gateway-probe 加了 `target`（primary / backup / both）能单独测备用站。
 7. 运行手册：`docs/12-daily-sync-troubleshooting.md` §8「备用中转站 (D-148)」。
+8. **11-10 补：备用站的 Haiku 用单独的通道钥匙**（owner 11-10：备用站 Haiku 是专门的通道 key，和通用 key 不通用；11-10 04:20 UTC gateway-probe 用通用 key 打 `claude-haiku-5-5` 回 503）。可选 secret `ANTHROPIC_API_KEY_BACKUP_HAIKU`：设了且模型名里带 haiku 时，备用站客户端改用这把钥匙（地址照旧），其它模型和没设时一字不变。只在 TV 的 `annotate_essence_pass.call_claude` 换（Haiku 只有遮挡词 `MASK_MODEL` 在用，跑在 daily-sync 上），三仓共享的 `relay_failover.py` 不动；daily-sync 和 gateway-probe 带上这个 secret，gateway-probe 打备用站的 haiku 也用它。CI：`check_relay_failover.py` §13。
 
 ### 这一轮不做 / 代价
 
