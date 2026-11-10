@@ -30,7 +30,10 @@
   env:  SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY /
         ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL(用【能跑通的那条通道】)/
         ESSENCE_MODEL(可选,默认 claude-sonnet-5-5)/ WORKER_API_KEY(鉴权,建议设)/
-        WORKER_RUN_TIMEOUT_S(可选,单次 subprocess 硬超时,默认 900)
+        WORKER_RUN_TIMEOUT_S(可选,单次 subprocess 硬超时,默认 900)/
+        ANTHROPIC_BASE_URL_BACKUP + ANTHROPIC_API_KEY_BACKUP(可选,备用中转站,两个都配才启用, D-148)/
+        RELAY_FORCE(可选,backup / primary / 空=自动)。子进程继承这些 env; 运行手册见
+        docs/12-daily-sync-troubleshooting.md「备用中转站 (D-148)」。
 """
 
 from __future__ import annotations
@@ -51,6 +54,8 @@ from fastapi.concurrency import run_in_threadpool
 # 根(见各自 railway.json 的 startCommand `uvicorn <svc>.app:app`), 所以顶层
 # 模块对三边都可导入; 它只用标准库, 不给任何一个服务加依赖。
 import service_auth
+# 仓库根的备用中转站 (D-148) 共享核心, 同 service_auth 只用标准库。worker 自己不调模型 (子进程调), 这里只为 /health 回显模式。
+import relay_failover
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("tv-worker")
@@ -224,6 +229,14 @@ def _safe_origin(url: str | None) -> str | None:
         return "(unparseable)"
 
 
+def _relay_health(include_counts: bool) -> dict:
+    """备用中转站 (D-148) 的模式 / 熔断状态: 只有布尔和枚举字符串, 绝不回显地址或 key。出错也不让 /health 500。"""
+    try:
+        return relay_failover.health(include_counts=include_counts)
+    except Exception as exc:  # noqa: BLE001
+        return {"relay_error": type(exc).__name__}
+
+
 @app.get("/health")
 def health() -> dict:
     """健康检查 + 【配置自曝】。
@@ -262,6 +275,8 @@ def health() -> dict:
             "curator_model": os.environ.get("FLYWHEEL_CURATOR_MODEL") or "claude-sonnet-5-5 (default)",
         },
         "running": _running_scripts(),
+        # D-148: 模式 / 是否配了备用站 / RELAY_FORCE / 熔断。调用都在子进程里, 计数见各脚本的 Done 行, 这里不带。
+        "relay": _relay_health(False),
     }
 
 

@@ -14,12 +14,14 @@ cache_control 的话每次调用都在多付一倍 input token, 持续几个月�
   §6 实际缓存读写按 usage 累加 (2026-10-12): essence.call_claude 与 librarian.call_anthropic 各自记 calls /
      input / cache_write / cache_read / output; read_share = cache_read / 总输入; 特征层与 essence 的 Done 行、
      librarian /health 都带出去 —— 网关静默丢掉 cache_control 时降级计数恒 0, 只有这几个数看得出来
+  §8 备用中转站 (D-148): 子进程跑 check_relay_failover.py (干净进程 + 它自己的假 anthropic; ci.yml 这一步不用改)
 用假的 anthropic 模块, 不碰网络。
 """
 from __future__ import annotations
 
 import inspect
 import os
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -181,12 +183,25 @@ def main() -> int:
     except ImportError as exc:
         print(f"  ⚠️ §7 /health 跳过 (import 失败: {exc})")
 
+    # §8 备用中转站 (D-148): 同样用假的 anthropic, 但要一个干净进程 (本进程已经 import 过被测模块、改过 env)。
+    #    env 去掉 ANTHROPIC_* / RELAY_* / PROMPT_CACHE_ENABLED: 开发机上的真地址 / 真 key 进不去。
+    sys.stdout.flush()
+    try:   # 本地 ~3 秒; 卡死 (比如文件锁) 别把整个 python job 拖到 45 分钟超时
+        r = subprocess.run([sys.executable, str(HERE / "check_relay_failover.py")], cwd=str(HERE), timeout=600,
+                           env={k: v for k, v in os.environ.items()
+                                if not k.startswith(("ANTHROPIC_", "RELAY_")) and k != "PROMPT_CACHE_ENABLED"})
+        rc = r.returncode
+    except subprocess.TimeoutExpired:
+        rc = "timeout"
+    if rc != 0:
+        fails.append(f"§8 备用中转站 check_relay_failover.py 红了 (rc={rc}, 见上面的输出)")
+
     for f in fails:
         print("  ❌", f)
     if fails:
         print(f"❌ prompt cache fallback: {len(fails)} 条不过")
         return 1
-    print("✅ prompt cache fallback: §1 馆员计数 · §2 essence 计数 · §3 /health · §4 Done 行 · §5 真错误仍抛 · §6 实际缓存读写 · §7 默认关 (D-113) 全过")
+    print("✅ prompt cache fallback: §1 馆员计数 · §2 essence 计数 · §3 /health · §4 Done 行 · §5 真错误仍抛 · §6 实际缓存读写 · §7 默认关 (D-113) · §8 备用中转站 全过")
     return 0
 
 

@@ -48,6 +48,10 @@ jobs:
       # D-100: 直连中转站, 不再经 Railway worker
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+      # D-148 备用中转站 (可选): 两个 secret 都配了才启用, 没配 = 行为不变; RELAY_FORCE 是 repo variable (backup / primary / 空)
+      ANTHROPIC_BASE_URL_BACKUP: ${{ secrets.ANTHROPIC_BASE_URL_BACKUP }}
+      ANTHROPIC_API_KEY_BACKUP: ${{ secrets.ANTHROPIC_API_KEY_BACKUP }}
+      RELAY_FORCE: ${{ vars.RELAY_FORCE }}
       FLYWHEEL_CURATOR_MODEL: ${{ vars.FLYWHEEL_CURATOR_MODEL }}
       PROJECT: ${{ github.event.inputs.project }}
       LIMIT: ${{ github.event.inputs.limit }}

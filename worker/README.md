@@ -56,6 +56,10 @@ staging)**没有任何症状** —— 服务照常 200、日志照常干净。�
    - `FLYWHEEL_CURATOR_MODEL`(可选, `/curate` 策展用的模型, 默认 `claude-sonnet-5-5`; **不**跟 `ESSENCE_MODEL`, `/health` 的 `config.curator_model` 回显它)
    - `WORKER_API_KEY`(自定口令,建议设 = GitHub `WORKER_API_KEY` secret)
    - `WORKER_RUN_TIMEOUT_S`(可选,单次 subprocess 硬超时,默认 900)
+   - `ANTHROPIC_BASE_URL_BACKUP` + `ANTHROPIC_API_KEY_BACKUP`(可选,**备用中转站**, D-148; 两个都配才启用, 缺一个 = 行为不变)、
+     `RELAY_FORCE`(可选: `backup` 只走备用 / `primary` 只走主站 / 空 = 自动)。子进程 (特征层脚本) 继承这些变量;
+     `/health` 的 `relay` 块回显模式与熔断状态 (`relay_mode` / `relay_backup_configured` / `relay_force` / `relay_breaker`),
+     调用计数在各脚本的 `Done:` 行。运行手册: `docs/12-daily-sync-troubleshooting.md`「备用中转站 (D-148)」
 3. GitHub repo secrets 加:`WORKER_URL`(Railway 域名)、`WORKER_API_KEY`(= Railway 那个)。
 4. (D-100 前) daily-sync 的 essence/curate 步骤 gate 在 `WORKER_URL != ''`; **现在** daily-sync 不读 `WORKER_URL`, 只有 features-sync / backfill-features 读。
 

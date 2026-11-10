@@ -10,8 +10,16 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
+from pathlib import Path
 from typing import Any, Iterator
+
+try:
+    import relay_failover  # repo root, stdlib only (same home and reason as service_auth.py)
+except ImportError:        # run as a script: sys.path[0] is the script's dir, the repo root is not on sys.path
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+    import relay_failover  # noqa: E402
 
 
 class FeishuClient:
@@ -303,6 +311,36 @@ _TRANSIENT_STATUS = (429, 500, 502, 503, 504, 520, 522, 524, 529)
 _GATEWAY_TIMEOUT_STATUS = (504, 524)
 
 
+def _consume(client, create_kwargs: dict, stream: bool) -> str:
+    """一次传输: 流式 = 开流并读完 text_stream; 非流式 = create 再拼 text 块。备用中转站 (D-148) 下这就是一次
+    "尝试单元" —— 主站中途断流时整段在备用站上重来, 不拼接半截。"""
+    if stream:
+        with client.messages.stream(**create_kwargs) as s:
+            return "".join(s.text_stream)
+    msg = client.messages.create(**create_kwargs)
+    return "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
+
+
+def _consume_primary_stream(client, create_kwargs: dict) -> str:
+    """备用中转站 (D-148) 自动模式下【主站】的流式那一路。
+
+    流开了之后读到一半卡住 / 断开, anthropic SDK 不包装 httpx 的异常 (实测 0.103.1: httpx.ReadTimeout /
+    httpx.RemoteProtocolError 原样抛出), 共享核心 relay_failover 按类名认不出该切 (核心三仓逐字节相同, 不在这里改)
+    —— 主站流卡住就既不切备用站、也不算熔断失败。所以只在这一路把 httpx 的传输层异常 (MRO 里有 TransportError) 换成
+    内置 TimeoutError / ConnectionError: 核心见了一定切到备用站, 换出来的这个异常不会抛给调用方, 只以类名进日志。
+    没配备用站 / 只走备用站 / 备用站那一路 / 非流式 (SDK 自己包装成 APITimeoutError 等): 一字不动, 不走这里。"""
+    try:
+        return _consume(client, create_kwargs, True)
+    except Exception as exc:  # noqa: BLE001
+        names = {c.__name__ for c in type(exc).__mro__}
+        if "TransportError" not in names or relay_failover.is_gateway_filtered(exc):
+            raise
+        timed_out = "TimeoutException" in names
+    if timed_out:
+        raise TimeoutError("primary stream: timed out")
+    raise ConnectionError("primary stream: connection broken")
+
+
 def call_anthropic(prompt: str, model: str, *, system=None, max_tokens: int = 8000,
                    max_attempts: int = 4) -> str:
     """一次 Anthropic 调用 + 瞬时错误退避重试。lazy-import anthropic。
@@ -332,6 +370,11 @@ def call_anthropic(prompt: str, model: str, *, system=None, max_tokens: int = 80
 
     非流式那条结论当时是对的(它验证的是"中转站能不能透传"), 只是没覆盖到"输出长到
     120s 都出不完"这种情况。换更快的模型只是把线往后挪, 挪不过宽表。
+
+    备用中转站 (D-148, relay_failover.py): ANTHROPIC_BASE_URL_BACKUP + ANTHROPIC_API_KEY_BACKUP 都配了才生效; 没配
+    (或 RELAY_FORCE=primary) → 客户端构造 / 重试一字不变。配了 → 每次尝试先打主站 (流式 90 秒没有新字节就算超时;
+    非流式 600 秒), 超时 / 连不上 / 429 / 5xx (含 524) / 401-404 → 这一次整段改打备用站 (同样 max_retries=0);
+    连续失败 → 熔断直接走备用站。下面的重试 / 524 诊断照旧套在外面。
     """
     import anthropic  # lazy
 
@@ -340,8 +383,32 @@ def call_anthropic(prompt: str, model: str, *, system=None, max_tokens: int = 80
         kwargs["api_key"] = os.environ["ANTHROPIC_API_KEY"]
     if os.environ.get("ANTHROPIC_BASE_URL"):
         kwargs["base_url"] = os.environ["ANTHROPIC_BASE_URL"]
-    client = anthropic.Anthropic(**kwargs)
     stream = os.environ.get("ONBOARDER_STREAM", "1").strip().lower() not in ("0", "false", "no")
+    relay_mode = relay_failover.mode()
+    if relay_mode == relay_failover.MODE_PRIMARY_ONLY:
+        client = anthropic.Anthropic(**kwargs)                    # unchanged {max_retries:0, api_key?, base_url?}
+
+        def _once(ck):
+            return _consume(client, ck, stream)
+    else:
+        primary_timeout = relay_failover.primary_timeout_s(90.0 if stream else 600.0)
+        slow = 0.0 if stream else relay_failover.slow_s(0.0)
+        built: dict = {}
+
+        def _client(target):
+            if target not in built:
+                built[target] = (anthropic.Anthropic(**kwargs, timeout=primary_timeout) if target == "primary"
+                                 else relay_failover.sdk_backup_client(anthropic, max_retries=0))
+            return built[target]
+
+        def _unit(target, ck):
+            if stream and target == "primary":
+                return _consume_primary_stream(_client(target), ck)   # 主站中途卡住 / 断流也切 (见上)
+            return _consume(_client(target), ck, stream)
+
+        def _once(ck):
+            return relay_failover.call(lambda target: _unit(target, ck), relay_mode=relay_mode,
+                                       primary_url=os.environ.get("ANTHROPIC_BASE_URL") or "", slow_after_s=slow)
     for attempt in range(max_attempts):
         try:
             create_kwargs: dict = {
@@ -351,11 +418,7 @@ def call_anthropic(prompt: str, model: str, *, system=None, max_tokens: int = 80
             }
             if system is not None:
                 create_kwargs["system"] = system
-            if stream:
-                with client.messages.stream(**create_kwargs) as s:
-                    return "".join(s.text_stream)
-            msg = client.messages.create(**create_kwargs)
-            return "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
+            return _once(create_kwargs)
         except Exception as exc:  # noqa: BLE001
             status = getattr(exc, "status_code", None)
             transient = (

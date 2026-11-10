@@ -32,6 +32,10 @@ librarian/
 - **结果缓存**(上面 step 3, `flywheel_librarian_cache`):挡"完全相同的请求"(同 brief + 同 library_version),直接复用上次精选、**整次跳过 LLM**。
 - **Anthropic prompt caching**(`cache_control: ephemeral`):候选卡库 + 项目 system_prompt 作为缓存 system 块,挡"同库不同 brief"的请求 —— 只重算 delta 部分,大前缀缓存命中省 ~90%。
 - LLM 调用支持**中转站**(`ANTHROPIC_BASE_URL`,同 autowriter `clients.get_anthropic_client` 约定);重试覆盖 429/502/503/529(中转站常见 overloaded)。
+- **备用中转站**(可选, D-148):`ANTHROPIC_BASE_URL_BACKUP` + `ANTHROPIC_API_KEY_BACKUP` 都配了才启用。每次尝试先打主站
+  (只给一次机会、限时 30 秒), 超时 / 连不上 / 429 / 5xx / 401-404 → 这次改打备用站; 主站连续 2 次失败或慢 (>25 秒) → 熔断
+  20 分钟直接走备用站。`RELAY_FORCE=backup` / `primary` 手动切。`/health` 的 `relay` 块带模式、熔断状态和本进程计数
+  (`relay_counts`), 不出地址或 key。运行手册: `docs/12-daily-sync-troubleshooting.md`「备用中转站 (D-148)」。
 
 ## 本地测试
 
@@ -60,7 +64,8 @@ python -m librarian.cli --brief librarian/sample_brief.json
 repo 根 `railway.json` 已配好;在 Railway 建一个 service、root 指 repo 根、设环境变量
 (`SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` / `ANTHROPIC_API_KEY` / **`ANTHROPIC_BASE_URL`**
 (中转站/第三方网关, 可选, 不设走官方) / `FLYWHEEL_LIBRARIAN_MODEL`(见下方⚠️) /
-**`LIBRARIAN_API_KEY`**)即可。healthcheck 走 `/health`。
+**`LIBRARIAN_API_KEY`** / 可选的备用中转站 `ANTHROPIC_BASE_URL_BACKUP` + `ANTHROPIC_API_KEY_BACKUP` 与 `RELAY_FORCE`
+(D-148, 见上))即可。healthcheck 走 `/health`。
 
 > ⚠️ **`LIBRARIAN_API_KEY` 从"建议设"变成"必须设"**(2026-08-26,跨库审计 SUP-001)。
 > 不设的话服务照常起、`/health` 照常 200,但**所有业务请求一律 401** ——

@@ -562,7 +562,9 @@ sync 脚本只查 `_status_raw`, 不查 `_note_for_tier` (备注字段). TGV_1 �
 |---|---|---|---|---|---|---|---|---|---|
 | `SUPABASE_SERVICE_ROLE_KEY` | ✓ daily-sync · features-sync · backfill-features · backfill-essence | ✓ | ✓ | ✓ | ✓ (`db.py` / `deskcore/app.py`) | ✓ (write=true 写账本) | ✓ (`apply_rows`) | ⚠️ 历史配置, 应换 anon 后删 | — |
 | `SUPABASE_ANON_KEY` | — | — | — | — | — | — | — | ✓ 只读 `v_dash_*` | — |
-| `ANTHROPIC_API_KEY` + `ANTHROPIC_BASE_URL` (中转站) | ✓ gateway-probe · **daily-sync / backfill-essence / recurate-lessons (D-100 起 essence / curate 直跑)** | ✓ features (essence / curate 端点 D-100 起没有调用方) | ✓ 冷路径馆员 | ✓ | ✓ deskcore (蒸馏 / 校准) | ✓ `loop.py` 修改单 (另有 `MOONSHOT_API_KEY`) | — | — | — |
+| `ANTHROPIC_API_KEY` + `ANTHROPIC_BASE_URL` (中转站) | ✓ gateway-probe · **daily-sync / backfill-essence / recurate-lessons (D-100 起 essence / curate 直跑)** · feature-discovery | ✓ features (essence / curate 端点 D-100 起没有调用方) | ✓ 冷路径馆员 | ✓ | ✓ deskcore (蒸馏 / 校准) | ✓ `loop.py` 修改单 (另有 `MOONSHOT_API_KEY`) | — | — | — |
+| `ANTHROPIC_BASE_URL_BACKUP` + `ANTHROPIC_API_KEY_BACKUP` (备用中转站, **可选**, D-148; 两个都配才启用, 地址也放 secret) | ✓ gateway-probe (`target`) · daily-sync / backfill-essence / recurate-lessons / feature-discovery | ✓ features (子进程继承) | ✓ | ✓ | — (deskcore 不调中转站; Streamlit / `worker.py` 重新开时加) | ✓ `loop.py` 规则编译 | — | — | — |
+| `RELAY_FORCE` (repo **variable**, 不是 secret; 可选, D-148: `backup` / `primary` / 空) | ✓ 同上 4 个 workflow | 可选 | 可选 | 可选 | — | 可选 | — | — | — |
 | `GOOGLE_API_KEY` (embedding) | — | — | — | — | ✓ `dedup` / 回填 / 补录 | — | — | — | — |
 | `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | ✓ daily-sync · preflight | — | — | ✓ | — | — | — | — | — |
 | `WORKER_API_KEY` | ✓ (调用方) | 🔑 | — | — | — | — | — | — | — |

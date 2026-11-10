@@ -36,7 +36,9 @@ uvicorn 进程)。重启/重部署会丢正在跑的作业, 调用方轮询拿�
   healthcheck: /health
   env:   ANTHROPIC_BASE_URL / ANTHROPIC_API_KEY(用【能跑通的那条通道】)/
          FEISHU_APP_ID / FEISHU_APP_SECRET / ONBOARDER_API_KEY(鉴权,建议设)/
-         ONBOARDER_MODEL(可选,默认 claude-sonnet-5-5)
+         ONBOARDER_MODEL(可选,默认 claude-sonnet-5-5)/
+         ANTHROPIC_BASE_URL_BACKUP + ANTHROPIC_API_KEY_BACKUP(可选,备用中转站,两个都配才启用, D-148)/
+         RELAY_FORCE(可选,backup / primary / 空=自动)
 """
 
 from __future__ import annotations
@@ -57,6 +59,8 @@ from . import core
 # 根(见各自 railway.json 的 startCommand `uvicorn <svc>.app:app`), 所以顶层
 # 模块对三边都可导入; 它只用标准库, 不给任何一个服务加依赖。
 import service_auth
+# 仓库根的备用中转站 (D-148) 共享核心, 同 service_auth 只用标准库。
+import relay_failover
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("onboarder")
@@ -77,6 +81,14 @@ def _check_auth(provided: str | None) -> None:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
 
+def _relay_health(include_counts: bool) -> dict:
+    """备用中转站 (D-148) 的模式 / 熔断 / 计数: 只有布尔、枚举字符串和整数, 绝不回显地址或 key。出错也不让 /health 500。"""
+    try:
+        return relay_failover.health(include_counts=include_counts)
+    except Exception as exc:  # noqa: BLE001
+        return {"relay_error": type(exc).__name__}
+
+
 @app.get("/health")
 def health() -> dict:
     """健康检查 + 鉴权状态自曝(跨库审计 SUP-001 / ROB-004)。
@@ -93,6 +105,8 @@ def health() -> dict:
         "ok": True,
         "service": "onboarder",
         "auth": service_auth.auth_health("ONBOARDER", header="X-Onboarder-Key"),
+        # D-148 备用中转站: 模式 / 是否配了 / RELAY_FORCE / 熔断 + 本进程计数。只有布尔、枚举和整数, 从不回显地址或 key。
+        "relay": _relay_health(True),
     }
 
 

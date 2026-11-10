@@ -11,6 +11,10 @@ name: gateway-probe (中转站可达性自检)
 #   gen   = max_tokens 200, 看出 200 个 token 要多久 (夜跑 essence / 特征 / 策展一次调用大约出几百个 token)。
 # 只打 http 码、耗时和 error.type (如 overloaded_error), 不打 error.message —— 公开仓的 Actions 日志谁都能看,
 # 余额、账号这类字样不能进日志。不设输入 = 原来那一次 sonnet-5-5 ping (max 25 s)。
+# 11-10 D-148 加: 输入 target = primary (默认, 同以前) / backup / both —— 同一套 ①-④ 也能测备用中转站
+#   (secrets ANTHROPIC_BASE_URL_BACKUP + ANTHROPIC_API_KEY_BACKUP)。每行前面带 [primary] / [backup];
+#   备用站没配 (地址或 key 缺一个) 就打一行跳过。输出规则不变: 只有长度、开头、末字符 hex、DNS 成败、curl 退出码、
+#   耗时、http 码、error.type, 从不打地址、域名、key 或报错原文。
 on:
   workflow_dispatch:
     inputs:
@@ -22,6 +26,14 @@ on:
         description: "每次请求最多等几秒"
         type: string
         default: "25"
+      target:
+        description: "测哪个中转站: primary (主站) / backup (备用站, D-148) / both"
+        type: choice
+        options:
+          - primary
+          - backup
+          - both
+        default: primary
 
 jobs:
   probe:
@@ -31,55 +43,69 @@ jobs:
         env:
           ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_BASE_URL_BACKUP: ${{ secrets.ANTHROPIC_BASE_URL_BACKUP }}
+          ANTHROPIC_API_KEY_BACKUP: ${{ secrets.ANTHROPIC_API_KEY_BACKUP }}
           PROBE_MODELS: ${{ github.event.inputs.models || 'claude-sonnet-5-5' }}
           PROBE_MAX_TIME: ${{ github.event.inputs.max_time || '25' }}
+          PROBE_TARGET: ${{ github.event.inputs.target || 'primary' }}
         run: |
           set +e
           set +o pipefail
-          base="${ANTHROPIC_BASE_URL%/}"
-          echo "── ① URL 形状(不泄露值)──"
-          echo "长度=${#ANTHROPIC_BASE_URL}"
-          case "$ANTHROPIC_BASE_URL" in
-            https://*) echo "开头: OK https://";;
-            *) echo "开头: ⚠️ 非 https://(填错/前导空格?)";;
-          esac
-          last=$(printf %s "$ANTHROPIC_BASE_URL" | tail -c 1 | od -An -tx1 | tr -d ' \n')
-          echo "末字符 hex=$last(0a=换行 20=空格 → 尾部带空白)"
-          echo "── ② DNS(只报成败)──"
-          host=$(printf %s "$base" | sed -E 's#^https?://##; s#[:/].*$##')
-          if getent hosts "$host" >/dev/null 2>&1; then echo "DNS 解析: OK"; else echo "DNS 解析: ❌(域名错?)"; fi
-          echo "── ③ 分阶段连接(connect-timeout 10s, max 25s)──"
-          out=$(curl -sS -o /dev/null --connect-timeout 10 --max-time 25 \
-            -w "connect=%{time_connect}s tls=%{time_appconnect}s total=%{time_total}s http=%{http_code}" \
-            "$base/v1/messages" \
-            -H "x-api-key: $ANTHROPIC_API_KEY" -H "anthropic-version: 2023-06-01" \
-            -H "content-type: application/json" \
-            -d '{"model":"claude-sonnet-5-5","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}' 2>/dev/null)
-          rc=$?
-          echo "curl 退出码=$rc | $out"
-          case $rc in
-            0)  echo "→ ✅ 连上并拿到响应。看 http=: 200=全通(可跳过 Railway!) / 503=连上了但通道无该模型(换通道 secret 即可) / 401|403=鉴权 / 404=路径";;
-            6)  echo "→ exit 6: DNS 解析失败 → URL 域名写错";;
-            7)  echo "→ exit 7: 连接被拒 → 端口错";;
-            28) echo "→ exit 28 超时:connect>0=连上了没回(网关);connect=0.000000=连都没连上(网络/路由 → 走 Railway)";;
-            35) echo "→ exit 35: TLS 握手失败";;
-            *)  echo "→ 其它 curl 错误 $rc";;
-          esac
-          echo "── ④ 按模型测速 (每次最多 ${PROBE_MAX_TIME}s; 只打 http 码 / 耗时 / error.type) ──"
           case "$PROBE_MAX_TIME" in ''|*[!0-9]*) echo "max_time 不是整数: 用 25"; PROBE_MAX_TIME=25;; esac
-          for m in $PROBE_MODELS; do
-            case "$m" in *[!A-Za-z0-9._-]*) echo "跳过不像模型名的输入"; continue;; esac
-            for kind in ping gen; do
-              if [ "$kind" = ping ]; then mt=1; msg='ping'; else mt=200; msg='从 1 数到 80, 用逗号隔开'; fi
-              body=$(printf '{"model":"%s","max_tokens":%s,"messages":[{"role":"user","content":"%s"}]}' "$m" "$mt" "$msg")
-              resp=$(mktemp)
-              out=$(curl -sS -o "$resp" --connect-timeout 10 --max-time "$PROBE_MAX_TIME" \
-                -w "total=%{time_total}s http=%{http_code}" "$base/v1/messages" \
-                -H "x-api-key: $ANTHROPIC_API_KEY" -H "anthropic-version: 2023-06-01" \
-                -H "content-type: application/json" -d "$body" 2>/dev/null)
-              rc=$?
-              extra=$(jq -r 'if .type == "error" then "error.type=\(.error.type // "?")" else "out_tokens=\(.usage.output_tokens) stop=\(.stop_reason)" end' "$resp" 2>/dev/null || echo "body=不是 JSON")
-              rm -f "$resp"
-              echo "$m · $kind · curl=$rc · $out · $extra"
+          case "$PROBE_TARGET" in primary|backup|both) ;; *) PROBE_TARGET=primary;; esac
+          # probe <label> <url> <key>: ①-④ 跑一遍, 每行前面带 [label]。只打形状 / 成败 / 码 / 耗时, 不打值。
+          probe() {
+            label="$1"; url="$2"; key="$3"
+            if [ "$label" = backup ] && { [ -z "$url" ] || [ -z "$key" ]; }; then
+              echo "[backup] 没配 (地址或 key 缺一个) → 跳过"
+              return 0
+            fi
+            base="${url%/}"
+            echo "[$label] ── ① URL 形状(不泄露值)──"
+            echo "[$label] 长度=${#url}"
+            case "$url" in
+              https://*) echo "[$label] 开头: OK https://";;
+              *) echo "[$label] 开头: ⚠️ 非 https://(填错/前导空格?)";;
+            esac
+            last=$(printf %s "$url" | tail -c 1 | od -An -tx1 | tr -d ' \n')
+            echo "[$label] 末字符 hex=$last(0a=换行 20=空格 → 尾部带空白)"
+            echo "[$label] ── ② DNS(只报成败)──"
+            host=$(printf %s "$base" | sed -E 's#^https?://##; s#[:/].*$##')
+            if getent hosts "$host" >/dev/null 2>&1; then echo "[$label] DNS 解析: OK"; else echo "[$label] DNS 解析: ❌(域名错?)"; fi
+            echo "[$label] ── ③ 分阶段连接(connect-timeout 10s, max 25s)──"
+            out=$(curl -sS -o /dev/null --connect-timeout 10 --max-time 25 \
+              -w "connect=%{time_connect}s tls=%{time_appconnect}s total=%{time_total}s http=%{http_code}" \
+              "$base/v1/messages" \
+              -H "x-api-key: $key" -H "anthropic-version: 2023-06-01" \
+              -H "content-type: application/json" \
+              -d '{"model":"claude-sonnet-5-5","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}' 2>/dev/null)
+            rc=$?
+            echo "[$label] curl 退出码=$rc | $out"
+            case $rc in
+              0)  echo "[$label] → ✅ 连上并拿到响应。看 http=: 200=全通(可跳过 Railway!) / 503=连上了但通道无该模型(换通道 secret 即可) / 401|403=鉴权 / 404=路径";;
+              6)  echo "[$label] → exit 6: DNS 解析失败 → URL 域名写错";;
+              7)  echo "[$label] → exit 7: 连接被拒 → 端口错";;
+              28) echo "[$label] → exit 28 超时:connect>0=连上了没回(网关);connect=0.000000=连都没连上(网络/路由 → 走 Railway)";;
+              35) echo "[$label] → exit 35: TLS 握手失败";;
+              *)  echo "[$label] → 其它 curl 错误 $rc";;
+            esac
+            echo "[$label] ── ④ 按模型测速 (每次最多 ${PROBE_MAX_TIME}s; 只打 http 码 / 耗时 / error.type) ──"
+            for m in $PROBE_MODELS; do
+              case "$m" in *[!A-Za-z0-9._-]*) echo "[$label] 跳过不像模型名的输入"; continue;; esac
+              for kind in ping gen; do
+                if [ "$kind" = ping ]; then mt=1; msg='ping'; else mt=200; msg='从 1 数到 80, 用逗号隔开'; fi
+                body=$(printf '{"model":"%s","max_tokens":%s,"messages":[{"role":"user","content":"%s"}]}' "$m" "$mt" "$msg")
+                resp=$(mktemp)
+                out=$(curl -sS -o "$resp" --connect-timeout 10 --max-time "$PROBE_MAX_TIME" \
+                  -w "total=%{time_total}s http=%{http_code}" "$base/v1/messages" \
+                  -H "x-api-key: $key" -H "anthropic-version: 2023-06-01" \
+                  -H "content-type: application/json" -d "$body" 2>/dev/null)
+                rc=$?
+                extra=$(jq -r 'if .type == "error" then "error.type=\(.error.type // "?")" else "out_tokens=\(.usage.output_tokens) stop=\(.stop_reason)" end' "$resp" 2>/dev/null || echo "body=不是 JSON")
+                rm -f "$resp"
+                echo "[$label] $m · $kind · curl=$rc · $out · $extra"
+              done
             done
-          done
+          }
+          if [ "$PROBE_TARGET" != backup ]; then probe primary "$ANTHROPIC_BASE_URL" "$ANTHROPIC_API_KEY"; fi
+          if [ "$PROBE_TARGET" != primary ]; then probe backup "$ANTHROPIC_BASE_URL_BACKUP" "$ANTHROPIC_API_KEY_BACKUP"; fi
