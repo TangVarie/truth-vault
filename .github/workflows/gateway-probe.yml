@@ -5,8 +5,23 @@
 #   connect=0(超时)    → 网络/路由层连不上 → 确认要走 Railway。
 name: gateway-probe (中转站可达性自检)
 
+#
+# 11-10 加: 按模型测速。输入 models (空格分隔) 和 max_time (秒); 每个模型发两次请求:
+#   ping  = max_tokens 1, 看多久回第一句;
+#   gen   = max_tokens 200, 看出 200 个 token 要多久 (夜跑 essence / 特征 / 策展一次调用大约出几百个 token)。
+# 只打 http 码、耗时和 error.type (如 overloaded_error), 不打 error.message —— 公开仓的 Actions 日志谁都能看,
+# 余额、账号这类字样不能进日志。不设输入 = 原来那一次 sonnet-5-5 ping (max 25 s)。
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      models:
+        description: "要测的模型, 空格分隔 (如 claude-sonnet-5-5 claude-haiku-5-5 claude-opus-5-5)"
+        type: string
+        default: "claude-sonnet-5-5"
+      max_time:
+        description: "每次请求最多等几秒"
+        type: string
+        default: "25"
 
 jobs:
   probe:
@@ -16,6 +31,8 @@ jobs:
         env:
           ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PROBE_MODELS: ${{ github.event.inputs.models || 'claude-sonnet-5-5' }}
+          PROBE_MAX_TIME: ${{ github.event.inputs.max_time || '25' }}
         run: |
           set +e
           set +o pipefail
@@ -48,3 +65,21 @@ jobs:
             35) echo "→ exit 35: TLS 握手失败";;
             *)  echo "→ 其它 curl 错误 $rc";;
           esac
+          echo "── ④ 按模型测速 (每次最多 ${PROBE_MAX_TIME}s; 只打 http 码 / 耗时 / error.type) ──"
+          case "$PROBE_MAX_TIME" in ''|*[!0-9]*) echo "max_time 不是整数: 用 25"; PROBE_MAX_TIME=25;; esac
+          for m in $PROBE_MODELS; do
+            case "$m" in *[!A-Za-z0-9._-]*) echo "跳过不像模型名的输入"; continue;; esac
+            for kind in ping gen; do
+              if [ "$kind" = ping ]; then mt=1; msg='ping'; else mt=200; msg='从 1 数到 80, 用逗号隔开'; fi
+              body=$(printf '{"model":"%s","max_tokens":%s,"messages":[{"role":"user","content":"%s"}]}' "$m" "$mt" "$msg")
+              resp=$(mktemp)
+              out=$(curl -sS -o "$resp" --connect-timeout 10 --max-time "$PROBE_MAX_TIME" \
+                -w "total=%{time_total}s http=%{http_code}" "$base/v1/messages" \
+                -H "x-api-key: $ANTHROPIC_API_KEY" -H "anthropic-version: 2023-06-01" \
+                -H "content-type: application/json" -d "$body" 2>/dev/null)
+              rc=$?
+              extra=$(jq -r 'if .type == "error" then "error.type=\(.error.type // "?")" else "out_tokens=\(.usage.output_tokens) stop=\(.stop_reason)" end' "$resp" 2>/dev/null || echo "body=不是 JSON")
+              rm -f "$resp"
+              echo "$m · $kind · curl=$rc · $out · $extra"
+            done
+          done
