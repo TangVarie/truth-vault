@@ -76,6 +76,8 @@ from _common import (
     _iso_now,
     _iso_now_tz,
 )
+# 「1. … 2. …」写在同一行的切法 (D-085), 数铺评工单列有几条时复用 (D-150)
+from sync_comments_from_raw_extra import _ITEM_NO_RE, _split_inline_items
 
 
 logger = setup_logger("sync_feishu_notes")
@@ -341,7 +343,74 @@ _COMMENT_MAINTAINED_STATUS = ("改评发布", "二次评论", "改评显示")
 #   ⚠️ 挡不住什么(D-051): 如果以后真有别的项目开一列叫「评论铺设情况」并往里填评论
 #   文案, 这条判据认不出来 —— 新列要进 _CM_TICKET_COLS 得先看值。
 _CM_TICKET_COLS = ("维护评论50条",)
-_CM_TICKET_SEEDED = {"维护评论50条": 50}   # 该列代表已铺的条数(运营 2026-09-22 确认计入评论数)
+# 已铺条数 = 这一格里的评论行数, 封顶这个数; 数不出行数时也按这个数 (D-150, owner 2026-11-10「贴几条就是发了几条」)。
+# 运营 2026-09-22 确认铺的评论计入评论数, 所以 ⑦ 减法拿它减。D-150 之前不看格子, 一律算 50。
+_CM_TICKET_SEEDED = {"维护评论50条": 50}
+# 一行按空白切出这么多段 → 这一行不是一条评论, 是好几条用空格接成的一长串, 数不出条数 (D-150)。
+# 11-10 生产: 途鸽这一列 4,629 个非空行, 正常的行最多 7 段; 一长串的 35 行每行 29–65 段
+# (601–1,249 字, 一格约 50 条); 8–28 段的行一行都没有。按换行硬数, 整格就这一行的算 1 条,
+# 会放出 6 篇其实铺了约 50 条的 (爆 5、风控 1)。
+_CM_LINE_MAX_PIECES = 10
+_CM_LABEL_LINE_RE = re.compile(r"(?:【[^】]*】\s*)+")     # 整行只有【…】标签 (配图说明之类), 不是评论
+# 整行只有编号 (「3.」「12、」「(4)」)。光秃秃的数字不算编号: 「666」是一条评论。
+_CM_NUM_ONLY_RE = re.compile(r"[(（]?\d{1,3}[)）]?[.、．]|[(（]\d{1,3}[)）]")
+_CM_NUM_GLUED_RE = re.compile(r"(?<=[^\d\s])\(?(\d{1,2})\)?[.、](?!\d)")   # 紧贴前文的编号「…。2、…」
+
+
+def _cm_split_numbered(line: str) -> list[str]:
+    """一行 → 一条或多条。先走 D-085 的切法 (「1. … 2. …」编号前有空白、连号); 切不开、行首又有编号 n 时,
+    再按 n+1、n+2… 依次找紧贴前文的编号切 (「1、…。2、…」)。多切了只是多算 (更挡), 不会放出去。"""
+    items = _split_inline_items(line)
+    if len(items) > 1:
+        return items
+    lead = _ITEM_NO_RE.match(line)
+    if not lead:
+        return [line]
+    cuts, nxt = [], int(lead.group(1)) + 1
+    for m in _CM_NUM_GLUED_RE.finditer(line, lead.end()):
+        if int(m.group(1)) == nxt:
+            cuts.append(m.start())
+            nxt += 1
+    if not cuts:
+        return [line]
+    bounds = [0, *cuts, len(line)]
+    return [line[a:b].strip() for a, b in zip(bounds, bounds[1:]) if line[a:b].strip()]
+
+
+def count_ticket_lines(cell: Any) -> tuple[int | None, str]:
+    """铺评工单列这一格有几条评论 (D-150): (条数, 说明); 数不出 → (None, 为什么)。
+
+    按换行切, 同一行写了好几条带编号的 (「1. … 2. …」「1、…2、…」) 再切开; 空行、只有编号的行、
+    只有【…】标签的行不算。数不出: 不是文本; 有一行按空白切出 ≥ _CM_LINE_MAX_PIECES 段 (好几条用空格接成一行);
+    一条都没剩下。"""
+    if not isinstance(cell, str):
+        return None, f"不是文本({type(cell).__name__})"
+    n = 0
+    for raw in cell.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        for item in _cm_split_numbered(line):
+            if _CM_NUM_ONLY_RE.fullmatch(item) or _CM_LABEL_LINE_RE.fullmatch(item):
+                continue
+            pieces = len(item.split())
+            if pieces >= _CM_LINE_MAX_PIECES:
+                return None, f"有一行是 {pieces} 段用空白接成的一长串"
+            n += 1
+    if not n:
+        return None, "没有一行像评论"
+    return n, f"数到 {n} 行"
+
+
+def ticket_seeded(col: str, cell: Any) -> tuple[int, str]:
+    """这一格算已铺几条 + 写进 reason 的说明 (D-150): 行数, 封顶 _CM_TICKET_SEEDED[col]; 数不出就按封顶的数。"""
+    cap = _CM_TICKET_SEEDED.get(col, 0)
+    n, why = count_ticket_lines(cell)
+    if n is None:
+        return cap, f"{why}, 数不出条数, 按 {cap} 条算"
+    if n > cap:
+        return cap, f"{why}, 封顶 {cap} 条"
+    return n, f"{why} = 已铺 {n} 条"
 
 # ③ 「维护情况」多选列 —— 按【取值】判, 不是"非空即算"(运营 2026-09-22 逐值语义)。
 #   运营原文: 关注=做了20条维护评论 · 重点关注⭐️=做了50条 · ✅=此帖【需要】做50条 ·
@@ -1094,9 +1163,12 @@ def _merge_risk_family(cur: dict, stored: dict, fam: str) -> dict:
     """库里这一族的证据 和 这一轮还在的列现判出来的证据 合起来, 只往「更挡」的方向合(codex #269)。
 
     不能拿库里的整族替换这一轮的: 别的来源列这一轮新判出来的证据(比如 维护情况 不见了、维护评论50条 这一轮
-    新填了 → 铺评工单 + 已铺 50)会被换掉, 下游反而放行。合法: 布尔取「任一为 true」; reason 去重拼接(这一轮的在前);
+    新填了 → 铺评工单 + 已铺 N 条)会被换掉, 下游反而放行。合法: 布尔取「任一为 true」; reason 去重拼接(这一轮的在前);
     routes 取并集; seeded 取大; 其余键这一轮有就用这一轮的。并集偏保守(库里旧的 铺评工单 和这一轮的 铺评未跨线
-    同时在时照旧挡) —— 这一轮本来就红着等人修列名, 修好之后下一轮整族重算。"""
+    同时在时照旧挡) —— 这一轮本来就红着等人修列名, 修好之后下一轮整族重算。
+    D-150 之后工单列的 seeded 按行数可以 < 50, 这两条仍只往「更挡」合: 库里的 铺评工单 留在 routes 里照挡, seeded 记
+    两边大的那个(库里 D-150 之前写的 50、或另一列的档), 不会因为这一轮按行数减得少而放; 那一轮本来就红, 列修好之后
+    下一轮按行数重算。"""
     out = {k: v for k, v in cur.items() if k.startswith(fam)}
     old = {k: v for k, v in stored.items() if k.startswith(fam)}
     if cur.get(fam) is True or old.get(fam) is True:
@@ -1564,9 +1636,12 @@ def transform_row(
 
     cm_seeded = 0          # 运营自己铺进去、且【计入评论数】的条数(2026-09-22 确认)
     for _col in _CM_TICKET_COLS:
-        if _cm_cell(_col) not in (None, "", []):
-            _cm_hit(_CM_ROUTE_TICKET, f"挂了铺评工单列「{_col}」")
-            cm_seeded = max(cm_seeded, _CM_TICKET_SEEDED.get(_col, 0))
+        _cell = _cm_cell(_col)
+        if _cell not in (None, "", []):
+            # 已铺 = 这一格里的行数, 封顶 50; 数不出按 50 (D-150)。说明写进 reason, 人能对着格子核。
+            _n, _how = ticket_seeded(_col, _cell)
+            _cm_hit(_CM_ROUTE_TICKET, f"挂了铺评工单列「{_col}」({_how})")
+            cm_seeded = max(cm_seeded, _n)
     # ⑥ 「维护情况」多选 —— 按取值分路(A2)。同一行可以同时命中两条 route:
     #   实测 BJS 6 行「控评&置顶✅」100% 同时带「关注+✅」, 按行拆不开;
     #   SPX 23 行「控评&置顶✅」里只有 1 行与铺评类共现。所以不做二选一。
@@ -1606,6 +1681,7 @@ def transform_row(
     #    改记 route「铺评未跨线」(信息性: 书架 / L2 / 通道 1 只认「铺评工单」, 所以一律放行; seeded
     #    照记, 别当特征)。不够线的照旧 铺评工单。评论数缺失时【不减】(证明不了过线, 照旧剔)。
     #    tier 本身不改: 减法只决定挡不挡, 不重判档位。反证见 check_comment_maintained.py ⑬。
+    #    D-150 (owner 2026-11-10): 工单列减的是格子里的行数(封顶 50, 数不出按 50), 不再一律 50; 反证见 ⑮。
     if _CM_ROUTE_TICKET in cm_routes and cm_seeded:
         _cc = note.get("comments_count")
         if isinstance(_cc, (int, float)) and not isinstance(_cc, bool) and _cc - cm_seeded >= _COMMENT_TIER_BAO:
