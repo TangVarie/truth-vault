@@ -8069,6 +8069,7 @@ owner 10-27 填回裁决表：83 格（不一致 43 + 复核 40），每一格�
 - 几条老日志会把一个异常原文打出来（特征层 `systemic` 行、essence `api_error`、策展 `%r`、遮挡词 `str(exc)[:160]`、馆员缓存降级 warning），配了备用站后那个异常可能是备用站的。改它们会让没配时的日志也变、还要动 ci.yml 的钉子，另开一单。
 - features-sync / backfill-features / onboard-table 的模型调用在 Railway，GitHub 那几个 workflow 不加变量；ci.yml 一行没动（新测试由已有的 `check_prompt_cache_fallback.py` 用子进程带着跑）。
 - 可调但一般不动：`RELAY_PRIMARY_TIMEOUT_S`、`RELAY_SLOW_S`（0 = 不按慢判）、`RELAY_BREAKER_FAILS`、`RELAY_BREAKER_COOLDOWN_S`，只在 Railway / 本地设，GitHub workflow 不接。
+- **11-10 第一晚（状态，S-14）**：主站在 SPX 第一趟两次超时，约 10:01 UTC 熔断，之后 essence 和遮挡词都走备用站（备用站成 46、失败 0），整晚 30 / 240 分钟；essence 走备用站（通用 key）回的用量每次只记约 1 个输入 token、没有缓存数，这部分的 token 数从夜跑日志算不了成本、也不能和主站比（遮挡词走 Haiku 通道 key，用量照常记）；切换 / 熔断那几行（`relay: `）起初没进 essence 那步的 job 日志，11-10 补进 grep。
 
 ## D-149 · 闸三预登记一条并排读数「删帖回算」：运营删掉的低流量帖不剔、按最后的标签算回去；主判定一个字不改，主判定过了、回算不过就不算干净的通过；闸二季度重跑同样报（2026-11-10，owner 11-10）
 
