@@ -20,7 +20,8 @@ check_external_shelf.py —— 外部参考书架 (D-117 ②, D-138; prompts/ext
      product_role、功效题照旧只给过了便宜那几道的查; P 卡卡头写「正文写了产品」, product_in_body 回给写作台、进指纹
   §5 缓存版本: 外部卡 (连卡面、结构、遮没遮过) 进版本串; 遮挡词变了版本跟着变; 现在发出几天不进; 没有外部卡时与以前一样
   §6 端到端 (打桩): 老消费方不给; 两臂都给; 模型挑多了截到 2 张 (不算契约失败), 截掉的不占 5 张的名额;
-     一张没挑就补日均最高的那张 (forced, 进缓存); 满 5 张才顶 rank 最低的内部卡; 摘录截到 600 字;
+     同一张外部卡挑了两遍只留一遍、不占外部名额 (F14a); 一张没挑就补日均最高的那张 (forced, 进缓存);
+     满 5 张才顶 rank 最低的内部卡; 摘录截到 600 字;
      查库挂了 / 品类还没有外部帖照样选内部卡; 外部卡不去查 note 的规律答案; 部署前的缓存行补上 external / validated_hits;
      命中缓存时现在发出几天按 id 重算, why_it_worked 一周后命中也和它不打架; 书架按品类在进程里缓存 10 分钟
      (查库失败不缓存), 只拉最近 45 天抓到的; 功效题答「是」/ 没答的不上架; 遮挡行过期 (原文变了) 的只给结构;
@@ -615,6 +616,10 @@ def s6_end_to_end() -> None:
     res = core.librarian_select_full(dict(brief, project_id="p7", explore=True))
     assert [s["source_note_id"] for s in res["selected"]] == [E[0], E[1], "n1", "n2"], \
         "截掉的外部卡不占名额: 模型多挑了外部卡, 后面合格的内部卡不能被挤掉"
+    pick[:] = [E[0], E[0], E[1], "n1", "n1"]
+    res = core.librarian_select_full(dict(brief, project_id="p14", explore=True))
+    assert [s["source_note_id"] for s in res["selected"]] == [E[0], E[1], "n1"], \
+        "F14a: 同一张外部卡挑了两遍只留一遍, 第二遍不占外部卡那 2 张的名额"
 
     # D-138 保底: 模型一张外部卡都没挑 → 补日均最高的那张 (D-140: 只补摘录遮过的), 标 forced, 进缓存
     pick[:] = ["n2", "n1"]

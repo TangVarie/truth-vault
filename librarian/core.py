@@ -5,6 +5,7 @@ librarian_select(brief) 的流程:
        空库 → 返回 []  (消费方降级到自有正例)。
     2. 算 library_version = f(整架候选数, max(curated_at), …) —— 版本看整架, 不看预筛结果。
     3. 算 cache_key = hash(consumer + project_id + brief_digest + library_version);
+       同一个 cache_key 已经有一次在选 → 等它, 拿同一份结果 (AU-F09, 见 _Flight);
        命中缓存 → 直接返回 (跳过 LLM)。
     4. 未命中 → 预筛 shortlist(): 按 brief 的【项目级】字段挑 ≤SHORTLIST_CAP 张 (D-088)
        → 渲染 brief + 候选 → LLM 推理选 3-5 张 → 校验 id → 富集摘要
@@ -20,11 +21,13 @@ library_version 说明: 用 (候选数, max(curated_at)) 而非每行 updated_at
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
 import os
 import re
+import threading
 import time
 from typing import Any, Optional
 
@@ -523,6 +526,7 @@ def _select_via_llm(brief: dict, cards: list[dict], model: str, delivery: Option
     by_id = {c.get("source_note_id"): c for c in cards}
     out = []
     dropped: list = []
+    taken: set = set()
     ext_left = X.max_per_borrow()
     # 不先切 [:5]: 超额的外部卡被跳过时不能占名额, 否则模型多挑几张外部卡就把后面合格的内部卡挤掉
     for item in parsed["selected"]:
@@ -536,6 +540,9 @@ def _select_via_llm(brief: dict, cards: list[dict], model: str, delivery: Option
         if card is None:        # 丢弃编造的 / 不在候选里的 id
             dropped.append(nid)
             continue
+        if nid in taken:        # 审计 11-02 F14a: 同一张卡模型挑了两遍 → 只留第一遍 (不占 5 张的名额, 也不占外部卡的名额)
+            continue
+        taken.add(nid)
         if X.is_external(card):  # D-117: 外部卡每次最多占 max_per_borrow 张, 模型多挑了就截掉 (不算契约失败)
             if ext_left <= 0:
                 continue
@@ -607,6 +614,72 @@ def _with_hits(sb, cards: list[dict], delivery: dict) -> tuple[list[dict], bool]
     return [dict(c, validated_hits=[names[h] for h in hits.get(str(c.get("source_note_id")), [])]) for c in cards], complete
 
 
+# ── 同一个请求在飞的合并 (审计 11-02 F09 / AU-F09) ────────────────────────────
+# 写作台 open_project 起的借阅最多等 15 秒就先交简报, 模型接着调 borrow_lessons —— 同一个 brief 第二次到的时候第一次
+# 往往还在选 (冷选卡 p50 14 秒, 慢的 25-60 秒)。以前两次各选各的: 付两次钱, 后写的缓存行盖掉先写的。
+# 现在同一个 cache_key (consumer + 项目 + brief 摘要 + 书架版本, 臂和规律版本都在书架版本里) 只让第一个去选,
+# 后到的等它, 拿同一份结果; 降级 (模型挂了) 的结果也一起拿, 不再各自重试一遍。
+# · 只在进程内有效: 馆员是单进程部署 (railway.json 的 uvicorn 不带 --workers), 多进程 / 多副本时各选各的, 和以前一样。
+# · 登记在 finally 里摘掉: 降级的结果不进缓存也不留登记, 下一个请求照常重新选 —— 一次失败不会一直传下去。
+# · 等有上限: 领头那次崩了 (没有结果可拿) 或等满 MERGE_WAIT_S 还没回 → 自己选, 和没有合并时一样。
+# · use_cache=False (CLI --no-cache: 要的就是强制重跑) 不参与。
+MERGE_WAIT_S = 75.0   # 比领头那次最坏的情况长一点: 模型整轮 60 秒 (clients.REQUEST_BUDGET_S) + 前后查库写缓存
+MERGE_STATS: dict = {"merged": 0, "wait_timeouts": 0}   # 进程内计数, /health 回显 (重启清零)
+_FLIGHTS: dict = {}
+_FLIGHTS_LOCK = threading.Lock()
+
+
+class _Flight:
+    """一次在飞的选卡。outcome = (selected, status); None = 还没结束, 或领头那次崩了 (异常抛出去了)。"""
+
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.outcome: Optional[tuple] = None
+
+
+def _board(key: str) -> tuple:
+    """(这个 cache_key 在飞的那次, 我是不是领头的)。"""
+    with _FLIGHTS_LOCK:
+        flight = _FLIGHTS.get(key)
+        if flight is not None:
+            return flight, False
+        flight = _FLIGHTS[key] = _Flight()
+        return flight, True
+
+
+def _unboard(key: str, flight: _Flight) -> None:
+    with _FLIGHTS_LOCK:
+        if _FLIGHTS.get(key) is flight:   # 只摘自己那条: 等满了被别人摘过、又有新的一次登记上来时不能误摘
+            del _FLIGHTS[key]
+
+
+def _land(key: str, flight: _Flight, outcome: Optional[tuple]) -> None:
+    """领头那次结束 (librarian_select 的 finally 里调: 选到 / 没货 / 降级 / 崩了都走到): 摘登记, 叫醒等着的。"""
+    _unboard(key, flight)
+    flight.outcome = outcome
+    flight.done.set()
+
+
+def _join(key: str, flight: _Flight, brief: dict) -> Optional[tuple]:
+    """等领头那次。拿到 → (selected 的一份拷贝, status); 拿不到 (它崩了 / 等满了) → None, 调用方自己选。"""
+    t0 = time.monotonic()
+    if not flight.done.wait(MERGE_WAIT_S):
+        _unboard(key, flight)   # 卡住的那条登记摘掉: 后来的同一个请求不用再陪它等满
+        with _FLIGHTS_LOCK:
+            MERGE_STATS["wait_timeouts"] += 1
+        logger.warning("librarian: 等在飞的那次选卡 %.0f 秒还没回, 这次自己选 (consumer=%s project_id=%s)",
+                       MERGE_WAIT_S, brief.get("consumer"), brief.get("project_id"))
+        return None
+    if flight.outcome is None:
+        return None
+    selected, status = flight.outcome
+    with _FLIGHTS_LOCK:
+        MERGE_STATS["merged"] += 1
+    logger.info("librarian: 并到在飞的那次选卡, 等了 %.1f 秒 (consumer=%s project_id=%s status=%s)",
+                time.monotonic() - t0, brief.get("consumer"), brief.get("project_id"), status)
+    return copy.deepcopy(selected), status
+
+
 def librarian_select_full(brief: dict, *, model: Optional[str] = None, **kw) -> dict:
     """HTTP 用: {selected, status, patterns}。patterns = 这次下发给写作台的已验证规律 (探索臂 / 没有 → [])。"""
     holder: dict = {}
@@ -675,6 +748,30 @@ def librarian_select(brief: dict, *, model: Optional[str] = None,
             "prompt": build_prompt(brief, shown, delivery),
         }
 
+    # AU-F09: 同一个 cache_key 已经有一次在选 → 等它 (不查缓存、不调模型)。登记在查缓存之前: 领头那次写完缓存才摘登记,
+    # 后到的要么等到它、要么查得到它写的那行, 中间没有「缓存还没写、登记已经没了」的空档。
+    flight, lead = _board(key) if use_cache else (None, False)
+    if flight is not None and not lead:
+        joined = _join(key, flight, brief)
+        if joined is not None:
+            if _status_out is not None:
+                _status_out["status"] = joined[1]
+            return joined[0]
+        flight = None   # 领头那次崩了 / 等满了: 下面自己选, 不登记
+    st = _status_out if _status_out is not None else {}
+    outcome = None
+    try:
+        selected = _cached_or_select(sb, brief, key, lib_v, cards, shown, delivery, model, use_cache, st)
+        outcome = (selected, st.get("status"))
+        return selected
+    finally:
+        if flight is not None:
+            _land(key, flight, outcome)
+
+
+def _cached_or_select(sb, brief: dict, key: str, lib_v: str, cards: list[dict], shown: list[dict],
+                      delivery: Optional[dict], model: str, use_cache: bool, _status_out: dict) -> list:
+    """命中缓存 → 那一行; 没命中 → 调模型选、写缓存。每条返回路径都把 status 写进 _status_out (在飞合并靠它)。"""
     if use_cache:
         cached = get_cache(sb, key)
         if cached is not None:
@@ -686,8 +783,7 @@ def librarian_select(brief: dict, *, model: Optional[str] = None,
                     c.setdefault("external", False)
                     if c["external"]:
                         _refresh_external(c, now)
-            if _status_out is not None:
-                _status_out["status"] = STATUS_OK if cached else STATUS_NO_MATCH
+            _status_out["status"] = STATUS_OK if cached else STATUS_NO_MATCH
             return cached
 
     hits_ok = True
@@ -703,15 +799,12 @@ def librarian_select(brief: dict, *, model: Optional[str] = None,
             "librarian_select LLM 选取失败,降级返回 [] (consumer=%s project_id=%s shelf=%d shown=%d)",
             brief.get("consumer"), brief.get("project_id"), len(cards), len(shown),
         )
-        if _status_out is not None:
-            _status_out["status"] = STATUS_DEGRADED
+        _status_out["status"] = STATUS_DEGRADED
         return []
 
-    if _status_out is not None:
-        _status_out["status"] = STATUS_OK if selected else STATUS_NO_MATCH
+    _status_out["status"] = STATUS_OK if selected else STATUS_NO_MATCH
     select_ms = int((time.monotonic() - t0) * 1000)
-    if _status_out is not None:
-        _status_out["select_ms"] = select_ms
+    _status_out["select_ms"] = select_ms
     if use_cache and hits_ok:
         try:
             put_cache(sb, key, brief, lib_v, selected, select_ms=select_ms)

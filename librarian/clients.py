@@ -93,9 +93,27 @@ def prompt_cache_enabled() -> bool:
     return (os.environ.get("PROMPT_CACHE_ENABLED") or "").strip().lower() in ("1", "true", "yes", "on")
 
 
+# ── 一次借阅在模型这头最多等多久 (审计 11-02 F09 / AU-F09) ─────────────────────
+# 以前: SDK 自己重试 2 次 (默认) 套在这里的 3 次尝试外面, 单次默认限时 600 秒, 整轮没有上限 —— 中转站挂住的时候一次
+# 冷借阅能拖上几分钟, 而写作台那头最多等 60 秒。现在重试只留 _run 这一层 (SDK 一律 max_retries=0), 单次限时, 整轮封顶。
+CALL_TIMEOUT_S = 45.0       # 单次调用: 没配备用站时的主站、备用站
+PRIMARY_TIMEOUT_S = 22.0    # 配了备用站时主站只等这么久就切 (原 30 秒, 是照夜跑定的; RELAY_PRIMARY_TIMEOUT_S 可改)。
+#                             正常冷选卡 11-19 秒; 主站挂住时 22 + 备用站约 15 ≈ 37 秒拿到卡 (原来 45 秒)
+REQUEST_BUDGET_S = 60.0     # 整轮 (各次尝试 + 切备用站 + 退避) 的上限。不许低于 60: 写作台 open_project 起的那次借阅在后台
+#                             等满 60 秒, 慢的也要选完写进缓存, 接着来的 borrow_lessons 才拿得到卡
+MIN_CALL_S = 10.0           # 整轮剩不到这么久就不再重试: 冷选卡最快也要 10 秒出头, 发了多半白付一次
+
+
+def _mono() -> float:       # 整轮时限用的钟; 检查脚本会换掉它
+    return time.monotonic()
+
+
 def call_anthropic(prompt: str, model: str, *, system=None, max_tokens: int = 1500,
                    max_attempts: int = 3) -> str:
     """One Anthropic call with exponential-backoff retry on transient errors.
+
+    时限 (AU-F09, 上面四个常数): 整轮最多 REQUEST_BUDGET_S; 每次调用的限时 = 调用点自己的上限和整轮剩下的时间里
+    小的那个; 重试只在整轮还放得下一次完整尝试时才做 (配了备用站: 主站限时 + MIN_CALL_S; 没配: MIN_CALL_S)。
 
     Lazy-imports anthropic so --dry-run works without the SDK.
 
@@ -107,12 +125,22 @@ def call_anthropic(prompt: str, model: str, *, system=None, max_tokens: int = 15
     clients.get_anthropic_client 同一约定 —— 帆谷用中转站访问 Claude; 不设则走官方 endpoint。
 
     备用中转站 (D-148, relay_failover.py): ANTHROPIC_BASE_URL_BACKUP + ANTHROPIC_API_KEY_BACKUP 都配了才生效; 没配
-    (或 RELAY_FORCE=primary) → 客户端构造 / 重试一字不变。配了 → 每次尝试先打主站 (只给一次机会、限时 30 秒),
-    超时 / 连不上 / 429 / 5xx / 401-404 → 这一次改打备用站; 慢 (>25 秒) 或连续失败 → 熔断直接走备用站。
+    (或 RELAY_FORCE=primary) → 只打主站 (限时 CALL_TIMEOUT_S)。配了 → 每次尝试先打主站 (只给一次机会、限时
+    PRIMARY_TIMEOUT_S), 超时 / 连不上 / 429 / 5xx / 401-404 → 这一次改打备用站 (限时 CALL_TIMEOUT_S); 连续 2 次失败 →
+    熔断直接走备用站。「成功但慢」的门槛 (25 秒, RELAY_SLOW_S) 在主站限时 22 秒之下用不上 (超时先到), 把
+    RELAY_PRIMARY_TIMEOUT_S 调到 25 以上才生效。
     """
     import anthropic  # lazy import
 
-    kwargs: dict = {}
+    deadline = _mono() + REQUEST_BUDGET_S
+
+    def _left() -> float:
+        return deadline - _mono()
+
+    def _limit(site_s: float) -> float:
+        return max(1.0, min(site_s, _left()))
+
+    kwargs: dict = {"max_retries": 0}     # AU-F09: 重试只留 _run 一层
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if api_key:
         kwargs["api_key"] = api_key
@@ -121,23 +149,30 @@ def call_anthropic(prompt: str, model: str, *, system=None, max_tokens: int = 15
         kwargs["base_url"] = base_url
     relay_mode = relay_failover.mode()
     if relay_mode == relay_failover.MODE_PRIMARY_ONLY:
-        client = anthropic.Anthropic(**kwargs)            # unchanged
+        client = anthropic.Anthropic(**kwargs, timeout=CALL_TIMEOUT_S)
+        attempt_needs = MIN_CALL_S
 
         def _create(kw: dict):
-            return client.messages.create(**kw)
+            return client.messages.create(**kw, timeout=_limit(CALL_TIMEOUT_S))
     else:
-        primary_timeout = relay_failover.primary_timeout_s(30.0)
+        primary_timeout = relay_failover.primary_timeout_s(PRIMARY_TIMEOUT_S)
         slow = relay_failover.slow_s(25.0)
+        # 一次尝试 = 主站 (最多 primary_timeout) + 可能切到备用站: 留得出这么多才重试, 切过去时备用站至少还有 MIN_CALL_S
+        attempt_needs = MIN_CALL_S + (primary_timeout if relay_mode == relay_failover.MODE_AUTO else 0.0)
         built: dict = {}
 
         def _client(target: str):
             if target not in built:
-                built[target] = (anthropic.Anthropic(**kwargs, max_retries=0, timeout=primary_timeout)
-                                 if target == "primary" else relay_failover.sdk_backup_client(anthropic))
+                built[target] = (anthropic.Anthropic(**kwargs, timeout=primary_timeout) if target == "primary"
+                                 else relay_failover.sdk_backup_client(anthropic, max_retries=0, timeout=CALL_TIMEOUT_S))
             return built[target]
 
+        def _unit(target: str, kw: dict):
+            site_s = primary_timeout if target == "primary" else CALL_TIMEOUT_S
+            return _client(target).messages.create(**kw, timeout=_limit(site_s))
+
         def _create(kw: dict):
-            return relay_failover.call(lambda target: _client(target).messages.create(**kw),
+            return relay_failover.call(lambda target: _unit(target, kw),
                                        relay_mode=relay_mode, primary_url=base_url or "", slow_after_s=slow)
     retryable = tuple(
         c for c in (
@@ -177,7 +212,10 @@ def call_anthropic(prompt: str, model: str, *, system=None, max_tokens: int = 15
                 )
                 if not transient or attempt == max_attempts - 1:
                     raise
-                time.sleep(2 ** (attempt + 1))
+                pause = 2 ** (attempt + 1)
+                if _left() - pause < attempt_needs:   # AU-F09: 整轮时限里放不下再来一次
+                    raise
+                time.sleep(pause)
         raise RuntimeError("call_anthropic exhausted retries without raising")
 
     if isinstance(system, list) and not prompt_cache_enabled():
@@ -190,7 +228,7 @@ def call_anthropic(prompt: str, model: str, *, system=None, max_tokens: int = 15
         # 会 400/被通道吞)—— 这正是"同一通道 worker(纯 system)能跑、librarian(带缓存块)
         # 失败"的差异点。注:余额不足/鉴权/模型不存在这类错误,纯 system 也会同样失败 → 仍会
         # 抛出,不会被本降级掩盖(只损失缓存省钱,不改变内容/结果)。
-        if isinstance(system, list):
+        if isinstance(system, list) and _left() >= attempt_needs:
             _note_cache_fallback(exc)
             logger.warning(
                 "带 cache_control 的馆员调用失败(%s: %s),去掉缓存块用纯 system 重试一次"
