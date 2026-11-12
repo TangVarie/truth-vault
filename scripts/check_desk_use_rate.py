@@ -108,7 +108,7 @@ CHUNK = 200     # .in_() 走 URL, 约 26 KB 撞线(D-080), 一批 ≤200 个 id
 # ── 回流闸读数(D-151) ──
 HIT_TIERS = frozenset({"爆", "大爆"})                    # 同 aw priors.HIT_TIERS
 SETTLED_TIERS = frozenset({"爆", "大爆", "趴"})          # 已定档, 同 aw priors.RESOLVED_TIERS
-COUNTED_CLASSES = frozenset({"pass", "fail", "unsure"})  # 有真实结果可数的类别; hold(没发布时间 / 太短 / 伪爆)和 withdrawn 不数
+COUNTED_CLASSES = frozenset({"pass", "fail", "unsure"})  # 有真实结果可数的类别; hold(没发布时间 / 排期在后面 / 正文还是空的 / 伪爆)和 withdrawn 不数
 ORIGIN_NONE = "(没记)"                                   # 有对账行, 闸还没给这一行记出处
 ORIGIN_UNLINKED = "(没对账)"                             # tv-sync 还没给这篇写对账行
 ORIGIN_LABELS = {"desk": "写作台的稿", "desk_edited": "写作台的稿·改过", "copied_back": "发后抄回写作台",

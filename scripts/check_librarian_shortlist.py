@@ -32,6 +32,7 @@ get_supabase / call_anthropic / 缓存读写), 核对 LLM 真正看到的候选�
   ⑱ gate_reasons 把字符串形状的原因也当结论                    → 读不懂的行被拿掉, 红
   ⑲ pass 却带着原因的行也挡 / ⑳ 不认识的类别也当结论           → 红
   ㉑ 没写品牌的卡也算一个品牌保底 / ㉒ 环境变量关不掉代码默认     → 红
+  ㉓ _read_gate 按 gate_reasons.hold 的细项放过一部分 hold (11-12 复审后加的 ⑦) → 正文是空的帖的卡被借出去, 红
 
 跑法: cd scripts && python check_librarian_shortlist.py
 """
@@ -505,6 +506,21 @@ core.RETURN_GATE_CHUNK = 25
 sb = use(GateSB(GATED))
 assert shelf()[0] == 55 and [c[3] for c in sb.calls] == [25, 25, 10], sb.calls
 assert saved_chunk <= 200
+
+# ⑦ hold 不看细项: 写作台把搁置的细项记在 gate_reasons.hold 里 (只给人看), 馆员只认 reasons 里的 hold —— 哪种细项都挡。
+#    11-12 复审: 最初 short_body 是「正文不到 50 字」, 书架上 13 张爆 / 大爆的卡会因此一直借不出去。那是闸判错了类
+#    (短帖不会变长, 不是「还没到齐」), 改在写作台那头: short_body 现在只指正文是空的, 有字的短帖照走后面几步。所以馆员
+#    这里不为它开口子 —— 正文是空的帖的卡不该借
+core.RETURN_GATE_CHUNK = saved_chunk
+HOLDS = [dict(gate_row(nid, "hold", "hold"), gate_reasons={"reasons": ["hold"], "hold": list(details)})
+         for nid, details in (("C_10", ["short_body"]), ("C_11", ["scheduled"]), ("C_12", ["no_publish_time", "short_body"]),
+                              ("C_13", ["synthetic"]), ("C_14", []))]
+sb = use(GateSB(HOLDS))
+left = ids(core._drop_gated(sb, list(CARDS)))
+assert sorted(set(ids(CARDS)) - set(left)) == [f"C_{i}" for i in range(10, 15)], \
+    f"hold 不管细项是什么都挡 (正文是空的也是还没到齐): 拿掉了 {sorted(set(ids(CARDS)) - set(left))}"
+h = core.gate_health()
+assert (h["verdicts"], h["unreadable"], h["would_drop"]) == (5, 0, 5), f"带着细项的 hold 是读得懂的结论: {h}"
 
 core.RETURN_GATE_DEFAULT, core._gate_clock, core.RETURN_GATE_CHUNK = saved_default, saved_clock, saved_chunk
 if saved_env is not None:

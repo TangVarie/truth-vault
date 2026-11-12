@@ -105,7 +105,7 @@ POST /librarian   header: X-Librarian-Key: <key>   body: <brief JSON>
 写作台每晚 tv-sync 的最后一步给映射项目里每篇发出去的帖分一次类，记在 `autowriter.tv_note_links` 的 `gate` / `gate_reasons` 上（aw 迁移 020；分类那一半在 TangVarie/autowriter）。馆员可以在整架取回之后、算版本串和预筛之前，把出处帖「不能学」的卡拿掉（`core._drop_gated`）。
 
 - **默认关**：`core.RETURN_GATE_DEFAULT = False`。要开就是改这一行的一个 PR（写作台那头的类别数连着三晚对得上之后，OPEN-ITEMS F-17）。环境变量 `LIBRARIAN_RETURN_GATE` 可以盖过代码默认，但不需要设。关着的时候一次库都不读，候选、版本串、缓存键和以前一字不差。
-- **挡卡的原因只有五个**（`core.CARD_BLOCKING_REASONS`）：`withdrawn`（飞书里删了）、`hold`（没发布时间 / 太短 / 伪爆）、`risk`（风控）、`efficacy`（功效承诺）、`unsure`（功效题还没答）。**只有 `not_clean`（投流标记 / 铺评工单 / 投流事件）的卡照借**：D-133 第 1 条定的是投流证据链不动书架，借不借是 owner 的事，还没定（OPEN-ITEMS F-16）；定了只改这一个集合。
+- **挡卡的原因只有五个**（`core.CARD_BLOCKING_REASONS`）：`withdrawn`（飞书里删了）、`hold`（没发布时间 / 排期在后面 / 正文还是空的 / 伪爆，都是「还没到齐」；细项在 `gate_reasons.hold` 里，馆员不看细项，哪种都挡。发出去的短帖有字就不是 `hold`：11-12 复审后写作台那头改的，最初按「正文不到 50 字」搁置，书架上 13 张爆 / 大爆的卡会一直借不出去）、`risk`（风控）、`efficacy`（功效承诺）、`unsure`（功效题还没答）。**只有 `not_clean`（投流标记 / 铺评工单 / 投流事件）的卡照借**：D-133 第 1 条定的是投流证据链不动书架，借不借是 owner 的事，还没定（OPEN-ITEMS F-16）；定了只改这一个集合。
 - **没有结论一律留**：四列不在（020 没跑）、这篇没有对账行（没映射写作台的项目）、这一行还没分过类、`gate_reasons` 读不懂（只认 `{"reasons": [名字, …]}`）。
 - **10 分钟读一次**（进程内），不是每次借阅都读；读失败沿用上一次读成的结论，一次都没读成过就不筛。绝不往借阅里抛。
 - **品牌保底**：筛完某个品牌的卡一张不剩 → 这个品牌的卡全留，`/health` 里记一笔。
