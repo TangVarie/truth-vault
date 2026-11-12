@@ -21,15 +21,29 @@ get_supabase / call_anthropic / 缓存读写), 核对 LLM 真正看到的候选�
   ⑩ librarian_select 的 finally 里不 _land                      → §9 降级之后登记还在, 后到的请求一直等, 红
   ⑪ _unboard 不看是不是自己那条就删                             → §9 领头那次落地时把别人的登记摘了, 红
 
+§10 回流闸 (D-151): 出处帖被闸挡下的卡不进书架。默认关; 这一节两种状态都跑 (改 core.RETURN_GATE_DEFAULT, 不看环境变量)。
+反证 (11-12 实跑, 13 个都红):
+  ⑫ CARD_BLOCKING_REASONS 加上 not_clean                      → 只有 not_clean 的卡被拿掉, 红
+  ⑬ _gate_blocked 去掉 10 分钟那一条 (每次借阅都读库)          → 读库次数, 红
+  ⑭ _drop_gated 去掉品牌保底                                  → 一个品牌的卡一张不剩, 红
+  ⑮ 读失败时往外抛 / 丢掉上一次读成的结论 / 失败那次不记时刻    → 红
+  ⑯ librarian_select 里不在预筛之前筛                          → 书架、版本串没变, 红
+  ⑰ _drop_gated 不看开关                                      → 关着也读了库, 红
+  ⑱ gate_reasons 把字符串形状的原因也当结论                    → 读不懂的行被拿掉, 红
+  ⑲ pass 却带着原因的行也挡 / ⑳ 不认识的类别也当结论           → 红
+  ㉑ 没写品牌的卡也算一个品牌保底 / ㉒ 环境变量关不掉代码默认     → 红
+
 跑法: cd scripts && python check_librarian_shortlist.py
 """
 from __future__ import annotations
 
 import logging
+import os
 import pathlib
 import random
 import sys
 import threading
+import types
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))   # repo 根: 让 librarian 包可导入
 
@@ -322,4 +336,183 @@ assert core.MERGE_WAIT_S >= 60, "等的上限不能比领头那次模型整轮 (
 core._board = real_board
 logging.getLogger("flywheel_librarian").disabled = False
 print("✓ AU-F09: 同一个请求在飞时第二个等它、拿同一份拷贝 (模型只调一次); 降级一起拿、不传下去; 崩了 / 等满了自己选")
+
+# ══ §10 · 回流闸 (D-151): 出处帖被闸挡下的卡不进书架; 默认关, 关着和以前一字不差; 读不到 / 读不懂就不筛 ═══════════
+logging.getLogger("flywheel_librarian").disabled = True   # 下面故意让读库失败、让品牌保底触发, 那几行日志不用进 CI 输出
+saved_env = os.environ.pop(core.RETURN_GATE_ENV, None)    # 这一节自己定开关, 不看跑它的机器上设了什么
+saved_default, saved_clock, saved_chunk = core.RETURN_GATE_DEFAULT, core._gate_clock, core.RETURN_GATE_CHUNK
+clock = [1000.0]
+core._gate_clock = lambda: clock[0]
+
+
+class GateSB:
+    """假库: 只会 autowriter.tv_note_links 的 select(...).in_(note_id, [...]).execute(), 记下每次请求问了几个 id。"""
+
+    def __init__(self, rows=(), fail=None):
+        self.rows, self.fail, self.calls = {r["note_id"]: r for r in rows}, fail, []
+
+    def schema(self, name):
+        self._schema = name
+        return self
+
+    def table(self, name):
+        self._table = name
+        return self
+
+    def select(self, cols):
+        self._cols = cols
+        return self
+
+    def in_(self, col, vals):
+        assert col == "note_id"
+        self._vals = list(vals)
+        return self
+
+    def execute(self):
+        self.calls.append((self._schema, self._table, self._cols, len(self._vals)))
+        if self.fail is not None:
+            raise self.fail
+        return types.SimpleNamespace(data=[dict(self.rows[v]) for v in self._vals if v in self.rows])
+
+
+def gate_row(nid, gate, *reasons, raw=None):
+    return {"note_id": nid, "gate": gate, "gate_reasons": {"reasons": list(reasons)} if raw is None else raw[0]}
+
+
+def use(sb, *, fresh=True):
+    """换一个库; fresh = 像刚起的进程 (没有上一次读到的结论, 计数清零)。"""
+    core.get_supabase = lambda *a, **k: sb
+    if fresh:
+        core._GATE.update(at=None, blocked=None)
+        core.GATE_STATS.update(read_ok=None, columns=None, read_errors=0, verdicts=0, unreadable=0,
+                               would_drop=0, brands_kept=0)
+    return sb
+
+
+def shelf():
+    d = core.librarian_select(BRIEF, dry_run=True)
+    return d["shelf_count"], d["library_version"], d["cache_key"], d["prompt"]
+
+
+GATED = [gate_row("A_00", "withdrawn", "withdrawn"),            # rank 全库第一 (无条件保留的那 8 张里): 也要拿掉
+         gate_row("A_01", "unsure", "unsure"), gate_row("A_02", "hold", "hold"),
+         gate_row("B_00", "fail", "efficacy"), gate_row("B_02", "fail", "not_clean", "risk"),
+         gate_row("B_01", "fail", "not_clean"),                 # 只有 not_clean: 照借 (D-133 第 1 条, owner 没定)
+         gate_row("A_03", "pass"),
+         gate_row("A_04", None, raw=[None]),                    # 这一行还没分过类
+         gate_row("A_05", "fail", raw=["efficacy"]),            # gate_reasons 是字符串: 读不懂 → 留
+         gate_row("A_06", "fail", raw=[{"reasons": "efficacy"}]),
+         gate_row("A_07", "fail", raw=[{"reasons": [{"name": "efficacy"}]}]),
+         gate_row("A_08", "pass", "efficacy"),                  # 类别和原因对不上: 按 pass 留
+         gate_row("C_00", "later", "efficacy")]                 # 不认识的类别 → 留
+DROPPED = {"A_00", "A_01", "A_02", "B_00", "B_02"}
+OFF = (60, dry["library_version"], dry["cache_key"], dry["prompt"])      # §6 算的: 没有闸时的书架、版本串、缓存键、prompt
+
+# ① 开关关着 (代码默认关; 环境变量写 0 / off 也是关): 一次库都不读, 书架、版本串、缓存键、prompt 和 §6 一字不差
+shipped = core.return_gate_enabled()                    # 环境变量没设 → 就是代码默认
+core.RETURN_GATE_DEFAULT = False
+sb = use(GateSB(GATED))
+assert shelf() == OFF and not sb.calls, f"开关关着不该读库、不该动书架: 读了 {len(sb.calls)} 次"
+assert OFF[2] == core.cache_key(BRIEF, core.library_version(CARDS)), "关着时缓存键就是以前那条算法"
+whole = list(CARDS)
+assert core._drop_gated(sb, whole) is whole and not sb.calls, "关着时原样返回同一个 list"
+core.call_anthropic = lambda *a, **k: pick("B_00", "A_00")
+assert [s["source_note_id"] for s in core.librarian_select(BRIEF)] == ["B_00", "A_00"] and not sb.calls, \
+    "关着时被闸挡下的帖的卡照旧借得出去 (和以前一样)"
+assert core.gate_health()["on"] is False and core.gate_health()["read_age_s"] is None
+for raw, want in (("1", True), ("true", True), ("ON", True), ("0", False), ("off", False), ("", False)):
+    os.environ[core.RETURN_GATE_ENV] = raw
+    assert core.return_gate_enabled() is want, f"LIBRARIAN_RETURN_GATE={raw!r} 该是 {want}"
+core.RETURN_GATE_DEFAULT = True
+os.environ[core.RETURN_GATE_ENV] = "0"
+assert core.return_gate_enabled() is False and shelf() == OFF and not sb.calls, "代码默认开了, 环境变量写 0 仍然关得掉"
+del os.environ[core.RETURN_GATE_ENV]
+assert core.return_gate_enabled() is True, "环境变量没设 → 听代码默认 (开的那个 PR 只改 core.RETURN_GATE_DEFAULT 一行)"
+
+# ② 开着: 挡卡的五种原因拿掉, 只有 not_clean / pass / 没结论 / 读不懂的都留; 在预筛之前拿, 给模型的还是满 24 张
+gate_seen: dict = {}
+
+
+def gate_llm(prompt, model, *, system=None, **kw):
+    gate_seen["system"] = system
+    return pick("B_00", "B_01", "A_00", "A_03")
+
+
+core.call_anthropic = gate_llm
+n, v_on, k_on, _ = shelf()
+kept = [c for c in CARDS if c["source_note_id"] not in DROPPED]
+assert n == 55 and v_on == core.library_version(kept) != OFF[1] and k_on != OFF[2], \
+    f"书架该剩 55 张、版本串按筛过的书架算 (卡一被挡缓存键就换): {n}"
+st = {}
+sel = core.librarian_select(BRIEF, _status_out=st)
+assert [s["source_note_id"] for s in sel] == ["B_01", "A_03"] and st["status"] == "ok", \
+    f"模型硬挑被挡的卡也拿不到 (不在候选里): {[s['source_note_id'] for s in sel]}"
+block1 = gate_seen["system"][0]["text"]
+assert block1.count("\n[") == 24, f"在预筛之前拿掉: 给模型的还是满 24 张, 实际 {block1.count(chr(10) + '[')}"
+assert not [x for x in DROPPED if f"[{x}]" in block1], "被挡的卡不该出现在给模型的候选里"
+assert all(f"[{x}]" in block1 for x in ("B_01", "B_03", "A_03", "A_04", "A_05", "A_06", "A_07")), \
+    "只有 not_clean、pass、没分过类、读不懂的卡都要留在候选里"
+h = core.gate_health()
+assert h == {"on": True, "read_age_s": 0, "read_ok": True, "columns": True, "read_errors": 0, "verdicts": 8,
+             "unreadable": 4, "would_drop": 5, "brands_kept": 0}, h
+assert all(x is None or isinstance(x, (bool, int)) for x in h.values()), "/health 里只有布尔、整数和 None"
+assert sb.calls == [("autowriter", "tv_note_links", "note_id, gate, gate_reasons", 60)], \
+    f"两次借阅 + 一次 dry-run 只读一次库 (10 分钟内不重读): {sb.calls}"
+
+# ③ 10 分钟读一次: 期间库里的结论变了也不重读; 过了 10 分钟才读到
+sb.rows["B_01"] = gate_row("B_01", "fail", "not_clean", "efficacy")
+clock[0] += core.RETURN_GATE_TTL_S - 1
+assert shelf()[0] == 55 and len(sb.calls) == 1, "10 分钟内不重读"
+clock[0] += 2
+assert shelf()[0] == 54 and len(sb.calls) == 2 and core.gate_health()["would_drop"] == 6, "过了 10 分钟重读一次"
+assert core.RETURN_GATE_TTL_S == 600, "decisions: 每个进程最多 10 分钟读一次"
+
+# ④ 读失败: 沿用上一次读成的结论 (书架不抖), 失败那次也占着 10 分钟; 一次都没读成过 → 不筛。都不往借阅里抛
+sb.fail = RuntimeError("PostgREST down")
+clock[0] += core.RETURN_GATE_TTL_S + 1
+assert shelf()[0] == 54 and len(sb.calls) == 3, "读失败时沿用上一次读到的结论"
+assert shelf()[0] == 54 and len(sb.calls) == 3, "失败之后 10 分钟内也不再去撞库"
+h = core.gate_health()
+assert (h["read_ok"], h["read_errors"]) == (False, 1), h
+sb = use(GateSB(GATED, fail=RuntimeError("PostgREST down")))
+assert shelf() == OFF and len(sb.calls) == 1, "一次都没读成过: 不筛, 和关着一样"
+st = {}
+assert [s["source_note_id"] for s in core.librarian_select(BRIEF, _status_out=st)] == ["B_00", "B_01", "A_00", "A_03"] \
+    and st["status"] == "ok", "读闸失败不影响借阅"
+use(object())                                           # 连 .schema 都没有的库
+assert shelf() == OFF, "库对象不对也不许抛进借阅"
+sb = use(GateSB(GATED, fail=RuntimeError("{'code': '42703', 'message': 'column tv_note_links.gate does not exist'}")))
+assert shelf() == OFF, "aw 迁移 020 没跑 (没有这两列): 不筛"
+h = core.gate_health()
+assert (h["columns"], h["read_ok"], h["read_errors"], h["would_drop"]) == (False, True, 0, 0), \
+    f"没有这两列不是读库故障, 不记 read_errors: {h}"
+
+# ⑤ 品牌保底: 一个品牌的卡全被挡 → 这个品牌的卡全留、记一笔; 没全挡的照筛; 没写品牌的卡不算一个品牌
+sb = use(GateSB([gate_row(f"B_{i:02d}", "withdrawn", "withdrawn") for i in range(10)] + [GATED[0]]))
+n, _, _, prompt_b = shelf()
+assert n == 59 and all(f"[B_{i:02d}]" in prompt_b for i in range(10)) and "[A_00]" not in prompt_b, \
+    f"B 品牌 10 张全被挡 → 全留; A_00 照样拿掉: 书架 {n}"
+h = core.gate_health()
+assert (h["would_drop"], h["brands_kept"]) == (1, 1), h
+sb = use(GateSB([gate_row(f"B_{i:02d}", "withdrawn", "withdrawn") for i in range(9)]))
+assert shelf()[0] == 51 and core.gate_health()["brands_kept"] == 0, "挡了 9 张、还剩 1 张: 不触发保底"
+nameless = [dict(card("N_00", None, "保健品", 0.5)), dict(card("N_01", "", "保健品", 0.4))] + CARDS
+sb = use(GateSB([gate_row("N_00", "hold", "hold"), gate_row("N_01", "hold", "hold")]))
+assert ids(core._drop_gated(sb, nameless)) == ids(CARDS), "没写品牌的卡全被挡也照筛 (它们不是一个品牌)"
+
+# ⑥ 分批: 一批不超过 RETURN_GATE_CHUNK 个 id (.in_ 走 URL)
+core.RETURN_GATE_CHUNK = 25
+sb = use(GateSB(GATED))
+assert shelf()[0] == 55 and [c[3] for c in sb.calls] == [25, 25, 10], sb.calls
+assert saved_chunk <= 200
+
+core.RETURN_GATE_DEFAULT, core._gate_clock, core.RETURN_GATE_CHUNK = saved_default, saved_clock, saved_chunk
+if saved_env is not None:
+    os.environ[core.RETURN_GATE_ENV] = saved_env
+use(object())
+assert core.CARD_BLOCKING_REASONS == {"withdrawn", "hold", "risk", "efficacy", "unsure"}, \
+    "挡卡的原因是这五个; not_clean 不在里面 (D-133 第 1 条, 要加先有 owner 的决定和新 D 号)"
+logging.getLogger("flywheel_librarian").disabled = False
+print(f"✓ D-151: 回流闸关着和以前一字不差 (不读库); 开着拿掉五种原因的卡、只有 not_clean 的照借; 没结论 / 读不懂 / 读失败不筛; "
+      f"10 分钟读一次; 品牌保底; 代码默认现在是{'开' if shipped else '关'}")
 print("\ncheck_librarian_shortlist: all checks passed")

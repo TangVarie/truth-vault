@@ -3,6 +3,7 @@
 librarian_select(brief) 的流程:
     1. 取【整架】经验卡 (v_flywheel_lesson_cards, 按 rank_score 排序, 上限 SHELF_FETCH_CAP)。
        空库 → 返回 []  (消费方降级到自有正例)。
+       回流闸开着时 (D-151, 默认关) 出处帖被闸挡下的卡在这里拿掉, 下面的版本串和预筛看的都是筛过的书架。
     2. 算 library_version = f(整架候选数, max(curated_at), …) —— 版本看整架, 不看预筛结果。
     3. 算 cache_key = hash(consumer + project_id + brief_digest + library_version);
        同一个 cache_key 已经有一次在选 → 等它, 拿同一份结果 (AU-F09, 见 _Flight);
@@ -123,6 +124,152 @@ def fetch_candidates(sb, limit: int = SHELF_FETCH_CAP) -> list[dict]:
         .limit(limit)
         .execute()
     ).data or []
+
+
+# ── 回流闸 (D-151): 出处帖被闸判成「不能学」的经验卡不借出去 ─────────────────────────────────
+# 写作台每晚 tv-sync 的最后一步给映射项目里每篇发出去的帖分一次类, 记在 autowriter.tv_note_links 的 gate / gate_reasons
+# 上 (aw 迁移 020; 分类那一半在 TangVarie/autowriter)。馆员在整架取回之后、算版本串和预筛之前把出处帖不能学的卡拿掉:
+# 在预筛之前拿, 给模型的那一摞还是满的 (在写作台那头事后丢, 简报就短一截); 版本串本来就摘要了候选 id 集合, 一张卡
+# 进出书架缓存键自己换, library_version 一个字不用改。
+# · 默认关 (RETURN_GATE_DEFAULT): 要开就是改这一行的一个 PR。环境变量 LIBRARIAN_RETURN_GATE 可以盖过它, 但不需要设。
+#   关着的时候一次库都不读, 候选、版本串、缓存键和以前一字不差。
+# · 只按原因挡 (CARD_BLOCKING_REASONS)。not_clean (投流标记 / 铺评工单 / 投流事件) 不在里面: D-133 第 1 条定的是投流证据链
+#   不动书架, 投流帖的卡借不借是 owner 的事, 还没定 (OPEN-ITEMS F-16) —— 定了只改这一个集合。只有 not_clean 的卡照借。
+# · 没有结论一律留: 四列不在 (020 没跑)、这篇没有对账行 (没映射写作台的项目)、这一行还没分过类、gate_reasons 读不懂。
+# · 最多 10 分钟读一次 (进程内记着上次的结果和时刻), 不是每次借阅都读; 读失败用上一次读成的那份, 一次都没读成过就不筛。
+#   失败那次的时刻也记: 库挂着的时候不会每次借阅都去撞一遍。绝不往借阅里抛。
+# · 一个品牌的卡不会因为闸一张不剩: 筛完某个品牌的卡全没了 → 这个品牌的卡全留, /health 的 select.return_gate 里记一笔。
+RETURN_GATE_DEFAULT = False
+RETURN_GATE_ENV = "LIBRARIAN_RETURN_GATE"
+RETURN_GATE_TTL_S = 600.0
+RETURN_GATE_CHUNK = 200       # .in_() 走 URL (D-080), 一批 ≤200 个 id
+CARD_BLOCKING_REASONS = frozenset({"withdrawn", "hold", "risk", "efficacy", "unsure"})
+# 闸的五个类别; 有原因可挡的只有后四个 (pass = 查过的几项都没事)。别的值、空值 = 没有结论。
+GATE_CLASSES = frozenset({"pass", "fail", "unsure", "hold", "withdrawn"})
+_GATE_COLUMNS = ("gate", "gate_reasons")
+# 进程内计数, /health 回显 (重启清零): 只有布尔、整数和 None。would_drop / brands_kept 是最近一次筛书架的结果。
+GATE_STATS: dict = {"read_ok": None, "columns": None, "read_errors": 0, "verdicts": 0, "unreadable": 0,
+                    "would_drop": 0, "brands_kept": 0}
+_GATE: dict = {"at": None, "blocked": None}   # at = 上次去读的时刻 (_gate_clock); blocked = 上次读成的 {note_id: 挡卡的原因}
+_GATE_LOCK = threading.Lock()
+
+
+def _gate_clock() -> float:    # 10 分钟那个钟; 检查脚本会换掉它
+    return time.monotonic()
+
+
+def return_gate_enabled() -> bool:
+    """馆员按不按回流闸筛书架。代码默认 RETURN_GATE_DEFAULT (关); LIBRARIAN_RETURN_GATE 设了非空值就听它的
+    (1 / true / yes / on = 开, 别的 = 关)。"""
+    raw = (os.environ.get(RETURN_GATE_ENV) or "").strip().lower()
+    if not raw:
+        return RETURN_GATE_DEFAULT
+    return raw in ("1", "true", "yes", "on")
+
+
+def gate_reasons(row: dict) -> Optional[frozenset]:
+    """一行 tv_note_links → 闸记下的原因名; None = 没有结论。
+    只认: gate 是五个类别之一, 且 gate_reasons 是个对象、它的 reasons 是一列名字。别的形状 (空、字符串、reasons 不是
+    列表) 一律当没有结论 —— 读不懂的时候留卡, 不猜。"""
+    if not isinstance(row, dict) or row.get("gate") not in GATE_CLASSES:
+        return None
+    reasons = row["gate_reasons"].get("reasons") if isinstance(row.get("gate_reasons"), dict) else None
+    if not isinstance(reasons, list) or not all(isinstance(r, str) for r in reasons):
+        return None
+    return frozenset(reasons)
+
+
+def _gate_columns_missing(exc: BaseException) -> bool:
+    """PostgREST 说没有 gate / gate_reasons 这一列 (aw 迁移 020 没跑): 42703 / PGRST204, 且带着列名。"""
+    s = f"{exc!r} {exc}"
+    return any(c in s for c in _GATE_COLUMNS) and any(
+        m in s for m in ("42703", "PGRST204", "does not exist", "Could not find"))
+
+
+def _read_gate(sb, note_ids: list[str]) -> tuple[dict, int, int]:
+    """读这些帖的闸结论 → ({note_id: 挡卡的原因}, 有结论的行数, gate 有值但读不懂的行数)。出错直接抛, 调用方兜。"""
+    blocked: dict = {}
+    verdicts = unreadable = 0
+    for i in range(0, len(note_ids), RETURN_GATE_CHUNK):
+        rows = (sb.schema("autowriter").table("tv_note_links")
+                .select("note_id, gate, gate_reasons")
+                .in_("note_id", note_ids[i:i + RETURN_GATE_CHUNK]).execute()).data or []
+        for r in rows:
+            reasons = gate_reasons(r)
+            if reasons is None:
+                unreadable += int(isinstance(r, dict) and r.get("gate") is not None)
+                continue
+            verdicts += 1
+            # pass 没有原因可挡; 类别和原因对不上的行 (pass 却带着原因) 按 pass 留
+            hit = reasons & CARD_BLOCKING_REASONS if r["gate"] != "pass" else frozenset()
+            if hit:
+                blocked[str(r.get("note_id"))] = tuple(sorted(hit))
+    return blocked, verdicts, unreadable
+
+
+def _gate_blocked(sb, cards: list[dict]) -> Optional[dict]:
+    """{note_id: 挡卡的原因}; None = 一次都没读成过 (不筛)。10 分钟内不重读; 读失败留着上一次读成的那份。不抛。"""
+    with _GATE_LOCK:      # 同时到的几次借阅只读一次: 后到的等这一次读完, 拿同一份
+        now = _gate_clock()
+        if _GATE["at"] is not None and now - _GATE["at"] < RETURN_GATE_TTL_S:
+            return _GATE["blocked"]
+        _GATE["at"] = now
+        ids = sorted({str(c.get("source_note_id")) for c in cards if c.get("source_note_id")})
+        try:
+            blocked, verdicts, unreadable = _read_gate(sb, ids)
+        except Exception as exc:  # noqa: BLE001 — 表 / 列不在、权限、网络: 都不许挡住借阅
+            if _gate_columns_missing(exc):      # 020 没跑: 不是故障, 就是还没有结论
+                if GATE_STATS["columns"] is not False:
+                    logger.info("回流闸: tv_note_links 上还没有 gate / gate_reasons 两列 (aw 迁移 020 没跑), 书架不筛")
+                GATE_STATS.update(read_ok=True, columns=False, verdicts=0, unreadable=0)
+                _GATE["blocked"] = {}
+                return _GATE["blocked"]
+            GATE_STATS["read_errors"] += 1
+            GATE_STATS["read_ok"] = False
+            logger.warning("回流闸: 读 tv_note_links 的 gate 失败 (%s), %s", type(exc).__name__,
+                           "沿用上一次读到的结论" if _GATE["blocked"] is not None else "这次书架不筛")
+            return _GATE["blocked"]
+        GATE_STATS.update(read_ok=True, columns=True, verdicts=verdicts, unreadable=unreadable)
+        _GATE["blocked"] = blocked
+        return blocked
+
+
+def _drop_gated(sb, cards: list[dict]) -> list[dict]:
+    """把出处帖被回流闸挡下的卡从书架里拿掉 (D-151)。开关关着 → 原样返回同一个 list, 库一次都不读。
+    任何一步出错 → 原样返回 (fail-open: 闸坏了、没装, 借阅和以前一样)。"""
+    if not return_gate_enabled():
+        return cards
+    try:
+        blocked = _gate_blocked(sb, cards)
+        if not blocked:
+            GATE_STATS.update(would_drop=0, brands_kept=0)
+            return cards
+        brand = lambda c: (c.get("brand") or "").strip().lower()  # noqa: E731
+        total: dict = {}
+        hit: dict = {}
+        for c in cards:
+            b = brand(c)
+            total[b] = total.get(b, 0) + 1
+            if str(c.get("source_note_id")) in blocked:
+                hit[b] = hit.get(b, 0) + 1
+        # 品牌保底: 某个品牌 (卡上写了品牌的) 的卡全被挡 → 这个品牌的卡全留。没写品牌的卡不算一个品牌, 照筛。
+        kept = {b for b, n in hit.items() if b and n == total[b]}
+        out = [c for c in cards if str(c.get("source_note_id")) not in blocked or brand(c) in kept]
+        GATE_STATS.update(would_drop=len(cards) - len(out), brands_kept=len(kept))
+        if kept:
+            logger.warning("回流闸: %d 个品牌的卡全被挡, 按保底全留 (/health select.return_gate.brands_kept)", len(kept))
+        return out
+    except Exception:  # noqa: BLE001
+        logger.warning("回流闸: 筛书架出错, 这次不筛", exc_info=True)
+        return cards
+
+
+def gate_health() -> dict:
+    """/health 的 select.return_gate: 开没开、上次读库成没成、最近一次会拿掉几张卡、保底留了几个品牌。只有数和布尔。"""
+    at = _GATE["at"]
+    return {"on": return_gate_enabled(),
+            "read_age_s": None if at is None else int(max(0.0, _gate_clock() - at)),
+            **GATE_STATS}
 
 
 def library_version(cards: list[dict], gate2_run: Optional[str] = None, *,
@@ -718,7 +865,8 @@ def librarian_select(brief: dict, *, model: Optional[str] = None,
     if _status_out is not None:
         _status_out["patterns"] = P.public_patterns(delivery)
 
-    cards = fetch_candidates(sb)
+    # D-151: 出处帖被回流闸挡下的卡先拿掉, 再算版本串、再预筛。开关默认关: 关着原样返回, 库一次都不读。
+    cards = _drop_gated(sb, fetch_candidates(sb))
     if not cards:
         return {"_dry_run": True, "candidate_count": 0, "shelf_count": 0, "note": "空库 → 返回 []"} if dry_run else []
 
