@@ -7,15 +7,21 @@
   §1 共享核心 (spec §16 C1-C12): 模式表 · 数值解析 · 切不切的判据 · describe · 熔断文件名 · 熔断状态机 ·
      坏文件 / 写不了 · 多进程计数 · call() · summary / health 的键
   §2 没配备用站 (四种配置) = 老路: 客户端构造参数、请求参数、重试次数一字不变; 不建熔断文件、不计数、不出日志
+     (馆员例外, AU-F09: 没配也是 SDK max_retries=0 + 单次限时 45 秒; 自己那层 3 次重试不变)
   §3 essence call_claude 切换: 主站超时 → 备用站; 主站 / 备用站各自的构造参数; 该切的状态码切、400 类不切;
      缓存块被拒 (400) 不切
   §4 D-125 中转站敏感词拦截: 不切、不算熔断失败、原异常原样抛 (特征层照旧判 gateway_filtered)
   §5 熔断跨调用: 连续 2 次失败 → 直接走备用; 冷却后试一次主站, 好了合上、不好再开; 慢 (>25 秒) 也算失败
   §6 RELAY_FORCE: backup = 只走备用 / 没配备用站时 backup 不生效 + 一行提示 / 认不出的值 = 自动 + 一行提示
-  §7 librarian call_anthropic 切换 (主站限时 30 秒)
+  §7 librarian call_anthropic 切换 (主站限时 22 秒, 备用站 45 秒, 都是 max_retries=0) + 整轮时限 60 秒 (AU-F09):
+     主站挂住 → 第 22 秒切、备用站拿剩下的 38 秒; 两边都挂 → 第 60 秒抛、不再试; 快失败照旧试 3 次;
+     整轮放不下一次完整尝试 (主站 22 + 10) 就不重试; 没配备用站: 45 秒 + 剩下的 13 秒; 缓存块降级也不许超出整轮
+     RELAY_PRIMARY_TIMEOUT_S 超过 40 按 40 (整轮 60 - 2 × 10): 调到 55 / 600 也照旧重试、照旧降级、备用站还有 20 秒;
+     主站 25.5 秒才答完的在 22 秒被切 (调到 30 才等得到); 限时按「没有新字节」算, 一直滴字节的调用不封顶 (README 写明)
   §8 onboarder call_anthropic: 流式中途断 → 整段在备用站重来 (不拼半截; 含真 SDK 原样抛的 httpx ReadTimeout /
      RemoteProtocolError); 524 也切; 非流式限时 600 秒
-  §9 三个服务的 /health 带 relay 块: 只有布尔 / 枚举 / 计数, 不漏备用站地址或任何 key; 出错也不 500
+  §9 三个服务的 /health 带 relay 块: 只有布尔 / 枚举 / 计数, 不漏备用站地址或任何 key; 出错也不 500;
+     馆员多一个 select 块 (AU-F09): 在飞合并计数 + 现在生效的三个时限
   §10 日志卫生: 以上全部日志 + 退出汇总行里没有地址、key、中转站报错原文
   §11 Done 行: essence / 特征层 / 策展 / 评论归线 只在配了备用站时带 relay 汇总
   §12 脚本直接跑 (仓库根不在 sys.path) 也 import 得到 relay_failover
@@ -291,9 +297,19 @@ class _NoSleep:
         return getattr(time, name)
 
 
+class _TickSleep(_NoSleep):
+    """馆员的 time: sleep 不睡, 但把假钟拨过去 —— 整轮时限 (AU-F09) 把退避也算在内。"""
+
+    def sleep(self, s):
+        super().sleep(s)
+        CLOCK[0] += s
+
+
 NOSLEEP = _NoSleep()
-for _m in (E, LC, OC):
+for _m in (E, OC):
     _m.time = NOSLEEP
+TICK = _TickSleep()
+LC.time = TICK
 
 _BASE_TMP = tempfile.TemporaryDirectory(prefix="relay_check_")
 _SECTION = [0]
@@ -338,6 +354,8 @@ def fresh(**env) -> str:
     NOW[0] = 1_800_000_000.0
     R._mono = lambda: CLOCK[0]
     R._now = lambda: NOW[0]
+    LC._mono = lambda: CLOCK[0]      # 馆员整轮时限的钟 (AU-F09) 和核心用同一只假钟
+    TICK.sleeps.clear()
     return d
 
 
@@ -671,11 +689,17 @@ def parity_once(label: str, cfg: dict) -> None:
     got = raises(lambda: E.call_claude("p", "m"))
     if not isinstance(got, BadRequestError) or len(CALLS) != 1:
         probs.append(f"essence 400 应 1 次就抛: calls={len(CALLS)}")
-    # librarian
+    # librarian (AU-F09: 没配备用站也是 max_retries=0 + 单次限时 45 秒; 重试还是自己那一层 3 次)
     ctx(**BASE)
     out = LC.call_anthropic("p", "m")
-    if out != "text-from-primary" or BUILT != [{"api_key": K, "base_url": P}]:
-        probs.append(f"librarian 构造参数变了: {BUILT}")
+    if out != "text-from-primary" or BUILT != [{"max_retries": 0, "api_key": K, "base_url": P, "timeout": 45.0}] \
+            or set(CALLS[0][2]) != {"model", "max_tokens", "messages", "timeout"} or CALLS[0][2]["timeout"] != 45.0:
+        probs.append(f"librarian 构造 / 请求参数变了: {BUILT} {sorted(CALLS[0][2]) if CALLS else None}")
+    ctx(**BASE)
+    SCRIPT["primary"].extend([RateLimitError(429), RateLimitError(429), RateLimitError(429)])
+    got = raises(lambda: LC.call_anthropic("p", "m"))
+    if not isinstance(got, RateLimitError) or len(CALLS) != 3 or len(BUILT) != 1 or TICK.sleeps != [2, 4]:
+        probs.append(f"librarian 429 应重试到 3 次 (退避 2 / 4 秒): calls={len(CALLS)} sleeps={TICK.sleeps}")
     # onboarder
     ctx(**BASE)
     out = OC.call_anthropic("p", "m")
@@ -841,7 +865,8 @@ def sec6_force() -> None:
     out = E.call_claude("p", "m")
     LC.call_anthropic("p", "m")
     OC.call_anthropic("p", "m")
-    check(out == "text-from-backup" and BUILT == [{"api_key": BK, "base_url": BU}, {"api_key": BK, "base_url": BU},
+    check(out == "text-from-backup" and BUILT == [{"api_key": BK, "base_url": BU},
+                                                  {"api_key": BK, "base_url": BU, "max_retries": 0, "timeout": 45.0},
                                                   {"api_key": BK, "base_url": BU, "max_retries": 0}],
           f"backup: 三处都只建备用站客户端 ({BUILT})")
     check(not breaker_files(d) and R.counts() == counts_with(backup_ok=3), "backup: 不碰熔断, 计 backup_ok")
@@ -867,22 +892,153 @@ def sec6_force() -> None:
 
 # ── §7 librarian ───────────────────────────────────────────────────────────
 
+def hang(kw):
+    """假的「挂住」: 把钟拨过这次调用拿到的限时, 再超时 (真 SDK 到点抛 APITimeoutError)。"""
+    CLOCK[0] += kw["timeout"]
+    return APITimeoutError()
+
+
+def timeouts() -> list:
+    return [c[2].get("timeout") for c in CALLS]
+
+
+def answers_at(seconds: float, text: str):
+    """假的「第 N 秒才答完」: 认这次调用拿到的限时 —— 限时先到就超时 (真 SDK 也是), 否则到点返回。"""
+    def f(kw):
+        if seconds > kw["timeout"]:
+            CLOCK[0] += kw["timeout"]
+            return APITimeoutError()
+        CLOCK[0] += seconds
+        return text
+    return f
+
+
 def sec7_librarian() -> None:
     print("§7 librarian call_anthropic")
     fresh(**BASE, **BOTH)
     SCRIPT["primary"].append(APIConnectionError())
     out = LC.call_anthropic("p", "m")
     check(out == "text-from-backup", "主站连不上 → 备用站")
-    check(BUILT == [{"api_key": K, "base_url": P, "max_retries": 0, "timeout": 30.0}, {"api_key": BK, "base_url": BU}],
-          f"主站限时 30 秒, 备用站 SDK 默认 ({BUILT})")
-    fresh(**BASE, **BOTH)
+    check(BUILT == [{"max_retries": 0, "api_key": K, "base_url": P, "timeout": 22.0},
+                    {"api_key": BK, "base_url": BU, "max_retries": 0, "timeout": 45.0}],
+          f"主站限时 22 秒, 备用站 45 秒, 两边 SDK 都不重试 ({BUILT})")
+    fresh(**BASE, **BOTH, RELAY_PRIMARY_TIMEOUT_S="30")
     SCRIPT["primary"].append(slow(26, "slow"))
     out = LC.call_anthropic("p", "m")
-    check(out == "slow" and R.counts()["primary_slow"] == 1, "馆员 26 秒算慢 (门槛 25)")
+    check(out == "slow" and R.counts()["primary_slow"] == 1 and BUILT[0]["timeout"] == 30.0 and timeouts() == [30.0],
+          "RELAY_PRIMARY_TIMEOUT_S=30 照认; 这时馆员 26 秒算慢 (门槛 25)")
     fresh(**BASE, **BOTH)
     SCRIPT["primary"].append(BadRequestError(400))
     got = raises(lambda: LC.call_anthropic("p", "m"))
     check(isinstance(got, BadRequestError) and "backup" not in relays_built(), "馆员 400 不切")
+
+    # AU-F09 整轮时限 60 秒: 每次调用的限时 = 自己的上限和整轮剩下的时间里小的那个
+    check(LC.REQUEST_BUDGET_S >= 60.0 and LC.PRIMARY_TIMEOUT_S + LC.MIN_CALL_S <= LC.REQUEST_BUDGET_S
+          and LC.PRIMARY_TIMEOUT_S < LC.CALL_TIMEOUT_S <= LC.REQUEST_BUDGET_S,
+          "整轮时限不低于 60 秒 (写作台后台借阅等 60 秒, 要让慢的那次填上缓存), 主站限时 < 单次限时 ≤ 整轮")
+    fresh(**BASE, **BOTH)
+    SCRIPT["primary"].append(hang)
+    SCRIPT["backup"].append(slow(15, "cards"))
+    out = LC.call_anthropic("p", "m")
+    check(out == "cards" and timeouts() == [22.0, 38.0] and CLOCK[0] == 37.0,
+          f"主站挂住: 第 22 秒切, 备用站拿整轮剩下的 38 秒, 第 37 秒拿到卡 ({timeouts()}, t={CLOCK[0]})")
+    fresh(**BASE, **BOTH)
+    SCRIPT["primary"].append(hang)
+    SCRIPT["backup"].append(hang)
+    got = raises(lambda: LC.call_anthropic("p", "m"))
+    check(isinstance(got, APITimeoutError) and CLOCK[0] == 60.0 and len(CALLS) == 2 and TICK.sleeps == [],
+          f"两边都挂住: 第 60 秒抛出去, 不再试 (t={CLOCK[0]}, {len(CALLS)} 次调用, 退避 {TICK.sleeps})")
+    fresh(**BASE, **BOTH)
+    SCRIPT["primary"].extend([status_exc(503)] * 2)
+    SCRIPT["backup"].extend([status_exc(503)] * 3)
+    got = raises(lambda: LC.call_anthropic("p", "m"))
+    check(isinstance(got, InternalServerError) and [c[0] for c in CALLS] == ["primary", "backup", "primary", "backup", "backup"]
+          and TICK.sleeps == [2, 4], f"两边都秒回 503: 照旧试 3 次 (第 3 次熔断已开, 直接备用站), 退避 2 / 4 秒 ({TICK.sleeps})")
+    fresh(**BASE, **BOTH)
+    SCRIPT["primary"].append(status_exc(503))
+    SCRIPT["backup"].append(hang)
+    got = raises(lambda: LC.call_anthropic("p", "m"))
+    check(isinstance(got, APITimeoutError) and timeouts() == [22.0, 45.0] and len(CALLS) == 2 and TICK.sleeps == [],
+          f"主站秒回 503、备用站挂满 45 秒: 整轮只剩 15 秒, 放不下主站 22 + 10, 不重试 ({len(CALLS)} 次调用)")
+    fresh(**BASE)
+    SCRIPT["primary"].append(hang)
+    out = LC.call_anthropic("p", "m")
+    check(out == "text-from-primary" and timeouts() == [45.0, 13.0] and TICK.sleeps == [2],
+          f"没配备用站: 第一次挂满 45 秒, 退避 2 秒, 第二次只给剩下的 13 秒 ({timeouts()})")
+    fresh(**BASE)
+    SCRIPT["primary"].extend([hang, hang, hang])
+    got = raises(lambda: LC.call_anthropic("p", "m"))
+    check(isinstance(got, APITimeoutError) and CLOCK[0] == 60.0 and len(CALLS) == 2,
+          f"没配备用站、一直挂住: 第 60 秒抛出去, 没有第三次 (t={CLOCK[0]}, {len(CALLS)} 次调用)")
+    fresh(**BASE, PROMPT_CACHE_ENABLED="1")
+    before = LC.PROMPT_CACHE_FALLBACKS["count"]
+    SCRIPT["primary"].extend([hang, hang, hang])
+    blocks = [{"type": "text", "text": "S", "cache_control": {"type": "ephemeral"}}]
+    got = raises(lambda: LC.call_anthropic("p", "m", system=blocks))
+    check(isinstance(got, APITimeoutError) and CLOCK[0] == 60.0 and len(CALLS) == 2
+          and LC.PROMPT_CACHE_FALLBACKS["count"] == before,
+          f"带缓存块的调用把整轮用完了: 不再去掉缓存块重来一遍 (t={CLOCK[0]}, {len(CALLS)} 次调用)")
+
+    # RELAY_PRIMARY_TIMEOUT_S 调大 (核心认 5..600; 别的调用点默认 60 / 150): 馆员这头超过「整轮 - 2 × MIN_CALL_S」按它算,
+    # 不然「主站限时 + 10」永远放不进 60 秒 —— 不重试、不降级, 60 以上备用站只剩 1 秒 (11-11 审查 R1)
+    cap = LC.REQUEST_BUDGET_S - 2 * LC.MIN_CALL_S
+    fresh(**BASE, **BOTH, RELAY_PRIMARY_TIMEOUT_S="55")
+    SCRIPT["primary"].append(status_exc(529))
+    SCRIPT["backup"].append(status_exc(529))
+    out = raises(lambda: LC.call_anthropic("p", "m")) or "returned"
+    check(out == "returned" and [c[0] for c in CALLS] == ["primary", "backup", "primary"] and TICK.sleeps == [2]
+          and timeouts()[:1] == [cap] and BUILT[0]["timeout"] == cap == 40.0,
+          f"RELAY_PRIMARY_TIMEOUT_S=55: 主站按 40 秒算, 两边各 529 一次照旧重试 "
+          f"({type(out).__name__}, {[c[0] for c in CALLS]}, 限时 {timeouts()[:1]}, 退避 {TICK.sleeps})")
+    fresh(**BASE, **BOTH, RELAY_PRIMARY_TIMEOUT_S="55", PROMPT_CACHE_ENABLED="1")
+    before = LC.PROMPT_CACHE_FALLBACKS["count"]
+    rejected = BadRequestError(400)
+    rejected.args = ("Error code: 400 - cache_control is not supported",)   # 馆员降级那行 warning 本来就带报错开头 (过掩码),
+    SCRIPT["primary"].append(rejected)                                      # 这里不带哨兵, 免得 §10 把它当成核心漏的
+    out = raises(lambda: LC.call_anthropic("p", "m", system=blocks)) or "returned"
+    check(out == "returned" and len(CALLS) == 2 and isinstance(CALLS[-1][2].get("system"), str)
+          and LC.PROMPT_CACHE_FALLBACKS["count"] == before + 1,
+          f"RELAY_PRIMARY_TIMEOUT_S=55: 缓存块被拒 (400) 照旧去掉缓存块再来一次 ({type(out).__name__}, {len(CALLS)} 次调用)")
+    fresh(**BASE, **BOTH, RELAY_PRIMARY_TIMEOUT_S="600")
+    SCRIPT["primary"].append(hang)
+    SCRIPT["backup"].append(slow(15, "cards"))
+    out = raises(lambda: LC.call_anthropic("p", "m")) or "returned"
+    check(out == "returned" and timeouts() == [40.0, 20.0] and CLOCK[0] == 55.0,
+          f"RELAY_PRIMARY_TIMEOUT_S=600: 主站挂住第 40 秒切, 备用站还有 20 秒 (不是 1 秒), 第 55 秒拿到卡 ({timeouts()}, t={CLOCK[0]})")
+
+    # 22 秒是有意的取舍 (11-11 审查 R2): 主站本来 25.5 秒能答完的也被切到备用站, 37 秒才拿到卡; 调到 30 等得到, 代价是挂住时 45 秒
+    fresh(**BASE, **BOTH)
+    SCRIPT["primary"].append(answers_at(25.5, "late-primary"))
+    SCRIPT["backup"].append(slow(15, "cards"))
+    out = LC.call_anthropic("p", "m")
+    check(out == "cards" and timeouts() == [22.0, 38.0] and CLOCK[0] == 37.0,
+          f"主站 25.5 秒才答完: 默认 22 秒被切, 第 37 秒从备用站拿到卡 ({out}, t={CLOCK[0]})")
+    fresh(**BASE, **BOTH, RELAY_PRIMARY_TIMEOUT_S="30")
+    SCRIPT["primary"].append(answers_at(25.5, "late-primary"))
+    out = LC.call_anthropic("p", "m")
+    t_slow = CLOCK[0]
+    fresh(**BASE, **BOTH, RELAY_PRIMARY_TIMEOUT_S="30")
+    SCRIPT["primary"].append(hang)
+    SCRIPT["backup"].append(slow(15, "cards"))
+    LC.call_anthropic("p", "m")
+    check(out == "late-primary" and t_slow == 25.5 and CLOCK[0] == 45.0,
+          f"RELAY_PRIMARY_TIMEOUT_S=30: 25.5 秒那次等得到 (t={t_slow}); 代价是主站挂住时第 45 秒才拿到卡 (t={CLOCK[0]})")
+
+    # 限时是「这么久没收到新字节」(httpx 按每次读算), 不是墙上时钟 (11-11 审查 R3): 假 SDK 里「过了限时还正常返回」
+    # 就是对方一直在滴字节。这种调用不会被掐, 也不切备用站 —— 已知边界, 文档要照实写, 不许再说「最多 60 秒」不带条件。
+    fresh(**BASE, **BOTH)
+    SCRIPT["primary"].append(slow(70, "dripped"))
+    out = LC.call_anthropic("p", "m")
+    check(out == "dripped" and CLOCK[0] == 70.0 and [c[0] for c in CALLS] == ["primary"],
+          f"一直滴字节的主站: 70 秒后照样从主站返回, 整轮超过 60 秒 (已知边界; t={CLOCK[0]})")
+    readme = (Path(LC.__file__).resolve().parent / "README.md").read_text(encoding="utf-8")
+    limits = next((b for b in readme.split("\n- ") if b.startswith("**时限**")), "")
+    src = Path(LC.__file__).read_text(encoding="utf-8")
+    missing = [w for w, text in (("没有新字节", limits), ("没有新字节", src), ("22-30 秒", limits), ("按 40", limits))
+               if w not in text]
+    check(limits and not missing,
+          "README「时限」和 clients.py 写明: 限时按没有新字节算 · 22-30 秒答完的也被切 · RELAY_PRIMARY_TIMEOUT_S 超过 40 按 40"
+          + (f" (缺 {missing})" if missing else ""))
 
 
 # ── §8 onboarder ───────────────────────────────────────────────────────────
@@ -981,6 +1137,16 @@ def sec9_health() -> None:
     rel = TestClient(LA.app).get("/health").json().get("relay")
     check(rel and rel["relay_mode"] == PO and rel["relay_breaker"] == "off" and rel["relay_backup_configured"] is False,
           "没配: relay_mode=primary_only, relay_breaker=off")
+    fresh(**BASE, **BOTH, RELAY_PRIMARY_TIMEOUT_S="30")
+    sel = TestClient(LA.app).get("/health").json().get("select") or {}
+    check(set(sel) == {"merged", "wait_timeouts", "primary_timeout_s", "call_timeout_s", "request_budget_s"}
+          and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in sel.values())
+          and (sel["primary_timeout_s"], sel["call_timeout_s"], sel["request_budget_s"]) == (30.0, 45.0, 60.0),
+          f"librarian: select 块 (AU-F09) 只有数, 主站限时回显的是生效值 ({sel})")
+    fresh(**BASE, **BOTH, RELAY_PRIMARY_TIMEOUT_S="55")
+    sel = TestClient(LA.app).get("/health").json().get("select") or {}
+    check(sel.get("primary_timeout_s") == 40.0,
+          f"librarian: RELAY_PRIMARY_TIMEOUT_S=55 时回显的是真在用的 40, 不是 55 ({sel.get('primary_timeout_s')})")
     real = R.health
 
     def boom(**_kw):

@@ -21,7 +21,8 @@
           FLYWHEEL_LIBRARIAN_MODEL(可选, 默认 claude-sonnet-5-5) /
           LIBRARIAN_API_KEY(鉴权, 生产建议设) /
           ANTHROPIC_BASE_URL_BACKUP + ANTHROPIC_API_KEY_BACKUP(备用中转站, 可选, 两个都配才启用, D-148) /
-          RELAY_FORCE(可选, backup / primary / 空=自动)
+          RELAY_FORCE(可选, backup / primary / 空=自动) /
+          RELAY_PRIMARY_TIMEOUT_S(可选, 配了备用站时主站等几秒就切; 不设 = 22, 见 clients.py 的 AU-F09 时限)
   见 repo 根 railway.json。
 """
 
@@ -34,7 +35,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 
 from starlette.concurrency import run_in_threadpool
 
-from .core import (STATUS_DEGRADED, librarian_select_full)
+from .core import (MERGE_STATS, STATUS_DEGRADED, librarian_select_full)
 
 STATUS_ERROR = "error"   # 应用层崩溃(core 之外), 与 core 的 degraded 区分开
 
@@ -98,6 +99,11 @@ def health() -> dict:
                    "prompt_cache_usage": dict(_clients.PROMPT_CACHE_USAGE)},
         # D-148 备用中转站: 模式 / 是否配了 / RELAY_FORCE / 熔断 + 本进程计数。只有布尔、枚举和整数, 从不回显地址或 key。
         "relay": _relay_health(True),
+        # AU-F09: 在飞合并的本进程计数 (merged = 后到的同一个请求并到了在飞的那次, 没再选一遍; wait_timeouts = 等满了
+        # 自己选的) + 现在生效的三个时限 (主站那个认 RELAY_PRIMARY_TIMEOUT_S, 设了就不是代码里的 22; 超过 40 按 40)。只有数。
+        "select": {**MERGE_STATS,
+                   "primary_timeout_s": _clients.primary_limit_s(),
+                   "call_timeout_s": _clients.CALL_TIMEOUT_S, "request_budget_s": _clients.REQUEST_BUDGET_S},
     }
 
 

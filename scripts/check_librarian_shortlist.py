@@ -14,13 +14,22 @@ get_supabase / call_anthropic / 缓存读写), 核对 LLM 真正看到的候选�
   ⑤ LIBRARIAN_MAX_TOKENS 改回 1500                  → §7 红
   ⑥ _select_via_llm 喂整架 (cards) 而不是 shown     → §7 LLM 看到了没进 shortlist 的卡, 红
 
+§8 选卡去重 (审计 11-02 F14a) 和 §9 同一个请求在飞的合并 (AU-F09) 也在这里, 同样真调 librarian_select。反证 (11-11 实跑):
+  ⑦ _select_via_llm 去掉 `if nid in taken: continue`           → §8 同一张卡回来两遍, 红
+  ⑧ librarian_select 里 _board 恒当领头 (不等在飞的那次)        → §9 第二个请求自己又调了一次模型, 红
+  ⑨ _join 不拷贝 (直接回领头那份 list)                          → §9 两个请求拿到同一个对象, 红
+  ⑩ librarian_select 的 finally 里不 _land                      → §9 降级之后登记还在, 后到的请求一直等, 红
+  ⑪ _unboard 不看是不是自己那条就删                             → §9 领头那次落地时把别人的登记摘了, 红
+
 跑法: cd scripts && python check_librarian_shortlist.py
 """
 from __future__ import annotations
 
+import logging
 import pathlib
 import random
 import sys
+import threading
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))   # repo 根: 让 librarian 包可导入
 
@@ -142,4 +151,175 @@ assert all(f"[{nid}]" in block1 for nid in ids(short)) and "[C_19]" not in block
 assert "30 字" in block1, "指令里要写明两句批注各 ≤30 字 (输出封顶靠它, max_tokens 只是兜底)"
 assert writes and writes[0][1] == sel and writes[0][2] is not None, "冷路径结果要进缓存并带 select_ms"
 print("✓ D-088: LLM 看到的恰是 shortlist 24 张, max_tokens 封顶 ≤1000, 批注 ≤30 字写进指令, 结果进缓存")
+
+
+def pick(*nids):
+    return '{"selected": [' + ", ".join(
+        '{"source_note_id": "%s", "why_relevant": "第 %d 条", "borrow_what": "借结构"}' % (n, i)
+        for i, n in enumerate(nids)) + "]}"
+
+
+# ══ §8 · 选卡去重 (F14a): 同一张卡模型挑了两遍只留第一遍, 重复的不占 5 张的名额 ═══════════════════════
+core.call_anthropic = lambda *a, **k: pick("B_00", "A_00", "B_00", "B_00", "A_01", "A_00", "A_02", "A_03", "A_04")
+writes.clear()
+st = {}
+sel = core.librarian_select(BRIEF, _status_out=st)
+assert [s["source_note_id"] for s in sel] == ["B_00", "A_00", "A_01", "A_02", "A_03"] and st["status"] == "ok", \
+    f"同一张卡只该留一遍, 重复的不占名额: {[s['source_note_id'] for s in sel]}"
+assert [s["why_relevant"] for s in sel[:2]] == ["第 0 条", "第 1 条"], "留的是第一遍的批注"
+assert [s["source_note_id"] for s in writes[-1][1]] == ["B_00", "A_00", "A_01", "A_02", "A_03"], "进缓存的那份也没有重复"
+core.call_anthropic = lambda *a, **k: pick("B_00", "B_00")
+assert [s["source_note_id"] for s in core.librarian_select(BRIEF)] == ["B_00"], "只挑了一张、挑了两遍 → 一张"
+print("✓ F14a: 同一张卡回来几遍只留第一遍, 不占名额, 缓存里也没有重复")
+
+# ══ §9 · 同一个请求在飞的合并 (AU-F09): 第二个等第一个、拿同一份结果; 失败不传下去; 等有上限 ═══════════
+logging.getLogger("flywheel_librarian").disabled = True   # ②–④ 故意让模型 / 查库失败、让等待超时, 那几段日志不用进 CI 输出
+KEY = core.librarian_select(BRIEF, dry_run=True)["cache_key"]
+OTHER = dict(BRIEF, draft_topic="换个选题")          # 换了 delta → 另一个 cache_key, 不该并
+real_board = core._board
+joined = threading.Event()
+
+
+def spy_board(key):                                   # 第二个请求拿到在飞的那条登记时点一下, 主线程才放行领头那次
+    flight, lead = real_board(key)
+    if not lead:
+        joined.set()
+    return flight, lead
+
+
+core._board = spy_board
+
+
+def race(first_llm, *, wait_join=True):
+    """两个线程借同一个 brief: 第一个卡在 first_llm 里, 等第二个并上来再放行。返回 (两边结果, 模型被调了几次)。"""
+    gate, entered, calls, out = threading.Event(), threading.Event(), [], {}
+    joined.clear()
+
+    def llm(prompt, model, *, system=None, **kw):
+        calls.append(1)
+        if len(calls) > 1:                            # 只有领头那次卡住; 再有人调模型就是没并上
+            return pick("A_05")
+        entered.set()
+        assert gate.wait(20), "领头那次没被放行"
+        return first_llm()
+
+    def borrow(name):
+        st = {}
+        try:
+            out[name] = (core.librarian_select(dict(BRIEF), _status_out=st), st.get("status"))
+        except Exception as exc:  # noqa: BLE001
+            out[name] = (exc, "raised")
+
+    core.call_anthropic = llm
+    t1 = threading.Thread(target=borrow, args=("first",), daemon=True)   # daemon: 断言红了进程照样退得出去
+    t1.start()
+    assert entered.wait(20), "领头那次没走到模型"
+    t2 = threading.Thread(target=borrow, args=("second",), daemon=True)
+    t2.start()
+    if wait_join:
+        assert joined.wait(20), "第二个请求没并到在飞的那次上"
+    return gate, calls, out, (t1, t2)
+
+
+def finish(gate, threads):
+    gate.set()
+    for t in threads:
+        t.join(20)
+        assert not t.is_alive(), "线程没结束 (等在飞的那次没被叫醒?)"
+
+
+# ① 正常: 模型只调一次, 两边拿到一样的卡、各自一份; 换 delta / use_cache=False 的请求不等
+writes.clear()
+merged0 = core.MERGE_STATS["merged"]
+gate, calls, out, threads = race(lambda: pick("B_00", "A_00"))
+assert [s["source_note_id"] for s in core.librarian_select(OTHER)] == ["A_05"] and len(calls) == 2, \
+    "brief 不一样 (另一个 cache_key) 不该等在飞的那次"
+assert [s["source_note_id"] for s in core.librarian_select(BRIEF, use_cache=False)] == ["A_05"] and len(calls) == 3, \
+    "use_cache=False 是强制重跑, 不并"
+finish(gate, threads)
+(first, st1), (second, st2) = out["first"], out["second"]
+assert len(calls) == 3, f"同一个请求在飞时第二个不该再调模型: 模型被调了 {len(calls)} 次 (该是领头 1 次 + 上面两次)"
+assert [s["source_note_id"] for s in first] == ["B_00", "A_00"] and second == first and (st1, st2) == ("ok", "ok"), out
+assert second is not first and second[0] is not first[0], "后到的拿的是拷贝, 不是领头那次的同一个对象"
+assert len([w for w in writes if w[0] == KEY]) == 1, "这个 cache_key 只写一次缓存"
+assert core.MERGE_STATS["merged"] == merged0 + 1 and KEY not in core._FLIGHTS and not core._FLIGHTS, \
+    f"并了一次要记数, 结束后登记清空: {core.MERGE_STATS} {len(core._FLIGHTS)}"
+
+# ② 领头那次降级 (模型挂了): 后到的一起拿降级结果、不自己再试; 登记摘掉、不进缓存, 再来的请求照常重新选
+writes.clear()
+
+
+def boom():
+    raise RuntimeError("relay down")
+
+
+gate, calls, out, threads = race(boom)
+finish(gate, threads)
+assert out["first"] == ([], "degraded") and out["second"] == ([], "degraded") and len(calls) == 1, \
+    f"领头那次降级, 后到的拿同一个降级结果, 不再付一次: {out} 模型 {len(calls)} 次"
+assert not core._FLIGHTS and not writes, "降级不进缓存, 登记要在 finally 里摘掉"
+core.call_anthropic = lambda *a, **k: pick("B_00")
+st = {}
+assert [s["source_note_id"] for s in core.librarian_select(BRIEF, _status_out=st)] == ["B_00"] and st["status"] == "ok", \
+    "一次失败不能传下去: 之后同一个请求照常选得到卡"
+
+# ③ 领头那次崩了 (异常抛出去, 没有结果可拿): 后到的自己选, 和没有合并时一样
+real_get = core.get_cache
+state = {"n": 0}
+gate3, entered3 = threading.Event(), threading.Event()
+
+
+def flaky_get(sb, key):
+    state["n"] += 1
+    if state["n"] == 1:
+        entered3.set()
+        assert gate3.wait(20)
+        raise RuntimeError("db down")
+    return None
+
+
+core.get_cache = flaky_get
+out = {}
+
+
+def borrow3(name):
+    st = {}
+    try:
+        out[name] = (core.librarian_select(dict(BRIEF), _status_out=st), st.get("status"))
+    except Exception as exc:  # noqa: BLE001
+        out[name] = (type(exc).__name__, "raised")
+
+
+joined.clear()
+t1 = threading.Thread(target=borrow3, args=("first",), daemon=True)
+t1.start()
+assert entered3.wait(20)
+t2 = threading.Thread(target=borrow3, args=("second",), daemon=True)
+t2.start()
+assert joined.wait(20)
+finish(gate3, (t1, t2))
+core.get_cache = real_get
+assert out["first"] == ("RuntimeError", "raised"), out
+assert [s["source_note_id"] for s in out["second"][0]] == ["B_00"] and out["second"][1] == "ok" and not core._FLIGHTS, \
+    f"领头那次崩了, 后到的该自己选出卡来: {out}"
+
+# ④ 等有上限: 等满了就摘掉卡住的那条登记、自己选; 卡住的那次后来落地, 不许把别人新登记的那条摘了
+core.MERGE_WAIT_S, keep = 0.3, core.MERGE_WAIT_S
+timeouts0 = core.MERGE_STATS["wait_timeouts"]
+gate, calls, out, threads = race(lambda: pick("B_00"))
+threads[1].join(20)
+assert not threads[1].is_alive() and [s["source_note_id"] for s in out["second"][0]] == ["A_05"] and len(calls) == 2, \
+    f"等满 {core.MERGE_WAIT_S} 秒后第二个请求该自己选: {out.get('second')}"
+assert KEY not in core._FLIGHTS and core.MERGE_STATS["wait_timeouts"] == timeouts0 + 1, "卡住的那条登记要摘掉、记一次数"
+newer, lead = real_board(KEY)                         # 这时又来一个同样的请求, 它当领头
+assert lead
+finish(gate, threads[:1])
+assert core._FLIGHTS.get(KEY) is newer, "卡住的那次落地时只能摘自己那条登记"
+core._land(KEY, newer, None)
+assert not core._FLIGHTS and out["first"][1] == "ok"
+core.MERGE_WAIT_S = keep
+assert core.MERGE_WAIT_S >= 60, "等的上限不能比领头那次模型整轮 (60 秒) 短, 否则正常慢的那次也会被重选一遍"
+core._board = real_board
+logging.getLogger("flywheel_librarian").disabled = False
+print("✓ AU-F09: 同一个请求在飞时第二个等它、拿同一份拷贝 (模型只调一次); 降级一起拿、不传下去; 崩了 / 等满了自己选")
 print("\ncheck_librarian_shortlist: all checks passed")
