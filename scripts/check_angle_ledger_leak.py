@@ -27,6 +27,17 @@ check_angle_ledger_leak.py
 「用过写作台」那一条是为了不对从来不走写作台的项目天天喊; 不设 60 天之类的期限 —— 断得越久越该喊, 设了期限, 一个断了
 两个月的项目反而会自己转绿(codex review on TV#205)。
 
+回流闸(D-151, 2026-11-12): owner 定了帖在哪写都可以, 不在写作台写不是故障。写作台每晚 tv-sync 的最后一步给每条对账行记
+出处(origin)和闸的类别(aw 迁移 020 加在 autowriter.tv_note_links 上的四列: origin / gate / gate_reasons / gate_at)。
+这四列在的时候:
+    · 出处是 elsewhere(和写作台任何一稿的文字重合不到 15%)的帖是在别处写的, 预期之内: 表里单列「别处写的」, 不进判据 C 的
+      补录副本数, 多少篇都不亮黄;
+    · 这一行还没记出处的、出处是 unclear 的, 照上面的老办法按 match_kind 分(origin_of_link 回 None);
+    · 黄多一种 —— 真的故障: 闸分过类、可最近一次分类(max(gate_at))离现在超过 36 小时(tv-sync 没跑完 / 闸那一步出错),
+      或者别的项目是新的、某个项目窗口里的对账行却没有一行在 36 小时内分过类(tv-sync 漏了这个项目)。
+    · 四列在、但全库一行都没分过类(020 跑了, 写作台那半还没上线或今晚才第一次跑): 只说一句, 不亮黄 —— 那不是谁能修的事。
+这四列不在(020 没跑)时一个字都不变: 取数的列、表、判据、报文和以前一样。
+
 只报、不喊的(给人看, 不进退出码):
     · 角度台账表: 每个写作台项目窗口内发牌 / 销账 / 稿子 / 带坐标(先排除 tv-sync 的补录副本 —— 它们不是发牌产出的,
       没有坐标; 不排除的话未归因率永远 97%+, D-071);
@@ -34,7 +45,8 @@ check_angle_ledger_leak.py
       那是模型没把 draw_angles 给的 angle_key 带到查重 / 存档(aw 的事), 不是写手的事。
 
 数据: autowriter.tv_project_map(TV 项目 → 写作台项目)、truth_vault.notes(publish_time 在窗口内) 减
-truth_vault.v_notes_vanished(飞书里删了的)、autowriter.tv_note_links(按 match_kind 分)、autowriter.angle_ledger
+truth_vault.v_notes_vanished(飞书里删了的)、autowriter.tv_note_links(按 match_kind 分; 回流闸的四列在的话多取 origin /
+gate_at)、autowriter.angle_ledger
 (发过牌的写作台项目不限时间; 窗口内的发牌)、autowriter.batches(params.source = deskcore 的: 写作台出过稿的项目, 不限
 时间)、autowriter.draft_fingerprints(窗口内的稿子)、autowriter.draft_snapshots(查重底稿: 只取 project_id / checked_at
 数篇数, 不取标题正文)。
@@ -47,8 +59,9 @@ truth_vault.v_notes_vanished(飞书里删了的)、autowriter.tv_note_links(按 
     python check_angle_ledger_leak.py --selftest      # CI: 判据 C 的纯函数 + 取数, 不连库
 
 退出码:
-    0 = 没有 TV 项目命中判据 C
-    1 = 至少一个 TV 项目命中 —— 修在 autowriter 仓(skill 触发 / tv-sync 的对照), TV 这边红了也改不好
+    0 = 没有 TV 项目命中判据 C, 回流闸(在的话)36 小时内分过类
+    1 = 至少一个 TV 项目命中判据 C, 或回流闸超过 36 小时没分类 / 漏了项目 —— 修在 autowriter 仓(skill 触发 / tv-sync 的
+        对照和闸那一步), TV 这边红了也改不好
 ⚠️ 同 check_librarian_traffic.py 的约定: 正常跑完末尾必打一行
 `ANGLE_LEDGER_CHECK_DONE rc=<码>`; daily-sync.yml 靠有没有这一行判定崩溃, 不靠退出码。
 """
@@ -76,6 +89,53 @@ INGESTED_KIND = "ingested"
 CAUGHT_KINDS = frozenset({"body_exact", "title_exact", "fuzzy", "edited", "tv_lineage"})
 # 表里分列、不进红的几种: 对不上的(没有补录目标 / 没正文 / W-38 明晚再试)、分不出是哪一版的(本来就是写作台的稿)。
 INFO_KINDS = ("unmatched", "ambiguous")
+
+# ── 回流闸(D-151): autowriter.tv_note_links 上的四列(aw 迁移 020)。名字两个仓共用, 由 D-151 钉着 ──────────────────
+GATE_COLS = ("origin", "gate", "gate_reasons", "gate_at")
+ORIGINS = ("desk", "desk_edited", "copied_back", "elsewhere", "unclear")
+ORIGIN_ELSEWHERE = "elsewhere"          # 对不上、和写作台任何一稿(发布前存的)重合不到 15%: 在别处写的
+GATE_CLASSES = ("pass", "fail", "unsure", "hold", "withdrawn")
+GATE_REASON_NOT_CLEAN = "not_clean"     # 投流标记 / 铺评工单 / 投流事件: 闸自己的那把「干净」尺子(同 aw priors.is_clean)
+# 闸每晚把范围内(近 60 天发布的)每一行的 gate_at 都摸一遍。灯早上 08~10 时(UTC)跑, 闸前一天 14:00 UTC 跑: 正常 18~20 小时;
+# 漏一晚就是 42~44 小时。36 小时卡在中间。
+GATE_STALE_HOURS = 36
+
+
+def origin_of_link(link) -> str | None:
+    """这条对账行上闸记下的出处。四列不在、这一行还没分过类、值不认识 → None: 调用方照今天的办法按 match_kind 分。
+    两盏灯(这里和 check_desk_use_rate.py)共用这一个读法。"""
+    o = (link or {}).get("origin")
+    return o if isinstance(o, str) and o in ORIGINS else None
+
+
+def gate_verdict(link) -> tuple[str, frozenset] | None:
+    """(闸的类别, 原因名) ; None = 没有结论。只认: gate 是五个类别之一, gate_reasons 是个对象、它的 reasons 是一列名字。
+    别的形状(空、字符串、reasons 不是一列名字)一律当没有结论(同 librarian.core.gate_reasons; 馆员独立部署, 不 import 这里)。"""
+    link = link or {}
+    cls, gr = link.get("gate"), link.get("gate_reasons")
+    reasons = gr.get("reasons") if isinstance(gr, dict) else None
+    if cls not in GATE_CLASSES or not isinstance(reasons, list) or not all(isinstance(r, str) for r in reasons):
+        return None
+    return cls, frozenset(reasons)
+
+
+def _gate_columns_missing(exc: BaseException) -> bool:
+    """PostgREST 说没有闸的那几列(同 _common._is_missing_column_error: 42703 / PGRST204, 且带着列名)。"""
+    s = f"{exc!r} {exc}"
+    return any(c in s for c in GATE_COLS) and any(m in s for m in ("42703", "PGRST204", "does not exist", "Could not find"))
+
+
+def gate_columns_present(sb) -> bool:
+    """autowriter.tv_note_links 上有没有回流闸的四列(aw 迁移 020 跑没跑)。没有 → False, 调用方一个字不变地走老路;
+    别的错(连不上 / 权限)直接抛 —— 灯崩了比错判好, 有哨兵行兜着。"""
+    try:
+        (sb.schema("autowriter").table("tv_note_links")
+         .select("note_id, " + ", ".join(GATE_COLS)).limit(1).execute())
+    except Exception as exc:                            # noqa: BLE001
+        if _gate_columns_missing(exc):
+            return False
+        raise
+    return True
 
 
 def _utc_or_none(ts) -> datetime | None:
@@ -111,6 +171,8 @@ def verdicts_publish(by_project: dict, pub: dict, window_days: int = CHECK_C_BAS
     ``{"map": {tv: [写作台 project_id…]}, "links": {tv: {"published", "caught", "ingested", "pre_snapshot",
     "unmatched", "ambiguous", "unlinked", "late"}}, "used": {用过写作台的 project_id}, "snapshots": {写作台 project_id:
     窗口内查重底稿篇数} 或 None(018 没跑)}``。``window_days`` 把两个下限按 7 天一份等比放大。
+    回流闸的四列在的时候(D-151) links 每格多一个 ``elsewhere``: 闸记成在别处写的帖, 已经不在 ``ingested`` 里 —— 所以
+    它们多少篇都到不了下限。
     """
     out = []
     used = pub.get("used") or set()
@@ -140,9 +202,45 @@ def verdicts_publish(by_project: dict, pub: dict, window_days: int = CHECK_C_BAS
                                                 + " —— 发出去的帖对不回: 多半是写作台开始记查重底稿之前写的(看「之前」那几篇), "
                                                 "不是的话看 aw tv-sync 日志")
         pre_note = (f"(其中约 {pre} 篇发布于写作台开始记查重底稿之前, 已补录成副本、改不回来)" if pre else "")
+        away = link.get(ORIGIN_ELSEWHERE, 0)
+        away_note = f"(另有 {away} 篇闸记成在别处写的, 预期之内, 没算在这里)" if away else ""
         out.append({"project": tv, "kind": kind, "ingested": ing, "caught": caught, "pre_snapshot": pre,
                     "drawn": drawn, "drafts": drafts, "checked": checked,
-                    "detail": f"发出去的帖里 {ing} 篇补录成了副本{pre_note}、对上 {caught} 篇; {why}"})
+                    "detail": f"发出去的帖里 {ing} 篇补录成了副本{pre_note}{away_note}、对上 {caught} 篇; {why}"})
+    return out
+
+
+def verdicts_gate(pub: dict, now: datetime) -> list[dict]:
+    """回流闸有没有在跑(D-151)。纯函数。``pub["gate"]``: None = 四列不在(020 没跑) → 不判;
+    ``{"latest": 全库最近一次分类的时刻 或 None, "by_tv": {tv: 这个项目窗口里的对账行最近一次分类的时刻 或 None}}``。
+
+    · latest 是 None: 列在、一行都没分过类(写作台那半没上线, 或今晚才第一次跑) → 不判(report 里说一句);
+    · latest 离 now 超过 GATE_STALE_HOURS → 一条 gate_stale(整个闸没在跑, 不再逐个项目点);
+    · latest 是新的, 某个项目窗口里有对账行、却没有一行在 GATE_STALE_HOURS 内分过类 → gate_missed(tv-sync 漏了这个项目)。
+      窗口里一条对账行都没有的项目(帖都还没对到)判不了, 不点: 那种由每周一的用上率灯 rc=2 点名。"""
+    gate = pub.get("gate")
+    if not gate:
+        return []
+    latest = _utc_or_none(gate.get("latest")) if gate.get("latest") else None
+    if latest is None:
+        return []
+    limit = timedelta(hours=GATE_STALE_HOURS)
+    age = now - latest
+    if age > limit:
+        return [{"project": "(全部项目)", "kind": "gate_stale", "hours": int(age.total_seconds() // 3600),
+                 "detail": f"最近一次分类在 {int(age.total_seconds() // 3600)} 小时前"}]
+    out = []
+    links = pub.get("links") or {}
+    for tv in sorted(pub.get("map") or {}):
+        link = links.get(tv) or {}
+        if link.get("published", 0) - link.get("unlinked", 0) <= 0:
+            continue
+        mine = (gate.get("by_tv") or {}).get(tv)
+        mine = _utc_or_none(mine) if mine else None
+        if mine is None or now - mine > limit:
+            hours = None if mine is None else int((now - mine).total_seconds() // 3600)
+            out.append({"project": tv, "kind": "gate_missed", "hours": hours,
+                        "detail": "窗口里的对账行一行都没分过类" if hours is None else f"最近一次分类在 {hours} 小时前"})
     return out
 
 
@@ -153,16 +251,54 @@ def _print_publish(pub: dict, by_project: dict, window_days: int) -> None:
     if not rows:
         print(f"  · 过去 {window_days} 天映射里的 TV 项目没有发出去的帖")
         return
+    gated = pub.get("gate") is not None         # 回流闸的四列在不在(D-151); 不在 → 下面每一行和以前一字不差
     print(f"  发帖对账 · 过去 {window_days} 天发出去的帖(按发布时间, 飞书里删了的不算)"
           + ("; 018 没跑, 查重底稿那列空着" if snaps is None else ""))
-    print(f"  {'TV 项目':<22}{'发出去':>6}{'对上':>6}{'补录副本':>8}{'没对上':>7}{'分不出':>7}{'还没对':>7}"
+    away_head = f"{'别处写的':>8}" if gated else ""
+    print(f"  {'TV 项目':<22}{'发出去':>6}{'对上':>6}{'补录副本':>8}{away_head}{'没对上':>7}{'分不出':>7}{'还没对':>7}"
           f"{'写作台发牌':>10}{'查重底稿':>8}")
     for tv, l in rows:
         pids = pub["map"][tv]
         drawn = sum((by_project.get(p) or {}).get("drawn", 0) for p in pids)
         checked = "—" if snaps is None else str(sum(snaps.get(p, 0) for p in pids))
-        print(f"  {tv[:21]:<22}{l.get('published', 0):>6}{l.get('caught', 0):>6}{l.get(INGESTED_KIND, 0):>8}"
+        away = f"{l.get(ORIGIN_ELSEWHERE, 0):>8}" if gated else ""
+        print(f"  {tv[:21]:<22}{l.get('published', 0):>6}{l.get('caught', 0):>6}{l.get(INGESTED_KIND, 0):>8}{away}"
               f"{l.get('unmatched', 0):>7}{l.get('ambiguous', 0):>7}{l.get('unlinked', 0):>7}{drawn:>10}{checked:>8}")
+    if gated:
+        print("  别处写的 = 回流闸记的出处是 elsewhere(和写作台任何一稿的文字重合不到 15%)。帖在哪写都可以(owner 11-12, "
+              "D-151), 这一列预期之内、不进判据; 补录副本、没对上两列里已经不含它们")
+
+
+def _print_gate(pub: dict, now: datetime) -> None:
+    """回流闸那一行(四列不在时什么都不打)。"""
+    gate = pub.get("gate")
+    if gate is None:
+        return
+    latest = _utc_or_none(gate.get("latest")) if gate.get("latest") else None
+    if latest is None:
+        print("  · 回流闸: tv_note_links 上的四列在, 还没有一行被分过类(写作台那一半还没上线, 或今晚才第一次跑) —— "
+              "这次全按 match_kind 判, 和以前一样; 不算故障")
+        return
+    hours = int((now - latest).total_seconds() // 3600)
+    print(f"  · 回流闸: 最近一次分类在 {hours} 小时前({GATE_STALE_HOURS} 小时内算正常; 写作台 tv-sync 每晚 14:00 UTC 跑完分一次)")
+
+
+def _warn_gate(gate_hits: list[dict]) -> None:
+    whole = [h for h in gate_hits if h["kind"] == "gate_stale"]
+    if whole:
+        msg = (f"回流闸超过 {GATE_STALE_HOURS} 小时没分类({whole[0]['detail']}): 写作台的 tv-sync 没跑完, 或它最后那一步"
+               "(回流闸)出错了。")
+    else:
+        msg = (f"回流闸漏了 {len(gate_hits)} 个 TV 项目: "
+               + "; ".join(f"{h['project']}({h['detail']})" for h in gate_hits)
+               + f" —— 别的项目 {GATE_STALE_HOURS} 小时内分过类, 这几个没有: tv-sync 在这几个项目上出错了(一个项目出错只记一行、"
+                 "接着跑别的)。")
+    msg += ("没分类的帖按「没有结论」走: 写作台和馆员照以前的办法用它们, 不会因此少卡、少标题, 只是闸暂时没在筛。"
+            "看 aw 的 tv-sync 定时(Railway cron)那晚的日志里回流闸那一行和这几个项目的 ❌(aw deskcore-runbook); "
+            "修在 autowriter 仓, TV 这边改不好。")
+    print(f"  ⚠ {msg}")
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print(f"::warning title=回流闸没在跑::{msg}", flush=True)
 
 
 def _warn_publish(pub_hits: list[dict], window_days: int) -> None:
@@ -178,7 +314,9 @@ def _warn_publish(pub_hits: list[dict], window_days: int) -> None:
 
 
 def report(stats: dict, window_days: int, now: datetime | None = None) -> int:
-    """把 gather() + gather_publish() 的统计渲染成报告并返回退出码。纯函数, 不碰网络。``now`` 留着给调用方对齐签名。"""
+    """把 gather() + gather_publish() 的统计渲染成报告并返回退出码。纯函数, 不碰网络。``now`` 只有回流闸那一条用
+    (最近一次分类离现在多久); 不给就取当前时刻。"""
+    now = now or datetime.now(timezone.utc)
     by_project = stats.get("by_project") or {}
     drawn = sum(s["drawn"] for s in by_project.values())
     consumed = sum(s["consumed"] for s in by_project.values())
@@ -193,7 +331,9 @@ def report(stats: dict, window_days: int, now: datetime | None = None) -> int:
     print("=" * 84)
     pub = stats.get("publish") or {}
     pub_hits = verdicts_publish(by_project, pub, window_days)
+    gate_hits = verdicts_gate(pub, now)
     _print_publish(pub, by_project, window_days)
+    _print_gate(pub, now)
 
     # 台账表只报: 牌只在稿子存了档、或者发出去以后被对回来时才销, 没写的、写了没发的本来就不销(D-132)
     print(f"  角度台账(只报, 不判): 牌在稿子存档、或发出去后被 tv-sync 对回来时销账, 没销的不算问题; "
@@ -209,6 +349,9 @@ def report(stats: dict, window_days: int, now: datetime | None = None) -> int:
 
     if pub_hits:
         _warn_publish(pub_hits, window_days)
+    if gate_hits:
+        _warn_gate(gate_hits)
+    if pub_hits or gate_hits:
         return 1
     print("  ✓ 没有 TV 项目命中判据 C —— 发出去的帖对得回写作台, 或量小到不值得喊")
     return 0
@@ -326,13 +469,22 @@ def gather_publish(sb, since_iso: str, until_iso: str | None = None) -> dict:
     vanished = fetch_vanished_note_ids(sb)
     tv_ids = {m["tv_project_id"] for m in maps}
     mine = [n for n in notes if n.get("project_id") in tv_ids and n["note_id"] not in vanished]
+    # 回流闸的四列(D-151, aw 迁移 020)在不在: 不在 → 取的列、数的格子和以前一字不差, 回包里 gate 是 None
+    gated = gate_columns_present(sb)
+    link_cols = "note_id, tv_project_id, match_kind, lag_days" + (", origin, gate_at" if gated else "")
     links: dict[str, dict] = {}
     ids = [n["note_id"] for n in mine]
     for i in range(0, len(ids), 200):
         for l in (sb.schema("autowriter").table("tv_note_links")
-                  .select("note_id, tv_project_id, match_kind, lag_days")
+                  .select(link_cols)
                   .in_("note_id", ids[i:i + 200]).execute()).data or []:
             links[l["note_id"]] = l
+    gate = None
+    if gated:
+        # 全库最近一次分类的时刻: gte 顺带把没分过类的(NULL)筛掉; 一行都没有 = 闸还没跑过
+        top = (sb.schema("autowriter").table("tv_note_links").select("note_id, gate_at")
+               .gte("gate_at", "1970-01-01T00:00:00Z").order("gate_at", desc=True).limit(1).execute()).data or []
+        gate = {"latest": top[0].get("gate_at") if top else None, "by_tv": {}}
     # 不限时间: 断得越久越该喊(见文件头)。台账全表千把行, id + project_id 两列, 夜跑拉一遍不贵。
     used = fetch_all_pages(sb.schema("autowriter").table("angle_ledger").select("id, project_id"), order_by="id")
     # 写作台出过稿的项目(存了档的 / 查重底稿转正的, batches.params.source = deskcore)也算用过, 不限时间 —— 只查过重、
@@ -350,12 +502,20 @@ def gather_publish(sb, since_iso: str, until_iso: str | None = None) -> dict:
     counts: dict[str, dict] = {}
     for n in mine:
         c = counts.setdefault(n["project_id"], {"published": 0, "caught": 0, INGESTED_KIND: 0, "pre_snapshot": 0,
-                                                "unmatched": 0, "ambiguous": 0, "unlinked": 0, "late": 0})
+                                                "unmatched": 0, "ambiguous": 0, "unlinked": 0, "late": 0,
+                                                **({ORIGIN_ELSEWHERE: 0} if gated else {})})
         c["published"] += 1
         l = links.get(n["note_id"])
         kind = (l or {}).get("match_kind")
+        if gated and l is not None and l.get("gate_at"):
+            seen = gate["by_tv"].get(n["project_id"])
+            at = _utc_or_none(l["gate_at"])
+            if at is not None and (seen is None or at > _utc_or_none(seen)):
+                gate["by_tv"][n["project_id"]] = l["gate_at"]
         if l is None:
             c["unlinked"] += 1                  # tv-sync 还没对到(它 14:00 UTC 跑, 这盏灯早上跑)
+        elif gated and kind in (INGESTED_KIND, "unmatched") and origin_of_link(l) == ORIGIN_ELSEWHERE:
+            c[ORIGIN_ELSEWHERE] += 1            # 闸记成在别处写的(D-151): 预期之内, 单列, 不进补录副本 / 没对上
         elif kind in CAUGHT_KINDS:
             if l.get("lag_days") is None or l["lag_days"] >= 0:
                 c["caught"] += 1
@@ -370,7 +530,7 @@ def gather_publish(sb, since_iso: str, until_iso: str | None = None) -> dict:
                 c["pre_snapshot"] += 1
         elif kind in INFO_KINDS:
             c[kind] += 1
-    return {"map": by_tv, "links": counts, "snapshots": snap_counts,
+    return {"map": by_tv, "links": counts, "snapshots": snap_counts, "gate": gate,
             "used": ({u["project_id"] for u in used} | {b["project_id"] for b in desk_batches} | snap_ever) & pids}
 
 
@@ -466,12 +626,97 @@ def selftest() -> int:
     rc, out = run({"by_project": {}, "ingested_skipped": 0})
     assert rc == 0, "没有 publish 的老调用方式不变"
 
+    # ── 回流闸(D-151): 出处 / 结论的读法; 别处写的不进红; 36 小时没分类才黄; 四列不在时报文一个字不变 ──────────────
+    assert origin_of_link({"origin": "elsewhere"}) == "elsewhere" and origin_of_link({"origin": "desk_edited"}) == "desk_edited"
+    assert origin_of_link({}) is None and origin_of_link(None) is None and origin_of_link({"origin": None}) is None
+    assert origin_of_link({"origin": "near_desk"}) is None and origin_of_link({"origin": ["elsewhere"]}) is None, \
+        "不认识的出处当没记(near_desk 这一类 D-151 没有)"
+    GV = lambda gate, gr: gate_verdict({"gate": gate, "gate_reasons": gr})  # noqa: E731
+    assert GV("fail", {"reasons": ["not_clean", "efficacy"]}) == ("fail", frozenset({"not_clean", "efficacy"}))
+    assert GV("pass", {"reasons": []}) == ("pass", frozenset())
+    assert GV(None, None) is None and GV("fail", None) is None and GV("fail", "efficacy") is None
+    assert GV("fail", {"reasons": "efficacy"}) is None and GV("fail", {"reasons": [{"name": "efficacy"}]}) is None
+    assert GV("later", {"reasons": []}) is None and gate_verdict(None) is None, "读不懂的一律当没有结论"
+
+    T0 = datetime(2026, 11, 12, 9, 0, tzinfo=timezone.utc)
+    ago = lambda h: (T0 - timedelta(hours=h)).isoformat()  # noqa: E731
+
+    def gpub(links, latest, by_tv=None, **kw):
+        return dict(pub(links, **kw), gate={"latest": latest, "by_tv": by_tv or {}})
+
+    # 11-11 那晚的形状: 三个项目亮黄, 帖几乎全是在别处写的。闸记了出处之后这些帖不在补录副本里 → 不亮
+    away = lambda ing, n, caught=0: dict(L(caught=caught, ing=ing), published=caught + ing + n, **{ORIGIN_ELSEWHERE: n})  # noqa: E731
+    night = {"TUGE": away(0, 16), "HATH": away(1, 37, caught=1), "SPX": away(0, 31)}
+    assert verdicts_publish({}, gpub(night, ago(19))) == [], "帖全在别处写的: 多少篇都不亮黄(D-151)"
+    # 同一批帖闸还没记出处(列不在 / 没分过类): 照今天的办法, 全在补录副本里 → 照亮
+    assert [h["project"] for h in verdicts_publish({}, pub({"TUGE": L(ing=16), "HATH": L(caught=1, ing=38)}))] \
+        == ["HATH", "TUGE"]
+    # 别处写的拿掉之后, 剩下的补录副本(出处不清 / 没记)还到下限: 照亮, 报文里说清另有几篇没算
+    mixed = verdicts_publish({}, gpub({"TUGE": away(MIN_UNCAUGHT, 30)}, ago(19)))
+    assert [h["kind"] for h in mixed] == ["desk_silent"] and "另有 30 篇闸记成在别处写的, 预期之内, 没算在这里" in mixed[0]["detail"]
+    assert "另有" not in verdicts_publish({}, pub({"TUGE": L(ing=22)}))[0]["detail"], "没有闸时报文和以前一样"
+
+    # 闸有没有在跑: 四列不在 / 一行都没分过类 → 不判; 36 小时内 → 不判; 超过 → 一条(不逐个项目点); 漏了项目 → 点名
+    fresh_by = {"TUGE": ago(19), "HATH": ago(19), "SPX": ago(19)}
+    assert verdicts_gate(pub(night), T0) == [] and verdicts_gate(gpub(night, None), T0) == []
+    assert verdicts_gate(gpub(night, ago(19), fresh_by), T0) == []
+    assert verdicts_gate(gpub(night, ago(GATE_STALE_HOURS), {k: ago(GATE_STALE_HOURS) for k in fresh_by}), T0) == [], \
+        "正好 36 小时不算超过"
+    stale = verdicts_gate(gpub(night, ago(43), {k: ago(43) for k in fresh_by}), T0)
+    assert [(h["project"], h["kind"], h["hours"]) for h in stale] == [("(全部项目)", "gate_stale", 43)], stale
+    missed = verdicts_gate(gpub(night, ago(19), dict(fresh_by, HATH=ago(43), SPX=None)), T0)
+    assert [(h["project"], h["kind"], h["hours"]) for h in missed] == [("HATH", "gate_missed", 43), ("SPX", "gate_missed", None)]
+    # 窗口里一条对账行都没有的项目(帖都还没对到)判不了, 不点; 没发帖的项目也不点
+    quiet = {"TUGE": away(0, 16), "HATH": L(unlinked=9)}
+    assert verdicts_gate(gpub(quiet, ago(19), {"TUGE": ago(19)}), T0) == []
+    assert verdicts_gate(gpub(night, "不是时刻"), T0) == [], "时刻读不懂当没分过类, 不崩"
+    assert GATE_STALE_HOURS == 36
+
+    def run_at(stats, now, gha=True):
+        buf = io.StringIO()
+        saved_env = os.environ.get("GITHUB_ACTIONS")
+        os.environ["GITHUB_ACTIONS"] = "true" if gha else "false"
+        try:
+            with contextlib.redirect_stdout(buf):
+                rc = report(stats, 7, now)
+        finally:
+            if saved_env is None:
+                os.environ.pop("GITHUB_ACTIONS", None)
+            else:
+                os.environ["GITHUB_ACTIONS"] = saved_env
+        return rc, buf.getvalue()
+
+    as_stats = lambda p: {"by_project": {}, "ingested_skipped": 0, "publish": p}  # noqa: E731
+    rc, out = run_at(as_stats(gpub(night, ago(19), fresh_by)), T0)
+    assert rc == 0 and "::warning" not in out and "✓" in out, out
+    assert "别处写的" in out and "最近一次分类在 19 小时前" in out and "帖在哪写都可以" in out, out
+    row = next(ln.split() for ln in out.splitlines() if ln.startswith("  HATH "))
+    assert row[1:5] == ["39", "1", "1", "37"], f"发出去 / 对上 / 补录副本 / 别处写的: {row}"
+    rc, out = run_at(as_stats(gpub(night, ago(43), {k: ago(43) for k in fresh_by})), T0)
+    warn = [ln for ln in out.splitlines() if ln.startswith("::warning")]
+    assert rc == 1 and len(warn) == 1 and "title=回流闸没在跑" in warn[0] and "43 小时前" in warn[0], out
+    assert "修在 autowriter 仓" in warn[0] and "不会因此少卡" in warn[0] and "发出去的帖对不回写作台" not in out, warn
+    rc, out = run_at(as_stats(gpub(night, ago(19), dict(fresh_by, SPX=None))), T0)
+    assert rc == 1 and "回流闸漏了 1 个 TV 项目: SPX(窗口里的对账行一行都没分过类)" in out, out
+    rc, out = run_at(as_stats(gpub(night, None)), T0)
+    assert rc == 0 and "还没有一行被分过类" in out and "::warning" not in out, "列在、闸没跑过: 说一句, 不亮黄"
+    # 判据 C 和闸那一条各喊各的, 两条 annotation
+    rc, out = run_at(as_stats(gpub({"TUGE": L(ing=22)}, ago(43), {"TUGE": ago(43)})), T0)
+    assert rc == 1 and len([ln for ln in out.splitlines() if ln.startswith("::warning")]) == 2, out
+    # 四列不在(今天的生产): 报文里没有闸的任何字样, 和不带 gate 这个键的老调用方逐字一样
+    rc0, out0 = run_at(as_stats(week), T0)
+    rc1, out1 = run_at(as_stats(dict(week, gate=None)), T0)
+    assert (rc0, out0) == (rc1, out1) and rc0 == 1 and not [w for w in ("回流闸", "别处写的", "elsewhere") if w in out0], out0
+
     # ── gather_publish: 按对照分、飞书删了的不算、窗口按发布时间、翻页键唯一、只认映射里的项目、底稿只数不读 ──────────
     class _Q:
-        def __init__(self, rows, sink=None, cols=None): self.rows, self.f, self.sink, self.cols = rows, [], sink, cols
+        def __init__(self, rows, sink=None, cols=None, missing=()):
+            self.rows, self.f, self.sink, self.cols, self.missing, self.bad = rows, [], sink, cols, missing, None
         def select(self, cols="*", *a, **k):
             if self.cols is not None:
                 self.cols.append(cols)
+            asked = [c.strip() for c in cols.split(",")]
+            self.bad = next((c for c in asked if c in self.missing), None)      # 库里没有的列: execute 时照 PostgREST 的样子抛
             return self
         def eq(self, k, v):
             if self.sink is not None:
@@ -481,12 +726,14 @@ def selftest() -> int:
         def gte(self, k, v): self.f.append(lambda r: r.get(k) is not None and r[k] >= v); return self
         def lte(self, k, v): self.f.append(lambda r: r.get(k) is not None and r[k] <= v); return self
         def in_(self, k, vs): self.f.append(lambda r: r.get(k) in set(vs)); return self
-        def order(self, k, **kw): self.f.append(lambda r: True); self.okey = k; return self
+        def order(self, k, desc=False, **kw): self.f.append(lambda r: True); self.okey, self.desc = k, desc; return self
         def limit(self, n): self.n = n; return self
         def execute(self):
+            if self.bad:
+                raise RuntimeError(f"{{'code': '42703', 'message': 'column tv_note_links.{self.bad} does not exist'}}")
             rows = [r for r in self.rows if all(f(r) for f in self.f)]
             if getattr(self, "okey", None):
-                rows = sorted(rows, key=lambda r: r[self.okey])[: getattr(self, "n", None)]
+                rows = sorted(rows, key=lambda r: r[self.okey], reverse=self.desc)[: getattr(self, "n", None)]
             return types.SimpleNamespace(data=rows)
 
     INWIN, OLD, LATER = "2026-10-14T08:00:00", "2026-09-20T08:00:00", "2026-10-21T08:00:00"
@@ -521,7 +768,9 @@ def selftest() -> int:
              {"id": "s4", "project_id": "d2", "checked_at": "2026-10-20T03:00:00+00:00"}]          # d2 没发过牌, 只查过重: 也算用过
     eq_seen: list = []
     snap_cols: list = []
+    link_cols: list = []
     missing_snapshots = [False]
+    gate_cols_exist = [False]                     # aw 迁移 020 跑没跑; 下面先按没跑(今天的生产)把老断言全过一遍
     TABLES = {"tv_project_map": [{"tv_project_id": "TUGE", "project_id": "d1"},
                                  {"tv_project_id": "TUGE", "project_id": "d2"},
                                  {"tv_project_id": "HATH", "project_id": "h1"}],
@@ -541,7 +790,9 @@ def selftest() -> int:
                     raise RuntimeError("{'code': 'PGRST205', 'message': \"Could not find the table "
                                        "'autowriter.draft_snapshots' in the schema cache\"}")
                 return _Q(SNAPS, cols=snap_cols)
-            return _Q(TABLES[t], eq_seen if t == "tv_note_links" else None)
+            if t == "tv_note_links":
+                return _Q(TABLES[t], eq_seen, cols=link_cols, missing=() if gate_cols_exist[0] else GATE_COLS)
+            return _Q(TABLES[t])
 
     def _pages(q, order_by=None):
         rows, seen = [], set()                       # 照抄真 fetch_all_pages 的去重语义
@@ -567,6 +818,9 @@ def selftest() -> int:
         assert g["snapshots"] == {"h1": 2, "d2": 1}, "只数映射里的写作台项目"
         assert all("title" not in c and "body" not in c and c != "*" for c in snap_cols), f"底稿只数不读: {snap_cols}"
         assert g["used"] == {"d1", "h1", "d2"}, "没映射的写作台项目不进 used; 只查过重的也算用过"
+        # 回流闸的四列不在(020 没跑): gate 是 None, 探过一次之后取数的列和以前一字不差(上面那几格也没有多出 elsewhere)
+        assert g["gate"] is None and gate_columns_present(SB()) is False
+        assert [c for c in link_cols if "match_kind" in c] == ["note_id, tv_project_id, match_kind, lag_days"], link_cols
         # 反证: 不传 until → 排期的 5 篇算进来; 窗口拉到 9 月 → 旧的 30 篇算进来 —— 窗口确实是 publish_time
         assert gather_publish(SB(), "2026-10-12T00:00:00")["links"]["TUGE"][INGESTED_KIND] == 26
         assert gather_publish(SB(), "2026-09-01T00:00:00",
@@ -583,6 +837,62 @@ def selftest() -> int:
         assert g0["snapshots"] is None and g0["links"]["TUGE"]["pre_snapshot"] == 21, g0
         assert g0["used"] == {"d1", "h1"}, "没有底稿表时, 存过档的(写作台的 batch)照样算用过; 补录的 batch 不算"
         missing_snapshots[0] = False
+
+        # ── 回流闸的四列在(D-151): 别处写的单列、不进补录副本; 最近一次分类的时刻按全库和按项目各取一个 ──────────
+        gate_cols_exist[0] = True
+        G_OLD, G_NEW = "2026-10-17T14:05:00+00:00", "2026-10-18T14:05:00+00:00"
+        base_links = TABLES["tv_note_links"]
+        by_id = {l["note_id"]: l for l in LINKS}
+        gated_links = []
+        for l in LINKS:
+            nid = l["note_id"]
+            extra = {"origin": None, "gate": None, "gate_reasons": None, "gate_at": None}
+            if nid.startswith("t") and nid[1:].isdigit():
+                # 20 篇补录副本: 15 篇闸记成在别处写的, 3 篇 unclear, 2 篇这一行还没分过类
+                i = int(nid[1:])
+                extra = ({"origin": "elsewhere", "gate": "pass", "gate_reasons": {"reasons": []}, "gate_at": G_NEW}
+                         if i < 15 else
+                         {"origin": "unclear", "gate": "pass", "gate_reasons": {"reasons": []}, "gate_at": G_NEW}
+                         if i < 18 else extra)
+            elif nid == "t-un":
+                extra = dict(extra, origin="elsewhere", gate_at=G_OLD)       # 没对上的也可以是别处写的
+            elif nid == "t-amb":
+                extra = dict(extra, origin="elsewhere", gate_at=G_OLD)       # 分不出的本来就是写作台的稿: 出处写错了也不挪
+            elif nid == "h1":
+                extra = dict(extra, origin="desk", gate_at=G_OLD)
+            elif nid == "h3":
+                extra = dict(extra, origin="bogus")                          # 不认识的出处: 当没记
+            gated_links.append({**l, **extra})
+        TABLES["tv_note_links"] = gated_links + [r for r in base_links if r.get("note_id") not in by_id]
+        gg = gather_publish(SB(), "2026-10-12T00:00:00", until_iso="2026-10-19T08:00:00")
+        assert "note_id, tv_project_id, match_kind, lag_days, origin, gate_at" in link_cols, link_cols
+        assert gg["links"]["TUGE"] == {"published": 24, "caught": 0, INGESTED_KIND: 6, "pre_snapshot": 5,
+                                       "unmatched": 0, "ambiguous": 1, "unlinked": 1, "late": 0,
+                                       ORIGIN_ELSEWHERE: 16}, gg["links"]["TUGE"]
+        assert gg["links"]["HATH"] == {"published": 3, "caught": 2, INGESTED_KIND: 0, "pre_snapshot": 0,
+                                       "unmatched": 0, "ambiguous": 0, "unlinked": 0, "late": 1,
+                                       ORIGIN_ELSEWHERE: 0}, gg["links"]["HATH"]
+        assert gg["gate"] == {"latest": G_NEW, "by_tv": {"TUGE": G_NEW, "HATH": G_OLD}}, gg["gate"]
+        # 没有闸时这 21 篇副本让 TUGE 亮黄(上面 verdicts_publish(…, g)); 闸记了 15 篇在别处写的, 剩 6 篇不到下限: 不亮
+        assert verdicts_publish({}, gg) == [], "在别处写的帖不该让发帖对账灯亮黄(D-151)"
+        NOW = datetime(2026, 10, 19, 8, 0, tzinfo=timezone.utc)                 # 灯早上跑: 离 G_NEW 18 小时, 离 G_OLD 42 小时
+        hits = verdicts_gate(gg, NOW)
+        assert [(h["project"], h["kind"], h["hours"]) for h in hits] == [("HATH", "gate_missed", 41)], hits
+        # 一行都没分过类: latest 是 None, 不判
+        TABLES["tv_note_links"] = [dict(l, gate_at=None) for l in TABLES["tv_note_links"]]
+        g_never = gather_publish(SB(), "2026-10-12T00:00:00", until_iso="2026-10-19T08:00:00")
+        assert g_never["gate"] == {"latest": None, "by_tv": {}} and verdicts_gate(g_never, NOW) == [], g_never["gate"]
+        TABLES["tv_note_links"] = base_links
+        gate_cols_exist[0] = False
+        # 探列时别的错(不是「没有这一列」)直接抛: 灯崩了比错判好
+        class _Down:
+            def schema(self, s): raise RuntimeError("PostgREST down")
+        try:
+            gate_columns_present(_Down())
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("探列时连不上库不该当成「列不在」")
 
         # ── gather: 台账表排除补录副本(反证: 不排除, 8 条副本会被当成 8 篇不带坐标的稿) ────────────
         st = gather(SB(), "2026-10-12T00:00:00")
@@ -619,6 +929,8 @@ def selftest() -> int:
     print("  ✓ 判据 A 撤了: 发了牌一张没销不喊; 以前的 B 只报一行、不进退出码")
     print("  ✓ 判据 C: 红只数补录副本(没对上 / 分不出 / 还没对的分列)、飞书删了的不算、下限在、没用过写作台的不喊、"
           "按查没查过重分两种报、记底稿之前的副本单独数、底稿只数不读、取数翻页键唯一、台账表排除补录副本")
+    print("  ✓ 回流闸(D-151): 闸记成在别处写的帖单列、不进红; 闸超过 36 小时没分类 / 漏了项目才黄, 没跑过只说一句; "
+          "四列不在时取数和报文一个字不变")
     return 0
 
 

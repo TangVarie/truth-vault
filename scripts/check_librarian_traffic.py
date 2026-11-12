@@ -39,6 +39,14 @@ LIBRARIAN_URL / LIBRARIAN_API_KEY 没配), TV 这边夜跑的飞轮状态只印 
 退出码:
     0 = 窗口内没生成(无从判)或 生成了且馆员有流量
     1 = 窗口内有生成、馆员零流量 —— 通道 2 暗着(修在 aw 仓, 见 docs/27)
+
+投流标注那一段 (D-151 第 13 条, 11-12 复审后加; 不改上面的判据和退出码):
+    馆员回包前给出处帖投过流的卡写一句, 这一句不进缓存、读不到那两路时卡照常借出去, 所以馆员那头出了事库里看不出来。
+    这里每晚做两件: ① 用夜跑的 service_role 钥匙把馆员读的那两路 (标了 paid_promoted 的帖、truth_vault.v_paid_boost_events)
+    照样读一遍, 有一路读不到 (视图被迁移改了名、权限) → 打 ::warning: 馆员多半也读不到, 投过流的卡正在不带那一句地借出去;
+    ② 数近 7 天新借给写作台的内部卡里出处帖投过流的占几成, 和 11-12 的基线 (165 张里 52 张) 并排印, 周检时看 ——
+    owner 定的是照借, 这个数掉下去就是这些卡没在借了。只印不判 (同上: 不做比例启发式)。
+    挡不住的: 馆员进程自己读不到 (它的钥匙 / 网络) 而夜跑读得到 —— 那要看馆员 /health 的 select.paid_boost (周检手看)。
 ⚠️ 和登记册(docs/29)里其它哨兵灯同一个约定: 正常跑完末尾必打一行
 `LIBRARIAN_TRAFFIC_CHECK_DONE rc=<码>`; daily-sync.yml 靠有没有这一行判定崩溃,
 不靠退出码(Python 崩溃也是 1)。改这个约定要同步改那边的 grep。
@@ -95,6 +103,93 @@ def report(stats: dict, window_hours: int) -> int:
         return 1
     print(f"  ✓ 写作台在生成({b} batch), 也在向馆员借({hits}) —— 通道 2 通着")
     return 0
+
+
+# ── 投流标注 (D-151 第 13 条): 馆员读的那两路夜里读不读得到; 借出去的卡里投过流的占几成 ─────────────────────
+# 和 librarian.core._PAID_SOURCES 是同一个表 / 视图、同一个筛选 (check_librarian_shortlist.py §11 钉着两边一致);
+# 这里不 import librarian (夜跑的环境不装馆员服务的依赖)。
+PAID_SOURCES: tuple = (
+    ("flagged", "notes", ("data_quality_flags->>paid_promoted", "true"), "note_id"),
+    ("events", "v_paid_boost_events", None, "event_id"),
+)
+PAID_PAGE = 1000
+PAID_MAX_PAGES = 20
+# 11-12 只读: 馆员缓存里给写作台的 38 次借卡, 内部卡 165 张, 出处帖投过流的 52 张 (D-151 第 13 条)。只当参照, 不判。
+PAID_BASELINE: tuple[int, int] = (52, 165)
+
+
+def _paid_ids(sb, table: str, where, order: str) -> set:
+    out: set = set()
+    for i in range(PAID_MAX_PAGES):
+        q = sb.schema("truth_vault").table(table).select("note_id")
+        if where:
+            q = q.eq(*where)
+        rows = q.order(order).range(i * PAID_PAGE, (i + 1) * PAID_PAGE - 1).execute().data or []
+        out.update(str(r["note_id"]) for r in rows if isinstance(r, dict) and r.get("note_id"))
+        if len(rows) < PAID_PAGE:
+            break
+    return out
+
+
+def gather_paid(sb, since7_iso: str) -> dict:
+    """读馆员读的那两路 + 近 7 天新写的写作台缓存行。哪一步读不到都记在 errors 里 (只记哪一步、什么异常类型), 不抛。"""
+    out: dict = {"errors": [], "flagged": None, "events": None, "rows": None, "lent": None, "lent_paid": None}
+    ids: set = set()
+    for name, table, where, order in PAID_SOURCES:
+        try:
+            got = _paid_ids(sb, table, where, order)
+        except Exception as exc:  # noqa: BLE001 — 这一段只读只报, 不许带崩上面那盏灯
+            out["errors"].append((name, type(exc).__name__))
+            continue
+        out[name] = len(got)
+        ids |= got
+    try:
+        rows = (sb.schema("truth_vault").table("flywheel_librarian_cache")
+                .select("selected")
+                .gte("created_at", since7_iso)
+                .in_("consumer", list(_DESK_CONSUMERS))
+                .execute()).data or []
+    except Exception as exc:  # noqa: BLE001
+        out["errors"].append(("cache", type(exc).__name__))
+        return out
+    lent = paid = 0
+    for r in rows:
+        sel = r.get("selected") if isinstance(r, dict) else None
+        for c in sel if isinstance(sel, list) else []:
+            nid = str(c.get("source_note_id") or "") if isinstance(c, dict) else ""
+            if not nid or c.get("external") or nid.startswith("ext:"):
+                continue                                  # 外部参考卡不归这条管
+            lent += 1
+            paid += nid in ids
+    out.update(rows=len(rows), lent=lent, lent_paid=paid)
+    return out
+
+
+def report_paid(p: dict) -> bool:
+    """把 gather_paid() 的结果印出来。纯函数。返回馆员读的那两路里有没有读不到的 (有 → 在 GHA 里打 ::warning)。"""
+    names = {"flagged": "标了 paid_promoted 的帖", "events": "truth_vault.v_paid_boost_events", "cache": "馆员缓存"}
+    errors = list(p.get("errors") or [])
+    blind = [(n, e) for n, e in errors if n != "cache"]
+    print("  投流标注 (D-151 第 13 条) · 馆员回包前读的两路: "
+          + " · ".join(f"{names[n]} {'读不到' if p.get(n) is None else str(p[n]) + ' 篇'}" for n in ("flagged", "events")))
+    if blind:
+        msg = ("夜跑读不到 " + "、".join(f"{names[n]} ({e})" for n, e in blind)
+               + ": 馆员用的是同一类钥匙, 多半也读不到 —— 出处帖投过流的经验卡正在不带「投流」那一句地借给写作台"
+               "(借卡照常返回 ok, 别处都不会红)。看视图是不是被迁移改了名 / 权限, 再看馆员 /health 的 select.paid_boost。")
+        print(f"  ⚠ {msg}")
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            print(f"::warning title=投流标注的读数读不到(投过流的卡可能没写明)::{msg}", flush=True)
+    lent, paid = p.get("lent"), p.get("lent_paid")
+    b_paid, b_all = PAID_BASELINE
+    if lent is None:
+        print("  近 7 天借出去的内部卡: 馆员缓存这次读不到, 没有数")
+    elif blind:
+        print(f"  近 7 天新借给写作台的内部卡 {lent} 张 ({p.get('rows')} 次借卡); 投过流的占几成这次数不出 (上面有一路读不到)")
+    else:
+        share = f"{paid / lent:.0%}" if lent else "没有借卡, 无从比"
+        print(f"  近 7 天新借给写作台的内部卡 {lent} 张 ({p.get('rows')} 次借卡), 出处帖投过流的 {paid} 张 ({share}); "
+              f"11-12 的基线 {b_paid} / {b_all} = {b_paid / b_all:.0%}。只印不判: owner 定的是照借, 周检时看这个数有没有掉下去")
+    return bool(blind)
 
 
 def gather(sb, since_iso: str, since7_iso: str) -> dict:
@@ -158,6 +253,11 @@ def main() -> int:
     sb = get_supabase_client()
     stats = gather(sb, since, since7)
     rc = report(stats, args.window_hours)
+    # D-151 第 13 条: 投流标注那一段只读只报 (见文件头), 不改 rc; 它自己崩了也不许带掉上面那盏灯的哨兵行。
+    try:
+        report_paid(gather_paid(sb, since7))
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ⚠ 投流标注那一段没跑完 ({type(exc).__name__}); 上面的判据不受影响")
     # ⚠️ 哨兵行: daily-sync.yml 靠它区分"跑完了"和"崩了"(那边是 `|| true` 调的)。
     print(f"LIBRARIAN_TRAFFIC_CHECK_DONE rc={rc}")
     return rc

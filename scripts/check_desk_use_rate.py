@@ -4,6 +4,11 @@ check_desk_use_rate.py
 
 写作台用上率: 每个项目发出去的帖里, 有多少是写作台出的稿、其中多少原样发了? —— 只读, 不写库。每周一跑。
 
+2026-11-12(D-151)起这盏灯【只报不判】: owner 定了帖在哪写都可以, 没有人被推回写作台 —— 接住率低不是故障, 不再亮黄,
+docs/32 §4 的 40% 目标也撤了。还会出声的只有「判不了」(rc=2: tv-sync 没对账 / 漏了某个项目), 那是真的故障。
+回流闸的四列(aw 迁移 020: autowriter.tv_note_links 的 origin / gate / gate_reasons / gate_at)在的时候, 末尾多一张按出处
+的读数表(只计数, 不下结论, 见 origin_rows); 不在的时候不出这张表, 取数的列也和以前一样。
+
 2026-10-20 生产诊断(docs/32 §1): 写作台的稿子短、彼此像, 大多在飞书里被人整篇重写 —— 写作台存的稿最后
 发出去的只有 23–45%, 有一个项目是 0。写作台自己量不出这件事: 参考分 79 篇全是 100, 而「被重写」发生在
 飞书里、写作台之外。第一批 / 第二批(docs/32)改的是写作台出稿; 这盏灯从【发出去的帖】那一侧看它们有没有用。
@@ -15,7 +20,7 @@ check_desk_use_rate.py
            只看窗口内会把起点前几天发的那批读成零动静(见 DRAW_LOOKBACK_DAYS)。
   在用期 = 这个 TV 项目每张牌那天起 7 天, 加上每篇接住的帖存稿那天(写作台那一版的 versions.created_at; 取不到时
            发布日 − lag_days, 见 _save_day)起 7 天, 按日、可以断成
-           几段(见 USE_TAIL_DAYS)。首牌之前、末牌 7 天之后、中间停了一阵的那几天发的帖基本不可能是写作台的稿, 判据只看
+           几段(见 USE_TAIL_DAYS)。首牌之前、末牌 7 天之后、中间停了一阵的那几天发的帖基本不可能是写作台的稿, 读数只看
            在用期里发布的; 接住的帖本身证明那几天写作台在出稿(翻旧牌写、没抽新牌也算)(codex review on TV#208)。
            回看期内一张牌都没发的项目没有在用期(D-053, 见下)。发牌日、发布日、存稿日、窗口两头都按【北京日历日】比
            (同 aw tvlink._cn_day; 外部审计 11-02 F12 之前按 UTC 日期切, 和发牌同一个北京日发的帖掉出在用期), 11-09 那次
@@ -33,27 +38,23 @@ check_desk_use_rate.py
      更晚), 看最近几天会把「还没对上」读成「没接住」。窗口 14 天: 一周一个项目常常不到 15 篇, 判不了。
      两个数都能调(--window-days / --delay-days)。
 
-判据(rc=1, 🟡): 写作台在用(回看期内发过牌, 或窗口里有接住的帖)、在用期里发布的帖对过账 >= 15 篇(且占在用期里发布的八成以上)、其中接住率 < 20% 的
-  TV 项目。表里的发布 / 对过账两列照旧数整个窗口(tv-sync 对没对账和写作台用没用无关)。
-  · 够不够格判只有一条规则(_judgeable): verdicts() 和「没有项目够格判」那句都调它, ✓ 那句照它写, 不各写一遍;
-  · 只看在用的: 回看期内一张牌都没发、窗口里也没有一篇接住的项目本来就没在用写作台, 它的没接住归角度台账灯
-    判据 C(写作台零动静), 这里不重复喊(D-053)。没抽新牌、翻更早的牌写出接住的帖的也算在用(接住本身就是证据,
-    codex review on TV#208)。在用的项目两盏灯会同时亮: 判据 C 的「查过稿、发出去对不回」也算在用的项目。两边
-    读的是同一批 tv_note_links, 光凭链接分不清「没在写作台写」和「被重写」(两种都是补录副本), 分开它们要看写作台
-    这段时间查没查过这个项目的稿 —— 判据 C 那张表的「查重底稿」列(W-38 / D-132; 写手没有存档这一步, 不看存档)。
-    亮黄的报文里点明这一句。11-11 整体审计量过哪一种多: 三个项目 545 篇没接住的帖里 542 篇和写作台任何一稿的
-    文字重合不到 15%, 是在别处写的, 不是被重写的(OPEN-ITEMS L-07 第三支), 报文照这个说, 先按「没在写作台写」查。
-    TangVarie/autowriter#153 起 tv-sync 给对不上的帖在 tv_note_links.score 里记最高重合度(不到 0.15 = 在别处写的,
-    0.30 以上 = 拿写作台的稿改的), 单篇可以直接分 —— 查过不少稿的项目也看它, 查过稿、对不上不等于被重写;
-    这盏灯不读这一列, 只在报文里指过去;
+读数(只报不判, D-151; 11-12 之前接住率 < 20% 亮 🟡 rc=1, 那条判据撤了): 写作台在用(回看期内发过牌, 或窗口里有接住的帖)、
+  在用期里发布的帖对过账 >= 15 篇(且占在用期里发布的八成以上)的 TV 项目, 报一句在用期内的接住率。表里的发布 / 对过账
+  两列照旧数整个窗口(tv-sync 对没对账和写作台用没用无关)。
+  · 读不读得出只有一条规则(_judgeable): readings() 和「没有项目在用期内读得出」那句都调它, 不各写一遍;
+  · 只看在用的: 回看期内一张牌都没发、窗口里也没有一篇接住的项目本来就没在用写作台, 在用期内没有数可报。没抽新牌、
+    翻更早的牌写出接住的帖的也算在用(接住本身就是证据, codex review on TV#208);
   · 15 篇是比例能不能读的样本下限, 不随窗口放大(它管的是一个比例有几个分母, 不是一周该发多少);
-  · 分母用对过账的, 不用发布数: 没对过账的不知道是不是写作台的稿, 当成没接住会在 tv-sync 某晚失败时冒假黄。
+  · 分母用对过账的, 不用发布数: 没对过账的不知道是不是写作台的稿;
+  · 为什么不判: 11-11 整体审计量过, 三个项目 545 篇没接住的帖里 542 篇和写作台任何一稿的文字重合不到 15%, 是在别处
+    写的, 不是被重写的(OPEN-ITEMS L-07 第三支); owner 11-12 定了这不是要纠正的事(D-151)。单篇在哪写的看回流闸记的
+    出处(tv_note_links.origin; 没有时看 score: 不到 0.15 = 在别处写的)。
 rc=2: 判不了 —— 映射的 TV 项目窗口内一篇都没发, 或发了但一条链接都没有(tv-sync 没对过账); 或者【某一个】项目
      整窗(或在用的项目在用期里)发布 >= 15 篇、对过账的不到八成(tv-sync 漏了这个项目: aw 的 tv-sync 一个项目出错
      只记一行、接着跑别的, 别的项目照常对账, 全局合计看不出来; tv-sync 坏的那几天正好是在用的那几天时, 整窗合计还
-     过八成)。这种项目点名报; 别的项目照常判, 有项目亮黄时 rc 仍是 1。
+     过八成)。这种项目点名报; 别的项目照常报读数。
 
-红了修在 autowriter 仓(写作台出稿质量: TV docs/32 第一批 / 第二批), TV 这边改不好。advisory, 不拖红。
+rc=2 修在 autowriter 仓(tv-sync), TV 这边改不好。advisory, 不拖红。
 
 用法:
     python check_desk_use_rate.py                         # 默认: 发布于 21 天前 ~ 7 天前
@@ -61,9 +62,9 @@ rc=2: 判不了 —— 映射的 TV 项目窗口内一篇都没发, 或发了但
     python check_desk_use_rate.py --selftest              # CI: 判据 / 口径 / 取数 / 接线, 不连库
 
 退出码:
-    0 = 没有项目命中判据(或有数但没有项目够格判, 且没有项目被点名判不了)
-    1 = 至少一个项目命中 —— 修在 autowriter 仓
-    2 = 判不了(没发布 / 没对过账 / 某个项目整窗或在用期里大多没对过账), 且没有项目命中
+    0 = 读数出了(或没有项目在用期内读得出), 没有项目被点名判不了
+    1 = 不再用(11-12 之前: 接住率低亮黄; D-151 撤了)
+    2 = 判不了(没发布 / 没对过账 / 某个项目整窗或在用期里大多没对过账)
 ⚠️ 同 check_angle_ledger_leak.py 的约定: 正常跑完末尾必打一行 `DESK_USE_RATE_CHECK_DONE rc=<码>`;
 daily-sync.yml 靠有没有这一行判定崩溃, 不靠退出码。
 """
@@ -74,15 +75,18 @@ import os
 import sys
 from datetime import date, datetime, timedelta, timezone
 
+# 回流闸那四列的读法两盏灯共用一份(D-151); 那个模块顶层只有标准库, 夜跑和 CI 都是在 scripts/ 里跑的。
+from check_angle_ledger_leak import (GATE_CLASSES, GATE_REASON_NOT_CLEAN, ORIGINS, gate_columns_present, gate_verdict,
+                                     origin_of_link)
+
 # ⚠️ 故意【不】在模块顶层 import _common(会拖进 supabase / yaml): tally / report 是纯函数,
 # --selftest 在 CI 的裸环境里直接测它们 —— 同 check_angle_ledger_leak.py 的理由。
 
 DEFAULT_WINDOW_DAYS = 14
 DEFAULT_DELAY_DAYS = 7
-# 判据下限(10-20 定): 10-12 那周全部映射项目发布 156 篇、接住 29 篇(19%), 之前三周 1–3%。
-# 20% 是「写作台在用、发出去的帖五篇里不到一篇是它的稿」—— 比这还低, 写作台就只是个摆设。
+# 读数的样本下限(10-20 定): 在用期内对过账不到这么多篇的项目, 接住率不报(一个比例要有够多的分母)。
+# 11-12(D-151)之前这里还有一条「接住率 < 20% 亮黄」(MIN_CAUGHT_SHARE): 撤了 —— 帖在哪写都可以, 接住率低不是故障。
 MIN_PUBLISHED = 15
-MIN_CAUGHT_SHARE = 0.20
 # 对过账 / 发布 低于这个数 = tv-sync 漏了这个项目。tv-sync 给映射项目的每篇都写一行(没正文的记 unmatched、对不上的
 # 补录成 ingested), 正常两者相等; 留两成余量给当晚刚进 TV、还没轮到对账的。只看发布 >= MIN_PUBLISHED 的项目。
 MIN_LINKED_SHARE = 0.8
@@ -101,6 +105,15 @@ CURRENT_DIFF_REV = 2
 # 对上写作台版本的几种(tv-sync 的 match_kind)。同 check_angle_ledger_leak.CAUGHT_KINDS、aw _TV_BACKFILL_KINDS。
 CAUGHT_KINDS = frozenset({"body_exact", "title_exact", "fuzzy", "edited", "tv_lineage"})
 CHUNK = 200     # .in_() 走 URL, 约 26 KB 撞线(D-080), 一批 ≤200 个 id
+# ── 回流闸读数(D-151) ──
+HIT_TIERS = frozenset({"爆", "大爆"})                    # 同 aw priors.HIT_TIERS
+SETTLED_TIERS = frozenset({"爆", "大爆", "趴"})          # 已定档, 同 aw priors.RESOLVED_TIERS
+COUNTED_CLASSES = frozenset({"pass", "fail", "unsure"})  # 有真实结果可数的类别; hold(没发布时间 / 排期在后面 / 正文还是空的 / 伪爆)和 withdrawn 不数
+ORIGIN_NONE = "(没记)"                                   # 有对账行, 闸还没给这一行记出处
+ORIGIN_UNLINKED = "(没对账)"                             # tv-sync 还没给这篇写对账行
+ORIGIN_LABELS = {"desk": "写作台的稿", "desk_edited": "写作台的稿·改过", "copied_back": "发后抄回写作台",
+                 "elsewhere": "别处写的", "unclear": "分不清"}
+CLASS_LABELS = {"pass": "通过", "fail": "不学", "unsure": "待答", "hold": "搁置", "withdrawn": "已撤"}
 
 
 def is_caught(link: dict) -> bool:
@@ -177,7 +190,7 @@ def tally(g: dict) -> dict:
     "diffs": {note_id: tv_edit_diffs 行}, "drawn": {project_id: 回看期内发牌数},
     "drawn_days": {project_id: 回看期内发过牌的日子 [YYYY-MM-DD…]}, "since" / "until": 窗口}``。
     发布 / 对过账 / 接住 数整个窗口(unlinked() 的整窗那条和表里的发布、对过账两列用它); ``j_*`` 只数在用期里发布的
-    —— 判据用它(codex review on TV#208)。在用期 = 这个 TV 项目(映射的几个写作台项目合起来)每个发牌日、每篇接住的帖的
+    —— 在用期内的读数用它(codex review on TV#208)。在用期 = 这个 TV 项目(映射的几个写作台项目合起来)每个发牌日、每篇接住的帖的
     存稿日起 USE_TAIL_DAYS 天, 按日、可以断成几段: 首牌之前、末牌 7 天之后、中间停了一阵的帖不判; 首牌之前就有接住的帖
     (翻旧牌写、没抽新牌; 早的牌在回看之外)那几天照判 —— 接住本身证明写作台在出稿, 回看期内一张牌都没发也一样。
     回看期内没发牌、窗口里也没有一篇接住的项目没有在用期(D-053, 归角度台账灯判据 C)。``use_spans`` = 在用期落在窗口里的几段, 给报文用。窗口内一篇都没发的 TV 项目不出现。
@@ -236,13 +249,14 @@ def _active(r: dict) -> bool:
 
 
 def _judgeable(r: dict) -> bool:
-    """这个项目够不够格判。verdicts() 和 report() 的「没有项目够格判」都只调这里 —— 以前两处各写一遍, report 漏了
-    八成那条: 唯一在用的项目对过账 15/100 时 verdicts() 跳过它, report 却打绿 ✓(codex review on TV#208)。
-    两条八成和 unlinked() 的两条一一对应: 对过账够样本、却因为对账不全不够格判的, unlinked() 一定点名。"""
+    """这个项目在用期内的接住率读不读得出。readings() 和 report() 的「没有项目在用期内读得出」都只调这里 —— 以前两处各写
+    一遍, report 漏了八成那条: 唯一在用的项目对过账 15/100 时一边跳过它, 另一边却打绿 ✓(codex review on TV#208)。
+    两条八成和 unlinked() 的两条一一对应: 对过账够样本、却因为对账不全读不出的, unlinked() 一定点名。
+    (名字是 11-12 之前留下的: 那时读得出的项目接住率 < 20% 会亮黄, D-151 撤了, 现在只报。)"""
     return (_active(r)
             and r["j_linked"] >= MIN_PUBLISHED                          # 在用期里对过账够样本下限
             and r["j_linked"] >= r["j_published"] * MIN_LINKED_SHARE    # 在用期里的也大多对过账, 不然接住率是偏的子集
-            # 整窗对过账不到八成的归 unlinked()「判不了」: 不能再同时喊「没被用上」把人往出稿质量上引
+            # 整窗对过账不到八成的归 unlinked()「判不了」: 对账不全的时候不报接住率
             and r["linked"] >= r["published"] * MIN_LINKED_SHARE)
 
 
@@ -250,26 +264,119 @@ def _span_text(r: dict) -> str:
     return "、".join(a[5:] if a == b else f"{a[5:]}~{b[5:]}" for a, b in r["use_spans"]) or "—"
 
 
-def verdicts(rows: dict) -> list[dict]:
-    """哪些 TV 项目在用写作台、在用期里发出去的帖却大多不是写作台的稿。纯函数。"""
+def readings(rows: dict) -> list[dict]:
+    """在用写作台、在用期内接住率读得出的 TV 项目, 各一句读数。纯函数。只报不判(D-151): 接住率多低都在这里, 不分高低。"""
     out = []
     for tv, r in sorted(rows.items()):
         if not _judgeable(r):
             continue
         share = r["j_caught"] / r["j_linked"]
-        if share < MIN_CAUGHT_SHARE:
-            out.append({"project": tv, "share": share, "linked": r["j_linked"], "caught": r["j_caught"],
-                        "drawn": r["drawn"], "use_spans": r["use_spans"],
-                        "detail": f"在用期 {_span_text(r)} 发布 {r['j_published']} 篇、对过账 {r['j_linked']} 篇、"
-                                  f"接住 {r['j_caught']} 篇({share:.0%}); 整窗发布 {r['published']} 篇, 发牌 {r['drawn']}"})
+        out.append({"project": tv, "share": share, "linked": r["j_linked"], "caught": r["j_caught"],
+                    "drawn": r["drawn"], "use_spans": r["use_spans"],
+                    "detail": f"在用期 {_span_text(r)} 发布 {r['j_published']} 篇、对过账 {r['j_linked']} 篇、"
+                              f"接住 {r['j_caught']} 篇({share:.0%}); 整窗发布 {r['published']} 篇, 发牌 {r['drawn']}"})
     return out
+
+
+def origin_rows(g: dict) -> dict:
+    """回流闸读数(D-151): {(TV 项目, 出处): 一格}。纯函数。``g["gate"]`` 是 None(四列不在) → {}, 不出表。
+
+    数的是【笔记】, 不是文字: 同一段文字挂在几篇笔记上, 每篇按自己的对账行各算一篇(D-151 第 6 条)。
+    出处 = 闸记在对账行上的 origin(origin_of_link); 有对账行没记出处的归 ORIGIN_NONE, 没有对账行的归 ORIGIN_UNLINKED。
+    每格: posts 发出去的帖(飞书里没删的, 同表上的「发布」) · 五个类别各几篇 · no_verdict 闸没结论的 ·
+    settled_clean 干净且已定档的 · clean_hits 其中爆 / 大爆 · deleted 飞书里删了的(单列, 不在前面几个数里) +
+    deleted_tiers 它们删之前最后的档位。
+    「干净」用闸自己的尺子: 类别是 pass / fail / unsure(hold 和 withdrawn 不是能数的结果), 且原因里没有 not_clean
+    (投流标记 / 铺评工单 / 投流事件; 闸那头直接调 aw priors.is_clean, 这里不重写一遍)。闸没结论的帖不知道干不干净, 不数。
+    """
+    gate = g.get("gate")
+    if gate is None:
+        return {}
+    links, mapped = g.get("links") or {}, g.get("map") or {}
+    out: dict[tuple, dict] = {}
+
+    def cell(tv, link):
+        origin = ORIGIN_UNLINKED if link is None else (origin_of_link(link) or ORIGIN_NONE)
+        return out.setdefault((tv, origin), {"posts": 0, "settled_clean": 0, "clean_hits": 0,
+                                             **{c: 0 for c in GATE_CLASSES}, "no_verdict": 0,
+                                             "deleted": 0, "deleted_tiers": {}})
+
+    for n in g.get("notes") or []:
+        if n.get("project_id") not in mapped:
+            continue
+        link = links.get(n.get("note_id"))
+        r = cell(n["project_id"], link)
+        r["posts"] += 1
+        verdict = gate_verdict(link)
+        if verdict is None:
+            r["no_verdict"] += 1
+            continue
+        cls, reasons = verdict
+        r[cls] += 1
+        if cls in COUNTED_CLASSES and GATE_REASON_NOT_CLEAN not in reasons and n.get("tier") in SETTLED_TIERS:
+            r["settled_clean"] += 1
+            r["clean_hits"] += int(n["tier"] in HIT_TIERS)
+    gone_links = gate.get("gone_links") or {}
+    for n in gate.get("gone") or []:
+        if n.get("project_id") not in mapped:
+            continue
+        r = cell(n["project_id"], gone_links.get(n.get("note_id")))
+        r["deleted"] += 1
+        tier = n.get("tier") or "没定档"
+        r["deleted_tiers"][tier] = r["deleted_tiers"].get(tier, 0) + 1
+    return out
+
+
+def _print_origin(g: dict) -> None:
+    """回流闸读数表。四列不在 → 什么都不打(和以前一样)。只计数, 不下结论, 不进退出码。"""
+    if g.get("gate") is None:
+        return
+    rows = origin_rows(g)
+    order = {o: i for i, o in enumerate(ORIGINS + (ORIGIN_NONE, ORIGIN_UNLINKED))}
+
+    def line(name, origin, r):
+        gone = (f"{r['deleted']}(" + "、".join(f"{t} {k}" for t, k in sorted(r["deleted_tiers"].items())) + ")"
+                if r["deleted"] else "0")
+        return (f"  {name[:19]:<20}{ORIGIN_LABELS.get(origin, origin):<14}{r['posts']:>5}{r['settled_clean']:>9}"
+                f"{r['clean_hits']:>7}" + "".join(f"{r[c]:>6}" for c in GATE_CLASSES) + f"{r['no_verdict']:>6}  {gone}")
+
+    print()
+    print("  回流闸读数 · 按出处(D-151)。数的是笔记, 不是文字: 同一段文字挂在几篇笔记上, 每篇各算一篇")
+    if not rows:
+        print("  · 这个窗口没有帖可数")
+        return
+    print(f"  {'TV 项目':<20}{'出处':<14}{'帖':>5}{'干净已定档':>9}{'干净爆':>7}"
+          + "".join(f"{CLASS_LABELS[c]:>6}" for c in GATE_CLASSES) + f"{'没判':>6}  已删(删之前最后的档位)")
+    total: dict[str, dict] = {}
+    for (tv, origin), r in sorted(rows.items(), key=lambda kv: (kv[0][0], order.get(kv[0][1], 99))):
+        print(line(tv, origin, r))
+        t = total.setdefault(origin, {k: (dict() if k == "deleted_tiers" else 0) for k in r})
+        for k, v in r.items():
+            if k == "deleted_tiers":
+                for tier, cnt in v.items():
+                    t[k][tier] = t[k].get(tier, 0) + cnt
+            else:
+                t[k] += v
+    for origin, r in sorted(total.items(), key=lambda kv: order.get(kv[0], 99)):
+        print(line("合计", origin, r))
+    if all(r["no_verdict"] == r["posts"] for r in rows.values()):
+        print("  · 闸的四列在, 这个窗口的帖一篇都还没被分过类(写作台那一半还没上线, 或窗口里的帖还没轮到): 上面只有篇数可看")
+    print("  帖 = 窗口内发出去、飞书里没删的; 已删 = 飞书里删了的, 单列、不在前面几列里, 括号里是删之前最后的档位。"
+          "通过 / 不学 / 待答 / 搁置 / 已撤 = 闸的五个类别(pass / fail / unsure / hold / withdrawn); 没判 = 闸对这篇没有结论"
+          "(没有对账行、这一行还没分过类, 或读不懂)。")
+    print("  干净 = 闸的类别是 通过 / 不学 / 待答, 且原因里没有 not_clean(投流标记 / 铺评工单 / 投流事件, 闸自己的尺子, "
+          "同写作台 priors.is_clean); 已定档 = 爆 / 大爆 / 趴; 干净爆 = 其中的爆 / 大爆。没判的帖不知道干不干净, 不数。")
+    print("  只计数, 不下结论, 不进退出码。这张表读不出的: ① 写作台写的比别处写的好不好 —— 11-12 只读, 60 天里写作台的稿"
+          "干净爆 3 篇, 命中率从约 2% 翻一倍要约 700 篇干净已定档的写作台帖才分得出; ② 拿掉投流 / 功效 / 已删的帖之后命中率"
+          "升没升 —— 别处写的帖干净爆一个月约 9 篇; ③ 已验证规律对探索臂 —— 别处写的帖没有臂; ④ 谁写的 —— 别处写的帖"
+          "没有记写手, 也不问。")
 
 
 def unlinked(rows: dict) -> list[dict]:
     """哪些 TV 项目发了不少帖、tv-sync 却大多没对过账(判不了)。纯函数。
 
     全局「一条链接都没有」那道 rc=2 管不到这种: aw 的 tv-sync 逐个项目跑, 一个项目出错只记一行、接着跑别的,
-    别的项目照常对账, 合计的对过账 > 0; 这个项目在 verdicts() 里因为对过账不到下限被安静地跳过。
+    别的项目照常对账, 合计的对过账 > 0; 这个项目在 readings() 里因为对过账不到下限被安静地跳过。
     两条任一条就点名: 整窗发布 >= 15 篇、对过账不到八成; 或者在用的项目在用期里发布 >= 15 篇、对过账不到八成 ——
     tv-sync 从某天起坏、这个项目又正好从某天起才用写作台, 没对上的扎堆在在用期里, 整窗合计还过八成; 只看整窗, 它会在
     _judgeable() 里被安静跳过、旁边别的项目照打 ✓(codex review on TV#208)。
@@ -343,8 +450,8 @@ def report(g: dict, window_days: int, delay_days: int) -> int:
         print(f"  接住 = 对上写作台发布前存的那版; 未改动 = 接住且算过差异的里面原样发的(标题、正文一个字没动); "
               f"改标题 = 其中标题动过的。发牌数窗口起点前 {DRAW_LOOKBACK_DAYS} 天到终点(牌先发、帖后发); "
               f"在用天 = 窗口里算写作台在用的天数(每个发牌日、每篇接住的帖的存稿日起 {USE_TAIL_DAYS} 天); "
-              f"在用期内 = 这些天发布的 接住/对过账/发布。判据只看在用期内: 写作台在用(发过牌或有接住)、在用期内对过账 >= {MIN_PUBLISHED} 篇"
-              f"且占这些天发布八成以上、接住率 < {MIN_CAUGHT_SHARE:.0%}")
+              f"在用期内 = 这些天发布的 接住/对过账/发布。在用期内的接住率只在写作台在用(发过牌或有接住)、在用期内对过账 >= {MIN_PUBLISHED} 篇"
+              f"且占这些天发布八成以上时读得出; 只报不判(D-151)")
 
     if not pub:
         _warn("写作台用上率判不了", f"映射了写作台的 TV 项目在 {span} 一篇都没发 —— 先看 daily-sync 的飞书入库"
@@ -366,31 +473,17 @@ def report(g: dict, window_days: int, delay_days: int) -> int:
     blind_rc = 2 if blind else 0
     blind_note = "(上面判不了的项目不在内)" if blind else ""
 
-    if not any(_judgeable(r) for r in rows.values()):     # 和 verdicts() 同一条规则, 不另写(codex review on TV#208)
-        print(f"  · 没有项目够格判: 写作台在用(发过牌或有接住)、在用期内发布的帖对过账够 {MIN_PUBLISHED} 篇且八成以上对过账的项目"
-              f"一个都没有(不是健康, 是没活、量太小或对账不全; 发了帖、写作台零动静的看角度台账灯判据 C){blind_note}")
-        return blind_rc
-    hits = verdicts(rows)
-    if not hits:
-        print(f"  ✓ 没有项目命中: 写作台在用(发过牌或有接住)、在用期内对过账够 {MIN_PUBLISHED} 篇且八成以上对过账的项目, "
-              f"在用期内发出去的帖至少 {MIN_CAUGHT_SHARE:.0%} 是写作台的稿{blind_note}")
-        return blind_rc
-    _warn("写作台的稿没被用上",
-          f"{span} 发布的帖里, {len(hits)} 个项目写作台在用(发过牌或有接住的帖)、在用期里发出去的却大多不是写作台的稿: "
-          + "; ".join(f"{h['project']}({h['detail']})" for h in hits)
-          + " —— 写作台在用、稿子没被用上: 要么稿子没在写作台写(没查过重), 要么查过、在飞书里被整篇重写了(稿短、彼此像、"
-            "版式不对)。量过: 没接住的帖大多和写作台任何一稿的文字重合不到 15%, 是在别处写的, "
-            "不是被重写的(11-11 只读核过三个项目: 545 篇没接住的帖里 542 篇), 所以先按「没在写作台写」查。"
-            "单篇是哪一种看 autowriter.tv_note_links.score(TangVarie/autowriter#153 起 tv-sync 给对不上的帖记它和写作台"
-            "最像那一稿的重合度: 不到 0.15 = 在别处写的, 0.30 以上 = 拿写作台的稿改的, 空 = 没算过或没得比(帖太短、没正文)); "
-            "整个项目看写作台这段时间查没查过这几个项目的稿: 发帖对账灯判据 C 那张表的「查重底稿」列"
-            "(它默认看最近 7 天, 要盖住这里的窗口就手动跑 check_angle_ledger_leak.py --window-days 21)。"
-            "查重底稿接近 0 = 没在写作台写, 判据 C 多半也亮着「写作台没查过这个项目一篇稿」, 先按那边查; "
-            "查过不少稿、发出去的仍对不上: 不等于被重写, 先看这些帖的 tv_note_links.score —— 0.30 以上的才是拿写作台的稿"
-            "改的, 修在 autowriter 仓(写作台出稿质量, TV docs/32 第一批 / 第二批), 先看这几个项目的改稿差异摘要和最近"
-            "几批稿子长什么样; 不到 0.15 的是在别处写的, 是流程上的事(OPEN-ITEMS L-07 第三支), 代码改不了。"
-            "写手没有存档这一步; TV 这边两种都改不好。")
-    return 1
+    reads = readings(rows)                                # 读不读得出只有 _judgeable 一条规则, 不另写(codex review on TV#208)
+    if reads:
+        print("  · 在用期内的接住率(只报不判): " + "; ".join(f"{h['project']}({h['detail']})" for h in reads) + blind_note)
+    else:
+        print(f"  · 没有项目在用期内读得出接住率: 写作台在用(发过牌或有接住)、在用期内发布的帖对过账够 {MIN_PUBLISHED} 篇且八成以上"
+              f"对过账的项目一个都没有(没活、量太小或对账不全){blind_note}")
+    print("  · 为什么只报不判(D-151): owner 11-12 定了帖在哪写都可以, 没有人被推回写作台。接住率低不是故障, 这盏灯不再"
+          "因为它亮黄, 也没有「该到多少」的目标; 数照旧每周记进 docs/32 §4。单篇在哪写的看回流闸记的出处"
+          "(autowriter.tv_note_links.origin; 那一列还没有时看 score: 不到 0.15 = 在别处写的, 0.30 以上 = 拿写作台的稿改的)。")
+    _print_origin(g)
+    return blind_rc
 
 
 def gather(sb, since_iso: str, until_iso: str) -> dict:
@@ -406,23 +499,36 @@ def gather(sb, since_iso: str, until_iso: str) -> dict:
     # 窗口按 publish_time 切, 不按对照写进去的时间(matched_at): 新接一张表、或 tv-sync 停几天再补, 一批旧笔记会
     # 同时拿到很新的 matched_at(codex review on aw#109, 角度台账灯判据 C 同一个坑)。
     # ⚠️ order_by 必须唯一且在 select 里(fetch_all_pages 按它去重), 所以是 note_id / id, 不是时间列。
+    # 回流闸的四列(D-151, aw 迁移 020)在不在: 不在 → 下面取的列和以前一字不差, 回包里 gate 是 None, 不出按出处的表
+    gated = gate_columns_present(sb)
     notes = fetch_all_pages(
         sb.schema("truth_vault").table("notes")
-        .select("note_id, project_id, publish_time")
+        .select("note_id, project_id, publish_time" + (", tier" if gated else ""))
         .gte("publish_time", since_iso).lte("publish_time", until_iso),
         order_by="note_id")
     # 飞书里已删的篇(本项目最近一次完整同步没见到, 审计 B-21 / D-103)不算发出去的帖, 同闸二 / 策展 / 通道 1: 删前的
     # 快照之后没人维护, 删了又重贴的一篇会数成两篇(codex review on TV#208)。视图不在就直接抛(fetch_vanished_note_ids
     # 的约定): 不打哨兵、daily-sync 报崩, 好过静默把删了的篇算进分母。
     vanished = fetch_vanished_note_ids(sb)
+    # 飞书里删了的篇: 发布 / 对过账 / 接住都不数它们(上面的道理); 回流闸读数里单列一栏(D-151), 所以四列在时留一份
+    gone = [n for n in notes if n.get("project_id") in by_tv and n["note_id"] in vanished] if gated else []
     notes = [n for n in notes if n.get("project_id") in by_tv and n["note_id"] not in vanished]
     ids = [n["note_id"] for n in notes]
+    link_cols = ("note_id, tv_project_id, project_id, version_id, match_kind, lag_days"
+                 + (", origin, gate, gate_reasons" if gated else ""))
     links: dict[str, dict] = {}
     for i in range(0, len(ids), CHUNK):
         for r in (sb.schema("autowriter").table("tv_note_links")
-                  .select("note_id, tv_project_id, project_id, version_id, match_kind, lag_days")
+                  .select(link_cols)
                   .in_("note_id", ids[i:i + CHUNK]).execute()).data or []:
             links[r["note_id"]] = r
+    gone_links: dict[str, dict] = {}
+    gone_ids = [n["note_id"] for n in gone]
+    for i in range(0, len(gone_ids), CHUNK):
+        for r in (sb.schema("autowriter").table("tv_note_links")
+                  .select("note_id, origin, gate, gate_reasons")
+                  .in_("note_id", gone_ids[i:i + CHUNK]).execute()).data or []:
+            gone_links[r["note_id"]] = r
     caught_ids = [nid for nid in ids if nid in links and is_caught(links[nid])]
     # 接住的那一版什么时候存的(只取 id 和 created_at, 不读正文): _save_day 用它算北京的存稿日 —— 库里的 lag_days 有一大半
     # 是 aw 10-29 之前按 UTC 日算的, 拿北京发布日去减会晚一天(复审 on 52f690e)
@@ -468,7 +574,8 @@ def gather(sb, since_iso: str, until_iso: str) -> dict:
                 drawn_days.setdefault(p, set()).add(_day(a["drawn_at"]))      # 按日, 同 tally() 的比法
     return {"map": by_tv, "names": _project_names(sb, pids), "notes": notes, "links": links,
             "diffs": diffs, "drawn": drawn, "drawn_days": {p: sorted(ds) for p, ds in drawn_days.items()},
-            "any_rev2": any_rev2, "since": since_iso, "until": until_iso, "draw_since": draw_since}
+            "any_rev2": any_rev2, "since": since_iso, "until": until_iso, "draw_since": draw_since,
+            "gate": {"gone": gone, "gone_links": gone_links} if gated else None}
 
 
 def _project_names(sb, pids: set) -> dict:
@@ -490,7 +597,7 @@ def window(now: datetime, window_days: int, delay_days: int) -> tuple[str, str]:
 
 
 def selftest() -> int:
-    """判据 / 口径 / 取数 / main 与夜跑接线。不连库; 反证靠改坏输入。"""
+    """读数 / 口径 / 判不了 / 回流闸读数表 / 取数 / main 与夜跑接线。不连库; 反证靠改坏输入。"""
     import contextlib
     import io
     import itertools
@@ -552,28 +659,30 @@ def selftest() -> int:
     # 同一天 → 进 j_*(以前按 UTC 日期切成 10-07、掉出在用期, 这就是 j_published 6 → 7 那一篇); a8 10-07 15:59 UTC = 北京
     # 10-07 23:59, 在在用期之前 → 只进发布一列、不进 j_*; a6 北京 10-08 08:30 → 进 j_published
 
-    # ── 判据: 下限真的在起作用 ─────────────────────────────────────────────────
+    # ── 读数: 只报不判(D-151); 样本下限真的在起作用 ─────────────────────────────
     def R(linked, caught, drawn=5):
         return {"P": {"published": linked + 2, "linked": linked, "caught": caught, "diffed": 0, "unchanged": 0,
                       "title_changed": 0, "drawn": drawn, "use_spans": [("2026-10-05", "2026-10-19")] if drawn else [],
                       "j_published": linked + 2 if drawn else 0, "j_linked": linked if drawn else 0,
                       "j_caught": caught if drawn else 0, "desk": []}}
-    assert [h["project"] for h in verdicts(R(15, 2))] == ["P"], "15 篇接住 2 篇(13%)该喊"
-    assert verdicts(R(15, 3)) == [], "正好 20% 不喊"
-    assert verdicts(R(14, 0)) == [], "对过账不到 15 篇不判"
-    assert verdicts(R(40, 0, drawn=0)) == [], "窗口内一张牌没发的归角度台账灯判据 C, 这里不重复喊"
-    # 分母是对过账的、不是发布数: 发了 40 篇、tv-sync 只对过 10 篇, 不能因为没对账就判没接住
+    assert [(h["project"], h["caught"], h["linked"]) for h in readings(R(15, 2))] == [("P", 2, 15)], "15 篇接住 2 篇(13%): 报"
+    assert [round(h["share"], 2) for h in readings({**R(15, 3), "Q": R(20, 0)["P"], "Z": R(30, 30)["P"]})] \
+        == [0.2, 0.0, 1.0], "接住率多高多低都只是一句读数, 不分高低(D-151: 以前 < 20% 才报、报了就黄)"
+    assert "MIN_CAUGHT_SHARE" not in globals() and "verdicts" not in globals(), "接住率低亮黄那条判据撤了(D-151), 别留着"
+    assert readings(R(14, 0)) == [], "对过账不到 15 篇读不出"
+    assert readings(R(40, 0, drawn=0)) == [], "窗口内一张牌没发、也没有接住的: 没在用写作台, 在用期内没有数可报"
+    # 分母是对过账的、不是发布数: 发了 40 篇、tv-sync 只对过 10 篇, 不能拿没对账的当没接住
     half = {"P": dict(R(10, 0)["P"], published=40)}
-    assert verdicts(half) == [], "没对过账的不当成没接住"
+    assert readings(half) == [], "没对过账的不当成没接住"
     partial = {"P": dict(R(15, 0)["P"], published=100)}
-    assert verdicts(partial) == [] and [u["project"] for u in unlinked(partial)] == ["P"], \
-        "对过账 15/100: 只报判不了, 不拿偏的子集再喊没接住"
+    assert readings(partial) == [] and [u["project"] for u in unlinked(partial)] == ["P"], \
+        "对过账 15/100: 只报判不了, 不拿偏的子集报接住率"
     late = {"P": dict(R(40, 0)["P"], j_published=20, j_linked=14, j_caught=0)}
-    assert verdicts(late) == [], "整窗对过账 40 篇, 在用期里只有 14 篇: 判据数在用期的, 不够 15 篇不判"
+    assert readings(late) == [], "整窗对过账 40 篇, 在用期里只有 14 篇: 读数数在用期的, 不够 15 篇不报"
     skew = {"P": dict(R(40, 0)["P"], j_published=30, j_linked=20, j_caught=0)}
-    assert verdicts(skew) == [] and [u["project"] for u in unlinked(skew)] == ["P"], \
-        "在用期 30 篇只对过 20 篇(不到八成): 偏的子集不判, 点名判不了(整窗 40/42 过八成也要点)"
-    # 对过账够样本、却因为对账不全(整窗或在用期)不够格判的, unlinked() 一定点名 —— 不会两边都不出声
+    assert readings(skew) == [] and [u["project"] for u in unlinked(skew)] == ["P"], \
+        "在用期 30 篇只对过 20 篇(不到八成): 偏的子集不报, 点名判不了(整窗 40/42 过八成也要点)"
+    # 对过账够样本、却因为对账不全(整窗或在用期)读不出的, unlinked() 一定点名 —— 不会两边都不出声
     for pub, lk, jp, jl in itertools.product((15, 20, 40, 100), (15, 20, 30, 40, 100), (15, 20, 30, 40),
                                              (15, 20, 30, 40)):
         if jl <= lk <= pub and jl <= jp <= pub and jp - jl <= pub - lk:
@@ -582,11 +691,21 @@ def selftest() -> int:
 
     def run(gg, w=14, d=7):
         buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            rc = report(gg, w, d)
+        saved_gha = os.environ.get("GITHUB_ACTIONS")
+        os.environ["GITHUB_ACTIONS"] = "true"          # 连 ::warning 那行一起看: 接住率低不许再打 annotation
+        try:
+            with contextlib.redirect_stdout(buf):
+                rc = report(gg, w, d)
+        finally:
+            if saved_gha is None:
+                os.environ.pop("GITHUB_ACTIONS", None)
+            else:
+                os.environ["GITHUB_ACTIONS"] = saved_gha
         return rc, buf.getvalue()
 
-    # ── report: 判不了 / 待重算 / 黄 / 通 ─────────────────────────────────────
+    QUIET = ("没被用上", "::warning", "⚠", "修在 autowriter 仓", "🟡")     # 接住率再低也不许出现的(D-151)
+
+    # ── report: 判不了 / 待重算 / 读数(只报不判) ──────────────────────────────
     rc, out = run(G([]))
     assert rc == 2 and "一篇都没发" in out, out
     rc, out = run(G([N(f"n{i}") for i in range(20)], drawn={"d1": 5}))
@@ -594,13 +713,14 @@ def selftest() -> int:
     many = [N(f"n{i:02d}") for i in range(20)]
     low = {f"n{i:02d}": L("body_exact" if i < 2 else "unmatched") for i in range(20)}
     rc, out = run(G(many, low, {"n00": D(False)}, {"d2": 3}, any_rev2=False))
-    assert rc == 1 and "AAA" in out and "修在 autowriter 仓" in out and "docs/32" in out, out
+    assert rc == 0 and "AAA(在用期" in out and "接住 2 篇(10%)" in out and "只报不判" in out and "D-151" in out, out
+    assert not [w for w in QUIET if w in out], f"20 篇只接住 2 篇(10%): 以前亮黄 rc=1, 现在只是一句读数, 不出声: {out}"
     assert "未改动率: 待重算" in out and "1/1" not in out, "没有 rev 2 的行时不打未改动的数"
     rc, out = run(G(many, low, {"n00": D(False), "n01": D(True, True)}, {"d2": 3}))
-    assert rc == 1 and "未改动率 1/2(50%)" in out, out
-    assert "查重底稿" in out and "判据 C" in out and "被重写" in out, "亮黄要说清怎么和判据 C 的「没在写作台写」分开"
-    assert "重合不到 15%" in out and "是在别处写的, 不是被重写的" in out and "tv_note_links.score" in out, \
-        "亮黄要说清没接住的帖大多是在别处写的、不是被重写的(11-11 审计, L-07 第三支)"
+    assert rc == 0 and "未改动率 1/2(50%)" in out, out
+    assert "帖在哪写都可以" in out and "没有人被推回写作台" in out and "tv_note_links.origin" in out, \
+        "读数下面要说清为什么不判、单篇在哪写的去哪看"
+    assert "回流闸读数" not in out, "回流闸的四列不在(G 里没有 gate): 不出按出处的表"
     assert "写完没存档" not in out and "查 score_drafts 存档" not in out, "写手没有存档这一步(D-132)"
 
     def row_of(out, tv):
@@ -612,75 +732,77 @@ def selftest() -> int:
         assert cols[5] == "1/2" and cols[6] == title, (title, cols)
     ok = {f"n{i:02d}": L("fuzzy", 1) for i in range(20)}
     rc, out = run(G(many, ok, {}, {"d1": 1}))
-    assert rc == 0 and "✓" in out and "没被用上" not in out and "待重算" in out, out   # 接住了、差异还没算
-    assert "且八成以上对过账的项目, 在用期内发出去的帖至少 20%" in out, "✓ 那句要说全 _judgeable 的规则, 不能比它宽"
+    assert rc == 0 and "接住 20 篇(100%)" in out and "待重算" in out and not [w for w in QUIET if w in out], out   # 接住了、差异还没算
+    assert "在用期内对过账 >= 15 篇且占这些天发布八成以上时读得出" in out, "表下面要说全 _judgeable 的规则, 不能比它宽"
     none = {f"n{i:02d}": L("unmatched") for i in range(20)}
     rc, out = run(G(many, none, {}, {}))
-    assert rc == 0 and "没有项目够格判" in out and "没被用上" not in out, "没发牌、也一篇没接住: 没在用, 归判据 C"
-    # 回看期内没发牌、却有接住的帖(翻更早的牌写): 接住证明在用, 照判(codex review on TV#208)
+    assert rc == 0 and "没有项目在用期内读得出" in out and "AAA(在用期" not in out, "没发牌、也一篇没接住: 没在用, 没有数可报"
+    # 回看期内没发牌、却有接住的帖(翻更早的牌写): 接住证明在用, 照报(codex review on TV#208)
     rc, out = run(G(many, low, {}, {}))
-    assert rc == 1 and "AAA(在用期" in out and "接住 2 篇(10%)" in out, out
-    assert "发了牌" not in out and "写作台在用(发过牌或有接住的帖)" in out, "只靠接住证明在用的不能说成发过牌(发牌 0)"
+    assert rc == 0 and "AAA(在用期" in out and "接住 2 篇(10%)" in out and "发牌 0)" in out, out
 
     # ── 一个项目的 tv-sync 坏了、别的照常: 合计对过账 > 0, 那个项目要点名报判不了(rc=2), 不能安静跳过 ──
     bbb = [N(f"b{i:02d}", "BBB") for i in range(20)]
     rc, out = run(G(many + bbb, ok, {}, {"d1": 1, "d3": 5}))
-    assert rc == 2 and "BBB(发布 20 篇、对过账 0 篇)" in out and "tv-sync 漏了" in out and "AAA(" not in out, out
-    assert "✓" in out and "判不了的项目不在内" in out, "AAA 照常判"
+    assert rc == 2 and "BBB(发布 20 篇、对过账 0 篇)" in out and "tv-sync 漏了" in out and "BBB(在用期" not in out, out
+    assert "::warning title=写作台用上率有项目判不了::" in out, "判不了(tv-sync 漏了项目)照旧出声: 这是真的故障"
+    assert "AAA(在用期" in out and "判不了的项目不在内" in out, "AAA 照常报读数"
     rc, out = run(G(many + bbb, none, {}, {"d3": 5}))      # AAA 没发牌也没接住(不在用), 只有 BBB 在用
-    assert rc == 2 and "没有项目够格判" in out and "BBB(" in out, "BBB 发过牌但没对过账: 不能落进「没有项目够格判」rc=0"
-    rc, out = run(G(many + bbb, ok, {}, {"d3": 5}))        # AAA 没发牌、20 篇全接住: 接住证明在用, 照判
-    assert rc == 2 and "BBB(" in out and "✓" in out and "没有项目够格判" not in out, out
+    assert rc == 2 and "没有项目在用期内读得出" in out and "BBB(" in out, "BBB 发过牌但没对过账: 不能落进 rc=0"
+    rc, out = run(G(many + bbb, ok, {}, {"d3": 5}))        # AAA 没发牌、20 篇全接住: 接住证明在用, 照报
+    assert rc == 2 and "BBB(" in out and "AAA(在用期" in out and "没有项目在用期内读得出" not in out, out
     part = dict(ok, **{f"b{i:02d}": L("ingested", None) for i in range(10)})     # 对过一半
     rc, out = run(G(many + bbb, part, {}, {"d1": 1, "d3": 5}))
     assert rc == 2 and "BBB(发布 20 篇、对过账 10 篇)" in out, out
     rc, out = run(G(many + bbb, low, {}, {"d1": 1, "d3": 5}))
-    assert rc == 1 and "BBB(" in out and "没被用上" in out, "有项目亮黄时 rc 仍是 1, 判不了的照样点名"
+    assert rc == 2 and "BBB(" in out and "没被用上" not in out and "接住 2 篇(10%)" in out, \
+        "接住率低不再亮黄; 判不了的照样点名、rc 是 2(以前这里是 1)"
     rc, out = run(G(many + bbb[:14], ok, {}, {"d1": 1, "d3": 5}))
     assert rc == 0 and "BBB(" not in out, "发布不到 15 篇的项目不点名(量太小)"
     rc, out = run(G(many + bbb, dict(ok, **{f"b{i:02d}": L("fuzzy", 1) for i in range(16)}),
                     {}, {"d1": 1, "d3": 5}))
     assert rc == 0 and "判不了" not in out, "对过账八成(16/20)算正常"
 
-    # ── 够不够格判和 verdicts() 是同一条 _judgeable: 唯一在用的项目对过账 15/100, 只能报判不了, 不能接着打绿 ✓ ──
+    # ── 读不读得出和 readings() 是同一条 _judgeable: 唯一在用的项目对过账 15/100, 只能报判不了, 不能接着报它的接住率 ──
     hund = [N(f"p{i:03d}") for i in range(100)]
     rc, out = run(G(hund, {f"p{i:03d}": L("fuzzy", 1) for i in range(15)}, {}, {"d1": 2}))
-    assert rc == 2 and "没有项目够格判" in out and "✓" not in out and "AAA(发布 100 篇、对过账 15 篇)" in out, out
+    assert rc == 2 and "没有项目在用期内读得出" in out and "AAA(在用期" not in out \
+        and "AAA(发布 100 篇、对过账 15 篇)" in out, out
 
     # ── 在用期: 每个发牌日 / 接住的存稿日起 7 天; 首牌之前、末牌 7 天之后、中间停的那几天发的帖不判(codex review on TV#208) ──
     ing = lambda ns: {n["note_id"]: L("ingested", None) for n in ns}  # noqa: E731
     spread = [N(f"s{i:02d}", at=f"2026-10-{5 + i % 14:02d}T08:00:00") for i in range(20)]    # 10-05 ~ 10-18
     rc, out = run(G(spread, ing(spread), {}, {"d1": 1}, days={"d1": ["2026-10-18"]}))
-    assert rc == 0 and "没有项目够格判" in out and "没被用上" not in out, \
-        "窗口末尾才发第一张牌(为之后的帖发的): 不拿窗口前段那些帖判它"
+    assert rc == 0 and "没有项目在用期内读得出" in out, \
+        "窗口末尾才发第一张牌(为之后的帖发的): 不拿窗口前段那些帖算它的接住率"
     rc, out = run(G(spread, ing(spread), {}, {"d1": 1}, days={"d1": ["2026-09-29"]}))
-    assert rc == 0 and "没有项目够格判" in out and "没被用上" not in out, \
-        "只在回看里(起点前 6 天)发过一张牌、之后再没动: 那批稿 10-03 前后就发完了, 不拿整窗手写的帖判它"
+    assert rc == 0 and "没有项目在用期内读得出" in out, \
+        "只在回看里(起点前 6 天)发过一张牌、之后再没动: 那批稿 10-03 前后就发完了, 不拿整窗手写的帖算它的接住率"
     after = [N(f"t{i:02d}", at=f"2026-10-{13 + i % 6:02d}T08:00:00") for i in range(20)]  # 起点 7 天之后
     rc, out = run(G(after, ing(after), {}, {"d1": 10}, days={"d1": ["2026-09-29"]}))
-    assert rc == 0 and "没有项目够格判" in out and "没被用上" not in out, "起点前 6 天发了 10 张、之后停用"
+    assert rc == 0 and "没有项目在用期内读得出" in out, "起点前 6 天发了 10 张、之后停用"
     # 一直在用(每三天一张): 在用期盖住整窗, 判的就是整窗 —— 和不切一样
     every = {"d1": ["2026-09-30", "2026-10-03", "2026-10-06", "2026-10-09", "2026-10-12", "2026-10-15", "2026-10-18"]}
     lows = {**ing(spread), "s00": L("fuzzy", 0), "s01": L("fuzzy", 0)}
     t = tally(G(spread, lows, {}, {"d1": 7}, days=every))["AAA"]
     assert (t["j_published"], t["j_linked"], t["j_caught"]) == (t["published"], t["linked"], t["caught"]) == (20, 20, 2)
     rc, out = run(G(spread, lows, {}, {"d1": 7}, days=every))
-    assert rc == 1 and "AAA(在用期 10-05~10-19 发布 20 篇、对过账 20 篇、接住 2 篇(10%); 整窗发布 20 篇, 发牌 7)" in out, out
+    assert rc == 0 and "AAA(在用期 10-05~10-19 发布 20 篇、对过账 20 篇、接住 2 篇(10%); 整窗发布 20 篇, 发牌 7)" in out, out
     # 中间停了一阵(09-29 一张, 10-15 再用): 10-08 ~ 10-13 手写的 20 篇不判
     gap = [N(f"h{i:02d}", at=f"2026-10-{8 + i % 6:02d}T08:00:00") for i in range(20)]
     back = [N(f"k{i:02d}", at="2026-10-16T08:00:00") for i in range(16)]
     rc, out = run(G(gap + back, {**ing(gap + back), **{f"k{i:02d}": L("fuzzy", 1) for i in range(4)}}, {}, {"d1": 2},
                     days={"d1": ["2026-09-29", "2026-10-15"]}))
-    assert rc == 0 and "✓" in out, "在用期内 4/16(25%) 不喊; 停用那几天的 20 篇不往下拉(整窗 4/36 = 11%)"
+    assert rc == 0 and "对过账 16 篇、接住 4 篇(25%)" in out, "在用期内 4/16(25%); 停用那几天的 20 篇不往下拉(整窗 4/36 = 11%)"
     assert row_of(out, "AAA")[8:10] == ["7", "4/16/16"], row_of(out, "AAA")     # 10-05~10-06、10-15~10-19
     pre = [N(f"q{i:02d}", at="2026-10-08T08:00:00") for i in range(20)]
     post = [N(f"r{i:02d}", at="2026-10-14T20:00:00") for i in range(16)]
     lk = {**ing(pre), **{f"r{i:02d}": L("unmatched", None) for i in range(16)}}
     rc, out = run(G(pre + post, {**lk, **{f"r{i:02d}": L("fuzzy", 0) for i in range(4)}}, {}, {"d1": 2},
                     days={"d1": ["2026-10-14"]}))
-    assert rc == 0 and "✓" in out, "在用期内 4/16(25%) 不喊; 首牌前 20 篇补录的不往下拉(整窗 4/36 = 11%)"
+    assert rc == 0 and "对过账 16 篇、接住 4 篇(25%)" in out, "在用期内 4/16(25%); 首牌前 20 篇补录的不往下拉(整窗 4/36 = 11%)"
     rc, out = run(G(pre + post, {**lk, "r00": L("fuzzy", 0)}, {}, {"d1": 2}, days={"d1": ["2026-10-14"]}))
-    assert rc == 1 and "AAA(在用期 10-14~10-19 发布 16 篇、对过账 16 篇、接住 1 篇(6%); 整窗发布 36 篇" in out, out
+    assert rc == 0 and "AAA(在用期 10-14~10-19 发布 16 篇、对过账 16 篇、接住 1 篇(6%); 整窗发布 36 篇" in out, out
     cols = row_of(out, "AAA")       # … 发牌 在用天 在用期内(接住/对过账/发布) 写作台项目; 发布 / 对过账 / 接住仍数整窗
     assert cols[1:4] == ["36", "36", "1"] and cols[7:10] == ["2", "6", "1/16/16"], cols
     # 接住的帖证明那几天在用(翻旧牌写、没抽新牌, 或那批牌在回看之外): 首牌(10-10)前 20 篇接住(存稿 10-03)
@@ -689,34 +811,35 @@ def selftest() -> int:
     rc, out = run(G(early + later, {**{f"c{i:02d}": L("body_exact", 3) for i in range(20)}, **ing(later),
                                     "m00": L("fuzzy", 0), "m01": L("fuzzy", 0)}, {}, {"d1": 2},
                     days={"d1": ["2026-10-10"]}))
-    assert rc == 0 and "✓" in out and "没被用上" not in out, "在用期内 22/36(61%), 不能只拿首牌后 2/16 判"
+    assert rc == 0 and "对过账 36 篇、接住 22 篇(61%)" in out, "在用期内 22/36(61%), 不能只拿首牌后 2/16 算"
     # 末牌之后照存稿: 10-01 一张牌, 10-16 又有接住的帖(存稿 10-15) —— 10-15 起也在用, 一起判
     first16 = [N(f"e{i:02d}", at="2026-10-06T08:00:00") for i in range(16)]
     tail = [N(f"f{i:02d}", at="2026-10-16T08:00:00") for i in range(10)] + \
         [N(f"u{i:02d}", at="2026-10-17T08:00:00") for i in range(6)]
     rc, out = run(G(first16 + tail, {**ing(first16 + tail), **{f"f{i:02d}": L("body_exact", 1) for i in range(10)}},
                     {}, {"d1": 1}, days={"d1": ["2026-10-01"]}))
-    assert rc == 0 and "✓" in out, "在用期 10-05~10-08、10-15~10-19 里 10/32(31%); 只按牌划只剩 10-06 那 16 篇, 冒假黄"
+    assert rc == 0 and "对过账 32 篇、接住 10 篇(31%)" in out, \
+        "在用期 10-05~10-08、10-15~10-19 里 10/32(31%); 只按牌划只剩 10-06 那 16 篇(0/16)"
     assert row_of(out, "AAA")[8:10] == ["9", "10/32/32"], row_of(out, "AAA")
 
-    # ── 在用期里大多没对过账、整窗还过八成: 点名判不了, 不能落进 ✓ 或「没有项目够格判」rc=0(codex review on TV#208) ──
+    # ── 在用期里大多没对过账、整窗还过八成: 点名判不了, 不能落进「没有项目在用期内读得出」rc=0(codex review on TV#208) ──
     old100 = [N(f"o{i:03d}", at="2026-10-06T08:00:00") for i in range(100)]
     fresh = [N(f"w{i:02d}", at="2026-10-14T08:00:00") for i in range(30)]
     lk = {**ing(old100), **ing(fresh[:15])}         # 整窗 115/130 = 88%; 在用期(10-14 起)15/30
     rc, out = run(G(old100 + fresh, lk, {}, {"d1": 3}, days={"d1": ["2026-10-14"]}))
-    assert rc == 2 and "没有项目够格判" in out and "✓" not in out \
+    assert rc == 2 and "没有项目在用期内读得出" in out \
         and "AAA(在用期 10-14~10-19 发布 30 篇、对过账 15 篇; 整窗 115/130)" in out, out
     bbb_ok = {f"b{i:02d}": L("fuzzy", 1) for i in range(20)}
     rc, out = run(G(old100 + fresh[:20] + bbb, {**ing(old100), **bbb_ok}, {}, {"d1": 3, "d3": 5},
                     days={"d1": ["2026-10-14"], "d3": ["2026-10-07"]}))
     assert rc == 2 and "AAA(在用期 10-14~10-19 发布 20 篇、对过账 0 篇; 整窗 100/120)" in out \
-        and "✓" in out and "判不了的项目不在内" in out, "tv-sync 从 10-14 起漏了 AAA: 点名, BBB 照常 ✓"
+        and "BBB(在用期" in out and "判不了的项目不在内" in out, "tv-sync 从 10-14 起漏了 AAA: 点名, BBB 照常报读数"
     assert row_of(out, "AAA")[9] == "0/0/20", "在用期内一格要露出没对上的 20 篇, 不能是 0/0"
 
     # ── 反例(F12): 15 篇在北京 10-20 发(publish_time 存成 10-19 16:00)、同一个北京日上午 10 点发了一张牌(drawn_at
     #    timestamptz 读回来是 10-20 02:00 UTC)。以前按 UTC 日期切: 帖算 10-19、牌算 10-20, 15 篇全掉在在用期之前,
-    #    j_linked = 0、「没有项目够格判」—— 10-12 ~ 10-26 那周 TUGE_phase1 0/17 就是这么被藏掉的。按北京日: 同一天, 15/15 判、
-    #    0 篇接住 → 亮黄。反证: 把 _day 换回 str(ts)[:10] → 这里红 ──
+    #    j_linked = 0、读不出 —— 10-12 ~ 10-26 那周 TUGE_phase1 0/17 就是这么被藏掉的。按北京日: 同一天, 15/15 都数、
+    #    0 篇接住 → 报 0/15(D-151 之前亮黄)。反证: 把 _day 换回 str(ts)[:10] → 这里红 ──
     same = [N(f"bj{i:02d}", at="2026-10-19T16:00:00") for i in range(15)]
     gb = dict(G(same, {n["note_id"]: L("unmatched", None) for n in same}, {}, {"d1": 1},
                 days={"d1": ["2026-10-20T02:00:00+00:00"]}),
@@ -725,15 +848,22 @@ def selftest() -> int:
     assert (t["j_published"], t["j_linked"], t["j_caught"]) == (15, 15, 0), t
     assert t["use_spans"] == [("2026-10-20", "2026-10-27")], t["use_spans"]
     rc, out = run(gb)
-    assert rc == 1 and "AAA(在用期 10-20~10-27 发布 15 篇、对过账 15 篇、接住 0 篇(0%)" in out, out
+    assert rc == 0 and "AAA(在用期 10-20~10-27 发布 15 篇、对过账 15 篇、接住 0 篇(0%)" in out, out
 
     # ── gather: 窗口按 publish_time、只取映射项目、in_ 分批、差异只认当前口径、翻页键唯一 ──
     calls: list[tuple] = []
     selects: list[tuple] = []
+    gate_cols_exist = [False]           # aw 迁移 020 跑没跑; 先按没跑(今天的生产)把老断言全过一遍
+    GATE_COLS = ("origin", "gate", "gate_reasons", "gate_at")
 
     class _Q:
-        def __init__(self, t, rows): self.t, self.rows, self.f, self.lim = t, rows, [], None
-        def select(self, *a, **k): selects.append((self.t, a[0] if a else "")); return self
+        def __init__(self, t, rows): self.t, self.rows, self.f, self.lim, self.bad = t, rows, [], None, None
+        def select(self, *a, **k):
+            selects.append((self.t, a[0] if a else ""))
+            asked = [c.strip() for c in (a[0] if a else "").split(",")]
+            if self.t == "tv_note_links" and not gate_cols_exist[0]:
+                self.bad = next((c for c in asked if c in GATE_COLS), None)   # 库里没有的列: execute 时照 PostgREST 的样子抛
+            return self
         def gte(self, k, v): self.f.append(lambda r: r[k] >= v); return self
         def lte(self, k, v): self.f.append(lambda r: r[k] <= v); return self
         def limit(self, n): self.lim = n; return self
@@ -742,6 +872,8 @@ def selftest() -> int:
             self.f.append(lambda r, s=set(vs): r[k] in s)
             return self
         def execute(self):
+            if self.bad:
+                raise RuntimeError(f"{{'code': '42703', 'message': 'column tv_note_links.{self.bad} does not exist'}}")
             rows = [r for r in self.rows if all(f(r) for f in self.f)]
             return types.SimpleNamespace(data=rows[:self.lim] if self.lim is not None else rows)
 
@@ -800,6 +932,12 @@ def selftest() -> int:
         assert [n["note_id"] for n in gg["notes"]] == [f"a{i:03d}" for i in range(230)], \
             "窗口外的(9 月的、排期还没发的)、没映射的 ZZZ、飞书里已删的 gone1 都不该进来"
         assert vanished_calls == [None], "已删名单读一次、全库(按项目筛会漏映射的别的项目)"
+        # 回流闸的四列不在(020 没跑, 今天的生产): 探一次, 之后取的列和以前一字不差, gate 是 None, 报告里没有按出处的表
+        assert gg["gate"] is None
+        assert {c for t, c in selects if t == "notes"} == {"note_id, project_id, publish_time"}, "列不在时 notes 不多取 tier"
+        assert {c for t, c in selects if t == "tv_note_links" and "match_kind" in c} == \
+            {"note_id, tv_project_id, project_id, version_id, match_kind, lag_days"}, "列不在时对账行取的列和以前一样"
+        assert "回流闸读数" not in run(gg)[1]
         assert all(n <= CHUNK for _, n in calls) and ("tv_note_links", 30) in calls, calls
         assert set(gg["diffs"]) == {"a001", "a205"}, "差异只取接住的、当前口径的(a002 是 rev 1, old1 在窗口外)"
         assert gg["drawn"] == {"d1": 4} and gg["any_rev2"] is True and gg["names"] == {"d1": "甲台"}, gg["drawn"]
@@ -817,11 +955,11 @@ def selftest() -> int:
         # 只在窗口起点前几天发过一批牌的项目, 帖落在窗口里: 是在用写作台, 要判(以前按发布窗口切发牌, 读成零动静)
         TABLES["angle_ledger"] = [r for r in LEDGER if r["drawn_at"] == PRE]
         rc, out = run(gather(SB(), "2026-10-05T08:00:00", "2026-10-19T08:00:00"))
-        assert rc == 0 and "✓" in out and "没有项目够格判" not in out and "发牌看 09-28 起" in out, out
+        assert rc == 0 and "AAA(在用期" in out and "没有项目在用期内读得出" not in out and "发牌看 09-28 起" in out, out
         TABLES["tv_note_links"] = [dict(r, match_kind="ingested", lag_days=None) for r in LINKS]
         rc, out = run(gather(SB(), "2026-10-05T08:00:00", "2026-10-19T08:00:00"))
-        assert rc == 1 and "AAA(在用期 10-05~10-08 发布 230 篇、对过账 230 篇、接住 0 篇(0%)" in out, \
-            "没有接住的帖垫着, 光凭 10-01 那张牌也要判(在用期到牌后第 7 天 10-08 为止, 含当天)"
+        assert rc == 0 and "AAA(在用期 10-05~10-08 发布 230 篇、对过账 230 篇、接住 0 篇(0%)" in out, \
+            "没有接住的帖垫着, 光凭 10-01 那张牌也要报(在用期到牌后第 7 天 10-08 为止, 含当天)"
         TABLES["tv_note_links"] = LINKS
         # 存稿日按版本时间(北京 10-08)划在用期; 一张牌都没有, 在用期只靠接住的帖: 10-08 ~ 10-15。版本表读不到时退回
         # 北京发布日 − lag(10-07 ~ 10-14) —— 这就是旧链接 UTC 口径的 lag 会让在用期晚一天 / 早一天的地方
@@ -833,6 +971,77 @@ def selftest() -> int:
         assert spans == [("2026-10-07", "2026-10-14")], spans
         TABLES["tv_edit_diffs"] = [d for d in DIFFS if d["diff_rev"] < 2]
         assert gather(SB(), "2026-10-05T08:00:00", "2026-10-19T08:00:00")["any_rev2"] is False
+
+        # ── 回流闸的四列在(D-151): notes 多取 tier, 对账行多取出处和结论, 已删的篇单留一份 ──
+        gate_cols_exist[0] = True
+        selects.clear()
+        TABLES.update(angle_ledger=LEDGER, versions=VERSIONS, tv_edit_diffs=DIFFS)
+        TABLES["notes"] = [dict(n, tier="爆" if n["note_id"] in ("a001", "a220", "gone1") else "趴") for n in NOTES]
+        V = lambda o, g, *rs: {"origin": o, "gate": g, "gate_reasons": {"reasons": list(rs)}}  # noqa: E731
+
+        def gate_of(i):
+            if i <= 209:                    # 对上写作台的(a000 是发后抄回去的)
+                return V("copied_back" if i == 0 else "desk", "fail" if i == 1 else "pass", *(["not_clean"] if i == 1 else []))
+            if i <= 219:
+                return V("elsewhere", "pass")
+            if i == 220:
+                return V("elsewhere", "fail", "not_clean")              # 别处写的爆帖, 投过流: 不算干净爆
+            if i == 221:
+                return V("elsewhere", "fail", "efficacy")               # 功效说法: 不学, 但没投流 → 干净
+            if i == 222:
+                return V("elsewhere", "unsure", "unsure")
+            if i == 223:
+                return V("elsewhere", "hold", "hold")                   # 搁置的不数结果
+            if i == 224:
+                return {"origin": "elsewhere", "gate": "fail", "gate_reasons": "not_clean"}   # 读不懂 → 没判
+            if i <= 227:
+                return V("unclear", "pass")
+            return {"origin": None, "gate": None, "gate_reasons": None}  # 这一行还没分过类
+
+        TABLES["tv_note_links"] = ([dict(l, **gate_of(int(l["note_id"][1:]))) if l["note_id"][0] == "a" else
+                                    dict(l, **V("elsewhere", "withdrawn", "withdrawn")) for l in LINKS])
+        gp = gather(SB(), "2026-10-05T08:00:00", "2026-10-19T08:00:00")
+        assert {c for t, c in selects if t == "notes"} == {"note_id, project_id, publish_time, tier"}
+        assert {c for t, c in selects if t == "tv_note_links" and "match_kind" in c} == \
+            {"note_id, tv_project_id, project_id, version_id, match_kind, lag_days, origin, gate, gate_reasons"}
+        assert [n["note_id"] for n in gp["gate"]["gone"]] == ["gone1"] and set(gp["gate"]["gone_links"]) == {"gone1"}, gp["gate"]
+        assert [n["note_id"] for n in gp["notes"]] == [f"a{i:03d}" for i in range(230)], "已删的照旧不进发布 / 对过账 / 接住"
+        tt2 = tally(gp)["AAA"]
+        assert (tt2["published"], tt2["linked"], tt2["caught"]) == (230, 230, 209), "闸的列在不在, 用上率那几个数都一样"
+        cell = lambda **k: {"posts": 0, "settled_clean": 0, "clean_hits": 0, "pass": 0, "fail": 0, "unsure": 0, "hold": 0,  # noqa: E731
+                            "withdrawn": 0, "no_verdict": 0, "deleted": 0, "deleted_tiers": {}, **k}
+        got = origin_rows(gp)
+        assert got == {
+            ("AAA", "copied_back"): cell(posts=1, settled_clean=1, **{"pass": 1}),
+            # a001: 写作台的爆帖, 投过流 → 不干净, 不算干净爆; 其余 208 篇趴
+            ("AAA", "desk"): cell(posts=209, settled_clean=208, clean_hits=0, fail=1, **{"pass": 208}),
+            # 15 篇: 10 通过 + a220 不干净的爆 + a221 功效(干净的趴)+ a222 待答 + a223 搁置 + a224 读不懂; 已删 1 篇(爆)
+            ("AAA", "elsewhere"): cell(posts=15, settled_clean=12, clean_hits=0, fail=2, unsure=1, hold=1, no_verdict=1,
+                                       deleted=1, deleted_tiers={"爆": 1}, **{"pass": 10}),
+            ("AAA", "unclear"): cell(posts=3, settled_clean=3, **{"pass": 3}),
+            ("AAA", ORIGIN_NONE): cell(posts=2, no_verdict=2),
+        }, got
+        rc, out = run(gp)
+        assert rc == 0 and "回流闸读数 · 按出处(D-151)。数的是笔记, 不是文字" in out, out
+        assert "只计数, 不下结论" in out and "读不出的" in out and "没有记写手" in out, "表下面要说清数的是什么、读不出什么"
+        tbl = out[out.index("回流闸读数"):]
+        erow = next(ln.split() for ln in tbl.splitlines() if ln.startswith("  AAA") and "别处写的" in ln)
+        assert erow[2:] == ["15", "12", "0", "10", "2", "1", "1", "0", "1", "1(爆", "1)"], erow
+        assert next(ln.split() for ln in tbl.splitlines() if ln.startswith("  合计") and "写作台的稿 " in ln)[2:5] == ["209", "208", "0"]
+        # 干净爆数得出来: 把 a220 的投流原因拿掉 → 别处写的干净已定档 13、干净爆 1
+        TABLES["tv_note_links"] = [dict(l, **V("elsewhere", "pass")) if l["note_id"] == "a220" else l for l in TABLES["tv_note_links"]]
+        e2 = origin_rows(gather(SB(), "2026-10-05T08:00:00", "2026-10-19T08:00:00"))[("AAA", "elsewhere")]
+        assert (e2["settled_clean"], e2["clean_hits"]) == (13, 1), e2
+        # 没有对账行的帖归「没对账」; 四列在、窗口里一篇都没分过类 → 说一句
+        TABLES["tv_note_links"] = [dict(l, origin=None, gate=None, gate_reasons=None) for l in LINKS if l["note_id"] != "a229"]
+        gn = gather(SB(), "2026-10-05T08:00:00", "2026-10-19T08:00:00")
+        assert origin_rows(gn)[("AAA", ORIGIN_UNLINKED)]["posts"] == 1 and origin_rows(gn)[("AAA", ORIGIN_NONE)]["no_verdict"] == 229
+        assert "一篇都还没被分过类" in run(gn)[1]
+        TABLES["tv_note_links"] = LINKS
+        TABLES["notes"] = NOTES
+        gate_cols_exist[0] = False
+        # origin_rows 是纯函数: gate 是 None(四列不在)→ 空, 不出表
+        assert origin_rows(dict(gp, gate=None)) == {} and "回流闸读数" not in run(dict(gp, gate=None))[1]
 
         # ── main: 窗口 = [now−delay−window, now−delay]; 哨兵行; 取数崩了不打哨兵 ──
         since, until = window(datetime(2026, 10, 26, 8, 0, tzinfo=timezone.utc), 14, 7)
@@ -848,7 +1057,7 @@ def selftest() -> int:
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 rc = main()
-            assert rc == 1 and "DESK_USE_RATE_CHECK_DONE rc=1" in buf.getvalue(), buf.getvalue()
+            assert rc == 0 and "DESK_USE_RATE_CHECK_DONE rc=0" in buf.getvalue(), buf.getvalue()
             s, u = seen_args[-1]
             gap = datetime.fromisoformat(u) - datetime.fromisoformat(s)
             assert gap == timedelta(days=DEFAULT_WINDOW_DAYS), (s, u)
@@ -895,9 +1104,11 @@ def selftest() -> int:
                    "truth_vault.note_feature_answers", "subject_type = 'aw_version'", "run_tag = 'primary'", "NOT EXISTS"):
         assert needle in m.group(0), f"verify #104 少了 {needle} —— 分母要取 batch_metrics 的 ok 判稿, 数账本里 aw_version × primary 0 行的"
     print("  ✓ 写作台用上率灯: 接住只认发布前那版 / 未改动只认 diff_rev ≥2 且没有时打待重算 / 下限与分母 / "
-          "够格判与判据同一条 / 判不了 rc=2(整窗或在用期对账不全) / 发牌回看 7 天 + 在用期 / 北京日 + 存稿日按版本时间 / "
+          "读不读得出同一条规则 / 判不了 rc=2(整窗或在用期对账不全) / 发牌回看 7 天 + 在用期 / 北京日 + 存稿日按版本时间 / "
           "已删的篇不算 / "
           "取数窗口按 publish_time、分批、翻页键唯一 / 哨兵行 / 每周一接线 / verify #104 在")
+    print("  ✓ D-151: 接住率只报不判(再低也不亮黄、不打 annotation, rc 只有 0 / 2); 回流闸的四列在时多一张按出处的读数表"
+          "(数笔记、已删单列、干净用闸的尺子、不下结论), 不在时取数和报告没有这张表")
     return 0
 
 

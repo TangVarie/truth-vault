@@ -1139,10 +1139,28 @@ def sec9_health() -> None:
           "没配: relay_mode=primary_only, relay_breaker=off")
     fresh(**BASE, **BOTH, RELAY_PRIMARY_TIMEOUT_S="30")
     sel = TestClient(LA.app).get("/health").json().get("select") or {}
+    gate = sel.pop("return_gate", None)        # D-151: 回流闸的子块单独核 (下面), AU-F09 那几个键照旧只有数
+    paid = sel.pop("paid_boost", None)         # D-151 第 13 条: 投流标注的子块也单独核
     check(set(sel) == {"merged", "wait_timeouts", "primary_timeout_s", "call_timeout_s", "request_budget_s"}
           and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in sel.values())
           and (sel["primary_timeout_s"], sel["call_timeout_s"], sel["request_budget_s"]) == (30.0, 45.0, 60.0),
           f"librarian: select 块 (AU-F09) 只有数, 主站限时回显的是生效值 ({sel})")
+    # 这个进程里没借过卡: on 回显的是现在生效的开关 (代码默认, LIBRARIAN_RETURN_GATE 设了听它的), 一次库都没读过
+    from librarian import core as LC  # noqa: E402
+    check(isinstance(gate, dict)
+          and set(gate) == {"on", "read_age_s", "read_ok", "columns", "read_errors", "verdicts", "unreadable",
+                            "would_drop", "brands_kept"}
+          and all(v is None or isinstance(v, (bool, int)) for v in gate.values())
+          and gate["on"] is LC.return_gate_enabled() and gate["read_age_s"] is None and gate["read_ok"] is None
+          and (gate["would_drop"], gate["brands_kept"], gate["read_errors"]) == (0, 0, 0),
+          f"librarian: select.return_gate (D-151) 只有布尔 / 整数 / None, 没读过库时不报数 ({gate})")
+    # 这个进程里没借过卡: 出处帖投过流的那两路一次都没读过, 计数都是 0 / None
+    check(isinstance(paid, dict)
+          and set(paid) == {"read_age_s", "read_ok", "read_errors", "flagged", "events", "window", "lent", "labelled"}
+          and all(v is None or isinstance(v, (bool, int)) for v in paid.values())
+          and (paid["read_age_s"], paid["read_ok"], paid["flagged"], paid["events"], paid["window"]) == (None,) * 5
+          and (paid["read_errors"], paid["lent"], paid["labelled"]) == (0, 0, 0),
+          f"librarian: select.paid_boost (D-151 第 13 条) 只有布尔 / 整数 / None, 没读过库时不报数 ({paid})")
     fresh(**BASE, **BOTH, RELAY_PRIMARY_TIMEOUT_S="55")
     sel = TestClient(LA.app).get("/health").json().get("select") or {}
     check(sel.get("primary_timeout_s") == 40.0,
