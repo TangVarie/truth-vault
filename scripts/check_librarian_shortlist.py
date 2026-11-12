@@ -34,15 +34,20 @@ get_supabase / call_anthropic / 缓存读写), 核对 LLM 真正看到的候选�
   ㉑ 没写品牌的卡也算一个品牌保底 / ㉒ 环境变量关不掉代码默认     → 红
   ㉓ _read_gate 按 gate_reasons.hold 的细项放过一部分 hold (11-12 复审后加的 ⑦) → 正文是空的帖的卡被借出去, 红
 
-§11 投流起量的卡照借、卡上写明 (D-151 第 13 条, owner 11-12): 不开关, 合并就生效。反证 (11-12 实跑, 20 个都红):
-  ㉔ 只在冷路径标 (命中缓存不标) / ㉕ 那一句写进缓存行 / ㊵ 回包时原地改 (进了缓存的那份跟着变)          → 红
-  ㉖ 那一句放进 excerpt / ㊸ 接在「为何有效」后面而不是最前面                                          → 红
-  ㉗ 读失败往外抛 / ㉞ 读失败丢掉上一次读成的 / ㊱ 失败那次不记时刻 / ㊲ 不知道也写 false               → 红
-  ㉘ 去掉 10 分钟那一条 / ㊷ 只读第一页                                                               → 红
-  ㉙ 外部卡也标                                                                                      → 红
-  ㉚ 不看投流事件 / ㉛ 不看 paid_promoted 标记 / ㉜ 读标记不带筛选 (整表的帖都算)                     → 红
-  ㉝ 候选里不写那一句 / ㊳ 书架不带记号 / ㊶ 那一句不在卡头下面 / ㊴ 任务说明里没有怎么用这种卡的那一句 → 红
-  ㉟ 并到在飞的那次上的请求拿没标过的                                                                → 红
+§11 出处帖投过流的卡照借、回包的卡上写明 (D-151 第 13 条, owner 11-12): 不开关, 合并就生效。11-12 复审后重写:
+选卡模型看不到这件事 (prompt 不变); 两种写法 (起量在投流窗口里 / 只知道投过流); 读数在后台线程里、失败 60 秒重读、
+旧名单 1 小时; 夜跑那盏灯 (check_librarian_traffic.py) 的投流那一段也在这里测 (ci.yml 不许动)。
+反证 (11-12 实跑, 36 个都红):
+  ㉔ 任务说明里又写了投流 / ㉕ 候选卡上带记号                                                         → 红
+  ㉖ 读失败也占 10 分钟 / ㉗ 读成了 60 秒就重读 / ㉘ 旧名单没有期限 (一直回 false) / ㊽ 去掉 10 分钟那一条 → 红
+  ㉙ 借阅等读完才回 / ㉚ 读数放回锁里 / ㉛ 没等到的那次读每次借阅都记一笔 / ㉜ 一笔都不记                  → 红
+  ㉝ 那一句带「靠」/ ㉞ 都写「投流起量的」/ ㉟ 都写「投过流」/ ㊱ 事件里有行就算起量在窗口里              → 红
+  ㊲ 那一句写进缓存行 / ㊳ 回包时原地改 / ㊴ 接在「为何有效」后面 / ㊵ 放进 excerpt                      → 红
+  ㊶ 读失败往外抛 / ㊷ 不知道也写 false / ㊸ 外部卡也标 / ㊾ 并到在飞那次上的请求拿没标过的               → 红
+  ㊹ 不看 paid_promoted 标记 / ㊺ 不看投流事件 / ㊻ 读标记不带筛选 / ㊼ 只读第一页 / (53) 事件按 note_id 翻页 → 红
+  ㊿ dry-run 也去读那两路 / (51) 外部卡算进 lent / (52) labelled 只记最近一次                           → 红
+  (54) 夜跑读的不是馆员读的那两路 / (55) 读不到不打 ::warning / (56) 外部卡算进借出去的卡 /
+  (57) 缓存读不到当成馆员瞎了 / (58) 读失败往外抛 / (59) 有一路读不到还报占比                           → 红
 
 跑法: cd scripts && python check_librarian_shortlist.py
 """
@@ -54,16 +59,17 @@ import pathlib
 import random
 import sys
 import threading
+import time
 import types
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))   # repo 根: 让 librarian 包可导入
 
 from librarian import core  # noqa: E402
 
-# 投流标注 (D-151 第 13 条) 每次借阅都会去读投流起量的帖 (10 分钟一次)。§1–§10 的假库不认这两路读数, 这里先换成
+# 投流标注 (D-151 第 13 条) 回包前会去读出处帖投过流的那两路 (10 分钟一次)。§1–§10 的假库不认这两路读数, 这里先换成
 # 「读到了, 一篇都没有」: 那几节的卡都是 paid_boost=false、一个字不加。§11 换回真的读法, 对着假库逐条测。
 REAL_READ_PAID = core._read_paid_source
-core._read_paid_source = lambda sb, table, where: frozenset()
+core._read_paid_source = lambda sb, table, where, cols, order: []
 
 
 def card(nid, brand, category, rank, audience=None):
@@ -426,7 +432,8 @@ GATED = [gate_row("A_00", "withdrawn", "withdrawn"),            # rank 全库第
 DROPPED = {"A_00", "A_01", "A_02", "B_00", "B_02"}
 OFF = (60, dry["library_version"], dry["cache_key"], dry["prompt"])      # §6 算的: 没有闸时的书架、版本串、缓存键、prompt
 
-# ① 开关关着 (代码默认关; 环境变量写 0 / off 也是关): 一次库都不读, 书架、版本串、缓存键、prompt 和 §6 一字不差
+# ① 开关关着 (代码默认关; 环境变量写 0 / off 也是关): tv_note_links 一次都不读, 书架、版本串、缓存键、prompt 和 §6 一字不差
+#    (回包不在这句话里: 第 13 条的投流标注不看开关, 见 §11)
 shipped = core.return_gate_enabled()                    # 环境变量没设 → 就是代码默认
 core.RETURN_GATE_DEFAULT = False
 sb = use(GateSB(GATED))
@@ -546,86 +553,113 @@ use(object())
 assert core.CARD_BLOCKING_REASONS == {"withdrawn", "hold", "risk", "efficacy", "unsure"}, \
     "挡卡的原因是这五个; not_clean 不在里面 (owner 11-12: 投流起量的卡照借、卡上写明, D-151 第 13 条; 要改先有 owner 的决定和新 D 号)"
 logging.getLogger("flywheel_librarian").disabled = False
-print(f"✓ D-151: 回流闸关着和以前一字不差 (不读库); 开着拿掉五种原因的卡、只有 not_clean 的照借; 没结论 / 读不懂 / 读失败不筛; "
+print(f"✓ D-151: 回流闸关着候选 / 版本串 / 缓存键 / prompt 和以前一字不差 (不读 tv_note_links); 开着拿掉五种原因的卡、只有 not_clean 的照借; 没结论 / 读不懂 / 读失败不筛; "
       f"10 分钟读一次; 品牌保底; 代码默认现在是{'开' if shipped else '关'}")
 
-# ══ §11 · 投流起量的卡照借, 卡上写明 (D-151 第 13 条): 给模型的候选和回给消费方的卡都带那一句; 不进缓存, 回包时现加 ═════
+# ══ §11 · 出处帖投过流的卡照借, 回包的卡上写明 (D-151 第 13 条): 只给人看, 选卡模型看不到; 不进缓存, 回包时现加 ═════════
 logging.getLogger("flywheel_librarian").disabled = True   # 下面故意让读库失败
 core._read_paid_source = REAL_READ_PAID
 saved_clock, saved_page, saved_pages = core._gate_clock, core.PAID_BOOST_PAGE, core.PAID_BOOST_MAX_PAGES
+saved_wait = core.PAID_BOOST_WAIT_S
 saved_shelf_for = core.X.shelf_for
 clock = [5000.0]
 core._gate_clock = lambda: clock[0]
-LINE = core.PAID_BOOST_LINE
+LINE, PLAIN = core.PAID_BOOST_LINE, core.PAID_BOOSTED_LINE   # 「投流起量的」(起量在投流窗口里) / 「投过流」(只知道投过流)
 FLAG_FILTER = ("data_quality_flags->>paid_promoted", "true")
+IN_WINDOW = core.PAID_TAKEOFF_IN_WINDOW
+
+
+class _PaidQ:
+    def __init__(self, sb, schema):
+        self.sb, self.q = sb, {"schema": schema, "eq": None, "in": None, "range": None, "gte": None, "order": None}
+
+    def table(self, name):
+        self.q["table"] = name
+        return self
+
+    def select(self, cols):
+        self.q["cols"] = cols
+        return self
+
+    def eq(self, col, val):
+        self.q["eq"] = (col, val)
+        return self
+
+    def in_(self, col, vals):
+        self.q["in"] = (col, list(vals))
+        return self
+
+    def gte(self, col, val):
+        self.q["gte"] = (col, val)
+        return self
+
+    def order(self, col, **kw):
+        self.q["order"] = col
+        return self
+
+    def range(self, lo, hi):
+        self.q["range"] = (lo, hi)
+        return self
+
+    def execute(self):
+        return self.sb._run(self.q)
 
 
 class PaidSB:
     """假库: truth_vault.notes (只回 note_id; 带着 paid_promoted 那个筛选才只回标了的, 不带就整表都回)、
-    truth_vault.v_paid_boost_events (一篇可以有几行)、autowriter.tv_note_links (回流闸那一读)。记下每个请求。"""
+    truth_vault.v_paid_boost_events (一篇可以有几行; 每行带 takeoff_vs_window, 没写的当 missing)、
+    truth_vault.flywheel_librarian_cache (夜跑那盏灯数借出去的卡)、autowriter.tv_note_links (回流闸那一读)。记下每个请求。
+    stall: {表名: Event} —— 读这张表时卡住, 等 Event 被 set (最多 20 秒)。"""
 
-    def __init__(self, flagged=(), events=(), clean=("A_01", "A_02", "C_00"), gate=(), fail=()):
+    def __init__(self, flagged=(), events=(), clean=("A_01", "A_02", "C_00"), gate=(), fail=(), cache=(), stall=None):
         self.notes = {n: True for n in flagged} | {n: False for n in clean}
-        self.events, self.gate, self.fail, self.calls = list(events), {r["note_id"]: r for r in gate}, set(fail), []
+        self.events = [e if isinstance(e, tuple) else (e, "missing") for e in events]
+        self.gate, self.fail, self.calls = {r["note_id"]: r for r in gate}, set(fail), []
+        self.cache, self.stall = list(cache), dict(stall or {})
 
     def schema(self, name):
-        self._q = {"schema": name, "eq": None, "in": None, "range": None}
-        return self
+        return _PaidQ(self, name)
 
-    def table(self, name):
-        self._q["table"] = name
-        return self
-
-    def select(self, cols):
-        self._q["cols"] = cols
-        return self
-
-    def eq(self, col, val):
-        self._q["eq"] = (col, val)
-        return self
-
-    def in_(self, col, vals):
-        self._q["in"] = list(vals)
-        return self
-
-    def order(self, col, **kw):
-        self._q["order"] = col
-        return self
-
-    def range(self, lo, hi):
-        self._q["range"] = (lo, hi)
-        return self
-
-    def execute(self):
-        q = self._q
+    def _run(self, q):
         self.calls.append((q["schema"], q["table"], q["eq"], q["range"]))
+        if q["table"] in self.stall:
+            assert self.stall[q["table"]].wait(20), "卡住的那次读没被放行"
         if q["table"] in self.fail:
             raise RuntimeError(f"PostgREST down ({q['table']})")
         if q["table"] == "tv_note_links":
-            return types.SimpleNamespace(data=[dict(self.gate[v]) for v in q["in"] if v in self.gate])
-        assert q["schema"] == "truth_vault" and q["cols"] == "note_id" and q["order"] == "note_id", q
+            return types.SimpleNamespace(data=[dict(self.gate[v]) for v in q["in"][1] if v in self.gate])
+        assert q["schema"] == "truth_vault", q
+        if q["table"] == "flywheel_librarian_cache":
+            assert q["cols"] == "selected" and q["gte"][0] == "created_at" and q["in"][0] == "consumer", q
+            return types.SimpleNamespace(data=[{"selected": r["selected"]} for r in self.cache
+                                               if r["created_at"] >= q["gte"][1] and r["consumer"] in q["in"][1]])
         if q["table"] == "notes":
-            ids = sorted(n for n, paid in self.notes.items() if paid or q["eq"] != FLAG_FILTER)
+            assert q["order"] == "note_id", q
+            rows = [{"note_id": n} for n in sorted(self.notes) if self.notes[n] or q["eq"] != FLAG_FILTER]
         else:
-            assert q["table"] == "v_paid_boost_events" and q["eq"] is None, q
-            ids = sorted(self.events)
+            assert q["table"] == "v_paid_boost_events" and q["eq"] is None and q["order"] == "event_id", q
+            rows = [{"note_id": n, "takeoff_vs_window": tw} for n, tw in self.events]   # 假库里 event_id 的顺序 = 写进来的顺序
+        keep = [c.strip() for c in q["cols"].split(",")]
         lo, hi = q["range"]
-        return types.SimpleNamespace(data=[{"note_id": n} for n in ids[lo:hi + 1]])
+        return types.SimpleNamespace(data=[{k: r[k] for k in keep} for r in rows[lo:hi + 1]])
+
+
+def settle():
+    """等后台那次读写回 (断言之前叫一下, 读数才是定的)。"""
+    t = core._PAID["thread"]
+    if t is not None:
+        t.join(20)
+        assert not t.is_alive(), "后台那次读没结束"
 
 
 def paid_use(sb):
     """换一个库, 像刚起的进程: 没有上一次读到的投流帖, 计数清零。"""
+    settle()
     core.get_supabase = lambda *a, **k: sb
-    core._PAID.update(at=None, flagged=None, events=None)
-    core.PAID_STATS.update(read_ok=None, read_errors=0, flagged=None, events=None, labelled=0)
+    core._PAID.update(at=None, next=None, flagged=None, events=None, window=None, thread=None, started=0.0, late=None)
+    core._PAID["ok_at"] = {"flagged": None, "events": None}
+    core.PAID_STATS.update(read_ok=None, read_errors=0, flagged=None, events=None, window=None, lent=0, labelled=0)
     return sb
-
-
-def block_of(text, nid):
-    """给模型的候选里这张卡的那一块 (卡之间空一行)。"""
-    start = text.index(f"[{nid}]")
-    end = text.find("\n\n", start)
-    return text[start:] if end < 0 else text[start:end]
 
 
 def paid_reads(sb):
@@ -637,7 +671,7 @@ paid_seen: dict = {}
 
 def paid_llm(*nids):
     def llm(prompt, model, *, system=None, **kw):
-        paid_seen["system"] = system
+        paid_seen["text"] = repr((prompt, system))            # 模型这一次看到的全部文字
         paid_seen["n"] = paid_seen.get("n", 0) + 1
         return pick(*nids)
     return llm
@@ -649,27 +683,43 @@ core.fetch_candidates = lambda sb, **kw: list(SHELF)
 core.get_cache = lambda sb, key: None
 writes.clear()
 
+# ⓪ 那两句话本身 (11-12 复审): 一句话只说一遍, 不带「靠」(不做归因); 「投流起量的」是 owner 的原话, 只给记录撑得住的卡,
+#    别的卡只说查得到的那一半「投过流」
+for line in (LINE, PLAIN):
+    assert line.startswith("注意: 这篇") and line.endswith(", 数据不全是内容带来的, 借不借由你判断") and len(line) <= 35 \
+        and "靠" not in line and "(" not in line, f"那一句要短、只说一遍、不带「靠」: {line!r}"
+assert "是投流起量的" in LINE and "投过流" in PLAIN and "起量" not in PLAIN and LINE != PLAIN, (LINE, PLAIN)
+
 # ① 冷路径。和写作台 priors.is_clean 投流那一半同一批帖: 标了 paid_promoted 的 (A_00)、只在投流事件里的 (B_00, 两行)、
-#    两样都有的 (B_01); A_01 查过、不是。那一句: 候选里卡头下面一行; 回包里 paid_boost=true、写在 why_it_worked 最前面
-sb = paid_use(PaidSB(flagged=["A_00", "B_01"], events=["B_00", "B_00", "B_01"]))
+#    两样都有的 (B_01); A_01 两样都没有。起量时间落在投流窗口里的 (B_00: 有一行是 in_window) 写「投流起量的」; 只有标记的
+#    (A_00)、事件里没填起量时间的 (B_01) 写「投过流」。回包里 paid_boost=true, 那一句在 why_it_worked 最前面
+sb = paid_use(PaidSB(flagged=["A_00", "B_01"], events=[("B_00", "after"), ("B_00", IN_WINDOW), "B_01"]))
 core.call_anthropic = paid_llm("B_00", "A_00", "A_01", "B_01")
 st = {}
 sel = core.librarian_select(BRIEF, _status_out=st)
 by = {s["source_note_id"]: s for s in sel}
-assert list(by) == ["B_00", "A_00", "A_01", "B_01"] and st["status"] == "ok", "投流起量的卡照借, 一张不少"
-block1 = paid_seen["system"][0]["text"]
-for nid in ("A_00", "B_00", "B_01"):
-    assert by[nid]["paid_boost"] is True and by[nid]["why_it_worked"] == f"{LINE}。w", \
-        f"{nid}: 回给消费方的卡要写明投流起量, 原来的「为何有效」接在后面: {by[nid]['why_it_worked']!r}"
-    assert block_of(block1, nid).split("\n")[1] == f"  {LINE}", f"{nid}: 给模型的候选里, 卡头下面一行就是那一句"
-assert by["A_01"]["paid_boost"] is False and by["A_01"]["why_it_worked"] == "w" and LINE not in block_of(block1, "A_01"), \
-    "不是投流起量的卡: paid_boost=false, 一个字不加"
-assert block1.count(LINE) == 3 and block1.count("\n[") == 24, "候选里只有那 3 张带这一句, 候选还是 24 张"
-said = core.ROLE_TASK_INSTR.split("「")[-1].split("」")[0]
-assert said in LINE and "不能证明内容有效" in core.ROLE_TASK_INSTR and "别拿它的数据当依据" in block1, \
-    f"任务说明里要有一句怎么用这种卡, 引的那几个字要真在卡上那一句里: {said!r}"
+assert list(by) == ["B_00", "A_00", "A_01", "B_01"] and st["status"] == "ok", "出处帖投过流的卡照借, 一张不少"
+assert by["B_00"]["paid_boost"] is True and by["B_00"]["why_it_worked"] == f"{LINE}。w", \
+    f"起量时间在投流窗口里: 写「投流起量的」, 原来的「为何有效」接在后面: {by['B_00']['why_it_worked']!r}"
+for nid in ("A_00", "B_01"):
+    assert by[nid]["paid_boost"] is True and by[nid]["why_it_worked"] == f"{PLAIN}。w", \
+        f"{nid}: 只有标记 / 没填起量时间, 只写「投过流」: {by[nid]['why_it_worked']!r}"
+assert by["A_01"]["paid_boost"] is False and by["A_01"]["why_it_worked"] == "w", "没有标记、不在事件里的卡: paid_boost=false, 一个字不加"
 assert paid_reads(sb) == ["notes", "v_paid_boost_events"] and sb.calls[0][2] == FLAG_FILTER, \
-    f"一次读 = 两个请求: 标了 paid_promoted 的帖 (带筛选)、投流事件里的帖: {sb.calls}"
+    f"一次读 = 两个请求: 标了 paid_promoted 的帖 (带筛选)、投流事件: {sb.calls}"
+# 只给人看: 选卡模型这一次看到的文字里没有这件事, 和书架上一篇投流帖都没有时一字不差, 缓存键也一样 (11-12 复审:
+# owner 把判断留给运营; 模型看得到就可能自己绕开这些卡, 那就是藏)
+with_paid, key_paid = paid_seen["text"], writes[-1][0]
+assert "投流" not in with_paid and "投过流" not in with_paid and "投流" not in core.ROLE_TASK_INSTR, \
+    "给选卡模型的候选和任务说明里不该有投流这件事"
+assert with_paid.count("\\n[") == 24, "候选还是 24 张"
+paid_use(PaidSB())
+core.librarian_select(BRIEF)
+assert paid_seen["text"] == with_paid and writes[-1][0] == key_paid, "书架上有没有投过流的帖, 给模型的文字和缓存键都一样"
+sb = paid_use(sb)
+sb.calls.clear()
+sel = core.librarian_select(BRIEF)
+by = {s["source_note_id"]: s for s in sel}
 # 不进缓存: 缓存行里没有 paid_boost, why_it_worked 是原来的
 cached_row = writes[-1][1]
 assert [c["source_note_id"] for c in cached_row] == list(by) and not any("paid_boost" in c for c in cached_row) \
@@ -679,22 +729,28 @@ assert len(by["B_00"]["excerpt"]) == core.X.EXCERPT_CAP == 600 and LINE not in b
 DESK_FIELDS = ("hook_type", "structure", "why_it_worked", "transferable_tactic", "borrow_what", "why_relevant")
 desk_text = "\n".join(str(by["B_00"][k]) for k in DESK_FIELDS) + "\n" + by["B_00"]["excerpt"][:200]
 assert LINE in desk_text, "消费方只渲染认得的那六个字段 + 200 字摘录 (aw memory.render_flywheel_block) 时, 那一句也整句在"
-assert LINE in block_of(block1, "B_00") and block_of(block1, "B_00").endswith("长" * 200), "候选里摘要截 200 字, 截不到那一句"
 h = core.paid_health()
-assert h == {"read_age_s": 0, "read_ok": True, "read_errors": 0, "flagged": 2, "events": 2, "labelled": 3}, h
+assert h == {"read_age_s": 0, "read_ok": True, "read_errors": 0, "flagged": 2, "events": 2, "window": 1,
+             "lent": 4, "labelled": 3}, h
 assert all(x is None or isinstance(x, (bool, int)) for x in h.values()), "/health 里只有布尔、整数和 None"
-# dry-run (诊断) 看到的 prompt 也带; 10 分钟内不重读
-assert core.librarian_select(BRIEF, dry_run=True)["prompt"].count(LINE) == 3 and len(sb.calls) == 2, \
-    "dry-run 的 prompt 和生产冷路径一样带那一句; 10 分钟内不重读"
-assert core.PAID_BOOST_TTL_S == 600, "每个进程最多 10 分钟读一次"
-assert [t for _, t, _ in core._PAID_SOURCES] == ["notes", "v_paid_boost_events"], \
+core.librarian_select(BRIEF)
+h = core.paid_health()
+assert (h["lent"], h["labelled"]) == (8, 6) and len(sb.calls) == 2, "lent / labelled 是累计的 (不是只记最近一次); 10 分钟内不重读"
+assert paid_seen["text"] == with_paid and "投流" not in core.librarian_select(BRIEF, dry_run=True)["prompt"], \
+    "那批帖已经读在手上的时候再选一次 (冷路径、dry-run): 给模型的文字还是一字不差, 没有投流这件事"
+# dry-run (诊断) 的 prompt 和生产冷路径一样不带; 诊断不回卡, 也就不去读那两路
+fresh_sb = paid_use(PaidSB(flagged=["A_00"], events=[("B_00", IN_WINDOW)]))
+dry = core.librarian_select(BRIEF, dry_run=True)
+assert "投流" not in dry["prompt"] and dry["cache_key"] == key_paid and not fresh_sb.calls, "dry-run: prompt 不带, 不读那两路"
+assert (core.PAID_BOOST_TTL_S, core.PAID_BOOST_RETRY_S, core.PAID_BOOST_STALE_S) == (600, 60, 3600) \
+    and 0 < core.PAID_BOOST_WAIT_S <= 5, "读成了 10 分钟不重读; 读失败 60 秒后重读; 1 小时没读成新的不再说「不是」; 回包最多等几秒"
+assert [(n, t, w) for n, t, w, _, _ in core._PAID_SOURCES] == \
+    [("flagged", "notes", FLAG_FILTER), ("events", "v_paid_boost_events", None)], \
     "只看 TV 自己的两样: paid_promoted 标记、投流事件 (铺评工单是另一回事, 不在这条里)"
-whole = list(CARDS)
-assert core._mark_paid(whole, core._Paid(frozenset(), True)) is whole \
-    and core._mark_paid(whole, core._Paid(frozenset({"不在书架上"}), False)) is whole, "书架上没有投流帖: 原样是同一个 list"
 
 # ② 命中缓存: 这次改动之前写的缓存行 (没有 paid_boost、没有 external 键) 回包时现加那一句, 不调模型、不改缓存键;
 #    新认出来的投流帖过了 10 分钟就标上, 还是同一行缓存
+sb = paid_use(PaidSB(flagged=["A_00", "B_01"], events=[("B_00", IN_WINDOW), "B_01"]))
 OLD_ROW = [{"source_note_id": "B_00", "why_relevant": "同品牌", "borrow_what": "借钩子", "tier": "爆", "synthetic": False,
             "hook_type": "h", "structure": "s", "why_it_worked": "w", "transferable_tactic": "t", "excerpt": "e"},
            {"source_note_id": "A_01", "why_relevant": "跨主题", "borrow_what": "借结构", "tier": "爆", "synthetic": False,
@@ -708,52 +764,108 @@ hit = core.librarian_select(BRIEF)
 assert [(c["source_note_id"], c["paid_boost"]) for c in hit] == [("B_00", True), ("A_01", False), ("A_02", False)] \
     and hit[0]["why_it_worked"] == f"{LINE}。w" and hit[1]["why_it_worked"] == "w", \
     f"以前写的缓存行回包时也要带那一句: {[(c['source_note_id'], c.get('paid_boost')) for c in hit]}"
-assert paid_seen["n"] == 0 and not writes and len(sb.calls) == 2, "命中缓存: 不调模型、不重写缓存、10 分钟内不重读"
-sb.events.append("A_01")                                  # 今晚的同步新认出一篇投流帖
+assert paid_seen["n"] == 0 and not writes and len(sb.calls) == 2, "命中缓存: 不调模型、不重写缓存; 那两路读一次"
+sb.events.append(("A_01", "missing"))                     # 今晚的同步新认出一篇投流帖 (没填起量时间)
 sb.notes["A_02"] = True                                   # 另一篇新标了 paid_promoted (这张卡没策展, why_it_worked 是空的)
-assert [c["paid_boost"] for c in core.librarian_select(BRIEF)] == [True, False, False], "10 分钟内用的还是上一次读到的"
+assert [c["paid_boost"] for c in core.librarian_select(BRIEF)] == [True, False, False] and len(sb.calls) == 2, \
+    "10 分钟内用的还是上一次读到的, 不重读"
 clock[0] += core.PAID_BOOST_TTL_S + 1
 hit = core.librarian_select(BRIEF)
-assert [c["paid_boost"] for c in hit] == [True, True, True] and hit[1]["why_it_worked"] == f"{LINE}。w" \
-    and hit[2]["why_it_worked"] == LINE, "新认出来的投流帖过了 10 分钟就标上; 原来没有「为何有效」的卡就只有那一句"
+assert [c["paid_boost"] for c in hit] == [True, True, True] and hit[1]["why_it_worked"] == f"{PLAIN}。w" \
+    and hit[2]["why_it_worked"] == PLAIN, "新认出来的投流帖过了 10 分钟就标上; 原来没有「为何有效」的卡就只有那一句"
 assert core.librarian_select(BRIEF, dry_run=True)["cache_key"] == key_before and paid_seen["n"] == 0 and len(sb.calls) == 4, \
     "投流帖多了一篇: 缓存键不变 (书架没动), 还是命中那一行、不调模型"
 assert OLD_ROW[0]["why_it_worked"] == "w" and "paid_boost" not in OLD_ROW[0]
 
-# ③ 读失败: 一次都没读成过 → 卡照常借出去、不带那一句, paid_boost 是 null, 计数加; 不往借阅里抛; 失败那次也占着 10 分钟
+# ③ 读失败: 一次都没读成过 → 卡照常借出去、不带那一句, paid_boost 是 null, 计数加; 不往借阅里抛。
+#    失败之后 60 秒重读 (11-12 复审: 原来失败也占 10 分钟, 刚部署的进程第一次读失败, 投过流的卡要不带那一句地借 10 分钟)
 core.get_cache = lambda sb, key: None
-sb = paid_use(PaidSB(flagged=["A_00"], events=["B_00"], fail=["notes", "v_paid_boost_events"]))
+sb = paid_use(PaidSB(flagged=["A_00"], events=[("B_00", IN_WINDOW)], fail=["notes", "v_paid_boost_events"]))
 core.call_anthropic = paid_llm("B_00", "A_00", "A_01")
 st = {}
 sel = core.librarian_select(BRIEF, _status_out=st)
 assert [s["source_note_id"] for s in sel] == ["B_00", "A_00", "A_01"] and st["status"] == "ok", "读投流帖失败不影响借阅"
-assert all(s["paid_boost"] is None and s["why_it_worked"] == "w" for s in sel) and LINE not in paid_seen["system"][0]["text"], \
+assert all(s["paid_boost"] is None and s["why_it_worked"] == "w" for s in sel), \
     "一次都没读成过: 卡上不写那一句, paid_boost 是 null (不知道), 不是 false"
 h = core.paid_health()
-assert (h["read_ok"], h["read_errors"], h["flagged"], h["events"], h["labelled"]) == (False, 2, None, None, 0), h
+assert (h["read_ok"], h["read_errors"], h["flagged"], h["events"], h["lent"], h["labelled"]) == (False, 2, None, None, 3, 0), h
+clock[0] += core.PAID_BOOST_RETRY_S - 1
 core.librarian_select(BRIEF)
-assert len(sb.calls) == 2 and core.paid_health()["read_errors"] == 2, "失败之后 10 分钟内不再去撞库"
-sb.fail.clear()                                           # 库好了: 过了 10 分钟读到, 那一句回来
-clock[0] += core.PAID_BOOST_TTL_S + 1
-assert [s["paid_boost"] for s in core.librarian_select(BRIEF)] == [True, True, False] and core.paid_health()["read_ok"] is True
-# 两路各记各的: 之后事件那一路挂了 → 沿用它上一次读成的那份 (B_00 还标着), 标记那一路照常读到新的
+assert len(sb.calls) == 2 and core.paid_health()["read_errors"] == 2, "失败之后 60 秒内不再去撞库"
+sb.fail.clear()                                           # 库好了: 失败之后过 60 秒 (不是 10 分钟) 就读到, 那一句回来
+clock[0] += 2
+sel = core.librarian_select(BRIEF)
+assert [s["paid_boost"] for s in sel] == [True, True, False] and core.paid_health()["read_ok"] is True \
+    and sel[0]["why_it_worked"] == f"{LINE}。w" and sel[1]["why_it_worked"] == f"{PLAIN}。w", \
+    f"读失败 60 秒后重读, 读到就标上: {[s['paid_boost'] for s in sel]}"
+clock[0] += core.PAID_BOOST_RETRY_S + 1
+core.librarian_select(BRIEF)
+assert len(sb.calls) == 4, "读成之后是 10 分钟不重读, 不是 60 秒"
+# 两路各记各的: 之后事件那一路挂了 → 沿用它上一次读成的那份 (B_00 还标着、还是「投流起量的」), 标记那一路照常读到新的;
+# 事件那一路上次读成还在 1 小时内, 不在两份里的卡还算「不是」(false)
+core.call_anthropic = paid_llm("B_00", "A_01", "A_02")
 sb.fail.add("v_paid_boost_events")
 sb.notes["A_01"] = True
-clock[0] += core.PAID_BOOST_TTL_S + 1
+clock[0] += core.PAID_BOOST_TTL_S
 sel = core.librarian_select(BRIEF)
-assert [s["paid_boost"] for s in sel] == [True, True, True], \
+assert [s["paid_boost"] for s in sel] == [True, True, False] and sel[0]["why_it_worked"] == f"{LINE}。w", \
     f"一路读失败: 沿用它上一次读成的, 另一路照常: {[s['paid_boost'] for s in sel]}"
 h = core.paid_health()
-assert (h["read_ok"], h["read_errors"], h["flagged"], h["events"]) == (False, 3, 2, 1), h
-# 事件那一路从来没读成过 (视图不在): 标了 paid_promoted 的照样写明; 别的卡是不知道 (null), 不是 false
-sb = paid_use(PaidSB(flagged=["A_00"], events=["B_00"], fail=["v_paid_boost_events"]))
+assert (h["read_ok"], h["read_errors"], h["flagged"], h["events"], h["window"]) == (False, 3, 2, 1, 1), h
+n_calls = len(sb.calls)
+clock[0] += core.PAID_BOOST_RETRY_S + 1
+core.librarian_select(BRIEF)
+assert len(sb.calls) == n_calls + 2, "有一路失败: 60 秒后两路都重读"
+# 那一路一直读不到, 上次读成已经是 1 小时以前: 在旧名单里的帖照标, 不在的不再说「不是」, 是不知道 (null) ——
+# 这期间新投的帖不在旧名单里 (11-12 复审: 原来旧名单没有期限, 一直回 false)
+clock[0] += core.PAID_BOOST_STALE_S
 sel = core.librarian_select(BRIEF)
-assert [s["paid_boost"] for s in sel] == [None, True, None] and sel[1]["why_it_worked"] == f"{LINE}。w", \
+assert [s["paid_boost"] for s in sel] == [True, True, None] and sel[0]["why_it_worked"] == f"{LINE}。w", \
+    f"旧名单过了 1 小时: 在里面的照标, 不在的是 null: {[s['paid_boost'] for s in sel]}"
+sb.fail.clear()
+clock[0] += core.PAID_BOOST_RETRY_S + 1
+assert [s["paid_boost"] for s in core.librarian_select(BRIEF)] == [True, True, False], "读成了: 又能说「不是」"
+# 事件那一路从来没读成过 (视图不在): 标了 paid_promoted 的照样写明; 别的卡是不知道 (null), 不是 false
+core.call_anthropic = paid_llm("B_00", "A_00", "A_01")
+sb = paid_use(PaidSB(flagged=["A_00"], events=[("B_00", IN_WINDOW)], fail=["v_paid_boost_events"]))
+sel = core.librarian_select(BRIEF)
+assert [s["paid_boost"] for s in sel] == [None, True, None] and sel[1]["why_it_worked"] == f"{PLAIN}。w", \
     f"一路从来没读成过: 读成的那一路照标, 别的卡不知道: {[s['paid_boost'] for s in sel]}"
 paid_use(object())                                        # 连 .schema 都没有的库
 assert [s["paid_boost"] for s in core.librarian_select(BRIEF)] == [None, None, None], "库对象不对也不许抛进借阅"
 
-# ④ 外部卡从不标 (别家的帖, 不归这条管): 就算它的 id 出现在投流帖里, 候选和回包都不带那一句
+# ③b 读卡住 (视图慢 / 超时; supabase 客户端默认 120 秒): 借阅最多等 PAID_BOOST_WAIT_S, 不等它读完; 读在后台线程里,
+#     不占着锁, 同时到的借阅不排队、不另起一次读; 读完自己写回 (11-12 复审: 原来两路读数在锁里做, 每次借阅都排在后面)
+core.PAID_BOOST_WAIT_S = 0.05
+go = threading.Event()
+sb = paid_use(PaidSB(flagged=["A_00"], events=[("B_00", IN_WINDOW)], stall={"v_paid_boost_events": go}))
+t0 = time.monotonic()
+sel = core.librarian_select(BRIEF)
+took = time.monotonic() - t0
+assert took < 5 and [s["paid_boost"] for s in sel] == [None, None, None], f"读卡住: 借阅只等 {core.PAID_BOOST_WAIT_S} 秒就回 ({took:.1f}s)"
+h = core.paid_health()
+assert (h["read_ok"], h["read_errors"]) == (False, 1), f"没等到要记一笔: {h}"
+assert core._PAID_LOCK.acquire(timeout=1), "读还卡着的时候锁不该被占着"
+core._PAID_LOCK.release()
+t0 = time.monotonic()
+core.librarian_select(BRIEF)
+assert time.monotonic() - t0 < 5 and paid_reads(sb) == ["notes", "v_paid_boost_events"] \
+    and core.paid_health()["read_errors"] == 1, "读还卡着: 后到的借阅不等、不另起一次读, 同一次读只记一笔"
+go.set()
+settle()
+sel = core.librarian_select(BRIEF)
+assert [s["paid_boost"] for s in sel] == [True, True, False] and core.paid_health()["read_ok"] is True \
+    and len(sb.calls) == 2, "卡住的那次读完自己写回, 下一次借阅就标上, 不用重读"
+go.clear()                                                # 手上有上一次读成的: 再卡住, 借阅照样很快回, 用手上那份
+clock[0] += core.PAID_BOOST_TTL_S + 1
+t0 = time.monotonic()
+sel = core.librarian_select(BRIEF)
+assert time.monotonic() - t0 < 5 and [s["paid_boost"] for s in sel] == [True, True, False], "手上有上一次读成的: 不等, 照标"
+go.set()
+settle()
+core.PAID_BOOST_WAIT_S = saved_wait
+
+# ④ 外部卡从不标 (别家的帖, 不归这条管): 就算它的 id 出现在投流帖里, 回包也不带那一句
 EXT = {"source_note_id": "ext:E1", "external": True, "category": "不在保底品类里", "comments": 90, "masked": True,
        "raw_excerpt": "别家的帖", "structure": "先问后答", "why_it_worked": "抓到时每天 30 条评论", "rank_score": 0.5}
 core.X.shelf_for = lambda sb, brief, **kw: [dict(EXT)]
@@ -761,8 +873,8 @@ sb = paid_use(PaidSB(flagged=["ext:E1", "E1"], events=["ext:E1", "B_00"]))
 core.call_anthropic = paid_llm("ext:E1", "B_00")
 sel = core.librarian_select(dict(BRIEF, explore=False))
 assert [(s["source_note_id"], s["external"], s["paid_boost"]) for s in sel] == [("ext:E1", True, False), ("B_00", False, True)], sel
-assert sel[0]["why_it_worked"] == EXT["why_it_worked"] and LINE not in block_of(paid_seen["system"][0]["text"], "ext:E1") \
-    and paid_seen["system"][0]["text"].count(LINE) == 1, "外部卡: 候选和回包都不带那一句"
+assert sel[0]["why_it_worked"] == EXT["why_it_worked"] and sel[1]["why_it_worked"] == f"{PLAIN}。w" \
+    and (core.paid_health()["lent"], core.paid_health()["labelled"]) == (1, 1), "外部卡: 回包不带那一句, 也不算进 lent"
 core.get_cache = lambda sb, key: [dict(core._enrich(EXT, "r", "b")), dict(OLD_ROW[0])]    # 命中缓存的外部卡也一样
 hit = core.librarian_select(dict(BRIEF, explore=False))
 assert [(c["external"], c["paid_boost"]) for c in hit] == [(True, False), (False, True)] \
@@ -798,21 +910,75 @@ gate, calls, out, threads = race(lambda: pick("B_00", "A_01"))
 finish(gate, threads)
 core._board = real_board
 assert len(calls) == 1 and out["second"][0] == out["first"][0] and \
-    [(s["paid_boost"], s["why_it_worked"]) for s in out["second"][0]] == [(True, f"{LINE}。w"), (False, "w")], out
+    [(s["paid_boost"], s["why_it_worked"]) for s in out["second"][0]] == [(True, f"{PLAIN}。w"), (False, "w")], out
 
-# ⑦ 翻页: 一页读满就接着读; 页数到顶就用读到的, 不抛
+# ⑦ 翻页: 一页读满就接着读 (事件按 event_id 排; 后面那一页上的 in_window 也算); 页数到顶就用读到的, 不抛
 core.PAID_BOOST_PAGE = 2
-sb = paid_use(PaidSB(events=["A_00", "A_01", "A_02", "B_00", "B_00"]))
-assert core._paid_boosted(sb) == (frozenset({"A_00", "A_01", "A_02", "B_00"}), True) and \
+sb = paid_use(PaidSB(events=["A_00", "A_01", "A_02", "B_00", ("A_00", IN_WINDOW)]))
+assert core._paid_boosted(sb) == (frozenset({"A_00", "A_01", "A_02", "B_00"}), frozenset({"A_00"}), True) and \
     [c[3] for c in sb.calls if c[1] == "v_paid_boost_events"] == [(0, 1), (2, 3), (4, 5)], sb.calls
 core.PAID_BOOST_MAX_PAGES = 2
 sb = paid_use(PaidSB(events=["A_00", "A_01", "A_02", "B_00", "B_01"]))
 assert core._paid_boosted(sb).ids == {"A_00", "A_01", "A_02", "B_00"} and core.paid_health()["read_ok"] is True, \
     "页数到顶: 用读到的这些"
+core.PAID_BOOST_PAGE, core.PAID_BOOST_MAX_PAGES = saved_page, saved_pages
 
-core._gate_clock, core.PAID_BOOST_PAGE, core.PAID_BOOST_MAX_PAGES = saved_clock, saved_page, saved_pages
+# ⑧ 夜跑那盏灯 (check_librarian_traffic.py) 的投流那一段: 馆员读的那两路夜里照样读一遍, 读不到 → ::warning (馆员那头读不到时
+#    卡照常借出去、借卡返回 ok, 别处都不红); 近 7 天借给写作台的内部卡里投过流的占几成, 和 11-12 的基线并排印 (只印不判)
+import contextlib  # noqa: E402
+import io  # noqa: E402
+
+import check_librarian_traffic as T  # noqa: E402
+
+assert [(n, t, w) for n, t, w, _ in T.PAID_SOURCES] == [(n, t, w) for n, t, w, _, _ in core._PAID_SOURCES] \
+    and [o for *_, o in T.PAID_SOURCES] == [o for *_, o in core._PAID_SOURCES], "夜跑读的那两路要和馆员读的是同一个表 / 视图、同一个筛选"
+assert T.PAID_BASELINE == (52, 165), "11-12 的基线: 165 张内部卡里 52 张 (D-151 第 13 条)"
+CACHE_ROWS = [
+    {"consumer": "deskcore", "created_at": "2026-11-10T00:00:00",
+     "selected": [{"source_note_id": "B_00"}, {"source_note_id": "A_01"}, {"source_note_id": "ext:E1", "external": True}]},
+    {"consumer": "autowriter", "created_at": "2026-11-11T00:00:00",
+     "selected": [{"source_note_id": "A_00"}, {"source_note_id": "ext:E2"}, "不是卡", {"source_note_id": "C_00"}]},
+    {"consumer": "deskcore", "created_at": "2026-11-11T00:00:00", "selected": []},          # 作废过的行 (D-126)
+    {"consumer": "deskcore", "created_at": "2026-11-01T00:00:00", "selected": [{"source_note_id": "B_00"}]},   # 7 天以前
+    {"consumer": "sanshengliubu", "created_at": "2026-11-11T00:00:00", "selected": [{"source_note_id": "B_00"}]},  # 不是写作台
+]
+
+
+def paid_report(sb, gha=False):
+    buf, old = io.StringIO(), os.environ.pop("GITHUB_ACTIONS", None)
+    if gha:
+        os.environ["GITHUB_ACTIONS"] = "true"
+    try:
+        with contextlib.redirect_stdout(buf):
+            p = T.gather_paid(sb, "2026-11-05T00:00:00")
+            blind = T.report_paid(p)
+    finally:
+        os.environ.pop("GITHUB_ACTIONS", None)
+        if old is not None:
+            os.environ["GITHUB_ACTIONS"] = old
+    return p, blind, buf.getvalue()
+
+
+p, blind, text = paid_report(PaidSB(flagged=["A_00"], events=["B_00", "B_00"], cache=CACHE_ROWS), gha=True)
+assert (p["flagged"], p["events"], p["rows"], p["lent"], p["lent_paid"], p["errors"]) == (1, 1, 3, 4, 2, []), p
+assert blind is False and "::warning" not in text and "内部卡 4 张" in text and "投过流的 2 张 (50%)" in text \
+    and "52 / 165 = 32%" in text, text
+p, blind, text = paid_report(PaidSB(flagged=["A_00"], events=["B_00"], cache=CACHE_ROWS, fail=["v_paid_boost_events"]), gha=True)
+assert blind is True and p["events"] is None and p["errors"] == [("events", "RuntimeError")] and "::warning" in text \
+    and "v_paid_boost_events" in text and "数不出" in text and "%" not in text.split("近 7 天")[1].split("\n")[0], \
+    f"有一路读不到: 打 ::warning, 不报一个算不准的占比: {text}"
+assert "::warning" not in paid_report(PaidSB(fail=["notes"]))[2], "不在 GHA 里不打 ::warning (只印 ⚠)"
+p, blind, text = paid_report(PaidSB(flagged=["A_00"], fail=["flywheel_librarian_cache"]), gha=True)
+assert blind is False and p["lent"] is None and "::warning" not in text and "没有数" in text, "缓存读不到: 说没有数, 不当成馆员瞎了"
+p, blind, text = paid_report(PaidSB(flagged=["A_00"]), gha=True)
+assert blind is False and p["lent"] == 0 and "无从比" in text, "7 天里没有借卡: 不除零, 不报占比"
+p, blind, text = paid_report(object(), gha=True)
+assert blind is True and len(p["errors"]) == 3 and text.count("::warning") == 1, "库对象不对: 不抛, 当两路都读不到"
+
+core._gate_clock = saved_clock
 paid_use(object())
 logging.getLogger("flywheel_librarian").disabled = False
-print("✓ D-151 第 13 条: 投流起量的卡照借, 候选和回包都写明 (标记 ∪ 投流事件, 和写作台同一批帖); 不进缓存, 以前的缓存行回包时现加; "
-      "读失败不标、不挡借阅、记数; 10 分钟读一次; 外部卡不标; 和回流闸的开关无关")
+print("✓ D-151 第 13 条: 出处帖投过流的卡照借, 回包的卡上写明 (起量在投流窗口里写「投流起量的」, 其余写「投过流」; 标记 ∪ 投流事件, "
+      "和写作台同一批帖); 选卡模型看不到, prompt 和缓存键不变; 不进缓存, 以前的缓存行回包时现加; 读失败不标、不挡借阅、记数、"
+      "60 秒后重读; 读卡住不堵借阅; 旧名单过 1 小时不再说「不是」; 外部卡不标; 和回流闸的开关无关; 夜跑那盏灯照读那两路")
 print("\ncheck_librarian_shortlist: all checks passed")

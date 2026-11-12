@@ -2,8 +2,10 @@
 
   POST /librarian   body = brief(JSON)  → {"selected": [ {source_note_id, why_relevant,
                                             borrow_what, hook_type, structure, ...}, ... ]}
-                    选中的卡都带 paid_boost (D-151 第 13 条): true = 出处帖是投流起量的, 这时 why_it_worked 最前面有一句
-                    「注意: 这篇是靠投流起量的…借不借由你判断」(core.PAID_BOOST_LINE); false = 不是; null = 这次没读到。
+                    选中的卡都带 paid_boost (D-151 第 13 条): true = 出处帖投过流 (paid_promoted 标记或投流事件), 这时
+                    why_it_worked 最前面有一句: 起量时间在投流窗口里的是「注意: 这篇是投流起量的, 数据不全是内容带来的,
+                    借不借由你判断」(core.PAID_BOOST_LINE), 其余是「注意: 这篇投过流, …」(core.PAID_BOOSTED_LINE);
+                    false = 没有标记、也不在投流事件里 (两路 1 小时内都读成了); null = 不知道 (没读成 / 手上那份太旧)。
   GET  /health      → {"ok": true}      (Railway healthcheck)
 
 鉴权: 若设了环境变量 LIBRARIAN_API_KEY, 请求须带 header `X-Librarian-Key: <key>`;
@@ -107,8 +109,9 @@ def health() -> dict:
         # 自己选的) + 现在生效的三个时限 (主站那个认 RELAY_PRIMARY_TIMEOUT_S, 设了就不是代码里的 22; 超过 40 按 40)。只有数。
         # D-151 回流闸 (return_gate): 开没开 (默认关)、上次读 tv_note_links 成没成、最近一次筛书架会拿掉几张卡、
         # 保底留了几个品牌。只有布尔、整数和 None, 不带 note_id、品牌名。
-        # D-151 第 13 条 投流标注 (paid_boost): 投流起量的帖那两路上次读成没成 (read_ok)、累计读失败几次 (read_errors,
-        # 涨 = 卡在不带那一句地借出去, 或者用的是旧的那批帖)、各读到几篇、最近一次回包标了几张。同样只有数、布尔和 None。
+        # D-151 第 13 条 投流标注 (paid_boost): 出处帖投过流的那两路上次读成没成 (read_ok)、累计读失败 / 回包前没等到
+        # 几次 (read_errors, 涨 = 卡在不带那一句地借出去, 或者用的是旧的那批帖)、各读到几篇 (flagged / events; window =
+        # 事件里起量在投流窗口内的)、累计回了几张内部卡 (lent)、其中标了几张 (labelled)。同样只有数、布尔和 None。
         "select": {**MERGE_STATS,
                    "primary_timeout_s": _clients.primary_limit_s(),
                    "call_timeout_s": _clients.CALL_TIMEOUT_S, "request_budget_s": _clients.REQUEST_BUDGET_S,
