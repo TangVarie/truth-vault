@@ -102,6 +102,15 @@ PRIMARY_TIMEOUT_S = 22.0    # 配了备用站时主站只等这么久就切 (原
 REQUEST_BUDGET_S = 60.0     # 整轮 (各次尝试 + 切备用站 + 退避) 的上限。不许低于 60: 写作台 open_project 起的那次借阅在后台
 #                             等满 60 秒, 慢的也要选完写进缓存, 接着来的 borrow_lessons 才拿得到卡
 MIN_CALL_S = 10.0           # 整轮剩不到这么久就不再重试: 冷选卡最快也要 10 秒出头, 发了多半白付一次
+# 这几个限时都是「这么久没收到新字节」(httpx 按每次读算), 不是墙上时钟: 中转站挂着不出字节时按它算 (线上见到的就是这种);
+# 对方一直在滴字节 (保活空白) 的话, 一次调用可以超过它, 整轮也可以超过 60 秒 —— 旧的 30 秒也一样, 等的人由 MERGE_WAIT_S 兜住。
+
+
+def primary_limit_s() -> float:
+    """配了备用站时主站这次最多等多久: RELAY_PRIMARY_TIMEOUT_S (没设 = PRIMARY_TIMEOUT_S), 但超过「整轮 - 2 × MIN_CALL_S」
+    (40 秒) 按它算。不封的话调到 50 以上时「主站限时 + MIN_CALL_S」放不进整轮: 快失败不再重试、缓存块降级不做, 60 以上
+    备用站只剩 1 秒。封在 40: 切过去时备用站至少还有 20 秒 (冷选卡 11-19 秒)。/health 回显的也是这个值。"""
+    return min(relay_failover.primary_timeout_s(PRIMARY_TIMEOUT_S), REQUEST_BUDGET_S - 2 * MIN_CALL_S)
 
 
 def _mono() -> float:       # 整轮时限用的钟; 检查脚本会换掉它
@@ -112,7 +121,7 @@ def call_anthropic(prompt: str, model: str, *, system=None, max_tokens: int = 15
                    max_attempts: int = 3) -> str:
     """One Anthropic call with exponential-backoff retry on transient errors.
 
-    时限 (AU-F09, 上面四个常数): 整轮最多 REQUEST_BUDGET_S; 每次调用的限时 = 调用点自己的上限和整轮剩下的时间里
+    时限 (AU-F09, 上面四个常数; 都按「没有新字节」算, 见常数下面那段): 整轮最多 REQUEST_BUDGET_S; 每次调用的限时 = 调用点自己的上限和整轮剩下的时间里
     小的那个; 重试只在整轮还放得下一次完整尝试时才做 (配了备用站: 主站限时 + MIN_CALL_S; 没配: MIN_CALL_S)。
 
     Lazy-imports anthropic so --dry-run works without the SDK.
@@ -128,7 +137,7 @@ def call_anthropic(prompt: str, model: str, *, system=None, max_tokens: int = 15
     (或 RELAY_FORCE=primary) → 只打主站 (限时 CALL_TIMEOUT_S)。配了 → 每次尝试先打主站 (只给一次机会、限时
     PRIMARY_TIMEOUT_S), 超时 / 连不上 / 429 / 5xx / 401-404 → 这一次改打备用站 (限时 CALL_TIMEOUT_S); 连续 2 次失败 →
     熔断直接走备用站。「成功但慢」的门槛 (25 秒, RELAY_SLOW_S) 在主站限时 22 秒之下用不上 (超时先到), 把
-    RELAY_PRIMARY_TIMEOUT_S 调到 25 以上才生效。
+    RELAY_PRIMARY_TIMEOUT_S 调到 25 以上才生效 (超过 40 按 40, primary_limit_s)。
     """
     import anthropic  # lazy import
 
@@ -155,7 +164,7 @@ def call_anthropic(prompt: str, model: str, *, system=None, max_tokens: int = 15
         def _create(kw: dict):
             return client.messages.create(**kw, timeout=_limit(CALL_TIMEOUT_S))
     else:
-        primary_timeout = relay_failover.primary_timeout_s(PRIMARY_TIMEOUT_S)
+        primary_timeout = primary_limit_s()
         slow = relay_failover.slow_s(25.0)
         # 一次尝试 = 主站 (最多 primary_timeout) + 可能切到备用站: 留得出这么多才重试, 切过去时备用站至少还有 MIN_CALL_S
         attempt_needs = MIN_CALL_S + (primary_timeout if relay_mode == relay_failover.MODE_AUTO else 0.0)

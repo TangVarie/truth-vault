@@ -168,7 +168,7 @@ ssll 真写过稿后才有。所以新部署的正常节奏: 标爆款 → Check
 
 **启用**：在每个调 Claude 的地方加两个变量（三个仓同名）：`ANTHROPIC_BASE_URL_BACKUP`（备用站地址）和 `ANTHROPIC_API_KEY_BACKUP`（备用站 key）。两个都填了才算启用，缺一个等于没配，行为和现在完全一样。GitHub（truth-vault）：Settings → Secrets and variables → Actions → **Secrets** 新建这两个（地址也放 secret，别放 variable，variable 会原样出现在公开日志里）。Railway：truth-vault 的 tv-worker / librarian / onboarder、Jev 的 judge，各自 Variables 里加这两个（改变量会自动重新部署）。autowriter 的 Streamlit / worker 以后开起来时同样加。加完跑一次 Actions → gateway-probe，`target` 选 `backup`（或 `both`），看备用站 `http=200`。备用站必须认同样的模型名（claude-sonnet-5-5 / claude-haiku-5-5），不认会回 404/503。备用站的 Haiku 如果是单独的通道 key（11-10 起就是这样），在 GitHub Secrets 再加 `ANTHROPIC_API_KEY_BACKUP_HAIKU`：只有模型名带 haiku 的调用（夜跑的外部帖遮挡词）用它，地址还是 `ANTHROPIC_BASE_URL_BACKUP`；Railway 上不用加（那边不调 Haiku）。gateway-probe 测备用站的 haiku 时也用这把。
 
-**自动切换**：配好后每次调用先打主站，但主站只给一次机会且限时（夜跑标注 60 秒、遮挡词 150 秒、馆员 30 秒、上表流式 90 秒没有新字节、Jev 规则编译沿用 JUDGE_COMPILE_TIMEOUT_SEC）。主站超时、连不上、429、5xx（含 520/522/524/529）、401/402/403（多半是余额或 key 失效）、404（多半是不认模型名）→ 这次立刻改打备用站。400 这类请求本身有问题的不切；中转站敏感词拦截（sensitive_words_detected）也不切，照旧按 D-125 记 NULL。主站连续 2 次失败，或连续 2 次慢得离谱（单次超过 25 秒；遮挡词 60 秒、馆员 25 秒）→ 熔断 20 分钟：这期间所有调用直接走备用站；到点放一个调用去试主站，好了切回，不行再熔断 20 分钟。同一台机器上的进程共用熔断状态（夜跑一个项目熔断了，下一个项目直接走备用）。
+**自动切换**：配好后每次调用先打主站，但主站只给一次机会且限时（夜跑标注 60 秒、遮挡词 150 秒、馆员 22 秒、上表流式 90 秒没有新字节、Jev 规则编译沿用 JUDGE_COMPILE_TIMEOUT_SEC）。主站超时、连不上、429、5xx（含 520/522/524/529）、401/402/403（多半是余额或 key 失效）、404（多半是不认模型名）→ 这次立刻改打备用站。400 这类请求本身有问题的不切；中转站敏感词拦截（sensitive_words_detected）也不切，照旧按 D-125 记 NULL。主站连续 2 次失败，或连续 2 次慢得离谱（单次超过 25 秒；遮挡词 60 秒、馆员 25 秒）→ 熔断 20 分钟：这期间所有调用直接走备用站；到点放一个调用去试主站，好了切回，不行再熔断 20 分钟。同一台机器上的进程共用熔断状态（夜跑一个项目熔断了，下一个项目直接走备用）。
 
 **手动切换**：变量 `RELAY_FORCE`：`backup` = 只走备用站；`primary` = 只走主站、不切换，和没配备用站时一模一样；留空或删掉 = 自动。GitHub 在 Settings → Secrets and variables → Actions → **Variables** 设；Railway 在对应服务的 Variables 设（会重新部署）。备用站没配时设 `backup` 不生效，日志会提示一行。
 
@@ -185,7 +185,7 @@ ssll 真写过稿后才有。所以新部署的正常节奏: 标爆款 → Check
 | 调用点 | 主站限时 / 慢门槛 | 备用站客户端 |
 |---|---|---|
 | `scripts/annotate_essence_pass.call_claude` (essence、子方向、canary、策展、特征层 `_llm`、评论归线、外部候选; 遮挡词 `mask_external_names` 走 max_tokens 8000 那档) | 60 秒 / 25 秒 (max_tokens > 4000: 150 / 60) | SDK 默认重试与超时 (同老主站) |
-| `librarian/clients.call_anthropic` | 30 秒 / 25 秒 | 同上 |
+| `librarian/clients.call_anthropic` | 22 秒 (`RELAY_PRIMARY_TIMEOUT_S` 超过 40 按 40; 整轮 60 秒, 见 `librarian/README.md`「时限」) / 25 秒 | `max_retries=0`, 单次 45 秒 |
 | `onboarder/clients.call_anthropic` | 流式 90 秒没有新字节 / 不按慢判; 非流式 600 秒 | `max_retries=0` (同老主站, 重试只留外面一层) |
 | `worker/app.py` | 自己不调; 子进程继承 env; `/health` 只回显模式与熔断 | — |
 

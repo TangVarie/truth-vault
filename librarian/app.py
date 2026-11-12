@@ -100,9 +100,9 @@ def health() -> dict:
         # D-148 备用中转站: 模式 / 是否配了 / RELAY_FORCE / 熔断 + 本进程计数。只有布尔、枚举和整数, 从不回显地址或 key。
         "relay": _relay_health(True),
         # AU-F09: 在飞合并的本进程计数 (merged = 后到的同一个请求并到了在飞的那次, 没再选一遍; wait_timeouts = 等满了
-        # 自己选的) + 现在生效的三个时限 (主站那个认 RELAY_PRIMARY_TIMEOUT_S, 设了就不是代码里的 22)。只有数。
+        # 自己选的) + 现在生效的三个时限 (主站那个认 RELAY_PRIMARY_TIMEOUT_S, 设了就不是代码里的 22; 超过 40 按 40)。只有数。
         "select": {**MERGE_STATS,
-                   "primary_timeout_s": relay_failover.primary_timeout_s(_clients.PRIMARY_TIMEOUT_S),
+                   "primary_timeout_s": _clients.primary_limit_s(),
                    "call_timeout_s": _clients.CALL_TIMEOUT_S, "request_budget_s": _clients.REQUEST_BUDGET_S},
     }
 

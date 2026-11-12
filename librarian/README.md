@@ -34,7 +34,7 @@ librarian/
 - **Anthropic prompt caching**(`cache_control: ephemeral`):候选卡库 + 项目 system_prompt 作为缓存 system 块,挡"同库不同 brief"的请求 —— 只重算 delta 部分,大前缀缓存命中省 ~90%。
 - LLM 调用支持**中转站**(`ANTHROPIC_BASE_URL`,同 autowriter `clients.get_anthropic_client` 约定);重试覆盖 429/502/503/529(中转站常见 overloaded)。
 - **备用中转站**(可选, D-148):`ANTHROPIC_BASE_URL_BACKUP` + `ANTHROPIC_API_KEY_BACKUP` 都配了才启用。每次尝试先打主站
-  (只给一次机会、限时 22 秒, `RELAY_PRIMARY_TIMEOUT_S` 可改), 超时 / 连不上 / 429 / 5xx / 401-404 → 这次改打备用站; 主站连续
+  (只给一次机会、限时 22 秒, `RELAY_PRIMARY_TIMEOUT_S` 可改, 超过 40 按 40), 超时 / 连不上 / 429 / 5xx / 401-404 → 这次改打备用站; 主站连续
   2 次失败 → 熔断 20 分钟直接走备用站 (「成功但慢 >25 秒」那条在 22 秒限时下用不上)。`RELAY_FORCE=backup` / `primary` 手动切。
   `/health` 的 `relay` 块带模式、熔断状态和本进程计数 (`relay_counts`), 不出地址或 key。运行手册:
   `docs/12-daily-sync-troubleshooting.md`「备用中转站 (D-148)」。
@@ -42,7 +42,14 @@ librarian/
   单次调用限时 45 秒 (配了备用站时主站 22 秒); 整轮 (各次尝试 + 切备用站 + 退避) 最多 60 秒, 每次调用的限时再按整轮剩下的
   时间收紧。最坏: 主站挂住 22 秒 → 备用站正常约 15 秒 ≈ 37 秒拿到卡; 两边都挂住 → 第 60 秒降级返回 `[]`。60 秒不能再低:
   写作台 `open_project` 起的借阅在后台等满 60 秒, 慢的那次也要写进缓存, 接着来的 `borrow_lessons` 才拿得到。
-  `/health` 的 `select` 块回显现在生效的三个时限和在飞合并的计数。
+  `/health` 的 `select` 块回显现在生效的三个时限和在飞合并的计数。三条边界:
+  - 限时都按「没有新字节」算 (httpx 按每次读计), 不是墙上时钟。中转站挂着不出字节时上面的数成立 (线上见到的就是这种);
+    中转站一直滴保活字节的话不封顶, 一次调用和整轮都可以超过, 等同一个请求的人到 75 秒 (`MERGE_WAIT_S`) 自己去选。
+  - 主站本来会在 22-30 秒答完的那种 (线上 10 月中到 11-12 见过 3 次: 11-01 25.5 秒、11-05 28.7 秒、11-11 22.7 秒) 也在
+    22 秒被切到备用站, 约 37 秒才拿到卡 (原来 26-29 秒), 写作台那次 `borrow_lessons` 可能等不到 (缓存照样写进去), 被切的
+    那次主站可能照样计费。要保这种就把 `RELAY_PRIMARY_TIMEOUT_S` 调到 30, 代价是主站挂住时回到约 45 秒。
+  - `RELAY_PRIMARY_TIMEOUT_S` 超过 40 按 40 (整轮 60 秒 - 2 × 10 秒): 再高的话快失败不再重试、缓存块降级不做、备用站
+    剩不下一次冷选卡的时间。`/health` 回显的是按 40 封过的值。
 
 ## 本地测试
 
