@@ -856,7 +856,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     # Existing orchestration fixtures replace all storage I/O. The independent recovery
     # regression exercises real main, queue reads and atomic write RPC calls.
-    afp.fetch_failures = lambda *a: {}
+    afp.fetch_recovery_rows = lambda *a: {}
     afp.claim_attempt = lambda *a: 1
     afp.finish_attempt = lambda *a, **k: None
     check_note_ids()

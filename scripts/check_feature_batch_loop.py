@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the real workflow shell loop with worker I/O executing real annotation main.
+"""Run the real workflow shell loop with worker I/O executing real annotation main (D-153).
 
 The worker transport, database and model are in-memory synthetic fixtures. State
 persists between shell requests; real curl/network clients are never invoked.
@@ -31,7 +31,9 @@ def fixture(mode, healthy):
     store = Store()
     base = store.rows['notes'].pop()
     store.rows['notes'] = [dict(base, note_id=f'AUDIT_h{i}') for i in range(healthy)]
-    if mode != 'new_invalid':
+    if mode == 'no_migration':    # v1.26 not applied: the queue table and its functions do not exist
+        del store.rows['feature_annotation_failures']
+    elif mode != 'new_invalid':
         store.rows['notes'].insert(0, dict(base, note_id='AUDIT_blocked'))
         store.rows['feature_annotation_failures'] = [dict(id=1,subject_id='AUDIT_blocked',project_id='AUDIT',
             bank_sha256=F.load_bank()['_sha256'],extractor='llm:synthetic',run_tag='primary',attempts=3,
@@ -43,10 +45,14 @@ def fake_transport(kind, args):
     path = Path(os.environ['AUDIT_FEATURE_STATE'])
     state = json.loads(path.read_text())
     store = Store(); store.rows = state['rows']
-    if kind == '--fake-count':
-        done = A.fetch_done_ids(store, 'AUDIT')
-        print(len({n['note_id'] for n in store.rows['notes']} - done))
-        return 0
+    if kind == '--fake-count':       # the real count script, on the in-memory store
+        import count_unannotated_features as C
+        with patch.object(C, 'get_supabase_client', return_value=store):
+            return C.main(['AUDIT'])
+    if kind == '--fake-report':      # the real backlog report, on the in-memory store
+        import feature_recovery_report as R
+        with patch.object(R, 'get_supabase_client', return_value=store):
+            return R.main(args)
     payload = json.loads(args[args.index('-d')+1])
     calls = []
     output = io.StringIO()
@@ -89,6 +95,7 @@ def run_shell(mode, healthy, budget):
 case "$1" in
  skip_on_cron.py) exit 1 ;;
  count_unannotated_features.py) exec {real} {here} --fake-count ;;
+ feature_recovery_report.py) shift; exec {real} {here} --fake-report "$@" ;;
  *) exec {real} "$@" ;;
 esac
 ''')
@@ -100,26 +107,57 @@ esac
                    FEATURE_LIMIT=str(budget),PROJECT_FILTER='AUDIT',WORKER_URL='https://audit.invalid',WORKER_API_KEY='synthetic')
         proc=subprocess.run(['bash','-e','-o','pipefail','-c',shell],cwd=scripts,env=env,text=True,capture_output=True,timeout=60)
         final=json.loads(state.read_text())
-        assert proc.returncode==1, proc.stdout+proc.stderr
-        if mode != 'api_failure':
-            assert '::error::features 恢复仍未完成' in proc.stdout, proc.stdout+proc.stderr
-        return final,proc.stdout
+        return final,proc.returncode,proc.stdout+proc.stderr
 
 
 def main():
-    progress,out=run_shell('historical',4,4)
+    # Standing backlog (one quarantined note) + 4 healthy notes: healthy notes use the whole budget,
+    # the job is GREEN, and the backlog is one ::warning:: with counts (D-153 / T4).
+    progress,rc,out=run_shell('historical',4,4)
+    assert rc==0, out
     assert progress['worker_calls']==2 and progress['model_calls']==24, (progress['worker_calls'],progress['model_calls'],out)
     completed={r['subject_id'] for r in progress['rows']['note_feature_answers'] if r['question_id']==A.DONE_MARKER_QUESTION}
     assert completed=={f'AUDIT_h{i}' for i in range(4)}, completed
-    only,_=run_shell('historical',0,4)
-    assert only['worker_calls']==1 and only['model_calls']==0
-    fresh,_=run_shell('new_invalid',6,6)
-    assert fresh['worker_calls']==1 and fresh['model_calls']==64, (fresh['worker_calls'],fresh['model_calls'])
-    api,_=run_shell('api_failure',4,4)
-    assert api['worker_calls']==1 and api['model_calls']>0, 'API failures must still stop the project'
-    # A malformed/incomplete worker response can never obtain the continue classification.
-    assert classify(dict(ok=False,returncode=1,stdout_tail='Done: {}'),'0','200',2)[0]=='other'
-    print('features-sync real shell: historical quarantine permits full healthy budget but stays red; quarantine-only costs zero; new invalid batch stops')
+    assert '::warning::features 恢复队列存量' in out and '已隔离 1 篇' in out and '::error::' not in out, out
+    # Backlog only: nothing can progress → no worker call, no model spend, still green, still reported.
+    only,rc,out=run_shell('historical',0,4)
+    assert rc==0 and only['worker_calls']==0 and only['model_calls']==0, (rc,only['worker_calls'],out)
+    assert '已隔离 1 篇' in out and '::error::' not in out, out
+    # A NEW all-invalid batch in this run: red, the project stops, the chunk is not re-sent.
+    fresh,rc,out=run_shell('new_invalid',6,6)
+    assert rc==1 and fresh['worker_calls']==1 and fresh['model_calls']==64, (rc,fresh['worker_calls'],fresh['model_calls'],out)
+    assert '模型题零有效' in out and len(fresh['rows']['feature_annotation_failures'])==2, out
+    assert all(r['attempts']==1 for r in fresh['rows']['feature_annotation_failures'])
+    # API failure: unchanged origin/main rule (first batch systemic → red), and no retry budget is consumed.
+    api,rc,out=run_shell('api_failure',4,4)
+    assert rc==1 and api['worker_calls']==1 and api['model_calls']>0, 'API failures must still stop the project'
+    assert all(r['attempts']==0 or r['subject_id']=='AUDIT_blocked' for r in api['rows']['feature_annotation_failures'])
+    # v1.26 not applied yet (code merged first): the count on stdout is still a bare number, so a finished
+    # project stops after one batch instead of burning the whole budget on empty worker calls; the nightly
+    # shows exactly one missing-migration annotation and stays green.
+    bare,rc,out=run_shell('no_migration',1,24)
+    assert rc==0, out
+    assert bare['worker_calls']==1 and bare['model_calls']==6, (bare['worker_calls'],bare['model_calls'],out)
+    assert '已全部抽完' in out and '::error::' not in out, out
+    assert out.count('::warning title=迁移还没跑 (notes_v1_26)::')==1, out
+    assert 'feature_annotation_failures' not in bare['rows']
+    # Classifier: malformed / incomplete / old-worker output is always "other" (existing handling applies).
+    done=lambda **k:'Done: '+json.dumps(dict(dict(ok=0,model_no_valid=0,retry_deferred=0,retry_quarantined=0),**k))
+    assert classify(dict(ok=False,returncode=1,stdout_tail='Done: {}'),'0','200')[0]=='other'
+    assert classify(dict(ok=True,returncode=0,stdout_tail=done(ok=2)),'0','200')[0]=='other'
+    assert classify(dict(ok=True,returncode=0,stdout_tail=done(ok=2,retry_quarantined=3)),'0','200')==('backlog',2,0,3,0)
+    assert classify(dict(ok=False,returncode=1,stdout_tail=done(ok=1,model_no_valid=1)),'0','200')==('model_invalid',1,0,0,1)
+    assert classify(dict(ok=True,returncode=0,stdout_tail=done(retry_deferred=1)),'0','502')[0]=='other'
+    assert classify(dict(ok=True,returncode=0,timed_out=True,stdout_tail=done(model_no_valid=1)),'0','200')[0]=='other'
+    # backfill-features uses the same classifier in both loops and never re-sends a zero-valid chunk.
+    backfill=(ROOT/'.github/workflows/backfill-features.yml').read_text()
+    assert backfill.count('python feature_batch_state.py /tmp/b.json')==2, 'both backfill loops must classify the batch'
+    for loop in backfill.split('for attempt in 1 2 3 4 5 6; do')[1:]:
+        body=loop[:loop.index('sleep 60')]
+        assert 'model_invalid' in body and 'break' in body[body.index('model_invalid'):], 'zero-valid chunk must leave the retry loop'
+    assert 'python feature_recovery_report.py "$PROJECT"' in backfill
+    print('features-sync real shell: standing backlog is a warning (green) and healthy notes use the full budget; '
+          'backlog-only costs zero calls; a new zero-valid batch is red and not re-sent; without v1.26 a finished project stops after one batch; backfill uses the same classifier')
     return 0
 
 

@@ -58,7 +58,7 @@ class _Q:
 
 class _SB:
     def __init__(self, tables):
-        self.tables, self.log = {"note_sync_runs": [], **tables}, []
+        self.tables, self.log = tables, []
 
     def schema(self, _s): return self
     def table(self, name): return _Q(self.tables[name], self.log)

@@ -1,7 +1,5 @@
 # Supabase 警告分诊 · 2026-10-22（S-13）
 
-> **2026-11-14 修复准备（F07，未部署）**：负责人已授权修复。新增 `schemas/security_revoke_authenticated_ssll_read.sql`，撤销五表旧全局读策略，fresh-install 基线也不再创建它；不改 service_role 或看板视图。下文“维持/不做”是当时的决定，已由这次修复准备取代，不能当作当前权限验收。生产仍须先核消费者、grants 和其它策略，再由负责人部署；步骤见 [部署说明](security-authenticated-read-removal.md)。
-
 项目 `kduysqedrclrfevrxiie`。只读：advisor 快照（10-22 05:43 UTC）、catalog 查询、24 小时 edge 日志、四个仓（TV / aw / Jev / linkcheck）的代码。没有执行任何改动。
 
 ## 1. 结论

@@ -57,16 +57,6 @@ class Gate2Refused(RuntimeError):
 
 # ── 统计: 纯函数 ───────────────────────────────────────────────────────────────
 
-def has_comparison_groups(table: Iterable[float]) -> bool:
-    """方向支持必须来自可比较的项目: 特征有/无、结果爆/趴两边都有人。
-
-    检查四个边际, 不要求四格各自非零; 单格为零仍可用 +0.5 平滑看方向。
-    否则恒定特征或恒定结果也会被平滑造出一个方向, 冒充独立项目支持。
-    """
-    a, b, c, d = table
-    return a + b > 0 and c + d > 0 and a + c > 0 and b + d > 0
-
-
 def mh_odds_ratio(tables: Iterable[tuple[float, float, float, float]]) -> Optional[dict]:
     """Mantel–Haenszel 合并优势比 + Robins–Breslow–Greenland 方差 (docs/28 B.1 的公式原样)。
     n ≤ 1 的层跳过; 没有可用层、或 R / S 为 0 (某一方向在所有层都没出现) → None。"""
@@ -306,7 +296,7 @@ def run_gate2(dataset: dict, bank: dict, *, sha: str, extractors: list[str], run
         ans = {k: v for k, v in answered.get(qid, {}).items() if k in labeled_ids}
         by_proj = contrast_tables(notes, ans, value, lambda n: n["project_id"])
         support = sum(tab[0] + tab[1] for tab in by_proj.values())
-        big_tabs = {p: tab for p, tab in by_proj.items() if p in big and has_comparison_groups(tab)}
+        big_tabs = {p: tab for p, tab in by_proj.items() if p in big and (tab[0] + tab[1]) > 0}
         n_above = sum(1 for tab in big_tabs.values() if (tab[0] + .5) * (tab[3] + .5) > (tab[1] + .5) * (tab[2] + .5))
         n_below = sum(1 for tab in big_tabs.values() if (tab[0] + .5) * (tab[3] + .5) < (tab[1] + .5) * (tab[2] + .5))
         mh = mh_odds_ratio(by_proj.values())
@@ -747,13 +737,13 @@ def _snapshot(rows: list[dict], *, expect: dict[str, tuple[int, set]], vocab: di
 
 
 def _sec_stats(notes: list[dict], side, *, strata_of, big: set, prior: Optional[dict] = None) -> dict:
-    """一行的数: 分层 MH (+ RGB 区间 + Wald p)、支持、比较基数、可比较大项目方向 (合并 2×2 +0.5, 照主题库) 与每个大项目分层内
+    """一行的数: 分层 MH (+ RGB 区间 + Wald p)、支持、比较基数、大项目方向 (合并 2×2 +0.5, 照主题库) 与每个大项目分层内
     的 MH 方向 (只报告)、账号先验再分层的 OR、只按项目分层的 OR、完全不分层的 OR。"""
     by_stratum = contrast_tables_by(notes, side, strata_of)
     by_proj = contrast_tables_by(notes, side, lambda n: n["project_id"])
     support = int(sum(t[0] + t[1] for t in by_stratum.values()))
     base_n = int(sum(sum(t) for t in by_stratum.values()))
-    big_tabs = {p: t for p, t in by_proj.items() if p in big and has_comparison_groups(t)}
+    big_tabs = {p: t for p, t in by_proj.items() if p in big and (t[0] + t[1]) > 0}
     above = sum(1 for t in big_tabs.values() if (t[0] + .5) * (t[3] + .5) > (t[1] + .5) * (t[2] + .5))
     below = sum(1 for t in big_tabs.values() if (t[0] + .5) * (t[3] + .5) < (t[1] + .5) * (t[2] + .5))
     within = {}

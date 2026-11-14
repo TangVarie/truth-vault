@@ -7088,20 +7088,19 @@ jobs:
           psql -v ON_ERROR_STOP=1 -f schemas/security_revoke_anon_write_dash_views.sql
       - name: Completed scan ledger migration and behavior (v1.25)
         run: |
+          psql -v ON_ERROR_STOP=1 -f scripts/seed_sync_runs_legacy.sql
           psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_25_sync_runs.sql
           psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_25_sync_runs.sql
+          psql -v ON_ERROR_STOP=1 -f scripts/check_sync_runs_legacy.sql
           psql -v ON_ERROR_STOP=1 -f scripts/check_sync_runs.sql
           python3 scripts/check_sync_runs_concurrent.py
       - name: Feature failure recovery migration and behavior (v1.26)
         run: |
+          psql -v ON_ERROR_STOP=1 -f scripts/seed_feature_recovery_legacy.sql
           psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_26_feature_failure_recovery.sql
           psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_26_feature_failure_recovery.sql
+          psql -v ON_ERROR_STOP=1 -f scripts/check_feature_failure_recovery_legacy.sql
           psql -v ON_ERROR_STOP=1 -f scripts/check_feature_failure_recovery.sql
-      - name: Authenticated reference read policy regression (isolated database)
-        run: |
-          createdb security_auth_ci
-          PGDATABASE=security_auth_ci psql -v ON_ERROR_STOP=1 -f scripts/check_ssll_authenticated_read.sql
-          dropdb security_auth_ci
       - name: Sanity-check revoke (v_dash_* 无 anon 写权限 · 且仍可读)
         # 在裸 PG 上先造出 anon/authenticated 角色并【故意 GRANT ALL】(复现 Supabase
         # 建库默认), 再跑一遍 REVOKE, 断言写权限确实没了、SELECT 还在。

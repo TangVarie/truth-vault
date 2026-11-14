@@ -1,36 +1,58 @@
-# 特征抽取失败恢复（F03）
+# 特征抽取失败恢复（v1.26，D-153）
 
-特征脚本使用 `schemas/notes_v1_26_feature_failure_recovery.sql` 的失败队列及三个 RPC。先审核并应用迁移，再部署 worker / 使用新版脚本；缺表或 RPC 时明确报迁移名称并失败，不能静默退回旧的完成判据。迁移不调模型、不会删除已有答案；把历史上模型答案全为 NULL、仍留有完成标记的快照导入队列，排除“正文太短”等真实不适用情况。
+特征脚本（`scripts/annotate_feature_pass.py`）用 `schemas/notes_v1_26_feature_failure_recovery.sql` 建的一张队列表和三个函数。迁移由 owner 在 SQL editor 跑，什么时候跑都行；没跑之前 worker 喊一次 warning，照 v1.26 之前的办法抽，features-sync 收尾在 run 页面上打一条「迁移还没跑 (notes_v1_26)」。迁移本身不调模型、不删已有答案。
 
-## 完成和失败
+## 什么算失败，什么算完成
 
-- 每组至少有一道有效答案才计 `groups_ok`；全部无效计 `groups_invalid`。`Done` 同时给出 `answered`、`invalid`、`model_valid_rate`。
-- 实际问过模型、但整篇没有一条有效模型答案：不写答案/完成标记，脚本退出非零。没有可问的问题不算模型坏回复；零星 NULL 仍保留 D-083 的语义。
-- API/写库失败仍非成功。失败预留状态在库里，不能靠重启 worker 清掉重试上限。原 JSONL 只作为本地诊断副本，恢复不依赖它。
-- 队列中仍在退避或已经隔离的项目会明确报 `retry_deferred` / `retry_quarantined`，退出非零。这是“没有完成”，不是成功的空跑。`count_unannotated_features` 仍把这些篇计为未解决；工作流自身的两轮无进展保护可停止重复探测，重复探测不再调用模型。
+- 一组题里至少有一道有效答案，记 `groups_ok`；一道都没有，记 `groups_invalid`。`Done:` 行里有 `answered`、`invalid`、`model_valid_rate`。
+- **问了模型、整篇一条有效的模型答案都没有**：不写答案、不写完成标记，进队列记一次失败，这一趟退出非零（`model_no_valid`）。没有正文或标题、本来就没有题可问的篇不算；个别题是空的照旧（D-083）。
+- 接口报错、写库被拒：和以前一样算这一篇没成，下一趟整篇重跑。它们**不记失败次数**。
+- 队列里现在不能抽的篇分两种：还在等待期的（`retry_deferred`）和已隔离的（`retry_quarantined`）。它们是存量，只在 `Done:` 行里报数，**不让这一趟变红**。`count_unannotated_features.py` 不把它们算进「还能抽几篇」，所以只剩存量时夜跑不会去叫 worker；存量由 `feature_recovery_report.py` 在夜跑收尾报一条 warning。
 
-## 自动重试与显式重放
+## 重试的次数和间隔
 
-开模型调用之前，数据库原子预留一次尝试。首次失败等至少24小时；第二次失败再等48小时；第三次失败隔离，后续定时任务不再付费重试。进程在调用期间被杀也消耗这次预留，避免崩溃导致无限付费。
+调模型之前，worker 先在库里给这一篇占位。占位是一个约 20 小时的租约，**不记次数**：进程中途被杀，租约到期后下一趟自己会再认领。
 
-排查并修好模型/网关后，用现有 backfill / 本地脚本对**指定篇**显式重放一次，例如：
+只有「问了模型、整篇零有效」记次数：
+
+| 第几次失败 | 之后 |
+|---|---|
+| 第 1 次 | 等约 20 小时（夜跑每 24 小时一趟，下一晚轮得到） |
+| 第 2 次 | 等约 44 小时（隔一晚的那一趟轮得到） |
+| 第 3 次 | 隔离，不再自动抽 |
+
+接口报错、写库被拒、卫生断言没过：当场放开占位，次数不变，下一趟照常重试。中转站连挂几晚不会把好好的篇隔离掉。占位那一下本身没成（库抖了一下、超时）也一样：只跳过那一篇，不调模型、不记次数，这一批剩下的照常抽；整批都占不上才判红。
+
+同一篇同一时间只有一个 worker 能占位；每次占位有自己的令牌，晚到的旧请求改不了新一次的状态。
+
+## 换过模型名
+
+夜跑判断「跑过没有」时认所有 `llm:` 开头的标签（GitHub 这边和 worker 那边配的模型名可能不一样，生产也换过模型）。队列跟着同一个口径：
+
+- 一篇抽成功时，这一篇同一题库、同一 run_tag 下**所有 `llm:` 标签**的队列行一起清掉。迁移导入的历史行挂在当时的模型名下，不这样清，这些篇会每晚被重抽。
+- 一篇在队列里有几行时取最严的状态：任何一行隔离了，这一篇就算隔离，换模型名不会让它自动再抽。
+
+## 隔离之后怎么重抽
+
+修好模型或中转站之后，对**点名的篇**显式重放一次：backfill-features 工作流填 `note_ids`、勾 `reannotate`；或者本地：
 
 ```bash
 python scripts/annotate_feature_pass.py PROJECT --note-ids NOTE_ID --model MODEL --reannotate --limit 1
 ```
 
-这是操作说明，不是部署时应自动执行的命令。重放会花模型费，应在既有操作授权范围内进行；失败仍保留隔离，成功后才清掉队列。变更模型/题库产生独立快照，不修改旧快照答案。查询失败队列只需 ID、抽取器、题库 SHA、尝试次数和错误类型，不包含客户原文或回复。
-
-同一快照并发预留只允许一个自动尝试；每次预留有独立令牌。旧请求的迟到结果不能清掉新尝试的恢复状态，即使旧队列行曾删除再重建。显式重放可绕过退避，因此仍应逐篇提交，不并发重放同一快照。
+这是操作说明，不是部署时自动执行的命令。重放要花模型钱；成了清队列，没成还是隔离。查队列只需要 note_id、标签、题库 sha、次数和错误类型，里面没有正文。
 
 ## 保护旧答案
 
-`write_feature_answers_preserving_valid` 在数据库 `ON CONFLICT` 内决定：新答案为 NULL 时不能盖掉旧非 NULL 答案；新有效答案可正常替换。判断与写入在同一语句中，不能被“先读后写”的并发窗口绕过。RPC 仅给 `service_role`，固定 `search_path`，不开放给 anon/authenticated。
+`write_feature_answers_preserving_valid` 在数据库的 `ON CONFLICT` 里判断：新答案是空的，就不盖库里已有的有效答案；新答案有效，照常替换。判断和写入是同一条语句。留下来的旧行带的还是旧的 `bank_sha256` / `extracted_at`，不会被说成这一趟测的。三个函数只给 `service_role`。
 
-若某题本次无效、但库里保留了上一轮有效答案，保留的整行仍带旧的 `bank_sha256` / `extracted_at`，不会把旧答案伪装成本轮重新测得。整篇全无效时连部分覆盖都不做。
+## 历史数据
+
+迁移会把历史上「整篇模型题全是空、却留着完成标记」的篇排进队列（次数从 0 算）。不排的：本来就没题可问的；同一题库下已经有别的 `llm:` 标签答出来过的（所以重跑迁移不会把抽成的篇再排一次）。排进去的篇之后几晚各重抽一次，受每晚每项目的上限管。
 
 ## 本地验证
 
-- `python scripts/check_feature_failure_recovery.py`：真实 `main` / 解析器连跑，坏回复不盖标记、第二轮不付费、三轮封顶、显式恢复、历史 NULL 标记、缺迁移拒跑。
-- `psql -v ON_ERROR_STOP=1 < scripts/check_feature_failure_recovery.sql`：仅供本地测试库，验证原子预留/旧令牌无效/封顶/恢复/NULL 保护/权限，夹具事务回滚。
-- 原有 `check_feature_orchestration.py`、`check_feature_parse.py`、`check_gateway_filter.py` 应继续通过。不得把本地测试库命令指向生产。
+- `python scripts/check_feature_failure_recovery.py`：真的 `main()`，假的库和模型。
+- `python scripts/check_feature_batch_loop.py`：features-sync 那段 shell，加 backfill-features 两个循环的接线。
+- `scripts/check_feature_failure_recovery.sql`、`scripts/seed_feature_recovery_legacy.sql` + `scripts/check_feature_failure_recovery_legacy.sql`：只给本地一次性的测试库用，不要指向生产。
+- 原有的 `check_feature_orchestration.py`、`check_feature_parse.py`、`check_gateway_filter.py` 照常要过。

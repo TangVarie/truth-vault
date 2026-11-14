@@ -174,8 +174,6 @@ _REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
         # (只记了 autowriter 那对), 靠 2026-08-30 那轮对抗盘点抓回来。
         "synced_to_ssll_at", "synced_ssll_reference_sample_id",
     ),
-    "note_sync_runs": ("run_seq", "run_id", "project_id", "completed_at", "seen_count"),
-    "note_sync_presence": ("note_id", "project_id", "last_seen_run_seq"),
     "accounts": ("account_id", "platform", "owner_type", "first_seen_at"),
     "comments": (
         "comment_id", "note_id", "project_id", "content", "comment_role",
@@ -233,8 +231,6 @@ _COLUMN_MIGRATION: dict[str, str] = {
     "last_seen_run_id": "schemas/notes_v1_9_last_seen_reconcile.sql",
     "comments_count":   "schemas/notes_v1_12_comment_tier.sql",   # D-062
     "select_ms":        "schemas/notes_v1_16_librarian_select_ms.sql",  # D-074
-    **{c: "schemas/notes_v1_25_sync_runs.sql" for c in
-       ("run_seq", "run_id", "completed_at", "seen_count", "last_seen_run_seq")},
 }
 
 
@@ -1611,17 +1607,44 @@ class SecretMaskingFormatter(logging.Formatter):
         return mask_secrets(super().format(record))
 
 
-def fetch_vanished_note_ids(sb, project_id: Optional[str] = None) -> set[str]:
-    """Read absence from the latest completed full scan (v1.25, audit F04).
+# ── 「迁移还没跑」只认这四个码 (owner 11-02: 代码要先能在没迁移的库上跑) ─────────────────────────
+# PostgREST: PGRST202 = schema cache 里没有这个函数 · PGRST205 = 没有这张表 / 视图
+# Postgres:  42883 = undefined_function · 42P01 = undefined_table
+# 别的错 (连不上 / 超时 / 权限 / 约束) 一律不是「没跑迁移」, 调用方照原样报, 不许说成「去跑 SQL」。
+_MISSING_DB_OBJECT_CODES = frozenset({"PGRST202", "PGRST205", "42883", "42P01"})
+_MISSING_DB_OBJECT_RE = re.compile(r"(?<![A-Za-z0-9])(?:PGRST202|PGRST205|42883|42P01)(?![A-Za-z0-9])")
+_MISSING_DB_OBJECT_WARNED: set[str] = set()
 
-    Completion is independent of per-note stamps: successful empty scans advance,
-    incomplete writes do not, and late older completions cannot replace a newer
-    snapshot. Never-confirmed notes remain unknown. Missing view raises.
-    """
-    try:
-        sb.schema("truth_vault").table("note_sync_runs").select("run_seq").limit(0).execute()
-    except Exception as exc:
-        raise RuntimeError("Completed-scan ledger missing; apply schemas/notes_v1_25_sync_runs.sql") from exc
+
+def is_missing_db_object(exc: BaseException) -> bool:
+    """这个错是不是「库里没有这张表 / 这个函数」。APIError 带 code 就只看 code; 没有 code 属性 (假客户端 / 包了一层的
+    RuntimeError) 才在报错文本里找这四个码。"""
+    code = getattr(exc, "code", None)
+    if isinstance(code, str) and code:
+        return code in _MISSING_DB_OBJECT_CODES
+    return bool(_MISSING_DB_OBJECT_RE.search(f"{exc!r} {exc}"))
+
+
+def warn_missing_migration_once(key: str, message: str, *, log: Optional[logging.Logger] = None) -> bool:
+    """同一个 key 一个进程只喊一次。在 GitHub Actions 里另打一行 ::warning:: (run 摘要顶上看得见);
+    worker 等服务里只走 logger.warning。回 True = 这次真喊了。"""
+    if key in _MISSING_DB_OBJECT_WARNED:
+        return False
+    _MISSING_DB_OBJECT_WARNED.add(key)
+    (log or logging.getLogger(__name__)).warning("%s", message)
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print(f"::warning title=迁移还没跑 ({key})::{message}", file=sys.stderr, flush=True)
+    return True
+
+
+def fetch_vanished_note_ids(sb, project_id: Optional[str] = None) -> set[str]:
+    """飞书里已经删掉的篇 (审计 B-21, D-103): 读 v_notes_vanished。三个新生产路径 (新策展 / 通道 1 推送 / 闸二取数)
+    用它排除; 只报不删, 删不删是 owner 的事。
+    视图的定义看库里跑到哪一版, 这里不探、不挑:
+      · 只跑到 v1_21: 盖过 last_seen 戳、但【本项目最近一次完整同步】没见到的 note_id;
+      · 跑过 v1_25 (D-153): 【本项目最近一次已完成的整轮扫描】没见到的 note_id, 空表也算一轮, 没写全的不算。
+    两版都是: 从没被整轮扫描见过的 (on_demand 项目) 不算; 比的是本项目自己的最近一轮, 不是固定天数。
+    视图不存在就直接抛 —— 三条路一起红好过静默把删了的篇继续喂下游 (B-10 的道理)。"""
     q = sb.schema("truth_vault").table("v_notes_vanished").select("note_id")
     if project_id:
         q = q.eq("project_id", project_id)

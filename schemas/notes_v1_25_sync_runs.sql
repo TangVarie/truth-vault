@@ -1,5 +1,10 @@
--- v1.25: trustworthy completed Feishu scans, including an empty scan (audit F04).
--- Apply after v1.21. No production execution is performed by application deploys.
+-- v1.25: trustworthy completed Feishu scans, including an empty scan (audit F04, D-153).
+-- Apply after v1.21, once, any time AFTER the code that writes the ledger is merged: until then
+-- that code finds these objects missing, warns and keeps the pre-v1.25 behaviour. Safe to re-run.
+-- Do not apply it before that merge: nothing errors or turns red, but this file switches
+-- v_notes_vanished to the ledger while older code never commits a new scan, so the vanished
+-- list stops updating until the merge plus one completed full sync.
+-- No production execution is performed by application deploys.
 -- Legacy last_seen columns remain diagnostic only. Completion and membership commit
 -- atomically; run_seq is allocated BEFORE fetching, so a late older run cannot
 -- supersede a newer completed scan or overwrite its membership.
@@ -102,6 +107,9 @@ END $$;
 -- Preserve the legacy view's existing classifications at upgrade. This does not
 -- invent evidence for never-seen notes or reconstruct old failed/empty scans.
 -- A new successful full scan is the first authoritative post-upgrade snapshot.
+-- The two legacy runs carry the real stamp times (not the migration clock), and the
+-- view below reports a legacy-seen note's own notes.last_seen_at: the desk's 36-hour
+-- grace test reads latest_seen_at - last_seen_at and must not see a zero gap.
 DO $$ DECLARE p RECORD; older BIGINT; current_seq BIGINT;
 BEGIN
     FOR p IN
@@ -111,11 +119,13 @@ BEGIN
             SELECT 1 FROM truth_vault.note_sync_runs r WHERE r.project_id=n.project_id)
         ORDER BY n.project_id,n.last_seen_at DESC,n.note_id
     LOOP
-        INSERT INTO truth_vault.note_sync_runs(run_id,project_id,completed_at,seen_count)
-            VALUES('legacy:older:'||p.project_id,p.project_id,clock_timestamp(),
+        INSERT INTO truth_vault.note_sync_runs(run_id,project_id,started_at,completed_at,seen_count)
+            VALUES('legacy:older:'||p.project_id,p.project_id,
+                coalesce((SELECT min(last_seen_at) FROM truth_vault.notes WHERE project_id=p.project_id AND last_seen_run_id IS NOT NULL AND last_seen_run_id<>p.last_seen_run_id),p.last_seen_at),
+                clock_timestamp(),
                 (SELECT count(*) FROM truth_vault.notes WHERE project_id=p.project_id AND last_seen_run_id IS NOT NULL AND last_seen_run_id<>p.last_seen_run_id)) RETURNING run_seq INTO older;
-        INSERT INTO truth_vault.note_sync_runs(run_id,project_id,completed_at,seen_count)
-            VALUES('legacy:current:'||p.project_id,p.project_id,clock_timestamp(),
+        INSERT INTO truth_vault.note_sync_runs(run_id,project_id,started_at,completed_at,seen_count)
+            VALUES('legacy:current:'||p.project_id,p.project_id,p.last_seen_at,clock_timestamp(),
                 (SELECT count(*) FROM truth_vault.notes WHERE project_id=p.project_id AND last_seen_run_id=p.last_seen_run_id))
             RETURNING run_seq INTO current_seq;
         INSERT INTO truth_vault.note_sync_presence(note_id,project_id,last_seen_run_seq)
@@ -131,7 +141,8 @@ WITH latest AS (
     ORDER BY project_id,run_seq DESC
 )
 SELECT n.note_id,n.project_id,n.tier,n.publish_url,
-    seen.run_id AS last_seen_run_id,seen.started_at AS last_seen_at,
+    seen.run_id AS last_seen_run_id,
+    CASE WHEN seen.run_id LIKE 'legacy:%' THEN n.last_seen_at ELSE seen.started_at END AS last_seen_at,
     latest.run_id AS latest_run_id,latest.started_at AS latest_seen_at,
     n.synced_to_ssll_at,n.synced_to_aw_at,n.essence_annotated_at,
     EXISTS(SELECT 1 FROM truth_vault.flywheel_lesson_annotations c WHERE c.note_id=n.note_id) AS has_lesson_card
