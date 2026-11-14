@@ -3,6 +3,7 @@
 
   §1 schemas/notes_v1_21_vanished_notes.sql 的判据: 按【本项目】最近一次完整同步 (DISTINCT ON project_id ... ORDER BY
      last_seen_at DESC) 比 last_seen_run_id; 从没盖过戳的 (IS NULL) 不算
+  §1b schemas/notes_v1_25_sync_runs.sql 跑过之后的新定义 (D-153): 按已完成的整轮扫描; v1_21 文件头有不要重跑的提醒
   §2 _common.fetch_vanished_note_ids: 读 v_notes_vanished, 按 note_id 翻页, 可按项目筛, 回 set
   §3 curate_flywheel_lessons.fetch_uncurated_cards: 名单里的卡不进策展 (默认路 / --recurate 都是), 项目筛传下去
   §4 sync_truth_vault_baokuan_to_sanshengliubu.fetch_pending_baokuan: 资格全够也不推名单里的篇, 项目筛传下去
@@ -63,6 +64,19 @@ def main() -> int:
             fails.append(f"§1 视图里缺: {needle}")
     if re.search(r"interval\s+'\d+ days?'", body):
         fails.append("§1 判据不许用固定天数 (on_demand 项目不进夜跑会被整批报成消失)")
+
+    # §1b v1.25 (D-153): 跑过它之后视图换成按「已完成的整轮扫描」算; 行为 (空表一轮 / 没写全 / 并发) 由
+    #     check_sync_runs.sql 在真 Postgres 上跑。这里只钉定义还在、老篇的 last_seen_at 用的是它自己的戳。
+    sql25 = (HERE.parent / "schemas" / "notes_v1_25_sync_runs.sql").read_text(encoding="utf-8")
+    body25 = re.sub(r"(?m)^\s*--.*$", "", sql25)
+    for needle in ("CREATE OR REPLACE VIEW truth_vault.v_notes_vanished",
+                   "WHERE completed_at IS NOT NULL", "ORDER BY project_id,run_seq DESC",
+                   "presence.last_seen_run_seq < latest.run_seq", "AS has_lesson_card",
+                   "CASE WHEN seen.run_id LIKE 'legacy:%' THEN n.last_seen_at ELSE seen.started_at END AS last_seen_at"):
+        if needle not in body25:
+            fails.append(f"§1b v1.25 视图里缺: {needle}")
+    if "notes_v1_25_sync_runs.sql" not in sql.splitlines()[0]:
+        fails.append("§1b v1_21 文件第一行要提醒: 跑过 v1_25 之后不要再跑它")
 
     # §2
     import _common as C

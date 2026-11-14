@@ -600,7 +600,7 @@ def check_missing_body_recovery() -> None:
             cleared,
             orphan]
     saved = {k: getattr(engine, k) for k in (
-        "FeishuClient", "get_supabase_client", "assert_db_schema_ready", "ensure_project_exists", "quarantine_record",
+        "begin_sync_run", "complete_sync_run", "FeishuClient", "get_supabase_client", "assert_db_schema_ready", "ensure_project_exists", "quarantine_record",
         "fetch_acknowledged_quarantine", "ensure_accounts_batch", "upsert_metrics_batch", "update_project_date_range",
         "fetch_all_pages", "upsert_notes_batch", "load_mapping")}
     saved_argv = sys.argv
@@ -617,6 +617,8 @@ def check_missing_body_recovery() -> None:
             engine.FeishuClient = F
             engine.get_supabase_client = lambda *a, **k: qb
             engine.assert_db_schema_ready = lambda *a, **k: None
+            engine.begin_sync_run = lambda *a, **k: None
+            engine.complete_sync_run = lambda *a, **k: None
             engine.ensure_project_exists = lambda *a, **k: None
             engine.quarantine_record = lambda sb, p, rid, *a, **k: cap["quarantined"].append(rid)
             engine.fetch_acknowledged_quarantine = lambda sb, p: set()

@@ -34,7 +34,13 @@ Resumability:
     body_len_bucket（code_rows 不产模型题, 拿模型题当标记会让 code-only 永远重跑, codex review on #141）。
     extractor 默认按前缀匹配 `llm:%` —— 计数脚本在 GitHub 上跑、真正写库的是 Railway worker,
     两边的 FEATURE_MODEL 可能不同; 换模型也不该让已经答过的笔记重答一遍。显式 --model 时按精确值匹配。
-    --reannotate 忽略这个标记全部重跑。
+    v1.26 (D-153) 起多一张恢复队列 (feature_annotation_failures): 队列里还挂着的篇不算「跑过」, 哪怕标记题那行在
+    (老版本整篇全 NULL 也会留下标记)。只有「问了模型、模型题一条有效答案都没有」才记一次失败: 第一次之后等约 20 小时、
+    第二次之后等约 44 小时, 第三次之后隔离, 不再自动重抽。接口报错 / 写库被拒 / 卫生断言 / 进程被杀都不记次数,
+    下一轮照常重试。等着的和隔离的只在 Done 行里报数 (retry_deferred / retry_quarantined), 不让本轮变红。
+    一篇抽成功时, 这篇同一题库、同一 run_tag 下所有 llm:* 标签的队列行一起清掉 (换过模型名也不会反复重抽)。
+    --reannotate 是显式重放一次、不看等待和隔离; 新的 NULL 不覆盖库里已有的有效答案。
+    库里还没跑 v1.26: 喊一次 warning, 其余和 v1.26 之前一样 (不建队列、直接 upsert)。
 
     --done-by (D-085): 显式指定「谁答过就算答过」, 逗号分隔, 每项是精确的 extractor (jev:1.13.0)
     或以 % 结尾的前缀 (llm:% / jev:%)。给了就取代上面两条默认 (llm:% / --model 的精确值)。
@@ -54,7 +60,7 @@ Resumability:
 
 --bank (D-128): 只收 feature_bank.BANKS 的【键】(primary / reader), 不收路径。默认 primary = 冻结的
     fq-v0.1, 走的还是上面那条路 (fb.load_bank()、8 个代码特征 + 3 道占位题、写 note_features、续跑看
-    has_specific_time), 参数、行、续跑查询与 D-128 之前逐字节一致。别的键是副题库, 拒跑 (退出 2) 的情况:
+    has_specific_time；另受 v1.26 恢复队列约束)。别的键是副题库, 拒跑 (退出 2) 的情况:
       · run_tag 不合 fb.check_run_tag (primary / 不带 fqr- 前缀): note_feature_answers 的主键不含
         bank_sha256, 用 primary 会按同一主键盖掉主题库的行;
       · --code-only (代码题只属于主题库) / 没给 --note-ids (副题库只跑点名的篇) / 没显式给 --model
@@ -75,11 +81,12 @@ import errno
 import re
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from _common import (fetch_all_pages, get_supabase_client, is_gateway_filtered, load_mapping,
-                     setup_logger, _iso_now)
+from _common import (fetch_all_pages, get_supabase_client, is_gateway_filtered, is_missing_db_object,
+                     load_mapping, setup_logger, warn_missing_migration_once, _iso_now)
 import feature_bank as fb
 
 logger = setup_logger("annotate_features")
@@ -89,6 +96,10 @@ CODE_DONE_MARKER_QUESTION = "body_len_bucket"    # --code-only 的标记题（co
 _RUN_TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$")
 # 模型跑的默认「答过」判据 (不带 --done-by / --model 时)。改它就是改夜跑的续跑口径, CI 编排自检钉着。
 DEFAULT_DONE_BY = ("llm:%",)
+RECOVERY_MIGRATION = "schemas/notes_v1_26_feature_failure_recovery.sql"
+MAX_AUTO_ATTEMPTS = 3
+# finish 时的 error 值。只有 ERR_MODEL_INVALID 记一次失败 (p_consume); 其余是基础设施问题, 放开占位、不记次数。
+ERR_MODEL_INVALID = "all_model_answers_invalid"
 # --done-by 的每一项: <命名空间>:<值>, 可选以 % 结尾表示前缀。worker/app.py 有一份逐字相同的
 # (它把 done_by 拼进子进程参数, 先在门口拦), CI 比对两份一致。前缀里不许有 _ —— LIKE 里 _ 是单字通配。
 _DONE_BY_RE = re.compile(r"^[a-z]+:(?:[A-Za-z0-9.:/-][A-Za-z0-9_.:/-]{0,78}|[A-Za-z0-9.:/-]{0,79}%)$")
@@ -134,20 +145,11 @@ def fetch_done_ids(sb, project_id: str, *, run_tag: str = "primary",
     extractor 与 done_by 同时给 → ValueError（两个判据谁说了算说不清, 不猜）。
 
     marker / bank_sha (D-128, 只有副题库传): 标记题换成本库的 done_marker, 再加一条 bank_sha256 = 本库 sha。
-    不传就是原来那条查询, 一个过滤条件都不多 (主题库、计数脚本都不传)。code-only 的标记题固定, 不收 marker。
+    不传时标记查询不另筛 sha；恢复队列始终按当前题库 sha 排除未解决项。code-only 的标记题固定, 不收 marker。
     """
-    if extractor and done_by:
-        raise ValueError("extractor 与 done_by 只能给一个")
+    patterns = done_patterns(code_only=code_only, extractor=extractor, done_by=done_by)
     if code_only and (marker != DONE_MARKER_QUESTION or bank_sha):
         raise ValueError("--code-only 的标记题固定是 code:v1 的 body_len_bucket, 不收 marker / bank_sha")
-    if code_only:
-        if done_by:
-            raise ValueError("--code-only 的判据固定是 code:v1, 不收 done_by")
-        patterns: tuple[str, ...] = (extractor or fb.CODE_EXTRACTOR,)
-    elif extractor:
-        patterns = (extractor,)
-    else:
-        patterns = tuple(done_by) if done_by else DEFAULT_DONE_BY
     done: set[str] = set()
     for pat in patterns:
         # 每个判据一条独立查询 (查询构造器是可变的, 不能复用上一条)
@@ -163,13 +165,143 @@ def fetch_done_ids(sb, project_id: str, *, run_tag: str = "primary",
         if bank_sha:
             q = q.eq("bank_sha256", bank_sha)
         done |= {r["subject_id"] for r in fetch_all_pages(q, order_by="subject_id")}
+    if not code_only:
+        # 队列里还挂着的不算跑过: 老版本整篇全 NULL 留下的标记 (v1.26 导入)、和失败过还没抽成的。
+        # 旧题库 sha 下的有效标记也盖不住当前题库的失败 —— 队列按当前 sha 查。
+        queued = fetch_recovery_rows(sb, project_id, bank_sha or fb.load_bank()["_sha256"], run_tag, patterns)
+        done -= set(queued)
     return done
+
+
+def done_patterns(*, code_only: bool = False, extractor: Optional[str] = None,
+                  done_by: Optional[tuple[str, ...]] = None) -> tuple[str, ...]:
+    """「谁答过就算答过」的 extractor 判据 (精确值或以 % 结尾的前缀)。fetch_done_ids、恢复队列、计数脚本共用这一份。"""
+    if extractor and done_by:
+        raise ValueError("extractor 与 done_by 只能给一个")
+    if code_only:
+        if done_by:
+            raise ValueError("--code-only 的判据固定是 code:v1, 不收 done_by")
+        return (extractor or fb.CODE_EXTRACTOR,)
+    if extractor:
+        return (extractor,)
+    return tuple(done_by) if done_by else DEFAULT_DONE_BY
+
+
+_RECOVERY_READY: dict[str, bool] = {}
+
+
+def recovery_missing(exc: BaseException) -> bool:
+    """这个错是不是「v1.26 还没跑」(缺表 / 缺函数)。是 → 一个进程喊一次、回 True, 调用方照 v1.26 之前的办法走。
+    别的错回 False, 调用方照原样抛 —— 连不上不许说成「去跑迁移」。"""
+    if not is_missing_db_object(exc):
+        return False
+    _RECOVERY_READY["ready"] = False
+    warn_missing_migration_once(
+        "notes_v1_26",
+        f"特征恢复队列还没建 (owner 在 SQL editor 跑 {RECOVERY_MIGRATION} 之前都是这样): 这一轮照 v1.26 之前的办法抽 —— "
+        "不建队列、不限重试、整篇全 NULL 也落标记。", log=logger)
+    return True
+
+
+def fetch_recovery_rows(sb, project_id: str, bank_sha: str, run_tag: str,
+                        patterns: tuple[str, ...]) -> dict[str, list[dict]]:
+    """{note_id: [队列行…]}: 本项目、本题库 sha、本 run_tag 下, extractor 合 patterns 的恢复队列行。
+    表不在 (v1.26 没跑) → {} 并喊一次; 别的错照抛。"""
+    out: dict[str, list[dict]] = {}
+    seen: set = set()
+    for pat in patterns:
+        q = (sb.schema("truth_vault").table("feature_annotation_failures")
+             .select("id,subject_id,extractor,attempts,next_retry_at,last_error")
+             .eq("project_id", project_id).eq("run_tag", run_tag).eq("bank_sha256", bank_sha))
+        q = q.like("extractor", pat) if pat.endswith("%") else q.eq("extractor", pat)
+        try:
+            rows = fetch_all_pages(q, order_by="id")
+        except Exception as exc:  # noqa: BLE001 —— 只吞「没有这张表」
+            if recovery_missing(exc):
+                return {}
+            raise
+        for r in rows:
+            if r.get("id") is not None:   # 两个判据都匹配到同一行 (llm:% 和精确值) 时只算一次
+                if r["id"] in seen:
+                    continue
+                seen.add(r["id"])
+            out.setdefault(r["subject_id"], []).append(r)
+    return out
 
 
 def write_answers(sb, rows: list[dict], dry_run: bool) -> None:
     if dry_run or not rows:
         return
+    # 「新的 NULL 不盖旧的有效答案」写在 SQL 的冲突条件里, 不在 Python 里先读后写 (中间会被别的写入插队)。
+    if _RECOVERY_READY.get("ready", True):
+        try:
+            sb.schema("truth_vault").rpc("write_feature_answers_preserving_valid", {"p_rows": rows}).execute()
+            return
+        except Exception as exc:  # noqa: BLE001 —— 只吞「没有这个函数」, 别的照抛 (调用方记 write_rejected)
+            if not recovery_missing(exc):
+                raise
+    # v1.26 还没跑: 和之前一样直接 upsert。
     sb.schema("truth_vault").table("note_feature_answers").upsert(rows).execute()
+
+
+def retry_state(row: dict, now: Optional[datetime] = None) -> str:
+    if row.get("attempts", 0) >= MAX_AUTO_ATTEMPTS:
+        return "quarantined"
+    due = datetime.fromisoformat(str(row["next_retry_at"]).replace("Z", "+00:00"))
+    return "ready" if due <= (now or datetime.now(timezone.utc)) else "deferred"
+
+
+_STATE_RANK = {"ready": 0, "deferred": 1, "quarantined": 2}
+
+
+def subject_retry_state(rows: list[dict], now: Optional[datetime] = None) -> str:
+    """一篇在队列里可能有几行 (换过模型名就一个标签一行): 取最严的那个状态。
+    任何一行隔离了这篇就算隔离, 换模型名不会让它自动再抽 —— 要重抽走显式重放。"""
+    return max((retry_state(r, now) for r in rows), key=_STATE_RANK.__getitem__, default="ready")
+
+
+def blocked_ids(queued: dict[str, list[dict]], now: Optional[datetime] = None) -> dict[str, str]:
+    """{note_id: "deferred" | "quarantined"}: 队列里现在不能抽的篇。"""
+    out = {}
+    for note_id, rows in queued.items():
+        state = subject_retry_state(rows, now)
+        if state != "ready":
+            out[note_id] = state
+    return out
+
+
+def claim_attempt(sb, note: dict, bank_sha: str, extractor: str, run_tag: str, replay: bool) -> Optional[str]:
+    """调模型之前占位 (20 小时的租约, 不记次数)。回令牌; None = 别的 worker 刚占了 / 还在等待期。
+    v1.26 没跑 → 抛 RecoveryUnavailable (已喊过一次), 调用方这一轮关掉队列。别的错照抛, 调用方只跳过这一篇。"""
+    try:
+        data = sb.schema("truth_vault").rpc("claim_feature_annotation_attempt", {
+            "p_subject_id": note["note_id"], "p_project_id": note["project_id"],
+            "p_bank_sha256": bank_sha, "p_extractor": extractor, "p_run_tag": run_tag,
+            "p_replay": replay}).execute().data
+    except Exception as exc:  # noqa: BLE001
+        if recovery_missing(exc):
+            raise RecoveryUnavailable(str(exc)) from exc
+        raise
+    if data is None:
+        return None
+    if not isinstance(data, str) or not data:
+        raise RuntimeError("claim_feature_annotation_attempt 返回值不是尝试令牌，拒绝调用模型")
+    return data
+
+
+class RecoveryUnavailable(RuntimeError):
+    """v1.26 的表 / 函数不在。"""
+
+
+def finish_attempt(sb, note_id: str, bank_sha: str, extractor: str, run_tag: str,
+                   *, attempt: str, success: bool, error: str = "") -> None:
+    """success → 清队列 (含别的 llm:* 标签下的行); error == ERR_MODEL_INVALID → 记一次失败并退避;
+    其余 error → 放开占位、不记次数 (基础设施问题不吃重试额度)。"""
+    sb.schema("truth_vault").rpc("finish_feature_annotation_attempt", {
+        "p_subject_id": note_id, "p_bank_sha256": bank_sha,
+        "p_extractor": extractor, "p_run_tag": run_tag,
+        "p_claim_token": attempt, "p_success": success, "p_error": error[:100],
+        "p_consume": (not success) and error == ERR_MODEL_INVALID}).execute()
 
 
 def write_raw_counts(sb, note_id: str, counts: dict, bank_version: str, dry_run: bool) -> None:
@@ -365,7 +497,7 @@ def annotate_note(bank: dict, note: dict, mapping: dict, *, model: str, extracto
     spans = fb.build_spans(note.get("raw_content") or "", mode=mode, title_col=note.get("title"))
     brand_words = fb.brand_dictionary(project, note, mapping)
     rows = code_rows(bank, note, spans, brand_words, run_tag)
-    stats = {"groups_ok": 0, "groups_retry": 0, "singles": 0, "systemic": 0, "filtered": 0, "invalid": 0, "answered": 0,
+    stats = {"groups_ok": 0, "groups_invalid": 0, "groups_retry": 0, "singles": 0, "systemic": 0, "filtered": 0, "invalid": 0, "answered": 0,
              "title_how": spans["_title_how"], "truncated": bool(spans["_truncated"])}
     if code_only:
         return {"rows": rows, "raw_counts": fb.raw_counts(spans), "stats": stats, "spans": spans}
@@ -391,8 +523,10 @@ def annotate_note(bank: dict, note: dict, mapping: dict, *, model: str, extracto
             stats["systemic"] += 1
         elif any(r.get("invalid_reason") == fb.INVALID_FILTERED for r in results.values()):
             stats["filtered"] += 1   # D-125: 被中转站拦的组, 这几题 NULL 落库, 不拖累整篇
-        else:
+        elif any(r.get("answer") is not None for r in results.values()):
             stats["groups_ok"] += 1
+        else:
+            stats["groups_invalid"] += 1
         if retried:
             stats["groups_retry"] += 1
         stats["singles"] += singles
@@ -415,8 +549,12 @@ def annotate_note(bank: dict, note: dict, mapping: dict, *, model: str, extracto
 
 def _exit_code_for_stats(stats: dict) -> int:
     """同 annotate_essence_pass._exit_code_for_stats 的口径:
-    卫生断言失败任意一条 → 1; systemic>0 且一篇都没成功 → 1; 其余 0（单篇抽风幂等下轮续）。"""
+    卫生断言失败任意一条 → 1; systemic>0 且一篇都没成功 → 1; 其余 0（单篇抽风幂等下轮续）。
+    D-153: 【这一轮】有篇模型题零有效 (model_no_valid) → 1。队列里等着的 / 隔离的 (retry_deferred /
+    retry_quarantined) 是存量, 只报数、不变红 —— 不然一篇隔离会让夜跑天天红。"""
     if stats.get("hygiene_failed"):
+        return 1
+    if stats.get("model_no_valid"):
         return 1
     if stats.get("systemic_failed", 0) > 0 and stats.get("ok", 0) == 0:
         return 1
@@ -526,6 +664,17 @@ def main(argv: Optional[list[str]] = None) -> int:
                 bank["bank_version"], bank["_sha256"][:12], model, args.run_tag, mode, args.single)
 
     sb = get_supabase_client()
+    # 恢复队列 (v1.26): 用和「跑过」判据同一组 extractor 去查, 再加上本 worker 自己的标签 —— 判据是 llm:%、
+    # 队列行却挂在别的模型名下时 (库里换过模型), 两边才看得到同一批行。没建表 → {} + 喊一次, 本轮不用队列。
+    _RECOVERY_READY.pop("ready", None)
+    blocked: dict[str, str] = {}
+    if need_llm:
+        if secondary or args.model:
+            q_patterns: tuple[str, ...] = (extractor,)
+        else:
+            q_patterns = tuple(dict.fromkeys((*(done_by or DEFAULT_DONE_BY), extractor)))
+        blocked = blocked_ids(fetch_recovery_rows(sb, args.project_id, bank["_sha256"], args.run_tag, q_patterns))
+    recovery_on = need_llm and _RECOVERY_READY.get("ready", True)
     notes = fetch_notes(sb, args.project_id)
     if args.note_ids:
         keep = _read_note_ids(args.note_ids)
@@ -543,16 +692,56 @@ def main(argv: Optional[list[str]] = None) -> int:
             done = fetch_done_ids(sb, args.project_id, run_tag=args.run_tag, code_only=args.code_only,
                                   extractor=extractor if args.model else None)
         notes = [n for n in notes if n["note_id"] not in done]
+    retry_counts = {"deferred": 0, "quarantined": 0}
+    if need_llm and not args.reannotate:
+        eligible = []
+        for note in notes:
+            state = blocked.get(note["note_id"], "ready")
+            if state == "ready":
+                eligible.append(note)
+            else:
+                retry_counts[state] += 1
+        notes = eligible
     if args.limit:
         notes = notes[: args.limit]
     logger.info("Found %d notes to annotate for project %s", len(notes), args.project_id)
 
     stats = {"ok": 0, "failed": 0, "systemic_failed": 0, "hygiene_failed": 0, "gateway_filtered": 0,
-             "groups_ok": 0, "groups_retry": 0, "singles": 0, "answered": 0, "invalid": 0,
-             "title_how": {}, "truncated": 0}
+             "groups_ok": 0, "groups_invalid": 0, "groups_retry": 0, "singles": 0, "answered": 0, "invalid": 0,
+             "title_how": {}, "truncated": 0, "model_no_valid": 0,
+             "retry_deferred": retry_counts["deferred"], "retry_quarantined": retry_counts["quarantined"]}
     sleep_s = 1.0 / args.qps if args.qps > 0 else 0
     fq = Path(args.failed_queue).resolve()
     for i, note in enumerate(notes):
+        attempt = None
+        if recovery_on:
+            try:
+                attempt = claim_attempt(sb, note, bank["_sha256"], extractor, args.run_tag, args.reannotate)
+            except RecoveryUnavailable:
+                recovery_on = False   # 表在、函数不在 (迁移只跑了一半): 已喊过, 这一轮照老办法
+            except Exception as exc:  # noqa: BLE001
+                # 占位这一下没成 (库抖了一下 / 超时): 只丢这一篇, 不调模型、不记次数, 这一批剩下的照常抽。
+                # 算 systemic: 整批都这样 (ok == 0) 时照旧退出 1, 库真断了看得见。
+                logger.warning("恢复队列占位没成 %s, 这一篇本轮跳过: %s", note["note_id"], exc)
+                stats["failed"] += 1
+                stats["systemic_failed"] += 1
+                _append_failed(fq, note, args.project_id, [f"claim_failed: {type(exc).__name__}: {exc}"])
+                continue
+            else:
+                if attempt is None:   # 读完队列之后别的 worker 占了这一篇 / 它还在等待期
+                    stats["retry_deferred"] += 1
+                    continue
+
+        def finish(success: bool, error: str = "") -> None:
+            if attempt is None:
+                return
+            try:
+                finish_attempt(sb, note["note_id"], bank["_sha256"], extractor, args.run_tag,
+                               attempt=attempt, success=success, error=error)
+            except Exception as exc:  # noqa: BLE001
+                # 收尾没写上不改这一篇的结果: 占位到期 (约 20 小时) 后下一轮自己会再认领, 不记次数。
+                logger.warning("恢复队列收尾没写上 %s (success=%s error=%s): %s", note["note_id"], success, error, exc)
+
         try:
             res = annotate_note(bank, note, mapping, model=model, extractor=extractor,
                                 run_tag=args.run_tag, single=args.single, code_only=args.code_only,
@@ -561,6 +750,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             logger.error("Hygiene assertion failed on %s: %s", note["note_id"], exc)
             stats["hygiene_failed"] += 1
             _append_failed(fq, note, args.project_id, [f"hygiene_failed: {exc}"])
+            finish(False, "hygiene_failed")
             continue
         st = res["stats"]
         stats["title_how"][st["title_how"]] = stats["title_how"].get(st["title_how"], 0) + 1
@@ -570,6 +760,23 @@ def main(argv: Optional[list[str]] = None) -> int:
             logger.info("[dry-run] %s title=%r calls=%d rows=%d", note["note_id"],
                         (res["spans"]["title"] or "")[:30], call_n, len(res["rows"]))
             stats["ok"] += 1
+            continue
+        def tally() -> None:   # 只把落了结论的篇计进合计 (抽成的 / 判了零有效的); 接口失败的篇和之前一样不计
+            for k in ("groups_ok", "groups_retry", "singles", "answered", "invalid"):
+                stats[k] += st[k]
+            stats["groups_invalid"] += st.get("groups_invalid", 0)
+
+        if (attempt is not None and st.get("invalid", 0) > 0 and st.get("answered", 0) == 0
+                and not _is_systemic(st, args.reannotate)):
+            # 只数真的问过模型的题: 没有输入 / 跳过的题不在 invalid 里, 真的不适用的篇不会进队列。
+            # attempt is None (v1.26 没跑) 时不走这一支: 和之前一样整篇落库、带标记。
+            tally()
+            stats["failed"] += 1
+            stats["model_no_valid"] += 1
+            finish(False, ERR_MODEL_INVALID)
+            _append_failed(fq, note, args.project_id, [ERR_MODEL_INVALID])
+            logger.error("模型题零有效 note_id=%s: 不写完成标记, 记一次失败; 自动最多试 %d 次, 之后隔离、要显式重放",
+                         note["note_id"], MAX_AUTO_ATTEMPTS)
             continue
         if _is_systemic(st, args.reannotate):
             # 任何一组 api 失败就整篇不落行（哪怕别的组成功了）。落一半 = 标记题那行先落库,
@@ -581,6 +788,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             # 调用方只看得到 stdout_tail。10-23 XIWU_phase2 一篇每次都 InternalServerError, 原因没处看。
             logger.warning("systemic %s: %s", note["note_id"], " | ".join(e[:300] for e in errs[-3:]))
             _append_failed(fq, note, args.project_id, errs)
+            finish(False, "systemic")
             continue   # 下轮幂等重跑整篇
         try:
             # ⚠️ 写序: 数值原值在前, 带标记题的答案在后。反过来的话 note_features 那一写
@@ -594,7 +802,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             stats["failed"] += 1
             stats["systemic_failed"] += 1
             _append_failed(fq, note, args.project_id, [f"write_rejected: {exc}"])
+            finish(False, "write_rejected")
             continue
+        finish(True)
         stats["ok"] += 1
         if st.get("filtered"):
             stats["gateway_filtered"] += 1
@@ -603,8 +813,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         if st.get("errors"):
             # 落了行但过程里有非致命错误 (比如单问阶段的 api 抖动被后面的成功盖过): 也记一笔, 只做线索
             _append_failed(fq, note, args.project_id, ["partial: " + e for e in st["errors"]])
-        for k in ("groups_ok", "groups_retry", "singles", "answered", "invalid"):
-            stats[k] += st[k]
+        tally()
         if i % 10 == 0:
             logger.info("[%d/%d] %s ok=%d failed=%d answered=%d invalid=%d",
                         i + 1, len(notes), note["note_id"], stats["ok"], stats["failed"],
@@ -618,11 +827,23 @@ def main(argv: Optional[list[str]] = None) -> int:
     _rf = sys.modules.get("relay_failover")   # D-148 备用中转站: 只在配了备用站 (mode 不是 primary_only) 时进 Done 行
     if _rf is not None and _rf.mode() != _rf.MODE_PRIMARY_ONLY:
         stats["relay"] = _rf.summary()
+    model_total = stats["answered"] + stats["invalid"]
+    stats["model_valid_rate"] = round(stats["answered"] / model_total, 4) if model_total else None
+    if stats["model_no_valid"]:
+        logger.error("特征恢复: 本轮 %d 篇模型题零有效 (已进恢复队列, 本轮判红); 另有等下一轮 %d 篇、已隔离 %d 篇; "
+                     "有效答案 %d/%d", stats["model_no_valid"], stats["retry_deferred"], stats["retry_quarantined"],
+                     stats["answered"], model_total)
+    elif stats["retry_deferred"] or stats["retry_quarantined"]:
+        logger.warning("特征恢复队列里的存量 (不算本轮失败): 等下一轮 %d 篇、已隔离 %d 篇。隔离的不会自动再抽, "
+                       "要重抽用 backfill-features 点名 note_ids + reannotate。",
+                       stats["retry_deferred"], stats["retry_quarantined"])
+    elif model_total and stats["model_valid_rate"] < 0.5:
+        logger.warning("特征有效答案率偏低：%d/%d；见invalid计数，零星无效保留D-083口径", stats["answered"], model_total)
     logger.info("Done: %s", json.dumps(stats, ensure_ascii=False))
     code = _exit_code_for_stats(stats)
     if code:
-        logger.error("feature pass 判红: hygiene_failed=%d systemic_failed=%d ok=%d",
-                     stats["hygiene_failed"], stats["systemic_failed"], stats["ok"])
+        logger.error("feature pass 判红: hygiene_failed=%d systemic_failed=%d model_no_valid=%d ok=%d",
+                     stats["hygiene_failed"], stats["systemic_failed"], stats["model_no_valid"], stats["ok"])
     return code
 
 

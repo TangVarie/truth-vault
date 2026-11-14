@@ -171,6 +171,7 @@ jobs:
           edge502_total=0      # 边缘 502 的批: worker 多半在后台跑完了, 既不算成也不算欠
           gf_total=0           # D-125: 本轮有题被中转站敏感词拦、记 NULL 落库的篇数 (一个请求最多 2 篇, 只能在这里跨批合计)
           gf_stop=0            # 到 3 篇就停掉本轮: 再跑下去只是多写一批 NULL
+          invalid_projects=""  # D-153: 【本轮】有篇模型题零有效的项目 (新失败, 收尾判红)。队列里的存量不在这里, 只在收尾报数
           for f in ../mappings/*.yaml; do
             p=$(basename "$f" .yaml)
             [ "$p" = "_template" ] && continue
@@ -223,6 +224,17 @@ jobs:
                 budget=$((budget - batch))
                 edge502_total=$((edge502_total + 1))
                 continue
+              fi
+              # D-153: 本批有篇模型题零有效 (问了模型、一条有效答案都没有) = 这一轮的新失败 → 记下、收尾判红, 并停掉本项目:
+              # 那几篇已进恢复队列 (约 20 小时后才会再抽), 接着要只会在模型本身坏了的时候把整晚预算烧在零有效上。
+              # 队列里的存量 (等下一轮 / 已隔离) 不走这里: count_unannotated_features 不数它们, worker 对它们也不判红。
+              read -r batch_state batch_ok _deferred _quarantined batch_invalid < <(
+                python feature_batch_state.py /tmp/feat.json "$curl_rc" "$code") || batch_state=other
+              if [ "$batch_state" = "model_invalid" ]; then
+                echo "::error::features $p 本批 $batch_invalid 篇模型题零有效 (另有 $batch_ok 篇抽成) —— 已进恢复队列、不重发; 本项目本轮到此为止。"
+                invalid_projects="$invalid_projects $p"
+                [ "$batch_ok" -gt 0 ] && ok_batches=$((ok_batches + 1))
+                break
               fi
               if [ "$code" != "200" ] || [ "$ok" != "true" ]; then
                 jq -r '.stderr_tail // ""' /tmp/feat.json 2>/dev/null | tail -8
@@ -278,6 +290,12 @@ jobs:
             echo "::error::features 本轮 $gf_total 篇有题被中转站敏感词拦截、记 NULL 已落库且不会再抽 —— 像是中转站整体开了/收紧了拦截 (D-125)。找中转站, 关了之后用 backfill-features reannotate 重抽这些篇。"
             fail_count=$((fail_count + 1))
           fi
+          if [ -n "$invalid_projects" ]; then
+            echo "::error::features 本轮有篇模型题零有效:${invalid_projects}。这些篇没有落完成标记, 已进恢复队列, 到点自动再抽 (最多 3 次, 之后隔离)。"
+            fail_count=$((fail_count + 1))
+          fi
+          # D-153: 恢复队列里的存量 (等下一轮 / 已隔离) 只报数, 不判红 —— 一篇隔离不该让夜跑天天红。脚本永远退出 0。
+          python feature_recovery_report.py "$PROJECT_FILTER" || true
           if [ $fail_count -gt 0 ]; then
             echo "::error::feature annotation failed for $fail_count project(s)"
             echo "Investigate: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"

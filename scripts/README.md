@@ -124,6 +124,16 @@ CI 和 daily-sync workflow 都优先读 `.lock`; `.txt` 仅作为 "high-level in
 #         notes.content_layer (P 产品贴 / T 流量贴 / Q 提问贴 / J 精品贴, CHECK)。daily 项目由 feishu 同步每晚整行重写时填,
 #         on_demand 项目由 backfill_content_layer.py 只往空里填; 遮挡词由 mask_external_names.py 夜跑列。
 #         代码宽容: 没跑之前外部卡只给结构、sync 不写内容层, 别的照旧 (在 v1_18 之后; D-140)
+#   - schemas/notes_v1_25_sync_runs.sql → 整轮扫描账本 (note_sync_runs / note_sync_presence) + 两个函数, 并把 v_notes_vanished
+#         换成按「本项目最近一次已完成的整轮扫描」算: 飞书回 0 行也算一轮, 没写全 / 带 --limit 的不算, 并发按开跑先后排。
+#         老篇保留原来的 last_seen 时间。代码宽容: 没跑之前 sync 喊一次 warning、照老办法按 last_seen 戳对账,
+#         Done 行 scan_completed=0 (在 v1_21 之后; 跑过它就别再跑 v1_21; D-153)
+#   - schemas/notes_v1_26_feature_failure_recovery.sql → 特征恢复队列 feature_annotation_failures + 三个函数: 模型题整篇零有效
+#         不落完成标记、最多自动重抽 3 次 (约 20 / 44 小时后), 新的 NULL 不盖旧的有效答案; 会把历史上整篇全 NULL 的篇排进队列
+#         (之后几晚各重抽一次, 要花模型钱)。代码宽容: 没跑之前 worker 喊一次 warning、照老办法抽 (在 v1_13 / v1_17 之后; D-153)。
+#         两份都可重跑。先合并代码, 之后什么时候跑都行; v1_26 在合并之前跑也可以, v1_25 不要在合并之前跑
+#         (不报错也不红, 但合并之前的代码不记新的一轮, 删帖名单从跑的那一刻起不再更新, 直到合并后跑完一趟完整同步)。
+#         详见 docs/audit-fixes-2026-11-14.md。
 #   - autowriter-migrations/001_create_autowriter_schema.sql → 把 autowriter 表从 public 迁到 autowriter schema
 #   - autowriter-migrations/002_add_external_source.sql     → items 加 (external_source, external_source_id) 列
 #         + per-user partial UNIQUE (user_id, external_source, external_source_id) WHERE external_source IS NOT NULL.

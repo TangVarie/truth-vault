@@ -236,6 +236,15 @@ jobs:
                   cb=$(jq -r '.bank // empty' /tmp/b.json 2>/dev/null)
                   [ "$cb" = "$BANK" ] || { echo "::error::$proj 第 $((i/BATCH+1)) 批: worker 没回显 bank=$BANK (收到 '${cb:-空}') —— 探针之后换成了不认 bank 的 worker, 这批按主题库跑了。停, 不重试; 查 Railway, 再按 docs/28 §6.2b 的 ① 查 run_tag=$RUN_TAG 下有没有别的题。"; exit 1; }
                 fi
+                # D-153: 这批有篇模型题零有效 = 模型问过了、答案全不可用。那几篇已进恢复队列; 带 reannotate 重发同一批
+                # 只会再付一遍钱, 所以【不重试】, 记成失败的批往下走; 一篇都没抽成就整个停 (多半是模型 / 题库本身的问题)。
+                read -r bstate bok bdef bquar binv < <(python feature_batch_state.py /tmp/b.json 0 "$code") || bstate=other
+                if [ "$bstate" = "model_invalid" ]; then
+                  echo "::error::$proj 第 $((i/BATCH+1)) 批: $binv 篇模型题零有效 (抽成 $bok 篇) —— 已进恢复队列, 不重发这一批。"
+                  [ "$bok" -gt 0 ] || { echo "::error::这一批一篇都没抽成, 停。查 Railway worker 日志里这几篇的 invalid 原因。"; exit 1; }
+                  ok=false; break
+                fi
+                [ "$bstate" = "backlog" ] && echo "::warning::$proj 这批点名的篇里有 $bdef 篇还在等待期、$bquar 篇已隔离, worker 跳过了它们 (不算失败); 要现在重抽就带 reannotate。"
                 { [ "$code" = "200" ] && [ "$ok" = "true" ] && [ -n "$nc" ]; } && break
                 # 409 = worker 正被别的调用占着(features-sync / 另一个 backfill): 等锁, 不算失败 (D-077)
                 echo "::warning::$proj 第 $((i/BATCH+1)) 批 try $attempt 失败 (HTTP $code, ok=$ok);等 60s 重试"
@@ -253,7 +262,7 @@ jobs:
           done
           echo "── 结束 · $total 篇 · 成功 $ok_chunks 批 · 失败 $bad_chunks 批 ──"
           echo "已答过的篇 pass 自己会跳过 (按 (extractor, run_tag) 幂等; 本次 run_tag=$RUN_TAG), 失败的批再触发一次接着跑。"
-          [ "$bad_chunks" = "0" ] || { echo "::error::$bad_chunks 批连续 6 次都没成 —— 查 Railway worker 日志。"; exit 1; }
+          [ "$bad_chunks" = "0" ] || { echo "::error::$bad_chunks 批没成 (连续 6 次失败, 或有篇模型题零有效 —— 见上面各批的报错) —— 查 Railway worker 日志。"; exit 1; }
 
       - name: 重抽过 primary 答案 → 清掉带规律命中的馆员缓存 (D-116)
         # 规律命中按 primary 答案算; reannotate 改了答案却不改书架 / 批准层 / 闸二标签, 版本串不变, 旧缓存会一直回旧的
@@ -270,7 +279,7 @@ jobs:
           # worker 重启吐空/坏响应时 `ok=$(jq …)` 解析失败会触发 errexit 直接杀掉整步、
           # 绕过重试循环(实测:整步 exit 5、连 [try 1] 都没打印 → 重试从没机会跑)。
           set +e
-          prev=-1; gf_total=0
+          prev=-1; gf_total=0; invalid_total=0
           # code_only: 计数和 worker 都按代码题的「跑过」判据 (code:v1 的 body_len_bucket), 两边一个口径 (I-19)。
           CO_FLAG=""; CO_JSON=""
           if [ "$CODE_ONLY" = "true" ]; then CO_FLAG="--code-only"; CO_JSON=",\"code_only\":true"; fi
@@ -304,6 +313,15 @@ jobs:
               echo "   [try $attempt] HTTP $code · ok=$ok · returncode=$(jq -r '.returncode // "?"' /tmp/b.json 2>/dev/null)"
               jq -r '.stdout_tail // ""' /tmp/b.json 2>/dev/null | tail -4
               { [ "$code" = "200" ] && [ "$ok" = "true" ]; } && break
+              # D-153: 有篇模型题零有效不是「调用失败」: 那几篇已进恢复队列、计数里已经不数它们, 不用重发。
+              # 这批还抽成了别的篇 → 记一笔接着灌; 一篇都没抽成 → 停 (多半是模型 / 题库本身的问题, 接着灌只是烧钱)。
+              read -r bstate bok _bdef _bquar binv < <(python feature_batch_state.py /tmp/b.json 0 "$code") || bstate=other
+              if [ "$bstate" = "model_invalid" ]; then
+                invalid_total=$((invalid_total + binv))
+                echo "::warning::batch $i: $binv 篇模型题零有效 (抽成 $bok 篇) —— 已进恢复队列, 不重发。"
+                [ "$bok" -gt 0 ] || { echo "::error::batch $i 一篇都没抽成, 全是模型题零有效 —— 停止 backfill。查 Railway worker 日志里的 invalid 原因。"; exit 1; }
+                ok=true; break
+              fi
               echo "::warning::batch $i try $attempt 失败 (HTTP $code, ok=$ok);等 60s 重试(边缘 502 / 网关瞬断;worker 不崩、注解仍会落库)"
               jq -r '.stderr_tail // ""' /tmp/b.json 2>/dev/null | tail -6
               sleep 60
@@ -321,3 +339,6 @@ jobs:
           if [ "$rem" != "0" ] && [ "$rem" != "?" ]; then
             echo "::warning::还剩 $rem 条未标注(到达 max_batches=$MAXB)。再触发一次本工作流接着灌,或调大 max_batches。"
           fi
+          # D-153: 恢复队列里的存量 (等下一轮 / 已隔离) 不在 remaining 里, 单独报一行; 本次新进队列的也在里面。永远退出 0。
+          [ "$CODE_ONLY" = "true" ] || python feature_recovery_report.py "$PROJECT" || true
+          [ "$invalid_total" = "0" ] || { echo "::error::本次有 $invalid_total 篇模型题零有效 (已进恢复队列, 到点自动再抽, 最多 3 次)。其余的篇已照常灌完。"; exit 1; }

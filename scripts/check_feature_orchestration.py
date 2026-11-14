@@ -253,22 +253,27 @@ def check_parse_done_by() -> None:
     print("  ✓ parse_done_by: 精确值 / 以 % 结尾的前缀 / 去重保序; 空、无命名空间、% 在中间、前缀里带 _ 都拒")
 
 
+def answer_queries(sb):
+    """This suite checks marker filters; recovery RPC/queue behavior has its own main regression."""
+    return [q for q in sb.log if q.table_name == "note_feature_answers"]
+
+
 def check_fetch_done_ids() -> None:
     afp.fetch_all_pages = _pages
     try:
         # 默认: 只认 llm:% —— judge 答过的 T_1 不算答过 (这就是要修的那件事, 默认行为本身不改)
         sb = _SB(_tables())
         assert _REAL_DONE(sb, "T") == {"T_2"}
-        assert len(sb.log) == 1 and sb.log[0].extractor_filters() == [("like", "llm:%")], sb.log[0].filters
+        assert len(answer_queries(sb)) == 1 and answer_queries(sb)[0].extractor_filters() == [("like", "llm:%")], answer_queries(sb)[0].filters
         # done_by 精确值: eq, 不走 like
         sb = _SB(_tables())
         assert _REAL_DONE(sb, "T", done_by=("jev:1.13.0",)) == {"T_1"}
-        assert [q.extractor_filters() for q in sb.log] == [[("eq", "jev:1.13.0")]], [q.filters for q in sb.log]
+        assert [q.extractor_filters() for q in answer_queries(sb)] == [[("eq", "jev:1.13.0")]], [q.filters for q in answer_queries(sb)]
         # done_by 多项: 各查一次取并集; run_tag 照样过滤 (T_3 的 judge 行在 gate1-x 下, 不算)
         sb = _SB(_tables())
         assert _REAL_DONE(sb, "T", done_by=("jev:1.13.0", "llm:%")) == {"T_1", "T_2"}
-        assert [q.extractor_filters() for q in sb.log] == [[("eq", "jev:1.13.0")], [("like", "llm:%")]]
-        for q in sb.log:
+        assert [q.extractor_filters() for q in answer_queries(sb)] == [[("eq", "jev:1.13.0")], [("like", "llm:%")]]
+        for q in answer_queries(sb):
             assert ("eq", "question_id", afp.DONE_MARKER_QUESTION) in q.filters and ("eq", "run_tag", "primary") in q.filters, q.filters
             assert ("like", "subject_id", "T_%") in q.filters and ("eq", "subject_type", "note") in q.filters, q.filters
         sb = _SB(_tables())
@@ -276,7 +281,7 @@ def check_fetch_done_ids() -> None:
         # 旧的两条路不变: code-only 看 code:v1 的 body_len_bucket; 显式 extractor 精确匹配
         sb = _SB(_tables())
         assert _REAL_DONE(sb, "T", code_only=True) == {"T_2"}
-        assert sb.log[0].extractor_filters() == [("eq", fb.CODE_EXTRACTOR)]
+        assert answer_queries(sb)[0].extractor_filters() == [("eq", fb.CODE_EXTRACTOR)]
         sb = _SB(_tables())
         assert _REAL_DONE(sb, "T", extractor="llm:claude-opus-4-6") == {"T_2"}
         # 两个判据同时给 / code-only 带 done_by → 拒, 不猜
@@ -354,7 +359,7 @@ def check_main_resume() -> None:
         # --done-by 取代 --model 的精确匹配 (不是再叠一层)
         fresh()
         assert run_main(["T", "--model", "claude-opus-4-6", "--done-by", "jev:%"]) == 0 and ran() == {"T_2", "T_3", "T_4"}, ran()
-        assert [q.extractor_filters() for q in box["sb"].log] == [[("like", "jev:%")]]
+        assert [q.extractor_filters() for q in answer_queries(box["sb"])] == [[("like", "jev:%")]]
 
         # model 写成 extractor 标签 → 退出 2, 一次调用都没有、一行都不写
         for argv, env in ((["T", "--model", "jev:1.13.0"], None), (["T", "--model", "llm:claude-opus-4-6"], None),
@@ -370,7 +375,7 @@ def check_main_resume() -> None:
         m = "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
         fresh()
         assert run_main(["T", "--model", m, "--limit", "1"]) == 0 and {r["extractor"] for r in written} >= {"llm:" + m}
-        assert box["sb"].log[0].extractor_filters() == [("eq", "llm:" + m)]
+        assert answer_queries(box["sb"])[0].extractor_filters() == [("eq", "llm:" + m)]
         # 非法 --done-by / code-only 带 --done-by → 退出 2
         for argv in (["T", "--done-by", "llm:claude_x%"], ["T", "--done-by", "%"], ["T", "--done-by", " , "],
                      ["T", "--code-only", "--done-by", "jev:%"]):
@@ -601,7 +606,7 @@ def check_reader_main() -> None:
         assert {r["run_tag"] for r in written} == {R_TAG} and {r["bank_sha256"] for r in written} == {READER["_sha256"]}
         assert {r["question_id"] for r in written} == {"reader_ask_form", "invites_sharing", "last_para_has_qmark"}
         assert {r["extractor"] for r in written} == {"llm:" + R_MODEL, fb.CODE_EXTRACTOR}
-        (q,) = box["sb"].log
+        (q,) = answer_queries(box["sb"])
         assert sorted(q.filters) == sorted([("eq", "subject_type", "note"), ("eq", "question_id", "reader_ask_form"),
                                             ("eq", "run_tag", R_TAG), ("like", "subject_id", "R_%"),
                                             ("eq", "extractor", "llm:" + R_MODEL),
@@ -612,7 +617,7 @@ def check_reader_main() -> None:
         fresh(reader_llm=False)
         assert afp.main(["R", "--qps", "0"]) == 0 and ran() == {"R_2", "R_3", "R_4", "R_5"}, ran()
         assert len(written) == 31 * 4 and sorted(raw_writes) == ["R_2", "R_3", "R_4", "R_5"], (len(written), raw_writes)
-        (q,) = box["sb"].log
+        (q,) = answer_queries(box["sb"])
         assert sorted(q.filters) == sorted([("eq", "subject_type", "note"), ("eq", "question_id", afp.DONE_MARKER_QUESTION),
                                             ("eq", "run_tag", "primary"), ("like", "subject_id", "R_%"),
                                             ("like", "extractor", "llm:%")]), q.filters
@@ -849,6 +854,11 @@ def main(argv: list[str] | None = None) -> int:
         check_worker_endpoint()
         check_worker_endpoint_bank()
         return 0
+    # Existing orchestration fixtures replace all storage I/O. The independent recovery
+    # regression exercises real main, queue reads and atomic write RPC calls.
+    afp.fetch_recovery_rows = lambda *a: {}
+    afp.claim_attempt = lambda *a: 1
+    afp.finish_attempt = lambda *a, **k: None
     check_note_ids()
     check_orchestration()
     check_parse_done_by()

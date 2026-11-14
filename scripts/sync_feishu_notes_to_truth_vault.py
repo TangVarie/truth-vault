@@ -56,6 +56,7 @@ from _common import (
     fetch_all_pages,
     get_supabase_client,
     infer_direction_from_content,
+    is_missing_db_object,
     load_mapping,
     make_note_id,
     map_intent,
@@ -72,6 +73,7 @@ from _common import (
     setup_logger,
     skip_on_demand_on_cron,
     update_project_date_range,
+    warn_missing_migration_once,
     _direction_key,
     _iso_now,
     _iso_now_tz,
@@ -2232,6 +2234,47 @@ def prepare_content_layer(sb, pending_notes: list[dict[str, Any]]) -> bool:
     return False
 
 
+LEDGER_MIGRATION = "schemas/notes_v1_25_sync_runs.sql"
+# begin_sync_run 的三种结果。只有 READY 才会去提交整轮账本; MISSING = 迁移还没跑, 整条同步照 v1.25 之前的老路走。
+LEDGER_READY, LEDGER_MISSING, LEDGER_ERROR = "ready", "missing", "error"
+
+
+def begin_sync_run(sb, project_id: str, run_id: str) -> str:
+    """抓飞书【之前】先在整轮账本 (v1.25) 里占一个顺序号, 晚到的老一轮就盖不掉新一轮。
+
+    回 LEDGER_READY / LEDGER_MISSING / LEDGER_ERROR, 从不抛、从不拦同步 (owner 11-02: 代码要先能在没迁移的库上跑):
+      · 库里没有这个函数 / 这张表 (PGRST202 / PGRST205 / 42883 / 42P01) → MISSING: 喊一次, 本轮照老办法盖戳、对账,
+        Done 行 scan_completed=0;
+      · 别的错 (连不上 / 超时 / 权限) → ERROR: 照实报错, 不说成「去跑迁移」; 笔记和指标照常入库, 本轮不提交账本、
+        不对账, 由调用方计一个 error。
+    """
+    try:
+        sb.schema("truth_vault").rpc("begin_note_sync", {
+            "p_project_id": project_id, "p_run_id": run_id,
+        }).execute()
+    except Exception as exc:  # noqa: BLE001 —— 分两类, 见 docstring
+        if is_missing_db_object(exc):
+            warn_missing_migration_once(
+                "notes_v1_25",
+                f"整轮扫描账本还没建 (owner 在 SQL editor 跑 {LEDGER_MIGRATION} 之前都是这样): 本轮照老办法"
+                "按 last_seen 戳对账, scan_completed=0; 笔记和指标照常入库。",
+                log=logger)
+            return LEDGER_MISSING
+        logger.error("整轮扫描账本这一轮没登记上 (不是缺迁移, 是这次调用出错): %s —— 笔记和指标照常入库, "
+                     "本轮不提交账本、不对账, scan_completed=0。", exc)
+        return LEDGER_ERROR
+    return LEDGER_READY
+
+
+def complete_sync_run(sb, run_id: str, note_ids: set[str],
+                      seen_failed_note_ids: set[str] | None = None) -> None:
+    """Atomically commit a full successful membership, including an empty set."""
+    sb.schema("truth_vault").rpc("complete_note_sync", {
+        "p_run_id": run_id, "p_note_ids": sorted(note_ids),
+        "p_seen_failed_note_ids": sorted(seen_failed_note_ids or ()),
+    }).execute()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("project_id", help="e.g. NUC_phase1")
@@ -2359,7 +2402,10 @@ def main() -> int:
              "missing_capabilities": [],
              "missing_capabilities_exempt": [], "stale_capability_exemptions": [],
              "metrics_written": 0, "metrics_failed": 0,
-             "metrics_skipped_fk": 0, "accounts_failed": 0}
+             "metrics_skipped_fk": 0, "accounts_failed": 0,
+             # v1.25 (D-153): 这一轮有没有在整轮账本里提交成一次完整扫描。Done 行里【永远有】这个键 ——
+             # 0 = 没提交 (不是完整扫描 / 没写全 / 账本还没建 / 提交失败), 1 = 提交了。
+             "scan_completed": 0}
     # D-055: 未声明列收进 raw_extra["_undeclared"] 之后, 这里攒一份【待处理清单】;
     # seen_cols 是这一轮飞书真的返回过的所有列名 —— 用来反查【已声明的核心列消失了】。
     undeclared_seen: set[str] = set()
@@ -2386,9 +2432,13 @@ def main() -> int:
     # 所以只有**完整**同步才有资格给 note 盖 last_seen 戳; 部分同步一个都
     # 不盖 —— 半新半旧的 last_seen 比没有这个字段更坏。
     run_id = uuid.uuid4().hex
-    # 本次开跑的时刻。对账时用它排除掉**并发的另一次完整同步**盖的戳 ——
+    # 本次开跑的时刻。账本还没建时 (老办法对账) 用它排除掉**并发的另一次完整同步**盖的戳 ——
     # 见下面对账那一段的说明。
     run_started_at = _iso_now_tz()
+    # 整轮账本 (v1.25): 没建就照老路走, 出错也不拦入库 —— 见 begin_sync_run。dry-run 不登记。
+    ledger = begin_sync_run(sb, mapping["project_id"], run_id) if not args.dry_run else LEDGER_MISSING
+    if ledger == LEDGER_ERROR:
+        stats["errors"] += 1
     fetch_failed: list[str] = []
     truncated_by_limit = False
 
@@ -2914,71 +2964,116 @@ def main() -> int:
             len(pending_notes) - len(written_ids), len(pending_notes),
         )
 
+    # ⚠️ 指标 / 账号没写成【不】挡这里 (D-153): 「这一轮在飞书里见到了哪些篇」只要 note 写全了就成立,
+    #    指标丢了是另一件事 —— 它已经计进 errors (COR-008)、这一轮照样红, 这里只把数字再报一遍。
+    if failed_metrics or failed_accounts:
+        logger.warning(
+            "指标 %d 条 / 账号 %d 个没写成 (已计进 errors, 本轮会红) —— 不影响「这一轮见到了哪些篇」的判断, "
+            "盖戳、账本、对账照常。", len(failed_metrics), len(failed_accounts))
+
+    # 整轮账本 (v1.25) 多一条: 带 --limit 的一轮哪怕没截断也不提交 (手动小范围跑不该刷新全项目的快照)。
+    vanished: list[dict[str, Any]] = []
     if full_scan and writes_all_ok:
-        try:
-            # ⚠️ 判据是 `IS DISTINCT FROM`, 不是 `<>`。
+        if ledger == LEDGER_READY and not args.limit:
+            completed = False
+            try:
+                # Preserve observations of failed NEW rows too. A concurrent older
+                # scan may create one after the D-058 existence probe; omitting it
+                # would falsely declare a row we actually saw absent.
+                complete_sync_run(sb, run_id, set(written_ids),
+                                  {make_note_id(mapping["project_id"], rid) for rid in failed_record_ids})
+                completed = True
+                stats["scan_completed"] = 1
+            except Exception as exc:
+                logger.exception("整轮账本提交失败 (快照没有前进, 本轮不对账): %s", exc)
+                stats["errors"] += 1
+            if completed:
+                try:
+                    # 账本提交之后, 日志里的对账和下游三条路读的是同一张视图 (v1.25 版 v_notes_vanished)。
+                    # 从没被整轮扫描见过的篇不在视图里 —— 它们是「还不知道」, 不是「消失了」。
+                    vanished = fetch_all_pages(
+                        sb.schema("truth_vault").table("v_notes_vanished")
+                        .select("note_id, tier, last_seen_at, last_seen_run_id, "
+                                "synced_to_ssll_at, synced_to_aw_at, essence_annotated_at")
+                        .eq("project_id", mapping["project_id"]),
+                        order_by="note_id",
+                    )
+                except Exception as exc:
+                    logger.exception("对账查询失败 (账本已提交, 只是这一轮没报出名单): %s", exc)
+                    stats["errors"] += 1
+                    vanished = []
+                stats["reconcile_vanished"] = len(vanished)
+        elif ledger == LEDGER_READY:
+            logger.info("这一轮带了 --limit: 不提交整轮账本、不对账 (scan_completed=0)。")
+        elif ledger == LEDGER_ERROR:
+            logger.warning("整轮账本这一轮没登记上 (见上面的报错): 不提交、不对账, scan_completed=0。")
+        else:
+            # ── 账本还没建 (v1_25 没跑): 以下是 v1.25 之前的对账, 一字不改 ──────────
+            try:
+                # ⚠️ 判据是 `IS DISTINCT FROM`, 不是 `<>`。
+                #
+                #    PostgREST 的 .neq() 直译成 SQL 的 `<>`, 而 `NULL <> 'x'` 的结果
+                #    是 **unknown**, WHERE 会把它滤掉。于是 last_seen_run_id 为 NULL
+                #    的老行(本列上线前就在库里的)**永远进不了 missing**, never_seen
+                #    恒为空 —— 而"还没经历过完整同步"和"消失了"必须分开, 正是
+                #    schemas/notes_v1_9 文件头写的这个功能的一半。真库上实测:
+                #        WHERE last_seen_run_id <> 'run-1'            → 只有 stale
+                #        WHERE last_seen_run_id IS DISTINCT FROM 'run-1' → legacy + stale
+                #    (codex review)
+                #
+                #    PostgREST 没有 IS DISTINCT FROM 的直接算子, 用 or() 展开成
+                #    「不等于它」或「是 NULL」—— 语义等价。
+                missing = fetch_all_pages(
+                    sb.schema("truth_vault").table("notes")
+                    .select("note_id, title, tier, last_seen_at, last_seen_run_id, "
+                            "synced_to_ssll_at, synced_to_aw_at, essence_annotated_at")
+                    .eq("project_id", mapping["project_id"])
+                    .or_(f"last_seen_run_id.neq.{run_id},last_seen_run_id.is.null"),
+                    order_by="note_id",
+                )
+            except Exception as exc:
+                logger.warning("对账查询失败(不影响本次同步): %s", exc)
+                missing = []
+
+            # ── 排掉**并发的另一次完整同步**盖的戳 ────────────────────────────
             #
-            #    PostgREST 的 .neq() 直译成 SQL 的 `<>`, 而 `NULL <> 'x'` 的结果
-            #    是 **unknown**, WHERE 会把它滤掉。于是 last_seen_run_id 为 NULL
-            #    的老行(本列上线前就在库里的)**永远进不了 missing**, never_seen
-            #    恒为空 —— 而"还没经历过完整同步"和"消失了"必须分开, 正是
-            #    schemas/notes_v1_9 文件头写的这个功能的一半。真库上实测:
-            #        WHERE last_seen_run_id <> 'run-1'            → 只有 stale
-            #        WHERE last_seen_run_id IS DISTINCT FROM 'run-1' → legacy + stale
-            #    (codex review)
+            # 运维在同项目上手动再起一次同步(或 cron 撞上手动跑)时: B 在 A 的
+            # 「写完 → 查对账」这个窗口里, 把每一行的 run_id 都覆盖成自己的。A 随后
+            # 一查, 全库都 `!= A.run_id` —— **整个项目被报成消失了**, 而两次扫描其实
+            # 都是完整的。(codex review)
             #
-            #    PostgREST 没有 IS DISTINCT FROM 的直接算子, 用 or() 展开成
-            #    「不等于它」或「是 NULL」—— 语义等价。
-            missing = fetch_all_pages(
-                sb.schema("truth_vault").table("notes")
-                .select("note_id, title, tier, last_seen_at, last_seen_run_id, "
-                        "synced_to_ssll_at, synced_to_aw_at, essence_annotated_at")
-                .eq("project_id", mapping["project_id"])
-                .or_(f"last_seen_run_id.neq.{run_id},last_seen_run_id.is.null"),
-                order_by="note_id",
-            )
-        except Exception as exc:
-            logger.warning("对账查询失败(不影响本次同步): %s", exc)
-            missing = []
+            # 判据仍以 run_id 为主(精确相等, 不依赖时钟), 时间只用来做这一件事:
+            # 一行的 last_seen_at 不早于**我开跑的时刻**, 说明有另一次同步在我这轮
+            # 期间见过它 —— 那它就不是"没见到"。别人见过和我见过, 对"这条还在不在
+            # 源里"这个问题是等价证据。
+            #
+            # ⚠️ 残留: 两个容器的时钟偏差大到超过一次同步的时长时, 这层排除会失效
+            #    (退化回原来的误报)。真要根治得给项目加一把互斥锁 —— 那是独立一件事
+            #    (要新表 + 抢锁/释放/超时回收), 而这里先把已知会发生的那个窗口关掉。
+            concurrent = [r for r in missing
+                          if r.get("last_seen_at") and r["last_seen_at"] >= run_started_at]
+            if concurrent:
+                logger.warning(
+                    "对账: %d 条带着**比本次开跑更新**的 last_seen —— 多半是同项目上"
+                    "有另一次同步在并行跑。这些不算「没见到」, 已从对账里排除。",
+                    len(concurrent))
+                _conc = {r["note_id"] for r in concurrent}
+                missing = [r for r in missing if r["note_id"] not in _conc]
 
-        # ── 排掉**并发的另一次完整同步**盖的戳 ────────────────────────────
-        #
-        # 运维在同项目上手动再起一次同步(或 cron 撞上手动跑)时: B 在 A 的
-        # 「写完 → 查对账」这个窗口里, 把每一行的 run_id 都覆盖成自己的。A 随后
-        # 一查, 全库都 `!= A.run_id` —— **整个项目被报成消失了**, 而两次扫描其实
-        # 都是完整的。(codex review)
-        #
-        # 判据仍以 run_id 为主(精确相等, 不依赖时钟), 时间只用来做这一件事:
-        # 一行的 last_seen_at 不早于**我开跑的时刻**, 说明有另一次同步在我这轮
-        # 期间见过它 —— 那它就不是"没见到"。别人见过和我见过, 对"这条还在不在
-        # 源里"这个问题是等价证据。
-        #
-        # ⚠️ 残留: 两个容器的时钟偏差大到超过一次同步的时长时, 这层排除会失效
-        #    (退化回原来的误报)。真要根治得给项目加一把互斥锁 —— 那是独立一件事
-        #    (要新表 + 抢锁/释放/超时回收), 而这里先把已知会发生的那个窗口关掉。
-        concurrent = [r for r in missing
-                      if r.get("last_seen_at") and r["last_seen_at"] >= run_started_at]
-        if concurrent:
-            logger.warning(
-                "对账: %d 条带着**比本次开跑更新**的 last_seen —— 多半是同项目上"
-                "有另一次同步在并行跑。这些不算「没见到」, 已从对账里排除。",
-                len(concurrent))
-            _conc = {r["note_id"] for r in concurrent}
-            missing = [r for r in missing if r["note_id"] not in _conc]
+            # 从来没经历过完整同步的行(本列上线前就在库里)**不是**候选 ——
+            # 把这两者混在一起, 迁移当天的报告会把全库都列出来, 然后没人再看它。
+            never_seen = [r for r in missing if not r.get("last_seen_run_id")]
+            vanished = [r for r in missing if r.get("last_seen_run_id")]
 
-        # 从来没经历过完整同步的行(本列上线前就在库里)**不是**候选 ——
-        # 把这两者混在一起, 迁移当天的报告会把全库都列出来, 然后没人再看它。
-        never_seen = [r for r in missing if not r.get("last_seen_run_id")]
-        vanished = [r for r in missing if r.get("last_seen_run_id")]
+            stats["reconcile_never_seen"] = len(never_seen)
+            stats["reconcile_vanished"] = len(vanished)
+            if never_seen:
+                logger.info(
+                    "对账: %d 条还没经历过完整同步(last_seen_run_id 为空) —— "
+                    "**不是**消失, 下次完整同步就会盖上戳。",
+                    len(never_seen),
+                )
 
-        stats["reconcile_never_seen"] = len(never_seen)
-        stats["reconcile_vanished"] = len(vanished)
-        if never_seen:
-            logger.info(
-                "对账: %d 条还没经历过完整同步(last_seen_run_id 为空) —— "
-                "**不是**消失, 下次完整同步就会盖上戳。",
-                len(never_seen),
-            )
         if vanished:
             # 下游影响面一起报出来: 一条只躺在 TV 里的孤儿, 和一条已经被推去
             # 三生六部当参考样本、或者已经生成过 lesson 的孤儿, 处理起来完全

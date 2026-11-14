@@ -312,7 +312,7 @@ A 家族根本没有目标列，B 家族 NRT_phase2 498 行有 target、0 行有
 ### 4.4 评论区快照 = TV 的第一条真实观众评论
 
 - **今天 comments 表 9035 行全部是运营自己写的随贴评论**：`comment_role` 全是 `'素人'`，`is_scripted`/`comment_type`/`comment_intent`/`comment_time`/`parent_comment_id` 全 NULL，`contains_blue_keyword` 与 `blue_keywords_matched` 各 0 行非空。特征层也没有任何评论来源（`feature_bank.py` 全是正文 span/hashtag/emoji/品牌词）。
-- 生产已有 **1184 行**非空快照 / 5 个项目，avg 169 字符，实值形如 `1. 陳Salty: <内容>`——**正好命中现成解析器的 Pattern A**（`sync_comments_from_raw_extra.py:104` 去编号、`:116` 拆昵称/正文）。约 **5000 条**真实评论不用写新解析逻辑。
+- 生产已有 **1184 行**非空快照 / 5 个项目，avg 169 字符，格式示例（昵称已替换）`1. 示例用户: <内容>`——**正好命中现成解析器的 Pattern A**（`sync_comments_from_raw_extra.py:104` 去编号、`:116` 拆昵称/正文）。约 **5000 条**真实评论不用写新解析逻辑。
 - **接住它要加什么**：给 `sync_comments_from_raw_extra.py` 加 `--source 评论区快照` 参数（不改默认行为）；comments 加 `source` + `is_truncated` 两列、`comment_id` 前缀改 `_s{ordinal}`（否则撞主键）；`comment_role` 的 CHECK 已含 `'路人'`（`notes_v1_2.sql:478`），这列不用迁移。
 - **不接的代价**：TV 对"观众实际怎么回应"零信号，L2 的全部特征都在猜内容本身。
 

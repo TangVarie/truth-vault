@@ -1607,10 +1607,43 @@ class SecretMaskingFormatter(logging.Formatter):
         return mask_secrets(super().format(record))
 
 
+# ── 「迁移还没跑」只认这四个码 (owner 11-02: 代码要先能在没迁移的库上跑) ─────────────────────────
+# PostgREST: PGRST202 = schema cache 里没有这个函数 · PGRST205 = 没有这张表 / 视图
+# Postgres:  42883 = undefined_function · 42P01 = undefined_table
+# 别的错 (连不上 / 超时 / 权限 / 约束) 一律不是「没跑迁移」, 调用方照原样报, 不许说成「去跑 SQL」。
+_MISSING_DB_OBJECT_CODES = frozenset({"PGRST202", "PGRST205", "42883", "42P01"})
+_MISSING_DB_OBJECT_RE = re.compile(r"(?<![A-Za-z0-9])(?:PGRST202|PGRST205|42883|42P01)(?![A-Za-z0-9])")
+_MISSING_DB_OBJECT_WARNED: set[str] = set()
+
+
+def is_missing_db_object(exc: BaseException) -> bool:
+    """这个错是不是「库里没有这张表 / 这个函数」。APIError 带 code 就只看 code; 没有 code 属性 (假客户端 / 包了一层的
+    RuntimeError) 才在报错文本里找这四个码。"""
+    code = getattr(exc, "code", None)
+    if isinstance(code, str) and code:
+        return code in _MISSING_DB_OBJECT_CODES
+    return bool(_MISSING_DB_OBJECT_RE.search(f"{exc!r} {exc}"))
+
+
+def warn_missing_migration_once(key: str, message: str, *, log: Optional[logging.Logger] = None) -> bool:
+    """同一个 key 一个进程只喊一次。在 GitHub Actions 里另打一行 ::warning:: (run 摘要顶上看得见);
+    worker 等服务里只走 logger.warning。回 True = 这次真喊了。"""
+    if key in _MISSING_DB_OBJECT_WARNED:
+        return False
+    _MISSING_DB_OBJECT_WARNED.add(key)
+    (log or logging.getLogger(__name__)).warning("%s", message)
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print(f"::warning title=迁移还没跑 ({key})::{message}", file=sys.stderr, flush=True)
+    return True
+
+
 def fetch_vanished_note_ids(sb, project_id: Optional[str] = None) -> set[str]:
-    """飞书里已经删掉的篇 (审计 B-21, D-103): schemas/notes_v1_21 的 v_notes_vanished —— 盖过 last_seen 戳、但
-    【本项目最近一次完整同步】没见到的 note_id。从没盖过戳的 (on_demand 项目) 不算; 比的是本项目自己的最近一次 run,
-    不是固定天数。三个新生产路径 (新策展 / 通道 1 推送 / 闸二取数) 用它排除; 只报不删, 删不删是 owner 的事。
+    """飞书里已经删掉的篇 (审计 B-21, D-103): 读 v_notes_vanished。三个新生产路径 (新策展 / 通道 1 推送 / 闸二取数)
+    用它排除; 只报不删, 删不删是 owner 的事。
+    视图的定义看库里跑到哪一版, 这里不探、不挑:
+      · 只跑到 v1_21: 盖过 last_seen 戳、但【本项目最近一次完整同步】没见到的 note_id;
+      · 跑过 v1_25 (D-153): 【本项目最近一次已完成的整轮扫描】没见到的 note_id, 空表也算一轮, 没写全的不算。
+    两版都是: 从没被整轮扫描见过的 (on_demand 项目) 不算; 比的是本项目自己的最近一轮, 不是固定天数。
     视图不存在就直接抛 —— 三条路一起红好过静默把删了的篇继续喂下游 (B-10 的道理)。"""
     q = sb.schema("truth_vault").table("v_notes_vanished").select("note_id")
     if project_id:
