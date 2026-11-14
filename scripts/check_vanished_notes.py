@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """CI 守卫: 飞书里已删的篇不再喂下游 (审计 B-21, D-103)。
 
-  §1 schemas/notes_v1_21_vanished_notes.sql 的判据: 按【本项目】最近一次完整同步 (DISTINCT ON project_id ... ORDER BY
-     last_seen_at DESC) 比 last_seen_run_id; 从没盖过戳的 (IS NULL) 不算
+  §1 v1.25 completed-scan ledger is the active view definition; actual SQL behavior
+     (empty / partial / overlapping completions) is exercised by check_sync_runs.sql.
   §2 _common.fetch_vanished_note_ids: 读 v_notes_vanished, 按 note_id 翻页, 可按项目筛, 回 set
   §3 curate_flywheel_lessons.fetch_uncurated_cards: 名单里的卡不进策展 (默认路 / --recurate 都是), 项目筛传下去
   §4 sync_truth_vault_baokuan_to_sanshengliubu.fetch_pending_baokuan: 资格全够也不推名单里的篇, 项目筛传下去
@@ -53,16 +53,13 @@ def main() -> int:
     fails: list[str] = []
 
     # §1
-    sql = (HERE.parent / "schemas" / "notes_v1_21_vanished_notes.sql").read_text(encoding="utf-8")
+    sql = (HERE.parent / "schemas" / "notes_v1_25_sync_runs.sql").read_text(encoding="utf-8")
     body = re.sub(r"(?m)^\s*--.*$", "", sql)
-    for needle in ("CREATE OR REPLACE VIEW truth_vault.v_notes_vanished", "DISTINCT ON (project_id)",
-                   "ORDER BY project_id, last_seen_at DESC", "WHERE last_seen_run_id IS NOT NULL",
-                   "n.last_seen_run_id IS NOT NULL", "n.last_seen_run_id <> l.latest_run_id",
-                   "JOIN latest l ON l.project_id = n.project_id", "AS has_lesson_card"):
+    for needle in ("CREATE OR REPLACE VIEW truth_vault.v_notes_vanished",
+                   "WHERE completed_at IS NOT NULL", "ORDER BY project_id,run_seq DESC",
+                   "presence.last_seen_run_seq < latest.run_seq", "AS has_lesson_card"):
         if needle not in body:
-            fails.append(f"§1 视图里缺: {needle}")
-    if re.search(r"interval\s+'\d+ days?'", body):
-        fails.append("§1 判据不许用固定天数 (on_demand 项目不进夜跑会被整批报成消失)")
+            fails.append(f"§1 completed-scan view missing: {needle}")
 
     # §2
     import _common as C
@@ -70,7 +67,7 @@ def main() -> int:
     sb = _SB({"v_notes_vanished": rows})
     got = C.fetch_vanished_note_ids(sb)
     tables = [x[1] for x in sb.log if x[0] == "table"]
-    if got != {"v1", "v2"} or tables != ["v_notes_vanished"] or any(x[0] == "eq" for x in sb.log):
+    if got != {"v1", "v2"} or tables != ["note_sync_runs", "v_notes_vanished"] or any(x[0] == "eq" for x in sb.log):
         fails.append(f"§2 不筛项目时应读 v_notes_vanished 全表回 set: got={got} log={sb.log}")
     if not any(x[0] == "order" and x[1][:1] == ("note_id",) for x in sb.log):
         fails.append(f"§2 要按 note_id 翻页 (fetch_all_pages 的唯一键): {sb.log}")
@@ -78,6 +75,18 @@ def main() -> int:
     C.fetch_vanished_note_ids(sb, "P1")
     if ("eq", ("project_id", "P1"), {}) not in sb.log:
         fails.append(f"§2 给了项目要 eq project_id: {sb.log}")
+
+    class MissingLedger(_SB):
+        def table(self, name):
+            if name == "note_sync_runs":
+                raise RuntimeError("missing table")
+            return super().table(name)
+    try:
+        C.fetch_vanished_note_ids(MissingLedger({"v_notes_vanished": rows}))
+        fails.append("§2 legacy view must not hide the missing completed ledger")
+    except RuntimeError as exc:
+        if "notes_v1_25_sync_runs.sql" not in str(exc):
+            fails.append("§2 missing ledger error must name the migration")
 
     # §3
     import curate_flywheel_lessons as cur

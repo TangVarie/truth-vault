@@ -218,6 +218,7 @@ class _FakeQ:
     def select(self, *_a, **_k): return self
     def order(self, *_a, **_k): return self
     def range(self, *_a, **_k): return self
+    def limit(self, count): self.rows = self.rows[:count]; return self
 
     def eq(self, col, val):
         self.filters.append(lambda r: r.get(col) == val); return self
@@ -236,7 +237,7 @@ class _FakeQ:
 
 
 class _FakeSB:
-    def __init__(self, tables): self.tables = tables
+    def __init__(self, tables): self.tables = {"note_sync_runs": [], **tables}
     def schema(self, _s): return self
     def table(self, name): return _FakeQ(self.tables[name])
 

@@ -171,6 +171,7 @@ jobs:
           edge502_total=0      # 边缘 502 的批: worker 多半在后台跑完了, 既不算成也不算欠
           gf_total=0           # D-125: 本轮有题被中转站敏感词拦、记 NULL 落库的篇数 (一个请求最多 2 篇, 只能在这里跨批合计)
           gf_stop=0            # 到 3 篇就停掉本轮: 再跑下去只是多写一批 NULL
+          recovery_projects="" # 历史失败不能阻塞健康待办，但必须在收尾判红
           for f in ../mappings/*.yaml; do
             p=$(basename "$f" .yaml)
             [ "$p" = "_template" ] && continue
@@ -188,6 +189,7 @@ jobs:
             ok_batches=0
             sent=0
             waits=0
+            recovery_seen=0
             while [ "$budget" -gt 0 ]; do
               rem=$(python count_unannotated_features.py "$p" 2>/dev/null || echo "?")
               [ "$rem" = "0" ] && { echo "  ✅ $p 特征已全部抽完"; break; }
@@ -224,6 +226,26 @@ jobs:
                 edge502_total=$((edge502_total + 1))
                 continue
               fi
+              read -r batch_state batch_ok retry_deferred retry_quarantined < <(
+                python feature_batch_state.py /tmp/feat.json "$curl_rc" "$code" "$batch")
+              case "$batch_state" in
+                recovery_progress|recovery_only|model_invalid)
+                  if [ "$recovery_seen" = "0" ]; then
+                    recovery_projects="$recovery_projects $p"
+                    recovery_seen=1
+                  fi
+                  echo "::warning::features $p 恢复未完成: 本批成功=$batch_ok, 退避=$retry_deferred, 隔离=$retry_quarantined (收尾判红)"
+                  if [ "$batch_state" = "recovery_progress" ]; then
+                    # 只有历史队列导致非零：健康篇已成功，继续本项目剩余预算。
+                    # 按实际成功篇数扣，不能让一条隔离每天把健康吞吐锁在首批2篇。
+                    ok_batches=$((ok_batches + 1))
+                    budget=$((budget - batch_ok))
+                    continue
+                  fi
+                  # 只有隔离时无模型调用；本批新零有效时立即停止，避免重复付费。
+                  break
+                  ;;
+              esac
               if [ "$code" != "200" ] || [ "$ok" != "true" ]; then
                 jq -r '.stderr_tail // ""' /tmp/feat.json 2>/dev/null | tail -8
                 kind=$(worker_fail_kind "$curl_rc" "$code")
@@ -276,6 +298,10 @@ jobs:
           # D-125: 单篇被拦是那一篇的内容; 一轮 ≥3 篇 = 像中转站整体开了/收紧了拦截, 这些 NULL 已落库、不会再抽 —— 红。
           if [ "$gf_total" -ge 3 ]; then
             echo "::error::features 本轮 $gf_total 篇有题被中转站敏感词拦截、记 NULL 已落库且不会再抽 —— 像是中转站整体开了/收紧了拦截 (D-125)。找中转站, 关了之后用 backfill-features reannotate 重抽这些篇。"
+            fail_count=$((fail_count + 1))
+          fi
+          if [ -n "$recovery_projects" ]; then
+            echo "::error::features 恢复仍未完成 (退避/隔离或本批模型零有效):${recovery_projects}。健康待办已按预算继续处理；这些告警不能算成功。"
             fail_count=$((fail_count + 1))
           fi
           if [ $fail_count -gt 0 ]; then

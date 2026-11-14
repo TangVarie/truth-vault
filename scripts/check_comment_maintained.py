@@ -262,7 +262,7 @@ def _run14(rows, stored, read_ok=True, schema=None, argv_extra=()):
     """schema = 飞书表结构里的列名(None = 读表结构失败)。"""
     cap = {"read": 0, "schema": 0}
     saved = {k: getattr(s14, k) for k in (
-        "FeishuClient", "get_supabase_client", "assert_db_schema_ready", "ensure_project_exists",
+        "begin_sync_run", "complete_sync_run", "FeishuClient", "get_supabase_client", "assert_db_schema_ready", "ensure_project_exists",
         "quarantine_record", "fetch_acknowledged_quarantine", "ensure_accounts_batch", "upsert_metrics_batch",
         "update_project_date_range", "fetch_all_pages", "upsert_notes_batch", "load_mapping",
         "_detect_missing_core_columns", "_current_tiers", "prepare_content_layer", "stored_flags_batch")}
@@ -276,6 +276,9 @@ def _run14(rows, stored, read_ok=True, schema=None, argv_extra=()):
             if schema is None:
                 raise RuntimeError("读表结构失败")
             return set(schema)
+    class Query:
+        def __getattr__(self, name):
+            return lambda *a, **k: self
     def read(sb, pid, ids):
         cap["read"] += 1
         return {f"T_CM14_{k}": v for k, v in stored.items()} if read_ok else None
@@ -284,8 +287,10 @@ def _run14(rows, stored, read_ok=True, schema=None, argv_extra=()):
         return {n["note_id"] for n in notes}
     try:
         s14.FeishuClient = F
-        s14.get_supabase_client = lambda *a, **k: object()
+        s14.get_supabase_client = lambda *a, **k: Query()
         s14.assert_db_schema_ready = lambda *a, **k: None
+        s14.begin_sync_run = lambda *a, **k: None
+        s14.complete_sync_run = lambda *a, **k: None
         s14.ensure_project_exists = lambda *a, **k: None
         s14.quarantine_record = lambda *a, **k: None
         s14.fetch_acknowledged_quarantine = lambda *a, **k: set()

@@ -34,7 +34,9 @@ Resumability:
     body_len_bucket（code_rows 不产模型题, 拿模型题当标记会让 code-only 永远重跑, codex review on #141）。
     extractor 默认按前缀匹配 `llm:%` —— 计数脚本在 GitHub 上跑、真正写库的是 Railway worker,
     两边的 FEATURE_MODEL 可能不同; 换模型也不该让已经答过的笔记重答一遍。显式 --model 时按精确值匹配。
-    --reannotate 忽略这个标记全部重跑。
+    v1.26 起，本快照的恢复队列会覆盖标记判据：历史全 NULL 标记和失败重抽都不算完成。
+    自动尝试最多三轮，首次后等24小时、第二次后等48小时；之后隔离、非零告警。
+    --reannotate 显式单轮重放、绕过退避；NULL 不覆盖库里的旧有效答案。
 
     --done-by (D-085): 显式指定「谁答过就算答过」, 逗号分隔, 每项是精确的 extractor (jev:1.13.0)
     或以 % 结尾的前缀 (llm:% / jev:%)。给了就取代上面两条默认 (llm:% / --model 的精确值)。
@@ -54,7 +56,7 @@ Resumability:
 
 --bank (D-128): 只收 feature_bank.BANKS 的【键】(primary / reader), 不收路径。默认 primary = 冻结的
     fq-v0.1, 走的还是上面那条路 (fb.load_bank()、8 个代码特征 + 3 道占位题、写 note_features、续跑看
-    has_specific_time), 参数、行、续跑查询与 D-128 之前逐字节一致。别的键是副题库, 拒跑 (退出 2) 的情况:
+    has_specific_time；另受 v1.26 恢复队列约束)。别的键是副题库, 拒跑 (退出 2) 的情况:
       · run_tag 不合 fb.check_run_tag (primary / 不带 fqr- 前缀): note_feature_answers 的主键不含
         bank_sha256, 用 primary 会按同一主键盖掉主题库的行;
       · --code-only (代码题只属于主题库) / 没给 --note-ids (副题库只跑点名的篇) / 没显式给 --model
@@ -75,6 +77,7 @@ import errno
 import re
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -89,6 +92,8 @@ CODE_DONE_MARKER_QUESTION = "body_len_bucket"    # --code-only 的标记题（co
 _RUN_TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$")
 # 模型跑的默认「答过」判据 (不带 --done-by / --model 时)。改它就是改夜跑的续跑口径, CI 编排自检钉着。
 DEFAULT_DONE_BY = ("llm:%",)
+RECOVERY_MIGRATION = "schemas/notes_v1_26_feature_failure_recovery.sql"
+MAX_AUTO_ATTEMPTS = 3
 # --done-by 的每一项: <命名空间>:<值>, 可选以 % 结尾表示前缀。worker/app.py 有一份逐字相同的
 # (它把 done_by 拼进子进程参数, 先在门口拦), CI 比对两份一致。前缀里不许有 _ —— LIKE 里 _ 是单字通配。
 _DONE_BY_RE = re.compile(r"^[a-z]+:(?:[A-Za-z0-9.:/-][A-Za-z0-9_.:/-]{0,78}|[A-Za-z0-9.:/-]{0,79}%)$")
@@ -134,7 +139,7 @@ def fetch_done_ids(sb, project_id: str, *, run_tag: str = "primary",
     extractor 与 done_by 同时给 → ValueError（两个判据谁说了算说不清, 不猜）。
 
     marker / bank_sha (D-128, 只有副题库传): 标记题换成本库的 done_marker, 再加一条 bank_sha256 = 本库 sha。
-    不传就是原来那条查询, 一个过滤条件都不多 (主题库、计数脚本都不传)。code-only 的标记题固定, 不收 marker。
+    不传时标记查询不另筛 sha；恢复队列始终按当前题库 sha 排除未解决项。code-only 的标记题固定, 不收 marker。
     """
     if extractor and done_by:
         raise ValueError("extractor 与 done_by 只能给一个")
@@ -163,13 +168,73 @@ def fetch_done_ids(sb, project_id: str, *, run_tag: str = "primary",
         if bank_sha:
             q = q.eq("bank_sha256", bank_sha)
         done |= {r["subject_id"] for r in fetch_all_pages(q, order_by="subject_id")}
+    if not code_only:
+        # A marker left by an older all-NULL run is not a successful annotation.
+        # Migration v1.26 imports those snapshots into the recovery queue.
+        recovery_sha = bank_sha or fb.load_bank()["_sha256"]
+        for pat in patterns:
+            q = (sb.schema("truth_vault").table("feature_annotation_failures")
+                 .select("id,subject_id").eq("project_id", project_id).eq("run_tag", run_tag)
+                 .eq("bank_sha256", recovery_sha))
+            q = q.like("extractor", pat) if pat.endswith("%") else q.eq("extractor", pat)
+            try:
+                # A previous valid marker (including an older bank SHA) cannot hide a
+                # failed explicit reannotation of the current snapshot.
+                done -= {r["subject_id"] for r in fetch_all_pages(q, order_by="id")}
+            except Exception as exc:
+                raise RuntimeError(f"特征恢复队列不可用；先应用 {RECOVERY_MIGRATION}") from exc
     return done
 
 
 def write_answers(sb, rows: list[dict], dry_run: bool) -> None:
     if dry_run or not rows:
         return
-    sb.schema("truth_vault").table("note_feature_answers").upsert(rows).execute()
+    # The conflict predicate is in SQL, not a read/filter/write race in Python.
+    try:
+        sb.schema("truth_vault").rpc("write_feature_answers_preserving_valid", {"p_rows": rows}).execute()
+    except Exception as exc:
+        raise RuntimeError(f"特征答案写入失败；确认已应用 {RECOVERY_MIGRATION}") from exc
+
+
+def fetch_failures(sb, project_id: str, bank_sha: str, extractor: str, run_tag: str) -> dict:
+    try:
+        q = (sb.schema("truth_vault").table("feature_annotation_failures")
+             .select("id,subject_id,attempts,next_retry_at,last_error")
+             .eq("project_id", project_id).eq("bank_sha256", bank_sha)
+             .eq("extractor", extractor).eq("run_tag", run_tag))
+        return {r["subject_id"]: r for r in fetch_all_pages(q, order_by="id")}
+    except Exception as exc:
+        raise RuntimeError(f"特征恢复队列不可用；先应用 {RECOVERY_MIGRATION}") from exc
+
+
+def retry_state(row: dict, now: Optional[datetime] = None) -> str:
+    if row.get("attempts", 0) >= MAX_AUTO_ATTEMPTS:
+        return "quarantined"
+    due = datetime.fromisoformat(str(row["next_retry_at"]).replace("Z", "+00:00"))
+    return "ready" if due <= (now or datetime.now(timezone.utc)) else "deferred"
+
+
+def claim_attempt(sb, note: dict, bank_sha: str, extractor: str, run_tag: str, replay: bool) -> Optional[str]:
+    try:
+        data = sb.schema("truth_vault").rpc("claim_feature_annotation_attempt", {
+            "p_subject_id": note["note_id"], "p_project_id": note["project_id"],
+            "p_bank_sha256": bank_sha, "p_extractor": extractor, "p_run_tag": run_tag,
+            "p_replay": replay}).execute().data
+    except Exception as exc:
+        raise RuntimeError(f"特征尝试无法预留；先应用 {RECOVERY_MIGRATION}") from exc
+    if data is None:
+        return None
+    if not isinstance(data, str) or not data:
+        raise RuntimeError("claim_feature_annotation_attempt 返回值不是尝试令牌，拒绝调用模型")
+    return data
+
+
+def finish_attempt(sb, note_id: str, bank_sha: str, extractor: str, run_tag: str,
+                   *, attempt: str, success: bool, error: str = "") -> None:
+    sb.schema("truth_vault").rpc("finish_feature_annotation_attempt", {
+        "p_subject_id": note_id, "p_bank_sha256": bank_sha,
+        "p_extractor": extractor, "p_run_tag": run_tag,
+        "p_claim_token": attempt, "p_success": success, "p_error": error[:100]}).execute()
 
 
 def write_raw_counts(sb, note_id: str, counts: dict, bank_version: str, dry_run: bool) -> None:
@@ -365,7 +430,7 @@ def annotate_note(bank: dict, note: dict, mapping: dict, *, model: str, extracto
     spans = fb.build_spans(note.get("raw_content") or "", mode=mode, title_col=note.get("title"))
     brand_words = fb.brand_dictionary(project, note, mapping)
     rows = code_rows(bank, note, spans, brand_words, run_tag)
-    stats = {"groups_ok": 0, "groups_retry": 0, "singles": 0, "systemic": 0, "filtered": 0, "invalid": 0, "answered": 0,
+    stats = {"groups_ok": 0, "groups_invalid": 0, "groups_retry": 0, "singles": 0, "systemic": 0, "filtered": 0, "invalid": 0, "answered": 0,
              "title_how": spans["_title_how"], "truncated": bool(spans["_truncated"])}
     if code_only:
         return {"rows": rows, "raw_counts": fb.raw_counts(spans), "stats": stats, "spans": spans}
@@ -391,8 +456,10 @@ def annotate_note(bank: dict, note: dict, mapping: dict, *, model: str, extracto
             stats["systemic"] += 1
         elif any(r.get("invalid_reason") == fb.INVALID_FILTERED for r in results.values()):
             stats["filtered"] += 1   # D-125: 被中转站拦的组, 这几题 NULL 落库, 不拖累整篇
-        else:
+        elif any(r.get("answer") is not None for r in results.values()):
             stats["groups_ok"] += 1
+        else:
+            stats["groups_invalid"] += 1
         if retried:
             stats["groups_retry"] += 1
         stats["singles"] += singles
@@ -417,6 +484,8 @@ def _exit_code_for_stats(stats: dict) -> int:
     """同 annotate_essence_pass._exit_code_for_stats 的口径:
     卫生断言失败任意一条 → 1; systemic>0 且一篇都没成功 → 1; 其余 0（单篇抽风幂等下轮续）。"""
     if stats.get("hygiene_failed"):
+        return 1
+    if stats.get("model_no_valid") or stats.get("retry_deferred") or stats.get("retry_quarantined"):
         return 1
     if stats.get("systemic_failed", 0) > 0 and stats.get("ok", 0) == 0:
         return 1
@@ -526,6 +595,13 @@ def main(argv: Optional[list[str]] = None) -> int:
                 bank["bank_version"], bank["_sha256"][:12], model, args.run_tag, mode, args.single)
 
     sb = get_supabase_client()
+    failures = {}
+    if need_llm:
+        try:
+            failures = fetch_failures(sb, args.project_id, bank["_sha256"], extractor, args.run_tag)
+        except RuntimeError as exc:
+            logger.error("%s", exc)
+            return 2
     notes = fetch_notes(sb, args.project_id)
     if args.note_ids:
         keep = _read_note_ids(args.note_ids)
@@ -543,16 +619,43 @@ def main(argv: Optional[list[str]] = None) -> int:
             done = fetch_done_ids(sb, args.project_id, run_tag=args.run_tag, code_only=args.code_only,
                                   extractor=extractor if args.model else None)
         notes = [n for n in notes if n["note_id"] not in done]
+    retry_counts = {"deferred": 0, "quarantined": 0}
+    if need_llm and not args.reannotate:
+        eligible = []
+        for note in notes:
+            state = retry_state(failures[note["note_id"]]) if note["note_id"] in failures else "ready"
+            if state == "ready":
+                eligible.append(note)
+            else:
+                retry_counts[state] += 1
+        notes = eligible
     if args.limit:
         notes = notes[: args.limit]
     logger.info("Found %d notes to annotate for project %s", len(notes), args.project_id)
 
     stats = {"ok": 0, "failed": 0, "systemic_failed": 0, "hygiene_failed": 0, "gateway_filtered": 0,
-             "groups_ok": 0, "groups_retry": 0, "singles": 0, "answered": 0, "invalid": 0,
-             "title_how": {}, "truncated": 0}
+             "groups_ok": 0, "groups_invalid": 0, "groups_retry": 0, "singles": 0, "answered": 0, "invalid": 0,
+             "title_how": {}, "truncated": 0, "model_no_valid": 0,
+             "retry_deferred": retry_counts["deferred"], "retry_quarantined": retry_counts["quarantined"]}
     sleep_s = 1.0 / args.qps if args.qps > 0 else 0
     fq = Path(args.failed_queue).resolve()
     for i, note in enumerate(notes):
+        attempt = None
+        if need_llm:
+            try:
+                attempt = claim_attempt(sb, note, bank["_sha256"], extractor, args.run_tag, args.reannotate)
+            except RuntimeError as exc:
+                logger.error("%s", exc)
+                return 2
+            if attempt is None:   # Another worker reserved the same snapshot after our initial read.
+                stats["retry_deferred"] += 1
+                continue
+
+        def finish(success: bool, error: str = "") -> None:
+            if attempt is not None:
+                finish_attempt(sb, note["note_id"], bank["_sha256"], extractor, args.run_tag,
+                               attempt=attempt, success=success, error=error)
+
         try:
             res = annotate_note(bank, note, mapping, model=model, extractor=extractor,
                                 run_tag=args.run_tag, single=args.single, code_only=args.code_only,
@@ -561,6 +664,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             logger.error("Hygiene assertion failed on %s: %s", note["note_id"], exc)
             stats["hygiene_failed"] += 1
             _append_failed(fq, note, args.project_id, [f"hygiene_failed: {exc}"])
+            finish(False, "hygiene_failed")
             continue
         st = res["stats"]
         stats["title_how"][st["title_how"]] = stats["title_how"].get(st["title_how"], 0) + 1
@@ -570,6 +674,20 @@ def main(argv: Optional[list[str]] = None) -> int:
             logger.info("[dry-run] %s title=%r calls=%d rows=%d", note["note_id"],
                         (res["spans"]["title"] or "")[:30], call_n, len(res["rows"]))
             stats["ok"] += 1
+            continue
+        for k in ("groups_ok", "groups_retry", "singles", "answered", "invalid"):
+            stats[k] += st[k]
+        stats["groups_invalid"] += st.get("groups_invalid", 0)
+        if (st.get("invalid", 0) > 0 and st.get("answered", 0) == 0
+                and not _is_systemic(st, args.reannotate)):
+            # Counts only questions actually sent to the model. No-input/skipped questions
+            # are not included, so genuine not-applicable notes are not quarantined.
+            stats["failed"] += 1
+            stats["model_no_valid"] += 1
+            finish(False, "all_model_answers_invalid")
+            _append_failed(fq, note, args.project_id, ["all_model_answers_invalid"])
+            logger.error("模型题零有效 note_id=%s；未写完成标记，自动尝试最多%d轮，之后需显式重放",
+                         note["note_id"], MAX_AUTO_ATTEMPTS)
             continue
         if _is_systemic(st, args.reannotate):
             # 任何一组 api 失败就整篇不落行（哪怕别的组成功了）。落一半 = 标记题那行先落库,
@@ -581,6 +699,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             # 调用方只看得到 stdout_tail。10-23 XIWU_phase2 一篇每次都 InternalServerError, 原因没处看。
             logger.warning("systemic %s: %s", note["note_id"], " | ".join(e[:300] for e in errs[-3:]))
             _append_failed(fq, note, args.project_id, errs)
+            finish(False, "systemic")
             continue   # 下轮幂等重跑整篇
         try:
             # ⚠️ 写序: 数值原值在前, 带标记题的答案在后。反过来的话 note_features 那一写
@@ -594,7 +713,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             stats["failed"] += 1
             stats["systemic_failed"] += 1
             _append_failed(fq, note, args.project_id, [f"write_rejected: {exc}"])
+            finish(False, "write_rejected")
             continue
+        finish(True)
         stats["ok"] += 1
         if st.get("filtered"):
             stats["gateway_filtered"] += 1
@@ -603,8 +724,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         if st.get("errors"):
             # 落了行但过程里有非致命错误 (比如单问阶段的 api 抖动被后面的成功盖过): 也记一笔, 只做线索
             _append_failed(fq, note, args.project_id, ["partial: " + e for e in st["errors"]])
-        for k in ("groups_ok", "groups_retry", "singles", "answered", "invalid"):
-            stats[k] += st[k]
         if i % 10 == 0:
             logger.info("[%d/%d] %s ok=%d failed=%d answered=%d invalid=%d",
                         i + 1, len(notes), note["note_id"], stats["ok"], stats["failed"],
@@ -618,6 +737,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     _rf = sys.modules.get("relay_failover")   # D-148 备用中转站: 只在配了备用站 (mode 不是 primary_only) 时进 Done 行
     if _rf is not None and _rf.mode() != _rf.MODE_PRIMARY_ONLY:
         stats["relay"] = _rf.summary()
+    model_total = stats["answered"] + stats["invalid"]
+    stats["model_valid_rate"] = round(stats["answered"] / model_total, 4) if model_total else None
+    if stats["model_no_valid"] or stats["retry_deferred"] or stats["retry_quarantined"]:
+        logger.error("特征恢复灯：零有效=%d 等退避=%d 已隔离=%d；有效答案=%d/%d，未解决项不是完成",
+                     stats["model_no_valid"], stats["retry_deferred"], stats["retry_quarantined"],
+                     stats["answered"], model_total)
+    elif model_total and stats["model_valid_rate"] < 0.5:
+        logger.warning("特征有效答案率偏低：%d/%d；见invalid计数，零星无效保留D-083口径", stats["answered"], model_total)
     logger.info("Done: %s", json.dumps(stats, ensure_ascii=False))
     code = _exit_code_for_stats(stats)
     if code:

@@ -124,6 +124,10 @@ CI 和 daily-sync workflow 都优先读 `.lock`; `.txt` 仅作为 "high-level in
 #         notes.content_layer (P 产品贴 / T 流量贴 / Q 提问贴 / J 精品贴, CHECK)。daily 项目由 feishu 同步每晚整行重写时填,
 #         on_demand 项目由 backfill_content_layer.py 只往空里填; 遮挡词由 mask_external_names.py 夜跑列。
 #         代码宽容: 没跑之前外部卡只给结构、sync 不写内容层, 别的照旧 (在 v1_18 之后; D-140)
+#   - schemas/notes_v1_25_sync_runs.sql → 完成扫描账本与成员证据；成功 0 行也推进，部分写失败/限量不推进，
+#         并发按开跑序号而不是最后完成时刻选快照。硬前置：没应用时入库在首次业务写入前明确报迁移缺失。
+#   - schemas/notes_v1_26_feature_failure_recovery.sql → 模型特征失败退避/隔离队列与原子答案写入；防全无效盖完成标记、NULL冲掉有效答案。
+#         先迁移后部署，均不调用模型；详见 docs/audit-fixes-2026-11-14.md。
 #   - autowriter-migrations/001_create_autowriter_schema.sql → 把 autowriter 表从 public 迁到 autowriter schema
 #   - autowriter-migrations/002_add_external_source.sql     → items 加 (external_source, external_source_id) 列
 #         + per-user partial UNIQUE (user_id, external_source, external_source_id) WHERE external_source IS NOT NULL.

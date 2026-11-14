@@ -158,6 +158,9 @@ def check_features(bank) -> None:
                 patch.object(afp, "load_mapping", return_value=mapping), \
                 patch.object(afp, "fetch_notes", return_value=[note]), \
                 patch.object(afp, "fetch_done_ids", return_value=set()), \
+                patch.object(afp, "fetch_failures", return_value={}), \
+                patch.object(afp, "claim_attempt", return_value="synthetic-claim"), \
+                patch.object(afp, "finish_attempt"), \
                 patch.object(afp, "write_answers", side_effect=lambda sb, rows, dry_run: written.extend(rows)), \
                 patch.object(afp, "write_raw_counts"), \
                 patch.object(afp, "_llm", make_llm(blocked)), \

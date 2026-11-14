@@ -1641,6 +1641,57 @@ def check_secondary_big_support() -> None:
     print("  §8q 有支持的大项目: C1 在 P3 没支持 → 4 个大项目只算 3 个; 占位题只有 2 个大项目有支持 → 不报警 ✓")
 
 
+def check_comparable_project_support() -> None:
+    """F06: 恒定特征/结果不算方向支持; 单格零仍可比较, 两题库同口径。"""
+    def dataset(tables):
+        notes, answers = [], []
+        for project, table in tables.items():
+            index = 0
+            for y, answer, count in ((1, "是", table[0]), (0, "是", table[1]),
+                                     (1, "否", table[2]), (0, "否", table[3])):
+                for _ in range(count):
+                    nid = f"{project}_{index}"
+                    index += 1
+                    notes.append({"note_id": nid, "project_id": project, "y": y,
+                                  "has_essence": True, "body_len": 100, "account_id": None,
+                                  "publish_time": T0.isoformat()})
+                    _answer(answers, nid, "brand_in_title", answer, extractor="code:v1")
+            # 项目整体仍有 ≥20 篇爆, 但题的有效答案可能全是趴。不能靠 big 定义替代边际检查。
+            for i in range(max(0, 20 - table[0] - table[2])):
+                notes.append({"note_id": f"{project}_unanswered_{i}", "project_id": project, "y": 1,
+                              "has_essence": True, "body_len": 100, "account_id": None,
+                              "publish_time": T0.isoformat()})
+        return notes, answers
+
+    def check_both(tables, expected):
+        notes, answers = dataset(tables)
+        primary = _row(_run(notes, answers), "brand_in_title")
+        values = {a["subject_id"]: a["answer"] == "是" for a in answers}
+        secondary = G._sec_stats(notes, lambda n: values.get(n["note_id"]),
+                                 strata_of=lambda n: (n["project_id"],), big=set(tables))
+        for row in (primary, secondary):
+            assert row["big_projects_n"] == len(expected), row
+            assert row["n_or_above_1"] + row["n_or_below_1"] <= len(expected), row
+        assert set(secondary["big_within"]) == expected, secondary
+        if len(expected) < 3:
+            assert primary["status"] == "insufficient", primary
+        return primary, secondary
+
+    # 原反例: 只有 P1 真有对照, P2/P3 全是「是」, 平滑不能把一个项目数成三个。
+    for constant in ((20, 180, 0, 0), (0, 0, 20, 180), (40, 0, 20, 0), (0, 40, 0, 160)):
+        check_both({"P1": (5, 95, 95, 5), "P2": constant, "P3": constant}, {"P1"})
+    # 全部项目的特征恒定, 无论全是/全否, 都没有可比较项目。
+    for constant in ((20, 180, 0, 0), (0, 0, 20, 180)):
+        check_both({p: constant for p in ("P1", "P2", "P3")}, set())
+    # 四格任意一格为零都不能一刀切排除: 两特征边际和两结果边际仍非零。
+    for single_zero in ((0, 160, 40, 20), (20, 0, 20, 160), (40, 160, 0, 20), (20, 160, 20, 0)):
+        primary, secondary = check_both({"P1": single_zero, "P2": (20, 20, 20, 140),
+                                         "P3": (20, 20, 20, 140)}, {"P1", "P2", "P3"})
+        assert primary["n_or_above_1"] + primary["n_or_below_1"] == 3, primary
+        assert secondary["n_or_above_1"] + secondary["n_or_below_1"] == 3, secondary
+    print("  §8r 可比较项目: 全是/全否/全爆/全趴不算支持; 原三项目假支持只剩一个; 四种单零格仍计支持 ✓")
+
+
 def main() -> int:
     check_golden()
     check_single_stratum_is_woolf()
@@ -1674,7 +1725,8 @@ def main() -> int:
         check_secondary_cli_and_workflow(t)
         check_secondary_current_labels()
         check_secondary_big_support()
-    print("\ncheck_gate2_run: 13 节 + §8 副题库 17 节全过")
+        check_comparable_project_support()
+    print("\ncheck_gate2_run: 13 节 + §8 副题库 18 节全过")
     return 0
 
 
