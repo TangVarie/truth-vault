@@ -5692,6 +5692,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends postgresql-client
+      - name: Bootstrap Supabase roles on fresh disposable Postgres
+        run: psql -v ON_ERROR_STOP=1 -f scripts/bootstrap_ci_supabase_roles.sql
       - name: Apply truth_vault schema
         run: psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_2.sql
       - name: Apply truth_vault schema again (idempotency)
