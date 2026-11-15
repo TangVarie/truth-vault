@@ -24,8 +24,13 @@ mapping yaml 必须包含 sync_config 段提供飞书表定位:
 幂等性:
     note_id 是 PRIMARY KEY (= f"{project_id}_{feishu_record_id}")，
     使用 UPSERT (insert ... on_conflict='note_id') 重跑安全。
-    指标会重新写一份 metric_snapshot（window_label='ad_hoc'），
-    UNIQUE(note_id, window_label, source='feishu_import') 防重复。
+    指标每次同步写一行 metric_snapshot: window_label 是按「发布时间到这次同步」隔了多久算出来的档
+    (_derive_metric_window; 没有发布时间才是 'ad_hoc'), UNIQUE(note_id, window_label, source='feishu_import'),
+    同一档后写的盖掉先写的 —— 一档只留一个数。
+    ⚠️ collected_at 是这次同步的时刻、window_label 是同步时刻算出来的档, 都【不是】这些数被量到的时刻:
+    评论数是巡查工具更早量的 (时刻在 raw_extra 的「评论数观测时间」/「最近检查时间」), 曝光 / 阅读 / 互动是运营
+    更早截的图 (截图时刻没有任何地方记)。逐次的变化在 audit_log, 按天看用视图 truth_vault.v_note_observations
+    (schemas/notes_v1_27_reader_comments_observations.sql, D-078 / D-155)。
 """
 
 from __future__ import annotations
@@ -1785,6 +1790,7 @@ def transform_row(
         hours_since_publish, window_label = _derive_metric_window(publish_time)
         metric = {
             "note_id": note["note_id"],
+            # 同步的钟, 不是观测时刻 (见模块头「幂等性」那一段; 观测时刻看 v_note_observations)
             "collected_at": _iso_now(),
             "window_label": window_label,    # heuristic from hours_since_publish or 'ad_hoc'
             "source": "feishu_import",

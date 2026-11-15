@@ -59,6 +59,7 @@ from _common import (
     load_mapping,
     setup_logger,
     skip_on_demand_on_cron,
+    _is_missing_column_error,
     _iso_now,
 )
 
@@ -518,6 +519,9 @@ def _retract_vanished_from_ssll(sb, *, project_filter: str | None, dry_run: bool
     return len(now)
 
 
+_COMMENT_SOURCE_COL: list[bool] = []     # [] 没探过 · [True] 库里有 comments.source · [False] 没有 (v1.27 没跑)
+
+
 def fetch_top_comments(sb, note_id: str, limit: int = 5) -> list[dict[str, Any]]:
     """Pull top N comments to embed as evidence in the reference pack.
 
@@ -529,19 +533,33 @@ def fetch_top_comments(sb, note_id: str, limit: int = 5) -> list[dict[str, Any]]
     comment_order as a stable tie-breaker.
 
     Returns dicts with 'content' (not 'text'), 'comment_role', 'is_pinned'.
+
+    v1.27 (D-155) 之后 comments 里还有巡查工具看到的读者评论 (source = linkcheck_*): 那是第三方写的字, 不随样本推出去。
+    这里只取运营贴的行 (source 为空)。库里还没有 source 这一列时 (v1.27 没跑) 也不可能有那种行, 照原样取;
+    「没有这一列」只探一次, 记在 _COMMENT_SOURCE_COL 里。
     """
-    res = (
-        sb.schema("truth_vault")
-        .table("comments")
-        .select("content, comment_role, is_pinned, contains_blue_keyword, "
-                "blue_keywords_matched, comment_order")
-        .eq("note_id", note_id)
-        .order("is_pinned", desc=True)
-        .order("comment_order", desc=False)
-        .limit(limit)
-        .execute()
-    )
-    return res.data or []
+    def read(only_operator: bool):
+        q = (
+            sb.schema("truth_vault")
+            .table("comments")
+            .select("content, comment_role, is_pinned, contains_blue_keyword, "
+                    "blue_keywords_matched, comment_order")
+            .eq("note_id", note_id)
+        )
+        if only_operator:
+            q = q.is_("source", "null")
+        return (q.order("is_pinned", desc=True).order("comment_order", desc=False).limit(limit).execute()).data or []
+
+    if _COMMENT_SOURCE_COL != [False]:
+        try:
+            rows = read(True)
+            _COMMENT_SOURCE_COL[:] = [True]
+            return rows
+        except Exception as exc:  # noqa: BLE001 —— 只吞「没有 source 这一列」, 别的照抛
+            if not _is_missing_column_error(exc, ("source",)):
+                raise
+            _COMMENT_SOURCE_COL[:] = [False]
+    return read(False)
 
 
 def build_reference_sample(note: dict, comments: list[dict]) -> dict:

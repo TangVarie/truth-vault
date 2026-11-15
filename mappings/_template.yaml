@@ -15,6 +15,10 @@ project_id: PROJECT_PHASE      # 形式: 品牌缩写_phase号，如 NUC_phase1,
 brand: 品牌中文全名
 product: 具体产品名
 category: 保健品                # 见 docs/05 §9 统一词表: 处方药/OTC药/保健品/医疗器械/美妆/个护/酒类/食品饮料/母婴/3C数码/家居家电/服饰鞋包/教育/其他
+# ⚠️ category 是「处方药」的项目 (D-155, owner 11-15): 先让 owner 把它加进 Jev 仓 config/data_policy.yaml 的 rx_cleared
+#   (合同确认可以把未发布的稿送去判定), 再在写作台开这个项目。没加之前不开。这道闸管的是「未发布的稿能不能送出去判」,
+#   不管这篇稿能不能发; 判定之外还有两处会把项目内容送给模型 (馆员选卡时带项目 brief、标题向量), 它们不看这份名单。
+#   细节 docs/09-system-integration.md「处方药项目」一节 / ONBOARDING.md。
 platform: xiaohongshu          # xiaohongshu / douyin
 schema_family: B               # A / B / C (见 docs/03-mapping-protocol.md)
 start_date: 2025-XX-XX
@@ -255,7 +259,11 @@ project_specific_fields_to_raw_extra:
   - 数据汇总
   - 观众分析
   - 巡查状态
-  - 最近检查时间
+  - 最近检查时间                  # linkcheck 最近一次【去查】的时刻; 查失败的轮次也推进, 不是评论数量到的时刻
+  - 评论区快照                    # linkcheck 写的评论区第一页 (文字, 每条截到 40 字); 评论同步读它 (D-155)
+  - 评论关键词                    # 运营填的铺评关键词; 评论同步拿它认出快照里我们自己铺的评论 (D-155)
+  - 评论数观测时间                # linkcheck 11-15 加的列: 「实时数据.评论数」是哪一刻量到的 (只在真量到时推进); 老表点一次「补齐缺的列」才有 (D-155)
+  - 评论区明细                    # linkcheck 11-15 加的列: 评论区第一页的一行 JSON (带平台评论 ID), 评论同步优先读它 (D-155)
 # 注: autowriter 回灌 lineage 列 (R-031) —— `_source_autowriter_project_id`/`_batch_id`/
 #     `_item_id`/`_version_id` · `_ai_engine` · `_exported_at` —— 【不用】列在这里。sync 脚本
 #     已对这 6 列全局特殊处理 (`_LINEAGE_FK_COLS`/`_LINEAGE_RAW_EXTRA_COLS`): 两个 UUID 自动进

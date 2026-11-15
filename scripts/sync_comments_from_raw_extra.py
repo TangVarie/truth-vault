@@ -70,6 +70,33 @@ What it does
     flat comments table. Confirm column semantics with the project's onboarding
     sheet BEFORE running on a new project; for now, NUC_phase1 / NRT_* are OK.
 
+第二个来源: 巡查工具 (linkcheck) 看到的评论区第一页 (十三件事第 2 件, D-155, 2026-11-15)
+  上面说的都是运营自己贴的「随贴评论」。巡查工具每轮还把帖子评论区第一页写进飞书两格, 夜跑同步原样收在
+  notes.raw_extra (顶层或 _undeclared) 里, 以前没人读:
+    · 「评论区快照」  给人看的一段文字: 「序号. [标记 · 标记] 昵称: 正文」, 每条截到 40 字 (截了以「…」结尾), 最多 8 条,
+                     放不下的记一行「…（还有 N 条未显示）」, 一条都没有是「（暂无评论）」。
+    · 「评论区明细」  同一页的一行 JSON (linkcheck 11-15 加的列, 老表要点一次「补齐缺的列」才有): 每条带平台评论 ID、
+                     发布时刻、作者 / 置顶 / 赞数、命中评论关键词没有、楼中楼的父评论 ID、截到 200 字的正文。
+  这条路把它们也写成 comments 行, 和运营贴的行靠 comments.source 分开 (schemas/notes_v1_27_*.sql):
+    运营贴的 = source 为空; 快照拆出来的 = linkcheck_digest; 明细读出来的 = linkcheck_records。
+  · 一篇两格都有 → 只用明细, 这一篇原来的快照行删掉; 只有快照 → 用快照。
+  · 快照行: id 按 (角色, 正文) 算 ({note_id}_lcd…), 重跑不变; 快照变了 → 这一篇的快照行换成新的一套 (不在新快照里的删掉,
+    新出现的插入), 运营贴的行一行不碰。昵称、IP 属地在入库前剥掉, 不落库。
+  · 明细行: id 用平台评论 ID ({note_id}_lcr…; 上游没给 ID 的按正文算, {note_id}_lcn…)。看到过的留着, 不因为后来掉出
+    第一页就删; 同一条的正文 / 角色 / 置顶 / 命中变了就更新。
+  · 作者标记 → comment_role = 贴主; 其余 = 路人 (明细里作者标记这一轮不可信时 = 未知)。
+    已经记成贴主的明细行, 后来某一轮作者标记不可信也不降成未知 (降了就会被数成读者评论)。
+  · 命中这一行「评论关键词」的 (快照里带「命中」标记的那条, 以及正文里出现任一关键词的; 明细里 k = 1 的) 写
+    is_scripted = true: 多半是我们自己铺的, 数读者评论时要拿掉。没命中的留空, 不写 false。
+  · is_truncated: 正文被截过 (快照 40 字 / 明细 200 字)。
+  · observed_at: 明细行 = JSON 里的 t; 快照行 = 这一篇的「最近检查时间」, 只在「巡查状态」= 正常 时填 (巡查失败的
+    轮次也会推进「最近检查时间」, 那时快照还是上一轮的)。
+    在巡查没成功的那一轮入库的行时刻是空的; 之后哪一轮巡查正常了、这一行还在, 就补上那一轮的时刻 (只补这一次)。
+  · 运营贴的那条路的配对和「找不到了」对账只看 source 为空的行, 巡查来的行不参与、不会被报成「源里没了」。
+  · v1.27 没跑 (comments 没有 source 这一列): 整条路不走, 行为和以前一模一样, 带快照的项目打一行 warning。
+  挡不住什么: 快照截到 40 字, 关键词落在 40 字之后的铺评认不出; 关了昵称落库的表, 正文里自带「xx: 」会被当成昵称
+  剥掉开头; 只有第一页 (小红书 10 条 / 抖音 20 条, 快照最多 8 条); 没有「评论关键词」的行分不出铺评。
+
 Usage:
     python sync_comments_from_raw_extra.py NUC_phase1
     python sync_comments_from_raw_extra.py NUC_phase1 --dry-run --limit 5
@@ -92,6 +119,8 @@ from _common import (
     load_mapping,
     setup_logger,
     skip_on_demand_on_cron,
+    warn_missing_migration_once,
+    _is_missing_column_error,
     _iso_now,
 )
 
@@ -210,6 +239,404 @@ def parse_comment_text(text: str) -> Iterator[tuple[str, str]]:
                 yield parsed
 
 
+# ════════════════════════════════════════════════════════════════════
+# 第二个来源: 巡查工具看到的评论区第一页 (D-155; 说明在模块头)
+# ════════════════════════════════════════════════════════════════════
+SOURCE_DIGEST = "linkcheck_digest"       # 「评论区快照」那段文字拆出来的
+SOURCE_RECORDS = "linkcheck_records"     # 「评论区明细」那一行 JSON 读出来的
+LINKCHECK_SOURCES = (SOURCE_DIGEST, SOURCE_RECORDS)
+DIGEST_COL, RECORDS_COL = "评论区快照", "评论区明细"
+CHECKED_COL, STATUS_COL, KEYWORDS_COL = "最近检查时间", "巡查状态", "评论关键词"
+STATUS_OK = "正常"
+DIGEST_TEXT_CHARS = 40                   # linkcheck DigestFormat.per_comment_chars: 超了截到 39 字 + 「…」
+RECORDS_VERSION = 1
+LINEAGE_COLS = ("source", "is_truncated", "observed_at")
+LINEAGE_MIGRATION = "schemas/notes_v1_27_reader_comments_observations.sql"
+_BASE_COMMENT_COLS = "comment_id, note_id, content, comment_role, comment_order"
+_LINEAGE_COMMENT_COLS = (_BASE_COMMENT_COLS + ", is_pinned, is_scripted, parent_comment_id, comment_time, "
+                         + ", ".join(LINEAGE_COLS))
+# main 读完项目的已入库评论之后置位: True = 库里有 source 这一列, existing_comments 要把巡查来的行滤掉。
+_LINEAGE_SUPPORTED: list[bool] = []
+
+_DIGEST_LINE_RE = re.compile(r"^\s*(\d{1,3})\. (.*)$")
+_DIGEST_MORE_RE = re.compile(r"^\s*…（还有 \d+ 条未显示）\s*$")
+_DIGEST_EMPTY_RE = re.compile(r"^\s*（(?:暂无评论|接口报评论数 \d+，但评论区一条都看不到).*$")
+_DIGEST_MARKS_RE = re.compile(r"^\[([^\[\]]*)\] ")
+_MARK_HIT_RE = re.compile(r"^命中「(.*)」$")
+_MARK_KNOWN_RE = re.compile(r"^(?:最新|置顶|作者|回复(?:「.*」)?|\d+赞)$")
+_MARK_IP_RE = re.compile(r"^[一-鿿]{2,10}$")     # IP 属地: 只会是最后一个标记
+_NICK_RE = re.compile(r"^(.{1,40}?): (.*)$")
+_HIGHLIGHT_RE = re.compile(r"#([^#\[\]]+?)\[搜索高亮\]#")   # 小红书蓝词标记: 「#词[搜索高亮]#」 → 「词」
+_UPSTREAM_ID_RE = re.compile(r"^[0-9A-Za-z_-]{1,64}$")
+_MS_MIN, _MS_MAX = 946684800000, 4102444800000           # 2000-01-01 … 2100-01-01, 同 v1.22 / v1.27 的 SQL
+
+
+def _raw_cell(raw: dict, col: str):
+    """raw_extra 里的一格: 顶层有值用顶层, 顶层空才看 _undeclared (mapping 没声明这一列时 sync 把它收在那里)。"""
+    v = raw.get(col)
+    if v in (None, "", []):
+        und = raw.get("_undeclared")
+        v = und.get(col) if isinstance(und, dict) else None
+    return v
+
+
+def _cell_text(v) -> str:
+    """飞书文本格可能是字符串, 也可能是 [{text, type}, …] 分段: 拼成一个字符串。别的类型 = 空。"""
+    if isinstance(v, str):
+        return v
+    if isinstance(v, dict):
+        return v.get("text") if isinstance(v.get("text"), str) else ""
+    if isinstance(v, list):
+        return "".join(_cell_text(x) for x in v if isinstance(x, (str, dict)))
+    return ""
+
+
+def _ms_to_iso(v, *, tz: bool) -> Optional[str]:
+    """毫秒时间戳 → UTC ISO 串 (tz=True 带 +00:00, 给 TIMESTAMPTZ 列; False 不带, 给无时区列)。不像时间戳的 = None。"""
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not (_MS_MIN <= v <= _MS_MAX):
+        return None
+    import datetime as _dt
+    t = _dt.datetime.fromtimestamp(v / 1000.0, tz=_dt.timezone.utc).replace(microsecond=0)
+    return t.isoformat() if tz else t.replace(tzinfo=None).isoformat()
+
+
+def _same_moment(a, b) -> bool:
+    """两个时间串是不是同一刻 (库里读回来的和这边算的写法可能不同: 带不带时区、带不带小数秒)。认不出的按不同算。"""
+    import datetime as _dt
+
+    def parse(v):
+        if not isinstance(v, str) or not v:
+            return None
+        try:
+            t = _dt.datetime.fromisoformat(v.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if t.tzinfo is not None:
+            t = t.astimezone(_dt.timezone.utc).replace(tzinfo=None)
+        return t.replace(microsecond=0)
+    pa, pb = parse(a), parse(b)
+    return pa is not None and pa == pb
+
+
+def _norm(text: str) -> str:
+    """同 linkcheck analyze._normalize: 去空白、去标点、统一大小写, 只做宽松的包含匹配。"""
+    return re.sub(r"[\s\W_]+", "", text or "").lower()
+
+
+def seed_needles(cell) -> list[str]:
+    """「评论关键词」那一格 → 归一化之后的词。拆法同 linkcheck 的 read_keywords (两边拆得不一样, 铺评就认不全):
+
+    列表先当多选取选项 (纯字符串, 或带 name 的选项对象); 取不到 (文本列的富文本分段 [{text, type}, …]) 再把分段
+    拼成一整段, 和纯字符串一样按 顿号 / 逗号 / 分号 / 换行 拆。不按空格拆 (带空格的词组是一个词)。"""
+    words: list[str] = []
+    if isinstance(cell, list):
+        for x in cell:
+            if isinstance(x, str):
+                words.append(x)
+            elif isinstance(x, dict) and x.get("name"):
+                words.append(str(x["name"]))
+    if not words:
+        words = re.split(r"[、,，;；\n]+", _cell_text(cell))
+    return [n for n in (_norm(w) for w in words) if n]
+
+
+def _strip_highlight(text: str) -> str:
+    return _HIGHLIGHT_RE.sub(lambda m: m.group(1).strip(), text)
+
+
+def _marks_ok(parts: list[str]) -> bool:
+    """方括号里是不是 linkcheck 排的标记段 (而不是评论正文自己带的 [笑哭R] 这种表情)。"""
+    for i, p in enumerate(parts):
+        if _MARK_HIT_RE.match(p) or _MARK_KNOWN_RE.match(p):
+            continue
+        if i == len(parts) - 1 and _MARK_IP_RE.match(p):
+            continue
+        return False
+    return bool(parts)
+
+
+def parse_digest(text: str, needles: Optional[list[str]] = None) -> Optional[list[dict]]:
+    """「评论区快照」那段文字 → 一条评论一个 dict (role / content / is_pinned / is_truncated / seeded / likes)。
+
+    回 None = 这段文字不是认得的格式 (一行编号行、一行占位都没有): 调用方不动这一篇已有的行。
+    回 []   = 认得, 评论区是空的 (「（暂无评论）」/ 「接口报评论数 N，但评论区一条都看不到」)。
+    昵称和 IP 属地在这里剥掉, 不出现在返回值里。「…（还有 N 条未显示）」那一行跳过。
+    """
+    out: list[dict] = []
+    recognised = False
+    for line in (text or "").splitlines():
+        if not line.strip():
+            continue
+        if _DIGEST_EMPTY_RE.match(line) or _DIGEST_MORE_RE.match(line):
+            recognised = True
+            continue
+        m = _DIGEST_LINE_RE.match(line)
+        if not m:
+            continue
+        recognised = True
+        body = m.group(2)
+        marks: list[str] = []
+        mm = _DIGEST_MARKS_RE.match(body)
+        if mm and _marks_ok(mm.group(1).split(" · ")):
+            marks = mm.group(1).split(" · ")
+            body = body[mm.end():]
+        nm = _NICK_RE.match(body)
+        if nm:
+            body = nm.group(2)
+        elif re.fullmatch(r".{1,40}:", body.rstrip()):
+            body = ""                       # 「昵称: 」后面是空的 (纯图片评论), 行尾空格被飞书吃掉了
+        content = body.strip()
+        if not content:
+            continue
+        truncated = content.endswith("…") and len(content) == DIGEST_TEXT_CHARS
+        content = _strip_highlight(content)
+        likes = next((int(p[:-1]) for p in marks if re.fullmatch(r"\d+赞", p)), None)
+        seeded = any(_MARK_HIT_RE.match(p) for p in marks) or (
+            bool(needles) and any(n in _norm(content) for n in needles))
+        out.append({
+            "role": "贴主" if "作者" in marks else "路人",
+            "content": content,
+            "is_pinned": "置顶" in marks,
+            "is_truncated": truncated,
+            "seeded": seeded,
+            "likes": likes,
+            "upstream_id": "", "parent_upstream_id": "", "comment_time": None,
+        })
+    return out if recognised else None
+
+
+def parse_records(text: str) -> Optional[dict]:
+    """「评论区明细」那一行 JSON → {"observed_at": ISO 或 None, "rows": [...]} (rows 的键同 parse_digest, 多了平台 ID)。
+
+    回 None = 不是认得的格式 (不是 JSON / 版本不是 1 / c 不是列表): 调用方退回去用快照。
+    正文为空的条目跳过; 同一个平台 ID 出现两次只留第一次。
+    """
+    try:
+        obj = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(obj, dict) or obj.get("v") != RECORDS_VERSION or not isinstance(obj.get("c"), list):
+        return None
+    author_ok, rows, seen = obj.get("ar") == 1, [], set()
+    for e in obj["c"]:
+        if not isinstance(e, dict) or not isinstance(e.get("x"), str):
+            continue
+        content = _strip_highlight(e["x"]).strip()
+        if not content:
+            continue
+        up = e.get("id") if isinstance(e.get("id"), str) and _UPSTREAM_ID_RE.match(e.get("id") or "") else ""
+        if up:
+            if up in seen:
+                continue
+            seen.add(up)
+        parent = e.get("r") if isinstance(e.get("r"), str) and _UPSTREAM_ID_RE.match(e.get("r") or "") else ""
+        likes = e.get("l")
+        rows.append({
+            "role": "贴主" if e.get("a") == 1 else ("路人" if author_ok else "未知"),
+            "content": content,
+            "is_pinned": e.get("p") == 1,
+            "is_truncated": e.get("tr") == 1,
+            "seeded": e.get("k") == 1,
+            "likes": likes if isinstance(likes, int) and not isinstance(likes, bool) else None,
+            "upstream_id": up, "parent_upstream_id": parent,
+            "comment_time": _ms_to_iso(e.get("ts"), tz=False),
+        })
+    return {"observed_at": _ms_to_iso(obj.get("t"), tz=True), "rows": rows}
+
+
+def has_linkcheck_cells(raw: dict) -> bool:
+    return bool(_cell_text(_raw_cell(raw, RECORDS_COL)).strip() or _cell_text(_raw_cell(raw, DIGEST_COL)).strip())
+
+
+def is_linkcheck_comment_id(comment_id: str, note_id: str) -> bool:
+    """巡查来的行的 id 都是 {note_id}_lc…; 运营贴的行是 {note_id}_c… / {note_id}_h…, 撞不上。"""
+    return (comment_id or "").startswith(f"{note_id}_lc")
+
+
+def _lc_hash(role: str, content: str) -> str:
+    return hashlib.sha256("\u0000".join(_content_key(role, content)).encode("utf-8")).hexdigest()[:12]
+
+
+_LC_MATERIAL = ("content", "comment_role", "is_pinned", "is_scripted", "is_truncated", "parent_comment_id")
+
+
+def plan_linkcheck_rows(note: dict, existing: list[dict]) -> dict:
+    """一篇 note: 巡查来的行该写成什么样。纯函数, 不碰库。
+
+    existing = 这一篇已入库的、source 是 linkcheck_* 的行。回:
+      source   这次用的哪个来源 (None = 这一篇没有能用的格子, 或认不出, 什么都不动)
+      upserts  要插入 / 更新的整行 (id 已在库里且内容没变的不在里面)
+      deletes  要删的 comment_id
+      note     一句话的原因 (认不出 / 明细认不出退回快照 …), 没有就是空串
+    """
+    raw = note.get("raw_extra") or {}
+    note_id, project_id = note["note_id"], note["project_id"]
+    plan = {"source": None, "upserts": [], "deletes": [], "note": ""}
+    rec_text = _cell_text(_raw_cell(raw, RECORDS_COL)).strip()
+    dig_text = _cell_text(_raw_cell(raw, DIGEST_COL)).strip()
+    by_id = {r["comment_id"]: r for r in existing}
+    old_digest = [r["comment_id"] for r in existing if r.get("source") == SOURCE_DIGEST]
+    has_records_rows = any(r.get("source") == SOURCE_RECORDS for r in existing)
+
+    parsed_rec = parse_records(rec_text) if rec_text else None
+    if rec_text and parsed_rec is None:
+        plan["note"] = "「评论区明细」认不出 (不是 v1 的 JSON), 退回去用快照"
+    if parsed_rec is not None:
+        source, rows, observed_at = SOURCE_RECORDS, parsed_rec["rows"], parsed_rec["observed_at"]
+    else:
+        if not dig_text:
+            return plan
+        if has_records_rows:
+            # 这一篇已经有按平台 ID 入库的行, 现在明细那一格空了 / 坏了: 不再往上叠一套快照行 (同一批评论会变两份)
+            plan["note"] = plan["note"] or "这一篇已有明细行、这次没有明细, 快照不叠上去"
+            return plan
+        rows = parse_digest(dig_text, seed_needles(_raw_cell(raw, KEYWORDS_COL)))
+        if rows is None:
+            plan["note"] = "「评论区快照」认不出 (没有编号行也没有占位行), 这一篇已有的行不动"
+            return plan
+        source = SOURCE_DIGEST
+        status = _cell_text(_raw_cell(raw, STATUS_COL)).strip()
+        observed_at = _ms_to_iso(_raw_cell(raw, CHECKED_COL), tz=True) if status == STATUS_OK else None
+    plan["source"] = source
+
+    # id: 明细有平台 ID 的用它; 其余按 (角色, 正文) 算, 同一页里重复的按第几次出现编号 (重跑不变)
+    nth: dict[tuple[str, str], int] = {}
+    ids: list[str] = []
+    for r in rows:
+        if r["upstream_id"]:
+            ids.append(f"{note_id}_lcr{r['upstream_id']}")
+            continue
+        prefix = "lcd" if source == SOURCE_DIGEST else "lcn"
+        if r["role"] == "未知":
+            # 没有平台 ID 的行, id 是按 (角色, 正文) 算的。这一轮作者标记不可信、角色成了「未知」, 而库里同一句话
+            # 以前是按「贴主」入的库: 认回那一行 (id 和角色都沿用), 不另起一行 —— 另起的话库里就有两份,
+            # 「未知」那一份还会过了「不是贴主」那道筛被数成读者评论。
+            akey = _content_key("贴主", r["content"])
+            alt = f"{note_id}_{prefix}{_lc_hash('贴主', r['content'])}_{nth.get(akey, 0) + 1}"
+            if alt in by_id and (by_id[alt].get("comment_role") == "贴主"):
+                r = dict(r, role="贴主")
+                rows[len(ids)] = r
+        key = _content_key(r["role"], r["content"])
+        nth[key] = nth.get(key, 0) + 1
+        ids.append(f"{note_id}_{prefix}{_lc_hash(r['role'], r['content'])}_{nth[key]}")
+    known = set(ids) | set(by_id)
+
+    for order, (cid, r) in enumerate(zip(ids, rows), start=1):
+        parent = f"{note_id}_lcr{r['parent_upstream_id']}" if r["parent_upstream_id"] else None
+        if parent not in known or parent == cid:
+            parent = None                    # 父评论不在这一页也不在库里: 外键指不过去, 留空
+        extra = {k: v for k, v in (("likes", r["likes"]), ("platform_comment_id", r["upstream_id"] or None)) if v is not None}
+        row = {
+            "comment_id": cid, "note_id": note_id, "project_id": project_id,
+            "content": r["content"], "comment_role": r["role"], "comment_order": order,
+            "parent_comment_id": parent, "comment_time": r["comment_time"],
+            "is_scripted": True if r["seeded"] else None,
+            "is_pinned": bool(r["is_pinned"]), "is_displayed": True,
+            "source": source, "is_truncated": bool(r["is_truncated"]), "observed_at": observed_at,
+            "raw_extra": extra or None,
+        }
+        old = by_id.get(cid)
+        if old is not None and old.get("comment_role") == "贴主" and row["comment_role"] == "未知":
+            # 以前某一轮确认过这条是作者自己发的, 这一轮只是作者标记不可信 (备用通道 / 没拿到作者账号): 不降成未知 ——
+            # 降了它就过了「不是贴主」那道筛, 被数成读者评论, 而且每次通道来回切都要把这一篇的行重写一遍。
+            row["comment_role"] = "贴主"
+        if old is not None and old.get("source") == source and all(old.get(k) == row[k] for k in _LC_MATERIAL) \
+                and (source == SOURCE_RECORDS or old.get("comment_order") == order) \
+                and not (old.get("observed_at") is None and row["observed_at"] is not None) \
+                and not (row["comment_time"] is not None and not _same_moment(old.get("comment_time"), row["comment_time"])):
+            # 库里已经是这样: 不重写 (observed_at 留第一次读到它的那一刻)。例外: 库里的时刻是空的 (这一行是在巡查没成功
+            # 的那一轮入库的), 这一轮拿得准 → 往下走, 补上这一次, 之后不再动。
+            continue
+        if old is not None and row["comment_time"] is None:
+            row["comment_time"] = old.get("comment_time")   # 这一轮没带发表时间: 以前记下的还是对的, 不拿空值盖掉
+        if old is not None and old.get("observed_at") is not None:
+            # observed_at = 第一次读到这条评论的那一刻: 库里已经有了就留着 —— 这一轮拿不准 (空) 不拿空值盖,
+            # 这一轮只是别的字段变了 (比如被置顶了) 也不往后挪。库里是空的才用这一轮的。
+            row["observed_at"] = old["observed_at"]
+        plan["upserts"].append(row)
+
+    if source == SOURCE_DIGEST:
+        keep = set(ids)
+        plan["deletes"] = [c for c in old_digest if c not in keep]      # 快照变了: 不在新快照里的快照行删掉
+    else:
+        plan["deletes"] = old_digest                                    # 有明细了: 这一篇的快照行整套让位
+    return plan
+
+
+_LC_DELETE_CHUNK, _LC_WRITE_CHUNK = 100, 500
+
+
+def apply_linkcheck_plans(sb, plans: list[dict], dry_run: bool) -> tuple[int, int]:
+    """把一个项目的计划写进库: 先删、再插入 / 更新 (整项目攒成几批, 不是一篇一次请求)。回 (写了几行, 删了几行)。
+
+    只碰 id 是 {note_id}_lc… 的行: 删的是计划里点了名的 id, 写的是 upsert (主键冲突就更新那一行)。
+    任何一批失败都直接抛 (同 write_comments 的口径: 写失败 = 这次同步失败), 下一晚重跑会按库里的现状重新对一遍。"""
+    deletes = [c for p in plans for c in p["deletes"]]
+    upserts = [r for p in plans for r in p["upserts"]]
+    if dry_run:
+        if deletes or upserts:
+            logger.info("[dry-run] 巡查来的评论: would upsert %d 行, delete %d 行", len(upserts), len(deletes))
+        return len(upserts), len(deletes)
+    tbl = lambda: sb.schema("truth_vault").table("comments")  # noqa: E731
+    for i in range(0, len(deletes), _LC_DELETE_CHUNK):
+        tbl().delete().in_("comment_id", deletes[i:i + _LC_DELETE_CHUNK]).execute()
+    # 一级评论先于它下面的回复 (plan 里就是这个顺序); 分批也按这个顺序, 父行总是先到
+    for i in range(0, len(upserts), _LC_WRITE_CHUNK):
+        tbl().upsert(upserts[i:i + _LC_WRITE_CHUNK], on_conflict="comment_id").execute()
+    return len(upserts), len(deletes)
+
+
+def _sorted_comment_rows(rows: list[dict]) -> list[dict]:
+    rows.sort(key=lambda r: (r.get("comment_order") is None,
+                             r.get("comment_order") or 0,
+                             r.get("comment_id") or ""))
+    return rows
+
+
+def fetch_project_comments_by_source(sb, project_id: str) -> tuple[dict[str, list[dict]], dict[str, list[dict]], bool]:
+    """整个项目已入库的评论, 一次读, 分成两份: (运营贴的 by note, 巡查来的 by note, 库里有没有 source 这一列)。
+
+    为什么每项目读一次 (2026-10-08 审计 A-07, D-092; 原 fetch_project_comments): 以前 write_comments 对**每一篇**调一次
+    existing_comments —— fetch_all_pages 以空页终止, 一篇至少 2 次 HTTP, 再加重排 / 插入; 17 个 mapping 全在循环里, 每晚
+    2.5–3k 篇、约 1 s 一篇, 随库线性涨。改成每项目读一次 (几页), 逐篇在内存里配对。翻页靠 fetch_all_pages: 一个项目的
+    评论轻松过千, 裸 execute 会被 db-max-rows 钳到 1000。
+
+    先带着 v1.27 的三列读; 库里没有这三列 (PostgREST 回「没有这一列」) → 按老的列再读一次, 全部算运营贴的 (那时
+    库里也不可能有巡查来的行)。别的错照抛。每组按 comment_order 稳定排序 (同 existing_comments 的口径)。"""
+    def read(cols: str) -> list[dict]:
+        q = sb.schema("truth_vault").table("comments").select(cols).eq("project_id", project_id)
+        return list(fetch_all_pages(q, order_by="comment_id"))
+    try:
+        rows, supported = read(_LINEAGE_COMMENT_COLS), True
+    except Exception as exc:  # noqa: BLE001 —— 只吞「没有这一列」
+        if not _is_missing_column_error(exc, LINEAGE_COLS):
+            raise
+        rows, supported = read(_BASE_COMMENT_COLS), False
+    ops: dict[str, list[dict]] = {}
+    lcs: dict[str, list[dict]] = {}
+    for r in rows:
+        (lcs if r.get("source") in LINKCHECK_SOURCES else ops).setdefault(r["note_id"], []).append(r)
+    for group in list(ops.values()) + list(lcs.values()):
+        _sorted_comment_rows(group)
+    return ops, lcs, supported
+
+
+def fetch_project_notes(sb, project_id: str) -> list[dict]:
+    """项目里 raw_extra 不为空的 note (一次读, 翻页); 两个来源各自在内存里挑。"""
+    q = (
+        sb.schema("truth_vault")
+        .table("notes")
+        .select("note_id, project_id, raw_extra")
+        .eq("project_id", project_id)
+        .not_.is_("raw_extra", None)
+    )
+    return [r for r in fetch_all_pages(q, order_by="note_id") if isinstance(r.get("raw_extra"), dict)]
+
+
+def has_operator_comment_text(raw: dict) -> bool:
+    return bool(raw.get("_comment_text") or raw.get("_comment_text_persona"))
+
+
 def fetch_notes_with_comments_text(sb, project_id: str) -> list[dict]:
     """Pull notes whose raw_extra has _comment_text but no comments rows yet."""
     q = (
@@ -224,8 +651,7 @@ def fetch_notes_with_comments_text(sb, project_id: str) -> list[dict]:
     # path filters on `not.is null` over deep paths is awkward).
     return [
         r for r in rows
-        if isinstance(r.get("raw_extra"), dict)
-        and (r["raw_extra"].get("_comment_text") or r["raw_extra"].get("_comment_text_persona"))
+        if isinstance(r.get("raw_extra"), dict) and has_operator_comment_text(r["raw_extra"])
     ]
 
 
@@ -246,41 +672,20 @@ def existing_comments(sb, note_id: str) -> list[dict]:
     ``fetch_all_pages``(它的 docstring 专门讲了这个 1000 的零余量), 同一个文件
     里两种口径才是真正危险的地方。
     """
+    # v1.27 之后库里还有巡查工具来的行 (source = linkcheck_*): 它们不参与运营这条路的配对和对账, 这里滤掉。
+    # 只有 main 确认过库里有 source 这一列才多选它; 老调用 (不经 main) 和没迁移的库照原样读。
+    lineage = _LINEAGE_SUPPORTED == [True]
     q = (
         sb.schema("truth_vault")
         .table("comments")
-        .select("comment_id, content, comment_role, comment_order")
+        .select("comment_id, content, comment_role, comment_order" + (", source" if lineage else ""))
         .eq("note_id", note_id)
     )
-    rows = list(fetch_all_pages(q, order_by="comment_id"))
+    rows = [r for r in fetch_all_pages(q, order_by="comment_id") if r.get("source") not in LINKCHECK_SOURCES]
     rows.sort(key=lambda r: (r.get("comment_order") is None,
                              r.get("comment_order") or 0,
                              r.get("comment_id") or ""))
     return rows
-
-
-def fetch_project_comments(sb, project_id: str) -> dict[str, list[dict]]:
-    """整个项目已入库的评论, 按 note_id 分组, 每组按 comment_order 稳定排序(同 existing_comments 的口径)。
-
-    为什么要有它(2026-10-08 审计 A-07, D-092): 以前 write_comments 对**每一篇**调一次 existing_comments ——
-    fetch_all_pages 以空页终止, 一篇至少 2 次 HTTP, 再加重排 / 插入; 17 个 mapping 全在循环里, 每晚
-    2.5–3k 篇、约 1 s 一篇, 随库线性涨。改成每项目读一次(几页), 逐篇在内存里配对。
-    翻页同样靠 fetch_all_pages: 一个项目的评论轻松过千, 裸 execute 会被 db-max-rows 钳到 1000。
-    """
-    q = (
-        sb.schema("truth_vault")
-        .table("comments")
-        .select("comment_id, note_id, content, comment_role, comment_order")
-        .eq("project_id", project_id)
-    )
-    by_note: dict[str, list[dict]] = {}
-    for r in fetch_all_pages(q, order_by="comment_id"):
-        by_note.setdefault(r["note_id"], []).append(r)
-    for rows in by_note.values():
-        rows.sort(key=lambda r: (r.get("comment_order") is None,
-                                 r.get("comment_order") or 0,
-                                 r.get("comment_id") or ""))
-    return by_note
 
 
 def _content_key(role: str, content: str) -> tuple[str, str]:
@@ -336,7 +741,7 @@ def write_comments(
     vanished_log (D-085): 给了就把本条 note「库里有、源里找不到」的行逐条追加进去 (含 kind:
     parser_change = 按新切法会被切开 / 剥前缀的旧行, source_removed = 其余)。只收集, 不删。
 
-    existing (D-092): 这条 note 已入库的评论(fetch_project_comments 按项目读一次之后分给每篇的那一份)。
+    existing (D-092): 这条 note 已入库的、运营贴的评论(fetch_project_comments_by_source 按项目读一次之后分给每篇的那一份)。
     不传就按 note 读一次 —— 老调用形状(ci COR-013 那步 / check_comment_parser)不变。
 
     ── 为什么按内容配对而不是按位置(跨库审计 2026-08-24 COR-013)──────────
@@ -524,16 +929,23 @@ def main() -> int:
         return 0
 
     sb = get_supabase_client()
-    notes = fetch_notes_with_comments_text(sb, args.project_id)
+    # note 每项目读一次, 两个来源各自挑 (运营贴的随贴评论 / 巡查工具看到的评论区第一页, D-155)。
+    all_notes = fetch_project_notes(sb, args.project_id)
+    notes = [r for r in all_notes if has_operator_comment_text(r["raw_extra"])]
+    lc_notes = [r for r in all_notes if has_linkcheck_cells(r["raw_extra"])]
     if args.limit:
         notes = notes[: args.limit]
+        lc_notes = lc_notes[: args.limit]
     logger.info("Found %d notes with raw_extra._comment_text(_persona) for %s",
                 len(notes), args.project_id)
     # 已入库评论每项目读一次、按 note 分组, 逐篇在内存里配对 (D-092; 以前每篇读一次, ≥2 次 HTTP/篇)。
-    by_note = fetch_project_comments(sb, args.project_id)
+    # by_note 只有运营贴的行; 巡查来的行 (source = linkcheck_*) 单独一份, 不进下面的配对和「找不到了」对账。
+    by_note, lc_by_note, lineage = fetch_project_comments_by_source(sb, args.project_id)
+    _LINEAGE_SUPPORTED[:] = [lineage]
 
     stats = {"notes_processed": 0, "comments_written": 0, "skipped_empty": 0,
-             "notes_source_cleared": 0, "vanished_parser_change": 0, "vanished_other": 0}
+             "notes_source_cleared": 0, "vanished_parser_change": 0, "vanished_other": 0,
+             "reader_notes": 0, "reader_rows_written": 0, "reader_rows_deleted": 0, "reader_unreadable": 0}
     covered: set[str] = set()
     unparseable: set[str] = set()         # 源字段非空、但一条都解析不出来的 note
     vanished_log: list[dict] = []
@@ -590,6 +1002,23 @@ def main() -> int:
             # 主职责。但也不能静默: 报出来, 并在 stats 里留 -1 标明"这次没算成"。
             logger.exception("「源被清空」对账查询失败")
             stats["notes_source_cleared"] = -1
+
+    # ── 巡查工具看到的评论区第一页 (D-155) ────────────────────────────────────────
+    # 和上面那条路互不相干: 只读 / 只写 source = linkcheck_* 的行。库里没有 source 这一列 (v1.27 没跑) 就整段不走。
+    if lc_notes and not lineage:
+        warn_missing_migration_once(
+            "comments.source",
+            f"{args.project_id}: {len(lc_notes)} 篇带巡查工具的评论区快照 / 明细, 但 truth_vault.comments 还没有 source / "
+            f"is_truncated / observed_at 三列 (owner 在 SQL editor 跑 {LINEAGE_MIGRATION} 之前都是这样): 这次只解析运营贴的"
+            "随贴评论, 和以前一样; 读者评论不入库。", log=logger)
+    elif lc_notes:
+        plans = [plan_linkcheck_rows(n, lc_by_note.get(n["note_id"], [])) for n in lc_notes]
+        for n, p in zip(lc_notes, plans):
+            if p["note"]:
+                stats["reader_unreadable"] += 1
+                logger.warning("note=%s %s", n["note_id"], p["note"])
+        stats["reader_notes"] = sum(1 for p in plans if p["source"])
+        stats["reader_rows_written"], stats["reader_rows_deleted"] = apply_linkcheck_plans(sb, plans, args.dry_run)
 
     # D-085: 按来由分开数。parser_change 是改了切法 / 剥了【…】前缀之后配不上的旧行, 同步之后要 owner
     # 清一次 (见模块头); source_removed 是运营在源里删了的。都只报不删。

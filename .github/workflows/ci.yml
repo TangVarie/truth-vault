@@ -76,6 +76,7 @@ jobs:
             scripts/check_ingest_guards.py \
             scripts/check_batch_upsert_columns.py \
             scripts/check_comments_sync_cost.py \
+            scripts/check_reader_comments.py \
             scripts/gate2_run.py \
             scripts/check_gate2_run.py \
             scripts/gate2_combo.py \
@@ -3596,6 +3597,9 @@ jobs:
       - name: 评论步 —— 每项目读一次已有评论 / 夜跑跳过 on_demand / 对账失败非零退出 (D-092)
         working-directory: scripts
         run: python check_comments_sync_cost.py   # §1 一次读零写 · §2 只写变化 · §3 on_demand 跳过 · §4 对账失败 rc=1 · §5 老调用形状不变
+      - name: 读者评论入库 —— 巡查快照 / 明细写成 comments 行, 和运营贴的行按 source 分开; v1.27 没跑时和以前一样 (D-155)
+        working-directory: scripts
+        run: python check_reader_comments.py   # §1 快照拆行 · §2 明细 JSON · §3 观测时刻 · §4 入库与对账 · §5 没迁移 · §6 昵称不落库 / 下游不带
       - name: 闸二可执行版 —— MH/RGB 对 Woolf 闭式、BH、状态表逐条、账号先验分层、占位题 / 快照 / 冻结三条拒跑 (D-093)
         working-directory: scripts
         run: python check_gate2_run.py   # §0 主题库金样 · §1 统计闭式 · §2 BH · §3 状态表 · §3b confounded · §4 占位题拒跑 · §5 快照唯一 · §6 draft 拒跑 · §6c 闸一裁决 · §7 取数与大项目 · §8 副题库 (D-128: 不写库 / old_id 半区 / 分层 / 3% / 基数 / BH 两行 / 占位题作废 / counts-only / 只读一次 / 取数 / workflow)
@@ -7102,6 +7106,11 @@ jobs:
           psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_26_feature_failure_recovery.sql
           psql -v ON_ERROR_STOP=1 -f scripts/check_feature_failure_recovery_legacy.sql
           psql -v ON_ERROR_STOP=1 -f scripts/check_feature_failure_recovery.sql
+      - name: Apply v1.27 读者评论三列 + v_note_observations (+ idempotency; 夹具与反证 scripts/check_reader_comments_observations.sql, D-155)
+        run: |
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_27_reader_comments_observations.sql
+          psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_27_reader_comments_observations.sql
+          psql -v ON_ERROR_STOP=1 -q -f scripts/check_reader_comments_observations.sql
       - name: Sanity-check revoke (v_dash_* 无 anon 写权限 · 且仍可读)
         # 在裸 PG 上先造出 anon/authenticated 角色并【故意 GRANT ALL】(复现 Supabase
         # 建库默认), 再跑一遍 REVOKE, 断言写权限确实没了、SELECT 还在。
