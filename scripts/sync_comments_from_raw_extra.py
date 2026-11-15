@@ -253,7 +253,7 @@ RECORDS_VERSION = 1
 LINEAGE_COLS = ("source", "is_truncated", "observed_at")
 LINEAGE_MIGRATION = "schemas/notes_v1_27_reader_comments_observations.sql"
 _BASE_COMMENT_COLS = "comment_id, note_id, content, comment_role, comment_order"
-_LINEAGE_COMMENT_COLS = (_BASE_COMMENT_COLS + ", is_pinned, is_scripted, parent_comment_id, "
+_LINEAGE_COMMENT_COLS = (_BASE_COMMENT_COLS + ", is_pinned, is_scripted, parent_comment_id, comment_time, "
                          + ", ".join(LINEAGE_COLS))
 # main 读完项目的已入库评论之后置位: True = 库里有 source 这一列, existing_comments 要把巡查来的行滤掉。
 _LINEAGE_SUPPORTED: list[bool] = []
@@ -488,9 +488,18 @@ def plan_linkcheck_rows(note: dict, existing: list[dict]) -> dict:
         if r["upstream_id"]:
             ids.append(f"{note_id}_lcr{r['upstream_id']}")
             continue
+        prefix = "lcd" if source == SOURCE_DIGEST else "lcn"
+        if r["role"] == "未知":
+            # 没有平台 ID 的行, id 是按 (角色, 正文) 算的。这一轮作者标记不可信、角色成了「未知」, 而库里同一句话
+            # 以前是按「贴主」入的库: 认回那一行 (id 和角色都沿用), 不另起一行 —— 另起的话库里就有两份,
+            # 「未知」那一份还会过了「不是贴主」那道筛被数成读者评论。
+            akey = _content_key("贴主", r["content"])
+            alt = f"{note_id}_{prefix}{_lc_hash('贴主', r['content'])}_{nth.get(akey, 0) + 1}"
+            if alt in by_id and (by_id[alt].get("comment_role") == "贴主"):
+                r = dict(r, role="贴主")
+                rows[len(ids)] = r
         key = _content_key(r["role"], r["content"])
         nth[key] = nth.get(key, 0) + 1
-        prefix = "lcd" if source == SOURCE_DIGEST else "lcn"
         ids.append(f"{note_id}_{prefix}{_lc_hash(r['role'], r['content'])}_{nth[key]}")
     known = set(ids) | set(by_id)
 
@@ -519,6 +528,8 @@ def plan_linkcheck_rows(note: dict, existing: list[dict]) -> dict:
             # 库里已经是这样: 不重写 (observed_at 留第一次读到它的那一刻)。例外: 库里的时刻是空的 (这一行是在巡查没成功
             # 的那一轮入库的), 这一轮拿得准 → 往下走, 补上这一次, 之后不再动。
             continue
+        if old is not None and row["comment_time"] is None:
+            row["comment_time"] = old.get("comment_time")   # 这一轮没带发表时间: 以前记下的还是对的, 不拿空值盖掉
         if old is not None and row["observed_at"] is None:
             row["observed_at"] = old.get("observed_at")     # 这一轮拿不准时刻: 不拿空值盖掉以前记下的
         plan["upserts"].append(row)

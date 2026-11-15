@@ -343,6 +343,19 @@ def check_observed_at() -> None:
     filled = [dict(r) for r in night2["upserts"]]
     night3 = M.plan_linkcheck_rows(_note("n1", 评论区快照=two, 最近检查时间=T2 + 86400000, 巡查状态="正常"), filled)
     assert not night3["upserts"] and not night3["deletes"], f"§3 时刻补过一次之后, 没变的行不再重写: {night3}"
+    # 没有平台 ID 的明细行: 第一轮认出是作者发的, 第二轮作者标记不可信 (ar=0) —— 还是那一行, 不多出一份「未知」
+    r1 = M.plan_linkcheck_rows(_note("n1", 评论区明细=_records(T1, [{"x": "合成作者回复", "a": 1}])), [])
+    kept = [dict(r) for r in r1["upserts"]]
+    assert len(kept) == 1 and kept[0]["comment_role"] == "贴主"
+    r2 = M.plan_linkcheck_rows(_note("n1", 评论区明细=_records(T2, [{"x": "合成作者回复", "a": 0}], ar=0)), kept)
+    assert not r2["upserts"] and not r2["deletes"], f"§3 作者标记不可信的那一轮把作者回复另存成了一行未知: {r2}"
+    # 有平台 ID 的行: 这一轮没带发表时间、又有别的字段变了要重写 —— 以前记下的发表时间留着
+    r1 = M.plan_linkcheck_rows(_note("n1", 评论区明细=_records(T1, [{"id": "a" * 24, "x": "合成读者评论", "ts": T1}])), [])
+    kept = [dict(r) for r in r1["upserts"]]
+    assert kept[0]["comment_time"] and kept[0]["comment_role"] == "路人"
+    r2 = M.plan_linkcheck_rows(_note("n1", 评论区明细=_records(T2, [{"id": "a" * 24, "x": "合成读者评论"}], ar=0)), kept)
+    assert len(r2["upserts"]) == 1 and r2["upserts"][0]["comment_role"] == "未知" \
+        and r2["upserts"][0]["comment_time"] == kept[0]["comment_time"], f"§3 重写时把发表时间冲成空了: {r2}"
     print("  §3 观测时刻: 快照行只在巡查正常时取最近检查时间; 明细行取 t; _undeclared 也读; 重写不冲掉旧时刻; 失败轮入库的行之后补一次 ✓")
 
 
