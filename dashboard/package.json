@@ -5,9 +5,13 @@
   "description": "飞轮总看板 — aw/tv/sanshengliubu 生态状态(对外装逼 + 对内自监测)。详见 docs/24-dashboard-plan.md",
   "scripts": {
     "dev": "next dev",
+    "prebuild": "node scripts/check-public-wording.mjs --source-only",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit",
+    "check:public": "node scripts/check-public-wording.mjs",
+    "test:check": "node --test scripts/check-public-wording.test.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",

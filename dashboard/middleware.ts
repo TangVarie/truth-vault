@@ -13,7 +13,10 @@ export async function middleware(req: NextRequest) {
   const url = req.nextUrl.clone();
   url.pathname = "/login";
   url.search = `?next=${encodeURIComponent(req.nextUrl.pathname)}`;
-  return NextResponse.redirect(url);
+  const res = NextResponse.redirect(url);
+  // 这个跳转取决于访问者有没有登录，不许任何缓存层存下来再发给别人
+  res.headers.set("Cache-Control", "no-store");
+  return res;
 }
 
 export const config = { matcher: ["/console", "/console/:path*"] };

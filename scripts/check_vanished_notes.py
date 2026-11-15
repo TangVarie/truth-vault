@@ -5,6 +5,8 @@
      last_seen_at DESC) 比 last_seen_run_id; 从没盖过戳的 (IS NULL) 不算
   §1b schemas/notes_v1_25_sync_runs.sql 跑过之后的新定义 (D-153): 按已完成的整轮扫描; v1_21 文件头有不要重跑的提醒
   §2 _common.fetch_vanished_note_ids: 读 v_notes_vanished, 按 note_id 翻页, 可按项目筛, 回 set
+  §2b _common.fetch_long_vanished (D-154 第 8 条): 同一张视图按「缺席满 36 小时 / 还在宽限里」分两堆; 36 小时这个数
+      和馆员 (librarian.core.VANISHED_GRACE_S)、两边读时刻的办法是同一个
   §3 curate_flywheel_lessons.fetch_uncurated_cards: 名单里的卡不进策展 (默认路 / --recurate 都是), 项目筛传下去
   §4 sync_truth_vault_baokuan_to_sanshengliubu.fetch_pending_baokuan: 资格全够也不推名单里的篇, 项目筛传下去
   §5 gate2_run.fetch_dataset: 名单里的篇不进闸二 notes, vanished_dropped 数出来
@@ -93,6 +95,47 @@ def main() -> int:
     if ("eq", ("project_id", "P1"), {}) not in sb.log:
         fails.append(f"§2 给了项目要 eq project_id: {sb.log}")
 
+    # §2b D-154 第 8 条: 缺席 = latest_seen_at - last_seen_at, 满 36 小时才算; 时刻读不懂的算还在宽限里
+    from datetime import timedelta
+    from librarian import core as L
+    if C.VANISHED_GRACE != timedelta(hours=36) or C.VANISHED_GRACE.total_seconds() != L.VANISHED_GRACE_S:
+        fails.append(f"§2b 36 小时宽限两处要是同一个数: _common={C.VANISHED_GRACE} librarian={L.VANISHED_GRACE_S}")
+    vrows = [
+        {"note_id": "long", "project_id": "P1", "last_seen_at": "2026-11-01T00:00:00+00:00",
+         "latest_seen_at": "2026-11-02T12:00:00+00:00", "synced_to_ssll_at": "2026-10-01T00:00:00+00:00"},
+        {"note_id": "short", "project_id": "P1", "last_seen_at": "2026-11-01T00:00:00.5+00:00",
+         "latest_seen_at": "2026-11-02T12:00:00.123456+00:00", "synced_to_ssll_at": None},
+        {"note_id": "space", "project_id": "P1", "last_seen_at": "2026-11-01 00:00:00.12+00",
+         "latest_seen_at": "2026-11-09 00:00:00+00", "synced_to_ssll_at": None},
+        {"note_id": "naive", "project_id": "P1", "last_seen_at": "2026-11-01T00:00:00",
+         "latest_seen_at": "2026-11-03T00:00:00Z", "synced_to_ssll_at": None},
+        {"note_id": "nots", "project_id": "P1", "last_seen_at": None, "latest_seen_at": "2026-11-09T00:00:00+00:00",
+         "synced_to_ssll_at": None},
+        {"note_id": "junk", "project_id": "P1", "last_seen_at": "昨天", "latest_seen_at": 20261109, "synced_to_ssll_at": None},
+    ]
+    sb = _SB({"v_notes_vanished": vrows})
+    gone, grace = C.fetch_long_vanished(sb)
+    if sorted(gone) != ["long", "naive", "space"] or grace != {"short", "nots", "junk"} \
+            or gone["long"].get("synced_to_ssll_at") != "2026-10-01T00:00:00+00:00":
+        fails.append(f"§2b 分两堆不对 (满 36 小时的带着视图那一行; 不满 / 时刻读不懂的在宽限里): gone={sorted(gone)} grace={grace}")
+    if [x[1] for x in sb.log if x[0] == "table"] != ["v_notes_vanished"] or any(x[0] == "eq" for x in sb.log) \
+            or not any(x[0] == "order" and x[1][:1] == ("note_id",) for x in sb.log):
+        fails.append(f"§2b 不筛项目时读全表、按 note_id 翻页: {sb.log}")
+    sel = [x[1][0] for x in sb.log if x[0] == "select"]
+    if not sel or any(col not in sel[0] for col in ("note_id", "last_seen_at", "latest_seen_at", "synced_to_ssll_at")):
+        fails.append(f"§2b 要取 last_seen_at / latest_seen_at / synced_to_ssll_at (v1.21 和 v1.25 的视图都有): {sel}")
+    sb = _SB({"v_notes_vanished": vrows})
+    C.fetch_long_vanished(sb, "P1")
+    if ("eq", ("project_id", "P1"), {}) not in sb.log:
+        fails.append(f"§2b 给了项目要 eq project_id: {sb.log}")
+    for r in vrows:   # 馆员那一头是自己的一份读法 (它是单独部署的服务, 不 import scripts/): 两份对同一行必须同判
+        if L.long_vanished(r) != (r["note_id"] in gone):
+            fails.append(f"§2b 馆员和 _common 对 {r['note_id']} 判得不一样")
+    for ver, text in (("v1.21", body), ("v1.25", body25)):
+        for col in ("last_seen_at", "latest_seen_at", "synced_to_ssll_at"):
+            if not re.search(rf"\b{col}\b", text):
+                fails.append(f"§2b {ver} 的视图里要有 {col} 这一列 (D-154 的两处读它)")
+
     # §3
     import curate_flywheel_lessons as cur
     view = [{"source_note_id": "a", "is_curated": False, "rank_score": 1.0, "curated_at": None},
@@ -166,7 +209,7 @@ def main() -> int:
     if fails:
         print(f"❌ vanished notes: {len(fails)} 条不过")
         return 1
-    print("✅ vanished notes: §1 视图判据 · §2 取 id · §3 新策展 · §4 通道 1 · §5 闸二取数 · §6 verify 灯 全过")
+    print("✅ vanished notes: §1 视图判据 · §2 取 id · §2b 缺席满 36 小时 · §3 新策展 · §4 通道 1 · §5 闸二取数 · §6 verify 灯 全过")
     return 0
 
 

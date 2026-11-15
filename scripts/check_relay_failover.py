@@ -1141,6 +1141,7 @@ def sec9_health() -> None:
     sel = TestClient(LA.app).get("/health").json().get("select") or {}
     gate = sel.pop("return_gate", None)        # D-151: 回流闸的子块单独核 (下面), AU-F09 那几个键照旧只有数
     paid = sel.pop("paid_boost", None)         # D-151 第 13 条: 投流标注的子块也单独核
+    gone = sel.pop("vanished", None)           # D-154: 出处帖已经删了的卡, 子块也单独核
     check(set(sel) == {"merged", "wait_timeouts", "primary_timeout_s", "call_timeout_s", "request_budget_s"}
           and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in sel.values())
           and (sel["primary_timeout_s"], sel["call_timeout_s"], sel["request_budget_s"]) == (30.0, 45.0, 60.0),
@@ -1161,6 +1162,15 @@ def sec9_health() -> None:
           and (paid["read_age_s"], paid["read_ok"], paid["flagged"], paid["events"], paid["window"]) == (None,) * 5
           and (paid["read_errors"], paid["lent"], paid["labelled"]) == (0, 0, 0),
           f"librarian: select.paid_boost (D-151 第 13 条) 只有布尔 / 整数 / None, 没读过库时不报数 ({paid})")
+    # 这个进程里没借过卡: v_notes_vanished 一次都没读过; on 回显现在生效的开关 (代码默认开, LIBRARIAN_VANISHED_FILTER=0 关)
+    check(isinstance(gone, dict)
+          and set(gone) == {"on", "read_age_s", "read_ok", "view", "read_errors", "long_gone", "in_grace", "dropped",
+                            "brands_kept"}
+          and all(v is None or isinstance(v, (bool, int)) for v in gone.values())
+          and gone["on"] is LC.vanished_filter_enabled()
+          and (gone["read_age_s"], gone["read_ok"], gone["view"], gone["long_gone"], gone["in_grace"]) == (None,) * 5
+          and (gone["read_errors"], gone["dropped"], gone["brands_kept"]) == (0, 0, 0),
+          f"librarian: select.vanished (D-154) 只有布尔 / 整数 / None, 没读过库时不报数 ({gone})")
     fresh(**BASE, **BOTH, RELAY_PRIMARY_TIMEOUT_S="55")
     sel = TestClient(LA.app).get("/health").json().get("select") or {}
     check(sel.get("primary_timeout_s") == 40.0,

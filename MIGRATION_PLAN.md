@@ -182,8 +182,9 @@ python scripts/sync_feishu_notes_to_truth_vault.py --project NUC_phase1
 # 2. 同步爆款到 sansheng (通道 1)
 python scripts/sync_truth_vault_baokuan_to_sanshengliubu.py
 
-# 3. 同步爆款到 autowriter (通道 2)
-python scripts/sync_truth_vault_baokuan_to_autowriter_items.py
+# 3. (已退役 D-038, 不要跑) 同步爆款到 autowriter (通道 2 push)。通道 2 现在是馆员 pull (docs/15), 夜跑里没有这一步;
+#    脚本留着备查, 不带 --dry-run 的真跑默认被拒绝 (D-154)。只看候选:
+python scripts/sync_truth_vault_baokuan_to_autowriter_items.py --dry-run
 ```
 
 3 个脚本都用同一个 `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` env var

@@ -19,7 +19,7 @@ import os
 import re
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -1649,6 +1649,52 @@ def fetch_vanished_note_ids(sb, project_id: Optional[str] = None) -> set[str]:
     if project_id:
         q = q.eq("project_id", project_id)
     return {r["note_id"] for r in fetch_all_pages(q, order_by="note_id")}
+
+
+# 飞书里删了的篇缺席多久才算「真删了」(D-154 第 8 条): 本项目最近一轮扫描的时刻比这篇最后被看到的时刻晚至少这么久。
+# 和写作台 (aw deskcore TV_VANISHED_GRACE)、馆员 (librarian/core.py VANISHED_GRACE_S) 是同一条: TV 一次同步写坏,
+# 活着的篇只会短暂进视图。check_vanished_notes.py §2b 钉着 TV 这两处是同一个数。
+VANISHED_GRACE = timedelta(hours=36)
+
+
+def _vanished_ts(val: Any) -> Optional[datetime]:
+    """v_notes_vanished 里的时刻 → 带时区的 datetime; 读不懂回 None。小数秒位数不定、空格分隔、+00 时区都认。"""
+    if not isinstance(val, str) or not val.strip():
+        return None
+    raw = val.strip().replace(" ", "T", 1)
+    if raw.endswith(("Z", "z")):
+        raw = raw[:-1] + "+00:00"
+    m = re.match(r"^(.*?T\d{2}:\d{2}:\d{2})(\.\d+)?(.*)$", raw)
+    if m:
+        tz = m.group(3)
+        if re.fullmatch(r"[+-]\d{2}", tz):
+            tz += ":00"
+        raw = m.group(1) + (m.group(2) or ".0")[:7].ljust(7, "0") + tz
+    try:
+        out = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return out if out.tzinfo is not None else out.replace(tzinfo=timezone.utc)
+
+
+def fetch_long_vanished(sb, project_id: Optional[str] = None,
+                        min_gap: timedelta = VANISHED_GRACE) -> tuple[dict[str, dict], set[str]]:
+    """v_notes_vanished 里的篇分两堆: ({缺席满 min_gap 的 note_id: 视图那一行}, 还在宽限里的 note_id)。
+    D-154 第 8 条: 已经推去三省六部的样本只撤前一堆。缺席 = latest_seen_at - last_seen_at (v1.21 和 v1.25 的视图都有
+    这两列和 synced_to_ssll_at, 读法一样); 有一个时刻读不懂的算还在宽限里 (不撤)。视图读不到直接抛, 调用方自己决定怎么退。"""
+    q = (sb.schema("truth_vault").table("v_notes_vanished")
+         .select("note_id, project_id, last_seen_at, latest_seen_at, synced_to_ssll_at"))
+    if project_id:
+        q = q.eq("project_id", project_id)
+    gone: dict[str, dict] = {}
+    grace: set[str] = set()
+    for r in fetch_all_pages(q, order_by="note_id"):
+        seen, latest = _vanished_ts(r.get("last_seen_at")), _vanished_ts(r.get("latest_seen_at"))
+        if seen is not None and latest is not None and latest - seen >= min_gap:
+            gone[r["note_id"]] = r
+        else:
+            grace.add(r["note_id"])
+    return gone, grace
 
 
 # D-129 挪表的 id 映射 (old_id → new_id, 9 行废稿 new_id 为空)。发现半 / 留出半按 old_id 定 (D-128 补记)。

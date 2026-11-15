@@ -41,7 +41,8 @@ from fastapi import FastAPI, Header, HTTPException, Request
 
 from starlette.concurrency import run_in_threadpool
 
-from .core import (MERGE_STATS, STATUS_DEGRADED, gate_health, librarian_select_full, paid_health)
+from .core import (MERGE_STATS, STATUS_DEGRADED, gate_health, librarian_select_full, paid_health,
+                   vanished_health)
 
 STATUS_ERROR = "error"   # 应用层崩溃(core 之外), 与 core 的 degraded 区分开
 
@@ -112,10 +113,13 @@ def health() -> dict:
         # D-151 第 13 条 投流标注 (paid_boost): 出处帖投过流的那两路上次读成没成 (read_ok)、累计读失败 / 回包前没等到
         # 几次 (read_errors, 涨 = 卡在不带那一句地借出去, 或者用的是旧的那批帖)、各读到几篇 (flagged / events; window =
         # 事件里起量在投流窗口内的)、累计回了几张内部卡 (lent)、其中标了几张 (labelled)。同样只有数、布尔和 None。
+        # D-154 出处帖已经删了的卡 (vanished): 开没开 (默认开)、上次读 v_notes_vanished 成没成 (read_ok)、视图里缺席满
+        # 36 小时 / 还在宽限里各几篇 (long_gone / in_grace)、最近一次筛书架拿掉几张卡 (dropped)、保底留了几个品牌
+        # (brands_kept)、累计读失败 / 没等到几次 (read_errors)。同样只有数、布尔和 None, 不带 note_id、品牌名。
         "select": {**MERGE_STATS,
                    "primary_timeout_s": _clients.primary_limit_s(),
                    "call_timeout_s": _clients.CALL_TIMEOUT_S, "request_budget_s": _clients.REQUEST_BUDGET_S,
-                   "return_gate": gate_health(), "paid_boost": paid_health()},
+                   "return_gate": gate_health(), "paid_boost": paid_health(), "vanished": vanished_health()},
     }
 
 

@@ -118,11 +118,15 @@ WHERE schemaname = 'autowriter'
 -- 需要重跑 002_add_external_source.sql 让自愈 DROP 生效.
 ```
 
-### Step 7 · 跑 TV sync dry-run
+### Step 7 · 跑 TV sync dry-run（这条 push 已退役，只留 dry-run）
+
+> **已退役（D-038，2026-06；护栏 D-154，2026-11-15）**：通道 2 改成馆员 pull，TV 不再往 `autowriter.items` 写正例，夜跑里也没有这一步。
+> 下面的 dry-run 只用来确认表结构对得上，一行不写。不带 `--dry-run` 的真跑会往写作台的正例池里写行，脚本现在默认拒绝（退出码 2）；
+> 确实要跑先问 owner，再显式加 `--i-know-channel2-is-retired`。
 
 ```bash
 cd truth-vault/scripts
-python sync_truth_vault_baokuan_to_autowriter_items.py --dry-run --limit 5
+python sync_truth_vault_baokuan_to_autowriter_items.py --dry-run
 ```
 
 应该看到 `Found N baokuan pending sync` + `would insert item X for note Y` 日志,

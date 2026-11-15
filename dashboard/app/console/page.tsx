@@ -1,5 +1,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
+import { SESSION_COOKIE, verifySessionToken } from "@/lib/auth";
 import { getDashboardData } from "@/lib/dashboard-data";
 import { cnNum, comma, consoleLabel } from "@/config/showcase";
 import CountUp from "@/components/CountUp";
@@ -30,6 +33,9 @@ const css = `
 .c-bar{transform-origin:left;animation:c-grow .9s cubic-bezier(.22,1,.36,1) both}
 `;
 
+// 实时监测条里事件流的内部叫法(对外看板用组件自带的对外说法, 见 components/LiveMonitor.tsx)
+const MONITOR_LABELS = { parse: "essence 解析", hit: "命中检测", reflow: "ssll 回流", snapshot: "指标快照", lend: "autowriter·馆员" };
+
 type Row = { label: string; n: number; rate: number };
 function HitList({ title, sub, items, color, className }: { title: string; sub: string; items: Row[]; color: string; className: string }) {
   const max = Math.max(...items.map((i) => i.rate), 1);
@@ -52,6 +58,9 @@ function HitList({ title, sub, items, color, className }: { title: string; sub: 
 function navPill(): React.CSSProperties { return { border: "1.5px solid rgba(255,255,255,0.18)", borderRadius: 999, padding: "5px 14px", fontSize: 12.5, fontWeight: 600, color: "#fff", textDecoration: "none" }; }
 
 export default async function ConsolePage() {
+  // 登录闸第二道：middleware.ts 已经拦了一次，这里在页面自己的服务端代码里再验一次会话，
+  // 验不过就回登录页、后面的取数一行都不跑。这样即使中间件那一层被绕过或没生效，座舱也进不来。
+  if (!(await verifySessionToken(cookies().get(SESSION_COOKIE)?.value))) redirect("/login?next=%2Fconsole");
   const d = await getDashboardData();
   const { o, projects, matrix, valence, leverPerf, archetypes, audience, formats, reach, intent, funnel, projectPerf, pulse } = d;
   const flabel = (id: string) => consoleLabel({ project_id: id });
@@ -77,7 +86,7 @@ export default async function ConsolePage() {
     { name: "飞书投放表", color: LIME, val: `已接入 ${comma(pulse?.feishu_n ?? o.notes)} 条` },
     { name: "ssll 资产库", color: LIME, val: `已回流 ${comma(pulse?.ssll_n ?? 0)} 条` },
     { name: "指标快照", color: LIME, val: `${comma(pulse?.snaps_n ?? 0)} 快照` },
-    { name: "essence 解析", color: LAV, val: `已标注 ${comma(pulse?.annotated_n ?? o.essence)}/${comma(o.notes)}` },
+    { name: "essence 解析", kind: "parse" as const, color: LAV, val: `已标注 ${comma(pulse?.annotated_n ?? o.essence)}/${comma(o.notes)}` },
     { name: "命中检测", color: CORAL, val: `${comma(o.baokuanReal)} 爆款判级` },
     { name: "autowriter · 馆员", color: LIME, val: `${comma(o.cards)} 经验卡可借` },
   ];
@@ -119,7 +128,7 @@ export default async function ConsolePage() {
               </div>
             </div>
           </section>
-          <section className="s12 ct" style={{ padding: "18px 22px" }}><LiveMonitor ports={livePorts} annotated={pulse?.annotated_n ?? o.essence} notes={o.notes} online={onlinePorts} total={7} live={false} /></section>
+          <section className="s12 ct" style={{ padding: "18px 22px" }}><LiveMonitor ports={livePorts} annotated={pulse?.annotated_n ?? o.essence} notes={o.notes} online={onlinePorts} total={7} live={false} labels={MONITOR_LABELS} /></section>
 
           {/* ── 挖掘 ── */}
           <div id="挖掘" className="s12 canchor" style={{ height: 0 }} />

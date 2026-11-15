@@ -16,6 +16,16 @@ dry_run 与真写两种模式都跑, 真写模式核对假客户端收到的 del
   ⑤ 回收按 publish_time 撤                        → §2 的 n_old (老但仍是爆) 被撤, 红
   ⑥ _retract_one 改回「先删样本、后清标记」       → §2 第一条 delete 就炸 (标记还没清), 红
 
+§8 是 D-154 第 8 条 (owner 11-15): 出处帖在飞书里删了满 36 小时、三省六部里还有样本的, 撤 (原因 vanished), 一轮最多 5 篇。
+反证 (11-15 实跑, 每条改坏都红):
+  ⑦ C 路不看上限 (一轮全撤)                       → §8 第一轮撤了 8 篇, 红
+  ⑧ C 路把还在宽限里的也撤                        → §8 w_grace 的样本被删, 红
+  ⑨ C 路不排 done (B 路刚撤过的再算一次)          → §8 第一轮数成 7, 红
+  ⑩ C 路不走双键查旧样本                          → §8 lg_legacy 留在三省六部, 红
+  ⑪ 读视图失败往外抛                              → §8 B 路那一篇也没撤成, 红
+  ⑫ 环境变量关不掉                                → §8 关着还撤, 红
+  ⑬ 超出上限的不打名单                            → §8 日志里没有没轮到的那几篇, 红
+
 §7 是 I-06 的大批首推闸 (D-119 第 14 条, D-130): 真的驱动 main(), 假客户端记下每一次 insert / update / delete,
 另把 daily-sync.yml 里通道 1 那一步和收尾的失败聚合垫假 python 真跑一遍。反证见 D-130 (每条改坏都红)。
 
@@ -181,10 +191,22 @@ class FakeSB:
         raise AssertionError(q.op)
 
 
-def install(sb: FakeSB, vanished: set[str] = frozenset()):
+def install(sb: FakeSB, vanished: set[str] = frozenset(), long_gone=(), grace=(), seen: list | None = None):
     s.fetch_all_pages = lambda q, page_size=1000, order_by=None: [dict(r) for r in sb.rows_for(q)]
     # 飞书已删篇 (v_notes_vanished, D-103) 的查询在 _common 里, 这里按名单桩掉; 真视图由 check_vanished_notes.py 守
-    s.fetch_vanished_note_ids = lambda _sb, project_id=None: set(vanished)
+    s.fetch_vanished_note_ids = lambda _sb, project_id=None: set(vanished) | set(long_gone) | set(grace)
+
+    # D-154 第 8 条: 缺席满 36 小时的 (long_gone) / 还在宽限里的 (grace) 两堆, 同样按名单桩掉 (真的分法在
+    # check_vanished_notes.py §2b); 回的行和视图一样带 synced_to_ssll_at。seen 记下每次调用给的项目筛。
+    def long_vanished(_sb, project_id=None, **kw):
+        if seen is not None:
+            seen.append(project_id)
+        rows = {nid: {"note_id": nid, "project_id": sb.notes[nid]["project_id"],
+                      "synced_to_ssll_at": sb.notes[nid].get("synced_to_ssll_at")}
+                for nid in long_gone if nid in sb.notes and project_id in (None, sb.notes[nid]["project_id"])}
+        return rows, set(grace)
+
+    s.fetch_long_vanished = long_vanished
 
 
 def note(note_id, tier, flags=None, *, project_id="P", tier_source="状态字段", publish_time=RECENT, synced=None):
@@ -533,5 +555,123 @@ assert rc == 1 and wrote_nothing(sb), f"闸里查炸的篇要算新插、照挡:
 assert len(err) == 1 and all(i in err[0] for i in flaky3), "查炸的那 3 篇要在 ERROR 行的新插名单里"
 assert "按新插算" in log, "查炸要留一行 WARNING"
 print("✓ §7k 闸里查旧样本出错 → 按新插算 (31 篇全炸全算; 3 篇炸把 28 顶过线照挡、名单里有它们)")
+
+# ══ §8 · D-154 第 8 条 (owner 11-15): 出处帖在飞书里删了满 36 小时的, 推过去的样本也撤 (vanished); 一轮最多 5 篇 ═════════
+VCAP = s.SSLL_VANISHED_RETRACT_MAX
+assert VCAP == 5, f"一轮最多撤 5 篇是 D-154 定的 (一次扫坏了最多错撤这几篇), 改了要先改决定: {VCAP}"
+assert s.SSLL_VANISHED_REASON == "vanished"
+saved_env8 = os.environ.pop(s.SSLL_VANISHED_RETRACT_ENV, None)
+
+
+def retract8(sb, level=logging.WARNING, **kw):
+    """跑一次回收, 返回 (撤回篇数, level 以上的日志)。"""
+    buf = io.StringIO()
+    h = logging.StreamHandler(buf)
+    h.setLevel(level)
+    old_level = s.logger.level
+    s.logger.setLevel(level)
+    s.logger.addHandler(h)
+    try:
+        return s.retract_stale_synthetic_from_ssll(sb, **kw), buf.getvalue()
+    finally:
+        s.logger.removeHandler(h)
+        s.logger.setLevel(old_level)
+
+
+def world8():
+    notes8 = ([note(f"g{i}", "爆", None, synced=RECENT) for i in range(1, 8)]          # 删了满 36 小时, 资格还在: 7 篇
+              + [note("w_grace", "爆", None, synced=RECENT),                             # 还在宽限里: 不撤
+                 note("d_demoted", "趴", None, synced=RECENT),                           # 删了、也降档了: B 路按资格撤, 不占名额
+                 note("k_alive", "大爆", None, synced=RECENT),                           # 没删: 不动
+                 note("lg_legacy", "参考", None, synced=RECENT),                         # 删了; 样本是回填 lineage 列之前的旧行
+                 note("x_nosample", "爆", None, synced=None)])                           # 删了, 三省六部里没有它的样本: 不动
+    samples8 = [{"id": f"s-{n['note_id']}", "source_truth_vault_note_id": n["note_id"]}
+                for n in notes8 if n["note_id"] not in ("lg_legacy", "x_nosample")]
+    samples8 += [{"id": "s-lg_legacy", "source_truth_vault_note_id": None, "_legacy_key": "lg_legacy"},
+                 {"id": "s-native", "source_truth_vault_note_id": None}]
+    return FakeSB(notes8, samples8)
+
+
+LONG_GONE = [f"g{i}" for i in range(1, 8)] + ["d_demoted", "lg_legacy", "x_nosample", "z_not_in_tv"]
+sb8 = world8()
+install(sb8, long_gone=LONG_GONE, grace=["w_grace"])
+n_dry, log = retract8(sb8, logging.INFO, dry_run=True)
+assert n_dry == 1 + VCAP and sb8.deleted == [] and sb8.updated == {}, f"dry-run: 按资格 1 篇 + 已删的 {VCAP} 篇, 一行不写: {n_dry}"
+assert "d_demoted (tier_demoted" in log and "d_demoted (vanished" not in log and "g5 (vanished" in log, \
+    f"B 路按资格撤过的那篇不再占已删这一路的名额 (dry-run 时样本还在, 靠 done 排掉): {log}"
+n1, log = retract8(sb8)
+assert n1 == 1 + VCAP, f"第一轮: d_demoted 按资格撤 (不占名额) + 已删的撤 {VCAP} 篇, 实得 {n1}"
+assert sorted(sb8.deleted) == sorted(["s-d_demoted"] + [f"s-g{i}" for i in range(1, 6)]), f"按 note_id 排, 撤前 5 篇: {sb8.deleted}"
+assert "(vanished " in log and "s-g1" in log, f"撤回的那一行日志要写明原因 vanished: {log}"
+skipped_line = [ln for ln in log.splitlines() if "没轮到" in ln]
+assert len(skipped_line) == 1 and all(x in skipped_line[0] for x in ("g6", "g7", "lg_legacy", "共 8 篇", "没轮到 3 篇")) \
+    and "x_nosample" not in skipped_line[0] and "w_grace" not in log, f"超出上限的要打名单 (下一轮接着撤): {log}"
+assert all(v == {"synced_to_ssll_at": None, "synced_ssll_reference_sample_id": None} for v in sb8.updated.values()) \
+    and sorted(sb8.updated) == sorted(["d_demoted"] + [f"g{i}" for i in range(1, 6)]), "TV 两列标记一起清, 只清撤了的"
+n2, log = retract8(sb8)
+assert n2 == 3 and sorted(sb8.deleted)[-3:] == ["s-g6", "s-g7", "s-lg_legacy"] and "没轮到" not in log, \
+    f"第二轮接着撤剩下的 3 篇 (含只有旧键的那行), 不再有名单: {n2} {sb8.deleted}"
+n3, log = retract8(sb8)
+left = sorted(x["id"] for x in sb8.samples)
+assert n3 == 0 and left == ["s-k_alive", "s-native", "s-w_grace"], f"撤完再跑是 0 (幂等); 没删的、还在宽限里的、原生样本不动: {left}"
+assert "x_nosample" not in sb8.updated and "w_grace" not in sb8.updated, "三省六部里没有样本的 / 还在宽限里的, TV 标记也不动"
+# 撤掉的篇还在 v_notes_vanished 里 → push 侧照样不推 (不会当晚又推回去)
+install(sb8, long_gone=LONG_GONE, grace=["w_grace"])
+assert [r["note_id"] for r in s.fetch_pending_baokuan(sb8)] == [], "撤掉的已删帖不该当晚又被推回去"
+
+# 上一轮清完 TV 标记、删样本那一步断了的旧行 (只有旧键, 标记已经是空的): 这一轮照样撤 (Codex on #284)
+sb8 = FakeSB([note("lg_half", "参考", None, synced=None)],
+             [{"id": "s-lg_half", "source_truth_vault_note_id": None, "_legacy_key": "lg_half"}])
+install(sb8, long_gone=["lg_half"])
+n, _ = retract8(sb8)
+assert n == 1 and sb8.deleted == ["s-lg_half"], f"标记已空、只有旧键的样本也要撤掉: {n} {sb8.deleted}"
+
+# --project 传下去, 只撤这个项目的
+sb8 = FakeSB([note("pa_gone", "爆", None, project_id="A", synced=RECENT), note("pb_gone", "爆", None, project_id="B", synced=RECENT)],
+             [{"id": "s-pa_gone", "source_truth_vault_note_id": "pa_gone"}, {"id": "s-pb_gone", "source_truth_vault_note_id": "pb_gone"}])
+seen8: list = []
+install(sb8, long_gone=["pa_gone", "pb_gone"], seen=seen8)
+n, _ = retract8(sb8, project_filter="A")
+assert n == 1 and sb8.deleted == ["s-pa_gone"] and seen8 == ["A"], f"--project 只撤该项目已删的帖: {sb8.deleted} {seen8}"
+
+# 读视图失败: 这一路这一轮不撤、打 warning, B / A 两路照常
+sb8 = world8()
+install(sb8, long_gone=LONG_GONE)
+
+
+def boom(_sb, project_id=None, **kw):
+    raise RuntimeError("PostgREST down")
+
+
+s.fetch_long_vanished = boom
+n, log = retract8(sb8)
+assert n == 1 and sb8.deleted == ["s-d_demoted"] and "v_notes_vanished" in log and "不撤" in log, \
+    f"读视图失败: 只撤按资格的那一篇, 不抛: {n} {sb8.deleted} {log}"
+
+# 环境变量只能关: SSLL_VANISHED_RETRACT=0 → 这一路不跑、视图不读; 不设 / 别的值 = 开
+for raw, want in (("0", False), ("off", False), ("False", False), ("no", False), ("1", True), ("", True)):
+    os.environ[s.SSLL_VANISHED_RETRACT_ENV] = raw
+    assert s.vanished_retract_enabled() is want, f"SSLL_VANISHED_RETRACT={raw!r} 该是 {want}"
+os.environ[s.SSLL_VANISHED_RETRACT_ENV] = "0"
+sb8 = world8()
+seen8 = []
+install(sb8, long_gone=LONG_GONE, seen=seen8)
+n, _ = retract8(sb8)
+assert n == 1 and sb8.deleted == ["s-d_demoted"] and seen8 == [], f"关着: 只有按资格的那一篇, 视图不读: {sb8.deleted} {seen8}"
+del os.environ[s.SSLL_VANISHED_RETRACT_ENV]
+assert s.vanished_retract_enabled() is True, "不设环境变量就是开 (纠错合并就生效)"
+if saved_env8 is not None:
+    os.environ[s.SSLL_VANISHED_RETRACT_ENV] = saved_env8
+
+# main() 里: 回收在推送之前, 已删的那几篇照撤; 正常夜 (名单是空的) 不多查一次样本 (§7a 钉着)
+sb8 = world8()
+install(sb8, long_gone=LONG_GONE, grace=["w_grace"])
+_install8 = install
+install = lambda sb, *a, **k: _install8(sb, long_gone=LONG_GONE, grace=["w_grace"])   # run_main 里会再 install 一次  # noqa: E731
+rc, log, _ = run_main(sb8)
+install = _install8
+assert rc == 0 and len(sb8.deleted) == 1 + VCAP and sb8.inserted == [], f"main(): rc={rc} 删 {sb8.deleted} 新插 {sb8.inserted}"
+print(f"✓ D-154: 出处帖在飞书里删了满 36 小时的样本撤 (vanished), 一轮最多 {VCAP} 篇、超出的打名单下一轮接着撤; 还在宽限里 / "
+      "没有样本 / 没删的不动; 按资格撤的不占名额; 旧键样本也撤; --project、读失败不抛、环境变量只能关")
 
 print("\ncheck_ssll_retract: all checks passed")

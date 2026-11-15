@@ -2,6 +2,11 @@
 sync_truth_vault_baokuan_to_autowriter_items.py
 ═══════════════════════════════════════════════════════════════════════════
 
+⚠️ 已退役 (D-038, 2026-06; 护栏 D-154, 2026-11-15): 通道 2 早就改成馆员 pull (docs/14 / docs/15), TV 不再往
+   autowriter.items 写正例, 夜跑里也没有这一步。这个脚本只留在仓库里备查。真跑会往写作台的正例池里写
+   example_label='positive' 的行 (还会清掉 6 个月以前的旧标), 所以现在不带 --dry-run 直接跑会被拒绝 (退出码 2);
+   真要跑 (先问 owner) 得显式加 --i-know-channel2-is-retired。--dry-run 照常能跑, 一行不写。
+
 把 Truth Vault 中筛选过的爆款 sync 到 autowriter.items，打标
 example_label='positive'，注入 autowriter `memory.build_system_prompt` 的
 few-shot pool（autowriter 的 `list_example_items` 会按 created_at DESC 取
@@ -32,10 +37,11 @@ example_label 置 NULL — autowriter 不再注入但历史依旧可查）。
     都会写回，无论本次 INSERT 是新建还是仅恢复孤儿 item。
 
 用法:
-    python sync_truth_vault_baokuan_to_autowriter_items.py
-    python sync_truth_vault_baokuan_to_autowriter_items.py --project NUC_phase1
-    python sync_truth_vault_baokuan_to_autowriter_items.py --dry-run
-    python sync_truth_vault_baokuan_to_autowriter_items.py --skip-retire   # 只 sync 不退役
+    python sync_truth_vault_baokuan_to_autowriter_items.py --dry-run                       # 只看, 不写 (照常能跑)
+    python sync_truth_vault_baokuan_to_autowriter_items.py --dry-run --project NUC_phase1
+    # 下面两条是真写, 已退役: 不加 --i-know-channel2-is-retired 会被拒绝
+    python sync_truth_vault_baokuan_to_autowriter_items.py --i-know-channel2-is-retired
+    python sync_truth_vault_baokuan_to_autowriter_items.py --i-know-channel2-is-retired --skip-retire   # 只 sync 不退役
 
 环境变量:
     SUPABASE_URL
@@ -694,8 +700,12 @@ def mark_synced(sb, note_id: str, item_id: str, dry_run: bool = False) -> None:
     )
 
 
+# 退役护栏 (D-154): 不带 --dry-run 的真跑要显式带这个开关。名字故意长: 不会被顺手敲出来。
+RETIRED_OVERRIDE_FLAG = "--i-know-channel2-is-retired"
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=__doc__.strip().splitlines()[0])
     parser.add_argument("--project")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
@@ -730,7 +740,21 @@ def main() -> int:
         help="Skip the post-sync retire pass (the one that clears example_label "
              "on TV-synced items older than 6 months).",
     )
+    parser.add_argument(
+        RETIRED_OVERRIDE_FLAG, dest="retired_override", action="store_true",
+        help="通道 2 push 已退役 (D-038)。不带 --dry-run 的真跑会往写作台的正例池里写行, 默认拒绝; "
+             "确实要跑 (先问 owner) 才加这个开关。--dry-run 不需要它",
+    )
     args = parser.parse_args()
+
+    # 退役护栏 (D-154): 真跑必须显式放行。放在读环境变量、连库之前 —— 被拒绝的这一次什么都不碰。
+    if not args.dry_run and not args.retired_override:
+        logger.error(
+            "通道 2 push 已退役 (D-038): TV 不再往 autowriter.items 写正例, 写作台的经验卡走馆员 (docs/15)。"
+            "这一次没有带 --dry-run, 已拒绝、一行没写。只想看候选: 加 --dry-run; 确实要真跑 (先问 owner): 加 %s",
+            RETIRED_OVERRIDE_FLAG,
+        )
+        return 2
 
     # Handle deprecated --max-per-run alias.
     if args.max_per_run is not None:

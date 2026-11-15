@@ -34,6 +34,8 @@ public.reference_samples（sanshengliubu 保持在 public schema，D-024）。
     已推进 ssll 但【现在】不满足 push 判据的样本会被撤回 (ssll 行按 id 删, TV 两列标记清空):
     tier 降档出 爆/大爆/参考、tier_source 退回 数值推断/NULL、爆/大爆 指标不可信 (synthetic / 铺评工单)。
     判据只有一份 ssll_eligibility_reason(), 推什么撤什么对称 (D-068 / D-087)。
+    飞书里删了满 36 小时的帖, 推过去的样本也撤 (原因 vanished, D-154 第 8 条): 一轮最多撤 5 篇, 超出的列名单、
+    下一轮接着撤; 环境变量 SSLL_VANISHED_RETRACT=0 可以关掉这一路 (不需要设)。详见 _retract_vanished_from_ssll()。
 
 环境变量:
     SUPABASE_URL
@@ -51,6 +53,7 @@ from typing import Any
 
 from _common import (
     fetch_all_pages,
+    fetch_long_vanished,
     fetch_vanished_note_ids,
     get_supabase_client,
     load_mapping,
@@ -163,7 +166,8 @@ def fetch_pending_baokuan(
         q = q.eq("project_id", project_filter)
     rows = fetch_all_pages(q, order_by="note_id")
     # 飞书里已删的篇不推 (审计 B-21, D-103): 本项目最近一次完整同步没见到它 = 运营删了, 推过去就是拿删掉的稿当参照。
-    # 已推过的不在这里撤 —— 回收 (retract_stale_synthetic_from_ssll) 只认资格 (D-087), 删没删由 owner 看 v_notes_vanished 定。
+    # 已推过的不在这里撤 —— 回收那一头撤: 缺席满 36 小时的, _retract_vanished_from_ssll 每轮撤几篇 (D-154 第 8 条,
+    # 改了 D-103「不自动撤」那一句); 还在宽限里的不撤, 这里照样不推。
     vanished = fetch_vanished_note_ids(sb, project_filter)
     if vanished:
         rows = [r for r in rows if r["note_id"] not in vanished]
@@ -337,13 +341,18 @@ def retract_stale_synthetic_from_ssll(
     才判、飞书状态列整批误标又改回 (OKMAN 08-18, 284 条处方药参照在 ssll 躺了 7 周) —— push 侧的
     过滤只挡【新】同步, 旧的会以高权重停留在 ssll `reference_samples`, 污染 vibe 仿写。每次 sync
     跑一遍即自愈; 同一篇两路都命中只撤一次 (done 集合)。
+
+      C · 飞书里删了的 (D-154 第 8 条, owner 11-15): 资格还在 (档位没变)、但出处帖在飞书里删了满 36 小时的,
+          样本也撤, 原因 vanished。排在 B / A 之后 (不合格的先按资格撤, 不占这一路的名额), 一轮最多
+          SSLL_VANISHED_RETRACT_MAX 篇。见 _retract_vanished_from_ssll。
     """
     done: set[str] = set()
     n_b = _retract_ineligible_from_ssll(sb, project_filter=project_filter, dry_run=dry_run, done=done)
     n_a = _retract_untrustworthy_by_tier(sb, project_filter=project_filter, dry_run=dry_run, done=done)
-    logger.info("retract summary%s: 从 ssll 侧按资格撤 %d · 从 TV 侧按 tier 补撤 (legacy/orphan 路) %d",
-                " [dry-run]" if dry_run else "", n_b, n_a)
-    return n_a + n_b
+    n_c = _retract_vanished_from_ssll(sb, project_filter=project_filter, dry_run=dry_run, done=done)
+    logger.info("retract summary%s: 从 ssll 侧按资格撤 %d · 从 TV 侧按 tier 补撤 (legacy/orphan 路) %d · 飞书里已删的撤 %d",
+                " [dry-run]" if dry_run else "", n_b, n_a, n_c)
+    return n_a + n_b + n_c
 
 
 def _retract_one(sb, note_id: str, sample_ids: list[str], reason: str, *, dry_run: bool, done: set[str]) -> None:
@@ -442,6 +451,71 @@ def _retract_untrustworthy_by_tier(sb, *, project_filter: str | None, dry_run: b
         _retract_one(sb, note_id, [sample_id] if sample_id else [], reason, dry_run=dry_run, done=done)
         retracted += 1
     return retracted
+
+
+# ── C 路: 飞书里删了满 36 小时的帖, 推过去的样本也撤 (D-154 第 8 条, owner 11-15) ─────────────────────────────
+# D-103 (10-09) 定的是「只报不删: 不自动撤 ssll 样本」, 撤不撤由 owner 看 v_notes_vanished 定。owner 11-15 定了删了的帖
+# 不该再当参照、也不该要人去看视图, 所以这一种情况改成自动撤 (D-154 记着这一句怎么改的; note 本身照旧不删)。
+# · 哪些算: 在 v_notes_vanished 里且缺席满 36 小时 (_common.VANISHED_GRACE, 和写作台、馆员同一条)。还在宽限里的不撤:
+#   TV 一次同步写坏, 活着的篇只会短暂进视图, 而撤是按 id 删另一个产品库里的行。
+# · 一轮最多撤 SSLL_VANISHED_RETRACT_MAX 篇 (按 note_id 排, 取前几篇), 超出的打名单、下一轮接着撤: 36 小时挡不住
+#   「连着几晚没扫成、接着一次扫坏了」, 那时一个项目的帖会一起进名单, 上限让一晚最多错撤这几篇; 帖回到飞书里之后
+#   它又是待推的 (12 个月内发布的), 下一轮自己推回去。真删了很多篇的时候就是分几晚撤完, 不用人管。
+# · 写法和别的回收同一处 (_retract_one: 先清 TV 标记、再按 id 删样本), 不碰没有 TV lineage 的原生样本。
+# · 视图读不到: 这一路这一轮不撤、打一行 warning, 不影响 B / A 两路 (后面 fetch_pending_baokuan 读同一张视图,
+#   它读不到会让整步红, 那是原来就有的行为)。
+# · 环境变量 SSLL_VANISHED_RETRACT=0 可以关掉这一路; 不设就是开 (这是纠错, 合并就生效)。
+SSLL_VANISHED_RETRACT_MAX = 5
+SSLL_VANISHED_RETRACT_ENV = "SSLL_VANISHED_RETRACT"
+SSLL_VANISHED_REASON = "vanished"
+_VANISHED_SKIP_LIST_MAX = 50      # 没轮到的名单最多打这么多个 id (总数照报)
+
+
+def vanished_retract_enabled() -> bool:
+    """C 路开没开: 默认开; SSLL_VANISHED_RETRACT 设成 0 / false / no / off 才关。"""
+    return (os.environ.get(SSLL_VANISHED_RETRACT_ENV) or "").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _retract_vanished_from_ssll(sb, *, project_filter: str | None, dry_run: bool, done: set[str]) -> int:
+    """C 路 (D-154 第 8 条): 出处帖在飞书里删了满 36 小时、三省六部里还有样本的, 撤。返回撤回的笔记数。"""
+    if not vanished_retract_enabled():
+        logger.info("飞书里已删的帖的样本这一轮不撤 (%s 关着)", SSLL_VANISHED_RETRACT_ENV)
+        return 0
+    try:
+        gone, _grace = fetch_long_vanished(sb, project_filter)
+    except Exception as exc:  # noqa: BLE001 — 这一路读不到不许带倒 B / A 两路
+        logger.warning("读 v_notes_vanished 失败 (%s) —— 飞书里已删的帖的样本这一轮不撤", type(exc).__name__)
+        return 0
+    note_ids = sorted(n for n in gone if n not in done)
+    by_note: dict[str, list[str]] = {}
+    for i in range(0, len(note_ids), _IN_LIST_CHUNK):
+        for smp in fetch_all_pages(
+            sb.schema("public").table("reference_samples")
+            .select("id, source_truth_vault_note_id")
+            .in_("source_truth_vault_note_id", note_ids[i:i + _IN_LIST_CHUNK]),
+            order_by="id",
+        ):
+            nid, sid = smp.get("source_truth_vault_note_id"), smp.get("id")
+            if nid and sid:
+                by_note.setdefault(nid, []).append(sid)
+    # 回填 lineage 列之前同步的旧行按列取不到: 按列没取到样本的, 再走一次双键查 (同 A 路)。
+    # 不看 TV 的已推标记 (Codex on #284): _retract_one 是先清标记、再删样本, 上一轮清完标记、删样本那一步断了的
+    # 旧行, 这时标记已经是空的 —— 只查标着已推的就永远撤不掉它 (B 路按 lineage 列取, 也看不见这种行)。
+    # 多出来的只是每篇已删、按列没样本的帖一次按键查询。两头都没有样本的不动 (三省六部里没有东西可撤)。
+    for nid in note_ids:
+        if nid not in by_note:
+            sid = existing_ssll_sample_id(sb, nid)
+            if sid is not None:
+                by_note[nid] = [sid]
+    todo = sorted(by_note)
+    now, later = todo[:SSLL_VANISHED_RETRACT_MAX], todo[SSLL_VANISHED_RETRACT_MAX:]
+    for nid in now:
+        _retract_one(sb, nid, by_note[nid], SSLL_VANISHED_REASON, dry_run=dry_run, done=done)
+    if later:
+        shown = ", ".join(later[:_VANISHED_SKIP_LIST_MAX]) + (" …" if len(later) > _VANISHED_SKIP_LIST_MAX else "")
+        logger.warning("飞书里已删、三省六部里还有样本的帖共 %d 篇, 一轮最多撤 %d 篇; 这一轮没轮到 %d 篇 (下一轮接着撤): %s",
+                       len(todo), SSLL_VANISHED_RETRACT_MAX, len(later), shown)
+    return len(now)
 
 
 def fetch_top_comments(sb, note_id: str, limit: int = 5) -> list[dict[str, Any]]:
@@ -848,7 +922,7 @@ def main() -> int:
     if not args.dry_run:
         preflight_check(sb)
     # 先自愈回收【已推进 ssll、但现在不满足 push 判据】的 (synthetic / 铺评工单 / tier 降档 / tier_source
-    # 退回未确认; D-068 / D-087, 不污染飞轮); 再推新爆款。
+    # 退回未确认; D-068 / D-087, 不污染飞轮) 和出处帖在飞书里删了满 36 小时的 (D-154 第 8 条); 再推新爆款。
     retracted = retract_stale_synthetic_from_ssll(sb, project_filter=args.project, dry_run=args.dry_run)
     pending = fetch_pending_baokuan(sb, project_filter=args.project)
     logger.info("Found %d baokuan pending sync to sanshengliubu", len(pending))

@@ -148,9 +148,9 @@ python preview_injection_candidates.py --project WTG_phase1
 python sync_truth_vault_baokuan_to_sanshengliubu.py --dry-run
 python sync_truth_vault_baokuan_to_sanshengliubu.py
 
-# 通道 2：TV → autowriter items
+# 通道 2：TV → autowriter items —— 这条 push 已退役 (D-038), 不要真跑: 写作台的经验卡走馆员 (docs/15)。
+#   不带 --dry-run 会往写作台的正例池里写行, 脚本现在默认拒绝 (D-154); 只看候选可以跑 dry-run:
 python sync_truth_vault_baokuan_to_autowriter_items.py --dry-run
-python sync_truth_vault_baokuan_to_autowriter_items.py
 ```
 
 验证下游真的有数据了（这些查询就是 Session #14 连库用的）：
