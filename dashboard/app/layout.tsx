@@ -17,7 +17,13 @@ const hanken = Hanken_Grotesk({
   variable: "--font-hanken",
 });
 
+/**
+ * 全站不让搜索引擎收录(含公开首页、对外看板和 Vercel 预览域名)：这里的 robots 落到每一条路由的
+ * <meta name="robots">，另有 app/robots.ts(robots.txt 全站 Disallow)和 next.config.mjs 里的
+ * X-Robots-Tag 响应头，三处说的是同一件事。子页面自己写 metadata 时不要把 robots 改回可收录。
+ */
 export const metadata: Metadata = {
+  robots: { index: false, follow: false, googleBot: { index: false, follow: false } },
   title: "BYWOOD 芭梧 · AI 驱动的内容增长中台",
   description:
     "把每一次投放,变成越投越准的策略复利 —— 一套结构化飞轮,照见从投放到决策到复利的每一环。",

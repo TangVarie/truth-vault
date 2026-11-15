@@ -258,7 +258,7 @@ SELECT '53', 'F · 数据状态',
     COALESCE(pg_temp.safe_count(
         $q$SELECT COUNT(*) FROM truth_vault.notes WHERE synced_to_aw_at IS NOT NULL$q$
     )::TEXT, 'N/A'),
-    '> 0', 'python scripts/sync_truth_vault_baokuan_to_autowriter_items.py'
+    '任意 (只是个数)', '不用修: 通道 2 push 已退役 (D-038), 写作台的经验卡走馆员; 这个数不再涨是对的, 不要为了它去跑那个推送脚本'
 UNION ALL
 SELECT '54', 'F · 数据状态',
     'public.reference_samples 里 source_type=pack 总行数',
@@ -498,7 +498,7 @@ SELECT '93', 'I · 数据一致性',
     'v_notes_vanished 行数: 盖过 last_seen 戳、但本项目最近一次完整同步没见到的篇 (飞书里删了; 审计 B-21 / D-103)',
     COALESCE(pg_temp.safe_count($q$SELECT COUNT(*) FROM truth_vault.v_notes_vanished$q$)::TEXT, 'N/A'),
     '0',
-    '> 0 = 飞书里删了但 TV 还留着 (10-09 实查 HATHERINE 6 · TUGE 4, 全已标 essence、0 在 ssll、0 有经验卡). 新策展 / 通道 1 推送 / 闸二取数 10-09 起自动排除; 已推去 ssll 的样本和已有的经验卡不自动撤 —— 看视图里 synced_to_ssll_at / has_lesson_card 两列, owner 决定删 note 还是留档.'
+    '> 0 = 飞书里删了但 TV 还留着 (10-09 实查 HATHERINE 6 · TUGE 4, 全已标 essence、0 在 ssll、0 有经验卡). 新策展 / 通道 1 推送 / 闸二取数 10-09 起自动排除; 11-15 起 (D-154 第 8 条) 缺席满 36 小时的: 馆员不再借它的经验卡, 已推去 ssll 的样本每晚自动撤几篇 (一轮最多 5 篇); note 本身不删, 删不删还是 owner 定.'
 
 UNION ALL
 SELECT '94', 'H · 跨 schema 孤儿',

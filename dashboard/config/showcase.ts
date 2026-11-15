@@ -143,7 +143,7 @@ export const NODE_LABEL: Record<string, { label: string; sub?: string }> = {
   truth_vault:   { label: "ROC 智能中台",   sub: "结构化策略库" },
   channel1:      { label: "跨域审美注入",   sub: "VIBE INJECTION" },
   channel2:      { label: "AI 决策回流",    sub: "STRATEGY RECALL" },
-  autowriter:    { label: "AI 创作工作台",  sub: "AUTOWRITER" },
+  autowriter:    { label: "AI 创作工作台",  sub: "AI WRITER DESK" },
   sanshengliubu: { label: "智能仿写网络",   sub: "SSL ENGINE" },
   decentralized: { label: "去中心化创作网络", sub: "DCN · 规划中" },
 };

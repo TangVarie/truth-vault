@@ -49,6 +49,16 @@ get_supabase / call_anthropic / 缓存读写), 核对 LLM 真正看到的候选�
   (54) 夜跑读的不是馆员读的那两路 / (55) 读不到不打 ::warning / (56) 外部卡算进借出去的卡 /
   (57) 缓存读不到当成馆员瞎了 / (58) 读失败往外抛 / (59) 有一路读不到还报占比                           → 红
 
+§12 出处帖在飞书里删了满 36 小时的卡不借 (D-154 第 8 条, owner 11-15; 默认开) 和 library_version 的卡面摘要 (D-154, 评审 D2)。
+反证 (11-15 实跑, 20 个都红):
+  (60) long_vanished 不看 36 小时 (视图里有就算) / (61) 门槛改成 > 36 小时 / (74) 读不懂时刻的行也算      → 红
+  (62) _drop_blocked 去掉品牌保底 / (63) 没写品牌的卡也保底                                             → 红
+  (64) _vanished_ids 去掉 10 分钟那一条 / (65) 读失败丢掉上一次读成的名单 / (66) 读失败往外抛            → 红
+  (67) librarian_select 里先过回流闸再拿删了的 / (68) 不在预筛之前拿 (librarian_select 里不调)           → 红
+  (69) 环境变量关不掉 / (70) 代码默认改成关 / (71) 视图不在记成读库故障                                  → 红
+  (72) 借阅等读完才回 / (73) 只读第一页                                                                 → 红
+  (75) _card_digest 不看摘录 / (76) 不看档位 / (77) 不看伪爆标记 / (78) 不看 curated_at / (79) 不排序    → 红
+
 跑法: cd scripts && python check_librarian_shortlist.py
 """
 from __future__ import annotations
@@ -70,6 +80,10 @@ from librarian import core  # noqa: E402
 # 「读到了, 一篇都没有」: 那几节的卡都是 paid_boost=false、一个字不加。§11 换回真的读法, 对着假库逐条测。
 REAL_READ_PAID = core._read_paid_source
 core._read_paid_source = lambda sb, table, where, cols, order: []
+# 出处帖已经删了的卡 (D-154) 默认开, 每次借阅前会去读 v_notes_vanished (10 分钟一次)。§1–§11 的假库不认这一读, 同样先换成
+# 「读到了, 一篇都没有」: 那几节的书架、版本串、读库次数都不因为它变。§12 换回真的读法, 对着假库逐条测。
+REAL_READ_VANISHED = core._read_vanished
+core._read_vanished = lambda sb: (frozenset(), 0)
 
 
 def card(nid, brand, category, rank, audience=None):
@@ -981,4 +995,255 @@ logging.getLogger("flywheel_librarian").disabled = False
 print("✓ D-151 第 13 条: 出处帖投过流的卡照借, 回包的卡上写明 (起量在投流窗口里写「投流起量的」, 其余写「投过流」; 标记 ∪ 投流事件, "
       "和写作台同一批帖); 选卡模型看不到, prompt 和缓存键不变; 不进缓存, 以前的缓存行回包时现加; 读失败不标、不挡借阅、记数、"
       "60 秒后重读; 读卡住不堵借阅; 旧名单过 1 小时不再说「不是」; 外部卡不标; 和回流闸的开关无关; 夜跑那盏灯照读那两路")
+
+# ══ §12 · 出处帖在飞书里删了满 36 小时的卡不借 (D-154 第 8 条); library_version 摘要卡面 (D-154, 评审 D2) ═══════════════
+logging.getLogger("flywheel_librarian").disabled = True   # 下面故意让读库失败、让品牌保底触发
+core._read_vanished = REAL_READ_VANISHED
+core._read_paid_source = lambda sb, table, where, cols, order: []   # 投流那两路在 §11 测过了, 这一节的假库不认
+saved_env_v = os.environ.pop(core.VANISHED_FILTER_ENV, None)
+saved_env_g = os.environ.pop(core.RETURN_GATE_ENV, None)
+saved_v = (core._gate_clock, core.VANISHED_PAGE, core.VANISHED_WAIT_S, core.RETURN_GATE_DEFAULT)
+clock = [9000.0]
+core._gate_clock = lambda: clock[0]
+core.fetch_candidates = lambda sb, **kw: list(CARDS)
+core.get_cache = lambda sb, key: None
+core.RETURN_GATE_DEFAULT = False
+
+
+def gone_row(nid, hours, *, seen="2026-11-01T00:00:00+00:00"):
+    """v_notes_vanished 的一行: 这篇最后被看到是 seen, 本项目最近一轮扫描比它晚 hours 小时。"""
+    from datetime import datetime, timedelta
+    latest = datetime.fromisoformat(seen) + timedelta(hours=hours)
+    return {"note_id": nid, "last_seen_at": seen, "latest_seen_at": latest.isoformat()}
+
+
+class VanishedSB:
+    """假库: truth_vault.v_notes_vanished (按 note_id 排着翻页) 和 autowriter.tv_note_links (回流闸那一读)。记下每个请求
+    (最后一格: 读视图是翻到哪一页, 读闸是问了几个 id)。fail: 读视图时抛这个异常; stall: 读视图时卡住, 等 Event 被 set。"""
+
+    def __init__(self, rows=(), gate=(), fail=None, stall=None):
+        self.rows, self.gate, self.fail, self.stall, self.calls = list(rows), {r["note_id"]: r for r in gate}, fail, stall, []
+
+    def schema(self, name):
+        return _PaidQ(self, name)
+
+    def _run(self, q):
+        if q["table"] == "tv_note_links":
+            self.calls.append((q["schema"], q["table"], q["cols"], len(q["in"][1])))
+            return types.SimpleNamespace(data=[dict(self.gate[v]) for v in q["in"][1] if v in self.gate])
+        self.calls.append((q["schema"], q["table"], q["cols"], q["range"]))
+        assert (q["schema"], q["table"], q["order"]) == ("truth_vault", "v_notes_vanished", "note_id"), q
+        assert q["cols"] == "note_id, last_seen_at, latest_seen_at", q
+        if self.stall is not None:
+            assert self.stall.wait(20), "卡住的那次读没被放行"
+        if self.fail is not None:
+            raise self.fail
+        lo, hi = q["range"]
+        return types.SimpleNamespace(data=[dict(r) for r in sorted(self.rows, key=lambda r: str(r.get("note_id")))[lo:hi + 1]])
+
+
+def v_settle():
+    t = core._VANISHED["thread"]
+    if t is not None:
+        t.join(20)
+        assert not t.is_alive(), "后台那次读没结束"
+
+
+def v_use(sb, *, fresh=True):
+    """换一个库; fresh = 像刚起的进程 (没有上一次读到的名单, 计数清零; 回流闸那边也清)。"""
+    v_settle()
+    core.get_supabase = lambda *a, **k: sb
+    if fresh:
+        core._VANISHED.update(at=None, ids=None, thread=None, started=0.0, late=None)
+        core.VANISHED_STATS.update(read_ok=None, view=None, read_errors=0, long_gone=None, in_grace=None,
+                                   dropped=0, brands_kept=0)
+        core._GATE.update(at=None, blocked=None)
+        core.GATE_STATS.update(read_ok=None, columns=None, read_errors=0, verdicts=0, unreadable=0,
+                               would_drop=0, brands_kept=0)
+    return sb
+
+
+def v_reads(sb):
+    return [c for c in sb.calls if c[1] == "v_notes_vanished"]
+
+
+# ⓪ 36 小时那条线: 和写作台同一条 (latest_seen_at - last_seen_at ≥ 36 小时); 时刻读不懂的行不算
+assert core.VANISHED_GRACE_S == 36 * 3600 and core.VANISHED_TTL_S == 600, "36 小时宽限 / 每个进程最多 10 分钟读一次"
+assert core.long_vanished(gone_row("x", 36)) and core.long_vanished(gone_row("x", 500)), "满 36 小时就算"
+assert not core.long_vanished(gone_row("x", 35.99)) and not core.long_vanished(gone_row("x", 0)), "不满 36 小时不算 (宽限)"
+for seen, latest, want in (
+        ("2026-11-01T00:00:00+00:00", "2026-11-02T12:00:00+00:00", True),
+        ("2026-11-01T00:00:00.5+00:00", "2026-11-02T12:00:00.123456+00:00", False),     # 小数秒位数不定: 差 0.38 秒不到 36 小时
+        ("2026-11-01 00:00:00.12+00", "2026-11-03 00:00:00+00", True),                  # 空格分隔、+00 时区
+        ("2026-11-01T00:00:00Z", "2026-11-02T12:00:00.000001Z", True),
+        ("2026-11-01T00:00:00", "2026-11-02T12:00:00", True),                           # 两个都不带时区
+        ("2026-11-01T08:00:00+08:00", "2026-11-02T12:00:00+00:00", True),               # 时区不同按同一个时刻比
+        (None, "2026-11-09T00:00:00+00:00", False), ("昨天", "2026-11-09T00:00:00+00:00", False),
+        ("2026-11-01T00:00:00+00:00", "", False), ("2026-11-01T00:00:00+00:00", 20261109, False)):
+    got = core.long_vanished({"note_id": "x", "last_seen_at": seen, "latest_seen_at": latest})
+    assert got is want, f"long_vanished({seen!r}, {latest!r}) 该是 {want}"
+assert not core.long_vanished({**gone_row("x", 99), "note_id": ""}) and not core.long_vanished("x"), "没有 note_id / 不是一行: 不算"
+
+# ① 默认开, 不用设环境变量: 缺席满 36 小时的帖的卡拿掉 (rank 全库第一的也拿), 还在宽限里的照借; 在预筛之前拿, 给模型的还是满 24 张
+assert core.VANISHED_FILTER_DEFAULT is True and core.vanished_filter_enabled() is True, "这是纠错: 代码默认开, 不需要环境变量"
+ROWS = [gone_row("A_00", 72), gone_row("B_03", 36), gone_row("C_05", 240),
+        gone_row("A_01", 20), gone_row("B_04", 35),                 # 还在宽限里: 照借
+        gone_row("Z_99", 99),                                      # 书架上没有这篇的卡
+        {"note_id": "A_02", "last_seen_at": None, "latest_seen_at": "2026-11-09T00:00:00+00:00"}]   # 时刻读不懂: 照借
+GONE = {"A_00", "B_03", "C_05"}
+sb = v_use(VanishedSB(ROWS))
+n, v_gone, k_gone, prompt_gone = shelf()
+kept = [c for c in CARDS if c["source_note_id"] not in GONE]
+assert n == 57 and v_gone == core.library_version(kept) != OFF[1] and k_gone != OFF[2], \
+    f"书架该剩 57 张, 版本串按筛过的书架算 (卡一拿掉缓存键就换): {n}"
+assert prompt_gone.count("\n[") == 24 and not [x for x in GONE if f"[{x}]" in prompt_gone] and "[B_04]" in prompt_gone, \
+    "在预筛之前拿掉: 给模型的还是满 24 张, 删了的帖的卡不在里面, 还在宽限里的在"
+core.call_anthropic = lambda *a, **k: pick("A_00", "B_03", "B_04", "A_01")
+st = {}
+sel = core.librarian_select(BRIEF, _status_out=st)
+assert [s["source_note_id"] for s in sel] == ["B_04", "A_01"] and st["status"] == "ok", \
+    f"模型硬挑删了的帖的卡也拿不到 (不在候选里): {[s['source_note_id'] for s in sel]}"
+h = core.vanished_health()
+assert h == {"on": True, "read_age_s": 0, "read_ok": True, "view": True, "read_errors": 0, "long_gone": 4, "in_grace": 3,
+             "dropped": 3, "brands_kept": 0}, h
+assert all(x is None or isinstance(x, (bool, int)) for x in h.values()), "/health 里只有布尔、整数和 None"
+assert len(v_reads(sb)) == 1 and len(sb.calls) == 1, \
+    f"一次借阅 + 一次 dry-run 只读一次视图; 回流闸关着, tv_note_links 不读: {sb.calls}"
+
+# ② 10 分钟读一次: 期间视图变了也不重读; 过了 10 分钟才读到 (回到飞书里的帖 → 卡回到书架)
+sb.rows = [r for r in ROWS if r["note_id"] != "A_00"] + [gone_row("C_06", 48)]
+clock[0] += core.VANISHED_TTL_S - 1
+assert shelf()[0] == 57 and len(v_reads(sb)) == 1, "10 分钟内不重读"
+clock[0] += 2
+n2, _, _, prompt2 = shelf()
+assert n2 == 57 and len(v_reads(sb)) == 2 and "[A_00]" in prompt2 and "[C_06]" not in prompt2, \
+    "过了 10 分钟重读一次: 回到飞书里的帖的卡回到书架, 新删满 36 小时的拿掉"
+
+# ③ 读失败: 沿用上一次读成的名单 (书架不抖), 失败那次也占 10 分钟, 记数; 一次都没读成过 → 不筛。都不往借阅里抛
+sb.fail = RuntimeError("PostgREST down")
+clock[0] += core.VANISHED_TTL_S + 1
+assert shelf()[0] == 57 and len(v_reads(sb)) == 3, "读失败时沿用上一次读到的名单"
+assert shelf()[0] == 57 and len(v_reads(sb)) == 3, "失败之后 10 分钟内也不再去撞库"
+h = core.vanished_health()
+assert (h["read_ok"], h["read_errors"], h["long_gone"], h["dropped"]) == (False, 1, 4, 3), h
+sb = v_use(VanishedSB(ROWS, fail=RuntimeError("PostgREST down")))
+assert shelf() == OFF and len(v_reads(sb)) == 1, "一次都没读成过: 不筛, 书架 / 版本串 / 缓存键 / prompt 和没有这个筛子时一样"
+core.call_anthropic = lambda *a, **k: pick("A_00", "B_03")
+st = {}
+assert [s["source_note_id"] for s in core.librarian_select(BRIEF, _status_out=st)] == ["A_00", "B_03"] \
+    and st["status"] == "ok", "读名单失败不影响借阅"
+h = core.vanished_health()
+assert (h["read_ok"], h["read_errors"], h["long_gone"], h["dropped"]) == (False, 1, None, 0), h
+v_use(object())                                         # 连 .schema 都没有的库
+assert shelf() == OFF and core.vanished_health()["read_errors"] == 1, "库对象不对也不许抛进借阅"
+for msg in ("{'code': 'PGRST205', 'message': \"Could not find the table 'truth_vault.v_notes_vanished' in the schema cache\"}",
+            "{'code': '42P01', 'message': 'relation \"truth_vault.v_notes_vanished\" does not exist'}"):
+    sb = v_use(VanishedSB(ROWS, fail=RuntimeError(msg)))
+    assert shelf() == OFF, "库里没有这张视图 (新库): 不筛"
+    h = core.vanished_health()
+    assert (h["view"], h["read_ok"], h["read_errors"], h["long_gone"], h["dropped"]) == (False, True, 0, 0, 0), \
+        f"视图不在不是读库故障, 不记 read_errors: {h}"
+sb = v_use(VanishedSB(ROWS, fail=RuntimeError("{'code': 'PGRST205', 'message': 'Could not find the table truth_vault.other'}")))
+assert shelf() == OFF and core.vanished_health()["read_errors"] == 1, "别的表不在是故障, 要记数 (只认带着这张视图名的)"
+
+# ④ 品牌保底 (和回流闸同一条): 一个品牌的卡全在名单里 → 这个品牌的卡全留、记一笔; 没全在的照筛; 没写品牌的卡不算一个品牌
+sb = v_use(VanishedSB([gone_row(f"B_{i:02d}", 100) for i in range(10)] + [gone_row("A_00", 100)]))
+n, _, _, prompt_b = shelf()
+assert n == 59 and all(f"[B_{i:02d}]" in prompt_b for i in range(10)) and "[A_00]" not in prompt_b, \
+    f"B 品牌 10 张全在名单里 (一次扫坏了的样子) → 全留; A_00 照样拿掉: 书架 {n}"
+h = core.vanished_health()
+assert (h["dropped"], h["brands_kept"]) == (1, 1), h
+sb = v_use(VanishedSB([gone_row(f"B_{i:02d}", 100) for i in range(9)]))
+assert shelf()[0] == 51 and core.vanished_health()["brands_kept"] == 0, "名单里 9 张、还剩 1 张: 不触发保底"
+nameless = [dict(card("N_00", None, "保健品", 0.5)), dict(card("N_01", "", "保健品", 0.4))] + CARDS
+sb = v_use(VanishedSB([gone_row("N_00", 100), gone_row("N_01", 100)]))
+assert ids(core._drop_vanished(sb, nameless)) == ids(CARDS), "没写品牌的卡全在名单里也照筛 (它们不是一个品牌)"
+whole = list(CARDS)
+sb = v_use(VanishedSB([gone_row("Z_99", 100)]))
+assert core._drop_vanished(sb, whole) is whole, "一张都不用拿: 原样返回同一个 list"
+
+# ⑤ 开关: 环境变量只能关 (0 / false / no / off); 关着视图一次都不读, 书架和没有这个筛子时一样
+sb = v_use(VanishedSB(ROWS))
+for raw, want in (("0", False), ("off", False), ("FALSE", False), ("no", False), ("1", True), ("on", True), ("", True)):
+    os.environ[core.VANISHED_FILTER_ENV] = raw
+    assert core.vanished_filter_enabled() is want, f"LIBRARIAN_VANISHED_FILTER={raw!r} 该是 {want}"
+os.environ[core.VANISHED_FILTER_ENV] = "0"
+whole = list(CARDS)
+assert shelf() == OFF and core._drop_vanished(sb, whole) is whole and not sb.calls, "关着: 不读视图、不动书架"
+assert core.vanished_health()["on"] is False and core.vanished_health()["read_age_s"] is None
+del os.environ[core.VANISHED_FILTER_ENV]
+
+# ⑥ 和回流闸一起: 先拿删了的、再过闸, 各自保底。B 品牌 9 张删了、剩下那张 (B_09) 被闸挡 → 闸的保底留下 B_09,
+#    不是把删了的那 9 张留回来; 闸只问还在书架上的卡
+core.RETURN_GATE_DEFAULT = True
+sb = v_use(VanishedSB([gone_row(f"B_{i:02d}", 100) for i in range(9)] + [gone_row("A_00", 100)],
+                      gate=[gate_row("B_09", "fail", "efficacy"), gate_row("A_01", "hold", "hold")]))
+n, _, _, prompt_both = shelf()
+assert n == 49 and "[B_09]" in prompt_both and not [i for i in range(9) if f"[B_{i:02d}]" in prompt_both] \
+    and "[A_00]" not in prompt_both and "[A_01]" not in prompt_both, f"先拿删了的、再过闸: 书架 {n}"
+assert (core.vanished_health()["dropped"], core.vanished_health()["brands_kept"]) == (10, 0) \
+    and (core.gate_health()["would_drop"], core.gate_health()["brands_kept"]) == (1, 1), \
+    (core.vanished_health(), core.gate_health())
+assert [c[3] for c in sb.calls if c[1] == "tv_note_links"] == [50], f"回流闸只问还在书架上的 50 张: {sb.calls}"
+core.RETURN_GATE_DEFAULT = False
+
+# ⑦ 翻页: 一页装不下就接着读, 一行不漏
+core.VANISHED_PAGE = 2
+sb = v_use(VanishedSB(ROWS))
+assert shelf()[0] == 57 and [c[3] for c in v_reads(sb)] == [(0, 1), (2, 3), (4, 5), (6, 7)], v_reads(sb)
+assert core.vanished_health()["long_gone"] == 4
+core.VANISHED_PAGE = saved_v[1]
+
+# ⑧ 读卡住不堵借阅: 最多等 VANISHED_WAIT_S, 等不到用手上那份 (一次都没读成过 → 这次不筛)、记一笔 (一次读只记一笔);
+#    线程读完自己写回, 下一次借阅就按名单筛
+assert saved_v[2] <= 5, "借阅最多为这一读等几秒 (写作台等馆员 60 秒)"
+core.VANISHED_WAIT_S = 0.2
+release = threading.Event()
+sb = v_use(VanishedSB(ROWS, stall=release))
+t0 = time.monotonic()
+assert shelf() == OFF and time.monotonic() - t0 < 5, "读卡住时借阅照常回 (不筛), 不干等"
+assert shelf() == OFF and len(v_reads(sb)) == 1, "那次读还没回来: 不再起第二次读"
+h = core.vanished_health()
+assert (h["read_ok"], h["read_errors"]) == (False, 1), f"没等到记一笔, 同一次读只记一笔: {h}"
+release.set()
+v_settle()
+assert shelf()[0] == 57 and len(v_reads(sb)) == 1 and core.vanished_health()["read_ok"] is True, "线程读完写回, 下一次借阅就筛"
+core.VANISHED_WAIT_S = saved_v[2]
+
+# ⑨ library_version 摘要卡面 (D-154, 评审 D2): 卡还在书架上、没重策展, 但档位 / 伪爆标记 / 摘录 / curated_at 变了 → 版本串变;
+#    不进摘要的字段 (rank、批注) 不动版本串; 卡的顺序不影响
+sb = v_use(VanishedSB([]))
+base_v = core.library_version(CARDS)
+
+
+def edited(nid="C_07", **kw):
+    return [dict(c, **kw) if c["source_note_id"] == nid else c for c in CARDS]
+
+
+for name, kw in (("摘录", {"raw_excerpt": "excerpt of C_07 (运营改过正文)"}), ("档位", {"tier": "参考"}),
+                 ("伪爆标记", {"synthetic": True}), ("curated_at", {"curated_at": "2026-08-01"})):
+    assert core.library_version(edited(**kw)) != base_v, f"卡面的{name}改了, 版本串必须变 (不然缓存里那张旧卡继续借出去)"
+assert core.library_version(edited(rank_score=9.9, why_it_worked="别的批注", hook_type="x")) == base_v, \
+    "排序分和批注不进摘要 (rank 每天连续重排, 进了就天天掉缓存)"
+assert core.library_version(list(reversed(CARDS))) == base_v, "卡的顺序不影响版本串"
+assert core.library_version(edited(raw_excerpt=None)) == core.library_version(edited(raw_excerpt="")) != base_v, \
+    "没有摘录的卡照样能算"
+assert core.library_version(edited(synthetic=None)) == base_v, "伪爆标记 None 和 False 是一回事"
+assert core.library_version(edited("C_07", tier="参考")) != core.library_version(edited("C_08", tier="参考")), \
+    "档位是跟着卡摘要的: 换一张卡降档, 版本串不一样"
+core.fetch_candidates = lambda sb, **kw: edited(raw_excerpt="excerpt of C_07 (运营改过正文)")
+assert shelf()[2] != OFF[2], "端到端: 一张卡改了摘录, 缓存键换了"
+core.fetch_candidates = lambda sb, **kw: list(CARDS)
+assert shelf() == OFF, "卡面没变: 版本串、缓存键、prompt 一字不差"
+
+v_settle()
+core._gate_clock, core.VANISHED_PAGE, core.VANISHED_WAIT_S, core.RETURN_GATE_DEFAULT = saved_v
+for name, val in ((core.VANISHED_FILTER_ENV, saved_env_v), (core.RETURN_GATE_ENV, saved_env_g)):
+    if val is not None:
+        os.environ[name] = val
+v_use(object())
+logging.getLogger("flywheel_librarian").disabled = False
+print("✓ D-154: 出处帖在飞书里删了满 36 小时的卡不借 (默认开, 环境变量只能关); 还在宽限里 / 时刻读不懂的照借; 10 分钟读一次, "
+      "读失败沿用上一次的名单、从没读成过不筛、读卡住不堵借阅; 品牌保底; 先于回流闸; library_version 摘要卡面 "
+      "(档位 / 伪爆标记 / 摘录 / curated_at 变了缓存键就换)")
 print("\ncheck_librarian_shortlist: all checks passed")

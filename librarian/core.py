@@ -3,7 +3,8 @@
 librarian_select(brief) 的流程:
     1. 取【整架】经验卡 (v_flywheel_lesson_cards, 按 rank_score 排序, 上限 SHELF_FETCH_CAP)。
        空库 → 返回 []  (消费方降级到自有正例)。
-       回流闸开着时 (D-151, 默认关) 出处帖被闸挡下的卡在这里拿掉, 下面的版本串和预筛看的都是筛过的书架。
+       出处帖在飞书里删了满 36 小时的卡在这里拿掉 (D-154, 默认开; 见「出处帖已经删了的卡」那一段);
+       回流闸开着时 (D-151, 默认关) 出处帖被闸挡下的卡也在这里拿掉。下面的版本串和预筛看的都是筛过的书架。
        出处帖投过流的卡照借, 卡上写明 (D-151 第 13 条, owner 11-12): 那一句只加在回给消费方的卡上 (回包时现加), 选卡模型看不到,
        这一步的候选、版本串、缓存键、prompt 都不因为它变 (见「出处帖投过流的卡」那一段)。
     2. 算 library_version = f(整架候选数, max(curated_at), …) —— 版本看整架, 不看预筛结果。
@@ -15,11 +16,11 @@ librarian_select(brief) 的流程:
        → 外部卡保底 (书架有能补的卡、模型一张没挑就补一张, D-138) → 写缓存。
        LLM 出错 → 返回 []  (绝不阻塞写稿; 飞轮是增强项)。
 
-library_version 说明: 用 (候选数, max(curated_at)) 而非每行 updated_at ——
-    * 新爆款进/出候选集 → 候选数变 → 失效；
-    * 重策展 → 策展 pass 每次 upsert 都把 curated_at 置 NOW() → max(curated_at) 变 → 失效。
-    覆盖了"新增"和"重策展"两大触发。极少见的边角 (已在候选内的笔记原地改内容、
-    既不增减也不重策展) 由缓存 TTL (created_at prune) 兜底。
+library_version 说明: 用 (候选数, max(curated_at), 每张卡的内容摘要) 而非每行 updated_at ——
+    * 新爆款进/出候选集 → 候选数 / 卡摘要变 → 失效；
+    * 重策展 → 策展 pass 每次 upsert 都把 curated_at 置 NOW() → max(curated_at) 变 → 失效；
+    * 已在候选内的卡原地改了内容 (档位、伪爆标记、摘录的那段正文) 而没重策展 → 卡摘要变 → 失效 (D-154, 2026-11-15;
+      在这之前这一种只能等版本串因为别的原因换掉, 清缓存的脚本 prune_librarian_cache.py 只删换过版本的旧行、不按时间删)。
 """
 
 from __future__ import annotations
@@ -126,6 +127,200 @@ def fetch_candidates(sb, limit: int = SHELF_FETCH_CAP) -> list[dict]:
         .limit(limit)
         .execute()
     ).data or []
+
+
+def _drop_blocked(cards: list[dict], blocked) -> tuple[list[dict], int]:
+    """把出处帖在 blocked 里的卡拿掉 → (留下的卡, 保底留了几个品牌)。回流闸和「出处帖已经删了」两个筛子共用。
+    品牌保底: 某个品牌 (卡上写了品牌的) 的卡全在 blocked 里 → 这个品牌的卡全留。没写品牌的卡不算一个品牌, 照筛。"""
+    brand = lambda c: (c.get("brand") or "").strip().lower()  # noqa: E731
+    total: dict = {}
+    hit: dict = {}
+    for c in cards:
+        b = brand(c)
+        total[b] = total.get(b, 0) + 1
+        if str(c.get("source_note_id")) in blocked:
+            hit[b] = hit.get(b, 0) + 1
+    kept = {b for b, n in hit.items() if b and n == total[b]}
+    return [c for c in cards if str(c.get("source_note_id")) not in blocked or brand(c) in kept], len(kept)
+
+
+# ── 出处帖已经删了的卡不借出去 (D-154 第 8 条, owner 11-15) ─────────────────────────────────────
+# 运营在飞书里删掉一篇帖 (下架、合规撤稿), 它在 TV 里的档位不会变, 所以它的经验卡一直在书架上、一直借得出去
+# (D-103 当时定的是「只报不删」, 新策展 / 通道 1 新推 / 闸二取数排除它, 已有的卡不动)。owner 11-15 定了: 删了的帖
+# 不该再拿来当参考, 不用人看视图。馆员在整架取回之后、回流闸之前把这些卡拿掉。
+# · 哪些帖算: 在 truth_vault.v_notes_vanished 里, 而且缺席满 VANISHED_GRACE_S (36 小时) —— 本项目最近一次整轮扫描的
+#   时刻 (latest_seen_at) 比这篇最后被看到的时刻 (last_seen_at) 晚至少 36 小时。和写作台降差异、回流闸记 withdrawn
+#   用的是同一条 (aw deskcore TV_VANISHED_GRACE): TV 一次同步写坏, 活着的帖只会短暂进视图。两个时刻有一个读不懂的不算。
+#   视图在 v1.21 和 v1.25 里这三列都有, v1.25 跑没跑读法一样。
+# · 默认开 (VANISHED_FILTER_DEFAULT): 这是纠错, 合并就生效, 不需要设环境变量; LIBRARIAN_VANISHED_FILTER=0 可以关掉。
+# · 读数: 整张视图一次读完 (按 note_id 翻页), 每个进程最多 VANISHED_TTL_S (10 分钟) 读一次, 失败那次也占 10 分钟。
+#   在后台线程里读 (同投流标注: supabase 客户端默认 120 秒超时, 不能让借阅干等), 借阅最多等到这次读开始后的
+#   VANISHED_WAIT_S 秒, 等不到用上一次读成的那份、记一笔。读失败沿用上一次读成的那份; 一次都没读成过 → 不筛。
+#   视图不在 (PGRST205 / 42P01, 新库) 不算故障: 没有「删了的帖」这回事, 不筛。绝不往借阅里抛。
+# · 品牌保底和回流闸同一条 (_drop_blocked): 一个品牌的卡不会因为这个筛子一张不剩 —— 36 小时挡不住「连着几晚没扫成、
+#   接着一次扫坏了」, 那时一个项目的帖会一起进名单, 保底让这个品牌照样有卡可借, /health 的 select.vanished 里记一笔。
+# · 先于回流闸: 两个筛子各自保底, 先拿删了的、再过闸; 反过来的话闸保底留下的可能正好是删了的那几张。
+# · 版本串摘要了每张卡, 一张卡被拿掉缓存键自己换; 命中缓存的选择里不会有这一轮被拿掉的卡。
+VANISHED_FILTER_DEFAULT = True
+VANISHED_FILTER_ENV = "LIBRARIAN_VANISHED_FILTER"
+VANISHED_GRACE_S = 36 * 3600.0
+VANISHED_TTL_S = 600.0
+VANISHED_WAIT_S = 4.0
+VANISHED_PAGE = 1000          # PostgREST 一页的上限
+VANISHED_MAX_PAGES = 20       # 11-09 生产上视图里 60 来行; 翻到 20 页还没完就是出事了, 记一笔、用读到的
+# 进程内计数, /health 回显 (重启清零): 只有布尔、整数和 None。long_gone / in_grace 是上次读成时视图里满 36 小时 / 还在
+# 宽限里的篇数; dropped / brands_kept 是最近一次筛书架拿掉的卡数、保底留下的品牌数; read_errors 累计 (读失败 + 没等到)。
+VANISHED_STATS: dict = {"read_ok": None, "view": None, "read_errors": 0, "long_gone": None, "in_grace": None,
+                        "dropped": 0, "brands_kept": 0}
+# at = 上次开始读的时刻 (_gate_clock); ids = 上次读成的那批 note_id (None = 一次都没读成过); thread = 正在读的线程,
+# started = 它开始的时刻 (time.monotonic, 等多久按它算), late = 已经有借阅没等到的那个线程 (一次读只记一笔)。
+_VANISHED: dict = {"at": None, "ids": None, "thread": None, "started": 0.0, "late": None}
+_VANISHED_LOCK = threading.Lock()   # 只护着上面两个 dict 的读写, 从不在里面做网络请求
+
+
+def vanished_filter_enabled() -> bool:
+    """馆员拿不拿掉出处帖已经删了的卡。代码默认开; LIBRARIAN_VANISHED_FILTER 设成 0 / false / no / off 才关。"""
+    raw = (os.environ.get(VANISHED_FILTER_ENV) or "").strip().lower()
+    if not raw:
+        return VANISHED_FILTER_DEFAULT
+    return raw not in ("0", "false", "no", "off")
+
+
+def _vanished_ts(val: Any):
+    """视图里的时刻 → 带时区的 datetime; 读不懂回 None (这一行就不算缺席够久)。"""
+    from datetime import datetime, timezone
+    if not isinstance(val, str) or not val.strip():
+        return None
+    raw = val.strip().replace(" ", "T", 1)
+    if raw.endswith(("Z", "z")):
+        raw = raw[:-1] + "+00:00"
+    m = re.match(r"^(.*?T\d{2}:\d{2}:\d{2})(\.\d+)?(.*)$", raw)
+    if m:   # 小数秒位数不定 (PostgREST 去掉末尾的 0), 老一点的 Python 只认 3 位或 6 位; 时区写成 +00 的补成 +00:00
+        tz = m.group(3)
+        if re.fullmatch(r"[+-]\d{2}", tz):
+            tz += ":00"
+        raw = m.group(1) + (m.group(2) or ".0")[:7].ljust(7, "0") + tz
+    try:
+        out = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return out if out.tzinfo is not None else out.replace(tzinfo=timezone.utc)
+
+
+def long_vanished(row: Any) -> bool:
+    """v_notes_vanished 的一行算不算「缺席满 36 小时」: latest_seen_at - last_seen_at ≥ VANISHED_GRACE_S。"""
+    if not isinstance(row, dict) or not row.get("note_id"):
+        return False
+    seen, latest = _vanished_ts(row.get("last_seen_at")), _vanished_ts(row.get("latest_seen_at"))
+    return seen is not None and latest is not None and (latest - seen).total_seconds() >= VANISHED_GRACE_S
+
+
+def _vanished_view_missing(exc: BaseException) -> bool:
+    """PostgREST / Postgres 说没有 v_notes_vanished 这张视图 (新库): PGRST205 / 42P01, 且带着视图名。"""
+    s = f"{exc!r} {exc}"
+    return "v_notes_vanished" in s and any(m in s for m in ("PGRST205", "42P01"))
+
+
+def _read_vanished(sb) -> tuple[frozenset, int]:
+    """整张 v_notes_vanished → (缺席满 36 小时的 note_id, 还在宽限里的篇数)。出错直接抛, 调用方兜。"""
+    rows: list = []
+    for i in range(VANISHED_MAX_PAGES):
+        page = (sb.schema("truth_vault").table("v_notes_vanished")
+                .select("note_id, last_seen_at, latest_seen_at")
+                .order("note_id").range(i * VANISHED_PAGE, (i + 1) * VANISHED_PAGE - 1).execute()).data or []
+        rows.extend(r for r in page if isinstance(r, dict) and r.get("note_id"))
+        if len(page) < VANISHED_PAGE:
+            break
+    else:
+        logger.warning("已删帖的卡: v_notes_vanished 翻了 %d 页还没读完 (%d 行), 用读到的这些", VANISHED_MAX_PAGES, len(rows))
+    gone = frozenset(str(r["note_id"]) for r in rows if long_vanished(r))
+    return gone, len({str(r["note_id"]) for r in rows} - gone)
+
+
+def _refresh_vanished(sb) -> None:
+    """读一次视图 (在后台线程里跑, 不拿锁), 读完在锁里写回。失败不动上一次读成的那份。不抛。"""
+    got = view = err = None
+    try:
+        got = _read_vanished(sb)
+    except Exception as exc:  # noqa: BLE001 — 视图不在、权限、网络、超时: 都不许挡住借阅
+        view = not _vanished_view_missing(exc)
+        err = type(exc).__name__
+    with _VANISHED_LOCK:
+        if got is not None:
+            _VANISHED["ids"] = got[0]
+            VANISHED_STATS.update(read_ok=True, view=True, long_gone=len(got[0]), in_grace=got[1])
+        elif view is False:      # 新库没有这张视图: 不是故障, 就是没有「删了的帖」
+            if VANISHED_STATS["view"] is not False:
+                logger.info("已删帖的卡: 库里没有 truth_vault.v_notes_vanished 这张视图, 书架不筛")
+            _VANISHED["ids"] = frozenset()
+            VANISHED_STATS.update(read_ok=True, view=False, long_gone=0, in_grace=0)
+        else:
+            VANISHED_STATS["read_errors"] += 1
+            VANISHED_STATS["read_ok"] = False
+            logger.warning("已删帖的卡: 读 v_notes_vanished 失败 (%s), %s", err,
+                           "沿用上一次读到的名单" if _VANISHED["ids"] is not None else "这次书架不筛")
+        _VANISHED["thread"] = None
+
+
+def _vanished_ids(sb) -> Optional[frozenset]:
+    """缺席满 36 小时的那批帖; None = 一次都没读成过 (不筛)。到点 (从没读过 / 距上次开始读过了 10 分钟) 且没有一次正在读
+    → 起一个后台线程去读; 有一次正在读就等它, 最多等到它开始后的 VANISHED_WAIT_S 秒, 等不到用手上那份。不抛。"""
+    with _VANISHED_LOCK:
+        now = _gate_clock()
+        t = _VANISHED["thread"]
+        reading = t is not None and t.is_alive()      # 死掉没写回的线程不算在读
+        if not reading:
+            t = None
+            if _VANISHED["at"] is None or now - _VANISHED["at"] >= VANISHED_TTL_S:
+                t = threading.Thread(target=_refresh_vanished, args=(sb,), name="librarian-vanished", daemon=True)
+                _VANISHED["thread"], _VANISHED["at"], _VANISHED["started"] = t, now, time.monotonic()
+                try:
+                    t.start()       # 线程读完才拿这把锁写回, 这里拿着锁起它不会卡住
+                except RuntimeError:  # 起不了线程: 当一次读失败, 10 分钟后再试
+                    _VANISHED["thread"], t = None, None
+                    VANISHED_STATS["read_errors"] += 1
+                    VANISHED_STATS["read_ok"] = False
+        started = _VANISHED["started"]
+    if t is not None:
+        t.join(max(0.0, VANISHED_WAIT_S - (time.monotonic() - started)))
+    with _VANISHED_LOCK:
+        if t is not None and _VANISHED["thread"] is t and _VANISHED["late"] is not t:   # 还在读: 这次用手上那份
+            _VANISHED["late"] = t
+            VANISHED_STATS["read_errors"] += 1
+            VANISHED_STATS["read_ok"] = False
+            logger.warning("已删帖的卡: 这次读超过 %.0f 秒还没回来, 先用手上那份名单", VANISHED_WAIT_S)
+        return _VANISHED["ids"]
+
+
+def _drop_vanished(sb, cards: list[dict]) -> list[dict]:
+    """把出处帖在飞书里删了满 36 小时的卡从书架里拿掉 (D-154)。关着 → 原样返回同一个 list, 库一次都不读。
+    任何一步出错 → 原样返回 (fail-open: 名单读不到, 借阅和以前一样)。"""
+    if not vanished_filter_enabled():
+        return cards
+    try:
+        gone = _vanished_ids(sb)
+        if not gone:
+            with _VANISHED_LOCK:
+                VANISHED_STATS.update(dropped=0, brands_kept=0)
+            return cards
+        out, kept = _drop_blocked(cards, gone)
+        with _VANISHED_LOCK:
+            VANISHED_STATS.update(dropped=len(cards) - len(out), brands_kept=kept)
+        if kept:
+            logger.warning("已删帖的卡: %d 个品牌的卡全在名单里, 按保底全留 (/health select.vanished.brands_kept)", kept)
+        return out if len(out) != len(cards) else cards
+    except Exception:  # noqa: BLE001
+        logger.warning("已删帖的卡: 筛书架出错, 这次不筛", exc_info=True)
+        return cards
+
+
+def vanished_health() -> dict:
+    """/health 的 select.vanished: 开没开、上次读视图成没成、视图里满 36 小时 / 还在宽限里各几篇、最近一次筛书架拿掉
+    几张卡、保底留了几个品牌、累计读失败 / 没等到几次。只有数、布尔和 None。"""
+    at = _VANISHED["at"]
+    return {"on": vanished_filter_enabled(),
+            "read_age_s": None if at is None else int(max(0.0, _gate_clock() - at)),
+            **VANISHED_STATS}
 
 
 # ── 回流闸 (D-151): 出处帖被闸判成「不能学」的经验卡不借出去 ─────────────────────────────────
@@ -252,20 +447,10 @@ def _drop_gated(sb, cards: list[dict]) -> list[dict]:
         if not blocked:
             GATE_STATS.update(would_drop=0, brands_kept=0)
             return cards
-        brand = lambda c: (c.get("brand") or "").strip().lower()  # noqa: E731
-        total: dict = {}
-        hit: dict = {}
-        for c in cards:
-            b = brand(c)
-            total[b] = total.get(b, 0) + 1
-            if str(c.get("source_note_id")) in blocked:
-                hit[b] = hit.get(b, 0) + 1
-        # 品牌保底: 某个品牌 (卡上写了品牌的) 的卡全被挡 → 这个品牌的卡全留。没写品牌的卡不算一个品牌, 照筛。
-        kept = {b for b, n in hit.items() if b and n == total[b]}
-        out = [c for c in cards if str(c.get("source_note_id")) not in blocked or brand(c) in kept]
-        GATE_STATS.update(would_drop=len(cards) - len(out), brands_kept=len(kept))
+        out, kept = _drop_blocked(cards, blocked)   # 品牌保底在里面 (和「出处帖已经删了」那个筛子同一条)
+        GATE_STATS.update(would_drop=len(cards) - len(out), brands_kept=kept)
         if kept:
-            logger.warning("回流闸: %d 个品牌的卡全被挡, 按保底全留 (/health select.return_gate.brands_kept)", len(kept))
+            logger.warning("回流闸: %d 个品牌的卡全被挡, 按保底全留 (/health select.return_gate.brands_kept)", kept)
         return out
     except Exception:  # noqa: BLE001
         logger.warning("回流闸: 筛书架出错, 这次不筛", exc_info=True)
@@ -458,10 +643,18 @@ def paid_health() -> dict:
     return {"read_age_s": None if at is None else int(max(0.0, _gate_clock() - at)), **PAID_STATS}
 
 
+def _card_digest(card: dict) -> str:
+    """一张卡进版本串的那一行: id、档位、伪爆标记、curated_at、摘录正文的 sha (D-154)。只进摘要, 不出进程。"""
+    excerpt = card.get("raw_excerpt")
+    sha = hashlib.sha256((excerpt if isinstance(excerpt, str) else "").encode("utf-8")).hexdigest()[:16]
+    return "\x1f".join((str(card.get("source_note_id") or ""), str(card.get("tier") or ""),
+                        "1" if card.get("synthetic") is True else "0", str(card.get("curated_at") or ""), sha))
+
+
 def library_version(cards: list[dict], gate2_run: Optional[str] = None, *,
                     delivery: Optional[str] = None, explore: bool = False,
                     external: Optional[str] = None) -> str:
-    """f(候选数, max(curated_at), 月份桶, 候选 ID 集合摘要[, gate2_run]) —— 见模块 docstring。
+    """f(候选数, max(curated_at), 月份桶, 每张候选卡的摘要[, gate2_run]) —— 见模块 docstring。
 
     ── 2026-09-20 D-070 (docs/28 §7.1 第 2 条) ──────────────────────────────
     特征层过了闸二之后, 馆员会多一个「已验证规律」缓存块 (P4)。规律换了一轮
@@ -488,12 +681,16 @@ def library_version(cards: list[dict], gate2_run: Optional[str] = None, *,
     没有另加"命中时重新校验所选卡是否仍在候选里": 版本已含 ID 集合摘要, 同一个
     缓存键就意味着同一批候选(除非 sha256 碰撞), 那条校验【永远不会触发】。
     本仓的规矩是写了分支就得有用例真的走进去 —— 写不出能让它变红的用例, 就不写。
+
+    ── 2026-11-15 D-154 (外部评审 D2, AU-F02b 第 3 条) ────────────────────────
+    摘要原来只看 id: 一张卡留在候选里、没重策展, 但档位改了 (爆 → 参考)、伪爆标记变了、或者摘录的那段正文改了,
+    版本串不变, 缓存里那张旧卡 (旧摘录、旧档位) 继续被借出去。现在每张卡摘要的是 _card_digest: id、档位、伪爆标记、
+    curated_at、摘录的 sha —— 卡面一变缓存键就换。代价: 上线后每个 (项目, brief) 冷选一次 (版本串本来就几乎每天换)。
     """
-    import hashlib
     from datetime import datetime, timezone
     month_bucket = datetime.now(timezone.utc).strftime("%Y-%m")
     max_curated = max((c.get("curated_at") or "" for c in cards), default="")
-    ids = sorted(str(c.get("source_note_id") or "") for c in cards)
+    ids = sorted(_card_digest(c) for c in cards)
     id_digest = hashlib.sha256("\n".join(ids).encode("utf-8")).hexdigest()[:16]
     base = f"{len(cards)}:{max_curated or 'none'}:{month_bucket}:{id_digest}"
     out = f"{base}:{gate2_run}" if gate2_run else base
@@ -1052,8 +1249,9 @@ def librarian_select(brief: dict, *, model: Optional[str] = None,
     if _status_out is not None:
         _status_out["patterns"] = P.public_patterns(delivery)
 
-    # D-151: 出处帖被回流闸挡下的卡先拿掉, 再算版本串、再预筛。开关默认关: 关着原样返回, 库一次都不读。
-    cards = _drop_gated(sb, fetch_candidates(sb))
+    # D-154: 出处帖在飞书里删了满 36 小时的卡先拿掉 (默认开; 名单 10 分钟读一次, 读不到就不筛)。
+    # D-151: 出处帖被回流闸挡下的卡再拿掉, 然后算版本串、预筛。回流闸默认关: 关着原样返回, 库一次都不读。
+    cards = _drop_gated(sb, _drop_vanished(sb, fetch_candidates(sb)))
     if not cards:
         return {"_dry_run": True, "candidate_count": 0, "shelf_count": 0, "note": "空库 → 返回 []"} if dry_run else []
 

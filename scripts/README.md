@@ -14,7 +14,7 @@ scripts/
 ├── annotate_feature_pass.py                            内容特征层抽取 pass (20 道模型题按组 + 8 代码特征 + 3 占位题 → note_feature_answers; D-070)
 ├── count_unannotated_features.py                       backfill-features / daily-sync 用: 项目还剩几篇没抽
 ├── sync_truth_vault_baokuan_to_sanshengliubu.py        TV 爆款 → ssll (periodic)
-├── sync_truth_vault_baokuan_to_autowriter_items.py     TV 爆款 → autowriter (periodic)
+├── sync_truth_vault_baokuan_to_autowriter_items.py     TV 爆款 → autowriter (已退役 D-038, 留着备查; 真跑会被拒绝, 见下)
 ├── extract_negative_examples_from_autowriter.py        autowriter 历史挖 negative (one-shot)
 ├── requirements.txt                                    依赖
 ├── .env.example                                        环境变量模板
@@ -36,7 +36,8 @@ scripts/
 
 [1] sync_feishu_notes_to_truth_vault.py          每日 cron
 [2] sync_truth_vault_baokuan_to_sanshengliubu.py  每日 cron 或 [1] 跑完后触发
-[3] sync_truth_vault_baokuan_to_autowriter_items.py 同上
+[3] sync_truth_vault_baokuan_to_autowriter_items.py 已退役 (D-038): 通道 2 改成馆员 pull (docs/14 / docs/15), 夜跑里没有这一步;
+    图上 [3] 这条线现在是空的。脚本留着备查, 不带 --dry-run 直接跑会被拒绝 (D-154)
 [5] sync_comments_from_raw_extra.py               [1] 跑完后跑 (落 comments 表)
 [6] annotate_essence_pass.py                      独立 LLM pass, D-028 不在 [1] 内
 
@@ -154,9 +155,9 @@ python sync_feishu_notes_to_truth_vault.py NUC_phase1              # 实跑
 python sync_truth_vault_baokuan_to_sanshengliubu.py --dry-run
 python sync_truth_vault_baokuan_to_sanshengliubu.py
 
-# Step 5: 把 TV 爆款喂给 autowriter
+# Step 5: (已退役 D-038, 不要跑) 把 TV 爆款喂给 autowriter —— 通道 2 现在是馆员 pull, 写作台自己来借卡 (docs/15)。
+#   真跑会往写作台的正例池里写行, 脚本现在默认拒绝 (退出码 2); 只看候选可以跑 dry-run, 一行不写:
 python sync_truth_vault_baokuan_to_autowriter_items.py --dry-run
-python sync_truth_vault_baokuan_to_autowriter_items.py
 
 # Step 6: 一次性从 autowriter 历史挖 negative 候选
 python extract_negative_examples_from_autowriter.py --dry-run
@@ -200,9 +201,8 @@ for project in NUC_phase1 NRT_phase2 NRT_phase3; do
     python annotate_feature_pass.py "$project" --limit 30
 done
 
-# Step 4: TV → 双通道
+# Step 4: TV → 通道 1 (通道 2 的 push 已退役 D-038, sync_truth_vault_baokuan_to_autowriter_items.py 不在循环里)
 python sync_truth_vault_baokuan_to_sanshengliubu.py
-python sync_truth_vault_baokuan_to_autowriter_items.py
 ```
 
 ## 幂等性保证
@@ -213,7 +213,7 @@ python sync_truth_vault_baokuan_to_autowriter_items.py
 |---|---|
 | sync_feishu_notes_to_truth_vault.py | `notes.note_id` PRIMARY KEY = `{project_id}_{feishu_record_id}`，UPSERT |
 | sync_truth_vault_baokuan_to_sanshengliubu.py | 优先查 `reference_samples.source_truth_vault_note_id` (干净的索引列, 由 001_add_source_tv_note_id.sql 加)；老 row 没填这列时 fallback 查 `ai_analysis->>'_truth_vault_note_id'` JSON 路径 |
-| sync_truth_vault_baokuan_to_autowriter_items.py | `items.external_source_id` partial UNIQUE INDEX，INSERT 重复返回 23505 → skip |
+| sync_truth_vault_baokuan_to_autowriter_items.py（已退役 D-038） | `items.external_source_id` partial UNIQUE INDEX，INSERT 重复返回 23505 → skip |
 | extract_negative_examples_from_autowriter.py | 只覆盖 `example_label_proposal IS NULL AND example_label IS NULL` 的 item |
 
 ## 安全

@@ -12,7 +12,7 @@ import SystemDeconstruct from "@/components/SystemDeconstruct";
  * 口径:强调「战役组合 + 峰值」(不讲会下滑的时间线)。颜色 = 战线(语义化)。
  * 仅露体量/结果,无任何策略机理。
  */
-export const metadata: Metadata = { title: "数据看板 · BYWOOD", description: "公开战绩组合速览" };
+export const metadata: Metadata = { title: "数据看板 · BYWOOD", description: "公开战绩组合速览", robots: { index: false, follow: false } };
 export const dynamic = "force-dynamic";
 
 const BG = "#0A0A0B", PANEL = "#141416", BORD = "rgba(255,255,255,0.08)";
@@ -109,14 +109,14 @@ export default async function BoardPage() {
   // 实时监测条:左栏端口/右栏计数全部真实(源自 pulse + overview)
   const livePorts = [
     { name: "飞书投放表", color: LIME, val: `已接入 ${comma(pulse?.feishu_n ?? o.notes)} 条` },
-    { name: "ssll 资产库", color: LIME, val: `已回流 ${comma(pulse?.ssll_n ?? 0)} 条` },
+    { name: "爆款资产库", color: LIME, val: `已回流 ${comma(pulse?.ssll_n ?? 0)} 条` },
     { name: "指标快照", color: LIME, val: `${comma(pulse?.snaps_n ?? 0)} 快照` },
-    { name: "essence 解析", color: LAV, val: `已标注 ${comma(pulse?.annotated_n ?? o.essence)}/${comma(o.notes)}` },
+    { name: "结构化解析", kind: "parse" as const, color: LAV, val: `已标注 ${comma(pulse?.annotated_n ?? o.essence)}/${comma(o.notes)}` },
     { name: "命中检测", color: CORAL, val: `${comma(o.baokuanReal)} 爆款判级` },
-    { name: "autowriter · 馆员", color: LIME, val: `${comma(o.cards)} 经验卡可借` },
-    { name: "内部座舱", color: LIME, val: `${comma(o.cards)} 策略卡` },
+    { name: "AI 创作工作台", color: LIME, val: `${comma(o.cards)} 经验卡可借` },
+    { name: "策略座舱", color: LIME, val: `${comma(o.cards)} 策略卡` },
   ];
-  // 端口在线数 = 与上方 7 个端口一一对应的底层信号 >0 的个数。autowriter·馆员 与 内部座舱
+  // 端口在线数 = 与上方 7 个端口一一对应的底层信号 >0 的个数。AI 创作工作台 与 策略座舱
   // 两个端口都看「策略卡 o.cards」→ 这里 o.cards 出现两次;之前只列 6 个信号却有 7 个端口,
   // 导致全健康时也只显示 6/7、永远到不了 7/7(此修复)。端口 1/4 与显示一致带 ?? 兜底。
   const onlinePorts = [pulse?.feishu_n ?? o.notes, pulse?.ssll_n, pulse?.snaps_n, pulse?.annotated_n ?? o.essence, o.baokuanReal, o.cards, o.cards].filter((x) => (x ?? 0) > 0).length;

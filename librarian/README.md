@@ -17,7 +17,8 @@ librarian/
 ## 流程 (core.librarian_select)
 
 1. 取【整架】(`v_flywheel_lesson_cards`, 按 rank_score, 上限 1000; 10-08 实查 306 张)。**空库 → 返回 `[]`**(消费方降级到自有正例)。
-2. 算 `library_version` = f(整架候选数, max(curated_at), 月份桶, id 集合摘要[, gate2_run]) → 算 `cache_key`。
+   出处帖在飞书里删了满 36 小时的卡在这里拿掉(D-154, 默认开); 回流闸开着时(D-151, 默认关)被闸挡下的卡也在这里拿掉。
+2. 算 `library_version` = f(整架候选数, max(curated_at), 月份桶, 每张卡的摘要(id / 档位 / 伪爆标记 / curated_at / 摘录的 sha)[, gate2_run]) → 算 `cache_key`。
 3. **同一个 `cache_key` 已经有一次在选 → 等它,拿同一份结果**(AU-F09 在飞合并;进程内,最多等 75 秒,等不到就自己选)。
    **命中缓存 → 直接返回**(跳过 LLM)。
 4. 未命中 → **预筛 `shortlist()`(D-088)**: 按 brief 的项目级字段打贴题分(同品牌 +3 · 同品类 +2 · 人群词 +1)挑 ≤24 张,
@@ -100,6 +101,23 @@ POST /librarian   header: X-Librarian-Key: <key>   body: <brief JSON>
 → {"selected": [ {source_note_id, why_relevant, borrow_what, hook_type, structure, excerpt, ...}, ... ]}
 ```
 
+## 出处帖已经删了的卡不借（D-154 第 8 条，默认开，合并就生效）
+
+运营在飞书里删掉一篇帖（下架、合规撤稿），它在 TV 里的档位不变，所以它的经验卡以前一直在书架上、一直借得出去（D-103 当时定的是只报不删）。owner 11-15 定了：删了的帖不该再当参考，也不该要人去看视图。馆员在整架取回之后、回流闸之前把这些卡拿掉（`core._drop_vanished`）。
+
+- **哪些帖算**：在 `truth_vault.v_notes_vanished` 里，而且缺席满 36 小时（`core.VANISHED_GRACE_S`）：本项目最近一轮扫描的时刻 `latest_seen_at` 比这篇最后被看到的时刻 `last_seen_at` 晚至少 36 小时。和写作台降差异、回流闸记 `withdrawn` 用的是同一条。还在宽限里的照借：TV 一次同步写坏，活着的帖只会短暂进视图。两个时刻有一个读不懂的也照借。`notes_v1_25` 跑没跑读法一样（这三列两版视图都有）。
+- **默认开**，不需要设环境变量；`LIBRARIAN_VANISHED_FILTER=0` 可以关掉。关着的时候视图一次都不读。
+- **10 分钟读一次**（进程内），整张视图一次读完；在后台线程里读，借阅最多等 4 秒，等不到用上一次读成的名单。读失败沿用上一次读成的名单，一次都没读成过就不筛；库里没有这张视图（新库）不算故障，也不筛。绝不往借阅里抛。
+- **品牌保底**（和回流闸同一条）：一个品牌的卡全在名单里 → 这个品牌的卡全留，`/health` 里记一笔。36 小时挡不住「连着几晚没扫成、接着一次扫坏了」，那时一个项目的帖会一起进名单，保底让这个品牌照样有卡可借。
+- **先于回流闸**：两个筛子各自保底，先拿删了的、再过闸。
+- **`/health` 的 `select.vanished`**（只有布尔、整数和 `null`）：`on` 开没开、`read_ok` / `read_errors` 上次读视图成没成 / 累计读失败和没等到的次数、`view` 视图在不在、`long_gone` / `in_grace` 视图里满 36 小时 / 还在宽限里的篇数、`dropped` 最近一次筛书架拿掉几张卡、`brands_kept` 保底留了几个品牌、`read_age_s` 上次读视图是多少秒前。
+- 已经推去三省六部的样本是另一头撤的（`scripts/sync_truth_vault_baokuan_to_sanshengliubu.py` 的 C 路，一轮最多 5 篇）。note 本身不删。
+- 守卫：`scripts/check_librarian_shortlist.py` §12、`scripts/check_vanished_notes.py` §2b。
+
+## 版本串摘要卡面（D-154，评审 D2）
+
+`library_version` 原来只摘要候选的 id 集合：一张卡还在书架上、没重策展，但档位改了、伪爆标记变了、或者摘录的那段正文改了，版本串不变，缓存里那张旧卡继续被借出去。现在每张卡摘要的是 id、档位、伪爆标记、`curated_at`、摘录的 sha（`core._card_digest`），卡面一变缓存键就换。排序分和批注不进摘要（排序分每天连续重排）。上线后每个（项目，brief）冷选一次。守卫：`check_librarian_shortlist.py` §12 ⑨。
+
 ## 回流闸（D-151，已做、开关关着）
 
 写作台每晚 tv-sync 的最后一步给映射项目里每篇发出去的帖分一次类，记在 `autowriter.tv_note_links` 的 `gate` / `gate_reasons` 上（aw 迁移 020；分类那一半在 TangVarie/autowriter）。馆员可以在整架取回之后、算版本串和预筛之前，把出处帖「不能学」的卡拿掉（`core._drop_gated`）。
@@ -110,7 +128,7 @@ POST /librarian   header: X-Librarian-Key: <key>   body: <brief JSON>
 - **10 分钟读一次**（进程内），不是每次借阅都读；读失败沿用上一次读成的结论，一次都没读成过就不筛。绝不往借阅里抛。
 - **品牌保底**：筛完某个品牌的卡一张不剩 → 这个品牌的卡全留，`/health` 里记一笔。
 - **`/health` 的 `select.return_gate`**（只有布尔、整数和 `null`）：`on` 开没开、`read_ok` / `read_errors` 上次读库成没成、`columns` 那两列在不在、`verdicts` / `unreadable` 书架里有结论 / 读不懂的行数、`would_drop` 最近一次筛书架拿掉几张、`brands_kept` 保底留了几个品牌、`read_age_s` 上次读库是多少秒前。
-- 版本串（`library_version`）不用改：它本来就摘要了候选 id 集合，一张卡被挡或放回来，缓存键自己换。
+- 版本串（`library_version`）不用改：它本来就摘要了书架上的每张卡，一张卡被挡或放回来，缓存键自己换。
 - 守卫：`scripts/check_librarian_shortlist.py` §10（开和关两种状态都跑）。
 
 ## 出处帖投过流的卡照借，回包的卡上写明（D-151 第 13 条，不设开关，合并就生效）
