@@ -619,6 +619,13 @@ assert "x_nosample" not in sb8.updated and "w_grace" not in sb8.updated, "三省
 install(sb8, long_gone=LONG_GONE, grace=["w_grace"])
 assert [r["note_id"] for r in s.fetch_pending_baokuan(sb8)] == [], "撤掉的已删帖不该当晚又被推回去"
 
+# 上一轮清完 TV 标记、删样本那一步断了的旧行 (只有旧键, 标记已经是空的): 这一轮照样撤 (Codex on #284)
+sb8 = FakeSB([note("lg_half", "参考", None, synced=None)],
+             [{"id": "s-lg_half", "source_truth_vault_note_id": None, "_legacy_key": "lg_half"}])
+install(sb8, long_gone=["lg_half"])
+n, _ = retract8(sb8)
+assert n == 1 and sb8.deleted == ["s-lg_half"], f"标记已空、只有旧键的样本也要撤掉: {n} {sb8.deleted}"
+
 # --project 传下去, 只撤这个项目的
 sb8 = FakeSB([note("pa_gone", "爆", None, project_id="A", synced=RECENT), note("pb_gone", "爆", None, project_id="B", synced=RECENT)],
              [{"id": "s-pa_gone", "source_truth_vault_note_id": "pa_gone"}, {"id": "s-pb_gone", "source_truth_vault_note_id": "pb_gone"}])

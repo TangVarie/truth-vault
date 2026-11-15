@@ -498,10 +498,12 @@ def _retract_vanished_from_ssll(sb, *, project_filter: str | None, dry_run: bool
             nid, sid = smp.get("source_truth_vault_note_id"), smp.get("id")
             if nid and sid:
                 by_note.setdefault(nid, []).append(sid)
-    # 回填 lineage 列之前同步的旧行按列取不到: TV 标着已推、按列又没取到样本的, 再走一次双键查 (同 A 路)。
-    # 两头都没有样本的不动 (三省六部里没有东西可撤)。
+    # 回填 lineage 列之前同步的旧行按列取不到: 按列没取到样本的, 再走一次双键查 (同 A 路)。
+    # 不看 TV 的已推标记 (Codex on #284): _retract_one 是先清标记、再删样本, 上一轮清完标记、删样本那一步断了的
+    # 旧行, 这时标记已经是空的 —— 只查标着已推的就永远撤不掉它 (B 路按 lineage 列取, 也看不见这种行)。
+    # 多出来的只是每篇已删、按列没样本的帖一次按键查询。两头都没有样本的不动 (三省六部里没有东西可撤)。
     for nid in note_ids:
-        if nid not in by_note and gone[nid].get("synced_to_ssll_at"):
+        if nid not in by_note:
             sid = existing_ssll_sample_id(sb, nid)
             if sid is not None:
                 by_note[nid] = [sid]
