@@ -356,6 +356,18 @@ def check_observed_at() -> None:
     r2 = M.plan_linkcheck_rows(_note("n1", 评论区明细=_records(T2, [{"id": "a" * 24, "x": "合成读者评论"}], ar=0)), kept)
     assert len(r2["upserts"]) == 1 and r2["upserts"][0]["comment_role"] == "未知" \
         and r2["upserts"][0]["comment_time"] == kept[0]["comment_time"], f"§3 重写时把发表时间冲成空了: {r2}"
+    # 同一条评论后来被置顶了 (别的字段变了要重写): 第一次读到它的时刻不往后挪
+    r1 = M.plan_linkcheck_rows(_note("n1", 评论区明细=_records(T1, [{"id": "b" * 24, "x": "合成读者评论"}])), [])
+    kept = [dict(r) for r in r1["upserts"]]
+    r2 = M.plan_linkcheck_rows(_note("n1", 评论区明细=_records(T2, [{"id": "b" * 24, "x": "合成读者评论", "p": 1}])), kept)
+    assert len(r2["upserts"]) == 1 and r2["upserts"][0]["is_pinned"] and r2["upserts"][0]["observed_at"] == ISO1, \
+        f"§3 别的字段变了重写时把第一次观测的时刻挪后了: {r2}"
+    # 第一次入库没带发表时间, 后来带了、别的一个字没变: 要补上; 补过之后 (库里读回来写法不同也算同一刻) 不再重写
+    r3 = M.plan_linkcheck_rows(_note("n1", 评论区明细=_records(T2, [{"id": "b" * 24, "x": "合成读者评论", "ts": T1}])), kept)
+    assert len(r3["upserts"]) == 1 and r3["upserts"][0]["comment_time"], f"§3 后来才拿到的发表时间没补上: {r3}"
+    back = [dict(r3["upserts"][0], comment_time=r3["upserts"][0]["comment_time"] + ".000000")]
+    r4 = M.plan_linkcheck_rows(_note("n1", 评论区明细=_records(T2, [{"id": "b" * 24, "x": "合成读者评论", "ts": T1}])), back)
+    assert not r4["upserts"], f"§3 发表时间补过之后不该每晚重写: {r4}"
     print("  §3 观测时刻: 快照行只在巡查正常时取最近检查时间; 明细行取 t; _undeclared 也读; 重写不冲掉旧时刻; 失败轮入库的行之后补一次 ✓")
 
 

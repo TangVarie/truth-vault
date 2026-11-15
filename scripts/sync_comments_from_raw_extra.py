@@ -300,6 +300,24 @@ def _ms_to_iso(v, *, tz: bool) -> Optional[str]:
     return t.isoformat() if tz else t.replace(tzinfo=None).isoformat()
 
 
+def _same_moment(a, b) -> bool:
+    """两个时间串是不是同一刻 (库里读回来的和这边算的写法可能不同: 带不带时区、带不带小数秒)。认不出的按不同算。"""
+    import datetime as _dt
+
+    def parse(v):
+        if not isinstance(v, str) or not v:
+            return None
+        try:
+            t = _dt.datetime.fromisoformat(v.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if t.tzinfo is not None:
+            t = t.astimezone(_dt.timezone.utc).replace(tzinfo=None)
+        return t.replace(microsecond=0)
+    pa, pb = parse(a), parse(b)
+    return pa is not None and pa == pb
+
+
 def _norm(text: str) -> str:
     """同 linkcheck analyze._normalize: 去空白、去标点、统一大小写, 只做宽松的包含匹配。"""
     return re.sub(r"[\s\W_]+", "", text or "").lower()
@@ -524,14 +542,17 @@ def plan_linkcheck_rows(note: dict, existing: list[dict]) -> dict:
             row["comment_role"] = "贴主"
         if old is not None and old.get("source") == source and all(old.get(k) == row[k] for k in _LC_MATERIAL) \
                 and (source == SOURCE_RECORDS or old.get("comment_order") == order) \
-                and not (old.get("observed_at") is None and row["observed_at"] is not None):
+                and not (old.get("observed_at") is None and row["observed_at"] is not None) \
+                and not (row["comment_time"] is not None and not _same_moment(old.get("comment_time"), row["comment_time"])):
             # 库里已经是这样: 不重写 (observed_at 留第一次读到它的那一刻)。例外: 库里的时刻是空的 (这一行是在巡查没成功
             # 的那一轮入库的), 这一轮拿得准 → 往下走, 补上这一次, 之后不再动。
             continue
         if old is not None and row["comment_time"] is None:
             row["comment_time"] = old.get("comment_time")   # 这一轮没带发表时间: 以前记下的还是对的, 不拿空值盖掉
-        if old is not None and row["observed_at"] is None:
-            row["observed_at"] = old.get("observed_at")     # 这一轮拿不准时刻: 不拿空值盖掉以前记下的
+        if old is not None and old.get("observed_at") is not None:
+            # observed_at = 第一次读到这条评论的那一刻: 库里已经有了就留着 —— 这一轮拿不准 (空) 不拿空值盖,
+            # 这一轮只是别的字段变了 (比如被置顶了) 也不往后挪。库里是空的才用这一轮的。
+            row["observed_at"] = old["observed_at"]
         plan["upserts"].append(row)
 
     if source == SOURCE_DIGEST:
