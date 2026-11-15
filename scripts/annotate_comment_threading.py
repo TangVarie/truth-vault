@@ -156,6 +156,8 @@ def fetch_notes_with_pending_threading(
             # comment_id 是主键, 作为唯一稳定的翻页键追加在后面。
             order_by="comment_id",
         )
+        # 巡查工具来的行 (id 是 {note_id}_lc…, v1.27 / D-155) 不是运营贴的那段文字里的评论, 不进楼层重建。
+        comments = [c for c in comments if not (c.get("comment_id") or "").startswith(f"{r['note_id']}_lc")]
         if not comments:
             continue
         already_threaded = any(c.get("parent_comment_id") for c in comments)

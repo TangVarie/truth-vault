@@ -405,10 +405,11 @@ SELECT '85', 'H · 跨 schema 孤儿',
     COALESCE(pg_temp.safe_count(
         $q$SELECT COUNT(*) FROM truth_vault.note_feature_answers a
         LEFT JOIN truth_vault.comments c ON c.comment_id = a.subject_id
-        WHERE a.subject_type = 'comment' AND c.comment_id IS NULL$q$
+        WHERE a.subject_type = 'comment' AND c.comment_id IS NULL
+          AND a.subject_id NOT LIKE '%\_lcd%'$q$
     )::TEXT, 'N/A'),
     '0',
-    '> 0 多半是 D-085 清理删了旧的并行评论行而 judge 的判分还在. 同一批 comment_id 的账本行一起删 (见 sync_comments_from_raw_extra.py 模块头).'
+    '> 0 多半是 D-085 清理删了旧的并行评论行而 judge 的判分还在. 同一批 comment_id 的账本行一起删 (见 sync_comments_from_raw_extra.py 模块头). 不数 id 带 _lcd 的: 那是巡查快照拆出来的读者评论, 快照一变旧行就换掉 (D-155), 判分留着不碍事.'
 UNION ALL
 SELECT '86', 'H · 跨 schema 孤儿',
     'truth_vault.note_feature_answers (subject_type=external_note) 指向不存在的 external_notes 数量 (v1.18)',

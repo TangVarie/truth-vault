@@ -360,7 +360,7 @@ A 家族根本没有目标列，B 家族 NRT_phase2 498 行有 target、0 行有
 | # | 做什么 | 收益 |
 |---|---|---|
 | B1 | `comments_count_prev` + `comments_delta`（源：`上次评论数` 924 行已在库） | 速度信号最便宜的一条；同时是补 tier"疑似限流"盲区的前置 |
-| B2 | comments 加 `source` + `is_truncated`，`comment_id` 前缀分流 | 打开约 5000 条真实观众评论，TV 第一次有观众侧信号 |
+| B2（**11-15 做了，D-155**：`notes_v1_27`，另加 `observed_at`；id 前缀 `_lcd` / `_lcr` / `_lcn`；有「评论区明细」的表按平台评论 ID 入库） | comments 加 `source` + `is_truncated`，`comment_id` 前缀分流 | 打开约 5000 条真实观众评论，TV 第一次有观众侧信号 |
 | B3 | `notes.has_negative` + `negative_keywords_hit` | TV 第一个观众负面信号；41 行真负面已在库 |
 | B4 | **tier 判据版本标记**（写进 raw_extra 一个固定键或一个 typed 列） | **必须在接第一张新表之前做**，事后无法回填（飞书端旧值已被机器覆盖） |
 | B5 | `took_off_at` + `hours_to_takeoff` | TV 第一个事件时刻；⚠️ 等跨仓口径确认后再做 |

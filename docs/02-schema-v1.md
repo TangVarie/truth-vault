@@ -341,6 +341,8 @@ CREATE TABLE truth_vault.metric_snapshots (
 
 不强制统一观察窗口——帆谷实际工作流是"项目结案后定 tier"，时间窗口不是核心 ([DECISIONS D-018](../DECISIONS.md))。但有了 window_label，未来想跑"24h 互动率 vs final tier"这种建模分析也不会被脏数据干扰。
 
+**⚠️ 这张表不是观测历史（2026-11-15 补，D-155）**：`collected_at` 是夜跑同步写这一行的时刻，`window_label` 是按「发布时间到同步时刻」算出来的档，都不是这些数被量到的时刻；同一档后写的盖掉先写的。评论数是巡查工具更早量的，曝光 / 阅读 / 互动是运营更早截的图（截图时刻没有记录）。逐次的变化在 `audit_log`（D-078），按天看用视图 `truth_vault.v_note_observations`（`schemas/notes_v1_27_reader_comments_observations.sql`，说明在 `docs/09-system-integration.md` linkcheck 一节）。今天没有任何分析读 `metric_snapshots`。
+
 ---
 
 ## 五、posthoc_analyses（D-017 · 复盘独立存）
@@ -400,6 +402,16 @@ CREATE TABLE comments (
 ```
 
 历史评论数据需要 LLM 重建楼层结构（飞书表"随贴评论"是文本块）。
+
+**v1.27 加的三列（2026-11-15，D-155；`schemas/notes_v1_27_reader_comments_observations.sql`，都可空）**：
+
+| 列 | 意思 |
+|---|---|
+| `source` | 这一行是谁写出来的。空 = 运营在飞书「随贴评论」里贴的（v1.27 之前的全部行）；`linkcheck_digest` = 巡查工具「评论区快照」那段文字拆出来的；`linkcheck_records` = 巡查工具「评论区明细」那一行 JSON 读出来的（带平台评论 ID） |
+| `is_truncated` | 正文是不是被截过（快照 40 字、明细 200 字）。运营贴的行是空 |
+| `observed_at` | 这条评论是哪一刻在评论区里看到的。拿不准是空，不拿同步时刻代填 |
+
+巡查来的行里，命中那一行「评论关键词」的写 `is_scripted = true`（多半是我们自己铺的）；`comment_time`（评论自己的发布时刻）和 `parent_comment_id` 只有明细行有。数读者评论：`source` 以 `linkcheck_` 开头、`is_scripted` 不是 true、`comment_role` 不是贴主。运营贴的和读者的不放进同一个统计。怎么写进来的见 `scripts/sync_comments_from_raw_extra.py` 模块头和 `docs/09-system-integration.md` linkcheck 一节。
 
 ---
 

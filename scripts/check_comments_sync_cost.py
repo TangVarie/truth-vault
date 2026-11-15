@@ -12,7 +12,7 @@
   ① main 不把项目级结果传给 write_comments(existing=None) → §1 每篇一次 select, 红
   ② 去掉 on_demand + 定时跑的跳过                           → §3 红
   ③ reconcile 失败仍 return 0                               → §4 红
-  ④ fetch_project_comments 不按 note 分组 / 丢 comment_order → §2 该插 1 条变成插多条, 红
+  ④ fetch_project_comments_by_source 不按 note 分组 / 丢 comment_order → §2 该插 1 条变成插多条, 红
 
 跑法: cd scripts && python check_comments_sync_cost.py
 """

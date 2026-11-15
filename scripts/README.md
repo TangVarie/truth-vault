@@ -135,6 +135,13 @@ CI 和 daily-sync workflow 都优先读 `.lock`; `.txt` 仅作为 "high-level in
 #         两份都可重跑。先合并代码, 之后什么时候跑都行; v1_26 在合并之前跑也可以, v1_25 不要在合并之前跑
 #         (不报错也不红, 但合并之前的代码不记新的一轮, 删帖名单从跑的那一刻起不再更新, 直到合并后跑完一趟完整同步)。
 #         详见 docs/audit-fixes-2026-11-14.md。
+#   - schemas/notes_v1_27_reader_comments_observations.sql → comments 加三列可空的 source / is_truncated / observed_at (读者评论和运营贴的
+#         评论分得开: source 为空 = 运营贴的, linkcheck_digest / linkcheck_records = 巡查工具看到的评论区第一页) + 视图
+#         v_note_observations (每篇每个北京日、指标变了的那些天, 从 audit_log 读; 评论数带量到的时刻) + metric_snapshots 的注释
+#         (collected_at / window_label 不是观测时刻)。代码宽容: 没跑之前 sync_comments_from_raw_extra.py 只解析随贴评论、
+#         带快照的项目喊一次 warning。可重跑, TV 这边先合代码还是先跑它都行, 但要等写作台的评论工具
+#         按 source 分开之后再跑 (OPEN-ITEMS W-59) (D-155; 夹具 check_reader_comments_observations.sql /
+#         check_reader_comments.py)。
 #   - autowriter-migrations/001_create_autowriter_schema.sql → 把 autowriter 表从 public 迁到 autowriter schema
 #   - autowriter-migrations/002_add_external_source.sql     → items 加 (external_source, external_source_id) 列
 #         + per-user partial UNIQUE (user_id, external_source, external_source_id) WHERE external_source IS NOT NULL.
