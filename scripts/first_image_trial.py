@@ -156,10 +156,14 @@ class Trial:
                 self.calls_ok += 1
                 self.fail_streak = 0
                 self.call_seconds.append(self.clock() - t0)
-                if usage:
-                    t = self.per_tag.setdefault(run["tag"], {"input": 0, "output": 0, "images": 0})
-                    t["input"] += sum(int(usage.get(k, 0)) for k in ("input", "cache_write", "cache_read"))
+                t = self.per_tag.setdefault(run["tag"], {"input": 0, "output": 0, "images": 0})
+                tin = sum(int(usage.get(k, 0)) for k in ("input", "cache_write", "cache_read")) if usage else 0
+                if tin > 0:
+                    t["input"] += tin
                     t["output"] += int(usage.get("output", 0))
+                else:
+                    # 答成了但中转站没回报用量: 这一档每张图花多少就算不出来了, 报告里写「算不出」, 不写成 0
+                    t["no_usage"] = t.get("no_usage", 0) + 1
             return FI.parse_answers(self.bank, qids, text or "")
         if self.calls_ok == 0 and not self.ended:
             # 头一次调用连重试都没成: 中转站多半不收图片 (设计 §4 验收表第二行), 就此停, 不往下花
@@ -254,6 +258,8 @@ class Trial:
         self._should_stop()
         self.column = self._column_check()
         self.cover = self._cover_check()
+        # 最后两步自己也会撞上限 (列核对的最后一次调用把预算用完、封面核对撞时间上限): 再看一遍, 没查完的不记成「跑完」
+        self._should_stop()
         if not self.ended:
             self.ended = "跑完"
 
@@ -280,7 +286,7 @@ class Trial:
         confirmed = set(self.bank.get("cover_confirmed_projects") or [])
         out: dict[str, dict] = {}
         for it in self.sample["cover_check"]:
-            if self.deadline is not None and self.clock() > self.deadline:
+            if self._should_stop():
                 break
             c = out.setdefault(it["project_id"], {"n": 0, "ok": 0, "cover_unconfirmed": it["project_id"] not in confirmed})
             c["n"] += 1
@@ -362,9 +368,10 @@ def run_trial(*, bank: dict, tier: str, cap: Optional[int], dry_run: bool, sampl
     res["per_image"] = {}
     for tag, p in t.per_tag.items():
         if p["images"] and tag in model_of:
-            y = MP.yuan(model_of[tag], p["input"], p["output"])
+            y = None if p.get("no_usage") else MP.yuan(model_of[tag], p["input"], p["output"])
             res["per_image"][tag] = {"images": p["images"], "input": p["input"] / p["images"],
-                                     "output": p["output"] / p["images"], "yuan": None if y is None else y / p["images"]}
+                                     "output": p["output"] / p["images"], "yuan": None if y is None else y / p["images"],
+                                     "no_usage": p.get("no_usage", 0)}
 
     # 可用率: 常规图按参照档第一轮的 img_kind 算
     ref = t.results[plan[0]["tag"]]

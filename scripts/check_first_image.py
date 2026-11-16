@@ -396,7 +396,23 @@ def check_budget() -> None:
     fk2 = Fakes(usage=False)
     res2, _, _ = _run(fk2, tier="mid", budget=FI.Budget(max_weighted=cap_tokens))
     assert len(fk2.asks) < len(fk.asks) and res2["budget"]["usage_missing"] == len(fk2.asks)
-    print(f"  §6 越线的那次不发 (上限 {cap_tokens:,} → 调了 {len(fk.asks)} 次就停); 上限抬不高; 没用量按预留记 ✓")
+    # 上限正好卡在最后一步 (列核对) 里: 没查完的不能记成「跑完」(以前最后两步之后不再看上限, 报告就少了「没跑完」那句)
+    fk3 = Fakes()
+    full, _, _ = _run(fk3, tier="both")
+    assert full["ended"] == "跑完", full["ended"]
+    fk3 = Fakes()
+    cut, _, _ = _run(fk3, tier="both", budget=FI.Budget(max_calls=full["budget"]["calls"] - 1))
+    assert cut["budget"]["stopped"] == "max_calls" and cut["ended"].startswith("到了硬上限"), (cut["ended"], cut["budget"]["stopped"])
+    # 没回报用量的调用: 钱不能显示成 0 —— 模型那一行把按预留估的加进去并标出来, 每张图 / 每月的花费写「算不出」
+    fk4 = Fakes(usage=False)
+    res4, _, _ = _run(fk4, tier="mid")
+    m4 = next(iter(res4["budget"]["by_model"].values()))
+    assert m4["input"] == 0 and m4["est_calls"] == m4["calls"] > 0 and m4["est_weighted"] > 0, m4
+    assert all(v["yuan"] is None and v["no_usage"] > 0 for v in res4["per_image"].values()), res4["per_image"]
+    md4 = FI.build_report(res4)
+    assert "按预留估的" in md4 and "算不出" in md4 and "| 0.00 |" not in md4, "没回报用量时报告不能写成没花钱"
+    assert "按预留估的" not in FI.build_report(full), "都回报了用量时不出这句"
+    print(f"  §6 越线的那次不发 (上限 {cap_tokens:,} → 调了 {len(fk.asks)} 次就停); 上限抬不高; 没用量按预留记、钱不显示成 0; 卡在最后一步不算跑完 ✓")
 
 
 # ── §7 ────────────────────────────────────────────────────────────────────────

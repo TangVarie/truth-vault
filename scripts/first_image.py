@@ -627,7 +627,8 @@ class Budget:
     def settle(self, estimate: int, model: str, usage: Optional[dict]) -> None:
         with self._lock:
             self.reserved -= estimate
-            m = self.by_model.setdefault(model, {"calls": 0, "input": 0, "output": 0, "weighted": 0})
+            m = self.by_model.setdefault(model, {"calls": 0, "input": 0, "output": 0, "weighted": 0,
+                                                 "est_calls": 0, "est_weighted": 0})
             m["calls"] += 1
             tin = tout = 0
             if usage:
@@ -637,6 +638,8 @@ class Budget:
                 self.usage_missing += 1
                 self.spent += estimate
                 m["weighted"] += estimate
+                m["est_calls"] += 1          # 没拿到用量 (含失败的调用): 按预留记, 报告里的钱也要把这一块算进去
+                m["est_weighted"] += estimate
                 return
             w = MP.weighted_tokens(tin, tout)
             self.spent += w
@@ -873,16 +876,30 @@ def build_report(res: dict) -> str:
     add("")
     add("| 模型 | 调用 | 输入 token | 输出 token | 约合（元） |")
     add("|---|---|---|---|---|")
+    any_est = False
     for model, m in sorted(b["by_model"].items()):
         y = MP.yuan(model, m["input"], m["output"])
-        add(f"| {model} | {m['calls']} | {m['input']:,} | {m['output']:,} | {fmt(y)} |")
+        if m.get("est_calls"):
+            # 有调用没回报用量: 这些按预留的 token 折成钱加进去, 标出来 —— 不能让「没回报」看起来像「没花钱」
+            any_est = True
+            ye = MP.yuan_of_weighted(model, m["est_weighted"])
+            y = None if (y is None or ye is None) else y + ye
+            add(f"| {model} | {m['calls']} | {m['input']:,} | {m['output']:,} | {fmt(y)}（含 {m['est_calls']} 次按预留估的） |")
+        else:
+            add(f"| {model} | {m['calls']} | {m['input']:,} | {m['output']:,} | {fmt(y)} |")
     add("")
+    if any_est:
+        add("输入 / 输出两列只有中转站回报了用量的调用；没回报的（含失败的）按预留的 token 折成钱算进「约合」，是往高估。")
+        add("")
     add(f"元是{MP.ASSUMED_NOTE}；token 数是中转站回报的。")
     add("")
     t = res["timing"]
     add(f"- 每次调用用时：中位 {fmt(t['median_s'])} 秒，最慢 {fmt(t['max_s'])} 秒（{t['n']} 次）")
     for tag, per in sorted(res["per_image"].items()):
         if not tag.endswith(("-a", "-1568")):          # 第二轮和逐题单问是核对用的, 不是以后每张图的花法
+            continue
+        if per.get("no_usage"):
+            add(f"- {tag}：有 {per['no_usage']} 次调用中转站没回报用量，每张图花多少算不出，经验卡和每晚的花费也不估（{per['images']} 张）")
             continue
         add(f"- {tag}：每张图平均输入 {per['input']:,.0f} / 输出 {per['output']:,.0f} token（{per['images']} 张），"
             f"约 {fmt(per['yuan'])} 元一张 → 经验卡那 {CARD_POSTS} 篇约 {fmt(per['yuan'] * CARD_POSTS if per['yuan'] is not None else None)} 元，"
