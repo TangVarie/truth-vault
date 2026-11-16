@@ -550,6 +550,16 @@ def check_media() -> None:
             raise AssertionError(code)
         except FM.MediaError as e:
             assert e.status == want and str(e) == want, (code, e.status)
+            if want == FM.NO_PERMISSION:
+                # 拒绝时带一个只有字母数字的细项 (状态码 / 飞书数字错误码 / 带没带 extra); 回包读不出来也不炸
+                assert e.detail and e.detail.startswith(f"http{code}_code") and e.detail.replace("_", "").isalnum(), e.detail
+    # 飞书回包里的数字错误码带得出来, 别的一个字都不带 (回包里的 msg 可能有地址)
+    seen["resp"] = _Resp(status=403, chunks=(b'{"code": 1061004, "msg": "forbidden https://example.invalid/x"}',))
+    try:
+        FM.download(_Client(), dict(f, url="https://open.feishu.cn/x?extra=abc"), 50_000, http_get=get)
+        raise AssertionError("403 没抛")
+    except FM.MediaError as e:
+        assert e.detail == "http403_code1061004_extra1", e.detail
     try:
         FM.download(_Client(fail=True), f, 50_000, http_get=get)
         raise AssertionError("auth")

@@ -123,7 +123,7 @@ class Trial:
         self.lock = threading.Lock()
         self.results: dict[str, dict] = {r["tag"]: {} for r in self.plan}
         self.status: dict[int, str] = {}
-        self.dl = {"ok": 0, "failed": 0, "by_status": Counter(), "seconds": [], "bytes": 0}
+        self.dl = {"ok": 0, "failed": 0, "by_status": Counter(), "detail": Counter(), "seconds": [], "bytes": 0}
         self.pixels: Counter = Counter()
         self.call_seconds: list[float] = []
         self.api_fail: Counter = Counter()
@@ -186,6 +186,9 @@ class Trial:
             with self.lock:
                 self.dl["failed"] += 1
                 self.dl["by_status"][_status_of(exc)] += 1
+                det = getattr(exc, "detail", None)
+                if isinstance(det, str) and det.replace("_", "").isalnum() and len(det) <= 60:
+                    self.dl["detail"][det] += 1
             return None, "download_failed"
         with self.lock:
             self.dl["ok"] += 1
@@ -361,7 +364,7 @@ def run_trial(*, bank: dict, tier: str, cap: Optional[int], dry_run: bool, sampl
     res["api_failures"] = dict(t.api_fail)
     res["timing"] = {"n": len(t.call_seconds), "median_s": statistics.median(t.call_seconds) if t.call_seconds else None,
                      "max_s": max(t.call_seconds) if t.call_seconds else None}
-    res["download"] = {"ok": t.dl["ok"], "failed": t.dl["failed"], "by_status": dict(t.dl["by_status"]),
+    res["download"] = {"ok": t.dl["ok"], "failed": t.dl["failed"], "by_status": dict(t.dl["by_status"]), "detail": dict(t.dl["detail"]),
                        "median_s": statistics.median(t.dl["seconds"]) if t.dl["seconds"] else None, "bytes": t.dl["bytes"]}
     res["pixels"] = dict(t.pixels)
     model_of = {r["tag"]: r["model"] for r in plan}

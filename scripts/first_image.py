@@ -910,6 +910,8 @@ def build_report(res: dict) -> str:
     d = res["download"]
     add(f"- 飞书下载：成功 {d['ok']}，失败 {d['failed']}（按原因：" + ("，".join(f"{k}={v}" for k, v in sorted(d['by_status'].items())) or "无")
         + f"）；每个文件中位 {fmt(d['median_s'])} 秒；合计 {d['bytes'] / 1e6:.1f} MB")
+    if d.get("detail"):
+        add("- 飞书拒绝下载的细项（HTTP 状态码 / 飞书错误码 / 这次带没带 extra）：" + "，".join(f"{k}={v}" for k, v in sorted(d["detail"].items())))
     add("- 原图像素分布：" + ("，".join(f"{k}={v}" for k, v in sorted(res['pixels'].items())) or "无"))
     u = res["usable"]
     add(f"- 常规图可用：{u['regular_ok']} / {u['regular_n']}"
