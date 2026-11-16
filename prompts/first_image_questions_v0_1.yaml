@@ -1,0 +1,262 @@
+# ════════════════════════════════════════════════════════════════════
+# 首图题库 fi-v0.1（草案 · 试跑用，未冻结；D-157, 2026-11-16）
+# ════════════════════════════════════════════════════════════════════
+#
+# 设计与用法: docs/33-first-image-trial.md
+# 这个文件是什么:
+#   一组只看首图就能回答的闭集小问题。模型只看到图, 看不到档位、数据、标题、正文。
+#   14 道题里 12 道由模型答, 2 道 (img_text_matches_title / img_text_has_number) 由代码从
+#   模型抄下来的封面大字和笔记标题算, 所以模型连标题也看不到。
+#
+# 和文字题库 (feature_questions_v0_1.yaml) 同一套规矩, 这里只写不一样的地方:
+#   role: image           图片题库; 没有 spans、没有「证据是原文子串」那条, 换成下面的 consistency
+#   run_tag_prefix        以后落库只许写在 img-* 下 (note_feature_answers 的主键不含题库, run_tag=primary 归文字题库)
+#   call_groups           一次调用只问一组, 一组最多 4 题, 组与组不合并 (docs/28 §5.3 的规矩照搬, 没有放宽)
+#   objective             yes / mostly / partly / no: 这道题有没有唯一的对错。no 的两道预计最弱, 过不了线就删
+#   cover_confirmed_projects  哪些项目确认过「多图的帖, 第一个附件就是封面」。没写进来的项目, 多图的帖一律带
+#                         cover_unconfirmed 标记, 不上经验卡、不进封面建议。试跑不改这张名单, 由人确认后再加
+#
+# 答题契约 (scripts/first_image.py):
+#   · 模型只输出 JSON: {"answers":[{"id":"...","answer":"..."}]}
+#   · choice 题的 answer 必须是 options 里的 value; 不在闭集里记无效 (out_of_vocab), 不重问、不修补
+#   · text 题 (img_main_text) 抄图上加的最大那行字, 最多 40 字, 没有就给空串; 只给代码用, 不出现在任何报告里
+#   · consistency 里的自相矛盾 → 这张图这一轮的答案整体记无效并写原因, 不修补
+#   · img_kind 不是「封面」→ 其余答案记无效 (not_a_cover)
+#
+# 冻结: 试跑通过、题目定稿那天把 status 改成 frozen、记下 frozen_sha256 (算法同文字题库:
+#       feature_bank.bank_digest, 剔掉 status / frozen_sha256 两行再算)。整份文件含注释进 digest。
+bank_version: fi-v0.1
+status: draft
+frozen_sha256: ""
+role: image
+run_tag_prefix: img-
+cover_confirmed_projects: []
+
+call_groups:
+  A_text:
+    - img_kind
+    - img_text_amount
+    - img_main_text
+    - img_text_kind
+  B_composition:
+    - img_layout
+    - img_finish
+    - img_decoration
+    - img_colour
+  C_content:
+    - img_person
+    - img_product
+    - img_brand_readable
+    - img_scene
+
+# 自检 (代码照这张表执行; 每条: 当 if 里的题答了这些值时, then 里的题必须 / 不许是这些值)
+consistency:
+  - name: no_text_but_transcribed
+    if: {img_text_amount: [没有字]}
+    then_empty: img_main_text
+  - name: text_but_not_transcribed
+    if: {img_text_amount: [一句大字, 好几行字, 字占了大半张图]}
+    then_not_empty: img_main_text
+  - name: text_card_without_text
+    if: {img_layout: [纯文字卡片]}
+    then_not: {img_text_amount: [没有字]}
+
+questions:
+
+  - id: img_kind
+    version: 1
+    group: A_text
+    type: choice
+    objective: "yes"
+    ask: 这张图是一篇小红书笔记的封面, 还是别的东西？
+    options:
+      - value: 封面
+        means: 给读者看的图：照片、拼图、带字的图、文字卡片、聊天或备忘录样式的图都算
+      - value: 后台或数据截图
+        means: 创作者后台、数据统计页、已发布笔记页面的截图（带互动数字、导航栏、数据曲线这类界面）
+      - value: 看不清或空白
+        means: 全黑、全白、严重模糊、打不开的图
+    use: 过滤。只有「封面」往下用；顺带量出传错列的有多少
+
+  - id: img_text_amount
+    version: 1
+    group: A_text
+    type: choice
+    objective: "yes"
+    ask: 图上后期加了多少字？只算加在图上的字，产品包装、招牌、屏幕里本来就有的字不算。
+    options:
+      - value: 没有字
+        means: 图上没有后期加的字
+      - value: 一句大字
+        means: 一个标题，最多两行
+      - value: 好几行字
+        means: 三行以上，或者好几处分开的字，但图还是主体
+      - value: 字占了大半张图
+        means: 字盖住了一半以上的画面，或者整张就是字
+    use: 封面上放不放大字、放多少
+
+  - id: img_main_text
+    version: 1
+    group: A_text
+    type: text
+    max_chars: 40
+    objective: "yes"
+    ask: 把图上后期加的、最大的那一行（或那一句）字照抄下来，最多 40 个字；没有就给空字符串。
+    use: 只给代码算下面两道题用；也用来核对上一题
+
+  - id: img_text_matches_title
+    version: 1
+    type: code
+    objective: "yes"
+    ask: 封面大字是不是把笔记标题又写了一遍？（代码算：去掉空格标点表情、全角转半角、转小写之后，一方包含另一方（短的至少 4 个字），或相似度 ≥ 0.80）
+    options:
+      - value: 一样或差不多
+      - value: 不一样
+      - value: 没有字
+    use: 封面重复标题，还是拿封面放第二个钩子
+
+  - id: img_text_has_number
+    version: 1
+    type: code
+    objective: "yes"
+    ask: 封面大字里有没有数字（天数、价格、个数）？（代码算）
+    options:
+      - value: 有
+      - value: 没有
+      - value: 没有字
+    use: 封面用不用数字开头
+
+  - id: img_text_kind
+    version: 1
+    group: A_text
+    type: choice
+    objective: partly
+    ask: 图上最大的那句字是哪一种？
+    options:
+      - value: 提问
+        means: 一个问句，或者在等读者回答的话
+      - value: 结果或结论
+        means: 说一个结果、一个判断、一句感受（「终于不痒了」「这个真的好用」）
+      - value: 清单或教程标题
+        means: 说后面有几样东西、几个步骤、怎么做（「三个办法」「新手怎么选」）
+      - value: 只是名称
+        means: 只有品名、品类、地名、人名这类名称，没有说法
+      - value: 没有字
+        means: 图上没有后期加的字
+    use: 封面标题写成哪种句式
+
+  - id: img_layout
+    version: 1
+    group: B_composition
+    type: choice
+    objective: "yes"
+    ask: 这张图是怎么排的？
+    options:
+      - value: 一张照片
+        means: 整张是一张照片（上面可以加字）
+      - value: 拼图
+        means: 两张以上的照片拼在一起，不是前后对比
+      - value: 前后对比
+        means: 左右或上下分成两半，对比使用前后、之前之后
+      - value: 纯文字卡片
+        means: 没有照片，只有底色和字
+      - value: 截图样式
+        means: 聊天记录、备忘录、搜索结果页、App 页面这类界面的样子
+    use: 选哪种封面模板
+
+  - id: img_finish
+    version: 1
+    group: B_composition
+    type: choice
+    objective: "no"
+    ask: 这张图看起来是手机随手拍的，还是修过、设计过的？
+    options:
+      - value: 随手拍
+        means: 光线和构图都随意，没有明显的修图和排版
+      - value: 修过或设计过
+        means: 明显调过色、抠过图、排过版，或者是棚拍
+      - value: 说不准
+        means: 两边都说得通
+    use: 封面做到多精致
+
+  - id: img_decoration
+    version: 1
+    group: B_composition
+    type: choice
+    objective: "yes"
+    ask: 图上有没有后期加的贴纸、表情、箭头、圆圈或手画的记号？（字不算）
+    options:
+      - value: 有
+      - value: 没有
+    use: 加不加记号
+
+  - id: img_colour
+    version: 1
+    group: B_composition
+    type: choice
+    objective: "no"
+    ask: 整张图的色调偏什么？
+    options:
+      - value: 暖
+        means: 整体偏黄、橙、红
+      - value: 冷
+        means: 整体偏蓝、青、绿
+      - value: 中性
+        means: 以黑白灰或接近白的颜色为主
+      - value: 混合
+        means: 冷暖都有，分不出哪边为主
+    use: 拍摄和修图的色调方向
+
+  - id: img_person
+    version: 1
+    group: C_content
+    type: choice
+    objective: "yes"
+    ask: 图里有没有人？
+    options:
+      - value: 没有人
+      - value: 只有手或身体一部分
+        means: 手、手臂、腿、背这类局部，看不出是谁
+      - value: 有人但看不到脸
+        means: 有大半个人，脸被挡住、背对或截掉了
+      - value: 看得到脸
+        means: 能看到脸（真人；卡通和包装上印的人不算）
+    use: 拍不拍人、露不露脸
+
+  - id: img_product
+    version: 1
+    group: C_content
+    type: choice
+    objective: mostly
+    ask: 图里有没有出现产品或它的包装？
+    options:
+      - value: 没有
+      - value: 有但在背景里或很小
+      - value: 有而且是主体
+    use: 封面上放不放产品，还是留到后面的图
+
+  - id: img_brand_readable
+    version: 1
+    group: C_content
+    type: choice
+    objective: "yes"
+    ask: 图上任何地方，能不能读出一个品牌名或认出一个商标？
+    options:
+      - value: 能
+      - value: 不能
+    use: 封面上露不露品牌
+
+  - id: img_scene
+    version: 1
+    group: C_content
+    type: choice
+    objective: mostly
+    ask: 这张图是在哪儿拍的？
+    options:
+      - value: 生活场景
+        means: 家里、街上、店里、办公室这类有人过日子的地方
+      - value: 纯色或棚拍背景
+        means: 干净的纯色背景、桌面摆拍、影棚
+      - value: 没有拍摄场景
+        means: 文字卡片、截图、纯设计图，没有实拍的场景
+    use: 生活场景还是产品摆拍

@@ -1,0 +1,5 @@
+# 只有首图试跑要装 (.github/workflows/first-image-trial.yml, D-157)。
+# 夜跑装的是 requirements.lock, 那份没动: 合并这个文件不改任何夜跑装的包。
+# 试跑通过、首图步骤要每晚跑的时候, 再把这两个并进 requirements.txt 并重出 lock。
+Pillow>=10.4,<13
+pillow-heif>=0.18,<2

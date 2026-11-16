@@ -1,0 +1,93 @@
+# 首图试跑 (D-157, 2026-11-16; 读法在 docs/33-first-image-trial.md): 只能手动点, 没有定时, 合并它不改任何夜跑。
+# 做什么: 只读地从库里抽样 → 用夜跑同步的飞书凭证把首图下载到 runner 的内存 → 缩图 → 让看图的模型答固定的题
+#         (一次调用一组、一组四题; 每档两轮算一致率) → 出一份只有计数的报告。
+# 不写库。图片只在内存里: 不写盘、不进 artifact、不进日志。传上去的 artifact 只有那份计数报告 (md + json)。
+# 花费: token 硬上限写死在 scripts/first_image.py (3,800,000 输入当量 token, 全按中档价约 98 元, 按假设价), 每次调用之前查;
+#       dry_run 默认 true: 不下载、不调模型、不花钱, 只报样本够不够数、要调多少次、纸面上大约多少钱。
+# 建议顺序: ① dry_run=true 看样本 → ② dry_run=false, max_images=2 冒烟 (核飞书给不给下载、中转站收不收图片, 纸面约 4 元, 106 次调用)
+#           → ③ dry_run=false, max_images=0 正式试跑 (纸面约 43 元)。
+name: First image trial (manual · counts-only report)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: "mid = 只跑中档 (Sonnet) · cheap = 只跑便宜档 (Haiku) · both = 两档都跑并互相比 (选档要用这个)"
+        required: false
+        default: "both"
+      max_images:
+        description: "每一层最多取几个; 0 = 设计全量 (常规 48 / 难办 12 / 封面检查 39 / 列检查 6)。冒烟填 2"
+        required: false
+        default: "0"
+      dry_run:
+        description: "true = 不下载、不调模型、不花钱, 只出计划 (默认)。正式跑改成 false"
+        required: false
+        default: "true"
+
+concurrency:
+  group: first-image-trial
+  cancel-in-progress: false
+
+jobs:
+  trial:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    permissions:
+      contents: read
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+      FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+      # D-148 备用中转站 (可选): 和夜跑用同一组, 没配 = 只走主站
+      ANTHROPIC_BASE_URL_BACKUP: ${{ secrets.ANTHROPIC_BASE_URL_BACKUP }}
+      ANTHROPIC_API_KEY_BACKUP: ${{ secrets.ANTHROPIC_API_KEY_BACKUP }}
+      ANTHROPIC_API_KEY_BACKUP_HAIKU: ${{ secrets.ANTHROPIC_API_KEY_BACKUP_HAIKU }}
+      RELAY_FORCE: ${{ vars.RELAY_FORCE }}
+      IN_TIER: ${{ github.event.inputs.tier || 'both' }}
+      IN_MAX_IMAGES: ${{ github.event.inputs.max_images || '0' }}
+      IN_DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Guard inputs + secrets (缺什么在这里就停, 还没花钱)
+        run: |
+          for v in "$IN_TIER" "$IN_MAX_IMAGES" "$IN_DRY_RUN"; do
+            case "$v" in *$'\n'*|*$'\r'*) echo "::error::输入里不许有换行"; exit 1;; esac
+          done
+          case "$IN_TIER" in mid|cheap|both) ;; *) echo "::error::tier 只能是 mid / cheap / both"; exit 1;; esac
+          case "$IN_DRY_RUN" in true|false) ;; *) echo "::error::dry_run 只能是 true / false"; exit 1;; esac
+          echo "$IN_MAX_IMAGES" | grep -Eq '^[0-9]{1,3}$' || { echo "::error::max_images 要是 0–999 的整数"; exit 1; }
+          [ -n "$SUPABASE_URL" ] || { echo "::error::缺 secret SUPABASE_URL"; exit 1; }
+          [ -n "$SUPABASE_SERVICE_ROLE_KEY" ] || { echo "::error::缺 secret SUPABASE_SERVICE_ROLE_KEY"; exit 1; }
+          if [ "$IN_DRY_RUN" = "false" ]; then
+            [ -n "$FEISHU_APP_ID" ] && [ -n "$FEISHU_APP_SECRET" ] || { echo "::error::缺 secret FEISHU_APP_ID / FEISHU_APP_SECRET"; exit 1; }
+            [ -n "$ANTHROPIC_API_KEY" ] || { echo "::error::缺 secret ANTHROPIC_API_KEY"; exit 1; }
+          fi
+      - name: Install deps (lockfile + 试跑自己的两个图片库)
+        run: |
+          pip install -r scripts/requirements.lock
+          if [ "$IN_DRY_RUN" = "false" ]; then pip install -r scripts/requirements-first-image.txt; fi
+      - name: Run trial
+        working-directory: scripts
+        run: |
+          mkdir -p "$RUNNER_TEMP/first-image-trial"
+          ARGS=(--tier "$IN_TIER" --max-images "$IN_MAX_IMAGES" --out "$RUNNER_TEMP/first-image-trial/first-image-trial.md")
+          [ "$IN_DRY_RUN" = "true" ] && ARGS+=(--dry-run)
+          rc=0
+          # 打出来的只有计数和状态词 (scripts/check_first_image.py 钉着); 报告另进 step summary
+          python first_image_trial.py "${ARGS[@]}" || rc=$?
+          [ -f "$RUNNER_TEMP/first-image-trial/first-image-trial.md" ] && cat "$RUNNER_TEMP/first-image-trial/first-image-trial.md" >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+      - name: Upload report (只有计数的 md + json)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: first-image-trial-report
+          path: ${{ runner.temp }}/first-image-trial/first-image-trial.*
+          if-no-files-found: ignore
+          retention-days: 90
