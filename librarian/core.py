@@ -4,7 +4,7 @@ librarian_select(brief) 的流程:
     1. 取【整架】经验卡 (v_flywheel_lesson_cards, 按 rank_score 排序, 上限 SHELF_FETCH_CAP)。
        空库 → 返回 []  (消费方降级到自有正例)。
        出处帖在飞书里删了满 36 小时的卡在这里拿掉 (D-154, 默认开; 见「出处帖已经删了的卡」那一段);
-       回流闸开着时 (D-151, 默认关) 出处帖被闸挡下的卡也在这里拿掉。下面的版本串和预筛看的都是筛过的书架。
+       回流闸开着时 (D-151, 2026-11-16 起默认开, D-156) 出处帖被闸挡下的卡也在这里拿掉。下面的版本串和预筛看的都是筛过的书架。
        出处帖投过流的卡照借, 卡上写明 (D-151 第 13 条, owner 11-12): 那一句只加在回给消费方的卡上 (回包时现加), 选卡模型看不到,
        这一步的候选、版本串、缓存键、prompt 都不因为它变 (见「出处帖投过流的卡」那一段)。
     2. 算 library_version = f(整架候选数, max(curated_at), …) —— 版本看整架, 不看预筛结果。
@@ -328,7 +328,8 @@ def vanished_health() -> dict:
 # 上 (aw 迁移 020; 分类那一半在 TangVarie/autowriter)。馆员在整架取回之后、算版本串和预筛之前把出处帖不能学的卡拿掉:
 # 在预筛之前拿, 给模型的那一摞还是满的 (在写作台那头事后丢, 简报就短一截); 版本串本来就摘要了候选 id 集合, 一张卡
 # 进出书架缓存键自己换, library_version 一个字不用改。
-# · 默认关 (RETURN_GATE_DEFAULT): 要开就是改这一行的一个 PR。环境变量 LIBRARIAN_RETURN_GATE 可以盖过它, 但不需要设。
+# · 默认开 (RETURN_GATE_DEFAULT; 2026-11-16 owner 看过三晚的类别数之后定的, D-156)。环境变量 LIBRARIAN_RETURN_GATE 可以盖过它
+#   (应急关: 设 0), 平时不需要设。
 #   关着的时候 autowriter.tv_note_links 一次都不读, 候选、版本串、缓存键、给模型的 prompt 和以前一字不差。
 #   (回包不在这句话里: 第 13 条的投流标注不看这个开关, 回包的卡多一个 paid_boost, 投过流的卡 why_it_worked 前面多一句,
 #   为这个每 10 分钟读两次 TV。)
@@ -342,7 +343,7 @@ def vanished_health() -> dict:
 # · 最多 10 分钟读一次 (进程内记着上次的结果和时刻), 不是每次借阅都读; 读失败用上一次读成的那份, 一次都没读成过就不筛。
 #   失败那次的时刻也记: 库挂着的时候不会每次借阅都去撞一遍。绝不往借阅里抛。
 # · 一个品牌的卡不会因为闸一张不剩: 筛完某个品牌的卡全没了 → 这个品牌的卡全留, /health 的 select.return_gate 里记一笔。
-RETURN_GATE_DEFAULT = False
+RETURN_GATE_DEFAULT = True
 RETURN_GATE_ENV = "LIBRARIAN_RETURN_GATE"
 RETURN_GATE_TTL_S = 600.0
 RETURN_GATE_CHUNK = 200       # .in_() 走 URL (D-080), 一批 ≤200 个 id
@@ -1250,7 +1251,7 @@ def librarian_select(brief: dict, *, model: Optional[str] = None,
         _status_out["patterns"] = P.public_patterns(delivery)
 
     # D-154: 出处帖在飞书里删了满 36 小时的卡先拿掉 (默认开; 名单 10 分钟读一次, 读不到就不筛)。
-    # D-151: 出处帖被回流闸挡下的卡再拿掉, 然后算版本串、预筛。回流闸默认关: 关着原样返回, 库一次都不读。
+    # D-151: 出处帖被回流闸挡下的卡再拿掉, 然后算版本串、预筛。回流闸 2026-11-16 起默认开 (D-156); 关着原样返回, 库一次都不读。
     cards = _drop_gated(sb, _drop_vanished(sb, fetch_candidates(sb)))
     if not cards:
         return {"_dry_run": True, "candidate_count": 0, "shelf_count": 0, "note": "空库 → 返回 []"} if dry_run else []

@@ -27,7 +27,7 @@
           ANTHROPIC_BASE_URL_BACKUP + ANTHROPIC_API_KEY_BACKUP(备用中转站, 可选, 两个都配才启用, D-148) /
           RELAY_FORCE(可选, backup / primary / 空=自动) /
           RELAY_PRIMARY_TIMEOUT_S(可选, 配了备用站时主站等几秒就切; 不设 = 22, 见 clients.py 的 AU-F09 时限) /
-          LIBRARIAN_RETURN_GATE(可选, 不需要设: 回流闸筛书架的开关在代码里 core.RETURN_GATE_DEFAULT, 默认关, D-151;
+          LIBRARIAN_RETURN_GATE(可选, 不需要设: 回流闸筛书架的开关在代码里 core.RETURN_GATE_DEFAULT, 2026-11-16 起默认开, D-151 / D-156; 应急关设 0;
           设了非空值才盖过代码默认)
   见 repo 根 railway.json。
 """
@@ -108,7 +108,7 @@ def health() -> dict:
         "relay": _relay_health(True),
         # AU-F09: 在飞合并的本进程计数 (merged = 后到的同一个请求并到了在飞的那次, 没再选一遍; wait_timeouts = 等满了
         # 自己选的) + 现在生效的三个时限 (主站那个认 RELAY_PRIMARY_TIMEOUT_S, 设了就不是代码里的 22; 超过 40 按 40)。只有数。
-        # D-151 回流闸 (return_gate): 开没开 (默认关)、上次读 tv_note_links 成没成、最近一次筛书架会拿掉几张卡、
+        # D-151 回流闸 (return_gate): 开没开 (2026-11-16 起默认开)、上次读 tv_note_links 成没成、最近一次筛书架会拿掉几张卡、
         # 保底留了几个品牌。只有布尔、整数和 None, 不带 note_id、品牌名。
         # D-151 第 13 条 投流标注 (paid_boost): 出处帖投过流的那两路上次读成没成 (read_ok)、累计读失败 / 回包前没等到
         # 几次 (read_errors, 涨 = 卡在不带那一句地借出去, 或者用的是旧的那批帖)、各读到几篇 (flagged / events; window =
