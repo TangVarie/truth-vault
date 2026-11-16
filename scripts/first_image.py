@@ -530,7 +530,7 @@ def stop_word(stop_reason: Any) -> Optional[str]:
 def _json_values(text: str) -> list:
     """回包里一段一段读得出来的 JSON (只取最外层的)。括号不成对 (多半是回到一半断了) → 一段都不取:
     不从断掉的回包里捡半截答案。某一段读不出来 (多了个逗号、里面夹着字) → 整段跳过, 不进去捡它里面的对象。"""
-    if text.count("{") != text.count("}") or text.count("[") != text.count("]"):
+    if not _balanced(text):
         return []
     dec, out, i = json.JSONDecoder(), [], 0
     while True:
@@ -542,6 +542,31 @@ def _json_values(text: str) -> list:
             out.append(val)
         except (ValueError, RecursionError):               # 嵌得太深的回包也只是「读不出来」, 不让整趟停
             i = _skip_value(text, m.start())
+
+
+def _balanced(text: str) -> bool:
+    """花括号、方括号各自成不成对。JSON 引号里的括号是内容 (抄下来的字里可以有「[限时」), 不算。"""
+    curly = square = 0
+    in_str = esc = False
+    for ch in text:
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch == "{":
+            curly += 1
+        elif ch == "}":
+            curly -= 1
+        elif ch == "[":
+            square += 1
+        elif ch == "]":
+            square -= 1
+    return curly == 0 and square == 0
 
 
 def _skip_value(text: str, start: int) -> int:
