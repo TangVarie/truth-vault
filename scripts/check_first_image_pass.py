@@ -19,6 +19,14 @@
   §7  接线: workflow 有定时也能手动、手动默认干跑、首图那一步不会让 job 变红、没有上传步骤、没用夜跑没有的 secret、
       看门狗名单里有它; 步骤的代码只碰库里那三个函数、不往盘上写图片; 夜跑的 lock 没动; 迁移文件和文档里该有的字都在;
       定时一天只起一趟 (上限是按一趟算的); 不传备用中转站的钥匙; NEW_SINCE 和三个函数的参数钉住; 迁移和这里点名的脚本都真在
+  §8  没答成的原因看得见 (11-16 首跑 32 张里 11 张没答成, 当时看不出为什么), 而且【认什么一个字没变】(D-159):
+      ① FI.parse_answers 就是 11-16 首跑时 main 上的那个函数 (源码的 sha256 钉住); read_reply 的 parsed、Pass._call 拿到的结果,
+        在固定的一批回包上 (对抗评审核实过的每一种 + 更早几轮评审的) 和守卫自己留的那份老读法逐字相同; stop_reason 不改它
+      ② 细一层的词 (empty_reply / truncated / no_json / json_not_template / id_numbered / oov_* …) 和「假如放宽某一条读法
+        会不会读出来」的词 (would_read) 各有代表性的例子钉住; 带问号 / 叉 / 没勾的框 / 话没说完的不数成「读得出」;
+        分类器出了岔子只换一个词, 很长的怪回包不花时间
+      ③ 摘要按写死的词分开数: 第一次调用没读出来的、整轮作废的 (哪条自检规则)、逐题无效的次数、回包撞没撞 max_tokens、
+        「假如放宽」的那一行; 里面只有写死的词, 没有回包里的字; 没写进库的帖不进原因计数
 
 反证 (改坏之后必须变红):
   ① 题库里把 img_colour 加回来 / 把单独问的题并回组里 / surfaced_questions 里放一道没验证的题        → §1
@@ -32,6 +40,12 @@
   ⑨ _process 里去掉「撞了上限这一篇不写」那两行                                                       → §4
   ⑩ 排第一的帖被拒时不记就停 (改回老写法)                                                            → §6
   ⑪ cron 改成每小时一趟 / NEW_SINCE 改早 / SupabaseStore 里 p_excluded 写死成 []                      → §7
+  ⑫ 去掉 no_answer_why / invalid_q 的计数, 或 summary 不打这几行                                      → §8 ③
+  ⑬ parse_answers 里动一个字 (去标点再比 / 认整行 / 换一种切 JSON 的办法 / 同一个键两遍就作废)          → §8 ① (sha256 + 固定回包)
+  ⑭ read_reply 把「假如放宽读得出」的答案放进 parsed / 撞了上限就把 parsed 清掉                        → §8 ①
+  ⑮ Pass._call 不用 parsed、改用分类器读出来的答案                                                    → §8 ① ③ (抄整行的帖变成答成了)
+  ⑯ 换了样子的 JSON 里一个答案都读不出也数一个回包 / would_read 落到有效的题上 / 计数的键带回包里的字     → §8 ② ③
+  ⑰ 先数 no_answer 的原因再写库 / 空回包排在撞上限前面 / _json_values 改回拿整个回包去解码 (平方级)      → §8 ② ③
 
 跑法: cd scripts && python check_first_image_pass.py
 """
@@ -41,11 +55,13 @@ import base64
 import contextlib
 import copy
 import hashlib
+import inspect
 import io
 import json
 import pathlib
 import re
 import sys
+import time
 import types
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -110,7 +126,7 @@ class FakeStore:
         return self.cands[:limit]
 
     def write(self, state, rows):
-        if self.write_fails:
+        if self.write_fails is True or self.write_fails == state["status"]:   # True = 都写不进; 一个状态词 = 只有它写不进
             raise RuntimeError(f"500 {ERR_CANARY} https://{URL_CANARY}/rest/v1/rpc/write_first_image_result")
         self.writes.append((state, rows))
         return "final" if state["outcome"] == "final" else "retry"
@@ -355,7 +371,8 @@ def check_one_request_per_reserve() -> None:
     try:
         P.os.environ.update({"ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "https://primary.invalid"})
         # 没配备用站: 成功 → 恰好一个请求, 客户端不带 SDK 的重试, 用量带得出来
-        text, usage = P.default_ask(CHEAP, "p", block)
+        text, usage, stop = P.default_ask(CHEAP, "p", block)
+        assert stop == "end_turn", "stop_reason 要带出来 (只带写死的词), 不然看不出回包是不是撞了 max_tokens"
         assert text == "ok" and usage["input"] == 1500 and sent == [("primary", CHEAP, FI.MAX_OUTPUT_TOKENS)], sent
         assert built[-1].get("max_retries") == 0, "SDK 自带的重试没关: 一次预留会发出不止一个请求"
         # 失败 (超时这种 call_claude 平时会重试的): 也只发一个请求就抛
@@ -474,6 +491,9 @@ def check_pass() -> None:
     assert tok("rio1") not in fk.downloads and "rio1" not in calls, "先不做的项目不下载、不问"
     assert by["heic1"][0]["file_kind"] == "empty_type" and by["heic1"][0]["status"] == "answered"
 
+    assert res["no_answer_why"] == {"first_call:oov_other": 1, "round:no_text_but_transcribed:transcribed_text": 1}, res["no_answer_why"]
+    assert res["invalid_by_question"] == {"img_kind:oov_other": 1, "img_layout:oov_other": 1}, res["invalid_by_question"]
+    assert res["reply"] == {}, res["reply"]
     assert res["status"] == {"answered": 4, "not_a_cover": 1, "first_is_video": 1, "too_large": 2, "decode_failed": 1,
                              "download_failed": 2, "no_answer": 2}, res["status"]
     assert res["budget"]["calls"] == len(fk.asks) == 7 * 5 + 1 + 1 == 37 and res["budget"]["images"] == 11
@@ -806,6 +826,495 @@ def check_wiring() -> None:
     print("  §7 workflow 定时 + 手动 (默认干跑)、不会变红、不传 artifact; 代码只碰三个函数、不开文件; 迁移只做加法; 文档齐 ✓")
 
 
+# ── §8 ────────────────────────────────────────────────────────────────────────
+KIND_LINE = "封面: 给读者看的图：照片、拼图、带字的图、文字卡片、聊天或备忘录样式的图都算"
+SHOT_LINE = "后台或数据截图：创作者后台、数据统计页、已发布笔记页面的截图（带互动数字、导航栏、数据曲线这类界面）"
+OLD_PARSER_SHA256 = "957a83bfbc5d4f2571d3bbd683c356760c2ddcbded39407a0cbf0ad34c7cf657"   # FI.parse_answers 的源码 (和 11-16 首跑时 main 上的一字不差)
+G_KIND = ["img_kind", "img_text_amount"]
+
+
+def _reply(items) -> str:
+    return json.dumps({"answers": [{"id": i, "answer": a} for i, a in items]}, ensure_ascii=False)
+
+
+def _old_parse(bank: dict, qids: list, text: str) -> dict:
+    """守卫自己留的一份老读法 (11-16 首跑时 main 上的 parse_answers, 逻辑一字不差): 认什么只许和它一样。"""
+    idx = {q["id"]: q for q in bank["questions"]}
+    got: dict = {}
+    try:
+        s, e = text.index("{"), text.rindex("}")
+        data = json.loads(text[s:e + 1])
+        for a in data.get("answers") or []:
+            if isinstance(a, dict) and isinstance(a.get("id"), str):
+                got.setdefault(a["id"], a.get("answer"))
+    except Exception:  # noqa: BLE001
+        return {qid: (None, "parse_failed") for qid in qids}
+    out: dict = {}
+    for qid in qids:
+        q = idx[qid]
+        if qid not in got or not isinstance(got[qid], str):
+            out[qid] = (None, "missing")
+            continue
+        val = got[qid].strip()
+        if q["type"] == "choice":
+            out[qid] = (val, None) if val in [str(o["value"]) for o in q["options"]] else (None, "out_of_vocab")
+        else:
+            out[qid] = (val, None) if len(val) <= int(q["max_chars"]) else (None, "text_too_long")
+    return out
+
+
+def review_corpus() -> list:
+    """固定的一批回包 [(题号们, 回包, stop_reason)]: 11-16 对抗评审里核实过的每一种 (scratch 的 real.json 逐条抄进来的),
+    加上更早几轮评审的 (否定、没勾的框、话没说完、同一个键两遍、断掉的数组、引号里的括号、断包)。全是合成的字。"""
+    K, A, one = ["img_kind"], G_KIND, json.dumps({"id": "img_kind", "answer": "封面"}, ensure_ascii=False)
+    ok = _reply([("img_kind", "封面")])
+    two = json.dumps([{"id": "img_kind", "answer": "封面"}, {"id": "img_text_amount", "answer": "没有字"}], ensure_ascii=False)
+    out: list = []
+
+    def add(qids, text, *stops):
+        for st in stops or (None, "end_turn"):
+            out.append((qids, text, st))
+
+    # 一个答案的各种写法 (模板 JSON 里)
+    kind_answers = [
+        "封面", " 封面 ", "封面。", "「封面」", "- 封面", " 封面​", '"封面"', "**封面**", "（封面）", "【封面】", "封面！", "封面，",
+        KIND_LINE, SHOT_LINE, KIND_LINE.replace(": ", "："), "后台或数据截图", "看不清或空白",
+        "!封面", "！封面", "! 封面", "!" + KIND_LINE, "！" + KIND_LINE, "「! " + KIND_LINE + "」",
+        "封面。。。", "封面. . .", "封面 . .", "封面. .", "封面···", "封面、、、", "封面——", "封面｡｡｡", "封面。。", "封面,,,",
+        "[ ] 封面", "- [ ] 封面", "( ) 封面", "（ ）封面", "[] 封面", "[ ]封面", "[-] 封面", "[x] 封面", "[X] 封面", "[✓] 封面",
+        "☐ 封面", "☑ 封面", "封面 [ ]", "[ ] " + KIND_LINE,
+        "封面: !给读者看的图：照片、拼图、带字的图、文字卡片、聊天或备忘录样式的图都算",
+        "封面 . . . 给读者看的图：照片、拼图、带字的图、文字卡片、聊天或备忘录样式的图都算",
+        "封面:(给读者看的图：照片、拼图、带字的图、文字卡片、聊天或备忘录样式的图都算。。。",
+        "封面图", "封面: 给读者看的图", "是封面", "不是封面", "看不清", "数据截图", "cover", "别的东西", "",
+        "封面？", "封面?", "封面 (?)", "❌封面", "封面❌", "封面 ✗", "封面×", "封面(×)", "≠封面", "~封面", "~~封面~~",
+        "封面…", "封面...", "封面……", "封\n面", "封 面", "封̶面̶", "封面🙂", "✓封面", "封面/", "<封面>",
+        KIND_LINE + "？", "❌" + KIND_LINE, "~~" + KIND_LINE + "~~", KIND_LINE + "…", KIND_LINE.replace("封面", "封̶面")]
+    for v in kind_answers:
+        add(A, _reply([("img_kind", v), ("img_text_amount", "没有字")]))
+        add(K, json.dumps({"img_kind": v}, ensure_ascii=False))
+    for v in (None, ["封面"], 1, True, {"v": "封面"}):
+        add(A, json.dumps({"answers": [{"id": "img_kind", "answer": v}]}, ensure_ascii=False))
+    for qid, vals in (("img_brand_readable", ("能", "能。", "能。。", "( ) 能", "不能", "能?")),
+                      ("img_decoration", ("有", "有。。。", "🈶", "㊒", "没有", "有。")),
+                      ("img_text_amount", ("没有字", "没有字。。。", "没有字？", "没有字。", "很多字")),
+                      ("img_main_text", ("三天见效", " 三天见效 ", "字" * 40, "字" * 41, "", "[限时优惠", "满减}到手"))):
+        for v in vals:
+            add([qid], _reply([(qid, v)]))
+            add([qid], json.dumps({qid: v}, ensure_ascii=False))
+    # 换了样子的 JSON
+    for text in (two, one, "[" + one + "]", "[" + one + ",]", "[" + one, "[" + one + ", {]",
+                 '{"id":"img_kind","answer":"封面"}\n{"id":"img_text_amount","answer":"没有字"}',
+                 json.dumps({"answers": {"img_kind": "封面"}}, ensure_ascii=False),
+                 json.dumps({"img_kind": "封面", "img_text_amount": "没有字"}, ensure_ascii=False),
+                 json.dumps({"img_kind": ["封面"]}, ensure_ascii=False),
+                 json.dumps([{"id": "img_kind", "answer": "封面图"}, {"id": "img_text_amount", "answer": "很多字"}], ensure_ascii=False),
+                 ok + " 说明: {备注}", '格式: {"answers":[{"id":"题号","answer":"答案"}]}\n' + ok, "{备注} " + one,
+                 "```json\n" + ok + "\n```", "好的，答案如下：\n" + ok + "\n以上。", '说明 {"x": 1} 和 {备注}', "我看不了图片", "", "  \n",
+                 '{"answers": 5, "img_kind": "封面"}', '{"answers": "img_kind"}', '{"answers": null}', "{}", "[]", "null",
+                 '{"answers":[{"id":"img_kind","answer":"封面"},]}',
+                 '{"answers":[{"id":"img_kind","answer":"封面"},{"id":"img_text_amount","answer":"没有字"}], 备注}',
+                 _reply([("1", "封面"), ("2", "没有字")]), json.dumps({"answers": [{"id": 1, "answer": "封面"}]}),
+                 _reply([("题号", "封面")]), _reply([("img_text_amount", "没有字")]),
+                 "[" * 12000 + "]" * 12000, '{"a":' + "[" * 12000 + "]" * 12000 + "}", "{,}" * 2000, "[1,]\n" * 2000):
+        add(A, text, None, "end_turn", "max_tokens", "length")
+    # 同一道题两个答案 / 同一个键两遍 / 一段读不出来的 JSON 带着另一个答案 (real.json 2、3、7、8、9、15、18)
+    for text in (
+            _reply([("img_kind", "封面"), ("img_kind", "后台或数据截图")]), _reply([("img_kind", "别的"), ("img_kind", "封面")]),
+            _reply([("img_kind", "别的"), ("img_kind", "其他")]), _reply([("img_kind", "别的"), ("img_kind", " 别的 ")]),
+            _reply([("img_kind", "封面"), ("img_kind", "封面。")]), _reply([("img_kind", "封面"), ("img_kind", None)]),
+            _reply([("img_kind", None), ("img_kind", "封面")]), _reply([("img_kind", "封面"), ("img_kind", ["封面"])]),
+            '{"img_kind":"后台或数据截图"} ' + ok,
+            "{'img_kind': '后台或数据截图'}\n" + '{"img_kind":"封面","img_text_amount":"没有字"}',
+            '{"img_kind":"后台或数据截图",} {"img_kind":"封面"}', '{"img_kind":"后台或数据截图", } {"img_kind":"封面"}',
+            '{"img_kind":"封面","img_kind":"后台或数据截图"} {"img_kind":"封面"}',
+            '{"answers":{"img_kind":"封面"},"img_kind":"后台或数据截图"}', '{"id":"img_kind","answer":"封面","img_kind":"后台或数据截图"}',
+            '{"img_kind":"封面","更正":{"img_kind":"后台或数据截图"}}', '{"img_kind":"封面","correction":{"img_kind":"后台或数据截图"}}',
+            '[{"id":"img_kind","answer":"封面"},[{"id":"img_kind","answer":"后台或数据截图"}]]',
+            '{"answers":[{"id":"img_kind","answer":"封面"}],"img_kind":"后台或数据截图"}',
+            '{"answers": {"img_kind": "封面", "img_kind": "后台或数据截图"}}', '{"img_kind": "后台或数据截图", "img_kind": "封面"}',
+            '{"id": "img_kind", "answer": "封面", "answer": "后台或数据截图"}',
+            '{"answers":[{"id":"img_kind","answer":"封面"},{"id":"img_text_amount","answer":"没有字"}],"note":"a","note":"b"}',
+            '{"answers":[{"id":"img_kind","answer":"封面","answer":"封面"}]}', '{"answers":[{"id":"img_kind","id":"img_kind","answer":"封面"}]}',
+            '{"answers":[{"id":"img_kind","answer":"封面","why":"a"},{"id":"img_text_amount","answer":"没有字"}],"note":"x","note":"x"}',
+            '{"answers":[{"id":"img_kind","answer":"封面"},{"id":"img_text_amount","answer":"没有字","why":"a","why":"b"}]}',
+            '{"answers":[{"id":"img_kind","answer":"封面","answer":"封面"},{"id":"img_text_amount","answer":"一句大字"}]}',
+            '{"answers":[{"id":"img_kind","answer":"封面"},{"id":"img_text_amount","answer":"没有字","answer":"一句大字"}]}',
+            '{"answers":[{"id":"img_kind","answer":"封面"},{"id":"img_text_amount","answer":"一句大字"}],"meta":{"n":1,"n":1}}',
+            '{"answers":[{"id":"img_kind","id":"img_kind","answer":"后台或数据截图"},{"id":"img_text_amount","answer":"一句大字"}]}',
+            '答案不是 {"img_kind":"封面"}', "答案不是 " + ok, '{"img_kind":"封面"}'):
+        add(A, text, None, "end_turn", "max_tokens", "model_context_window_exceeded", "length")
+    add(["img_decoration"], '{"answers":[{"id":"img_decoration","answer":"有","answer":"有"}]}')
+    # 断包 (real.json 4、10、11、16、19)
+    for text in (
+            '看起来像 6" 手机的截图 {"img_kind":"封面"} {"img_text_amount":"没有', '注: 5" 的图 {"img_kind":"封面"} {"img_text_amount":"一句',
+            ok + '\n更正: {"answers":[{"id":"img_kind","answer":"后台', "[" + ok + ',{"answers":[{"id":"img_kind","answer":"后台或',
+            '图上写着 5" 的屏幕。\n{"id":"img_kind","answer":"封面"}\n{"id":"img_text_amount","answer":"一句',
+            '先看"标题\n{"id":"img_kind","answer":"封面"}\n{"id":"img_text_amount","answer":"没有字"}\n更正: {"id":"img_kind","answer":"后台或数据截',
+            one + "\n", ok, ok[:40], two[:30],
+            '{"answers":[{"id":"img_kind","answer":"封面"},{"id":"img_text_amount","answer":"一句'):
+        add(A, text, None, "end_turn", "max_tokens")
+    add(["img_layout", "img_finish"], '照片"}, {"id": "img_finish", "answer": "随手拍"}]}')
+    add(K, _reply([("img_kind", "封面。。。")]))
+    add(K, _reply([("img_kind", "[ ] 封面")]))
+    # 题库里每道选择题的每个选项: 包了标点的、抄了整行的、换了样子的 JSON 里的 —— 单问这一题、和它那一次调用的别的题一起问, 两种都过
+    # (后面几次调用的题也在里面: 只在某几道题、某一次调用上放宽的改法也过不了)
+    idx = {q["id"]: q for q in BANK["questions"]}
+    for unit in P.call_units(BANK):
+        for qid in unit:
+            q = idx[qid]
+            if q["type"] != "choice":
+                continue
+            rest = [(o, str(idx[o]["options"][0]["value"]) if idx[o]["type"] == "choice" else "三天见效") for o in unit if o != qid]
+            for o in q["options"]:
+                v = str(o["value"])
+                forms = [v, v + "。", "「" + v + "」", "**" + v + "**", "- " + v, "（" + v + "）。", v + "？", "[ ] " + v]
+                if o.get("means"):
+                    forms += [f"{v}: {o['means']}", f"{v}：{o['means']}", f"「{v}: {o['means']}」"]
+                for f in forms:
+                    add([qid], _reply([(qid, f)]))
+                    add([qid], json.dumps({qid: f}, ensure_ascii=False))
+                    add([qid], json.dumps([{"id": qid, "answer": f}], ensure_ascii=False))
+                    if rest:
+                        add(unit, _reply([(qid, f)] + rest))
+                        add(unit, json.dumps(dict([(qid, f)] + rest), ensure_ascii=False))
+    for text in ('{"id": "img_main_text", "answer": "[限时优惠"}', '[{"id": "img_main_text", "answer": "满减}到手"}]',
+                 '{"img_main_text": "写着 \\"[\\" 的图"}', _reply([("img_main_text", "三天见效"), ("img_main_text", "七天见效")]),
+                 _reply([("img_main_text", "三天见效"), ("img_main_text", "三天 见效！")])):
+        add(["img_main_text"], text)
+    return out
+
+
+def check_reply_reading() -> None:
+    g = G_KIND
+    assert g == P.call_units(BANK)[0]
+
+    # ① 认什么只许和老读法一样: parse_answers 的源码钉住; read_reply 的 parsed、Pass 拿到的 parsed, 在固定的一批回包上逐字相同
+    src = inspect.getsource(FI.parse_answers)
+    assert hashlib.sha256(src.encode("utf-8")).hexdigest() == OLD_PARSER_SHA256, "FI.parse_answers 被改了: 认什么不许动 (D-159)"
+    assert "read_reply" not in src and "_shape_read" not in src and "match_option" not in src
+    corpus = review_corpus()
+    assert len(corpus) > 3000 and {st for _q, _t, st in corpus} >= {None, "end_turn", "max_tokens", "length"}, len(corpus)
+    n_invalid = n_would = 0
+    for qids, text, stop in corpus:
+        want = _old_parse(BANK, qids, text)
+        r = FI.read_reply(BANK, qids, text, stop)
+        assert repr(r["parsed"]) == repr(want) == repr(FI.parse_answers(BANK, qids, text)), \
+            f"认下来的和老读法不一样 (第 {corpus.index((qids, text, stop))} 条)"
+        assert set(r) == {"parsed", "notes", "would_read"}
+        bad = {q for q in qids if want[q][1] is not None}
+        assert set(r["notes"]) == bad and set(r["notes"].values()) <= set(FI.NOTES), "每道无效的题有一个写死的词, 有效的题没有"
+        assert set(r["would_read"]) <= bad and set(r["would_read"].values()) <= set(FI.WOULD_READ), "would_read 只落在无效的题上"
+        n_invalid += len(bad)
+        n_would += len(r["would_read"])
+
+        class One(Fakes):                                  # Pass._call 拿到的也是老读法的结果 (stop_reason 不改它)
+            def ask(self, model, prompt, block, _t=text, _s=stop):
+                return _t, {"input": 10, "output": 5}, _s
+        p = P.Pass(bank=BANK, store=None, budget=P.PassBudget("nightly", 7), download=None, shrinker=None, ask=One().ask)
+        assert repr(p._call(qids, b"x", (1, 1))) == repr(want), "Pass._call 认下来的和老读法不一样"
+    assert n_invalid > 3000 and 1000 < n_would < n_invalid, (n_invalid, n_would)
+    # 每道选择题 (哪一次调用的都算) 在固定回包里都有「假如放宽就读得出」的答案 —— 上面已经逐条钉住它们照旧无效
+    seen_would: dict = {}
+    for qids, text, stop in corpus:
+        for q, w in FI.read_reply(BANK, qids, text, stop)["would_read"].items():
+            seen_would.setdefault(q, set()).add(w)
+    for q in BANK["questions"]:
+        if q["type"] != "choice":
+            continue
+        need = {FI.WOULD_PUNCT, FI.WOULD_LOOSE, FI.WOULD_LOOSE_PUNCT}
+        if any(o.get("means") for o in q["options"]):
+            need |= {FI.WOULD_LINE, FI.WOULD_LOOSE_LINE}
+        assert seen_would.get(q["id"], set()) >= need, f"{q['id']}: 固定回包里缺一种「假如放宽」的样子"
+
+    def kind(text, stop=None, qid="img_kind", qids=None):
+        r = FI.read_reply(BANK, qids or g, text, stop)
+        return r["parsed"][qid], r["notes"].get(qid), r["would_read"].get(qid)
+
+    # 老读法认的还是认 (一字不差的选项、围栏、前后有闲话); 它不认的一个都没多认: 这几条是评审里漏进去过的
+    ok = _reply([("img_kind", "封面")])
+    for text in (_reply([("img_kind", "封面"), ("img_text_amount", "一句大字")]), "```json\n" + ok + "\n```", "好的：\n" + ok + "\n以上。",
+                 _reply([("img_kind", " 封面 ")])):
+        for stop in (None, "end_turn", "max_tokens", "length"):
+            assert kind(text, stop) == (("封面", None), None, None), (text, stop)
+    for v in ("封面。", "「封面」", "**封面**", KIND_LINE, "封面。。。", "[ ] 封面", "( ) 封面", "!封面", "封面？", "❌封面", "封面图", "🈶"):
+        assert kind(_reply([("img_kind", v)]))[0] == (None, FI.INVALID_OOV), f"没有放宽: {v!r} 不是一字不差的选项"
+    assert kind(_reply([("img_decoration", "🈶")]), qid="img_decoration", qids=["img_decoration"])[0] == (None, FI.INVALID_OOV)
+    for text in ('{"img_kind":"封面"}', '[{"id":"img_kind","answer":"封面"}]', '{"answers":{"img_kind":"封面"}}', '答案不是 {"img_kind":"封面"}',
+                 '{"answers":{"img_kind":"封面"},"img_kind":"后台或数据截图"}',
+                 '看起来像 6" 手机的截图 {"img_kind":"封面"} {"img_text_amount":"没有'):
+        assert kind(text)[0] == (None, FI.INVALID_MISSING), f"没有放宽: 不是模板的 JSON 里的答案不认: {text}"
+    for text in ('{"img_kind":"后台或数据截图",} {"img_kind":"封面"}', "{'img_kind': '后台或数据截图'}\n" + '{"img_kind":"封面"}',
+                 '[{"id":"img_kind","answer":"封面"},{"id":"img_text_amount","answer":"没有字"}]', "我看不了图片", ""):
+        assert kind(text)[0] == (None, FI.INVALID_PARSE), text
+    # 老读法本来就认的, 照旧认 (评审说的两处「倒退」): 同一个键两遍、同一题两个答案取第一个、撞了上限但 JSON 完整
+    for text, want in (('{"answers":[{"id":"img_kind","answer":"封面","answer":"封面"}]}', "封面"),
+                       ('{"answers":[{"id":"img_kind","answer":"封面"}],"note":"a","note":"b"}', "封面"),
+                       ('{"answers":[{"id":"img_kind","answer":"封面"}],"meta":{"n":1,"n":1}}', "封面"),
+                       (_reply([("img_kind", "封面"), ("img_kind", "后台或数据截图")]), "封面"),
+                       (_reply([("img_kind", "后台或数据截图"), ("img_kind", "封面")]), "后台或数据截图"),
+                       (ok + " 说明: {备注}", None), ('{"id":"img_kind","answer":"封面"}\n', None)):
+        for stop in (None, "max_tokens"):
+            got = kind(text, stop)[0]
+            assert got[0] == want and got == _old_parse(BANK, g, text)["img_kind"], (text, stop, got)
+
+    # ② 细一层的词和「假如放宽」的词 (只是计数用的词; 上面已经钉住了答案照旧无效)
+    oov, miss, fail = FI.INVALID_OOV, FI.INVALID_MISSING, FI.INVALID_PARSE
+    two = json.dumps([{"id": "img_kind", "answer": "封面"}, {"id": "img_text_amount", "answer": "没有字"}], ensure_ascii=False)
+    for v, note, would in (
+            ("封面。", FI.NOTE_OOV_WRAPPED, FI.WOULD_PUNCT), ("「封面」", FI.NOTE_OOV_WRAPPED, FI.WOULD_PUNCT),
+            ("**封面**", FI.NOTE_OOV_WRAPPED, FI.WOULD_PUNCT), ("- 封面", FI.NOTE_OOV_WRAPPED, FI.WOULD_PUNCT),
+            (KIND_LINE, FI.NOTE_OOV_LINE, FI.WOULD_LINE), (SHOT_LINE, FI.NOTE_OOV_LINE, FI.WOULD_LINE),
+            (KIND_LINE.replace(": ", "："), FI.NOTE_OOV_LINE, FI.WOULD_LINE),
+            ("封面图", FI.NOTE_OOV_PLUS, None), ("封面: 给读者看的图", FI.NOTE_OOV_PLUS, None), ("是封面", FI.NOTE_OOV_CONTAINS, None),
+            ("看不清", FI.NOTE_OOV_PART, None), ("数据截图", FI.NOTE_OOV_PART, None), ("cover", FI.NOTE_OOV_OTHER, None),
+            ("", FI.NOTE_OOV_OTHER, None),
+            # 带着会改意思的记号的: 「假如放宽」也读不出 (不把打了问号、打了叉、没勾的框、话没说完的「封面」数成读得出)
+            ("封面？", FI.NOTE_OOV_MARKED, None), ("❌封面", FI.NOTE_OOV_MARKED, None), ("~~封面~~", FI.NOTE_OOV_MARKED, None),
+            ("封面…", FI.NOTE_OOV_MARKED, None), ("封 面", FI.NOTE_OOV_MARKED, None), ("!封面", FI.NOTE_OOV_MARKED, None),
+            ("封面。。。", FI.NOTE_OOV_MARKED, None), ("封面. . .", FI.NOTE_OOV_MARKED, None), ("封面——", FI.NOTE_OOV_MARKED, None),
+            ("[ ] 封面", FI.NOTE_OOV_MARKED, None), ("( ) 封面", FI.NOTE_OOV_MARKED, None), ("- [ ] 封面", FI.NOTE_OOV_MARKED, None),
+            ("!" + KIND_LINE, FI.NOTE_OOV_PLUS, None), ("[ ] " + KIND_LINE, FI.NOTE_OOV_PLUS, None), (KIND_LINE + "？", FI.NOTE_OOV_PLUS, None)):
+        assert kind(_reply([("img_kind", v)])) == ((None, oov), note, would), (v, kind(_reply([("img_kind", v)])))
+    for text, stop, why, note, would in (
+            ("", None, fail, FI.NOTE_EMPTY, None), ("  \n", "end_turn", fail, FI.NOTE_EMPTY, None),
+            ("", "max_tokens", fail, FI.NOTE_TRUNCATED, None),          # 思考把上限用完、一个字都没回: 是撞上限, 不是 empty_reply
+            ("", "refusal", fail, FI.NOTE_EMPTY, None), ("我看不了图片", "refusal", fail, FI.NOTE_STOP_OTHER, None),
+            ("我看不了图片", "end_turn", fail, FI.NOTE_NO_JSON, None),
+            (ok[:40], "max_tokens", fail, FI.NOTE_TRUNCATED, None), (ok[:40], None, fail, FI.NOTE_NO_JSON, None),
+            (two, None, fail, FI.NOTE_NOT_TEMPLATE, FI.WOULD_LOOSE), (two, "max_tokens", fail, FI.NOTE_TRUNCATED, None),
+            (two, "length", fail, FI.NOTE_STOP_OTHER, None),            # 不认识的停止原因: 也不数成读得出
+            ('{"img_kind":"封面"}', None, miss, FI.NOTE_NOT_TEMPLATE, FI.WOULD_LOOSE),
+            ('{"img_kind":"封面。"}', None, miss, FI.NOTE_NOT_TEMPLATE, FI.WOULD_LOOSE_PUNCT),
+            (json.dumps({"img_kind": KIND_LINE}, ensure_ascii=False), None, miss, FI.NOTE_NOT_TEMPLATE, FI.WOULD_LOOSE_LINE),
+            ('{"answers":{"img_kind":"封面"}}', "end_turn", miss, FI.NOTE_NOT_TEMPLATE, FI.WOULD_LOOSE),
+            ('{"img_kind":"封面"}', "max_tokens", miss, FI.NOTE_TRUNCATED, None),
+            ('{"img_kind": ["封面"]}', None, miss, FI.NOTE_NOT_TEXT, None),          # 不是字符串: 换了样子也读不出, 不数
+            ('[{"id":"img_kind","answer":"封面图"},{"id":"img_text_amount","answer":"很多字"}]', None, fail, FI.NOTE_OOV_PLUS, None),
+            ('{"img_kind":"后台或数据截图"} ' + ok, None, fail, FI.NOTE_CONFLICT, None),
+            ('{"answers":[{"id":"img_kind","answer":"封面"},]}', None, fail, FI.NOTE_NO_JSON, None),
+            ('{"answers":[{"id":"img_kind","answer":"封面"},{"id":"img_text_amount","answer":"没有字"}], 备注}', None, fail, FI.NOTE_NO_JSON, None),
+            ('说明 {"x": 1} 和 {备注}', None, fail, FI.NOTE_NO_ANSWERS, None),
+            (_reply([("1", "封面"), ("2", "没有字")]), None, miss, FI.NOTE_ID_NUMBERED, None),
+            (json.dumps({"answers": [{"id": 1, "answer": "封面"}]}), None, miss, FI.NOTE_ID_NUMBERED, None),
+            (_reply([("题号", "封面")]), None, miss, FI.NOTE_NO_ANSWERS, None),
+            (_reply([("img_text_amount", "没有字")]), None, miss, FI.NOTE_ID_ABSENT, None),
+            (json.dumps({"answers": [{"id": "img_kind", "answer": None}]}), None, miss, FI.NOTE_NOT_TEXT, None),
+            (_reply([("img_kind", None), ("img_kind", "封面")]), None, miss, FI.NOTE_NOT_TEXT, None),
+            (_reply([("img_kind", "别的"), ("img_kind", "封面")]), None, oov, FI.NOTE_CONFLICT, None),
+            (_reply([("img_kind", "封面。"), ("img_kind", "后台或数据截图")]), None, oov, FI.NOTE_CONFLICT, None),
+            ('{"answers":[{"id":"img_kind","answer":"封面。"}],"note":"a","note":"b"}', None, oov, FI.NOTE_DUP_KEY, None),
+            ("x" * 20_001, None, fail, FI.NOTE_TOO_LONG, None),             # 长度上限写死在这里: 调大了这两条就红
+            ("x" * 20_001, "max_tokens", fail, FI.NOTE_TRUNCATED, None),
+            ("x" * 20_000, None, fail, FI.NOTE_NO_JSON, None)):
+        assert kind(text, stop) == ((None, why), note, would), (text[:60], stop, kind(text, stop))
+    assert FI.NOTE_MAX_CHARS == 20_000, "细看的回包长度上限不许悄悄调大"
+    deep = kind("[" * 9000 + "]" * 9000)                       # 嵌得很深: 解码器受不受得了看 Python 版本, 哪种都只是一个词, 不抛
+    assert deep[0] == (None, fail) and deep[1] in (FI.NOTE_NO_JSON, FI.NOTE_NO_ANSWERS) and deep[2] is None, deep
+    gt = ["img_main_text"]
+    rt = FI.read_reply(BANK, gt, _reply([("img_main_text", "字" * 41)]))
+    assert rt["parsed"]["img_main_text"] == (None, FI.INVALID_TEXT_LONG) and rt["notes"] == {"img_main_text": FI.NOTE_TEXT_LONG}, rt
+    rt = FI.read_reply(BANK, gt, '{"img_main_text": "三天见效"}')
+    assert rt["parsed"]["img_main_text"] == (None, miss) and rt["would_read"] == {"img_main_text": FI.WOULD_LOOSE}, rt
+    assert FI.stop_word("end_turn") == "end_turn" and FI.stop_word("max_tokens") == "max_tokens" and FI.stop_word(None) is None
+    assert FI.stop_word(f"x {ERR_CANARY}") == "other" and FI.stop_word(["max_tokens"]) == "other", "stop_reason 只带写死的词"
+    assert len(set(FI.NOTES)) == len(FI.NOTES) and all(re.fullmatch(r"[a-z_]+", w) for w in FI.NOTES + FI.WOULD_READ)
+    # 「假如放宽」的分类器: 两份题库里每个选项的整行都数得成 (不然那一行的计数永远是 0, 看不出值不值得放宽)
+    for bank in (BANK, FI.load_bank()):
+        for q in bank["questions"]:
+            for o in q.get("options") or [] if q["type"] == "choice" else []:
+                assert FI.match_option(q, str(o["value"])) == (str(o["value"]), None)
+                assert FI.match_option(q, f"「{o['value']}」。") == (str(o["value"]), FI.WOULD_PUNCT), q["id"]
+                if o.get("means"):
+                    assert FI.match_option(q, f"{o['value']}: {o['means']}") == (str(o["value"]), FI.WOULD_LINE), q["id"]
+    # 分类器不许拖垮夜跑: 自己出了岔子只是换一个词; 很长的怪回包不花时间 (平方级的那种写法 0.9 MB 要三十几秒)
+    real_shape = FI._shape_read
+    try:
+        FI._shape_read = lambda *a, **k: (_ for _ in ()).throw(RuntimeError(ERR_CANARY))
+        r = FI.read_reply(BANK, g, "{'img_kind': '封面'}", "end_turn")
+        assert r["parsed"]["img_kind"] == (None, fail) and r["notes"]["img_kind"] == FI.NOTE_UNCLASSIFIED and not r["would_read"], r
+    finally:
+        FI._shape_read = real_shape
+    for hostile in ("{,}" * 300_000, "[1,]\n" * 100_000, '{"a":' * 200_000, '"' * 500_000 + "{}", "[" * 500_000 + "]" * 500_000):
+        t0 = time.perf_counter()
+        r = FI.read_reply(BANK, g, hostile, "end_turn")
+        real_shape(BANK, g, hostile, "end_turn")           # 不靠长度上限: 分类器本身也得是线性的
+        assert time.perf_counter() - t0 < 20, "很长的怪回包读了太久"
+        assert repr(r["parsed"]) == repr(_old_parse(BANK, g, hostile)) and set(r["notes"].values()) <= set(FI.NOTES)
+    # 一个答案里「开括号 + 一长串空格」: 没勾的框那条正则写成两段挨着的空白时是平方级的 (上限以内一条回包 1.6 秒, 6 万字十几秒)
+    kq = FI.question_index(BANK)["img_kind"]
+    for n in (19_900, 60_000):
+        for v in ("[" + " " * n + "封面图", "封面图" + " " * (n // 2) + "(" * 200 + " " * (n // 2), "【" + " \t" * (n // 2) + "-" + " " * n + "封面图"):
+            text = _reply([("img_kind", v)])
+            t0 = time.perf_counter()
+            r = FI.read_reply(BANK, g, text, "end_turn")
+            assert FI.match_option(kq, v) == (None, None) and real_shape(BANK, g, text, "end_turn")["img_kind"][0] is None
+            assert time.perf_counter() - t0 < 2, "答案里一长串空格读了太久 (正则回溯)"
+            assert repr(r["parsed"]) == repr(_old_parse(BANK, g, text)) and not r["would_read"]
+            assert r["notes"]["img_kind"] == (FI.NOTE_TOO_LONG if len(text) > 20_000 else FI.NOTE_OOV_PLUS), (n, r["notes"])
+
+    # ③ 走一遍: 假模型按记号换一种回法。认下来的和老读法一样 (抄整行 / 换了样子的 JSON 还是没答成), 摘要里只有写死的词
+    class Odd(Fakes):
+        def ask(self, model, prompt, block):
+            text, usage = super().ask(model, prompt, block)
+            key = base64.b64decode(block[1]).decode()
+            first = "img_kind" in prompt
+            ans = json.loads(text)["answers"]
+            if "LINE" in key and first:
+                ans[0]["answer"] = KIND_LINE
+            elif "SHOTFULL" in key and first:
+                ans[0]["answer"] = SHOT_LINE
+            elif "WRAP" in key and first:
+                ans[0]["answer"] = "「封面」。"
+            elif "DOUBT" in key and first:
+                ans[0]["answer"] = "封面？"
+            elif "CROSS" in key and first:
+                ans[0]["answer"] = "❌封面"
+            elif "THINK" in key and first:
+                return "", usage, "max_tokens"
+            elif "SYMBOLS" in key:
+                ans = [dict(a, answer="！！" if a["id"] == "img_main_text" else a["answer"]) for a in ans]
+            elif "PLUS" in key and first:
+                ans[0]["answer"] = "封面图"
+            elif "HALF" in key and first:
+                ans[0]["answer"] = "看不清"
+            elif "NUMID" in key and first:
+                ans = [{"id": str(n), "answer": a["answer"]} for n, a in enumerate(ans, 1)]
+            elif "FLAT" in key and first:
+                return json.dumps({a["id"]: a["answer"] for a in ans}, ensure_ascii=False), usage, "end_turn"
+            elif "CUTOBJ" in key and first:
+                return json.dumps({a["id"]: a["answer"] for a in ans}, ensure_ascii=False), usage, "max_tokens"
+            elif "LIST" in key and first:
+                return json.dumps([{"id": "img_kind", "answer": ["封面"]}], ensure_ascii=False), usage, "end_turn"
+            elif "TRUNC" in key and first:
+                return json.dumps({"answers": ans}, ensure_ascii=False)[:40], usage, "max_tokens"
+            elif "SILENT" in key and first:
+                return "", usage, f"refusal {ERR_CANARY}"
+            elif "SAIDNONE" in key:
+                ans = [dict(a, answer={"img_text_amount": "没有字", "img_main_text": "无。"}.get(a["id"], a["answer"])) for a in ans]
+            elif "NOTEXT" in key:
+                ans = [dict(a, answer="" if a["id"] == "img_main_text" else a["answer"]) for a in ans]
+            elif "NOANS" in key and first:                 # 换了样子的 JSON, 但里面一个答案都读不出: 不数进 replies:loose_json
+                return '{"foo": 1}', usage, "end_turn"
+            elif "CONFL" in key and first:
+                return '{"img_kind":"后台或数据截图","img_text_amount":"没有字"} ' + text, usage, "end_turn"
+            elif "DUPK" in key and first:
+                return '{"img_kind":"封面","img_kind":"封面","img_text_amount":"一句大字"}', usage, "end_turn"
+            elif "LATERPUNCT" in key and not first:           # 后面几次调用的每道选择题: 选项包了标点
+                ans = [dict(a, answer=f"「{a['answer']}」。" if a["id"] in later_choice else a["answer"]) for a in ans]
+            elif "LATERFULL" in key and not first:           # 后面几次调用的每道选择题: 抄了选项的整行 (有解释的才抄得成)
+                ans = [dict(a, answer=line_of(a["id"], a["answer"])) for a in ans]
+            elif "MANY" in key and "img_person" in prompt:
+                ans = [dict(a, answer={"img_person": "有人", "img_scene": "生活场景。"}.get(a["id"], a["answer"])) for a in ans]
+            return json.dumps({"answers": ans}, ensure_ascii=False), usage, "end_turn"
+
+    bidx = FI.question_index(BANK)
+    later_choice = [q for u in P.call_units(BANK)[1:] for q in u if bidx[q]["type"] == "choice"]
+
+    def line_of(qid, v):
+        means = next((o.get("means") for o in bidx[qid].get("options") or [] if str(o["value"]) == v), None)
+        return f"{v}: {means}" if qid in later_choice and means else v
+
+    tags = ["ok1", "LINE1", "FLAT1", "SHOTFULL1", "PLUS1", "HALF1", "NUMID1", "TRUNC1", "SILENT1", "SAIDNONE1", "NOTEXT1", "MANY1",
+            "DOUBT1", "CROSS1", "THINK1", "SYMBOLS1", "WRAP1", "CUTOBJ1", "LIST1", "NOANS1", "CONFL1", "DUPK1", "LATERPUNCT1", "LATERFULL1"]
+    fk, store = Odd(), FakeStore([_cand(t) for t in tags])
+    res, out = _run(store, fk)
+    by = {s["note_id"].split("-", 1)[1]: (s["status"], s["outcome"], rows) for s, rows in store.writes}
+    assert res["ended"] == "done" and [by[t][0] for t in tags] == [
+        "answered" if t in ("ok1", "MANY1", "LATERPUNCT1", "LATERFULL1") else "no_answer" for t in tags], [by[t][0] for t in tags]
+    for t in ("LINE1", "FLAT1", "SHOTFULL1", "WRAP1", "CUTOBJ1", "LIST1", "PLUS1", "HALF1", "NUMID1", "TRUNC1", "SILENT1", "DOUBT1",
+              "CROSS1", "THINK1", "NOANS1", "CONFL1", "DUPK1"):
+        assert by[t][1:] == ("counted", []) and sum(1 for _m, k, _p in fk.asks if t in k) == 1, \
+            f"{t}: 第一次调用没读出来 (没有放宽), 一行答案都不写, 后面不问"
+    for t in ("SAIDNONE1", "NOTEXT1", "SYMBOLS1"):
+        assert by[t][1:] == ("counted", []) and sum(1 for _m, k, _p in fk.asks if t in k) == 7, f"{t}: 整轮作废还是整轮作废"
+    many = {r["question_id"]: r for r in by["MANY1"][2]}
+    assert many["img_person"]["invalid_reason"] == "out_of_vocab" and many["img_scene"]["invalid_reason"] == "out_of_vocab" \
+        and many["img_scene"]["answer"] is None, "「生活场景。」不是一字不差的选项: 存的还是 out_of_vocab"
+    # 后面几次调用的每道选择题: 包了标点的、抄了整行的都照旧存 out_of_vocab、答案是空的 (不只是第一次调用不放宽)
+    punct = {r["question_id"]: r for r in by["LATERPUNCT1"][2]}
+    full = {r["question_id"]: r for r in by["LATERFULL1"][2]}
+    asked = {r["question_id"]: r["answer"] for r in by["ok1"][2]}
+    lined = [q for q in later_choice if line_of(q, asked[q]) != asked[q]]
+    assert len(later_choice) == 8 and len(lined) >= 4 and {u[0] for u in P.call_units(BANK)[1:]} - {"img_main_text"} <= set(later_choice)
+    for q in later_choice:
+        assert (punct[q]["answer"], punct[q]["invalid_reason"]) == (None, "out_of_vocab"), f"{q}: 包了标点的选项不认"
+        want_full = (None, "out_of_vocab") if q in lined else (asked[q], None)
+        assert (full[q]["answer"], full[q]["invalid_reason"]) == want_full, f"{q}: 抄了整行的选项不认"
+    for rows in (punct, full):
+        assert all(rows[q]["invalid_reason"] is None for q in rows if q not in later_choice)
+    stored = {r["invalid_reason"] for _s, rows in store.writes for r in rows}
+    assert stored <= {None, FI.INVALID_PARSE, FI.INVALID_MISSING, FI.INVALID_OOV, FI.INVALID_TEXT_LONG, P.INVALID_SOURCE,
+                      FI.INVALID_NO_TITLE, FI.INVALID_NOT_COVER}, f"落库的无效原因还是老的那几个词: {stored}"
+    assert res["status"] == {"answered": 4, "no_answer": 20}, res["status"]
+    assert sum(res["no_answer_why"].values()) == res["status"]["no_answer"], "每一篇没答成的都有一个原因"
+    assert res["no_answer_why"] == {
+        "first_call:oov_option_line": 2, "first_call:oov_option_wrapped": 1, "first_call:json_not_template": 1,
+        "first_call:oov_option_plus_more": 1, "first_call:oov_part_of_option": 1, "first_call:id_numbered": 1,
+        "first_call:truncated": 3, "first_call:empty_reply": 1, "first_call:oov_option_with_mark": 2,
+        "first_call:answer_not_text": 1, "first_call:no_answers_in_json": 1, "first_call:conflicting_answers": 1,
+        "first_call:json_duplicate_key": 1,
+        "round:no_text_but_transcribed:said_none_in_words": 1, "round:text_but_not_transcribed:empty_text": 1,
+        "round:text_but_not_transcribed:symbols_only": 1}, res["no_answer_why"]
+    want_q = {f"{q}:oov_option_wrapped": 1 for q in later_choice}
+    want_q.update({f"{q}:oov_option_line": 1 for q in lined})
+    want_q["img_scene:oov_option_wrapped"] = 2             # MANY1 的那一个
+    want_q.update({
+        "img_kind:no_answers_in_json": 1, "img_text_amount:no_answers_in_json": 1, "img_kind:conflicting_answers": 1,
+        "img_text_amount:conflicting_answers": 1, "img_kind:json_duplicate_key": 1, "img_text_amount:json_duplicate_key": 1,
+        "img_kind:oov_option_line": 2, "img_kind:oov_option_wrapped": 1, "img_kind:json_not_template": 1,
+        "img_text_amount:json_not_template": 1, "img_kind:oov_option_plus_more": 1, "img_kind:oov_part_of_option": 1,
+        "img_kind:id_numbered": 1, "img_kind:oov_option_with_mark": 2, "img_text_amount:id_numbered": 1,
+        "img_kind:truncated": 3, "img_text_amount:truncated": 3, "img_kind:empty_reply": 1, "img_text_amount:empty_reply": 1,
+        "img_kind:answer_not_text": 1, "img_text_amount:id_absent": 1,
+        "img_person:oov_other": 1})
+    assert res["invalid_by_question"] == want_q, res["invalid_by_question"]
+    assert res["reply"] == {"stop:max_tokens": 3, "stop:other": 1}, res["reply"]
+    # 「假如放宽」: 按无效的答案数; 换了样子的 JSON 那一行按回包数, 而且只数真有答案读得出的回包
+    # (FLAT1 两个答案 1 个回包; CUTOBJ1 撞了上限、LIST1 答案不是字符串、NOANS1 里面没有答案、CONFL1 两段答案打架、
+    #  DUPK1 同一个键两遍 → 都是换了样子的 JSON, 但一个答案都读不出, 不数)
+    assert res["would_read"] == {"answers:option_line_copied": 2 + len(lined), "answers:option_with_punctuation": 2 + len(later_choice),
+                                 "answers:loose_json": 2, "replies:loose_json": 1}, res["would_read"]
+    assert "tolerated" not in json.dumps(res) and "rescued" not in json.dumps(res), "没有「放宽读出来了」这种计数"
+    for line in ("没答成（no_answer）的原因：", "逐题无效（题号:原因=调用次数）：", "回包：", "first_call:truncated=3", "first_call:oov_option_with_mark=2",
+                 "round:no_text_but_transcribed:said_none_in_words=1", "img_person:oov_other=1", "stop:max_tokens=3",
+                 "假如放宽读法会多读出（没有放宽，这些答案照旧无效）：", f"answers:option_line_copied={2 + len(lined)}", "replies:loose_json=1"):
+        assert line in out, f"摘要里没有 {line}"
+    _no_leak("没答成的原因", out, json.dumps(res, ensure_ascii=False, default=str))
+    for text in (out, json.dumps(res, ensure_ascii=False)):
+        assert "给读者看的图" not in text and "refusal" not in text and "tolerated" not in text, "回包里的字 / stop_reason 的原样不进输出"
+    keys = list(res["no_answer_why"]) + list(res["invalid_by_question"]) + list(res["reply"]) + list(res["would_read"])
+    assert all(re.fullmatch(r"[a-z0-9_:]+", k) for k in keys), keys
+    fixed = set(FI.NOTES) | {FI.INVALID_PARSE, FI.INVALID_MISSING, FI.INVALID_OOV, FI.INVALID_TEXT_LONG}
+    assert all(k.split(":", 1)[1] in fixed for k in res["invalid_by_question"]), "逐题无效的词全在写死的那张单子里"
+    assert all(k.split(":", 1)[1] in fixed for k in res["no_answer_why"] if k.startswith("first_call:"))
+    assert all(k.split(":", 1)[1] in FI.WOULD_READ for k in res["would_read"]) and set(res["reply"]) <= {"stop:max_tokens", "stop:other"}
+    # 没写进库的帖不进原因计数: 原因那一行的数加起来永远等于 no_answer 的篇数
+    for tag in ("PLUS9", "SAIDNONE9"):                         # 第一次调用没读出来 / 整轮作废, 两条路
+        res, _ = _run(FakeStore([_cand(tag)], write_fails="no_answer"), Odd())
+        assert res["ended"] == "write_failed" and res["status"] == {} and res["no_answer_why"] == {}, (tag, res["no_answer_why"])
+    # 嵌得太深的回包: 这一篇记没答成, 整趟照走 (不是「首图步骤中断」)
+    class Deep(Fakes):
+        def ask(self, model, prompt, block):
+            text, usage = super().ask(model, prompt, block)
+            return ("[" * 9000 + "]" * 9000 if "DEEP" in base64.b64decode(block[1]).decode() else text), usage, "end_turn"
+    res, _ = _run(FakeStore([_cand("DEEP1"), _cand("ok2")]), Deep())
+    assert res["ended"] == "done" and res["status"] == {"no_answer": 1, "answered": 1} \
+        and res["no_answer_why"] in ({"first_call:no_json": 1}, {"first_call:no_answers_in_json": 1}), res
+    # 标题是空的帖: 代码题算不成也数得到
+    res, _ = _run(FakeStore([dict(_cand("t1"), title="")]), Fakes())
+    assert res["status"] == {"answered": 1} and res["invalid_by_question"] == {"img_text_matches_title:no_title": 1}, res
+    for doc, needles in (("docs/34-first-image-pass.md", ("D-159", "first_call:", "oov_option_plus_more", "oov_option_with_mark", "stop:other",
+                                                          "would_read", "没有放宽", "原因还不知道", "别的记 `reply_too_long`")),
+                         ("DECISIONS.md", ("D-159", "would_read", "没有放宽")), ("OPEN-ITEMS.md", ("D-159", "I-38", "would_read")),
+                         ("CURRENT_STATE.md", ("D-159", "没有放宽"))):
+        text = (ROOT / doc).read_text(encoding="utf-8")
+        for nd in needles:
+            assert nd in text, f"{doc} 里没写 {nd}"
+    print(f"  §8 没答成的原因按写死的词分开数; 认什么和老读法逐字相同 ({len(corpus)} 条固定回包, 含评审核实过的每一种), "
+          "没有放宽; 「假如放宽」只是另数一行 ✓")
+
+
 def main() -> int:
     check_bank()
     check_money()
@@ -814,7 +1323,8 @@ def main() -> int:
     check_never_blocks()
     check_stops()
     check_wiring()
-    print("\ncheck_first_image_pass: 7 节全过")
+    check_reply_reading()
+    print("\ncheck_first_image_pass: 8 节全过")
     return 0
 
 
