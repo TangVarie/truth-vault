@@ -31,7 +31,8 @@ owner 11-16 同意的小的那一版:
   而读的那一面要靠它才知道哪些帖不能往外给。
 
 没答成的原因 (D-159, docs/34 §10): 摘要里按写死的词分开数 —— 第一次调用没读出来的是哪一种、整轮作废的是哪条自检规则、
-  每道题无效了几次、回包撞没撞输出上限。只有计数; 原因不进库。回包怎么读在 first_image.read_reply (只认格式, 不猜意思)。
+  每道题无效了几次、回包撞没撞输出上限。只有计数; 原因不进库。认什么还是 first_image.parse_answers 一个地方说了算, 没有放宽;
+  「假如放宽某一条读法会多读出几个」另数一行 (would_read), 那只是给下一步做决定用的数, 不是认下来的答案。
 
 隐私: 图片只在内存里 (不写盘、不进 artifact、不进日志、不进库)。打出来的只有计数和状态词: 没有 note_id、标题、封面上的字、
   文件名、file_token、链接、中转站地址、报错正文。标题只给代码算「大字是不是重复标题」用, 不进提示词。
@@ -327,7 +328,8 @@ class Pass:
         # 下面三个只是计数 (11-16 首跑 32 张里 11 张没答成, 当时看不出为什么): 键全是写死的词和题号, 不带回包里的字
         self.no_answer_why: Counter = Counter()   # 没答成的帖 → first_call:<词> / round:<自检规则名>[:细项]
         self.invalid_q: Counter = Counter()       # 题号:<词> → 多少次调用里这道题无效 (含后来答成了的帖)
-        self.reply: Counter = Counter()           # 回包: stop:max_tokens / stop:other / tolerated:<词>
+        self.reply: Counter = Counter()           # 回包: stop:max_tokens / stop:other
+        self.would_read: Counter = Counter()      # 假如放宽 (没有放宽): answers:<词> 无效的答案数 / replies:loose_json 回包数
         self._note: dict[str, str] = {}           # 当前这张图各题细一层的词 (图和图之间不并, 一张图内各次调用的题不重)
         self.ended: Optional[str] = None
         self.calls_ok = 0
@@ -365,12 +367,14 @@ class Pass:
             with self.lock:
                 if stop and stop != "end_turn":
                     self.reply["stop:" + stop] += 1
-                for word in read["tolerated"]:
-                    self.reply["tolerated:" + word] += 1
+                for word in read["would_read"].values():
+                    self.would_read["answers:" + word] += 1
+                if any(w.startswith(FI.WOULD_LOOSE) for w in read["would_read"].values()):
+                    self.would_read["replies:" + FI.WOULD_LOOSE] += 1   # 真有一个答案靠它才读得出的回包才数
                 for q, word in read["notes"].items():
                     self.invalid_q[f"{q}:{word}"] += 1
                     self._note[q] = word
-            return read["parsed"]
+            return read["parsed"]                                 # = FI.parse_answers(...) 原样; notes / would_read 只进了计数
         return {q: (None, FI.INVALID_API) for q in qids}
 
     def _void_why(self, res: dict, parsed: dict) -> str:
@@ -541,7 +545,7 @@ def run_pass(*, bank: dict, store: Any, mode: str = "nightly", dry_run: bool = F
         "caps": {"images": budget.max_images, "weighted": budget.max_weighted, "calls": budget.max_calls,
                  "yuan": MP.yuan_of_weighted(cheap_model(), budget.max_weighted)},
         "candidates": None, "ended": None, "status": {}, "written": {}, "detail": {}, "flags": {},
-        "no_answer_why": {}, "invalid_by_question": {}, "reply": {},
+        "no_answer_why": {}, "invalid_by_question": {}, "reply": {}, "would_read": {},
         "budget": {"images": 0, "calls": 0, "spent": 0, "usage_missing": 0, "yuan": 0.0}}
     try:
         store.sync_bank(bank)                                      # 名单的镜像 (干跑也同步: 不花钱); 也是「迁移跑没跑」的探针
@@ -559,7 +563,7 @@ def run_pass(*, bank: dict, store: Any, mode: str = "nightly", dry_run: bool = F
     p.run(cands)
     res.update({"ended": p.ended, "status": dict(p.status), "written": dict(p.written), "detail": dict(p.detail),
                 "flags": dict(p.flags), "no_answer_why": dict(p.no_answer_why),
-                "invalid_by_question": dict(p.invalid_q), "reply": dict(p.reply)})
+                "invalid_by_question": dict(p.invalid_q), "reply": dict(p.reply), "would_read": dict(p.would_read)})
     spent_yuan = MP.yuan_of_weighted(cheap_model(), budget.spent)
     res["budget"] = {"images": budget.images, "calls": budget.calls, "spent": budget.spent,
                      "usage_missing": budget.usage_missing, "yuan": spent_yuan}
@@ -598,7 +602,7 @@ def summary(res: dict) -> str:
                  f"没拿到用量、按预留记的 {b['usage_missing']} 次")
     for title, key in (("写进库的结果", "status"), ("其中", "flags"), ("之后", "written"), ("失败的状态词", "detail"),
                        ("没答成（no_answer）的原因", "no_answer_why"), ("逐题无效（题号:原因=调用次数）", "invalid_by_question"),
-                       ("回包", "reply")):
+                       ("回包", "reply"), ("假如放宽读法会多读出（没有放宽，这些答案照旧无效）", "would_read")):
         if res.get(key):
             lines.append(f"{title}：" + "，".join(f"{k}={v}" for k, v in sorted(res[key].items())))
     return "\n".join(lines) + "\n"
