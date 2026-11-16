@@ -21,13 +21,9 @@ ALTER TABLE public.stage_logs        ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.outputs           ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.reference_samples ENABLE ROW LEVEL SECURITY;
 
-DO $$ DECLARE t TEXT; BEGIN
-  FOREACH t IN ARRAY ARRAY['projects','pipeline_runs','stage_logs','outputs','reference_samples'] LOOP
-    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename=t AND policyname='ssll_authenticated_read') THEN
-      EXECUTE format('CREATE POLICY ssll_authenticated_read ON public.%I FOR SELECT TO authenticated USING (true)', t);
-    END IF;
-  END LOOP;
-END $$;
+-- 2026-11-16: 这里原来给 authenticated 建一条只读策略 ssll_authenticated_read (理由见上面「为什么给 authenticated 留只读 policy」)。
+-- 后来查实三省六部走 service_role、没有代码靠它, owner 11-15 定了收掉 (S-16): 策略由
+-- security_drop_ssll_authenticated_read.sql 删除, 这份文件不再建它 —— 重跑这份文件不会把它建回来。
 
 REVOKE SELECT, REFERENCES, TRIGGER
   ON public.projects, public.pipeline_runs, public.stage_logs, public.outputs, public.reference_samples

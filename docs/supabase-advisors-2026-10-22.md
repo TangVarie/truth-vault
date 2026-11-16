@@ -35,7 +35,7 @@ autowriter 的 11 张表也给 authenticated 开着，但 policy 按 `auth.uid()
 **owner 10-22 定：下面两条都不做，目前没有必要。** 日志巡检（每 3 小时）照常看注册 / 登录事件和 authenticated 请求，有异常再报。以下留作以后要做时的参考。
 
 1. **现在**：Supabase 控制台 → Authentication → Sign In / Providers，关掉「Allow new users to sign up」。随时能开回来，现在没人用登录。
-2. **owner 定**：去掉 `ssll_authenticated_read`。去掉以后登录用户读这 5 张表得 0 行，三省六部走 service_role 不受影响。在 SQL editor 跑：
+2. **owner 定**（**11-15 owner 改成做了；11-16 正式的 SQL 在 `schemas/security_drop_ssll_authenticated_read.sql`，比下面这段多收了 authenticated 的表授权，跑那一份，OPEN-ITEMS S-16**）：去掉 `ssll_authenticated_read`。去掉以后登录用户读这 5 张表得 0 行，三省六部走 service_role 不受影响。在 SQL editor 跑：
 
 ```sql
 BEGIN;
