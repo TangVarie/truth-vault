@@ -849,6 +849,13 @@ def check_reply_reading() -> None:
         assert kind(_reply([("img_kind", v)])) == (("封面", None), None, [FI.TOL_PUNCT]), v
     for v in ("!封面", "！封面", "! 封面"):                 # 打头的感叹号不当标点去 (可能是「不是」)
         assert kind(_reply([("img_kind", v)]))[0][0] is None, v
+    for v in ("!" + KIND_LINE, "！" + KIND_LINE, "「! " + KIND_LINE + "」"):     # 整行照抄、前面带感叹号的也一样不认
+        assert kind(_reply([("img_kind", v)]))[0][0] is None, v
+    one = json.dumps({"id": "img_kind", "answer": "封面"}, ensure_ascii=False)
+    for txt in ("[" + one + ",]", "[" + one, "[" + one + ", {]"):          # 外面一层数组断了 / 多了逗号: 不从里面切一个对象出来当答案
+        assert FI.read_reply(BANK, ["img_kind"], txt)["parsed"]["img_kind"][0] is None, txt
+    assert FI.read_reply(BANK, ["img_kind"], "[" + one + "]")["parsed"]["img_kind"][0] == "封面", "完整的数组照旧读得出"
+    assert FI.read_reply(BANK, ["img_kind"], one)["parsed"]["img_kind"][0] == "封面", "单独一个对象照旧读得出"
     assert kind(_reply([("img_kind", KIND_LINE.replace(": ", "："))])) == (("封面", None), None, [FI.TOL_LINE]), "整行里冒号换了全角"
     two = json.dumps([{"id": "img_kind", "answer": "封面"}, {"id": "img_text_amount", "answer": "没有字"}], ensure_ascii=False)
     r2 = FI.read_reply(BANK, g, two)                          # 最外层是列表、两个对象 (老的读法读不出来)

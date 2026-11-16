@@ -615,7 +615,7 @@ def match_option(q: dict, raw: str) -> tuple[Optional[str], Optional[str]]:
     key = normalise(raw)
     for o in q.get("options") or []:
         line = f"{o['value']}: {o.get('means') or ''}"
-        if key and o.get("means") and key == normalise(line) and _only_plain_marks(raw, line):
+        if key and o.get("means") and key == normalise(line) and _only_plain_marks(raw, line) and not _leads_negated(raw):
             hits.append((str(o["value"]), TOL_LINE))
     return hits[0] if len(hits) == 1 else (None, None)
 
@@ -637,6 +637,15 @@ def _unwrap(text: str) -> str:
     while j > i and t[j - 1] in _WRAP:
         j -= 1
     return t[i:j]
+
+
+def _leads_negated(raw: str) -> bool:
+    """去掉打头的空格、引号、括号这些之后, 第一个字是不是感叹号 (可能是「不是」的意思)。"""
+    t = _plain(raw)
+    i = 0
+    while i < len(t) and t[i] in _WRAP and t[i] != "!":
+        i += 1
+    return t[i:i + 1] == "!"
 
 
 def _only_plain_marks(raw: str, line: str) -> bool:
@@ -680,6 +689,11 @@ def read_reply(bank: dict, qids: list[str], text: str, stop_reason: Any = None) 
         vals = _json_values(text)
         if vals:
             tolerated.append(TOL_LOOSE_JSON)
+    else:
+        if not (isinstance(vals[0], dict) and isinstance(vals[0].get("answers"), list)):
+            # 老的读法读出来的不是模板那个样子 (多半是从外面一层数组里切出来的一个对象): 不拿这一刀切出来的东西当答案,
+            # 整个回包重新按「一段一段完整的 JSON」读 —— 外面那层数组断了、多了逗号, 就一段都不取
+            vals = _json_values(text)
     template = [_collect(v, qids, got, odd_ids) for v in vals]
     if stop_word(stop_reason) == "max_tokens" and not (strict and all(template)):
         # 撞了输出上限、又不是一整个模板 JSON: 多半是回到一半断了 (哪怕正好断在两个对象中间), 一个答案都不取
