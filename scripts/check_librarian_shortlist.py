@@ -375,7 +375,7 @@ core._board = real_board
 logging.getLogger("flywheel_librarian").disabled = False
 print("✓ AU-F09: 同一个请求在飞时第二个等它、拿同一份拷贝 (模型只调一次); 降级一起拿、不传下去; 崩了 / 等满了自己选")
 
-# ══ §10 · 回流闸 (D-151): 出处帖被闸挡下的卡不进书架; 默认关, 关着和以前一字不差; 读不到 / 读不懂就不筛 ═══════════
+# ══ §10 · 回流闸 (D-151): 出处帖被闸挡下的卡不进书架; 2026-11-16 起默认开 (D-156), 关着和以前一字不差; 读不到 / 读不懂就不筛 ═══════════
 logging.getLogger("flywheel_librarian").disabled = True   # 下面故意让读库失败、让品牌保底触发, 那几行日志不用进 CI 输出
 saved_env = os.environ.pop(core.RETURN_GATE_ENV, None)    # 这一节自己定开关, 不看跑它的机器上设了什么
 saved_default, saved_clock, saved_chunk = core.RETURN_GATE_DEFAULT, core._gate_clock, core.RETURN_GATE_CHUNK
@@ -571,6 +571,8 @@ print(f"✓ D-151: 回流闸关着候选 / 版本串 / 缓存键 / prompt 和以
       f"10 分钟读一次; 品牌保底; 代码默认现在是{'开' if shipped else '关'}")
 
 # ══ §11 · 出处帖投过流的卡照借, 回包的卡上写明 (D-151 第 13 条): 只给人看, 选卡模型看不到; 不进缓存, 回包时现加 ═════════
+_shipped_gate_default = core.RETURN_GATE_DEFAULT      # 这一节测的是投流标注, 和回流闸无关: 把闸关着跑 (闸开着会多读一次 tv_note_links)
+core.RETURN_GATE_DEFAULT = False
 logging.getLogger("flywheel_librarian").disabled = True   # 下面故意让读库失败
 core._read_paid_source = REAL_READ_PAID
 saved_clock, saved_page, saved_pages = core._gate_clock, core.PAID_BOOST_PAGE, core.PAID_BOOST_MAX_PAGES
@@ -995,6 +997,7 @@ logging.getLogger("flywheel_librarian").disabled = False
 print("✓ D-151 第 13 条: 出处帖投过流的卡照借, 回包的卡上写明 (起量在投流窗口里写「投流起量的」, 其余写「投过流」; 标记 ∪ 投流事件, "
       "和写作台同一批帖); 选卡模型看不到, prompt 和缓存键不变; 不进缓存, 以前的缓存行回包时现加; 读失败不标、不挡借阅、记数、"
       "60 秒后重读; 读卡住不堵借阅; 旧名单过 1 小时不再说「不是」; 外部卡不标; 和回流闸的开关无关; 夜跑那盏灯照读那两路")
+core.RETURN_GATE_DEFAULT = _shipped_gate_default
 
 # ══ §12 · 出处帖在飞书里删了满 36 小时的卡不借 (D-154 第 8 条); library_version 摘要卡面 (D-154, 评审 D2) ═══════════════
 logging.getLogger("flywheel_librarian").disabled = True   # 下面故意让读库失败、让品牌保底触发
