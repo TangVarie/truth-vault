@@ -32,9 +32,30 @@ BAD_TOKEN = "bad_file_token"           # 库里的 file_token 不像一个 token
 
 
 class MediaError(Exception):
-    def __init__(self, status: str):
+    def __init__(self, status: str, detail: Optional[str] = None):
         super().__init__(status)
         self.status = status
+        # 只给排查用的细项: HTTP 状态码、飞书回包里那个数字错误码、这次带没带 extra。只有字母数字和下划线,
+        # 不带回包正文、地址、token。分得清「应用没开下载权限」和「这张表开了高级权限要 extra」。
+        self.detail = detail
+
+
+def _refusal_detail(resp: Any, status: int, had_extra: bool) -> str:
+    code = "x"
+    try:
+        raw = b""
+        for chunk in resp.iter_content(1024):
+            raw += chunk or b""
+            if len(raw) >= 4096:
+                break
+        import json as _json
+        obj = _json.loads(raw[:4096].decode("utf-8", "replace"))
+        c = obj.get("code") if isinstance(obj, dict) else None
+        if isinstance(c, int) and not isinstance(c, bool) and 0 <= c < 10 ** 9:
+            code = str(c)
+    except Exception:  # noqa: BLE001 — 读不出来就算了, 细项只是锦上添花
+        pass
+    return f"http{status}_code{code}_extra{1 if had_extra else 0}"
 
 
 def _extra_param(f: dict) -> Optional[str]:
@@ -80,7 +101,7 @@ def download(client: Any, f: dict, max_bytes: int, *, http_get=None) -> bytes:
                         params=params, stream=True, timeout=TIMEOUT_S)
         status = int(getattr(resp, "status_code", 0) or 0)
         if status in (400, 403):
-            raise MediaError(NO_PERMISSION)
+            raise MediaError(NO_PERMISSION, _refusal_detail(resp, status, bool(extra)))
         if status == 401:
             raise MediaError(AUTH_FAILED)
         if status == 404:
