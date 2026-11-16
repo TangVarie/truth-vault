@@ -483,30 +483,259 @@ def build_prompt(bank: dict, qids: list[str]) -> str:
     return "\n".join(parts) + "\n"
 
 
-def parse_answers(bank: dict, qids: list[str], text: str) -> dict[str, tuple[Optional[str], Optional[str]]]:
-    """模型回的字 → {题号: (答案, 无效原因)}。不在闭集里、缺题、抄的字超长都记无效, 不修补。"""
+# 回包读法 (11-16 首跑之后放宽; docs/34 §10)。只认格式, 不猜意思:
+#   · 题号必须是这一次问的题号本身 (数字题号、别的键名都不认)
+#   · 选择题的答案去掉【两头】包着的标点、空格、引号、括号 (_WRAP 里写死的那几个) 之后, 必须和某一个选项【一字不差】,
+#     或者就是那个选项在提示词里的整行 (「选项: 解释」, 提示词说「照抄选项的原文」, 选项又是带着解释打出来的);
+#     多一个字少一个字都还是 out_of_vocab
+#   · 带着会改意思的记号的 (问号、叉、删除线、省略号、不等号、表情, 字中间断开) 一律不认: 「封面？」「❌封面」「~~封面~~」不是「封面」
+#   · 同一道题给了两个不一样的答案 → 这道题无效 (null 的重复项不算一个答案; 抄字题两遍只差标点空格的算同一个)
+#   · 回包撞了输出上限、又不是完整的模板 JSON → 一个答案都不取; 一段 JSON 读不出来 → 整段跳过, 不进去捡里面的对象
+# 下面这些词只进计数 (first_image_pass 的 run 摘要), 都是写死的词, 不带回包里的任何字。
+NOTE_EMPTY = "empty_reply"                # 回包里没有字
+NOTE_TRUNCATED = "truncated"              # 没读出来, 而且中转站说是撞了 max_tokens (一个字都没回的也算这个)
+NOTE_NO_JSON = "no_json"                  # 没有一段读得出来的 JSON
+NOTE_NO_ANSWERS = "no_answers_in_json"    # 有 JSON, 里面没有认得出的答案
+NOTE_ID_NUMBERED = "id_numbered"          # 题号写成了 1 / 2 / 「第 1 题」
+NOTE_ID_ABSENT = "id_absent"              # 回包里有别的题, 没有这一道
+NOTE_NOT_TEXT = "answer_not_text"         # 答案不是字符串 (列表 / null / 数字)
+NOTE_CONFLICT = "conflicting_answers"     # 同一道题两个不一样的答案
+NOTE_OOV_MARKED = "oov_option_with_mark"  # 字就是某个选项, 但带着问号 / 叉 / 删除线之类的记号, 或字中间断开了
+NOTE_OOV_PLUS = "oov_option_plus_more"    # 以某个选项开头, 后面多了字
+NOTE_OOV_CONTAINS = "oov_contains_option"  # 里面含着恰好一个选项
+NOTE_OOV_PART = "oov_part_of_option"      # 是某一个选项的一截
+NOTE_OOV_OTHER = "oov_other"
+NOTE_TEXT_LONG = INVALID_TEXT_LONG
+TOL_LOOSE_JSON = "loose_json"             # JSON 不是模板那个样子, 但题号和答案都读得出来
+TOL_PUNCT = "option_with_punctuation"     # 选项两头多了标点 / 引号 / 括号 / 空格
+TOL_LINE = "option_line_copied"           # 抄的是选项的整行 (选项: 解释)
+NOTES = (NOTE_EMPTY, NOTE_TRUNCATED, NOTE_NO_JSON, NOTE_NO_ANSWERS, NOTE_ID_NUMBERED, NOTE_ID_ABSENT, NOTE_NOT_TEXT,
+         NOTE_CONFLICT, NOTE_OOV_MARKED, NOTE_OOV_PLUS, NOTE_OOV_CONTAINS, NOTE_OOV_PART, NOTE_OOV_OTHER, NOTE_TEXT_LONG)
+TOLERATED = (TOL_LOOSE_JSON, TOL_PUNCT, TOL_LINE)
+STOP_WORDS = ("end_turn", "max_tokens")   # 中转站回的 stop_reason 只认这两个词, 别的一律记 other
+
+_JSON_OPEN = re.compile(r"[{\[]")
+# 选项两头可以去掉的字 (NFKC 之后): 句读、引号、括号、列表记号、加粗的星号。问号、叉、波浪线、省略号都不在里面。
+_WRAP = frozenset(" \t\r\n.,;:!。、\"'`“”‘’「」『』《》〈〉【】()[]{}-–—*•·")
+_NUMBERED_ID = re.compile(r"(?:第\s*)?\d{1,2}(?:\s*题)?")
+
+
+def stop_word(stop_reason: Any) -> Optional[str]:
+    """stop_reason → 写死的词 (end_turn / max_tokens / other); 没给回 None。原样的字不往外带。"""
+    if stop_reason is None:
+        return None
+    return stop_reason if stop_reason in STOP_WORDS else "other"
+
+
+def _json_values(text: str) -> list:
+    """回包里一段一段读得出来的 JSON (只取最外层的)。括号不成对 (多半是回到一半断了) → 一段都不取:
+    不从断掉的回包里捡半截答案。某一段读不出来 (多了个逗号、里面夹着字) → 整段跳过, 不进去捡它里面的对象。"""
+    if text.count("{") != text.count("}") or text.count("[") != text.count("]"):
+        return []
+    dec, out, i = json.JSONDecoder(), [], 0
+    while True:
+        m = _JSON_OPEN.search(text, i)
+        if not m:
+            return out
+        try:
+            val, i = dec.raw_decode(text, m.start())
+            out.append(val)
+        except (ValueError, RecursionError):               # 嵌得太深的回包也只是「读不出来」, 不让整趟停
+            i = _skip_value(text, m.start())
+
+
+def _skip_value(text: str, start: int) -> int:
+    """start 处是一个 { 或 [: 回它配对的那个括号后面的位置 (引号里的括号不算); 配不上就回文末。"""
+    depth, in_str, esc = 0, False, False
+    for j in range(start, len(text)):
+        ch = text[j]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch in "{[":
+            depth += 1
+        elif ch in "}]":
+            depth -= 1
+            if depth <= 0:
+                return j + 1
+    return len(text)
+
+
+def _collect(val: Any, qids: list[str], got: dict[str, list], odd_ids: list) -> bool:
+    """从一段 JSON 里把 (题号, 答案) 捡进 got。回「这一段是不是模板那个样子」。认的样子:
+    {"answers":[{id, answer}…]} (模板) / {"answers":{题号: 答案}} / [{id, answer}…] / {id, answer} / {题号: 答案}。"""
+    def items(seq: list) -> None:
+        for a in seq:
+            if isinstance(a, dict) and "id" in a:
+                if isinstance(a["id"], str) and a["id"] in qids:
+                    got.setdefault(a["id"], []).append(a.get("answer"))
+                else:
+                    odd_ids.append(a["id"])
+
+    def flat(d: dict) -> None:
+        for q in qids:
+            if q in d:
+                got.setdefault(q, []).append(d[q])
+
+    if isinstance(val, list):
+        items(val)
+        return False
+    if not isinstance(val, dict):
+        return False
+    ans = val.get("answers")
+    if isinstance(ans, list):
+        items(ans)
+        return True
+    if isinstance(ans, dict):
+        flat(ans)
+    elif "id" in val and "answer" in val:
+        items([val])
+    else:
+        flat(val)
+    return False
+
+
+def match_option(q: dict, raw: str) -> tuple[Optional[str], Optional[str]]:
+    """选择题的一个答案 → (选项的原值, 放宽的词)。认不出回 (None, None)。
+    只认: 和选项一字不差; 去掉【两头】包着的标点引号括号空格 (_WRAP) 之后和【恰好一个】选项一字不差;
+    或者是【恰好一个】选项在提示词里的整行 (字完全一样, 中间只许有 _WRAP 里的字和那一行自己有的标点)。
+    问号、叉、删除线、省略号、表情这些会改意思的记号不在 _WRAP 里, 带着它们的答案认不出。"""
+    val = raw.strip()
+    vals = option_values(q)
+    if val in vals:
+        return val, None
+    core = _unwrap(raw)
+    hits = [(str(o["value"]), TOL_PUNCT) for o in q.get("options") or [] if core and core == _unwrap(str(o["value"]))]
+    key = normalise(raw)
+    for o in q.get("options") or []:
+        line = f"{o['value']}: {o.get('means') or ''}"
+        if key and o.get("means") and key == normalise(line) and _only_plain_marks(raw, line):
+            hits.append((str(o["value"]), TOL_LINE))
+    return hits[0] if len(hits) == 1 else (None, None)
+
+
+def _plain(text: str) -> str:
+    """NFKC、小写、去掉零宽这类看不见的格式字符 (Cf)。别的一个字都不动。"""
+    t = unicodedata.normalize("NFKC", text or "").lower()
+    return "".join(ch for ch in t if unicodedata.category(ch) != "Cf")
+
+
+def _unwrap(text: str) -> str:
+    """去掉两头 _WRAP 里的字。连着两个以上的点 (省略号) 不当句号去: 「封面…」不是「封面。」。"""
+    t = _plain(text)
+    if ".." in t:
+        return ""
+    i, j = 0, len(t)
+    while i < j and t[i] in _WRAP and t[i] != "!":      # 打头的感叹号可能是「不是」的意思, 不去
+        i += 1
+    while j > i and t[j - 1] in _WRAP:
+        j -= 1
+    return t[i:j]
+
+
+def _only_plain_marks(raw: str, line: str) -> bool:
+    """raw 里字母数字之外的字, 是不是都在 _WRAP 或者那一行自己的标点里 (而且没有省略号)。"""
+    t, own = _plain(raw), set(_plain(line))
+    if ".." in t:
+        return False
+    return all(ch in _WRAP or ch in own for ch in t if unicodedata.category(ch)[0] not in ("L", "N"))
+
+
+def _oov_note(q: dict, raw: str) -> str:
+    key = normalise(raw)
+    opts = [normalise(v) for v in option_values(q)]
+    if key and key in opts:
+        return NOTE_OOV_MARKED
+    if key and sum(1 for o in opts if key.startswith(o)) == 1:
+        return NOTE_OOV_PLUS
+    if key and sum(1 for o in opts if o in key) == 1:
+        return NOTE_OOV_CONTAINS
+    if key and sum(1 for o in opts if key in o) == 1:
+        return NOTE_OOV_PART
+    return NOTE_OOV_OTHER
+
+
+def read_reply(bank: dict, qids: list[str], text: str, stop_reason: Any = None) -> dict:
+    """模型回的字 → {"parsed": {题号: (答案, 无效原因)}, "notes": {题号: 细一层的词}, "tolerated": [词…]}。
+
+    parsed 里的无效原因还是老的那几个 (落库的词不变); notes 给每道无效的题一个更细的写死的词 (NOTES 里的),
+    tolerated 记这一次回包靠哪几条放宽才读出来 (TOLERATED 里的)。两样都只进计数。
+    """
     idx = question_index(bank)
-    got: dict[str, Any] = {}
-    try:
-        s, e = text.index("{"), text.rindex("}")
-        data = json.loads(text[s:e + 1])
-        for a in data.get("answers") or []:
-            if isinstance(a, dict) and isinstance(a.get("id"), str):
-                got.setdefault(a["id"], a.get("answer"))
-    except Exception:  # noqa: BLE001
-        return {qid: (None, INVALID_PARSE) for qid in qids}
-    out: dict[str, tuple] = {}
+    text = text or ""
+    got: dict[str, list] = {}
+    odd_ids: list = []
+    tolerated: list[str] = []
+    strict = True
+    try:                                                   # 老的读法: 第一个 { 到最后一个 }
+        vals = [json.loads(text[text.index("{"):text.rindex("}") + 1])]
+    except (ValueError, RecursionError):
+        strict = False
+        vals = _json_values(text)
+        if vals:
+            tolerated.append(TOL_LOOSE_JSON)
+    template = [_collect(v, qids, got, odd_ids) for v in vals]
+    if stop_word(stop_reason) == "max_tokens" and not (strict and all(template)):
+        # 撞了输出上限、又不是一整个模板 JSON: 多半是回到一半断了 (哪怕正好断在两个对象中间), 一个答案都不取
+        got, tolerated = {}, []
+    if got and not all(template) and TOL_LOOSE_JSON not in tolerated:
+        tolerated.append(TOL_LOOSE_JSON)
+    if not got:
+        if stop_word(stop_reason) == "max_tokens":         # 先看这一条: 思考把上限用完、一个字都没回的也是撞上限
+            whole = NOTE_TRUNCATED
+        elif not text.strip():
+            whole = NOTE_EMPTY
+        elif not vals:
+            whole = NOTE_NO_JSON
+        elif odd_ids and all(isinstance(i, int) or (isinstance(i, str) and _NUMBERED_ID.fullmatch(i.strip()))
+                             for i in odd_ids):
+            whole = NOTE_ID_NUMBERED
+        else:
+            whole = NOTE_NO_ANSWERS
+        why = INVALID_MISSING if strict and whole != NOTE_TRUNCATED else INVALID_PARSE  # 老的读法读得出 JSON、里面没有这道题 = missing (和以前一样)
+        return {"parsed": {q: (None, why) for q in qids}, "notes": {q: whole for q in qids}, "tolerated": []}
+    parsed: dict[str, tuple] = {}
+    notes: dict[str, str] = {}
     for qid in qids:
         q = idx[qid]
-        if qid not in got or not isinstance(got[qid], str):
-            out[qid] = (None, INVALID_MISSING)
+        if qid not in got:
+            parsed[qid], notes[qid] = (None, INVALID_MISSING), NOTE_ID_ABSENT
             continue
-        val = got[qid].strip()
+        answers = [a for a in got[qid] if a is not None] or got[qid]   # null 的重复项不算一个答案 (只有 null 才是没答)
+        if any(not isinstance(a, str) for a in answers):
+            parsed[qid], notes[qid] = (None, INVALID_MISSING), NOTE_NOT_TEXT
+            continue
         if q["type"] == "choice":
-            out[qid] = (val, None) if val in option_values(q) else (None, INVALID_OOV)
+            matched = [match_option(q, a) for a in answers]
+            if len({v for v, _t in matched}) > 1 or (matched[0][0] is None and len({a.strip() for a in answers}) > 1):
+                parsed[qid], notes[qid] = (None, INVALID_PARSE), NOTE_CONFLICT
+            elif matched[0][0] is None:
+                parsed[qid], notes[qid] = (None, INVALID_OOV), _oov_note(q, answers[0])
+            else:
+                parsed[qid] = (matched[0][0], None)
+                if matched[0][1] and matched[0][1] not in tolerated:
+                    tolerated.append(matched[0][1])
         else:
-            out[qid] = (val, None) if len(val) <= int(q["max_chars"]) else (None, INVALID_TEXT_LONG)
-    return out
+            if len({normalise(a) for a in answers}) > 1:   # 两遍只差标点空格的算同一个, 取第一遍
+                parsed[qid], notes[qid] = (None, INVALID_PARSE), NOTE_CONFLICT
+                continue
+            val = answers[0].strip()
+            if len(val) <= int(q["max_chars"]):
+                parsed[qid] = (val, None)
+            else:
+                parsed[qid], notes[qid] = (None, INVALID_TEXT_LONG), NOTE_TEXT_LONG
+    return {"parsed": parsed, "notes": notes, "tolerated": tolerated}
+
+
+def parse_answers(bank: dict, qids: list[str], text: str) -> dict[str, tuple[Optional[str], Optional[str]]]:
+    """模型回的字 → {题号: (答案, 无效原因)}。不在闭集里、缺题、抄的字超长都记无效; 只认格式, 不猜意思 (read_reply)。"""
+    return read_reply(bank, qids, text)["parsed"]
 
 
 def normalise(text: str) -> str:

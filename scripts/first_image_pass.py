@@ -30,6 +30,9 @@ owner 11-16 同意的小的那一版:
 名单 (先不做的项目 / 确认过封面的项目 / 往外给的题) 只要连得上库就同步, 干跑、缺钥匙、没装图片库时也同步: 它不花钱,
   而读的那一面要靠它才知道哪些帖不能往外给。
 
+没答成的原因 (D-159, docs/34 §10): 摘要里按写死的词分开数 —— 第一次调用没读出来的是哪一种、整轮作废的是哪条自检规则、
+  每道题无效了几次、回包撞没撞输出上限。只有计数; 原因不进库。回包怎么读在 first_image.read_reply (只认格式, 不猜意思)。
+
 隐私: 图片只在内存里 (不写盘、不进 artifact、不进日志、不进库)。打出来的只有计数和状态词: 没有 note_id、标题、封面上的字、
   文件名、file_token、链接、中转站地址、报错正文。标题只给代码算「大字是不是重复标题」用, 不进提示词。
 
@@ -42,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 import threading
 import time
@@ -84,6 +88,7 @@ REQUIRED_ENV = ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "FEISHU_APP_ID", "F
 
 FINAL, COUNTED, INFRA = "final", "counted", "infra"
 INVALID_SOURCE = "source_invalid"            # 代码题: 它要用的那句大字没抄成
+_NONE_WORDS = frozenset(FI.normalise(w) for w in ("无", "没有", "没有字", "无字", "空", "空字符串", "none", "null", "n/a"))
 
 
 class PassConfigError(Exception):
@@ -245,7 +250,7 @@ def is_missing_migration(exc: BaseException) -> bool:
 # 默认的两个外部动作 (测试里全换成假的)
 # ════════════════════════════════════════════════════════════════════
 
-def default_ask(model: str, prompt: str, block: tuple[str, str]) -> tuple[str, Optional[dict]]:
+def default_ask(model: str, prompt: str, block: tuple[str, str]) -> tuple[str, Optional[dict], Optional[str]]:
     """调一次模型 (仓里现成的 call_claude)。一次预留对一个真发出去的请求: 只试一次 (max_attempts=1)、SDK 自带的重试关掉
     (sdk_max_retries=0)、只走主中转站 —— 配了备用站又没把 RELAY_FORCE 定成 primary 时, call_claude 一次会发两个请求
     (主站一个、备用站一个), 第二个不在账上, 所以那种配置下这里一个请求都不发。main() 开头自己把 RELAY_FORCE 定成 primary。"""
@@ -257,7 +262,7 @@ def default_ask(model: str, prompt: str, block: tuple[str, str]) -> tuple[str, O
     meta: dict = {}
     text = call_claude(prompt, model, max_attempts=1, max_tokens=FI.MAX_OUTPUT_TOKENS, meta=meta, images=[block],
                        sdk_max_retries=0)
-    return text, meta.get("usage")
+    return text, meta.get("usage"), FI.stop_word(meta.get("stop_reason"))   # 第三项只会是写死的词 (或 None)
 
 
 def default_downloader() -> Callable[[dict], bytes]:
@@ -319,6 +324,11 @@ class Pass:
         self.written: Counter = Counter()         # final / retry / quarantined
         self.detail: Counter = Counter()          # 下载 / 解图 / 模型失败的状态词
         self.flags: Counter = Counter()
+        # 下面三个只是计数 (11-16 首跑 32 张里 11 张没答成, 当时看不出为什么): 键全是写死的词和题号, 不带回包里的字
+        self.no_answer_why: Counter = Counter()   # 没答成的帖 → first_call:<词> / round:<自检规则名>[:细项]
+        self.invalid_q: Counter = Counter()       # 题号:<词> → 多少次调用里这道题无效 (含后来答成了的帖)
+        self.reply: Counter = Counter()           # 回包: stop:max_tokens / stop:other / tolerated:<词>
+        self._note: dict[str, str] = {}           # 当前这张图各题细一层的词 (图和图之间不并, 一张图内各次调用的题不重)
         self.ended: Optional[str] = None
         self.calls_ok = 0
         self.fail_streak = 0
@@ -334,7 +344,7 @@ class Pass:
             if self.ended or not self.budget.reserve(est):
                 return {q: (None, FI.INVALID_BUDGET) for q in qids}
             try:
-                text, usage = self.ask(self.model, prompt, FI.as_block(jpeg))
+                text, usage, *more = self.ask(self.model, prompt, FI.as_block(jpeg))
             except PassConfigError:                               # 配置不对 (模型 / 中转站): 不是这张图的事, 整趟停
                 self.budget.release(est, self.model)
                 raise
@@ -350,8 +360,34 @@ class Pass:
             with self.lock:
                 self.calls_ok += 1
                 self.fail_streak = 0
-            return FI.parse_answers(self.bank, qids, text or "")
+            stop = FI.stop_word(more[0]) if more else None
+            read = FI.read_reply(self.bank, qids, text or "", stop)
+            with self.lock:
+                if stop and stop != "end_turn":
+                    self.reply["stop:" + stop] += 1
+                for word in read["tolerated"]:
+                    self.reply["tolerated:" + word] += 1
+                for q, word in read["notes"].items():
+                    self.invalid_q[f"{q}:{word}"] += 1
+                    self._note[q] = word
+            return read["parsed"]
         return {q: (None, FI.INVALID_API) for q in qids}
+
+    def _void_why(self, res: dict, parsed: dict) -> str:
+        """整轮作废的那一篇: 是哪条自检规则 (规则名是题库文件里的, 仓里本来就有), 再加一个写死的细项。"""
+        why = next((w for w in res["invalid"].values() if str(w).startswith("inconsistent:")), "")
+        name = why.split(":", 1)[-1]
+        rule = next((r for r in self.bank.get("consistency") or [] if r.get("name") == name), None)
+        if not rule or not re.fullmatch(r"[a-z0-9_]{1,40}", name):
+            return "round:other"
+        text = (parsed.get(rule.get("then_empty") or rule.get("then_not_empty") or "") or (None, None))[0]
+        if rule.get("then_empty") and isinstance(text, str):
+            # 说了「没有字」又抄出了字: 抄出来的是一句「没有」的话, 还是真的字 (只比这几个写死的说法, 字本身不往外带)
+            said_none = FI.normalise(text) in _NONE_WORDS
+            return f"round:{name}:" + ("said_none_in_words" if said_none else "transcribed_text")
+        if rule.get("then_not_empty") and isinstance(text, str):
+            return f"round:{name}:" + ("symbols_only" if text.strip() else "empty_text")
+        return f"round:{name}"
 
     def _state(self, cand: dict, status: str, outcome: str, *, size: Optional[tuple] = None,
                asked: bool = False) -> dict:
@@ -363,18 +399,20 @@ class Pass:
                 "bank_version": self.bank["bank_version"], "bank_sha256": self.bank["_sha256"],
                 "model": self.model if asked else None}
 
-    def _write(self, cand: dict, status: str, outcome: str, rows: Optional[list] = None, **kw) -> None:
+    def _write(self, cand: dict, status: str, outcome: str, rows: Optional[list] = None, **kw) -> bool:
+        """回「写进去了没有」。没写进去的帖不进任何按帖数的计数 (status / no_answer_why)。"""
         try:
             res = self.store.write(self._state(cand, status, outcome, **kw), rows or [])
         except Exception as exc:  # noqa: BLE001 — 写不进去就停: 不接着为存不下来的结果花钱
             self.ended = "migration_missing" if is_missing_migration(exc) else "write_failed"
             self.detail["write:" + type(exc).__name__] += 1
-            return
+            return False
         self.status[status] += 1
         self.written[res if res in ("final", "retry", "quarantined") else "written"] += 1
         if status == "answered":
             multi = int(cand["n_files"]) > 1 and cand["project_id"] not in self.confirmed
             self.flags["cover_unconfirmed" if multi else "usable"] += 1
+        return True
 
     def _process(self, cand: dict) -> None:
         f = cand.get("first_file") or {}
@@ -421,6 +459,7 @@ class Pass:
         jpeg, w, h = shr["images"][FI.LONG_SIDE]
         del shr
         size = (w, h)
+        self._note = {}
 
         parsed = self._call(self.units[0], jpeg, size)
         kind, why = parsed.get("img_kind", (None, FI.INVALID_MISSING))
@@ -435,7 +474,9 @@ class Pass:
                         self.ended = "relay_refused"
             return
         if kind is None:
-            self._write(cand, "no_answer", COUNTED, size=size, asked=True)
+            word = "first_call:" + self._note.get("img_kind", why or FI.INVALID_MISSING)
+            if self._write(cand, "no_answer", COUNTED, size=size, asked=True):
+                self.no_answer_why[word] += 1                     # 写进去了才数: 这一行的数加起来等于 no_answer 的篇数
             return
         if kind != FI.COVER:
             res = FI.assemble(self.bank, {"img_kind": parsed["img_kind"]}, None)
@@ -456,8 +497,12 @@ class Pass:
             return
         res = FI.assemble(self.bank, parsed, cand.get("title") or "")
         if res["answers"].get("img_kind") != FI.COVER:            # 自相矛盾, 整轮作废
-            self._write(cand, "no_answer", COUNTED, size=size, asked=True)
+            if self._write(cand, "no_answer", COUNTED, size=size, asked=True):
+                self.no_answer_why[self._void_why(res, parsed)] += 1
             return
+        for qid in FI.code_question_ids(self.bank):               # 代码题没算成的 (没有标题 / 那句大字没抄成)
+            if qid not in res["answers"]:
+                self.invalid_q[f"{qid}:{res['invalid'].get(qid) or INVALID_SOURCE}"] += 1
         self._write(cand, "answered", FINAL, answer_rows(self.bank, cand["note_id"], res, self.model), size=size, asked=True)
 
     def _should_stop(self) -> bool:
@@ -496,6 +541,7 @@ def run_pass(*, bank: dict, store: Any, mode: str = "nightly", dry_run: bool = F
         "caps": {"images": budget.max_images, "weighted": budget.max_weighted, "calls": budget.max_calls,
                  "yuan": MP.yuan_of_weighted(cheap_model(), budget.max_weighted)},
         "candidates": None, "ended": None, "status": {}, "written": {}, "detail": {}, "flags": {},
+        "no_answer_why": {}, "invalid_by_question": {}, "reply": {},
         "budget": {"images": 0, "calls": 0, "spent": 0, "usage_missing": 0, "yuan": 0.0}}
     try:
         store.sync_bank(bank)                                      # 名单的镜像 (干跑也同步: 不花钱); 也是「迁移跑没跑」的探针
@@ -512,7 +558,8 @@ def run_pass(*, bank: dict, store: Any, mode: str = "nightly", dry_run: bool = F
              workers=workers, deadline=deadline, clock=clock)
     p.run(cands)
     res.update({"ended": p.ended, "status": dict(p.status), "written": dict(p.written), "detail": dict(p.detail),
-                "flags": dict(p.flags)})
+                "flags": dict(p.flags), "no_answer_why": dict(p.no_answer_why),
+                "invalid_by_question": dict(p.invalid_q), "reply": dict(p.reply)})
     spent_yuan = MP.yuan_of_weighted(cheap_model(), budget.spent)
     res["budget"] = {"images": budget.images, "calls": budget.calls, "spent": budget.spent,
                      "usage_missing": budget.usage_missing, "yuan": spent_yuan}
@@ -549,8 +596,10 @@ def summary(res: dict) -> str:
     b = res["budget"]
     lines.append(f"实际：问了 {b['images']} 张图，调用 {b['calls']} 次，{b['spent']:,} 输入当量 token，约 {b['yuan']:.3f} 元；"
                  f"没拿到用量、按预留记的 {b['usage_missing']} 次")
-    for title, key in (("写进库的结果", "status"), ("其中", "flags"), ("之后", "written"), ("失败的状态词", "detail")):
-        if res[key]:
+    for title, key in (("写进库的结果", "status"), ("其中", "flags"), ("之后", "written"), ("失败的状态词", "detail"),
+                       ("没答成（no_answer）的原因", "no_answer_why"), ("逐题无效（题号:原因=调用次数）", "invalid_by_question"),
+                       ("回包", "reply")):
+        if res.get(key):
             lines.append(f"{title}：" + "，".join(f"{k}={v}" for k, v in sorted(res[key].items())))
     return "\n".join(lines) + "\n"
 
