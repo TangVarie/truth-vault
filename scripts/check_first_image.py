@@ -679,7 +679,10 @@ def check_wiring() -> None:
     for other in sorted(wf_dir.glob("*.yml")):
         if other.name in ("first-image-trial.yml", "ci.yml"):
             continue
-        assert "first_image" not in other.read_text(encoding="utf-8"), f"{other.name} 不该提首图试跑 (它没有定时)"
+        text = other.read_text(encoding="utf-8")
+        assert "first_image_trial" not in text and "first-image-trial" not in text, f"{other.name} 不该提首图试跑 (它没有定时)"
+        # 每晚的首图步骤 (D-158) 是另一个脚本、另一个 workflow, 归 check_first_image_pass.py 管; 别的 workflow 都不该碰首图
+        assert other.name == "first-image-sync.yml" or "first_image" not in text, f"{other.name} 不该提首图"
     lock = (HERE / "requirements.lock").read_text(encoding="utf-8").lower()
     assert "pillow" not in lock, "夜跑的 lock 这一波不动"
 

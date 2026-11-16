@@ -99,6 +99,9 @@ jobs:
             scripts/feishu_media.py \
             scripts/first_image_trial.py \
             scripts/check_first_image.py \
+            scripts/first_image_pass.py \
+            scripts/check_first_image_pass.py \
+            scripts/check_first_image_pg.py \
             librarian/__init__.py \
             librarian/clients.py \
             librarian/core.py \
@@ -3644,6 +3647,9 @@ jobs:
       - name: 首图试跑 (D-157) · 题库一组四题 / 抽样 / 过线 / token 硬上限 / 不写库不写盘 / 输出只有计数 / 只能手动且默认干跑
         working-directory: scripts
         run: python check_first_image.py
+      - name: 每晚的首图步骤 (D-158) · 题库 fi-v0.2 / 只许便宜档 / 每晚约 1 元的硬上限 / 迁移没跑不拦夜跑 / 输出只有计数
+        working-directory: scripts
+        run: python check_first_image_pass.py
       - name: sanshengliubu sync shape self-check (build_reference_sample ↔ preflight ↔ ssll v2 schema)
         working-directory: scripts
         run: |
@@ -7119,6 +7125,11 @@ jobs:
           psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_27_reader_comments_observations.sql
           psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_27_reader_comments_observations.sql
           psql -v ON_ERROR_STOP=1 -q -f scripts/check_reader_comments_observations.sql
+      - name: Apply v1.28 首图特征 (+ idempotency; 夹具与反证 scripts/check_first_image_pg.py, D-158)
+        run: |
+          psql -v ON_ERROR_STOP=1 -q -f schemas/notes_v1_28_first_image.sql
+          psql -v ON_ERROR_STOP=1 -q -f schemas/notes_v1_28_first_image.sql
+          python3 scripts/check_first_image_pg.py
       - name: Sanity-check revoke (v_dash_* 无 anon 写权限 · 且仍可读)
         # 在裸 PG 上先造出 anon/authenticated 角色并【故意 GRANT ALL】(复现 Supabase
         # 建库默认), 再跑一遍 REVOKE, 断言写权限确实没了、SELECT 还在。

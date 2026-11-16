@@ -140,3 +140,11 @@ GitHub → Actions → **First image trial (manual · counts-only report)** → 
 - 每张表里运营是不是先传封面。
 - `c0:raw_extra->内容配图` 这种只取一个键的取数写法对中文键灵不灵。不灵的话脚本自己退回取整个 `raw_extra`，慢一些。
 - `scripts/requirements-first-image.txt` 里两个库的版本范围没有在本机装过（开发环境不联网）。
+
+## 10. 试跑的结果（11-16 跑完）
+
+只跑了便宜档，跑完了：660 次调用，按假设价约 1.63 元。飞书下载 109 / 109；难办的文件都处理了；每张图约 0.01 元。常规图可用 40 / 48 = 0.83（线 0.90，没过：4 张模型说不是封面，4 张模型没答成）。列检查 RIO / TXQ / WTG 6 篇里对了 2 篇（没过）。封面检查 13 张表各 3 篇都下得到，全部 `cover_unconfirmed`。逐题：过的是 `img_layout`、`img_person`、`img_product`；过但要单独问的是 `img_main_text`、`img_text_has_number`、`img_text_kind`、`img_decoration`、`img_brand_readable`；对数不够的是 `img_text_amount`、`img_finish`、`img_scene`（一致率 0.96 到 1.00）；κ 算不出的是 `img_kind`、`img_text_matches_title`；没过的是 `img_colour`（0.87）。答得对不对没有人对着图核过，验收只凭模型自己两轮一致。
+
+中档没有用：之前一趟两档全跑的，按假设价到约 80 元时撞了 token 硬上限停了。以后不经 owner 不再跑中档。
+
+owner 11-16 看过结果，同意照四条做小的那一版（D-158）。之后的事在 `docs/34-first-image-pass.md`：题库 `fi-v0.2`、每晚的首图步骤、要跑的一份 SQL、给下游的读法。

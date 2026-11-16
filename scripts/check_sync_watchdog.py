@@ -21,7 +21,7 @@ src = textwrap.dedent(m.group(1))
 
 def now(h=0):
     return (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:%SZ")
-def run_with(responses, error=None, code_src=None):
+def run_with(responses, error=None, code_src=None, states=None):
     """responses: {workflow 文件名: [run dict, ...]}; error 非空则让 API 抛它。
     code_src 不给就跑原样那段。返回 (exit_code, 输出)"""
     class FakeResp:
@@ -39,6 +39,11 @@ def run_with(responses, error=None, code_src=None):
             raise RuntimeError(error[name])
         if isinstance(error, str) and error:
             raise RuntimeError(error)
+        if "/runs" not in url:                              # actions/workflows/<文件名>: 问这个 workflow 现在的状态
+            st = (states or {}).get(name, "active")
+            if isinstance(st, Exception):
+                raise st
+            return FakeResp({"state": st})
         if name not in responses:
             raise RuntimeError("HTTP Error 404: Not Found")
         return FakeResp({"workflow_runs": responses[name]})
@@ -166,6 +171,22 @@ code, out = run_with({**both_ok, "feature-discovery.yml": [mkrun(24 * 30, "succe
                      code_src=due_src)
 assert code == 0, f"⑫c 季度窗口(93 天)里有一趟成功就该绿: {code} {out}"
 
+# ⑬ 首图那一趟 (D-158) 文档写的停法是在 Actions 里 Disable。停用之后窗口里没有跑 → 只说一声, 不红;
+#    没停用却没跑 → 照旧红; 查不到状态 → 照旧红; 夜跑那两趟被停用 → 照旧红 (那是故障, 不是开关)。
+FI_WF = "first-image-sync.yml"
+stale = {**both_ok, FI_WF: [mkrun(72, "success")]}
+code, out = run_with(stale, states={FI_WF: "disabled_manually"})
+assert code == 0 and "被停用了" in out and FI_WF in out, f"⑬a 首图手动停用不该红: {code} {out}"
+code, out = run_with(stale)
+assert code == 1 and "一趟 schedule 都没有" in out, f"⑬b 首图没停用却没跑该红: {code} {out}"
+code, out = run_with(stale, states={FI_WF: RuntimeError("HTTP Error 502")})
+assert code == 1 and "一趟 schedule 都没有" in out, f"⑬c 查不到状态不许当成停用: {code} {out}"
+code, out = run_with({"daily-sync.yml": [mkrun(72, "success")], "features-sync.yml": [mkrun(5, "success")]},
+                     states={"daily-sync.yml": "disabled_manually"})
+assert code == 1 and "一趟 schedule 都没有" in out, f"⑬d 夜跑被停用照样红: {code} {out}"
+code, out = run_with({**both_ok, FI_WF: [mkrun(5, "failure")]}, states={FI_WF: "disabled_manually"})
+assert code == 1 and "没有一趟成功" in out, f"⑬e 窗口里跑了没成, 不因为之后停用就放过: {code} {out}"
+
 print("  ✓ 看门狗自检: 都成功→绿 / 全失败或取消→红 / cron 没触发→红 / 新上线→放行 /"
       " API 查不动→红 / 还在跑→放行 / 一个都没验成→红 / 在跑+失败→照报失败 /"
-      " pending→当没跑完 / 单个 403 不被别人验成掩盖 / 在跑的不算验过 / 季度过了日子没跑→红")
+      " pending→当没跑完 / 单个 403 不被别人验成掩盖 / 在跑的不算验过 / 季度过了日子没跑→红 / 首图手动停用→放行")

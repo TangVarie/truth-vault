@@ -429,13 +429,16 @@ SELECT '87', 'H · 跨 schema 孤儿',
                    MAX(COUNT(*)) OVER (PARTITION BY run_tag, extractor, bank_version) AS n_max
             FROM truth_vault.note_feature_answers
             WHERE extracted_at > now() - interval '30 days'
+              AND run_tag NOT LIKE 'img-%'
             GROUP BY run_tag, extractor, bank_version, subject_id
         ) s WHERE n < n_max$q$
     )::TEXT, 'N/A'),
     '0',
     '> 0 多半是 judge 仓 postgrest_upsert 写到一半失败 (PostgREST 批之间没有事务; 2026-10-09 起 judge 回 write_error 带已写行数, '
     'TV 审计 B-06). 修法: 拿当时 /judge 回包里的 ledger_rows 重跑 (upsert 幂等). 也可能是同一 bank_version 中途改了题数——'
-    '那种情况 subject 数会很大且集中在一天, 对照 banks/ 的 git log.'
+    '那种情况 subject 数会很大且集中在一天, 对照 banks/ 的 git log. '
+    '不数首图的行 (run_tag 以 img- 开头, v1.28): 模型说不是封面的帖按规矩只存一行, 封面存十几行, 行数本来就不齐; '
+    '它们由 write_first_image_result 在一个事务里写, 没有半写这回事.'
 
 UNION ALL
 SELECT '88', 'H · 跨 schema 孤儿',

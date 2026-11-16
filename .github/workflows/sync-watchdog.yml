@@ -56,10 +56,15 @@ jobs:
           WATCHED = [
               ("daily-sync.yml",   "夜跑(飞书入库 / 评论 / essence / 策展 / 通道1)"),
               ("features-sync.yml", "内容特征层增量抽取"),
+              # 首图步骤 (D-158): 它自己那一步不会让 job 变红 (做没做成看它的 Summary), 这里盯的只是「cron 有没有触发、job 有没有跑完」。
+              ("first-image-sync.yml", "首图特征(每晚)"),
               # 季度跑(D-120): 两趟最多隔 92 天, 窗口给 93 天 + 2h = 2234h(写成字面量: ci.yml 用 literal_eval 读这份名单)。
               # 第一趟排在 2027-01-02 03:23 UTC, 给两天漂移余量 → 01-04 起还一趟没有就红。
               ("feature-discovery.yml", "季度找新特征", 2234, "2027-01-04"),
           ]
+          # 允许被人手动停用的几趟: 文档写的停法就是在 Actions 里 Disable。窗口里没有跑、而 GitHub 说它是停用状态 → 只说一声, 不红。
+          # 只有这里点了名的才这样; 夜跑那几趟被停用照样红 (那是故障, 不是开关)。查不到状态 → 照旧按没跑判红。
+          MAY_BE_OFF = {"first-image-sync.yml"}
           WINDOW_H = 26   # 24h 的窗口 + 2h 余量: cron 起跑时刻本来就会漂(D-064)
 
           repo, token = os.environ["REPO"], os.environ["GH_TOKEN"]
@@ -102,6 +107,14 @@ jobs:
               recent = [r for r in runs
                         if dt.datetime.fromisoformat(r["run_started_at"].replace("Z", "+00:00")) >= since]
               if not recent:
+                  if wf in MAY_BE_OFF:
+                      try:
+                          wf_state = str(api(f"actions/workflows/{wf}").get("state") or "")
+                      except Exception:
+                          wf_state = ""
+                      if wf_state.startswith("disabled"):
+                          notes.append(f"· {human} ({wf}): 被停用了({wf_state}), 这是它文档里写的停法, 本轮跳过")
+                          continue
                   last = runs[0]
                   problems.append(
                       f"· {human} ({wf}): 最近 {window_h}h 一趟 schedule 都没有 —— "

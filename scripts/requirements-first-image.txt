@@ -1,5 +1,5 @@
-# 只有首图试跑要装 (.github/workflows/first-image-trial.yml, D-157)。
-# 夜跑装的是 requirements.lock, 那份没动: 合并这个文件不改任何夜跑装的包。
-# 试跑通过、首图步骤要每晚跑的时候, 再把这两个并进 requirements.txt 并重出 lock。
+# 只有首图的两个 workflow 装: 试跑 (first-image-trial.yml, D-157) 和每晚的首图步骤 (first-image-sync.yml, D-158)。
+# 夜跑装的是 requirements.lock, 那份没动: 这两个库不进别的夜跑。
+# 没有并进 requirements.txt / lock (D-158): 首图步骤是单独的 workflow, 装不上也只是那一步说一声、不红; 重出 lock 要联网, 另做。
 Pillow>=10.4,<13
 pillow-heif>=0.18,<2
