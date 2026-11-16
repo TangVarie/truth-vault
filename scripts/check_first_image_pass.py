@@ -856,6 +856,9 @@ def check_reply_reading() -> None:
         assert FI.read_reply(BANK, ["img_kind"], txt)["parsed"]["img_kind"][0] is None, txt
     assert FI.read_reply(BANK, ["img_kind"], "[" + one + "]")["parsed"]["img_kind"][0] == "封面", "完整的数组照旧读得出"
     assert FI.read_reply(BANK, ["img_kind"], one)["parsed"]["img_kind"][0] == "封面", "单独一个对象照旧读得出"
+    for txt in ('{"answers": {"img_kind": "封面", "img_kind": "后台或数据截图"}}', '{"img_kind": "后台或数据截图", "img_kind": "封面"}',
+                '{"id": "img_kind", "answer": "封面", "answer": "后台或数据截图"}'):   # 同一个键写两遍: 不替它挑后一个
+        assert FI.read_reply(BANK, ["img_kind"], txt)["parsed"]["img_kind"][0] is None, txt
     for txt in ('{"id": "img_main_text", "answer": "[限时优惠"}', '[{"id": "img_main_text", "answer": "满减}到手"}]',
                 '{"img_main_text": "写着 \\"[\\" 的图"}'):                # 引号里的括号是抄下来的字, 不当成括号不成对
         assert FI.read_reply(BANK, ["img_main_text"], txt)["parsed"]["img_main_text"][0], txt

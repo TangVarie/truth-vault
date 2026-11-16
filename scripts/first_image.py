@@ -532,7 +532,7 @@ def _json_values(text: str) -> list:
     不从断掉的回包里捡半截答案。某一段读不出来 (多了个逗号、里面夹着字) → 整段跳过, 不进去捡它里面的对象。"""
     if not _balanced(text):
         return []
-    dec, out, i = json.JSONDecoder(), [], 0
+    dec, out, i = json.JSONDecoder(object_pairs_hook=_no_duplicate_keys), [], 0
     while True:
         m = _JSON_OPEN.search(text, i)
         if not m:
@@ -542,6 +542,16 @@ def _json_values(text: str) -> list:
             out.append(val)
         except (ValueError, RecursionError):               # 嵌得太深的回包也只是「读不出来」, 不让整趟停
             i = _skip_value(text, m.start())
+
+
+def _no_duplicate_keys(pairs: list) -> dict:
+    """一个 JSON 对象里同一个键写了两遍 (同一道题给了两个答案, 解码器只会留后一个) → 这一段当读不出来, 不替它挑一个。"""
+    out: dict = {}
+    for k, v in pairs:
+        if k in out:
+            raise ValueError("duplicate key")
+        out[k] = v
+    return out
 
 
 def _balanced(text: str) -> bool:
@@ -708,7 +718,7 @@ def read_reply(bank: dict, qids: list[str], text: str, stop_reason: Any = None) 
     tolerated: list[str] = []
     strict = True
     try:                                                   # 老的读法: 第一个 { 到最后一个 }
-        vals = [json.loads(text[text.index("{"):text.rindex("}") + 1])]
+        vals = [json.loads(text[text.index("{"):text.rindex("}") + 1], object_pairs_hook=_no_duplicate_keys)]
     except (ValueError, RecursionError):
         strict = False
         vals = _json_values(text)
