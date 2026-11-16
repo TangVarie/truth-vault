@@ -142,6 +142,12 @@ CI 和 daily-sync workflow 都优先读 `.lock`; `.txt` 仅作为 "high-level in
 #         带快照的项目喊一次 warning。可重跑, TV 这边先合代码还是先跑它都行, 但要等写作台的评论工具
 #         按 source 分开之后再跑 (OPEN-ITEMS W-59) (D-155; 夹具 check_reader_comments_observations.sql /
 #         check_reader_comments.py)。
+#   - schemas/notes_v1_28_first_image.sql → 首图特征 (I-29, D-158): 表 note_first_image (每篇做过的帖一行: 哪一列、第一个附件的指纹、
+#         结果、重试) + 表 first_image_bank_state (题库三张名单的镜像, 一行) + 三个函数 (该做哪些帖 / 一张图的结果一次写完 /
+#         同步名单) + 视图 v_note_first_image_source (取列规则) 和 v_first_image_features (给下游读的那一面)。全是加法。
+#         不是同步的前置: 没跑之前每晚的首图步骤 (first-image-sync.yml) 打一行说明就结束、不花钱, 别的夜跑不受影响;
+#         跑了之后下一晚开始做 (每晚最多 40 张图、约 1 元)。可重跑, 先合代码还是先跑都行 (在 v1_4 / v1_13 / v1_25 之后;
+#         docs/34-first-image-pass.md; 夹具 check_first_image_pg.py)。
 #   - autowriter-migrations/001_create_autowriter_schema.sql → 把 autowriter 表从 public 迁到 autowriter schema
 #   - autowriter-migrations/002_add_external_source.sql     → items 加 (external_source, external_source_id) 列
 #         + per-user partial UNIQUE (user_id, external_source, external_source_id) WHERE external_source IS NOT NULL.

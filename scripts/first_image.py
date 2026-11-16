@@ -139,11 +139,12 @@ def option_values(q: dict) -> list[str]:
     return [str(o["value"]) for o in q.get("options") or []]
 
 
-def validate_bank(bank: dict) -> list[str]:
-    """结构校验。返回错误列表, 空 = 合法。"""
+def validate_bank(bank: dict, version: str = BANK_VERSION) -> list[str]:
+    """结构校验。返回错误列表, 空 = 合法。version: 这份文件该是哪一版 (试跑是 fi-v0.1; 每晚的首图步骤传 fi-v0.2,
+    它自己那几条名单的校验在 first_image_pass.py)。"""
     errs: list[str] = []
-    if bank.get("bank_version") != BANK_VERSION:
-        errs.append(f"bank_version 要是 {BANK_VERSION}")
+    if bank.get("bank_version") != version:
+        errs.append(f"bank_version 要是 {version}")
     if bank.get("role") != "image":
         errs.append("role 要是 image")
     if bank.get("status") not in ("draft", "frozen"):
