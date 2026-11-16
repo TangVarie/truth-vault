@@ -57,7 +57,8 @@ MAX_CONSECUTIVE_API_FAILS = 3
 PAGE = 1000
 UPSERT_CHUNK = 100
 # 标价 (美元 / 百万 token, 输入, 输出)。只用来打估算那一行; 中转站实价可能不同。
-PRICES = {"claude-haiku-5-5": (0.10, 0.50), "claude-sonnet-5-5": (2.00, 10.00)}
+# 11-16 (D-157) 起数字住在 scripts/model_prices.py (全仓只这一处算钱), 这里照原名引进来, 一个数没变。
+from model_prices import PRICES  # noqa: E402
 
 SYSTEM = """你帮我们给小红书笔记做「品牌名遮挡」的第一步: 只列出名字, 不改写任何内容。
 

@@ -94,6 +94,11 @@ jobs:
             scripts/check_paid_boost.py \
             scripts/gate3_score.py \
             scripts/check_gate3.py \
+            scripts/model_prices.py \
+            scripts/first_image.py \
+            scripts/feishu_media.py \
+            scripts/first_image_trial.py \
+            scripts/check_first_image.py \
             librarian/__init__.py \
             librarian/clients.py \
             librarian/core.py \
@@ -3636,6 +3641,9 @@ jobs:
       - name: 闸三第一轨 (D-118) · 冻结文件摘要 / token 同闸二 / 打分 / 分位 / 幂等 / 标注器对不上判红 / 判定线 / 接线
         working-directory: scripts
         run: python check_gate3.py
+      - name: 首图试跑 (D-157) · 题库一组四题 / 抽样 / 过线 / token 硬上限 / 不写库不写盘 / 输出只有计数 / 只能手动且默认干跑
+        working-directory: scripts
+        run: python check_first_image.py
       - name: sanshengliubu sync shape self-check (build_reference_sample ↔ preflight ↔ ssll v2 schema)
         working-directory: scripts
         run: |

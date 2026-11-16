@@ -525,11 +525,20 @@ def _backup_client_for_model(anthropic_module, model: str):
 
 
 def call_claude(prompt: str, model: str, *, cached_system: str | None = None,
-                max_attempts: int = 3, max_tokens: int = 2000, meta: dict | None = None) -> str:
+                max_attempts: int = 3, max_tokens: int = 2000, meta: dict | None = None,
+                images: list | None = None, sdk_max_retries: int | None = None) -> str:
     """Single Mode A call with exponential-backoff retry on transient errors.
 
     meta: 若给定 (一个 dict), 成功那次的 ``stop_reason`` 写进 meta["stop_reason"] —— 调用方据此分得清「回到一半被
       max_tokens 截断」和「回的就是垃圾」(外部帖遮挡词截断了就拆批重列, D-140 review)。不给 → 行为不变。
+      11-16 (D-157) 起成功那次的四项 token 也写进 meta["usage"] (只在给了 meta、回包里带用量时), 首图试跑按次记账用。
+
+    images: 首图试跑用 (D-157)。一组 (media_type, base64 字符串); 给了就把图片块放在文字前面一起作 user message。
+      不给 (默认, 现有调用方全都不给) → 发出去的请求和以前一个字节不差 (check_first_image.py §9 钉着)。
+
+    sdk_max_retries: 首图试跑用 (D-157)。SDK 自己还会悄悄重试 (默认 2 次), 一次 call_claude 实际能发 3 个请求; 试跑的
+      调用上限要按「真发出去的请求」数, 所以它传 0: 主站、备用站的客户端都不再自己重试 (配了备用站时一次最多两个请求:
+      主站一个、备用站一个)。不给 (默认 None, 现有调用方全都不给) → 客户端的构造和以前一字不差 (§9 钉着)。
 
     cached_system: 若给定, 作为带 `cache_control: ephemeral` 的 system 块发送(Anthropic
       prompt caching), `prompt` 作 user message —— 稳定大前缀(essence 词表/schema)跨请求命中
@@ -563,7 +572,8 @@ def call_claude(prompt: str, model: str, *, cached_system: str | None = None,
         _kwargs["base_url"] = _base_url
     _relay_mode = relay_failover.mode()
     if _relay_mode == relay_failover.MODE_PRIMARY_ONLY:
-        client = anthropic.Anthropic(**_kwargs)            # unchanged
+        client = (anthropic.Anthropic(**_kwargs) if sdk_max_retries is None            # unchanged
+                  else anthropic.Anthropic(**_kwargs, max_retries=int(sdk_max_retries)))
 
         def _create(kw: dict):
             return client.messages.create(**kw)
@@ -577,6 +587,8 @@ def call_claude(prompt: str, model: str, *, cached_system: str | None = None,
             if target not in _built:
                 _built[target] = (anthropic.Anthropic(**_kwargs, max_retries=0, timeout=_primary_timeout)
                                   if target == "primary" else _backup_client_for_model(anthropic, model))
+                if target != "primary" and sdk_max_retries is not None:
+                    _built[target].max_retries = int(sdk_max_retries)   # 没设上会直接报错, 不会悄悄多发
             return _built[target]
 
         def _create(kw: dict):
@@ -601,6 +613,10 @@ def call_claude(prompt: str, model: str, *, cached_system: str | None = None,
             "max_tokens": max_tokens,     # 默认 2000 (essence / curate 一直是这个); 外部帖遮挡词一次列好几篇, 给 8000 (D-140)
             "messages": [{"role": "user", "content": prompt}],
         }
+        if images:
+            create_kwargs["messages"] = [{"role": "user", "content": [
+                *({"type": "image", "source": {"type": "base64", "media_type": mt, "data": b64}} for mt, b64 in images),
+                {"type": "text", "text": prompt}]}]
         if system_payload is not None:
             create_kwargs["system"] = system_payload
         for attempt in range(max_attempts):
@@ -609,6 +625,11 @@ def call_claude(prompt: str, model: str, *, cached_system: str | None = None,
                 _record_usage(msg)
                 if meta is not None:
                     meta["stop_reason"] = getattr(msg, "stop_reason", None)
+                    _u = getattr(msg, "usage", None)
+                    if _u is not None:
+                        meta["usage"] = {k: int(getattr(_u, a, 0) or 0) for k, a in (
+                            ("input", "input_tokens"), ("cache_write", "cache_creation_input_tokens"),
+                            ("cache_read", "cache_read_input_tokens"), ("output", "output_tokens"))}
                 # Concatenate text blocks. Mode A responses are JSON, never tool calls.
                 parts = [b.text for b in msg.content if getattr(b, "type", None) == "text"]
                 return "".join(parts)
