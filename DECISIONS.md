@@ -8800,3 +8800,33 @@ owner 11-16：开。
 - 没答成的 9 篇下一趟自己排上：最多 63 次、约 0.15 元（不改是 33 次、约 0.08 元，多半还是答不成）。和这一趟一样的一晚最多 134 次、约 0.32 元。钱的上限没动。
 - 下一趟才知道：34 个里一字不差的有几个；中转站给不给结束原因；对不上的时候哪一头错；靠认整行答成的帖是不是真的封面；任何一个答案对不对。
 - 细节 `docs/34-first-image-pass.md` 第 11 节；守卫 `scripts/check_first_image_pass.py` 第 9 节、`scripts/check_first_image_pg.py` B 段。没有 SQL，没有环境变量。
+
+## D-161 · 看板升到 Next 16 + React 19：照官方升级指南改，中间件改名 proxy、运行时从 Edge 变 Node，`lint` 脚本删掉、不新加 ESLint（2026-11-17，工程；S-17）
+
+**What**
+
+- `dashboard/` 升到 Next 16.4.6、React 19.3.1、`@types/react` / `@types/react-dom` 19.3.0；别的依赖没动（framer-motion 11、geist、lenis 都支持 React 19）。`npm audit --omit=dev` 从 2 条（critical 1、high 1）到 0 条，`npm audit` 连开发依赖也是 0 条。
+- 代码只改了升级指南点名的几处：`cookies()`、`searchParams` 先 `await`（Next 15 起异步、Next 16 去掉了同步用法；官方 codemod）；`middleware.ts` 改名 `proxy.ts`、函数改名 `proxy`（Next 16 的新名字；官方 codemod）；`<html>` 加 `data-scroll-behavior="smooth"`（Next 16 换页时默认不再临时关掉平滑滚动，加了才和以前一样）；`tsconfig.json` 两处是 Next 16 构建时要求的。登录闸、会话、跳转不让缓存、noindex 三处、对外页面不出现内部叫法、对外展示层的数，都没动。
+- 另加 `app/not-found.tsx`（404 页）：字和样式照抄 Next 自带的那一版，用 `metadata` 把浏览器标签上的标题定回 `404: This page could not be found.`（Next 16 下自带那版的标题排到了站点标题后面，标签显示成站点标题），用 `await connection()` 让 404 页每次现做（Next 16 把它做成静态页，直接访问 `/_not-found` 或 `/%62oard` 这类编码过的地址时带 `Cache-Control: s-maxage=31536000`）。两处都回到升级前的样子。
+- `next lint` 在 Next 16 没了，`lint` 脚本删掉。
+
+**Why**
+
+- 两条告警只有升大版本才修得掉（S-17）；`next` 那条 14 这条线没有补丁，Next 自带的旧 `postcss` 要到 16 才换。
+- proxy 只能跑在 Node 上。看板的中间件只读一个 cookie、用 Web Crypto 验签名、跳登录页，Node 上一样跑；升级前后签的会话两边互认（本机核过）。继续用已经标了「不推荐」的 `middleware.ts` 能留在 Edge，但只是推迟改名。
+- 看板从没配过 ESLint：原来的 `npm run lint` 一跑只弹配置问答。照官方 codemod 配上 ESLint 会加约 280 个开发依赖，它装的 ESLint 9 已经停止维护，换 10 的话 `eslint-config-next` 带的几个插件声明只支持到 9（npm 报 peer 依赖冲突、强装），而且现有代码一跑就是 23 个错（`any`、effect 里同步 setState 这类）；要改就得动组件，和这次「行为不变」的目标冲突。
+
+**Rejected**
+
+- 只升到 Next 15.5.29：`postcss` 那条还在，过不久还得再升一次大版本。
+- 照官方 codemod 配上 ESLint、带着 23 个错提交：多一个一直是红的检查。要的话是单独一件事（一条 codemod 命令加改那 23 处）。
+- 不加 `app/not-found.tsx`、只把 404 页标题和缓存头的变化记下来：改得回去、只多一个照抄的小文件，这次的目标是行为不变。
+- 把客户端换页缓存调回 Next 14 的 30 秒（`staleTimes.dynamic`）：看板是实时的，页面本来就全是 `force-dynamic` + `no-store`，换页拿新数更对；看板页面的 HTTP 缓存头没变。
+
+**Implications**
+
+- Next 16 要 Node 20.9 以上：Vercel 项目设置里是 24.x（11-17 核过）；`package.json` 没加 `engines`，免得 Vercel 自己换 Node 大版本。本机核的是 Node 22。
+- 构建默认用 Turbopack。本机连不上 Google Fonts，本机构建用的是上一次构建取下来的同一份字体文件；Vercel 预览上的构建 11-17 核过，通过、字体取得到。预览上升级前后两份对比：公开页状态码、缓存头、`X-Robots-Tag`、字和对外数字都一样，没登录打开 `/console` 跳登录页。
+- 本机（`next start`）对比，看板自己的路由（`/`、`/board`、`/login`、登录后的 `/console`、`/api/*`、`/robots.txt`、404 页）状态码、`Cache-Control`、`X-Robots-Tag`、页面上的字和截图都一样。不一样的都是 Next 16 自己的，不带数据、不带内部叫法：没登录打开 `/console` 跳登录页的 `Location` 变成相对地址（`no-store` 还在）；`Vary` 头多一项；`/console.rsc`、`/%63onsole` 这类以前 404 的地址现在也被登录闸拦下跳登录页；带 `RSC: 1` 头、没有 `_rsc` 参数的请求先 307 到带 `?_rsc` 的地址（不带 `Cache-Control`）；Next 自带的出错页地址 `/_global-error` 从 404 变成 500 + `s-maxage=31536000`（固定页面；Vercel 上也是 500，缓存头是 `public, max-age=0`）；带会话的 `OPTIONS /console` 从 200 变 400；只在 Vercel 上，编码过的公开页地址（`/%62oard` 这类）从 404 变 500（Vercel 运行 Next 16 时找不到对应模块，平台和框架的问题，通用出错页、不带数据、不缓存，`/%63onsole` 照样跳登录页）。逐条在 `dashboard/README.md`「依赖」那一条。
+- 顺带发现一个升级前就有的小毛病：`/login` 地址里 `next` 写两遍会 500（`sanitizeNext` 只认字符串）。升级前后一样、不漏数据，这次没改；要修另开一件。
+- 以后看板要 lint，单独开一件事。

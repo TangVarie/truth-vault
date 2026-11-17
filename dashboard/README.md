@@ -8,13 +8,17 @@
 ## 路由
 - `/` — **公开首页**:BYWOOD 芭梧 品牌与方法论 + 极简战绩 + 两个入口(数据看板免登录 / 团队登录)。
 - `/board` — **对外数据看板**(免登录):公开展示口径的聚合数。
-- `/console` — **内部座舱**(要登录):真实口径 + 策略机理。登录闸有两道:`middleware.ts` 拦一次,`app/console/page.tsx` 在页面自己的服务端代码里再验一次会话(2026-11-15 加,不再只靠中间件)。
+- `/console` — **内部座舱**(要登录):真实口径 + 策略机理。登录闸有两道:`proxy.ts`(Next 16 之前叫 `middleware.ts`,2026-11-17 改名,逻辑没动)拦一次,`app/console/page.tsx` 在页面自己的服务端代码里再验一次会话(2026-11-15 加,不再只靠这一层)。
 - `/login`、`/api/auth/*` — 团队口令登录 / 退出。
 - `/api/live/presence` — 实时"在线"信号(stub)。
 - `/robots.txt` — 全站 Disallow(见下「对外页面的规矩」)。
 
 ## 技术栈
-Next.js 14(App Router)· React · TypeScript · Tailwind · `@supabase/supabase-js`(**服务端**查库)· 部署 Vercel。
+Next.js 16(App Router,构建默认 Turbopack)· React 19 · TypeScript · Tailwind 3 · `@supabase/supabase-js`(**服务端**查库)· 部署 Vercel。
+
+- Node 至少 20.9(Next 16 的要求)。`package.json` 没写 `engines`,用的是 Vercel 项目设置里的 Node 版本;本机核过的是 Node 22。
+- 构建时要从 Google Fonts 取两种字体(`app/layout.tsx` 的 Fraunces、Hanken Grotesk),连不上外网的机器上 `npm run build` 会失败;Vercel 上有网,不受影响。
+- 没有 lint:Next 16 去掉了 `next lint`,看板之前也从没配过 ESLint(那条命令只会弹出配置问答),所以 `lint` 脚本删了。类型检查用 `npm run typecheck`。
 
 ## 本地跑
 ```bash
@@ -48,9 +52,16 @@ Vercel 项目 → **Settings → Domains** → 加域名 → 按提示配一条 
    检查:`npm run build && npm run check:public`(脚本 `scripts/check-public-wording.mjs`;不联网、不连库。先查源码里会显示的字,再起一个本机临时服务,查 `/`、`/board` 实际发出的 HTML 和脚本)。要加禁用词,改脚本里的 `BANNED`。
    不用记得手动跑:`package.json` 里的 `prebuild` 会在每次 `npm run build` 之前先跑源码那一层(Vercel 部署走的也是 `npm run build`),查到内部叫法构建就失败、不会发出去。成品那一层(HTML 和脚本)仍要构建完手动跑上面那条命令。检查自己的测试:`npm run test:check`。
 2. **不进搜索引擎。** 三处同一个决定:`app/layout.tsx` 的 robots 元信息(每条路由都有 noindex, nofollow)、`app/robots.ts`(robots.txt 全站 Disallow)、`next.config.mjs` 的 `X-Robots-Tag` 响应头(Vercel 预览域名也带)。
-3. **依赖。** `npm audit fix`(不加 `--force`)能修的已修,只动了 `package-lock.json`。`npm audit --omit=dev` 还剩两条(2026-11-15 实跑),都挂在 Next 14 上:14.2.35 是 14 这条线的最后一版,后面公布的问题没有 14.x 补丁。
-   - `next` 那条(critical,底下 26 个公告):升到 Next 15.5.29 以上就清掉(15 这条线的补丁版,需同时升 React 19)。
-   - `postcss` 那条(high):是 Next 自己带的那份旧 postcss(8.4.31),15.5.29 带的还是这一版,要到 Next 16 才换新。所以只升到 15.5.29 之后 `npm audit` 还会剩这一条;它说的是处理别人给的 CSS 时的问题,本看板只在构建时处理自己的 CSS。
-   - `npm audit fix --force` 会直接跳到 Next 16,两条都清,但改动更多(中间件要改名、`next lint` 没了)。两种都是大版本升级,另排。
-
-   按代码推断、未实测:本看板没有用图片组件、Server Actions、rewrites,公布的问题里多数走不到(Vercel 平台自己的图片优化那部分没有核实);走得到的主要是服务端组件的拒绝服务类和中间件跳转被缓存那一条(后者已给跳转加了 `Cache-Control: no-store`,且 `/console` 现在页面内再验一次会话)。
+3. **依赖。** 2026-11-17 升到 Next 16.4.6 + React 19.3.1(S-17)。升完 `npm audit --omit=dev` 0 条,`npm audit`(连开发依赖)也是 0 条。升之前(11-15 那次 `npm audit fix` 之后)还剩两条,都挂在 Next 14 上:`next` 那条(critical,11-17 升级前实跑底下 25 个公告,14.2.35 是 14 这条线的最后一版、没有补丁)和 Next 自己带的旧 `postcss` 那条(high,4 个公告,受影响的是 8.5.22 及以下;Next 16.4.6 带的是 8.5.23)。
+   升级照 Next 15、16 的官方升级指南做,改的地方:`cookies()`、`searchParams` 改成先 `await`(官方 codemod `next-async-request-api`);`middleware.ts` 改名 `proxy.ts`、函数改名 `proxy`(codemod `middleware-to-proxy`),运行时从 Edge 变成 Node(proxy 不能选 Edge;`lib/auth.ts` 只用 Web Crypto,两边都能跑,升级前后签的会话互认);`app/layout.tsx` 的 `<html>` 加 `data-scroll-behavior="smooth"`(Next 16 换页时默认不再临时关掉平滑滚动,加这个才和以前一样直接跳到顶);`tsconfig.json` 两处是 Next 16 构建时要求的(`jsx: react-jsx`、多 include `.next/dev/types`)。另加了 `app/not-found.tsx`(404 页),页面上的字和样式照抄 Next 自带的那一版,只为把升级带来的两处变化改回去:浏览器标签上的标题(Next 16 下自带 404 页的标题排到了站点标题后面,标签显示成站点标题,现在改回 `404: This page could not be found.`);直接访问 `/_not-found` 或 `/%62oard` 这种编码过的地址时 404 页带 `Cache-Control: s-maxage=31536000`(Next 16 把 404 页做成了静态页,前面要是有共享缓存能存一年,现在改回每次现做、`private, no-store`;代价是 404 页不再是构建好的静态页,每次由服务端现做,看板访问量小,不在意)。
+   升级前后在本机各起一份(`next start`)、不连真库对比过,另用两份假的聚合视图数据(一份低于对外展示的下限、一份高于)各比一次。看板自己的路由:`/`、`/board`、`/login`(各种 `next`、`error`)、登录后的 `/console`、`/api/*`、`/robots.txt`、404 页,状态码、`Cache-Control`、`X-Robots-Tag` 一样,`/`、`/board` 上对外展示层算出来的数一样,页面上的字逐字一样;404 页的 HTML 里少了一个原来就不显示的第二个 `<title>`(站点标题)。截图(1280、390 两种宽度,冻住动画)逐像素一样,只差一个走秒的时钟。
+   和升级前不一样的地方,都是 Next 16 自己的,都不带登录后才有的数据和内部叫法,`X-Robots-Tag` 照样在:
+   - `/console` 没登录时跳登录页的 `Location` 从带域名的绝对地址变成 `/login?next=…` 这样的相对地址(浏览器照样跳,`Cache-Control: no-store` 还在)。`Vary` 头多了一项。
+   - 登录闸管得更宽:`/console.rsc`、`/console.segments/…`、`/%63onsole`、`/console%2F`、`/./console` 这类地址以前直接 404,现在也被 `proxy.ts` 拦下、跳登录页(`no-store`)。
+   - 带 `RSC: 1` 请求头、地址上没有 `_rsc` 参数的请求,以前直接回页面数据(`private, no-store`),现在先 307 跳到带 `?_rsc` 的同一地址(Next 防缓存串数据的做法,这个跳转不带 `Cache-Control`,按 HTTP 规矩 307 默认不缓存)。浏览器里正常换页总是带 `_rsc`,不受影响。
+   - `/_global-error`(Next 16 自带的出错页地址):以前 404、`private, no-store`;现在 500、`Cache-Control: s-maxage=31536000`,内容是 Next 自带的「500: This page couldn't load」,没有 robots 元信息。页面固定、不含任何数据,没有链接指向它。Vercel 预览上(11-17 核)这个地址也回 500,但缓存头是 Vercel 自己给的 `public, max-age=0, must-revalidate`(不会被存一年),`X-Robots-Tag` 照样在。页面真出错时(比如下面那个 `next` 写两遍)还是 500 + `private, no-store`,和以前一样。
+   - 带着有效会话发 `OPTIONS /console`:以前照样回整页(200),现在回 400、空内容。
+   - 只在 Vercel 上:编码过的公开页地址(`/%62oard` 这类)以前 404,现在 500。Vercel 运行 Next 16 时按字面去找 `pages/%62oard.js`、找不到就抛错(运行日志 `MODULE_NOT_FOUND`),是平台和框架的问题,改不到。回的是 Next 自带的通用出错页,不带数据,`public, max-age=0, must-revalidate`(不缓存),`X-Robots-Tag` 照样在;正常访问和站内链接碰不到这种地址。登录闸不受影响:`/%63onsole` 在 Vercel 上照样跳登录页。
+   Vercel 预览上核过(11-17,升级前后两份预览各打一遍):构建通过(Next 16.4.6、Turbopack,Google Fonts 取得到),项目设置的 Node 是 24.x;`/`、`/board`、`/login`、`/login?error=1`、`/robots.txt`、`/api/live/presence` 状态码、`Cache-Control`、`X-Robots-Tag`、页面上的字和每一个对外数字都一样;没登录打开 `/console` 跳登录页;普通 404 还是 404,缓存头从 Vercel 给的 `public, max-age=0, must-revalidate` 变成 `private, no-store`(都不缓存);`robots.txt` 内容和缓存头一样,只是 Vercel 上不再是预先生成好的。
+   客户端换页时页面不再复用 30 秒内的旧数据(Next 15 起的默认),对实时看板只会更新鲜。
+   顺带发现一个升级前就有的小毛病:`/login?next=/a&next=/b`(`next` 写两遍)会 500,因为 `app/login/page.tsx` 的 `sanitizeNext` 只认字符串。升级前后一样,不漏数据、不跳走,这次没改(S-17 只管升级、行为不变)。

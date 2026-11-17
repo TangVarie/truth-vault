@@ -58,9 +58,9 @@ function HitList({ title, sub, items, color, className }: { title: string; sub: 
 function navPill(): React.CSSProperties { return { border: "1.5px solid rgba(255,255,255,0.18)", borderRadius: 999, padding: "5px 14px", fontSize: 12.5, fontWeight: 600, color: "#fff", textDecoration: "none" }; }
 
 export default async function ConsolePage() {
-  // 登录闸第二道：middleware.ts 已经拦了一次，这里在页面自己的服务端代码里再验一次会话，
+  // 登录闸第二道：proxy.ts(Next 16 前叫 middleware.ts)已经拦了一次，这里在页面自己的服务端代码里再验一次会话，
   // 验不过就回登录页、后面的取数一行都不跑。这样即使中间件那一层被绕过或没生效，座舱也进不来。
-  if (!(await verifySessionToken(cookies().get(SESSION_COOKIE)?.value))) redirect("/login?next=%2Fconsole");
+  if (!(await verifySessionToken((await cookies()).get(SESSION_COOKIE)?.value))) redirect("/login?next=%2Fconsole");
   const d = await getDashboardData();
   const { o, projects, matrix, valence, leverPerf, archetypes, audience, formats, reach, intent, funnel, projectPerf, pulse } = d;
   const flabel = (id: string) => consoleLabel({ project_id: id });
