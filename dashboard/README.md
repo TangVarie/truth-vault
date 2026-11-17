@@ -64,4 +64,4 @@ Vercel 项目 → **Settings → Domains** → 加域名 → 按提示配一条 
    - 只在 Vercel 上:编码过的公开页地址(`/%62oard` 这类)以前 404,现在 500。Vercel 运行 Next 16 时按字面去找 `pages/%62oard.js`、找不到就抛错(运行日志 `MODULE_NOT_FOUND`),是平台和框架的问题,改不到。回的是 Next 自带的通用出错页,不带数据,`public, max-age=0, must-revalidate`(不缓存),`X-Robots-Tag` 照样在;正常访问和站内链接碰不到这种地址。登录闸不受影响:`/%63onsole` 在 Vercel 上照样跳登录页。
    Vercel 预览上核过(11-17,升级前后两份预览各打一遍):构建通过(Next 16.4.6、Turbopack,Google Fonts 取得到),项目设置的 Node 是 24.x;`/`、`/board`、`/login`、`/login?error=1`、`/robots.txt`、`/api/live/presence` 状态码、`Cache-Control`、`X-Robots-Tag`、页面上的字和每一个对外数字都一样;没登录打开 `/console` 跳登录页;普通 404 还是 404,缓存头从 Vercel 给的 `public, max-age=0, must-revalidate` 变成 `private, no-store`(都不缓存);`robots.txt` 内容和缓存头一样,只是 Vercel 上不再是预先生成好的。
    客户端换页时页面不再复用 30 秒内的旧数据(Next 15 起的默认),对实时看板只会更新鲜。
-   顺带发现一个升级前就有的小毛病:`/login?next=/a&next=/b`(`next` 写两遍)会 500,因为 `app/login/page.tsx` 的 `sanitizeNext` 只认字符串。升级前后一样,不漏数据、不跳走,这次没改(S-17 只管升级、行为不变)。
+   顺带发现一个升级前就有的小毛病:`/login?next=/a&next=/b`(`next` 写两遍)会 500,因为 `app/login/page.tsx` 的 `sanitizeNext` 只认字符串。升级前后一样,不漏数据、不跳走,升级那次没改(S-17 只管升级、行为不变);11-17 另一个 PR 修了:`next` 不是单个字符串(写了两遍)就当成没给,回 `/console`,和其它不合格的 `next` 一样。
