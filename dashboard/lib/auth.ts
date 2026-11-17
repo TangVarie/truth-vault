@@ -1,7 +1,7 @@
 /**
  * 共享团队口令登录 —— 会话签名 / 校验。
  *
- * 只用 Web Crypto(crypto.subtle),Edge(middleware)与 Node(route handler)双运行时通用,
+ * 只用 Web Crypto(crypto.subtle),Edge 与 Node 双运行时通用(proxy.ts 和 route handler 现在都跑在 Node 上),
  * 不依赖 Buffer / node:crypto。会话 cookie = `<expEpochMs>.<hmacHex>`,
  * HMAC-SHA256(secret, expEpochMs)。secret 优先 AUTH_SECRET,缺省回退 DASHBOARD_PASSWORD。
  *

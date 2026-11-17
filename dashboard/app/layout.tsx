@@ -46,9 +46,12 @@ export default function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
+  // data-scroll-behavior="smooth"：globals.css 给 html 设了平滑滚动。Next 14/15 换页时会临时关掉它、
+  // 直接跳到顶部；Next 16 默认不再这样做，要靠这个属性才保留原来的行为(Next 16 升级指南 Scroll Behavior Override)。
   return (
     <html
       lang="zh-CN"
+      data-scroll-behavior="smooth"
       className={`${GeistSans.variable} ${GeistMono.variable} ${fraunces.variable} ${hanken.variable}`}
     >
       <body className="min-h-screen antialiased">{children}</body>
