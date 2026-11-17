@@ -19,14 +19,25 @@
   §7  接线: workflow 有定时也能手动、手动默认干跑、首图那一步不会让 job 变红、没有上传步骤、没用夜跑没有的 secret、
       看门狗名单里有它; 步骤的代码只碰库里那三个函数、不往盘上写图片; 夜跑的 lock 没动; 迁移文件和文档里该有的字都在;
       定时一天只起一趟 (上限是按一趟算的); 不传备用中转站的钥匙; NEW_SINCE 和三个函数的参数钉住; 迁移和这里点名的脚本都真在
-  §8  没答成的原因看得见 (11-16 首跑 32 张里 11 张没答成, 当时看不出为什么), 而且【认什么一个字没变】(D-159):
-      ① FI.parse_answers 就是 11-16 首跑时 main 上的那个函数 (源码的 sha256 钉住); read_reply 的 parsed、Pass._call 拿到的结果,
-        在固定的一批回包上 (对抗评审核实过的每一种 + 更早几轮评审的) 和守卫自己留的那份老读法逐字相同; stop_reason 不改它
+  §8  没答成的原因看得见 (11-16 首跑 32 张里 11 张没答成, 当时看不出为什么), 而且【老读法一个字没变】(D-159):
+      ① FI.parse_answers 就是 11-16 首跑时 main 上的那个函数 (源码的 sha256 钉住); read_reply 的 parsed 在固定的一批回包上
+        (对抗评审核实过的每一种 + 更早几轮评审的) 和守卫自己留的那份老读法逐字相同; stop_reason 不改它。
+        Pass._call 拿到的结果和老读法只差一种 (D-160): 老读法判了 out_of_vocab、而答案和提示词里那个选项的整行一字不差
+        (守卫自己照题库文件拼的「选项: 解释」/「- 选项: 解释」逐字节比), 这样的答案有几个也钉住
       ② 细一层的词 (empty_reply / truncated / no_json / json_not_template / id_numbered / oov_* …) 和「假如放宽某一条读法
         会不会读出来」的词 (would_read) 各有代表性的例子钉住; 带问号 / 叉 / 没勾的框 / 话没说完的不数成「读得出」;
         分类器出了岔子只换一个词, 很长的怪回包不花时间
       ③ 摘要按写死的词分开数: 第一次调用没读出来的、整轮作废的 (哪条自检规则)、逐题无效的次数、回包撞没撞 max_tokens、
         「假如放宽」的那一行; 里面只有写死的词, 没有回包里的字; 没写进库的帖不进原因计数
+  §9  D-160 的两处改动 (docs/34 §11):
+      ① 整行照抄: 只认和提示词里那一行一字不差的 (两头的空白、提示词自己印的那个「- 」之外, 多一个字少一个字换一个字都不认);
+        回包得是一整个模板 JSON、前后没有别的字 (至多包在一个 ``` 围栏里)、没撞上限、没有写了两遍的键和题号;
+        没有解释的选项什么都没多认; 评审核实过的 21 种一种都没多认; 两份题库的提示词一个字节没变 (sha256 钉住)
+      ② 自相矛盾: fi-v0.2 的规则写了 void, 只作废有关的题 —— 这一篇答成了、13 行、有关的题是空的而且带原因、
+        靠那句大字算的两道代码题跟着无效、别的题照存、不重问; 两条规则都中取并集; img_kind 不是「封面」的照旧不是封面;
+        规则中了的帖, 留下的答案里没有一个在说图上有没有字 (守卫自己的单子 TEXT_CLAIMS: 字数、大字、字的种类、两道代码题、
+        版式是「纯文字卡片」), 不只是不再中题库里的规则; 说了没有字、抄出来的是一句「没有」的话 (said_none_in_words) 不是
+        真的对不上, 照 D-160 之前整轮作废、按日程重问; fi-v0.1 (没写 void) 照旧整轮作废; 没有矛盾的轮次 assemble 的结果和原来一样
 
 反证 (改坏之后必须变红):
   ① 题库里把 img_colour 加回来 / 把单独问的题并回组里 / surfaced_questions 里放一道没验证的题        → §1
@@ -43,9 +54,16 @@
   ⑫ 去掉 no_answer_why / invalid_q 的计数, 或 summary 不打这几行                                      → §8 ③
   ⑬ parse_answers 里动一个字 (去标点再比 / 认整行 / 换一种切 JSON 的办法 / 同一个键两遍就作废)          → §8 ① (sha256 + 固定回包)
   ⑭ read_reply 把「假如放宽读得出」的答案放进 parsed / 撞了上限就把 parsed 清掉                        → §8 ①
-  ⑮ Pass._call 不用 parsed、改用分类器读出来的答案                                                    → §8 ① ③ (抄整行的帖变成答成了)
+  ⑮ Pass._call 不用 parsed、改用分类器读出来的答案                                                    → §8 ① ③ (全角冒号的整行、包了标点的选项变成答成了)
   ⑯ 换了样子的 JSON 里一个答案都读不出也数一个回包 / would_read 落到有效的题上 / 计数的键带回包里的字     → §8 ② ③
   ⑰ 先数 no_answer 的原因再写库 / 空回包排在撞上限前面 / _json_values 改回拿整个回包去解码 (平方级)      → §8 ② ③
+  ⑱ accept_option_lines 比之前先折全半角 / 去标点 / 认全角冒号 / 认「-」后面不带空格 / 认没有解释的选项前面加「- 」   → §9 ①
+  ⑲ accept_option_lines 不看停止原因 / 不看 JSON 前后的字 / 不查模板 (同一题两遍、多出来的键、写了两遍的键)             → §9 ①
+  ⑳ accept_option_lines 永远回 ({}, {}) (整行照抄不认了)                                                            → §9 ① (该认的没认)
+  ㉑ 题库里去掉 void / assemble 不看 void / 作废的题少一道多一道 / 把 img_kind 放进 void                              → §9 ② / §1
+  ㉒ build_prompt 的选项那一行改一个字                                                                              → §9 ① (提示词的 sha256)
+  ㉓ 第二条规则 (说了有字、没抄出来) 的 void 里拿掉 img_layout (纯文字卡片留下来, 信了「有字」那一边)                   → §9 ② / §8 ③
+  ㉔ said_none_in_words 也走「只作废有关的题」(这一篇定下来, 字那几道题再也不问)                                       → §8 ③ / §9 ②
 
 跑法: cd scripts && python check_first_image_pass.py
 """
@@ -63,6 +81,7 @@ import re
 import sys
 import time
 import types
+import unicodedata
 
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -466,7 +485,7 @@ def check_pass() -> None:
     assert all(set(r) == {"subject_type", "subject_id", "question_id", "question_version", "bank_version", "bank_sha256",
                           "extractor", "run_tag", "answer", "invalid_reason"} for r in rows)
     assert by["ok2"][0]["status"] == "answered" and by["ok2"][0]["n_files"] == 3 and by["ok2"][0]["source_column"] == "笔记配图"
-    assert res["flags"] == {"usable": 3, "cover_unconfirmed": 1}, res["flags"]      # ok1 / OOV1 / heic1 可用; ok2 多图没确认
+    assert res["flags"] == {"usable": 4, "cover_unconfirmed": 1}, res["flags"]      # ok1 / CONTRA1 / OOV1 / heic1 可用; ok2 多图没确认
 
     s, rows = by["NOTCOVER1"]
     assert (s["status"], s["outcome"]) == ("not_a_cover", "final") and len(calls["NOTCOVER1"]) == 1, "不是封面: 只问了第一组"
@@ -483,26 +502,37 @@ def check_pass() -> None:
     for t in ("GONE1", "NET1", "HUGE1", "BROKEN1"):
         assert t not in calls and by[t][1] == [], f"{t}: 没拿到图不该问模型、不该写答案"
     assert (by["NOKIND1"][0]["status"], by["NOKIND1"][0]["outcome"]) == ("no_answer", "counted") and len(calls["NOKIND1"]) == 1
-    assert (by["CONTRA1"][0]["status"], by["CONTRA1"][0]["outcome"]) == ("no_answer", "counted") and by["CONTRA1"][1] == [], \
-        "自相矛盾 (没有字却抄出了字): 整轮作废, 一行都不写"
+    # 自相矛盾 (说没有字、却抄出了字): 只作废有关的题 (D-160), 这一篇答成了, 13 行照写; 细的在 §9
+    s, rows = by["CONTRA1"]
+    con = {r["question_id"]: (r["answer"], r["invalid_reason"]) for r in rows}
+    assert (s["status"], s["outcome"]) == ("answered", "final") and len(rows) == 13 and len(calls["CONTRA1"]) == 7
+    assert {q for q, (a, _w) in con.items() if a is None} == {"img_text_amount", "img_main_text", "img_text_kind",
+                                                              "img_text_matches_title", "img_text_has_number"}, con
+    assert con["img_text_amount"] == con["img_main_text"] == con["img_text_kind"] == (None, "inconsistent:no_text_but_transcribed")
+    assert con["img_text_has_number"] == con["img_text_matches_title"] == (None, "source_invalid")
+    assert con["img_kind"] == ("封面", None) and con["img_layout"] == ("一张照片", None)
     s, rows = by["OOV1"]
     oov = {r["question_id"]: r for r in rows}["img_layout"]
     assert s["status"] == "answered" and oov["answer"] is None and oov["invalid_reason"] == "out_of_vocab", "闭集外记无效, 不修补"
     assert tok("rio1") not in fk.downloads and "rio1" not in calls, "先不做的项目不下载、不问"
     assert by["heic1"][0]["file_kind"] == "empty_type" and by["heic1"][0]["status"] == "answered"
 
-    assert res["no_answer_why"] == {"first_call:oov_other": 1, "round:no_text_but_transcribed:transcribed_text": 1}, res["no_answer_why"]
-    assert res["invalid_by_question"] == {"img_kind:oov_other": 1, "img_layout:oov_other": 1}, res["invalid_by_question"]
+    assert res["no_answer_why"] == {"first_call:oov_other": 1}, res["no_answer_why"]
+    assert res["partial_void"] == {"no_text_but_transcribed:transcribed_text": 1}, res["partial_void"]
+    assert res["line_accepted"] == {} and res["line_refused"] == {}, "没有人抄整行: 这两行是空的"
+    assert res["invalid_by_question"] == {"img_kind:oov_other": 1, "img_layout:oov_other": 1, "img_text_matches_title:source_invalid": 1,
+                                          "img_text_has_number:source_invalid": 1}, res["invalid_by_question"]
     assert res["reply"] == {}, res["reply"]
-    assert res["status"] == {"answered": 4, "not_a_cover": 1, "first_is_video": 1, "too_large": 2, "decode_failed": 1,
-                             "download_failed": 2, "no_answer": 2}, res["status"]
+    assert res["status"] == {"answered": 5, "not_a_cover": 1, "first_is_video": 1, "too_large": 2, "decode_failed": 1,
+                             "download_failed": 2, "no_answer": 1}, res["status"]
     assert res["budget"]["calls"] == len(fk.asks) == 7 * 5 + 1 + 1 == 37 and res["budget"]["images"] == 11
     assert store.synced == [{"confirmed": [], "excluded": ["RIO_phase1", "TXQ_phase1", "WTG_phase1"],
                              "surfaced": P.surfaced_questions(BANK)}] and store.asked == [(False, 80)]
     for _m, _k, prompt in fk.asks:
         assert TITLE_CANARY not in prompt and NOTE_CANARY not in prompt, "标题和 note_id 不进提示词"
     _no_leak("走一遍", out, json.dumps(res, ensure_ascii=False, default=str))
-    assert "按假设价估算" in out and "answered=4" in out and "not_a_cover=1" in out
+    assert "按假设价估算" in out and "answered=5" in out and "not_a_cover=1" in out
+    assert "自相矛盾只作废有关的题（规则:细项=帖数）：no_text_but_transcribed:transcribed_text=1" in out
 
     # mode=cards: 只问库要经验卡的帖, 上限是一次性的那一组
     fk, store = Fakes(), FakeStore([_cand("c1")])
@@ -831,6 +861,7 @@ KIND_LINE = "封面: 给读者看的图：照片、拼图、带字的图、文�
 SHOT_LINE = "后台或数据截图：创作者后台、数据统计页、已发布笔记页面的截图（带互动数字、导航栏、数据曲线这类界面）"
 OLD_PARSER_SHA256 = "957a83bfbc5d4f2571d3bbd683c356760c2ddcbded39407a0cbf0ad34c7cf657"   # FI.parse_answers 的源码 (和 11-16 首跑时 main 上的一字不差)
 G_KIND = ["img_kind", "img_text_amount"]
+CORPUS_LINES = 96    # 固定回包里, 整行一字不差、D-160 之后认下来的答案数 (变了就是认的范围变了)
 
 
 def _reply(items) -> str:
@@ -861,6 +892,58 @@ def _old_parse(bank: dict, qids: list, text: str) -> dict:
         else:
             out[qid] = (val, None) if len(val) <= int(q["max_chars"]) else (None, "text_too_long")
     return out
+
+
+class _Obj(tuple):
+    """JSON 的一个对象, 按 (键, 值) 的顺序留着 (写了两遍的键看得见)。"""
+
+
+def _line_forms(bank: dict, qid: str) -> dict:
+    """守卫自己照题库文件拼的: 这道题每个有解释的选项在提示词里的整行 → 选项。只有「选项: 解释」和「- 选项: 解释」两种。"""
+    q = next(x for x in bank["questions"] if x["id"] == qid)
+    out: dict = {}
+    for o in q.get("options") or []:
+        if o.get("means"):
+            out[str(o["value"]) + ": " + str(o["means"])] = str(o["value"])
+            out["- " + str(o["value"]) + ": " + str(o["means"])] = str(o["value"])
+    return out
+
+
+def _new_parse(bank: dict, qids: list, text: str, stop=None) -> tuple:
+    """守卫自己的一份「D-160 之后该认成什么」→ (结果, {多认的题号: 选项})。和 first_image.accept_option_lines 是两种写法:
+    整个回包去掉两头空白之后要么就是一个 JSON 对象, 要么是一个 ``` / ```json 围栏包着它; 对象只有 answers 一个键,
+    每一项恰好是 id 和 answer 两个键, 没有写了两遍的键和题号; 停止原因没给或是 end_turn; 然后才逐字节比整行。"""
+    out = dict(_old_parse(bank, qids, text))
+    lines: dict = {}
+    if stop not in (None, "end_turn"):
+        return out, lines
+    body = text.strip()
+    if body.startswith("```"):
+        if not body.endswith("```") or len(body) < 6:
+            return out, lines
+        body = body[3:-3]
+        body = (body[4:] if body.startswith("json") else body).strip()
+    if not (body.startswith("{") and body.endswith("}")):
+        return out, lines
+    try:
+        data = json.loads(body, object_pairs_hook=_Obj)
+    except (ValueError, RecursionError):
+        return out, lines
+    if not isinstance(data, _Obj) or [k for k, _v in data] != ["answers"] or type(data[0][1]) is not list:
+        return out, lines
+    seen: dict = {}
+    for item in data[0][1]:
+        if not isinstance(item, _Obj) or sorted(k for k, _v in item) != ["answer", "id"]:
+            return out, lines
+        d = dict(item)
+        if not isinstance(d["id"], str) or d["id"] not in qids or d["id"] in seen or not isinstance(d["answer"], str):
+            return out, lines
+        seen[d["id"]] = d["answer"]
+    for q in qids:
+        if out[q] == (None, "out_of_vocab") and q in seen and seen[q].strip() in _line_forms(bank, q):
+            lines[q] = _line_forms(bank, q)[seen[q].strip()]
+            out[q] = (lines[q], None)
+    return out, lines
 
 
 def review_corpus() -> list:
@@ -995,7 +1078,7 @@ def check_reply_reading() -> None:
     assert "read_reply" not in src and "_shape_read" not in src and "match_option" not in src
     corpus = review_corpus()
     assert len(corpus) > 3000 and {st for _q, _t, st in corpus} >= {None, "end_turn", "max_tokens", "length"}, len(corpus)
-    n_invalid = n_would = 0
+    n_invalid = n_would = n_line = 0
     for qids, text, stop in corpus:
         want = _old_parse(BANK, qids, text)
         r = FI.read_reply(BANK, qids, text, stop)
@@ -1012,8 +1095,19 @@ def check_reply_reading() -> None:
             def ask(self, model, prompt, block, _t=text, _s=stop):
                 return _t, {"input": 10, "output": 5}, _s
         p = P.Pass(bank=BANK, store=None, budget=P.PassBudget("nightly", 7), download=None, shrinker=None, ask=One().ask)
-        assert repr(p._call(qids, b"x", (1, 1))) == repr(want), "Pass._call 认下来的和老读法不一样"
+        got = p._call(qids, b"x", (1, 1))
+        # Pass._call 认下来的和老读法只差一种 (D-160): 老读法判 out_of_vocab、答案是那个选项的整行一字不差、回包是干净的模板。
+        # 「该是什么」由守卫自己的 _new_parse 说 (照题库文件拼的整行, 逐字节比), 不问被测的代码
+        new, lines = _new_parse(BANK, qids, text, stop)
+        assert repr(got) == repr(new), f"Pass._call 认下来的不对 (第 {corpus.index((qids, text, stop))} 条)"
+        for q in qids:
+            if got[q] != want[q]:
+                assert want[q] == (None, FI.INVALID_OOV) and got[q][1] is None and q in lines, "只许在 out_of_vocab 上多认整行"
+                assert r["would_read"].get(q) == FI.WOULD_LINE, "多认的每一个, 诊断那一面本来就说是抄了整行"
+        assert dict(p.line_accepted) == {q: 1 for q in lines} and sum(p.line_accepted.values()) == len(lines)
+        n_line += len(lines)
     assert n_invalid > 3000 and 1000 < n_would < n_invalid, (n_invalid, n_would)
+    assert n_line == CORPUS_LINES, f"固定回包里整行一字不差、认下来的答案数变了: {n_line}"
     # 每道选择题 (哪一次调用的都算) 在固定回包里都有「假如放宽就读得出」的答案 —— 上面已经逐条钉住它们照旧无效
     seen_would: dict = {}
     for qids, text, stop in corpus:
@@ -1153,7 +1247,8 @@ def check_reply_reading() -> None:
             assert repr(r["parsed"]) == repr(_old_parse(BANK, g, text)) and not r["would_read"]
             assert r["notes"]["img_kind"] == (FI.NOTE_TOO_LONG if len(text) > 20_000 else FI.NOTE_OOV_PLUS), (n, r["notes"])
 
-    # ③ 走一遍: 假模型按记号换一种回法。认下来的和老读法一样 (抄整行 / 换了样子的 JSON 还是没答成), 摘要里只有写死的词
+    # ③ 走一遍: 假模型按记号换一种回法。全角冒号的整行 / 包了标点的选项 / 换了样子的 JSON 还是没答成 (没有放宽);
+    # 和提示词一字不差的整行认 (D-160: LINE1、LATERFULL1); 自相矛盾只作废有关的题。摘要里只有写死的词
     class Odd(Fakes):
         def ask(self, model, prompt, block):
             text, usage = super().ask(model, prompt, block)
@@ -1220,18 +1315,33 @@ def check_reply_reading() -> None:
     fk, store = Odd(), FakeStore([_cand(t) for t in tags])
     res, out = _run(store, fk)
     by = {s["note_id"].split("-", 1)[1]: (s["status"], s["outcome"], rows) for s, rows in store.writes}
+    done = ("ok1", "MANY1", "LATERPUNCT1", "LATERFULL1", "LINE1", "NOTEXT1", "SYMBOLS1")
     assert res["ended"] == "done" and [by[t][0] for t in tags] == [
-        "answered" if t in ("ok1", "MANY1", "LATERPUNCT1", "LATERFULL1") else "no_answer" for t in tags], [by[t][0] for t in tags]
-    for t in ("LINE1", "FLAT1", "SHOTFULL1", "WRAP1", "CUTOBJ1", "LIST1", "PLUS1", "HALF1", "NUMID1", "TRUNC1", "SILENT1", "DOUBT1",
+        "answered" if t in done else "no_answer" for t in tags], [by[t][0] for t in tags]
+    for t in ("FLAT1", "SHOTFULL1", "WRAP1", "CUTOBJ1", "LIST1", "PLUS1", "HALF1", "NUMID1", "TRUNC1", "SILENT1", "DOUBT1",
               "CROSS1", "THINK1", "NOANS1", "CONFL1", "DUPK1"):
         assert by[t][1:] == ("counted", []) and sum(1 for _m, k, _p in fk.asks if t in k) == 1, \
             f"{t}: 第一次调用没读出来 (没有放宽), 一行答案都不写, 后面不问"
-    for t in ("SAIDNONE1", "NOTEXT1", "SYMBOLS1"):
-        assert by[t][1:] == ("counted", []) and sum(1 for _m, k, _p in fk.asks if t in k) == 7, f"{t}: 整轮作废还是整轮作废"
+    # LINE1: img_kind 抄的是「封面」那一行, 一字不差 → 认成封面 (D-160), 存的是选项「封面」, 不是那一行
+    line1 = {r["question_id"]: (r["answer"], r["invalid_reason"]) for r in by["LINE1"][2]}
+    assert by["LINE1"][1] == "final" and line1 == {r["question_id"]: (r["answer"], r["invalid_reason"]) for r in by["ok1"][2]} \
+        and line1["img_kind"] == ("封面", None) and sum(1 for _m, k, _p in fk.asks if "LINE1" in k) == 7
+    # SHOTFULL1 抄的那一行冒号是全角的 (提示词里是半角冒号加空格): 不是一字不差, 照旧没答成
+    for t, rule in (("NOTEXT1", "text_but_not_transcribed"), ("SYMBOLS1", "text_but_not_transcribed")):
+        got_t = {r["question_id"]: (r["answer"], r["invalid_reason"]) for r in by[t][2]}
+        assert by[t][1] == "final" and len(got_t) == 13 and sum(1 for _m, k, _p in fk.asks if t in k) == 7, f"{t}: 答成了, 不重问"
+        assert {q for q, (a, _w) in got_t.items() if a is None} == {"img_layout", "img_text_amount", "img_main_text", "img_text_kind",
+                                                                    "img_text_matches_title", "img_text_has_number"}, (t, got_t)
+        assert got_t["img_layout"] == got_t["img_text_amount"] == got_t["img_main_text"] == got_t["img_text_kind"] \
+            == (None, "inconsistent:" + rule), (t, got_t)
+    # SAIDNONE1: 说了「没有字」, 抄出来的是「无。」—— 两次说的是一回事 (said_none_in_words), 不是真的对不上:
+    # 照 D-160 之前整轮作废、记 no_answer、按日程重问; 不定下来, 不然字那几道题再也不问 (D-160 评审的第二条)
+    assert by["SAIDNONE1"][1:] == ("counted", []) and sum(1 for _m, k, _p in fk.asks if "SAIDNONE1" in k) == 7, by["SAIDNONE1"][:2]
     many = {r["question_id"]: r for r in by["MANY1"][2]}
     assert many["img_person"]["invalid_reason"] == "out_of_vocab" and many["img_scene"]["invalid_reason"] == "out_of_vocab" \
         and many["img_scene"]["answer"] is None, "「生活场景。」不是一字不差的选项: 存的还是 out_of_vocab"
-    # 后面几次调用的每道选择题: 包了标点的、抄了整行的都照旧存 out_of_vocab、答案是空的 (不只是第一次调用不放宽)
+    # 后面几次调用的每道选择题: 包了标点的照旧存 out_of_vocab、答案是空的 (不只是第一次调用不放宽);
+    # 抄了整行、一字不差的认成那个选项 (D-160), 存下来的和没抄整行的 ok1 一样
     punct = {r["question_id"]: r for r in by["LATERPUNCT1"][2]}
     full = {r["question_id"]: r for r in by["LATERFULL1"][2]}
     asked = {r["question_id"]: r["answer"] for r in by["ok1"][2]}
@@ -1239,30 +1349,30 @@ def check_reply_reading() -> None:
     assert len(later_choice) == 8 and len(lined) >= 4 and {u[0] for u in P.call_units(BANK)[1:]} - {"img_main_text"} <= set(later_choice)
     for q in later_choice:
         assert (punct[q]["answer"], punct[q]["invalid_reason"]) == (None, "out_of_vocab"), f"{q}: 包了标点的选项不认"
-        want_full = (None, "out_of_vocab") if q in lined else (asked[q], None)
-        assert (full[q]["answer"], full[q]["invalid_reason"]) == want_full, f"{q}: 抄了整行的选项不认"
+        assert (full[q]["answer"], full[q]["invalid_reason"]) == (asked[q], None), f"{q}: 整行一字不差, 存的该是选项本身"
     for rows in (punct, full):
         assert all(rows[q]["invalid_reason"] is None for q in rows if q not in later_choice)
     stored = {r["invalid_reason"] for _s, rows in store.writes for r in rows}
     assert stored <= {None, FI.INVALID_PARSE, FI.INVALID_MISSING, FI.INVALID_OOV, FI.INVALID_TEXT_LONG, P.INVALID_SOURCE,
-                      FI.INVALID_NO_TITLE, FI.INVALID_NOT_COVER}, f"落库的无效原因还是老的那几个词: {stored}"
-    assert res["status"] == {"answered": 4, "no_answer": 20}, res["status"]
+                      FI.INVALID_NO_TITLE, FI.INVALID_NOT_COVER} | {"inconsistent:" + r["name"] for r in BANK["consistency"]}, \
+        f"落库的无效原因: 老的那几个词, 加上 inconsistent:<题库里的规则名> (D-160): {stored}"
+    assert res["status"] == {"answered": 7, "no_answer": 17}, res["status"]
     assert sum(res["no_answer_why"].values()) == res["status"]["no_answer"], "每一篇没答成的都有一个原因"
+    assert res["partial_void"] == {"text_but_not_transcribed:empty_text": 1, "text_but_not_transcribed:symbols_only": 1}, res["partial_void"]
+    assert res["line_accepted"] == {"img_kind": 1, **{q: 1 for q in lined}} and res["line_refused"] == {}, res["line_accepted"]
     assert res["no_answer_why"] == {
-        "first_call:oov_option_line": 2, "first_call:oov_option_wrapped": 1, "first_call:json_not_template": 1,
+        "first_call:oov_option_line": 1, "first_call:oov_option_wrapped": 1, "first_call:json_not_template": 1,
         "first_call:oov_option_plus_more": 1, "first_call:oov_part_of_option": 1, "first_call:id_numbered": 1,
         "first_call:truncated": 3, "first_call:empty_reply": 1, "first_call:oov_option_with_mark": 2,
         "first_call:answer_not_text": 1, "first_call:no_answers_in_json": 1, "first_call:conflicting_answers": 1,
-        "first_call:json_duplicate_key": 1,
-        "round:no_text_but_transcribed:said_none_in_words": 1, "round:text_but_not_transcribed:empty_text": 1,
-        "round:text_but_not_transcribed:symbols_only": 1}, res["no_answer_why"]
+        "first_call:json_duplicate_key": 1, "round:no_text_but_transcribed:said_none_in_words": 1}, res["no_answer_why"]
     want_q = {f"{q}:oov_option_wrapped": 1 for q in later_choice}
-    want_q.update({f"{q}:oov_option_line": 1 for q in lined})
     want_q["img_scene:oov_option_wrapped"] = 2             # MANY1 的那一个
+    want_q.update({"img_text_matches_title:source_invalid": 2, "img_text_has_number:source_invalid": 2})   # 两篇作废了那句大字的
     want_q.update({
         "img_kind:no_answers_in_json": 1, "img_text_amount:no_answers_in_json": 1, "img_kind:conflicting_answers": 1,
         "img_text_amount:conflicting_answers": 1, "img_kind:json_duplicate_key": 1, "img_text_amount:json_duplicate_key": 1,
-        "img_kind:oov_option_line": 2, "img_kind:oov_option_wrapped": 1, "img_kind:json_not_template": 1,
+        "img_kind:oov_option_line": 1, "img_kind:oov_option_wrapped": 1, "img_kind:json_not_template": 1,
         "img_text_amount:json_not_template": 1, "img_kind:oov_option_plus_more": 1, "img_kind:oov_part_of_option": 1,
         "img_kind:id_numbered": 1, "img_kind:oov_option_with_mark": 2, "img_text_amount:id_numbered": 1,
         "img_kind:truncated": 3, "img_text_amount:truncated": 3, "img_kind:empty_reply": 1, "img_text_amount:empty_reply": 1,
@@ -1273,26 +1383,33 @@ def check_reply_reading() -> None:
     # 「假如放宽」: 按无效的答案数; 换了样子的 JSON 那一行按回包数, 而且只数真有答案读得出的回包
     # (FLAT1 两个答案 1 个回包; CUTOBJ1 撞了上限、LIST1 答案不是字符串、NOANS1 里面没有答案、CONFL1 两段答案打架、
     #  DUPK1 同一个键两遍 → 都是换了样子的 JSON, 但一个答案都读不出, 不数)
-    assert res["would_read"] == {"answers:option_line_copied": 2 + len(lined), "answers:option_with_punctuation": 2 + len(later_choice),
+    # 认下来的整行不再数进「假如」: 剩下的 1 个是 SHOTFULL1 (全角冒号, 没认)
+    assert res["would_read"] == {"answers:option_line_copied": 1, "answers:option_with_punctuation": 2 + len(later_choice),
                                  "answers:loose_json": 2, "replies:loose_json": 1}, res["would_read"]
     assert "tolerated" not in json.dumps(res) and "rescued" not in json.dumps(res), "没有「放宽读出来了」这种计数"
     for line in ("没答成（no_answer）的原因：", "逐题无效（题号:原因=调用次数）：", "回包：", "first_call:truncated=3", "first_call:oov_option_with_mark=2",
                  "round:no_text_but_transcribed:said_none_in_words=1", "img_person:oov_other=1", "stop:max_tokens=3",
-                 "假如放宽读法会多读出（没有放宽，这些答案照旧无效）：", f"answers:option_line_copied={2 + len(lined)}", "replies:loose_json=1"):
+                 "假如放宽读法会多读出（没有放宽，这些答案照旧无效）：", "answers:option_line_copied=1", "replies:loose_json=1",
+                 "整行照抄、和提示词里那一行一字不差，认成选项（题号=答案数）：", "img_kind=1",
+                 "自相矛盾只作废有关的题（规则:细项=帖数）：", "text_but_not_transcribed:symbols_only=1"):
         assert line in out, f"摘要里没有 {line}"
     _no_leak("没答成的原因", out, json.dumps(res, ensure_ascii=False, default=str))
     for text in (out, json.dumps(res, ensure_ascii=False)):
         assert "给读者看的图" not in text and "refusal" not in text and "tolerated" not in text, "回包里的字 / stop_reason 的原样不进输出"
-    keys = list(res["no_answer_why"]) + list(res["invalid_by_question"]) + list(res["reply"]) + list(res["would_read"])
+    keys = list(res["no_answer_why"]) + list(res["invalid_by_question"]) + list(res["reply"]) + list(res["would_read"]) \
+        + list(res["line_accepted"]) + list(res["line_refused"]) + list(res["partial_void"])
     assert all(re.fullmatch(r"[a-z0-9_:]+", k) for k in keys), keys
-    fixed = set(FI.NOTES) | {FI.INVALID_PARSE, FI.INVALID_MISSING, FI.INVALID_OOV, FI.INVALID_TEXT_LONG}
+    fixed = set(FI.NOTES) | {FI.INVALID_PARSE, FI.INVALID_MISSING, FI.INVALID_OOV, FI.INVALID_TEXT_LONG, P.INVALID_SOURCE}
     assert all(k.split(":", 1)[1] in fixed for k in res["invalid_by_question"]), "逐题无效的词全在写死的那张单子里"
     assert all(k.split(":", 1)[1] in fixed for k in res["no_answer_why"] if k.startswith("first_call:"))
     assert all(k.split(":", 1)[1] in FI.WOULD_READ for k in res["would_read"]) and set(res["reply"]) <= {"stop:max_tokens", "stop:other"}
     # 没写进库的帖不进原因计数: 原因那一行的数加起来永远等于 no_answer 的篇数
-    for tag in ("PLUS9", "SAIDNONE9"):                         # 第一次调用没读出来 / 整轮作废, 两条路
-        res, _ = _run(FakeStore([_cand(tag)], write_fails="no_answer"), Odd())
-        assert res["ended"] == "write_failed" and res["status"] == {} and res["no_answer_why"] == {}, (tag, res["no_answer_why"])
+    res, _ = _run(FakeStore([_cand("PLUS9")], write_fails="no_answer"), Odd())      # 第一次调用没读出来的那条路
+    assert res["ended"] == "write_failed" and res["status"] == {} and res["no_answer_why"] == {}, res["no_answer_why"]
+    res, _ = _run(FakeStore([_cand("NOTEXT9")], write_fails="answered"), Odd())     # 只作废有关的题的那条路: 没写进去也不数
+    assert res["ended"] == "write_failed" and res["status"] == {} and res["partial_void"] == {}, res["partial_void"]
+    res, _ = _run(FakeStore([_cand("SAIDNONE9")], write_fails="no_answer"), Odd())  # 说的是一回事、整轮作废的那条路: 一样
+    assert res["ended"] == "write_failed" and res["status"] == {} and res["no_answer_why"] == {} and res["partial_void"] == {}, res
     # 嵌得太深的回包: 这一篇记没答成, 整趟照走 (不是「首图步骤中断」)
     class Deep(Fakes):
         def ask(self, model, prompt, block):
@@ -1312,7 +1429,593 @@ def check_reply_reading() -> None:
         for nd in needles:
             assert nd in text, f"{doc} 里没写 {nd}"
     print(f"  §8 没答成的原因按写死的词分开数; 认什么和老读法逐字相同 ({len(corpus)} 条固定回包, 含评审核实过的每一种), "
-          "没有放宽; 「假如放宽」只是另数一行 ✓")
+          f"只多认了整行一字不差的 {n_line} 个; 「假如放宽」只是另数一行 ✓")
+
+
+# ── §9 ────────────────────────────────────────────────────────────────────────
+PROMPT_SHA256 = {   # 每个调用组的提示词用 \x00 连起来的 sha256 (在 D-160 改动之前的 main 上算的): 提示词一个字节没变
+    "fi-v0.1": "4ef2073f0b7c58908165d58caa7ac73789b330b7c04843e8298eeb98425aabdb",
+    "fi-v0.2": "40bc2364812bd88eb2188082426a30e02d43313df9818f9275435592d7e2da6f"}
+LINE_OPTIONS = {"img_kind": 3, "img_text_amount": 4, "img_text_kind": 5, "img_layout": 5, "img_finish": 3, "img_person": 3, "img_scene": 3}
+VOID_TEXT = ["img_text_amount", "img_main_text", "img_text_kind"]
+# 守卫自己的一张单子: 这几个答案在说「图上有没有后期加的字」(None = 答什么都在说; 一组值 = 只有这几个值在说)。
+# 自检规则中了的帖两头都不信, 所以留下来的答案里一个都不许有 —— 不只是不许再中题库里的规则 (那几条都要 img_text_amount,
+# 它一作废, 「再中一次」就查不出东西了)。D-160 评审: 第二条规则留下「纯文字卡片」(没有照片, 只有底色和字), 等于信了「有字」那一边。
+TEXT_CLAIMS = {"img_text_amount": None, "img_main_text": None, "img_text_kind": None, "img_text_has_number": None,
+               "img_text_matches_title": None, "img_layout": {"纯文字卡片"}}
+
+
+def _claims(answers: dict) -> set:
+    """留下来的答案里, 哪几个在说图上有没有字。"""
+    return {q for q, vals in TEXT_CLAIMS.items() if answers.get(q) is not None and (vals is None or answers[q] in vals)}
+
+
+def _old_assemble(bank: dict, parsed: dict, title) -> dict:
+    """守卫自己留的一份: D-160 之前 main 上的 assemble (自相矛盾 → 整轮记无效)。"""
+    answers = {q: v for q, (v, why) in parsed.items() if why is None}
+    invalid = {q: why for q, (v, why) in parsed.items() if why is not None}
+    grey = False
+    for rule in bank.get("consistency") or []:
+        if _violated(rule, answers):
+            why = f"inconsistent:{rule.get('name')}"
+            return {"answers": {}, "invalid": {q: invalid.get(q, why) for q in parsed}, "grey": False}
+    if answers.get("img_kind") not in (None, FI.COVER):
+        keep = {"img_kind": answers["img_kind"]}
+        return {"answers": keep, "invalid": {q: invalid.get(q, FI.INVALID_NOT_COVER) for q in parsed if q != "img_kind"},
+                "grey": False}
+    if title is not None and "img_main_text" in answers:
+        val, why, grey = FI.text_matches_title(answers["img_main_text"], title)
+        if why:
+            invalid["img_text_matches_title"] = why
+        else:
+            answers["img_text_matches_title"] = val
+        answers["img_text_has_number"] = FI.text_has_number(answers["img_main_text"])
+    return {"answers": answers, "invalid": invalid, "grey": grey}
+
+
+def _violated(rule: dict, answers: dict) -> bool:
+    """守卫自己的一份: 这一份答案中没中这条自检规则。"""
+    if not all(answers.get(q) in vals for q, vals in (rule.get("if") or {}).items()):
+        return False
+    if rule.get("then_empty") and rule["then_empty"] in answers and FI.normalise(answers[rule["then_empty"]]):
+        return True
+    if rule.get("then_not_empty") and rule["then_not_empty"] in answers and not FI.normalise(answers[rule["then_not_empty"]]):
+        return True
+    return any(answers.get(q) in vals for q, vals in (rule.get("then_not") or {}).items())
+
+
+def _accept(qids: list, text: str, stop=None, bank: dict | None = None) -> tuple:
+    b = bank or BANK
+    return FI.accept_option_lines(b, qids, text, FI.parse_answers(b, qids, text), stop)
+
+
+def _call_once(qids: list, text: str, stop=None):
+    class One:
+        def ask(self, model, prompt, block):
+            return text, {"input": 10, "output": 5}, stop
+    p = P.Pass(bank=BANK, store=None, budget=P.PassBudget("nightly", 7), download=None, shrinker=None, ask=One().ask)
+    return p._call(qids, b"x", (1, 1)), p
+
+
+def real_cases() -> list:
+    """11-16 对抗评审核实过的 21 种 (scratch 的 real.json, 按它的顺序), 每一种的回包逐条写在这里: [(第几种, 题号们, 回包, 停止原因们)]。
+    全是合成的字。D-160 之后, 这里的每一条认下来的都和老读法逐字相同 —— 一个都没多认。"""
+    K, A, D, B, T = ["img_kind"], G_KIND, ["img_decoration"], ["img_brand_readable"], ["img_text_amount"]
+    ok = _reply([("img_kind", "封面")])
+    rest = "给读者看的图：照片、拼图、带字的图、文字卡片、聊天或备忘录样式的图都算"
+    any_stop = (None, "end_turn", "max_tokens", "length")
+    out: list = []
+
+    def add(n, qids, texts, stops=any_stop):
+        out.extend((n, qids, t, stops) for t in texts)
+
+    add(1, K, [_reply([("img_kind", v)]) for v in ("封面。。。", "封面. . .", "封面 . .", "封面···", "封面、、、", "封面——", "封面｡｡｡")])
+    add(1, B, [_reply([("img_brand_readable", "能。。")])])
+    add(1, D, [_reply([("img_decoration", "有。。。")])])
+    add(1, T, [_reply([("img_text_amount", "没有字。。。")])])
+    add(2, K, [_reply([("img_kind", v)]) for v in ("[ ] 封面", "- [ ] 封面", "( ) 封面", "[ ] " + KIND_LINE, "- [ ] " + KIND_LINE)])
+    add(2, B, [_reply([("img_brand_readable", "( ) 能")])])
+    add(3, A, ["{'img_kind': '后台或数据截图'}\n" + '{"img_kind":"封面","img_text_amount":"没有字"}',
+               '{"img_kind":"后台或数据截图",} {"img_kind":"封面"}', '{"img_kind":"封面","img_kind":"后台或数据截图"} {"img_kind":"封面"}'])
+    add(4, A, ['{"answers":{"img_kind":"封面"},"img_kind":"后台或数据截图"}', '{"id":"img_kind","answer":"封面","img_kind":"后台或数据截图"}',
+               '{"img_kind":"封面","更正":{"img_kind":"后台或数据截图"}}', '[{"id":"img_kind","answer":"封面"},[{"id":"img_kind","answer":"后台或数据截图"}]]'])
+    add(5, A, ['看起来像 6" 手机的截图 {"img_kind":"封面"} {"img_text_amount":"没有'])
+    add(6, D, [_reply([("img_decoration", v)]) for v in ("🈶", "㊒")])
+    add(7, K, [_reply([("img_kind", v)]) for v in ("封面: !" + rest, "封面 . . . " + rest, "封面:(" + rest + "。。。")])
+    add(8, A, ['{"answers":[{"id":"img_kind","answer":"封面"},{"id":"img_text_amount","answer":"没有字"}],"note":"a","note":"b"}',
+               '{"answers":[{"id":"img_kind","answer":"封面","answer":"封面"}]}', '{"answers":[{"id":"img_kind","id":"img_kind","answer":"封面"}]}'])
+    add(9, A, ['{"img_kind":"后台或数据截图", } {"img_kind":"封面"}', '{"img_kind":"封面","img_kind":"后台或数据截图"} {"img_kind":"封面"}'])
+    add(10, A, ['{"answers":{"img_kind":"封面"},"img_kind":"后台或数据截图"}', '{"id":"img_kind","answer":"封面","img_kind":"后台或数据截图"}',
+                '{"img_kind":"封面","correction":{"img_kind":"后台或数据截图"}}', '{"answers":[{"id":"img_kind","answer":"封面"}],"img_kind":"后台或数据截图"}'])
+    add(11, A, [ok + '\n更正: {"answers":[{"id":"img_kind","answer":"后台', "[" + ok + ',{"answers":[{"id":"img_kind","answer":"后台或'])
+    add(12, A, ['注: 5" 的图 {"img_kind":"封面"} {"img_text_amount":"一句'])
+    add(13, A, ['答案不是 {"img_kind":"封面"}', "答案不是 " + ok])
+    add(14, A, ['{"img_kind":"封面"}'], (None, "model_context_window_exceeded", "length"))
+    add(15, A, ["{,}" * 3000, "[1,]\n" * 2000])
+    add(16, D, ['{"answers":[{"id":"img_decoration","answer":"有","answer":"有"}]}'])
+    add(16, A, ['{"answers":[{"id":"img_kind","answer":"封面","why":"a"},{"id":"img_text_amount","answer":"没有字"}],"note":"x","note":"x"}',
+                '{"answers":[{"id":"img_kind","answer":"封面"},{"id":"img_text_amount","answer":"没有字","why":"a","why":"b"}]}'])
+    add(17, A, ['图上写着 5" 的屏幕。\n{"id":"img_kind","answer":"封面"}\n{"id":"img_text_amount","answer":"一句',
+                '先看"标题\n{"id":"img_kind","answer":"封面"}\n{"id":"img_text_amount","answer":"没有字"}\n更正: {"id":"img_kind","answer":"后台或数据截'])
+    add(17, ["img_layout", "img_finish"], ['照片"}, {"id": "img_finish", "answer": "随手拍"}]}'])
+    add(18, A, [_reply([("img_kind", v), ("img_text_amount", "没有字")]) for v in ("封面。。。", "封面···", "封面. .", "封面、、、", "封面——", "[ ] 封面")])
+    add(19, A, ['{"answers":[{"id":"img_kind","answer":"封面","answer":"封面"},{"id":"img_text_amount","answer":"一句大字"}]}',
+                '{"answers":[{"id":"img_kind","answer":"封面"},{"id":"img_text_amount","answer":"没有字","answer":"一句大字"}]}',
+                '{"answers":[{"id":"img_kind","answer":"封面"},{"id":"img_text_amount","answer":"一句大字"}],"meta":{"n":1,"n":1}}',
+                '{"answers":[{"id":"img_kind","id":"img_kind","answer":"后台或数据截图"},{"id":"img_text_amount","answer":"一句大字"}]}'])
+    add(20, A, ['{"id":"img_kind","answer":"封面"}\n'])
+    add(21, A, ['{"img_kind": ["封面"]}', '[{"id":"img_kind","answer":"封面图"},{"id":"img_text_amount","answer":"很多字"}]'])
+    return out
+
+
+def check_line_and_void() -> None:
+    idx = FI.question_index(BANK)
+    units = P.call_units(BANK)
+    unit_of = {q: u for u in units for q in u}
+    choice = [q for u in units for q in u if idx[q]["type"] == "choice"]
+
+    def rest_of(qid: str) -> list:
+        return [(o, str(idx[o]["options"][0]["value"]) if idx[o]["type"] == "choice" else "三天见效") for o in unit_of[qid] if o != qid]
+
+    # ① 整行照抄 ── 认的范围: 每道选择题有解释的选项, 「选项: 解释」和「- 选项: 解释」两种, 一共 52 个写死的字符串
+    forms = {q: _line_forms(BANK, q) for q in choice}
+    assert {q: len(f) // 2 for q, f in forms.items() if f} == LINE_OPTIONS and sum(len(f) for f in forms.values()) == 52, \
+        "认的整行: 26 个有解释的选项 × 两种写法"
+    # 提示词一个字节没变; 认的那一行就是提示词里印的那一行 (带「- 」的那种逐字节在提示词里)
+    old_bank = FI.load_bank()
+    for bank in (old_bank, BANK):
+        joined = "\x00".join(FI.build_prompt(bank, u) for u in P.call_units(bank))
+        assert hashlib.sha256(joined.encode("utf-8")).hexdigest() == PROMPT_SHA256[bank["bank_version"]], \
+            f"{bank['bank_version']} 的提示词变了 (整行照抄认的是老提示词里的那一行; 改提示词要换题库版本)"
+    for q in choice:
+        prompt = FI.build_prompt(BANK, unit_of[q])
+        for line in forms[q]:
+            if line.startswith("- "):
+                assert line + "\n" in prompt, f"{q}: 认的整行不在提示词里"
+        for o in idx[q]["options"]:
+            assert f"- {o['value']}" + (f": {o['means']}" if o.get("means") else "") + "\n" in prompt
+    src = inspect.getsource(FI.accept_option_lines) + inspect.getsource(FI._line_refusal) + inspect.getsource(FI.option_line)
+    for banned in ("normalise", "NFKC", "unicodedata", "_unwrap", "_WRAP", "match_option", "_shape_read", ".lower(", ".replace(", "re."):
+        assert banned not in src, f"整行照抄的代码里不该有 {banned} (只许 strip、去一个「- 」、== 比)"
+
+    # 该认的: 每个调用组里每个有解释的选项, 两种写法, 两头带空白, 裸的 / 包在一个围栏里, 停止原因没给 / end_turn
+    n_ok = 0
+    for q in choice:
+        for line, value in forms[q].items():
+            for ans in (line, " " + line + " ", "\n" + line + "\n", "\t" + line + "  "):
+                body = _reply([(q, ans)] + rest_of(q))
+                for text in (body, "\n " + body + " \n", "```json\n" + body + "\n```", "```\n" + body + "\n```", " ```json" + body + "``` "):
+                    for stop in (None, "end_turn"):
+                        assert _accept(unit_of[q], text, stop) == ({q: value}, {}), f"{q}: 一字不差的整行没认"
+                        n_ok += 1
+            got, p = _call_once(unit_of[q], _reply([(q, line)] + rest_of(q)), "end_turn")
+            want = dict(_old_parse(BANK, unit_of[q], _reply([(q, line)] + rest_of(q))))
+            assert want[q] == (None, FI.INVALID_OOV), "夹具: 老读法判的是 out_of_vocab"
+            want[q] = (value, None)
+            assert repr(got) == repr(want) and value in FI.option_values(idx[q]), "认下来的是选项本身, 别的题一个字没动"
+            assert dict(p.line_accepted) == {q: 1} and not p.line_refused and not p.invalid_q and not p.would_read, \
+                "认下来的题不再数进「逐题无效」和「假如放宽」"
+    # 一次调用里几道题都抄了整行: 都认
+    for u in units:
+        lined = {q: next(iter(forms[q].items())) for q in u if q in forms and forms[q]}
+        if len(lined) > 1:
+            text = _reply([(q, lined[q][0] if q in lined else ("三天见效" if idx[q]["type"] != "choice" else str(idx[q]["options"][0]["value"])))
+                           for q in u])
+            assert _accept(u, text, None) == ({q: v for q, (_l, v) in lined.items()}, {})
+
+    # 不该认的 ①: 没有解释的选项前面加「- 」、有解释的选项只加「- 」、「选项: 」后面没有解释 —— 照旧 out_of_vocab
+    for q in choice:
+        for o in idx[q]["options"]:
+            v = str(o["value"])
+            for ans in ("- " + v, v + ": ", v + ":", "- " + v + ": ", str(o.get("means") or "没有解释"), "-" + v):
+                text = _reply([(q, ans)] + rest_of(q))
+                assert _accept(unit_of[q], text) == ({}, {}), f"{q}: {ans[:6]}… 不是整行"
+                assert _call_once(unit_of[q], text)[0][q] == (None, FI.INVALID_OOV)
+    # 不该认的 ②: 整行上动一个字 (逐个位置删一个字 / 插一个字)、换冒号、去空格、两个「- 」、两行连着、别的题的那一行、
+    # 否定、没勾的框、叉、删除线、引号、零宽字符 —— 一个都不认, 也不数成「一字不差但没认」
+    ins = "。？?!！~…·-不 ​"
+    n_mut = n_still = 0
+    for q in choice:
+        accepted = set(forms[q]) | set(FI.option_values(idx[q]))
+        other = next(s for qq in choice if qq != q for s in forms[qq] if s not in forms[q])
+        for line in forms[q]:
+            muts = {line[:i] + line[i + 1:] for i in range(len(line))}
+            muts |= {line[:i] + c + line[i:] for i in range(len(line) + 1) for c in ins}
+            bare = line[2:] if line.startswith("- ") else line
+            muts |= {line.replace(": ", "：", 1), line.replace(": ", ":", 1), line.replace(": ", " : ", 1), line.replace(": ", "： ", 1),
+                     "-" + bare, "- - " + bare, "-  " + bare, "— " + bare, "• " + bare, "* " + bare, "1. " + bare,
+                     line + "\n" + other, line + line, line + " " + line, other, line + "\n- " + bare,
+                     "不是" + line, "不是 " + line, "不是：" + line, "[ ] " + line, "- [ ] " + bare, "( ) " + line, "[x] " + line,
+                     "❌" + line, "~~" + line + "~~", "「" + line + "」", '"' + line + '"', "**" + line + "**", line + "。", line + "？",
+                     line + "（不确定）", "​" + line, line + "​", "﻿" + line, line.replace("：", ":"), line.replace("、", ","),
+                     line.replace("（", "(").replace("）", ")"), unicodedata.normalize("NFKC", line) if unicodedata.normalize("NFKC", line) != line else line + "!"}
+            for m in muts:
+                if m.strip() in accepted:        # 两头多一个空格的、删掉「-」剩下的那一行: 还是 52 个里的一个, 不算动过
+                    n_still += 1
+                    continue
+                text = _reply([(q, m)] + rest_of(q))
+                assert _accept(unit_of[q], text, "end_turn") == ({}, {}), f"{q}: 动过一个字的整行被认了 (第 {n_mut} 个)"
+                n_mut += 1
+    assert n_mut > 20_000 and n_still < n_mut // 50, (n_mut, n_still)
+    # 不该认的 ③: 整行一字不差, 但回包不够格 —— 一个都不认, 各数一个写死的词; 认下来的和老读法逐字相同
+    L, SHOT = KIND_LINE, SHOT_LINE.replace("：", ": ", 1)
+    assert L in forms["img_kind"] and forms["img_kind"][SHOT] == "后台或数据截图" and SHOT_LINE not in forms["img_kind"]
+    ok = _reply([("img_kind", L), ("img_text_amount", "没有字")])
+    e = json.dumps
+    item = lambda a, **kw: e({"id": "img_kind", "answer": a, **kw}, ensure_ascii=False)   # noqa: E731
+    amount = e({"id": "img_text_amount", "answer": "没有字"}, ensure_ascii=False)
+    shapes = [
+        # (回包, 停止原因, 该数的词; None = 老读法就没把那一行当这道题的答案, 这里什么都不做)
+        (_reply([("img_kind", L), ("img_kind", L)]), None, "not_template"),
+        (_reply([("img_kind", L), ("img_kind", "后台或数据截图")]), None, "not_template"),
+        (_reply([("img_kind", L), ("img_kind", SHOT)]), None, "not_template"),
+        (_reply([("img_kind", L), ("img_kind", "别的")]), None, "not_template"),
+        (_reply([("img_kind", "别的"), ("img_kind", L)]), None, None),
+        (_reply([("img_kind", "后台或数据截图"), ("img_kind", L)]), None, None),
+        ('{"answers":[{"id":"img_kind","answer":"后台或数据截图","answer":' + e(L, ensure_ascii=False) + "}]}", None, "not_template"),
+        ('{"answers":[{"id":"img_kind","answer":' + e(L, ensure_ascii=False) + ',"answer":' + e(L, ensure_ascii=False) + "}]}", None, "not_template"),
+        ('{"answers":[{"id":"img_kind","answer":' + e(L, ensure_ascii=False) + ',"answer":"后台或数据截图"}]}', None, None),
+        ('{"answers":[{"id":"img_kind","id":"img_kind","answer":' + e(L, ensure_ascii=False) + "}]}", None, "not_template"),
+        ('{"answers":[' + amount + '],"answers":[' + item(L) + "]}", None, "not_template"),
+        ('{"answers":[' + item(L, why="像是封面") + "]}", None, "not_template"),
+        ('{"answers":[' + item(L, confidence="低") + "," + amount + "]}", None, "not_template"),
+        ('{"answers":[' + item(L) + '],"note":"不确定"}', None, "not_template"),
+        ('{"answers":[' + item(L) + '],"更正":{"img_kind":"后台或数据截图"}}', None, "not_template"),
+        ('{"answers":[' + item(L) + '],"img_kind":"后台或数据截图"}', None, "not_template"),
+        ('{"answers":[' + item(L) + ',{"id":"img_layout","answer":"一张照片"}]}', None, "not_template"),
+        ('{"answers":[' + item(L) + ',{"id":"img_text_amount","answer":null}]}', None, "not_template"),
+        ('{"answers":[' + item(L) + ',{"id":"img_text_amount","answer":["没有字"]}]}', None, "not_template"),
+        ('{"answers":[' + item(L) + ',"img_text_amount"]}', None, "not_template"),
+        ('{"answers":[' + item(L) + ',{"id":1,"answer":"没有字"}]}', None, "not_template"),
+        ("[" + ok + "]", None, "text_around_json"),
+        ("[" + item(L) + "]", None, None),
+        (e({"img_kind": L}, ensure_ascii=False), None, None),
+        (e({"answers": {"img_kind": L}}, ensure_ascii=False), None, None),
+        ("答案不是 " + ok, None, "text_around_json"),
+        ("不是：" + ok, None, "text_around_json"),
+        (ok + "\n更正: 其实是后台截图", None, "text_around_json"),
+        (ok + " 以上，不太确定。", None, "text_around_json"),
+        ("好的，答案如下：\n" + ok, None, "text_around_json"),
+        (ok + "\n" + _reply([("img_kind", "后台或数据截图")]), None, None),
+        (ok + '\n更正: {"answers":[{"id":"img_kind","answer":"后台', None, "text_around_json"),     # 评审的第 11 种, 换成整行,
+        ("```json\n" + ok + "\n```\n更正: 不是封面", None, "text_around_json"),
+        ("```JSON\n" + ok + "\n```", None, "text_around_json"),
+        ("~~~\n" + ok + "\n~~~", None, "text_around_json"),
+        ("```json\n" + ok, None, "text_around_json"),
+        (ok + "\n```", None, "text_around_json"),
+        ("```\n```json\n" + ok + "\n```\n```", None, "text_around_json"),
+        ("``` json\n" + ok + "\n```", None, "text_around_json"),
+        ("- " + ok, None, "text_around_json"),
+        (ok + "？", None, "text_around_json"),
+        (ok, "max_tokens", "stop"), (ok, "length", "stop"), (ok, "model_context_window_exceeded", "stop"), (ok, "other", "stop"),
+        (ok, "refusal", "stop"), (ok, "stop_sequence", "stop"), (ok, "", "stop"), (ok, 0, "stop"), (ok, True, "stop"),
+        ("答案不是 " + ok, "max_tokens", "stop"),
+        ("```json\n" + ok + "\n```", "max_tokens", "stop"),
+    ]
+    assert {w for _t, _s, w in shapes} == set(FI.LINE_REFUSED) | {None}
+    for n, (text, stop, word) in enumerate(shapes):
+        old = _old_parse(BANK, G_KIND, text)
+        up, refused = _accept(G_KIND, text, stop)
+        assert up == {}, f"第 {n} 种: 回包不够格, 整行不该认"
+        assert refused == ({"img_kind": word} if word else {}), (n, refused)
+        assert (old["img_kind"] == (None, FI.INVALID_OOV)) or word is None, f"第 {n} 种: 夹具不对"
+        got, p = _call_once(G_KIND, text, stop)
+        assert repr(got) == repr(old), f"第 {n} 种: 认下来的要和老读法逐字相同"
+        assert not p.line_accepted and dict(p.line_refused) == ({word: 1} if word else {}), (n, dict(p.line_refused))
+    assert _accept(G_KIND, ok, None) == ({"img_kind": "封面"}, {}) and _accept(G_KIND, ok, "end_turn") == ({"img_kind": "封面"}, {})
+    # 一个回包里一道题不够格 (同一题两遍), 另一道题的整行也不认: 3–5 看的是整个回包
+    amount_line = next(s for s, v in forms["img_text_amount"].items() if v == "没有字" and not s.startswith("- "))
+    both = _reply([("img_kind", L), ("img_text_amount", amount_line), ("img_kind", L)])
+    assert _accept(G_KIND, both) == ({}, {"img_kind": "not_template", "img_text_amount": "not_template"})
+    assert _accept(G_KIND, _reply([("img_kind", L), ("img_text_amount", amount_line)])) == ({"img_kind": "封面", "img_text_amount": "没有字"}, {})
+    # 出了岔子不抛、不认: 题库坏了 / 回包不是字符串 / parsed 缺题
+    assert FI.accept_option_lines({}, G_KIND, ok, {"img_kind": (None, FI.INVALID_OOV)}, None) == ({}, {})
+    assert FI.accept_option_lines(BANK, G_KIND, None, {"img_kind": (None, FI.INVALID_OOV)}, None) == ({}, {})
+    assert FI.accept_option_lines(BANK, G_KIND, ok, {}, None) == ({}, {})
+    assert FI.accept_option_lines(BANK, G_KIND, ok, {"img_kind": ("封面", None)}, None) == ({}, {}), "老读法认下来的题这里不碰"
+    assert FI.accept_option_lines(BANK, G_KIND, ok, {"img_kind": (None, FI.INVALID_MISSING)}, None) == ({}, {}), "只看 out_of_vocab"
+    # 评审核实过的 21 种: 每一条认下来的都和老读法逐字相同, 一个整行都没多认
+    cases = real_cases()
+    assert sorted({n for n, _q, _t, _s in cases}) == list(range(1, 22)), "21 种一种不少"
+    for n, qids, text, stops in cases:
+        for stop in stops:
+            assert _accept(qids, text, stop) == ({}, {}), f"评审的第 {n} 种: 多认了"
+            got, p = _call_once(qids, text, stop)
+            assert repr(got) == repr(_old_parse(BANK, qids, text)) and not p.line_accepted and not p.line_refused, f"评审的第 {n} 种"
+    # 试跑脚本不走这条路 (直接用 parse_answers): fi-v0.1 的试跑结果不受影响
+    trial_src = (HERE / "first_image_trial.py").read_text(encoding="utf-8")
+    assert "accept_option_lines" not in trial_src and "FI.parse_answers(" in trial_src
+
+    # 题库检查: 整行照抄认不准的题库、自检规则没写清楚作废哪几道题的题库, 都过不了
+    def bad(mut, needle):
+        b = copy.deepcopy(BANK)
+        mut(b)
+        errs = P.validate_bank(b)
+        assert any(needle in x for x in errs), (needle, errs)
+
+    def q_of(b, qid):
+        return next(x for x in b["questions"] if x["id"] == qid)
+
+    def rule_of(b, name):
+        return next(r for r in b["consistency"] if r["name"] == name)
+    bad(lambda b: q_of(b, "img_kind")["options"][2].__setitem__("value", KIND_LINE), "两个一样的")
+    bad(lambda b: q_of(b, "img_kind")["options"][2].__setitem__("value", "- " + KIND_LINE), "两个一样的")
+    bad(lambda b: q_of(b, "img_kind")["options"][1].update(value="封面", means="别的解释"), "两个一样的")
+    bad(lambda b: q_of(b, "img_kind")["options"][0].__setitem__("means", q_of(b, "img_kind")["options"][0]["means"] + " "), "两头带空白")
+    bad(lambda b: q_of(b, "img_layout")["options"][0].__setitem__("value", " 一张照片"), "两头带空白")
+    bad(lambda b: q_of(b, "img_layout")["options"][0].__setitem__("means", "第一行\n第二行"), "换行")
+    bad(lambda b: q_of(b, "img_decoration")["options"][0].__setitem__("value", "- 有"), "打头")
+    bad(lambda b: rule_of(b, "no_text_but_transcribed").pop("void"), "要写 void")
+    bad(lambda b: rule_of(b, "text_card_without_text").__setitem__("void", []), "要写 void")
+    bad(lambda b: rule_of(b, "text_card_without_text").__setitem__("void", "img_layout"), "要写 void")
+    bad(lambda b: rule_of(b, "no_text_but_transcribed")["void"].remove("img_main_text"), "都要在 void 里")
+    bad(lambda b: rule_of(b, "text_but_not_transcribed")["void"].remove("img_text_amount"), "都要在 void 里")
+    bad(lambda b: rule_of(b, "text_card_without_text")["void"].remove("img_layout"), "都要在 void 里")
+    bad(lambda b: rule_of(b, "no_text_but_transcribed")["void"].append("img_colour"), "只能是模型题")
+    bad(lambda b: rule_of(b, "no_text_but_transcribed")["void"].append("img_text_has_number"), "只能是模型题")
+    bad(lambda b: rule_of(b, "no_text_but_transcribed")["void"].append("img_kind"), "img_kind 不能进")
+    bad(lambda b: rule_of(b, "no_text_but_transcribed")["if"].__setitem__("img_kind", ["封面"]), "img_kind 不能进")
+    bad(lambda b: rule_of(b, "text_card_without_text")["then_not"].__setitem__("img_kind", ["看不清或空白"]), "img_kind 不能进")
+    assert [r["void"] for r in BANK["consistency"]] == [VOID_TEXT, ["img_layout"] + VOID_TEXT, ["img_layout"] + VOID_TEXT], \
+        "作废哪几道题钉住 (第二条连版式也作废: 纯文字卡片说的就是有字)"
+
+    # 走一遍 ①: 第一次调用抄了整行
+    class Lines(Fakes):
+        def ask(self, model, prompt, block):
+            text, usage = super().ask(model, prompt, block)
+            key = base64.b64decode(block[1]).decode()
+            if "img_kind" not in prompt:
+                return text, usage, "end_turn"
+            ans = json.loads(text)["answers"]
+            stop = "end_turn"
+            if "LINEOK" in key:
+                ans[0]["answer"] = L
+            elif "BULLET" in key:
+                ans[0]["answer"] = "- " + L
+                return "```json\n" + json.dumps({"answers": ans}, ensure_ascii=False) + "\n```", usage, None
+            elif "SHOTEXACT" in key:
+                ans[0]["answer"] = SHOT
+            elif "BLANKEXACT" in key:
+                ans[0]["answer"] = next(s for s, v in forms["img_kind"].items() if v == "看不清或空白")
+            elif "PROSE" in key:
+                ans[0]["answer"] = L
+                return json.dumps({"answers": ans}, ensure_ascii=False) + "\n不太确定，也可能是后台截图。", usage, "end_turn"
+            elif "CUT" in key:
+                ans[0]["answer"] = L
+                stop = "max_tokens"
+            elif "TWICE" in key:
+                ans = [dict(ans[0], answer=L), dict(ans[0], answer=SHOT)] + ans[1:]
+            return json.dumps({"answers": ans}, ensure_ascii=False), usage, stop
+
+    tags = ["ok1", "LINEOK1", "BULLET1", "SHOTEXACT1", "BLANKEXACT1", "PROSE1", "CUT1", "TWICE1"]
+    fk, store = Lines(), FakeStore([_cand(t) for t in tags])
+    res, out = _run(store, fk)
+    by = {s["note_id"].split("-", 1)[1]: (s["status"], s["outcome"], {r["question_id"]: (r["answer"], r["invalid_reason"]) for r in rows})
+          for s, rows in store.writes}
+    n_calls = lambda t: sum(1 for _m, k, _p in fk.asks if t in k)   # noqa: E731
+    for t in ("LINEOK1", "BULLET1"):
+        assert by[t][:2] == ("answered", "final") and by[t][2] == by["ok1"][2] and by[t][2]["img_kind"] == ("封面", None) and n_calls(t) == 7, \
+            f"{t}: 抄的是「封面」那一行, 一字不差 → 认成封面, 存的是选项本身, 后面六次照问"
+    for t, v in (("SHOTEXACT1", "后台或数据截图"), ("BLANKEXACT1", "看不清或空白")):
+        assert by[t] == ("not_a_cover", "final", {"img_kind": (v, None)}) and n_calls(t) == 1, \
+            f"{t}: 抄的是「{v}」那一行 → 不是封面, 只问一次, 只存 img_kind 一行 (认整行不会让不是封面的帖变成能用)"
+    for t in ("PROSE1", "CUT1", "TWICE1"):
+        assert by[t] == ("no_answer", "counted", {}) and n_calls(t) == 1, f"{t}: 整行一字不差但回包不够格 → 照旧没答成"
+    assert res["status"] == {"answered": 3, "not_a_cover": 2, "no_answer": 3}, res["status"]
+    assert res["line_accepted"] == {"img_kind": 4} and res["line_refused"] == {"text_around_json": 1, "stop": 1, "not_template": 1}, res
+    assert sum(res["no_answer_why"].values()) == 3 and set(res["no_answer_why"]) <= {"first_call:oov_option_line", "first_call:truncated",
+                                                                                     "first_call:conflicting_answers",
+                                                                                     "first_call:oov_option_plus_more"}, res["no_answer_why"]
+    assert res["partial_void"] == {} and res["budget"]["calls"] == len(fk.asks) == 7 * 3 + 2 + 3
+    for line in ("整行照抄、和提示词里那一行一字不差，认成选项（题号=答案数）：img_kind=4",
+                 "整行一字不差但没认（原因=答案数）：not_template=1，stop=1，text_around_json=1"):
+        assert line in out, f"摘要里没有 {line}"
+    _no_leak("整行照抄", out, json.dumps(res, ensure_ascii=False, default=str))
+    assert "给读者看的图" not in out and "tolerated" not in out and "rescued" not in out
+    assert all(re.fullmatch(r"[a-z0-9_:]+", k) for key in ("line_accepted", "line_refused", "partial_void") for k in res[key])
+    assert set(res["line_refused"]) <= set(FI.LINE_REFUSED) and set(res["line_accepted"]) <= set(choice)
+    # 反证: 不认整行 (accept_option_lines 永远回空) → 这几篇又是没答成 / 后台截图那两篇也没答成
+    real_accept = FI.accept_option_lines
+    FI.accept_option_lines = lambda *a, **k: ({}, {})
+    try:
+        res0, _ = _run(FakeStore([_cand(t) for t in tags]), Lines())
+    finally:
+        FI.accept_option_lines = real_accept
+    assert res0["status"] == {"answered": 1, "no_answer": 7} and res0["line_accepted"] == {}, f"反证没成立: {res0['status']}"
+
+    # ② 自相矛盾只作废有关的题 ── assemble: 没有矛盾的轮次和原来一样; 有矛盾的只少了 void 里的题
+    kinds = [("封面", None), ("后台或数据截图", None), (None, FI.INVALID_OOV)]
+    amounts = [(str(o["value"]), None) for o in idx["img_text_amount"]["options"]] + [(None, FI.INVALID_OOV), (None, FI.INVALID_MISSING)]
+    texts = [("", None), ("三天见效", None), ("！！", None), ("无。", None), (None, FI.INVALID_TEXT_LONG)]
+    layouts = [("纯文字卡片", None), ("一张照片", None), (None, FI.INVALID_OOV)]
+    tkinds = [("没有字", None), ("结果或结论", None), (None, FI.INVALID_OOV)]
+    no_void = copy.deepcopy(BANK)
+    for r in no_void["consistency"]:
+        r.pop("void")
+    n_same = n_part = n_card = 0
+    seen_rules: set = set()
+    assert "纯文字卡片" in FI.option_values(idx["img_layout"]) and set(TEXT_CLAIMS) <= set(idx), "守卫的单子对得上题库"
+    for kind in kinds:
+        for amount_ in amounts:
+            for text_ in texts:
+                for layout in layouts:
+                    for tkind in tkinds:
+                        for title in ("三天见效", "", None):
+                            parsed = {"img_kind": kind, "img_text_amount": amount_, "img_main_text": text_, "img_layout": layout,
+                                      "img_text_kind": tkind, "img_person": ("没有人", None), "img_scene": (None, FI.INVALID_OOV)}
+                            before = copy.deepcopy(parsed)
+                            new = FI.assemble(BANK, parsed, title)
+                            old = _old_assemble(BANK, parsed, title)
+                            assert parsed == before, "assemble 不改传进来的 parsed"
+                            assert set(new) == {"answers", "invalid", "grey", "voided"}
+                            assert FI.assemble(no_void, parsed, title) == dict(old, voided=[]) == FI.assemble(old_bank, parsed, title), \
+                                "没写 void 的题库 (fi-v0.1 就是): 和原来一样, 整轮作废"
+                            valid = {q: v for q, (v, why) in parsed.items() if why is None}
+                            hit = [r for r in BANK["consistency"] if _violated(r, valid)]
+                            assert new["voided"] == [r["name"] for r in hit]
+                            assert not any(_violated(r, new["answers"]) for r in BANK["consistency"]), "留下来的答案里不许还有自相矛盾的一对"
+                            if hit:
+                                assert not _claims(new["answers"]), \
+                                    f"规则中了: 留下的答案里不许有哪一个在说图上有没有字 (两头都不信): {sorted(_claims(new['answers']))}"
+                                n_card += [r["name"] for r in hit] == ["text_but_not_transcribed"] and valid.get("img_layout") == "纯文字卡片"
+                            if not hit:
+                                assert new == dict(old, voided=[]), "没有矛盾的轮次: 和原来一样"
+                                n_same += 1
+                                continue
+                            n_part += 1
+                            seen_rules |= {r["name"] for r in hit}
+                            gone = {q for r in hit for q in r["void"]}
+                            first = {}
+                            for r in hit:
+                                for q in r["void"]:
+                                    first.setdefault(q, "inconsistent:" + r["name"])
+                            assert not gone & set(new["answers"]) and "img_text_matches_title" not in new["answers"] \
+                                and "img_text_has_number" not in new["answers"], "作废的题、靠那句大字算的两道代码题都没有答案"
+                            for q in gone:
+                                assert new["invalid"][q] == (parsed[q][1] or first[q]), "本来就无效的题留着本来的原因; 别的记是哪条规则"
+                            assert new["answers"].get("img_kind") == valid.get("img_kind"), "img_kind 不被自检规则动"
+                            if valid.get("img_kind") == "封面":
+                                assert new["answers"] == {q: v for q, v in valid.items() if q not in gone}, "别的题照留"
+                                assert {q: w for q, w in new["invalid"].items() if q not in gone} == \
+                                    {q: w for q, (_v, w) in parsed.items() if w and q not in gone}
+                            elif "img_kind" in valid:
+                                assert new["answers"] == {"img_kind": valid["img_kind"]}, "不是封面: 照旧只留 img_kind"
+                            assert old["answers"] == {} and new["grey"] is False
+    assert n_same > 1000 and n_part > 500 and seen_rules == {r["name"] for r in BANK["consistency"]}, (n_same, n_part, seen_rules)
+    assert n_card >= 50, f"夹具: 只中第二条、版式是纯文字卡片的组合要走到 ({n_card})"
+
+    # 一条写了 void、一条没写, 两条都中: 没写的那条说了算, 整轮作废 (这样的题库每晚的步骤不收, 这里只钉 assemble)
+    mixed = copy.deepcopy(BANK)
+    mixed["consistency"][2].pop("void")
+    r = FI.assemble(mixed, {"img_kind": ("封面", None), "img_text_amount": ("没有字", None), "img_main_text": ("三天见效", None),
+                            "img_layout": ("纯文字卡片", None), "img_person": (None, FI.INVALID_OOV)}, "标题")
+    assert r["answers"] == {} and r["voided"] == [] and r["grey"] is False and r["invalid"] == {
+        "img_kind": "inconsistent:text_card_without_text", "img_text_amount": "inconsistent:text_card_without_text",
+        "img_main_text": "inconsistent:text_card_without_text", "img_layout": "inconsistent:text_card_without_text",
+        "img_person": FI.INVALID_OOV}, r
+
+    # 走一遍 ②: 三条规则各一篇, 两条一起中的一篇, 本来就无效的题留着本来的原因
+    class Contra(Fakes):
+        def ask(self, model, prompt, block):
+            text, usage = super().ask(model, prompt, block)
+            key = base64.b64decode(block[1]).decode()
+            patch: dict = {}
+            if "TBNTCARD" in key:                          # 第二条, 版式是纯文字卡片: 版式也作废 (D-160 评审的第一条)
+                patch = {"img_main_text": "", "img_layout": "纯文字卡片"}
+            elif "SAIDNONECARD" in key:                    # 说的是一回事 + 第三条: 照旧整轮作废
+                patch = {"img_text_amount": "没有字", "img_main_text": "无", "img_layout": "纯文字卡片"}
+            elif "SAIDNONE" in key:                        # 说了没有字, 抄出来的是「没有」: 两次说的是一回事
+                patch = {"img_text_amount": "没有字", "img_main_text": "没有"}
+            elif "NTBT" in key:
+                patch = {"img_text_amount": "没有字"}
+            elif "TBNT" in key:
+                patch = {"img_main_text": ""}
+            elif "CARDONLY" in key:
+                patch = {"img_layout": "纯文字卡片", "img_text_amount": "没有字", "img_main_text": ""}
+            elif "BOTH" in key:
+                patch = {"img_layout": "纯文字卡片", "img_text_amount": "没有字"}
+            elif "CARDOOV" in key:
+                patch = {"img_layout": "纯文字卡片", "img_text_amount": "没有字", "img_main_text": "", "img_text_kind": "不在闭集里的词"}
+            elif "SHOTCON" in key:
+                patch = {"img_kind": "后台或数据截图", "img_text_amount": "没有字"}
+            elif "BADKIND" in key:
+                patch = {"img_kind": "不在闭集里的词", "img_text_amount": "没有字"}
+            ans = [dict(a, answer=patch.get(a["id"], a["answer"])) for a in json.loads(text)["answers"]]
+            return json.dumps({"answers": ans}, ensure_ascii=False), usage, "end_turn"
+
+    R1, R2, R3 = "inconsistent:no_text_but_transcribed", "inconsistent:text_but_not_transcribed", "inconsistent:text_card_without_text"
+    SRC = (None, P.INVALID_SOURCE)
+    want_void = {
+        "NTBT1": {"img_text_amount": (None, R1), "img_main_text": (None, R1), "img_text_kind": (None, R1)},
+        "TBNT1": {"img_layout": (None, R2), "img_text_amount": (None, R2), "img_main_text": (None, R2), "img_text_kind": (None, R2)},
+        "TBNTCARD1": {"img_layout": (None, R2), "img_text_amount": (None, R2), "img_main_text": (None, R2), "img_text_kind": (None, R2)},
+        "CARDONLY1": {"img_layout": (None, R3), "img_text_amount": (None, R3), "img_main_text": (None, R3), "img_text_kind": (None, R3)},
+        "BOTH1": {"img_layout": (None, R3), "img_text_amount": (None, R1), "img_main_text": (None, R1), "img_text_kind": (None, R1)},
+        "CARDOOV1": {"img_layout": (None, R3), "img_text_amount": (None, R3), "img_main_text": (None, R3),
+                     "img_text_kind": (None, FI.INVALID_OOV)},
+    }
+    tags = ["ok1"] + list(want_void) + ["SHOTCON1", "BADKIND1", "SAIDNONE1", "SAIDNONECARD1"]
+
+    def go(bank=None):
+        fk, store = Contra(), FakeStore([_cand(t) for t in tags])
+        res, out = _run(store, fk, bank=bank)
+        by = {s["note_id"].split("-", 1)[1]: (s["status"], s["outcome"], {r["question_id"]: (r["answer"], r["invalid_reason"]) for r in rows})
+              for s, rows in store.writes}
+        return fk, res, out, by
+
+    fk, res, out, by = go()
+    for t, void in want_void.items():
+        want = dict(by["ok1"][2])
+        want.update(void)
+        want.update({"img_text_matches_title": SRC, "img_text_has_number": SRC})
+        assert by[t][:2] == ("answered", "final") and len(by[t][2]) == 13, f"{t}: 答成了, 13 行, 不重问"
+        assert by[t][2] == want, f"{t}: 只有 void 里的题和两道代码题是空的, 别的和没有矛盾的那一篇一样"
+        assert sum(1 for _m, k, _p in fk.asks if t in k) == 7
+        kept = {q for q, (a, _w) in by[t][2].items() if a is not None}
+        assert kept >= {"img_kind", "img_finish", "img_person", "img_product", "img_decoration", "img_brand_readable", "img_scene"}
+    assert by["SHOTCON1"] == ("not_a_cover", "final", {"img_kind": ("后台或数据截图", None)}), "不是封面的照旧不是封面 (和自检规则没关系)"
+    assert by["BADKIND1"] == ("no_answer", "counted", {}), "img_kind 没读出来的照旧没答成"
+    for t in ("SAIDNONE1", "SAIDNONECARD1"):
+        assert by[t] == ("no_answer", "counted", {}) and sum(1 for _m, k, _p in fk.asks if t in k) == 7, \
+            f"{t}: 说了没有字、抄出来的是「没有」—— 两次说的是一回事, 照 D-160 之前整轮作废、按日程重问, 不定下来"
+    said = "round:no_text_but_transcribed:said_none_in_words"
+    assert res["status"] == {"answered": 7, "not_a_cover": 1, "no_answer": 3} \
+        and res["no_answer_why"] == {"first_call:oov_other": 1, said: 2}, res
+    assert res["partial_void"] == {"no_text_but_transcribed:transcribed_text": 2, "text_but_not_transcribed:empty_text": 2,
+                                   "text_card_without_text": 3}, res["partial_void"]
+    assert res["flags"] == {"usable": 7}, res["flags"]
+    assert "自相矛盾只作废有关的题（规则:细项=帖数）：no_text_but_transcribed:transcribed_text=2，text_but_not_transcribed:empty_text=2，" \
+           "text_card_without_text=3" in out and said + "=2" in out
+    _no_leak("自相矛盾", out, json.dumps(res, ensure_ascii=False, default=str))
+    # 存下来的每一篇: 留下的答案里没有自相矛盾的一对, 也没有哪一个在说图上有没有字 (两头都不信)
+    for t in want_void:
+        stored = {q: a for q, (a, _w) in by[t][2].items() if a is not None}
+        assert not any(_violated(r, stored) for r in BANK["consistency"]) and not _claims(stored), (t, sorted(_claims(stored)))
+    # 反证 ①: 题库里去掉 void → 这五篇照旧整轮作废 (一行都不写), 原因数在 round: 下面
+    real_validate = P.validate_bank                        # 这样的题库 run_pass 本来不收 (上面钉住了); 这里只为了看 assemble 那一半
+    P.validate_bank = lambda _b: []
+    try:
+        _fk, res0, _out, by0 = go(no_void)
+    finally:
+        P.validate_bank = real_validate
+    assert all(by0[t] == ("no_answer", "counted", {}) for t in want_void) and res0["partial_void"] == {}, "反证没成立: 去掉 void 还是答成了"
+    assert res0["status"] == {"answered": 1, "not_a_cover": 1, "no_answer": 9} and res0["no_answer_why"] == {
+        "first_call:oov_other": 1, "round:no_text_but_transcribed:transcribed_text": 2, "round:text_but_not_transcribed:empty_text": 2,
+        "round:text_card_without_text": 2, said: 2}, res0["no_answer_why"]
+    # 反证 ②: assemble 不看 void (换回老的) → 一样
+    real_assemble = FI.assemble
+    FI.assemble = lambda bank, parsed, title: dict(_old_assemble(bank, parsed, title), voided=[])
+    try:
+        _fk, res0, _out, by0 = go()
+    finally:
+        FI.assemble = real_assemble
+    assert all(by0[t][0] == "no_answer" for t in want_void) and res0["status"]["no_answer"] == 9, "反证没成立"
+    # 反证 ③: 认不出「没有」的说法 (said_none_in_words 那条路没了) → 说的是一回事的那两篇也定下来了, 上面的断言就会红
+    real_none = P._NONE_WORDS
+    P._NONE_WORDS = frozenset()
+    try:
+        _fk, res0, _out, by0 = go()
+    finally:
+        P._NONE_WORDS = real_none
+    assert by0["SAIDNONE1"][:2] == ("answered", "final") and said not in res0["no_answer_why"], "反证没成立"
+    # 反证 ④: 第二条的 void 里拿掉版式 → 纯文字卡片留下来, 在说「有字」
+    one_side = copy.deepcopy(BANK)
+    one_side["consistency"][1]["void"].remove("img_layout")
+    _fk, _res0, _out, by0 = go(one_side)
+    assert by0["TBNTCARD1"][2]["img_layout"] == ("纯文字卡片", None) \
+        and _claims({q: a for q, (a, _w) in by0["TBNTCARD1"][2].items() if a is not None}) == {"img_layout"}, "反证没成立"
+
+    for doc, needles in (("docs/34-first-image-pass.md", ("D-160", "## 11", "line_accepted", "line_refused", "partial_void", "一字不差",
+                                                          "没有人对着图核过", "inconsistent:", "void", "said_none_in_words",
+                                                          "连 `img_layout` 也作废", "D-119", "owner 可以否决")),
+                         ("DECISIONS.md", ("D-160", "一字不差", "partial_void", "没有人对着图核过", "said_none_in_words", "owner 可以否决")),
+                         ("OPEN-ITEMS.md", ("D-160", "line_refused", "owner 可以否决")),
+                         ("CURRENT_STATE.md", ("D-160", "没有人对着图核过", "owner 可以否决"))):
+        text = (ROOT / doc).read_text(encoding="utf-8")
+        for nd in needles:
+            assert nd in text, f"{doc} 里没写 {nd}"
+    print(f"  §9 整行照抄只认一字不差的 (52 个写死的字符串; 该认的 {n_ok} 种都认, 动过一个字的 {n_mut} 种、回包不够格的 {len(shapes)} 种、"
+          f"评审的 21 种一个没多认); 自相矛盾只作废有关的题 ({n_part} 种组合), 没有矛盾的 {n_same} 种和原来一样 ✓")
 
 
 def main() -> int:
@@ -1324,7 +2027,8 @@ def main() -> int:
     check_stops()
     check_wiring()
     check_reply_reading()
-    print("\ncheck_first_image_pass: 8 节全过")
+    check_line_and_void()
+    print("\ncheck_first_image_pass: 9 节全过")
     return 0
 
 

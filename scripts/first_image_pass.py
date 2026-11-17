@@ -31,8 +31,13 @@ owner 11-16 同意的小的那一版:
   而读的那一面要靠它才知道哪些帖不能往外给。
 
 没答成的原因 (D-159, docs/34 §10): 摘要里按写死的词分开数 —— 第一次调用没读出来的是哪一种、整轮作废的是哪条自检规则、
-  每道题无效了几次、回包撞没撞输出上限。只有计数; 原因不进库。认什么还是 first_image.parse_answers 一个地方说了算, 没有放宽;
+  每道题无效了几次、回包撞没撞输出上限。只有计数; 原因不进库。
   「假如放宽某一条读法会多读出几个」另数一行 (would_read), 那只是给下一步做决定用的数, 不是认下来的答案。
+认什么 (D-160, docs/34 §11): first_image.parse_answers 一个字没动。在它判了 out_of_vocab 的选择题上多认一种: 答案和提示词里
+  那个选项的整行【一字不差】(first_image.accept_option_lines; 回包还得是一整个模板 JSON、前后没有别的字、没撞上限)。
+  别的读法一条都没放宽。自相矛盾的自检: fi-v0.2 的规则写了 void, 只把有关的那几道题记无效, 别的照存; 这一篇算答成了。
+  只有一种照 D-160 之前整轮作废、按日程重问: 说了「没有字」, 抄出来的又是一句「没有」的话 (said_none_in_words) ——
+  两次调用说的是一回事, 不是真的对不上, 不该让这一篇定下来、字那几道题再也不问。
 
 隐私: 图片只在内存里 (不写盘、不进 artifact、不进日志、不进库)。打出来的只有计数和状态词: 没有 note_id、标题、封面上的字、
   文件名、file_token、链接、中转站地址、报错正文。标题只给代码算「大字是不是重复标题」用, 不进提示词。
@@ -90,6 +95,7 @@ REQUIRED_ENV = ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "FEISHU_APP_ID", "F
 FINAL, COUNTED, INFRA = "final", "counted", "infra"
 INVALID_SOURCE = "source_invalid"            # 代码题: 它要用的那句大字没抄成
 _NONE_WORDS = frozenset(FI.normalise(w) for w in ("无", "没有", "没有字", "无字", "空", "空字符串", "none", "null", "n/a"))
+SAID_NONE = "said_none_in_words"             # 说了「没有字」, 抄出来的是上面这几种「没有」的说法: 两次调用说的是一回事 (D-160)
 
 
 class PassConfigError(Exception):
@@ -208,6 +214,40 @@ def validate_bank(bank: dict) -> list[str]:
             errs.append(f"surfaced_questions 里的 {qid}: 只能是试跑里过线的闭集题 (抄下来的字不往外给)")
     if set(bank.get("excluded_projects") or []) & set(bank.get("cover_confirmed_projects") or []):
         errs.append("同一个项目不能既在 excluded_projects 又在 cover_confirmed_projects 里")
+    # D-160 ①: 整行照抄只认「一字不差」, 所以一道题里 选项 / 选项的整行 / 带「- 」的整行 不许有两个长得一样的,
+    # 选项和解释两头不许带空白、里面不许有换行, 选项不许以「- 」打头 (不然「一字不差」对得上两个东西)
+    for q in bank.get("questions") or []:
+        if q.get("type") != "choice":
+            continue
+        opts = [o for o in q.get("options") or [] if isinstance(o, dict) and "value" in o]
+        lines = [FI.option_line(o) for o in opts if o.get("means")]
+        forms = [str(o["value"]) for o in opts] + lines + ["- " + ln for ln in lines]
+        if len(forms) != len(set(forms)):
+            errs.append(f"{q.get('id')}: 选项和选项的整行里有两个一样的 (整行照抄认不准)")
+        for o in opts:
+            for part in (str(o["value"]), str(o["means"])) if o.get("means") else (str(o["value"]),):
+                if part != part.strip() or "\n" in part or "\r" in part:
+                    errs.append(f"{q.get('id')}: 选项或解释两头带空白 / 里面有换行")
+            if str(o["value"]).startswith("- "):
+                errs.append(f"{q.get('id')}: 选项不能以「- 」打头")
+    # D-160 ②: 每条自检规则都要写 void (作废哪几道题): 是模型题、规则里提到的题都在里面; img_kind 不许进规则
+    # (「是不是封面」那一道只由它自己的答案定, 不能被别的规则作废掉、也不能拿来作废别的题)
+    model_ids = set(FI.model_question_ids(bank))
+    for rule in bank.get("consistency") or []:
+        name = rule.get("name")
+        refs = list((rule.get("if") or {}).keys()) + list((rule.get("then_not") or {}).keys())
+        refs += [rule[k] for k in ("then_empty", "then_not_empty") if rule.get(k)]
+        void = rule.get("void")
+        if not isinstance(void, list) or not void or any(not isinstance(x, str) for x in void) \
+                or len(void) != len(set(void)):
+            errs.append(f"consistency {name}: 要写 void (作废哪几道题, 不空、不重复)")
+            void = []
+        if any(x not in model_ids for x in void):
+            errs.append(f"consistency {name}: void 里只能是模型题的题号")
+        if any(r not in void for r in refs):
+            errs.append(f"consistency {name}: 规则里提到的题都要在 void 里")
+        if "img_kind" in void or "img_kind" in refs:
+            errs.append(f"consistency {name}: img_kind 不能进自检规则")
     return errs
 
 
@@ -330,6 +370,10 @@ class Pass:
         self.invalid_q: Counter = Counter()       # 题号:<词> → 多少次调用里这道题无效 (含后来答成了的帖)
         self.reply: Counter = Counter()           # 回包: stop:max_tokens / stop:other
         self.would_read: Counter = Counter()      # 假如放宽 (没有放宽): answers:<词> 无效的答案数 / replies:loose_json 回包数
+        # D-160: 也只是计数, 键是题号 / 写死的词 / 题库里的规则名
+        self.line_accepted: Counter = Counter()   # 题号 → 多少个答案是整行照抄、一字不差, 认成了选项
+        self.line_refused: Counter = Counter()    # FI.LINE_REFUSED 的词 → 多少个答案整行一字不差、但回包不够格, 没认
+        self.partial_void: Counter = Counter()    # <自检规则名>[:细项] → 多少篇答成了的帖只作废了有关的题
         self._note: dict[str, str] = {}           # 当前这张图各题细一层的词 (图和图之间不并, 一张图内各次调用的题不重)
         self.ended: Optional[str] = None
         self.calls_ok = 0
@@ -364,34 +408,49 @@ class Pass:
                 self.fail_streak = 0
             stop = FI.stop_word(more[0]) if more else None
             read = FI.read_reply(self.bank, qids, text or "", stop)
+            parsed = dict(read["parsed"])                         # = FI.parse_answers(...) 原样
+            # D-160: 只在 out_of_vocab 的选择题上多认一种 —— 和提示词里那个选项的整行一字不差 (别的一个都不改)
+            lines, refused = FI.accept_option_lines(self.bank, qids, text or "", parsed, stop)
+            for q, value in lines.items():
+                parsed[q] = (value, None)
             with self.lock:
                 if stop and stop != "end_turn":
                     self.reply["stop:" + stop] += 1
-                for word in read["would_read"].values():
+                for q in lines:
+                    self.line_accepted[q] += 1
+                for word in refused.values():
+                    self.line_refused[word] += 1
+                still = {q: w for q, w in read["would_read"].items() if q not in lines}   # 认下来的不再是「假如」
+                for word in still.values():
                     self.would_read["answers:" + word] += 1
-                if any(w.startswith(FI.WOULD_LOOSE) for w in read["would_read"].values()):
+                if any(w.startswith(FI.WOULD_LOOSE) for w in still.values()):
                     self.would_read["replies:" + FI.WOULD_LOOSE] += 1   # 真有一个答案靠它才读得出的回包才数
                 for q, word in read["notes"].items():
+                    if q in lines:
+                        continue                                  # 认下来的题不是无效的题
                     self.invalid_q[f"{q}:{word}"] += 1
                     self._note[q] = word
-            return read["parsed"]                                 # = FI.parse_answers(...) 原样; notes / would_read 只进了计数
+            return parsed
         return {q: (None, FI.INVALID_API) for q in qids}
 
-    def _void_why(self, res: dict, parsed: dict) -> str:
-        """整轮作废的那一篇: 是哪条自检规则 (规则名是题库文件里的, 仓里本来就有), 再加一个写死的细项。"""
-        why = next((w for w in res["invalid"].values() if str(w).startswith("inconsistent:")), "")
-        name = why.split(":", 1)[-1]
+    def _rule_detail(self, name: Any, parsed: dict) -> Optional[str]:
+        """一条自检规则 → 「规则名」或「规则名:细项」(规则名是题库文件里的, 仓里本来就有; 细项是写死的词)。认不出的规则回 None。"""
         rule = next((r for r in self.bank.get("consistency") or [] if r.get("name") == name), None)
-        if not rule or not re.fullmatch(r"[a-z0-9_]{1,40}", name):
-            return "round:other"
+        if not rule or not isinstance(name, str) or not re.fullmatch(r"[a-z0-9_]{1,40}", name):
+            return None
         text = (parsed.get(rule.get("then_empty") or rule.get("then_not_empty") or "") or (None, None))[0]
         if rule.get("then_empty") and isinstance(text, str):
             # 说了「没有字」又抄出了字: 抄出来的是一句「没有」的话, 还是真的字 (只比这几个写死的说法, 字本身不往外带)
             said_none = FI.normalise(text) in _NONE_WORDS
-            return f"round:{name}:" + ("said_none_in_words" if said_none else "transcribed_text")
+            return f"{name}:" + (SAID_NONE if said_none else "transcribed_text")
         if rule.get("then_not_empty") and isinstance(text, str):
-            return f"round:{name}:" + ("symbols_only" if text.strip() else "empty_text")
-        return f"round:{name}"
+            return f"{name}:" + ("symbols_only" if text.strip() else "empty_text")
+        return name
+
+    def _void_why(self, res: dict, parsed: dict) -> str:
+        """整轮作废的那一篇: 是哪条自检规则, 再加一个写死的细项。"""
+        why = next((w for w in res["invalid"].values() if str(w).startswith("inconsistent:")), "")
+        return "round:" + (self._rule_detail(why.split(":", 1)[-1], parsed) or "other")
 
     def _state(self, cand: dict, status: str, outcome: str, *, size: Optional[tuple] = None,
                asked: bool = False) -> dict:
@@ -500,14 +559,21 @@ class Pass:
                 self._write(cand, "model_failed", INFRA, size=size, asked=True)
             return
         res = FI.assemble(self.bank, parsed, cand.get("title") or "")
-        if res["answers"].get("img_kind") != FI.COVER:            # 自相矛盾, 整轮作废
+        voided = [self._rule_detail(name, parsed) or "other" for name in res.get("voided") or []]
+        agree = next((d for d in voided if d.endswith(":" + SAID_NONE)), None)
+        if res["answers"].get("img_kind") != FI.COVER or agree:
+            # 整轮作废, 记 no_answer、按日程重问: 自相矛盾而且那条规则没写 void; 或者说了「没有字」、抄出来的又是一句「没有」的话
+            # (agree: 两次调用说的是一回事, 只是没给空字符串。按 D-160 只作废字那几道题的话, 这一篇就定了、字那几道题再也不问)
             if self._write(cand, "no_answer", COUNTED, size=size, asked=True):
-                self.no_answer_why[self._void_why(res, parsed)] += 1
+                self.no_answer_why[("round:" + agree) if agree else self._void_why(res, parsed)] += 1
             return
         for qid in FI.code_question_ids(self.bank):               # 代码题没算成的 (没有标题 / 那句大字没抄成)
             if qid not in res["answers"]:
                 self.invalid_q[f"{qid}:{res['invalid'].get(qid) or INVALID_SOURCE}"] += 1
-        self._write(cand, "answered", FINAL, answer_rows(self.bank, cand["note_id"], res, self.model), size=size, asked=True)
+        if self._write(cand, "answered", FINAL, answer_rows(self.bank, cand["note_id"], res, self.model), size=size,
+                       asked=True):
+            for word in voided:                                   # 自相矛盾只作废了有关的题 (D-160): 写进去了才数
+                self.partial_void[word] += 1
 
     def _should_stop(self) -> bool:
         if self.ended:
@@ -546,6 +612,7 @@ def run_pass(*, bank: dict, store: Any, mode: str = "nightly", dry_run: bool = F
                  "yuan": MP.yuan_of_weighted(cheap_model(), budget.max_weighted)},
         "candidates": None, "ended": None, "status": {}, "written": {}, "detail": {}, "flags": {},
         "no_answer_why": {}, "invalid_by_question": {}, "reply": {}, "would_read": {},
+        "line_accepted": {}, "line_refused": {}, "partial_void": {},
         "budget": {"images": 0, "calls": 0, "spent": 0, "usage_missing": 0, "yuan": 0.0}}
     try:
         store.sync_bank(bank)                                      # 名单的镜像 (干跑也同步: 不花钱); 也是「迁移跑没跑」的探针
@@ -563,7 +630,9 @@ def run_pass(*, bank: dict, store: Any, mode: str = "nightly", dry_run: bool = F
     p.run(cands)
     res.update({"ended": p.ended, "status": dict(p.status), "written": dict(p.written), "detail": dict(p.detail),
                 "flags": dict(p.flags), "no_answer_why": dict(p.no_answer_why),
-                "invalid_by_question": dict(p.invalid_q), "reply": dict(p.reply), "would_read": dict(p.would_read)})
+                "invalid_by_question": dict(p.invalid_q), "reply": dict(p.reply), "would_read": dict(p.would_read),
+                "line_accepted": dict(p.line_accepted), "line_refused": dict(p.line_refused),
+                "partial_void": dict(p.partial_void)})
     spent_yuan = MP.yuan_of_weighted(cheap_model(), budget.spent)
     res["budget"] = {"images": budget.images, "calls": budget.calls, "spent": budget.spent,
                      "usage_missing": budget.usage_missing, "yuan": spent_yuan}
@@ -602,7 +671,10 @@ def summary(res: dict) -> str:
                  f"没拿到用量、按预留记的 {b['usage_missing']} 次")
     for title, key in (("写进库的结果", "status"), ("其中", "flags"), ("之后", "written"), ("失败的状态词", "detail"),
                        ("没答成（no_answer）的原因", "no_answer_why"), ("逐题无效（题号:原因=调用次数）", "invalid_by_question"),
-                       ("回包", "reply"), ("假如放宽读法会多读出（没有放宽，这些答案照旧无效）", "would_read")):
+                       ("回包", "reply"), ("假如放宽读法会多读出（没有放宽，这些答案照旧无效）", "would_read"),
+                       ("整行照抄、和提示词里那一行一字不差，认成选项（题号=答案数）", "line_accepted"),
+                       ("整行一字不差但没认（原因=答案数）", "line_refused"),
+                       ("自相矛盾只作废有关的题（规则:细项=帖数）", "partial_void")):
         if res.get(key):
             lines.append(f"{title}：" + "，".join(f"{k}={v}" for k, v in sorted(res[key].items())))
     return "\n".join(lines) + "\n"

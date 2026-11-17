@@ -18,6 +18,10 @@
     · 权限: anon / authenticated 什么都没有; service_role 调得动三个函数、读得到那张视图
   B 段 (要 pyyaml; 没有就跳过并打一条 ::warning::): 用 scripts/first_image_pass.py 真跑一趟 (假下载、假缩图、假模型, 库是真的),
     再跑一趟确认不重复做、不重复问。排第一的经验卡帖飞书不给下载: 记一笔、别的照做, 到了重试时间再试也卡不住别的帖。
+    其中一篇答案自相矛盾 (说了没有字、又抄出了字; D-160): 库收下带 inconsistent:<规则名> 的行, 这一篇是 answered、13 行、
+    读的那一面 usable = true, answers 里没有 img_text_kind 和 img_text_has_number (没有键 = 没答成), 别的往外给的题照有。
+    一篇说了有字、大字是空的、版式是纯文字卡片: answers 里连 img_layout 也没有。一篇说了没有字、抄出来的是「没有」
+    (said_none_in_words, 两次说的是一回事): 照旧 no_answer、一行答案都不写、按日程重问。
 
 反证 (改坏迁移之后必须红):
     · v_note_first_image_source 的 ORDER BY k.ord 去掉或调换                       → 取列
@@ -358,7 +362,7 @@ def part_b() -> None:
     bank = copy.deepcopy(P.load_bank())
     bank["excluded_projects"] = [PX]
     import feishu_media as FM
-    ids = {k: f"{P1}_{k}" for k in ("card", "multi", "notcover", "video", "old")}
+    ids = {k: f"{P1}_{k}" for k in ("card", "multi", "notcover", "video", "old", "contra", "tcard", "saidnone")}
     ids["deny"] = f"{P1}_aaa"                  # 经验卡的帖, 排在所有帖前面; 飞书对它这一个文件回 403
     sql(f"INSERT INTO truth_vault.projects (project_id, brand, product, category) VALUES ('{P1}', 'b', 'p', '保健品'), ('{PX}', 'b', 'p', '保健品');"
         + note(ids["card"], P1, {"内容配图": [f("card")]}, new=False, card=True)
@@ -367,6 +371,9 @@ def part_b() -> None:
         + note(ids["notcover"], P1, {"图片": [f("NOTCOVER")]}, new=True)
         + note(ids["video"], P1, {"内容配图": [f("video", typ="video/mp4")]}, new=True)
         + note(ids["old"], P1, {"内容配图": [f("old")]}, new=False)
+        + note(ids["contra"], P1, {"内容配图": [f("CONTRA")]}, new=True)
+        + note(ids["tcard"], P1, {"内容配图": [f("TCARD")]}, new=True)
+        + note(ids["saidnone"], P1, {"内容配图": [f("SAIDNONE")]}, new=True)
         + note(f"{PX}_x", PX, {"内容配图": [f("x")]}, new=True, card=True))
     asks: list[str] = []
     downloads: list[str] = []
@@ -389,9 +396,11 @@ def part_b() -> None:
             if qid == "img_kind":
                 v = "后台或数据截图" if "NOTCOVER" in key else "封面"
             elif qid == "img_main_text":
-                v = "合成的大字 3 天"
+                v = "" if "TCARD" in key else ("没有" if "SAIDNONE" in key else "合成的大字 3 天")
             elif qid == "img_text_amount":
-                v = "一句大字"
+                v = "没有字" if "CONTRA" in key or "SAIDNONE" in key else "一句大字"
+            elif qid == "img_layout" and "TCARD" in key:
+                v = "纯文字卡片"
             elif qid == "img_text_kind":
                 v = "结果或结论"
             else:
@@ -405,13 +414,15 @@ def part_b() -> None:
             return P.run_pass(bank=bank, store=PsqlStore(), mode="nightly", download=download, shrinker=shrink, ask=ask)
 
     res = go()
-    assert res["ended"] == "done" and res["candidates"] == 5, res
-    assert res["status"] == {"answered": 2, "not_a_cover": 1, "first_is_video": 1, "download_failed": 1}, res["status"]
+    assert res["ended"] == "done" and res["candidates"] == 8, res
+    assert res["status"] == {"answered": 4, "not_a_cover": 1, "first_is_video": 1, "download_failed": 1, "no_answer": 1}, res["status"]
+    assert res["partial_void"] == {"no_text_but_transcribed:transcribed_text": 1, "text_but_not_transcribed:empty_text": 1} \
+        and res["no_answer_why"] == {"round:no_text_but_transcribed:said_none_in_words": 1}, res
     assert downloads[0] == tok("DENY"), "夹具: 被拒的那一篇要排第一"
     tries = lambda: sql(f"SELECT attempts || ',' || tries || ',' || (next_try_at IS NOT NULL) FROM truth_vault.note_first_image "  # noqa: E731
                         f"WHERE note_id = '{ids['deny']}';")
     assert tries() == "0,1,true", f"排第一的帖被拒: 要记一笔 (不算数), 不然它每晚都排第一: {tries()}"
-    assert len(asks) == 7 + 7 + 1 and tok("old") not in downloads and tok("x") not in downloads and tok("video") not in downloads
+    assert len(asks) == 7 + 7 + 7 + 7 + 7 + 1 and tok("old") not in downloads and tok("x") not in downloads and tok("video") not in downloads
     v = view(ids["card"])
     assert v["usable"] is True and v["model"] == P.cheap_model() and set(v["answers"]) == set(P.surfaced_questions(bank)), v
     assert v["answers"]["img_text_has_number"] == "有" and "img_main_text" not in v["answers"]
@@ -420,7 +431,32 @@ def part_b() -> None:
     assert view(ids["video"])["status"] == "first_is_video" and view(ids["video"])["model"] is None
     assert view(ids["old"]) == {} and view(f"{PX}_x") == {}, "老帖和先不做的项目没有行"
     n_rows = sql(f"SELECT count(*) FROM truth_vault.note_feature_answers WHERE subject_id LIKE '{P1}%' AND run_tag = 'img-primary';")
-    assert n_rows == str(13 + 13 + 1), n_rows
+    assert n_rows == str(13 + 13 + 13 + 13 + 1), n_rows
+    # 自相矛盾只作废有关的题 (D-160): 库收下 inconsistent:* 的行; 这一篇能用, answers 里没有字那两道题, 别的照有
+    void = sql("SELECT string_agg(question_id || '=' || invalid_reason, ',' ORDER BY question_id) FROM truth_vault.note_feature_answers "
+               f"WHERE subject_id = '{ids['contra']}' AND run_tag = 'img-primary' AND answer IS NULL;")
+    assert void == ("img_main_text=inconsistent:no_text_but_transcribed,img_text_amount=inconsistent:no_text_but_transcribed,"
+                    "img_text_has_number=source_invalid,img_text_kind=inconsistent:no_text_but_transcribed,"
+                    "img_text_matches_title=source_invalid"), void
+    assert sql(f"SELECT count(*) FROM truth_vault.note_feature_answers WHERE subject_id = '{ids['contra']}' AND run_tag = 'img-primary';") == "13"
+    v = view(ids["contra"])
+    assert (v["status"], v["usable"]) == ("answered", True), v
+    assert set(v["answers"]) == set(P.surfaced_questions(bank)) - {"img_text_kind", "img_text_has_number"} and len(v["answers"]) == 5, \
+        f"没有键 = 这道题没答成; 别的往外给的题照有: {v['answers']}"
+    assert sql(f"SELECT next_try_at IS NULL FROM truth_vault.note_first_image WHERE note_id = '{ids['contra']}';") == "t", "定了, 不重试"
+    # 说了有字、大字是空的、版式是纯文字卡片 (第二条): 版式也作废 —— 纯文字卡片说的就是有字, 留着它等于信了一边
+    v = view(ids["tcard"])
+    assert (v["status"], v["usable"]) == ("answered", True) and set(v["answers"]) == set(P.surfaced_questions(bank)) - {
+        "img_text_kind", "img_text_has_number", "img_layout"}, v
+    assert sql("SELECT invalid_reason FROM truth_vault.note_feature_answers "
+               f"WHERE subject_id = '{ids['tcard']}' AND run_tag = 'img-primary' AND question_id = 'img_layout';") \
+        == "inconsistent:text_but_not_transcribed"
+    # 说了没有字、抄出来的是「没有」(两次说的是一回事): 照旧 no_answer, 一行答案都不写, 算一次、过一天重问
+    v = view(ids["saidnone"])
+    assert (v["status"], v["usable"], v["answers"]) == ("no_answer", False, None), v
+    assert sql(f"SELECT attempts || ',' || tries || ',' || (next_try_at IS NOT NULL) FROM truth_vault.note_first_image "
+               f"WHERE note_id = '{ids['saidnone']}';") == "1,1,true"
+    assert sql(f"SELECT count(*) FROM truth_vault.note_feature_answers WHERE subject_id = '{ids['saidnone']}';") == "0"
     assert sql(f"SELECT count(*) FROM truth_vault.note_feature_answers WHERE subject_id LIKE '{P1}%' AND run_tag = 'primary';") == "0"
     stored = sql("SELECT string_agg(file_sha, ',') FROM truth_vault.note_first_image;")
     assert "boxcn" not in stored and sql(f"SELECT count(*) FROM truth_vault.note_first_image WHERE file_sha = '{sha('card')}';") == "1"

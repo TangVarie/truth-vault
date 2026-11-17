@@ -463,6 +463,12 @@ _PROMPT_HEAD = ("下面是一张图片。只根据这张图片本身回答问题
                 "只输出 JSON, 不要解释、不要加别的字: {\"answers\":[{\"id\":\"题号\",\"answer\":\"答案\"}]}\n")
 
 
+def option_line(o: dict) -> str:
+    """一个选项在提示词里印出来的那一行 (不带打头的「- 」): 有解释的是「选项: 解释」, 没有解释的就是选项本身。
+    build_prompt 印的、accept_option_lines 比的是同一个函数的结果, 所以「和提示词里那一行一字不差」不会各说各的。"""
+    return f"{o['value']}" + (f": {o['means']}" if o.get("means") else "")
+
+
 def build_prompt(bank: dict, qids: list[str]) -> str:
     """一次调用的提示词: 只有这一组的题。里面没有档位、数据、标题、正文 —— 这个函数根本拿不到它们。"""
     if not 1 <= len(qids) <= MAX_GROUP_SIZE:
@@ -477,7 +483,7 @@ def build_prompt(bank: dict, qids: list[str]) -> str:
         if q["type"] == "choice":
             parts.append("选项:")
             for o in q["options"]:
-                parts.append(f"- {o['value']}" + (f": {o['means']}" if o.get("means") else ""))
+                parts.append("- " + option_line(o))
         else:
             parts.append(f"答案是照抄的字 (最多 {q['max_chars']} 个字), 没有就给空字符串。")
     return "\n".join(parts) + "\n"
@@ -854,6 +860,87 @@ def read_reply(bank: dict, qids: list[str], text: str, stop_reason: Any = None) 
     return {"parsed": parsed, "notes": notes, "would_read": would}
 
 
+# ── 整行照抄 (D-160, docs/34 §11): 认, 但只认和提示词里那一行【一字不差】的 ────────────────────────────
+# 第二趟真跑 (每晚那一趟) 104 次调用里, 分类器数出 34 个答案抄的是选项的整行 (「选项: 解释」), 不是选项的名字。parse_answers 一个字不动
+# (源码的 sha256 还钉着); 这里只在它判了 out_of_vocab 的选择题上再看一眼, 而且只有下面五条全中才认成那个选项:
+#   1. parse_answers 给这道题的是 (None, out_of_vocab)
+#   2. 它取的那个答案, 去掉两头的空白、再去掉至多一个打头的「- 」(提示词自己印的那个) 之后, 和【恰好一个】有解释的选项的
+#      option_line 用 == 比一字不差 —— 不折全半角、不去标点、不认全角冒号、不认少一个字多一个字的
+#   3. 停止原因没给, 或者是 end_turn
+#   4. 整个回包除了那一段 JSON 之外没有别的字 (只许整段包在一个 ``` / ```json 围栏里)
+#   5. 那一段 JSON 就是模板: 只有 answers 一个键、是列表、每一项只有 id 和 answer 两个键、id 是这次问的题而且不重复、
+#      answer 是字符串、整段没有写了两遍的键
+# 3–5 看的是整个回包: 有一条不中, 这个回包里一个整行都不认 (照旧 out_of_vocab), 只数一个写死的词 (LINE_REFUSED)。
+# 没有解释的选项 (「有」「能」这种) 没有「整行」可抄, 这里什么都不多认: 「- 有」照旧无效。
+LINE_REFUSED = ("stop", "text_around_json", "not_template")
+
+
+def accept_option_lines(bank: dict, qids: list[str], text: str, parsed: dict[str, tuple],
+                        stop: Any = None) -> tuple[dict[str, str], dict[str, str]]:
+    """回 (认下来的 {题号: 选项}, 一字不差但没认的 {题号: LINE_REFUSED 里的词})。parsed 是 parse_answers 的结果, 这里不改它。
+    出了任何岔子都回 ({}, {}): 宁可不认。"""
+    try:
+        idx = question_index(bank)
+        cand = [q for q in qids if idx[q].get("type") == "choice" and parsed.get(q) == (None, INVALID_OOV)]
+        if not cand:
+            return {}, {}
+        s, e = text.index("{"), text.rindex("}")                 # parse_answers 的切法和取法: 同一题取第一个
+        got: dict[str, Any] = {}
+        for a in json.loads(text[s:e + 1]).get("answers") or []:
+            if isinstance(a, dict) and isinstance(a.get("id"), str):
+                got.setdefault(a["id"], a.get("answer"))
+        hits: dict[str, str] = {}
+        for q in cand:
+            raw = got.get(q)
+            if not isinstance(raw, str):
+                continue
+            body = raw.strip()
+            if body.startswith("- "):
+                body = body[2:]
+            vals = [str(o["value"]) for o in idx[q].get("options") or [] if o.get("means") and body == option_line(o)]
+            if len(vals) == 1:
+                hits[q] = vals[0]
+        if not hits:
+            return {}, {}
+        word = _line_refusal(qids, text, s, e, stop_word(stop))
+        if word:
+            return {}, {q: word for q in hits}
+        return hits, {}
+    except Exception:  # noqa: BLE001
+        return {}, {}
+
+
+def _line_refusal(qids: list[str], text: str, s: int, e: int, stop: Optional[str]) -> Optional[str]:
+    """整个回包够不够格 (上面的 3–5)。够格回 None, 不够格回 LINE_REFUSED 里的一个词。"""
+    if stop not in (None, "end_turn"):
+        return "stop"
+    pre, post = text[:s].strip(), text[e + 1:].strip()
+    if not ((pre == "" and post == "") or (pre in ("```", "```json") and post == "```")):
+        return "text_around_json"
+
+    def hook(pairs: list) -> dict:
+        out: dict = {}
+        for k, v in pairs:
+            if k in out:
+                raise ValueError("duplicate key")
+            out[k] = v
+        return out
+
+    try:
+        data = json.loads(text[s:e + 1], object_pairs_hook=hook)
+    except ValueError:
+        return "not_template"
+    if not isinstance(data, dict) or set(data) != {"answers"} or not isinstance(data["answers"], list):
+        return "not_template"
+    seen: set = set()
+    for a in data["answers"]:
+        if not isinstance(a, dict) or set(a) != {"id", "answer"} or not isinstance(a["id"], str) \
+                or a["id"] not in qids or a["id"] in seen or not isinstance(a["answer"], str):
+            return "not_template"
+        seen.add(a["id"])
+    return None
+
+
 def normalise(text: str) -> str:
     """去掉空格、标点、表情, 全角转半角, 转小写 (设计 §3)。"""
     t = unicodedata.normalize("NFKC", text or "").lower()
@@ -897,34 +984,53 @@ def text_has_number(text: str) -> str:
 
 
 def assemble(bank: dict, parsed: dict[str, tuple], title: Optional[str]) -> dict:
-    """一张图一轮的全部模型答案 → {answers: {题号: 答案}, invalid: {题号: 原因}, grey: bool}。
+    """一张图一轮的全部模型答案 → {answers: {题号: 答案}, invalid: {题号: 原因}, grey: bool, voided: [规则名]}。
 
-    顺序: 闭集校验 (parse_answers 已做) → 自相矛盾 (整轮记无效) → 不是封面 (其余记无效) → 两道代码题。
+    顺序: 闭集校验 (parse_answers 已做) → 自相矛盾 → 不是封面 (其余记无效) → 两道代码题。
+    自相矛盾 (D-160, docs/34 §11): 每条规则都对着同一份答案看 (前一条规则作废的题不影响后一条怎么判)。
+      · 规则写了 void (fi-v0.2): 只把 void 里列的题记无效 (inconsistent:<规则名>; 本来就无效的题留着本来的原因), 别的照留。
+        几条规则都中: 作废的题取并集, 一道题的原因是题库里排在前面的那条规则。voided 里是这样处理掉的规则名。
+      · 规则没写 void (fi-v0.1): 整轮记无效, 和原来一样; 只要有一条这样的规则中了, 就是整轮 (voided 是空的)。
+    没有「信哪一边」的规则: 两头的答案都作废。
     title=None 表示这一轮不算代码题 (列检查那种只问一题的)。
     """
     answers = {q: v for q, (v, why) in parsed.items() if why is None}
     invalid = {q: why for q, (v, why) in parsed.items() if why is not None}
     grey = False
+    seen = dict(answers)                                   # 规则只看这一份, 不看作废之后的
+    partial: list[tuple[str, list]] = []
+    whole: Optional[str] = None
     for rule in bank.get("consistency") or []:
         cond = rule.get("if") or {}
-        if not all(answers.get(q) in vals for q, vals in cond.items()):
+        if not all(seen.get(q) in vals for q, vals in cond.items()):
             continue
         bad = False
-        if rule.get("then_empty") and rule["then_empty"] in answers and normalise(answers[rule["then_empty"]]):
+        if rule.get("then_empty") and rule["then_empty"] in seen and normalise(seen[rule["then_empty"]]):
             bad = True
-        if rule.get("then_not_empty") and rule["then_not_empty"] in answers \
-                and not normalise(answers[rule["then_not_empty"]]):
+        if rule.get("then_not_empty") and rule["then_not_empty"] in seen \
+                and not normalise(seen[rule["then_not_empty"]]):
             bad = True
         for q, vals in (rule.get("then_not") or {}).items():
-            if answers.get(q) in vals:
+            if seen.get(q) in vals:
                 bad = True
-        if bad:
-            why = f"inconsistent:{rule.get('name')}"
-            return {"answers": {}, "invalid": {q: invalid.get(q, why) for q in parsed}, "grey": False}
+        if not bad:
+            continue
+        if rule.get("void") is None:
+            whole = whole or f"inconsistent:{rule.get('name')}"
+        else:
+            partial.append((str(rule.get("name")), list(rule["void"])))
+    if whole:
+        return {"answers": {}, "invalid": {q: invalid.get(q, whole) for q in parsed}, "grey": False, "voided": []}
+    for name, ids in partial:
+        for q in ids:
+            if q in parsed:
+                answers.pop(q, None)
+                invalid.setdefault(q, f"inconsistent:{name}")
+    voided = [name for name, _ids in partial]
     if answers.get("img_kind") not in (None, COVER):
         keep = {"img_kind": answers["img_kind"]}
         return {"answers": keep, "invalid": {q: invalid.get(q, INVALID_NOT_COVER) for q in parsed if q != "img_kind"},
-                "grey": False}
+                "grey": False, "voided": voided}
     if title is not None and "img_main_text" in answers:
         val, why, grey = text_matches_title(answers["img_main_text"], title)
         if why:
@@ -932,7 +1038,7 @@ def assemble(bank: dict, parsed: dict[str, tuple], title: Optional[str]) -> dict
         else:
             answers["img_text_matches_title"] = val
         answers["img_text_has_number"] = text_has_number(answers["img_main_text"])
-    return {"answers": answers, "invalid": invalid, "grey": grey}
+    return {"answers": answers, "invalid": invalid, "grey": grey, "voided": voided}
 
 
 # ════════════════════════════════════════════════════════════════════
