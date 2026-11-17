@@ -4,12 +4,13 @@ import { isAuthConfigured } from "@/lib/auth";
 export const metadata: Metadata = { robots: { index: false, follow: false }, title: "登录 · 内部座舱" };
 export const dynamic = "force-dynamic";
 
-function sanitizeNext(n?: string): string {
-  if (!n || !n.startsWith("/") || n.startsWith("//") || n.includes("\\")) return "/console";
+// 链接里同名参数写了两次(?next=a&next=b)时 Next 给的是数组;只认单个字符串,其余一律回 /console。
+function sanitizeNext(n: unknown): string {
+  if (typeof n !== "string" || !n.startsWith("/") || n.startsWith("//") || n.includes("\\")) return "/console";
   return n;
 }
 
-export default async function LoginPage(props: { searchParams: Promise<{ next?: string; error?: string }> }) {
+export default async function LoginPage(props: { searchParams: Promise<{ next?: string | string[]; error?: string | string[] }> }) {
   const searchParams = await props.searchParams;
   const next = sanitizeNext(searchParams?.next);
   const configured = isAuthConfigured();
