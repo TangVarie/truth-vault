@@ -23,7 +23,7 @@
 # 其余规矩和 fi-v0.1 一样 (scripts/first_image.py):
 #   · 模型只看到图, 看不到档位、数据、标题、正文; 只输出 JSON
 #   · choice 题的答案必须是 options 里的 value; 不在闭集里记无效, 不重问、不修补
-#   · consistency 里的自相矛盾 → 这张图这一轮整体记无效
+#   · consistency 里的自相矛盾 → 只把规则 void 里列的题记无效, 别的照存 (D-160); 没写 void 的规则整轮记无效
 #   · 一次调用只问一组, 一组最多 4 题
 #   · run_tag_prefix: 落库只写在 img-* 下 (每晚的步骤写 img-primary; run_tag=primary 归文字题库)
 #
@@ -86,17 +86,24 @@ call_groups:
   S_brand:
     - img_brand_readable
 
-# 自检 (和 fi-v0.1 同三条)
+# 自检 (和 fi-v0.1 同三条)。void (D-160): 这条规则中了, 作废哪几道题 —— 两头的答案都作废, 不信哪一边;
+# 靠 img_main_text 算的两道代码题跟着记 source_invalid。问法、选项、分组都没动, 所以 bank_version 还是 fi-v0.2。
+# 第二条连 img_layout 也作废: 「纯文字卡片」说的就是图上有字, 留着它等于信了「有字」那一边。第一条不用: 那时候版式是
+# 纯文字卡片的话, 第三条也中, 版式已经作废; 别的版式不说有没有字。
+# 第一条中了、而抄出来的是一句「没有」的话 (said_none_in_words): 两次说的是一回事, 每晚的步骤照 D-160 之前整轮作废、按日程重问。
 consistency:
   - name: no_text_but_transcribed
     if: {img_text_amount: [没有字]}
     then_empty: img_main_text
+    void: [img_text_amount, img_main_text, img_text_kind]
   - name: text_but_not_transcribed
     if: {img_text_amount: [一句大字, 好几行字, 字占了大半张图]}
     then_not_empty: img_main_text
+    void: [img_layout, img_text_amount, img_main_text, img_text_kind]
   - name: text_card_without_text
     if: {img_layout: [纯文字卡片]}
     then_not: {img_text_amount: [没有字]}
+    void: [img_layout, img_text_amount, img_main_text, img_text_kind]
 
 questions:
 
