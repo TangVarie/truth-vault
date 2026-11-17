@@ -59,7 +59,9 @@ Vercel 项目 → **Settings → Domains** → 加域名 → 按提示配一条 
    - `/console` 没登录时跳登录页的 `Location` 从带域名的绝对地址变成 `/login?next=…` 这样的相对地址(浏览器照样跳,`Cache-Control: no-store` 还在)。`Vary` 头多了一项。
    - 登录闸管得更宽:`/console.rsc`、`/console.segments/…`、`/%63onsole`、`/console%2F`、`/./console` 这类地址以前直接 404,现在也被 `proxy.ts` 拦下、跳登录页(`no-store`)。
    - 带 `RSC: 1` 请求头、地址上没有 `_rsc` 参数的请求,以前直接回页面数据(`private, no-store`),现在先 307 跳到带 `?_rsc` 的同一地址(Next 防缓存串数据的做法,这个跳转不带 `Cache-Control`,按 HTTP 规矩 307 默认不缓存)。浏览器里正常换页总是带 `_rsc`,不受影响。
-   - `/_global-error`(Next 16 自带的出错页地址):以前 404、`private, no-store`;现在 500、`Cache-Control: s-maxage=31536000`,内容是 Next 自带的「500: This page couldn't load」,没有 robots 元信息。页面固定、不含任何数据,没有链接指向它;Vercel 上会不会对外提供这个地址没核过。页面真出错时(比如下面那个 `next` 写两遍)还是 500 + `private, no-store`,和以前一样。
+   - `/_global-error`(Next 16 自带的出错页地址):以前 404、`private, no-store`;现在 500、`Cache-Control: s-maxage=31536000`,内容是 Next 自带的「500: This page couldn't load」,没有 robots 元信息。页面固定、不含任何数据,没有链接指向它。Vercel 预览上(11-17 核)这个地址也回 500,但缓存头是 Vercel 自己给的 `public, max-age=0, must-revalidate`(不会被存一年),`X-Robots-Tag` 照样在。页面真出错时(比如下面那个 `next` 写两遍)还是 500 + `private, no-store`,和以前一样。
    - 带着有效会话发 `OPTIONS /console`:以前照样回整页(200),现在回 400、空内容。
+   - 只在 Vercel 上:编码过的公开页地址(`/%62oard` 这类)以前 404,现在 500。Vercel 运行 Next 16 时按字面去找 `pages/%62oard.js`、找不到就抛错(运行日志 `MODULE_NOT_FOUND`),是平台和框架的问题,改不到。回的是 Next 自带的通用出错页,不带数据,`public, max-age=0, must-revalidate`(不缓存),`X-Robots-Tag` 照样在;正常访问和站内链接碰不到这种地址。登录闸不受影响:`/%63onsole` 在 Vercel 上照样跳登录页。
+   Vercel 预览上核过(11-17,升级前后两份预览各打一遍):构建通过(Next 16.4.6、Turbopack,Google Fonts 取得到),项目设置的 Node 是 24.x;`/`、`/board`、`/login`、`/login?error=1`、`/robots.txt`、`/api/live/presence` 状态码、`Cache-Control`、`X-Robots-Tag`、页面上的字和每一个对外数字都一样;没登录打开 `/console` 跳登录页;普通 404 还是 404,缓存头从 Vercel 给的 `public, max-age=0, must-revalidate` 变成 `private, no-store`(都不缓存);`robots.txt` 内容和缓存头一样,只是 Vercel 上不再是预先生成好的。
    客户端换页时页面不再复用 30 秒内的旧数据(Next 15 起的默认),对实时看板只会更新鲜。
    顺带发现一个升级前就有的小毛病:`/login?next=/a&next=/b`(`next` 写两遍)会 500,因为 `app/login/page.tsx` 的 `sanitizeNext` 只认字符串。升级前后一样,不漏数据、不跳走,这次没改(S-17 只管升级、行为不变)。

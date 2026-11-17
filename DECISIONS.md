@@ -8825,8 +8825,8 @@ owner 11-16：开。
 
 **Implications**
 
-- 部署前要确认 Vercel 项目设置里的 Node 版本是 20.9 以上（Next 16 的要求）；`package.json` 没加 `engines`，免得 Vercel 自己换 Node 大版本。本机核的是 Node 22。
-- 构建默认用 Turbopack。本机连不上 Google Fonts，构建核的时候字体用的是上一次构建取下来的同一份文件；Vercel 上的构建还没核过，合并部署后第一件事核它（S-17）。
-- 本机（`next start`）对比，看板自己的路由（`/`、`/board`、`/login`、登录后的 `/console`、`/api/*`、`/robots.txt`、404 页）状态码、`Cache-Control`、`X-Robots-Tag`、页面上的字和截图都一样。不一样的都是 Next 16 自己的，不带数据、不带内部叫法：没登录打开 `/console` 跳登录页的 `Location` 变成相对地址（`no-store` 还在）；`Vary` 头多一项；`/console.rsc`、`/%63onsole` 这类以前 404 的地址现在也被登录闸拦下跳登录页；带 `RSC: 1` 头、没有 `_rsc` 参数的请求先 307 到带 `?_rsc` 的地址（不带 `Cache-Control`）；Next 自带的出错页地址 `/_global-error` 从 404 变成 500 + `s-maxage=31536000`（固定页面，Vercel 上会不会对外提供没核）；带会话的 `OPTIONS /console` 从 200 变 400。逐条在 `dashboard/README.md`「依赖」那一条。
+- Next 16 要 Node 20.9 以上：Vercel 项目设置里是 24.x（11-17 核过）；`package.json` 没加 `engines`，免得 Vercel 自己换 Node 大版本。本机核的是 Node 22。
+- 构建默认用 Turbopack。本机连不上 Google Fonts，本机构建用的是上一次构建取下来的同一份字体文件；Vercel 预览上的构建 11-17 核过，通过、字体取得到。预览上升级前后两份对比：公开页状态码、缓存头、`X-Robots-Tag`、字和对外数字都一样，没登录打开 `/console` 跳登录页。
+- 本机（`next start`）对比，看板自己的路由（`/`、`/board`、`/login`、登录后的 `/console`、`/api/*`、`/robots.txt`、404 页）状态码、`Cache-Control`、`X-Robots-Tag`、页面上的字和截图都一样。不一样的都是 Next 16 自己的，不带数据、不带内部叫法：没登录打开 `/console` 跳登录页的 `Location` 变成相对地址（`no-store` 还在）；`Vary` 头多一项；`/console.rsc`、`/%63onsole` 这类以前 404 的地址现在也被登录闸拦下跳登录页；带 `RSC: 1` 头、没有 `_rsc` 参数的请求先 307 到带 `?_rsc` 的地址（不带 `Cache-Control`）；Next 自带的出错页地址 `/_global-error` 从 404 变成 500 + `s-maxage=31536000`（固定页面；Vercel 上也是 500，缓存头是 `public, max-age=0`）；带会话的 `OPTIONS /console` 从 200 变 400；只在 Vercel 上，编码过的公开页地址（`/%62oard` 这类）从 404 变 500（Vercel 运行 Next 16 时找不到对应模块，平台和框架的问题，通用出错页、不带数据、不缓存，`/%63onsole` 照样跳登录页）。逐条在 `dashboard/README.md`「依赖」那一条。
 - 顺带发现一个升级前就有的小毛病：`/login` 地址里 `next` 写两遍会 500（`sanitizeNext` 只认字符串）。升级前后一样、不漏数据，这次没改；要修另开一件。
 - 以后看板要 lint，单独开一件事。
