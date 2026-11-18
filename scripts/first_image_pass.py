@@ -96,6 +96,12 @@ FINAL, COUNTED, INFRA = "final", "counted", "infra"
 INVALID_SOURCE = "source_invalid"            # 代码题: 它要用的那句大字没抄成
 _NONE_WORDS = frozenset(FI.normalise(w) for w in ("无", "没有", "没有字", "无字", "空", "空字符串", "none", "null", "n/a"))
 SAID_NONE = "said_none_in_words"             # 说了「没有字」, 抄出来的是上面这几种「没有」的说法: 两次调用说的是一回事 (D-160)
+# 11-18 (I-38): 「说了没有字、又抄出了字」那几篇, 抄出来的到底是什么 —— 只出写死的词和计数, 字本身不出这个进程
+TRANSCRIBED = "transcribed_text"
+TEXT_KIND_Q = "img_text_kind"
+MAPPINGS_DIR = HERE.parent / "mappings"
+_LEN_BUCKETS = ((4, "1_4"), (12, "5_12"))    # 去掉空格标点后的字数; 再长是 13_plus (原文最多 40 个字)
+_TITLE_WORD = {"一样或差不多": "same", "不一样": "different"}
 
 
 class PassConfigError(Exception):
@@ -374,6 +380,11 @@ class Pass:
         self.line_accepted: Counter = Counter()   # 题号 → 多少个答案是整行照抄、一字不差, 认成了选项
         self.line_refused: Counter = Counter()    # FI.LINE_REFUSED 的词 → 多少个答案整行一字不差、但回包不够格, 没认
         self.partial_void: Counter = Counter()    # <自检规则名>[:细项] → 多少篇答成了的帖只作废了有关的题
+        # 11-18 (I-38): 答成的封面里「说了没有字」的有几篇 (分母), 其中又抄出了字的那几篇抄的是什么 (只有写死的词):
+        # 是不是这个项目的品牌 / 产品名、像不像标题、多长、「字是哪一种」答的什么、「没有字」是不是靠认整行认下的
+        self.no_text_void: Counter = Counter()
+        self._lined: set[str] = set()             # 当前这张图里靠「整行一字不差」认下的题
+        self._brand_cache: dict[str, Optional[list[str]]] = {}
         self._note: dict[str, str] = {}           # 当前这张图各题细一层的词 (图和图之间不并, 一张图内各次调用的题不重)
         self.ended: Optional[str] = None
         self.calls_ok = 0
@@ -418,6 +429,7 @@ class Pass:
                     self.reply["stop:" + stop] += 1
                 for q in lines:
                     self.line_accepted[q] += 1
+                    self._lined.add(q)
                 for word in refused.values():
                     self.line_refused[word] += 1
                 still = {q: w for q, w in read["would_read"].items() if q not in lines}   # 认下来的不再是「假如」
@@ -451,6 +463,82 @@ class Pass:
         """整轮作废的那一篇: 是哪条自检规则, 再加一个写死的细项。"""
         why = next((w for w in res["invalid"].values() if str(w).startswith("inconsistent:")), "")
         return "round:" + (self._rule_detail(why.split(":", 1)[-1], parsed) or "other")
+
+    def _brand_words(self, project_id: Any) -> Optional[dict[str, list[str]]]:
+        """项目映射文件里的词 (去掉空格标点、转小写, 两个字以上), 分两组: name = 品牌和品牌别名, product = 产品名
+        (有的项目这一格写的是一长串描述, 所以和品牌分开数)。读不到 / 两组都空 → None。
+        只读仓里的 mappings/<项目>.yaml, 不查库。占位 (「(未填)」「待确认」这种) 不算。"""
+        pid = project_id if isinstance(project_id, str) else ""
+        if pid in self._brand_cache:
+            return self._brand_cache[pid]
+        groups: dict[str, list[str]] = {"name": [], "product": []}
+        try:
+            if re.fullmatch(r"[A-Za-z0-9_]{1,64}", pid):
+                import yaml
+                m = yaml.safe_load((MAPPINGS_DIR / f"{pid}.yaml").read_text(encoding="utf-8"))
+                m = m if isinstance(m, dict) else {}
+                aliases = m.get("brand_aliases")
+                aliases = aliases if isinstance(aliases, list) else []
+                for group, raw in (("name", [m.get("brand"), *aliases]), ("product", [m.get("product")])):
+                    for v in raw:
+                        if not isinstance(v, str) or v.strip().startswith(("(", "（")) or ("待" in v and len(v.strip()) <= 4):
+                            continue                              # 和 feature_bank.brand_dictionary 同一道形状过滤
+                        w = FI.normalise(v)
+                        if len(w) >= 2 and w not in groups[group]:
+                            groups[group].append(w)
+        except Exception:  # noqa: BLE001 — 计数用的, 读不到就记 no_list, 不影响这一篇
+            groups = {"name": [], "product": []}
+        self._brand_cache[pid] = groups if (groups["name"] or groups["product"]) else None
+        return self._brand_cache[pid]
+
+    def _brand_word(self, project_id: Any, nt: str) -> str:
+        """抄出来的字 (已经 normalise) 和项目映射对一下, 回一个写死的词。先看强的:
+        name = 里面有品牌 / 品牌别名; product = 没有品牌、但整个产品名都在里面; part = 都没有、但抄出来的整句是
+        品牌 / 产品名里的一截 (「戒烟」「营养」这种常用词也会落在长的产品描述里, 所以只当弱的旁证); no = 都不沾;
+        no_list = 映射读不到。"""
+        g = self._brand_words(project_id)
+        if g is None:
+            return "no_list"
+        if any(w in nt for w in g["name"]):
+            return "name"
+        if any(w in nt for w in g["product"]):
+            return "product"
+        if len(nt) >= 2 and any(nt in w for w in g["name"] + g["product"]):
+            return "part"
+        return "no"
+
+    def _count_no_text(self, cand: dict, parsed: dict, voided: list[str]) -> None:
+        """答成的封面: 「说了没有字」的数一篇; 其中第一条规则 (说了没有字、却抄出了字) 中了的, 再数抄出来的是什么。
+        出去的只有写死的词 (brand / title / len / kind / amount_by / text_invalid) 和题库里的选项词,
+        抄出来的字本身不出这个函数。"""
+        for rule in self.bank.get("consistency") or []:
+            text_q, cond = rule.get("then_empty"), rule.get("if") or {}
+            if not text_q or len(cond) != 1:
+                continue
+            amount_q, said = next(iter(cond.items()))
+            value, why = parsed.get(amount_q, (None, None))
+            if why is not None or value not in said:
+                continue
+            text, text_why = parsed.get(text_q, (None, FI.INVALID_MISSING))
+            if text_why is not None:
+                # 抄字那道题自己没读出来 (比如抄了 40 个字以上): 规则判不了, 不进分母, 另记一个写死的原因
+                word = text_why if isinstance(text_why, str) and re.fullmatch(r"[a-z0-9_]{1,40}", text_why) else "other"
+                self.no_text_void["text_invalid:" + word] += 1
+                continue
+            self.no_text_void["covers_said_no_text"] += 1
+            if f"{rule.get('name')}:{TRANSCRIBED}" not in voided:
+                continue
+            self.no_text_void["fired"] += 1
+            nt = FI.normalise(text if isinstance(text, str) else "")
+            self.no_text_void["brand:" + self._brand_word(cand.get("project_id"), nt)] += 1
+            title_ans, _why, _grey = FI.text_matches_title(text if isinstance(text, str) else "", cand.get("title") or "")
+            self.no_text_void["title:" + _TITLE_WORD.get(title_ans or "", "no_title")] += 1
+            self.no_text_void["len:" + next((lab for top, lab in _LEN_BUCKETS if len(nt) <= top), "13_plus")] += 1
+            kind, kind_why = parsed.get(TEXT_KIND_Q, (None, None))
+            opts = {o.get("value") for q in self.bank.get("questions") or [] if q.get("id") == TEXT_KIND_Q
+                    for o in q.get("options") or []}
+            self.no_text_void["kind:" + (kind if kind_why is None and kind in opts else "invalid")] += 1
+            self.no_text_void["amount_by:" + ("line" if amount_q in self._lined else "value")] += 1
 
     def _state(self, cand: dict, status: str, outcome: str, *, size: Optional[tuple] = None,
                asked: bool = False) -> dict:
@@ -523,6 +611,7 @@ class Pass:
         del shr
         size = (w, h)
         self._note = {}
+        self._lined = set()
 
         parsed = self._call(self.units[0], jpeg, size)
         kind, why = parsed.get("img_kind", (None, FI.INVALID_MISSING))
@@ -574,6 +663,7 @@ class Pass:
                        asked=True):
             for word in voided:                                   # 自相矛盾只作废了有关的题 (D-160): 写进去了才数
                 self.partial_void[word] += 1
+            self._count_no_text(cand, parsed, voided)
 
     def _should_stop(self) -> bool:
         if self.ended:
@@ -612,7 +702,7 @@ def run_pass(*, bank: dict, store: Any, mode: str = "nightly", dry_run: bool = F
                  "yuan": MP.yuan_of_weighted(cheap_model(), budget.max_weighted)},
         "candidates": None, "ended": None, "status": {}, "written": {}, "detail": {}, "flags": {},
         "no_answer_why": {}, "invalid_by_question": {}, "reply": {}, "would_read": {},
-        "line_accepted": {}, "line_refused": {}, "partial_void": {},
+        "line_accepted": {}, "line_refused": {}, "partial_void": {}, "no_text_void": {},
         "budget": {"images": 0, "calls": 0, "spent": 0, "usage_missing": 0, "yuan": 0.0}}
     try:
         store.sync_bank(bank)                                      # 名单的镜像 (干跑也同步: 不花钱); 也是「迁移跑没跑」的探针
@@ -632,7 +722,7 @@ def run_pass(*, bank: dict, store: Any, mode: str = "nightly", dry_run: bool = F
                 "flags": dict(p.flags), "no_answer_why": dict(p.no_answer_why),
                 "invalid_by_question": dict(p.invalid_q), "reply": dict(p.reply), "would_read": dict(p.would_read),
                 "line_accepted": dict(p.line_accepted), "line_refused": dict(p.line_refused),
-                "partial_void": dict(p.partial_void)})
+                "partial_void": dict(p.partial_void), "no_text_void": dict(p.no_text_void)})
     spent_yuan = MP.yuan_of_weighted(cheap_model(), budget.spent)
     res["budget"] = {"images": budget.images, "calls": budget.calls, "spent": budget.spent,
                      "usage_missing": budget.usage_missing, "yuan": spent_yuan}
@@ -674,9 +764,15 @@ def summary(res: dict) -> str:
                        ("回包", "reply"), ("假如放宽读法会多读出（没有放宽，这些答案照旧无效）", "would_read"),
                        ("整行照抄、和提示词里那一行一字不差，认成选项（题号=答案数）", "line_accepted"),
                        ("整行一字不差但没认（原因=答案数）", "line_refused"),
-                       ("自相矛盾只作废有关的题（规则:细项=帖数）", "partial_void")):
+                       ("自相矛盾只作废有关的题（规则:细项=帖数）", "partial_void"),
+                       ("说了没有字的封面、其中又抄出了字的抄的是什么（只有是/否和计数，字本身不出库、不进日志）",
+                        "no_text_void")):
         if res.get(key):
             lines.append(f"{title}：" + "，".join(f"{k}={v}" for k, v in sorted(res[key].items())))
+    nt = res.get("no_text_void") or {}
+    if nt.get("covers_said_no_text"):
+        lines.append(f"说了没有字的封面 {nt['covers_said_no_text']} 篇，其中又抄出了字 {nt.get('fired', 0)} 篇"
+                     f"（{nt.get('fired', 0) / nt['covers_said_no_text']:.0%}；有字的封面不会中这一条，所以看这个比，不看占全部封面的比）")
     return "\n".join(lines) + "\n"
 
 
