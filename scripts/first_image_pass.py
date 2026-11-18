@@ -67,6 +67,8 @@ sys.path.insert(0, str(HERE.parent))
 import first_image as FI  # noqa: E402
 import model_prices as MP  # noqa: E402
 
+# fi-v0.3 (prompts/first_image_questions_v0_3.yaml) 备好了、还没换上 (D-162, docs/34 §13): 换不换看 no_text_void 攒的证据。
+# 换是另一个 PR: 这两行一起改 (只改一行, 题库检查不过, 首图步骤打一行「题库不合法」就停、不花钱), 再加上守卫里的钉子。
 BANK_PATH = HERE.parent / "prompts" / "first_image_questions_v0_2.yaml"
 BANK_VERSION = "fi-v0.2"
 RUN_TAG = "img-primary"
@@ -74,7 +76,9 @@ CODE_EXTRACTOR = "code:fi"
 FIRST_GROUP = "A_kind"                       # 先问这一组; img_kind 不是「封面」后面就不问
 NEW_SINCE = "2026-11-16 00:00:00"            # 「新帖」先要 notes.ingested_at (第一次入库, UTC) 不早于这一刻; 老帖不回头补 (D-157)
 SURFACE_TRIALS = ("pass", "pass_ask_alone")  # 往外给的题只能是试跑里两轮对得上的
-TRIAL_VERDICTS = ("pass", "pass_ask_alone", "too_few", "kappa_undefined")
+# reworded_unverified (fi-v0.3, D-162): 试跑之后改了问法 (或者它靠的那道题改了问法), 试跑的结论不再作数、还没有新的核对。
+# 它不在 SURFACE_TRIALS 里: 这样的题照样问、照样存, 不往外给。fi-v0.2 里没有一道题用它。
+TRIAL_VERDICTS = ("pass", "pass_ask_alone", "too_few", "kappa_undefined", "reworded_unverified")
 
 # ── 钱: 写死的上限 (命令行只能调低) ──
 NIGHTLY_YUAN = 1.0
