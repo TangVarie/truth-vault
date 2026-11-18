@@ -1,0 +1,319 @@
+# ════════════════════════════════════════════════════════════════════
+# 首图题库 fi-v0.3（草案 · 备好了、还没换上：每晚的首图步骤读的还是 fi-v0.2；没有冻结，也没有「验证过」；D-162, 2026-11-18）
+# ════════════════════════════════════════════════════════════════════
+#
+# 设计与用法: docs/34-first-image-pass.md 第 12、13 节。fi-v0.2 (现在每晚在用的那份) 和 fi-v0.1 (试跑用的那份) 原样留着, 不改。
+#
+# 换不换 (D-162): 第一条规则 (说了没有字、又抄出了字) 攒到中了 6 篇以上, 一半以上抄的是品牌或整个产品名
+#   (Summary 的 no_text_void 里 brand:name / brand:product) 才换; 证据不支持就不换, 这份文件留着不用。
+#   换是另一个 PR: 改 scripts/first_image_pass.py 的 BANK_PATH / BANK_VERSION 和几处守卫的钉子 (docs/34 第 13 节)。
+#   只改 BANK_PATH 不改 BANK_VERSION, 题库检查不过, 首图步骤打一行「题库不合法」, 什么都不做、不花钱。
+#
+# 和 fi-v0.2 比, 只有这几处不一样 (守卫 scripts/check_first_image_pass.py 第 10 节逐处钉着):
+#   · img_main_text (抄最大那句字): 问句后面加一句「只算加在图上的字，产品包装、招牌、商标上本来就有的字不算。」; version 1 → 2
+#   · img_text_kind (字是哪一种): 问句改成「图上后期加的、最大的那句字是哪一种？」, 后面加同一句 (一个字节不差); version 1 → 2;
+#     选项没动。这一句不带「屏幕」: 「多少字」那道题写着「屏幕里本来就有的字不算」, 照抄过来的话, 截图样式的封面
+#     两次调用会一起答成没有字, 等于借提示词信了一边 (D-162 评审)
+#   · 第四条自检规则 text_kind_without_text: 说了没有字, 「字是哪一种」却答了有字的四个选项之一 → 作废字那三道题
+#   · trial: 改了问法的两道, 和靠 img_main_text 算的两道代码题, 都改成 reworded_unverified (试跑量的是老问法, 不再作数);
+#     所以 surfaced_questions 拿掉 img_text_kind 和 img_text_has_number, 往外给的剩五道
+#   · 第一组 (A_kind: img_kind, img_text_amount) 和别的题、选项、分组、顺序、三张名单都没动; 第一组印出来的提示词和
+#     fi-v0.2 逐字节相同, 换上之后拿它当对照 (「没有字」的比例应该差不多)
+#
+# ⚠️ 这份题库答得对不对, 没有人对着图核过。试跑 (便宜档, 660 次调用) 的验收只凭同一个模型两轮答案的一致;
+#    每道题的 trial 字段是那次试跑的结论, 不是「验证过」:
+#      pass             两轮一致率 ≥ 0.90 且 κ ≥ 0.60, 分组问和单题问对得上
+#      pass_ask_alone   两轮过线, 但分组问和单题问对不上 → 这里改成单独问 (改完之后没有再试)
+#      too_few          两轮都有有效答案的图不到 30 张, 没下结论 (一致率 0.96–1.00)
+#      kappa_undefined  答案一边倒, κ 算不出: 不算过, 记「还没验证」
+#      reworded_unverified  试跑之后改了问法, 或者它靠的那道题改了问法: 试跑的结论不再作数, 还没有新的核对, 不往外给。
+#                       换上之后拿同一批图前后的对比当核对 (docs/34 第 13 节), 过了再改这一格、把题号加回 surfaced_questions
+#    新的分组 (三组各少了一两道题) 也没有单独试过。status 因此还是 draft。
+#
+# 其余规矩和 fi-v0.1 一样 (scripts/first_image.py):
+#   · 模型只看到图, 看不到档位、数据、标题、正文; 只输出 JSON
+#   · choice 题的答案必须是 options 里的 value; 不在闭集里记无效, 不重问、不修补
+#   · consistency 里的自相矛盾 → 只把规则 void 里列的题记无效, 别的照存 (D-160); 没写 void 的规则整轮记无效
+#   · 一次调用只问一组, 一组最多 4 题
+#   · run_tag_prefix: 落库只写在 img-* 下 (每晚的步骤写 img-primary; run_tag=primary 归文字题库)
+#
+# cover_confirmed_projects: 哪些项目有人确认过「多图的帖, 第一个附件就是封面」。今天是空的, 没有人被要求做任何事。
+#   没写进来的项目, 多图的帖照样答题, 但带 cover_unconfirmed, 读的那一面 (v_first_image_features) 不给出它的答案,
+#   所以不上经验卡、不进封面建议; 只有一张图的帖不受影响。往这张名单里加项目名 (和 mappings/ 里的文件名一样),
+#   下一晚的首图步骤会把这个项目已经答过的多图帖放开, 不用重新问模型。
+# excluded_projects: 这些项目的帖不下载、不问、不写。从名单里拿掉之后, 它们的经验卡帖和新帖从下一晚开始做。
+bank_version: fi-v0.3
+status: draft
+frozen_sha256: ""
+role: image
+run_tag_prefix: img-
+excluded_projects:
+  - RIO_phase1
+  - TXQ_phase1
+  - WTG_phase1
+cover_confirmed_projects: []
+
+# 一次调用只问它一道的题 (每道在下面各占一个调用组)
+ask_alone:
+  - img_main_text
+  - img_text_kind
+  - img_decoration
+  - img_brand_readable
+
+# 往外给的题: 读的那一面 (v_first_image_features.answers) 只出这几道。只许放试跑里两轮对得上的闭集题
+# (trial = pass / pass_ask_alone)。没放进来的六道闭集题照样问、照样存, 只是不往外给:
+#   img_text_amount / img_finish / img_scene  试跑里对数不够, 没下结论
+#   img_text_kind / img_text_has_number       fi-v0.3 改了问法 (后一道是代码从 img_main_text 算的, 它改了问法):
+#                                              试跑的结论不再作数 (reworded_unverified)。fi-v0.2 里这两道往外给
+#   img_text_matches_title                     同上 (也是从 img_main_text 算的); 试跑里本来也是答案一边倒, 没验证
+# (img_kind 只当筛子用; img_main_text 是抄下来的字, 永远不往外给。)
+# 哪道题重测过了线, 把它的 trial 改掉、题号加进这张名单, 下一晚起它就出现在已经答过的帖上, 不用重新问模型。
+surfaced_questions:
+  - img_layout
+  - img_person
+  - img_product
+  - img_decoration
+  - img_brand_readable
+
+# 调用顺序就是这里的顺序; A_kind 必须排第一 (代码按它决定后面问不问)
+call_groups:
+  A_kind:
+    - img_kind
+    - img_text_amount
+  B_composition:
+    - img_layout
+    - img_finish
+  C_content:
+    - img_person
+    - img_product
+    - img_scene
+  S_main_text:
+    - img_main_text
+  S_text_kind:
+    - img_text_kind
+  S_decoration:
+    - img_decoration
+  S_brand:
+    - img_brand_readable
+
+# 自检: 前三条和 fi-v0.2 一字不差 (和 fi-v0.1 同三条), 第四条是 fi-v0.3 加的 (D-162)。void (D-160): 这条规则中了,
+# 作废哪几道题 —— 两头的答案都作废, 不信哪一边; 靠 img_main_text 算的两道代码题跟着记 source_invalid。
+# 第二条连 img_layout 也作废: 「纯文字卡片」说的就是图上有字, 留着它等于信了「有字」那一边。第一条不用: 那时候版式是
+# 纯文字卡片的话, 第三条也中, 版式已经作废; 别的版式不说有没有字。
+# 第一条中了、而抄出来的是一句「没有」的话 (said_none_in_words): 两次说的是一回事, 每晚的步骤照 D-160 之前整轮作废、按日程重问。
+# 第四条 (text_kind_without_text): 说了没有字, 「字是哪一种」却答了提问 / 结果或结论 / 清单或教程标题 / 只是名称 ——
+# 11-17 晚 fi-v0.2 有 5 篇「没有字」配「只是名称」, 前三条都不管。和第一条一样只作废字那三道题、不作废版式 (版式是纯文字卡片
+# 的话第三条也中)。「字是哪一种」答「没有字」不中; 「多少字」自己没读出来也不中 (四条规则都要它的答案)。
+consistency:
+  - name: no_text_but_transcribed
+    if: {img_text_amount: [没有字]}
+    then_empty: img_main_text
+    void: [img_text_amount, img_main_text, img_text_kind]
+  - name: text_but_not_transcribed
+    if: {img_text_amount: [一句大字, 好几行字, 字占了大半张图]}
+    then_not_empty: img_main_text
+    void: [img_layout, img_text_amount, img_main_text, img_text_kind]
+  - name: text_card_without_text
+    if: {img_layout: [纯文字卡片]}
+    then_not: {img_text_amount: [没有字]}
+    void: [img_layout, img_text_amount, img_main_text, img_text_kind]
+  - name: text_kind_without_text
+    if: {img_text_amount: [没有字]}
+    then_not: {img_text_kind: [提问, 结果或结论, 清单或教程标题, 只是名称]}
+    void: [img_text_amount, img_main_text, img_text_kind]
+
+questions:
+
+  - id: img_kind
+    version: 1
+    trial: kappa_undefined
+    group: A_kind
+    type: choice
+    objective: "yes"
+    ask: 这张图是一篇小红书笔记的封面, 还是别的东西？
+    options:
+      - value: 封面
+        means: 给读者看的图：照片、拼图、带字的图、文字卡片、聊天或备忘录样式的图都算
+      - value: 后台或数据截图
+        means: 创作者后台、数据统计页、已发布笔记页面的截图（带互动数字、导航栏、数据曲线这类界面）
+      - value: 看不清或空白
+        means: 全黑、全白、严重模糊、打不开的图
+    use: 过滤。只有「封面」往下用；顺带量出传错列的有多少
+
+  - id: img_text_amount
+    version: 1
+    trial: too_few
+    group: A_kind
+    type: choice
+    objective: "yes"
+    ask: 图上后期加了多少字？只算加在图上的字，产品包装、招牌、屏幕里本来就有的字不算。
+    options:
+      - value: 没有字
+        means: 图上没有后期加的字
+      - value: 一句大字
+        means: 一个标题，最多两行
+      - value: 好几行字
+        means: 三行以上，或者好几处分开的字，但图还是主体
+      - value: 字占了大半张图
+        means: 字盖住了一半以上的画面，或者整张就是字
+    use: 封面上放不放大字、放多少
+
+  - id: img_main_text
+    version: 2
+    trial: reworded_unverified
+    group: S_main_text
+    type: text
+    max_chars: 40
+    objective: "yes"
+    ask: 把图上后期加的、最大的那一行（或那一句）字照抄下来，最多 40 个字；没有就给空字符串。只算加在图上的字，产品包装、招牌、商标上本来就有的字不算。
+    use: 只给代码算下面两道题用；也用来核对上一题
+
+  - id: img_text_matches_title
+    version: 1
+    trial: reworded_unverified
+    type: code
+    objective: "yes"
+    ask: 封面大字是不是把笔记标题又写了一遍？（代码算：去掉空格标点表情、全角转半角、转小写之后，一方包含另一方（短的至少 4 个字），或相似度 ≥ 0.80）
+    options:
+      - value: 一样或差不多
+      - value: 不一样
+      - value: 没有字
+    use: 封面重复标题，还是拿封面放第二个钩子
+
+  - id: img_text_has_number
+    version: 1
+    trial: reworded_unverified
+    type: code
+    objective: "yes"
+    ask: 封面大字里有没有数字（天数、价格、个数）？（代码算）
+    options:
+      - value: 有
+      - value: 没有
+      - value: 没有字
+    use: 封面用不用数字开头
+
+  - id: img_text_kind
+    version: 2
+    trial: reworded_unverified
+    group: S_text_kind
+    type: choice
+    objective: partly
+    ask: 图上后期加的、最大的那句字是哪一种？只算加在图上的字，产品包装、招牌、商标上本来就有的字不算。
+    options:
+      - value: 提问
+        means: 一个问句，或者在等读者回答的话
+      - value: 结果或结论
+        means: 说一个结果、一个判断、一句感受（「终于不痒了」「这个真的好用」）
+      - value: 清单或教程标题
+        means: 说后面有几样东西、几个步骤、怎么做（「三个办法」「新手怎么选」）
+      - value: 只是名称
+        means: 只有品名、品类、地名、人名这类名称，没有说法
+      - value: 没有字
+        means: 图上没有后期加的字
+    use: 封面标题写成哪种句式
+
+  - id: img_layout
+    version: 1
+    trial: pass
+    group: B_composition
+    type: choice
+    objective: "yes"
+    ask: 这张图是怎么排的？
+    options:
+      - value: 一张照片
+        means: 整张是一张照片（上面可以加字）
+      - value: 拼图
+        means: 两张以上的照片拼在一起，不是前后对比
+      - value: 前后对比
+        means: 左右或上下分成两半，对比使用前后、之前之后
+      - value: 纯文字卡片
+        means: 没有照片，只有底色和字
+      - value: 截图样式
+        means: 聊天记录、备忘录、搜索结果页、App 页面这类界面的样子
+    use: 选哪种封面模板
+
+  - id: img_finish
+    version: 1
+    trial: too_few
+    group: B_composition
+    type: choice
+    objective: "no"
+    ask: 这张图看起来是手机随手拍的，还是修过、设计过的？
+    options:
+      - value: 随手拍
+        means: 光线和构图都随意，没有明显的修图和排版
+      - value: 修过或设计过
+        means: 明显调过色、抠过图、排过版，或者是棚拍
+      - value: 说不准
+        means: 两边都说得通
+    use: 封面做到多精致
+
+  - id: img_decoration
+    version: 1
+    trial: pass_ask_alone
+    group: S_decoration
+    type: choice
+    objective: "yes"
+    ask: 图上有没有后期加的贴纸、表情、箭头、圆圈或手画的记号？（字不算）
+    options:
+      - value: 有
+      - value: 没有
+    use: 加不加记号
+
+  - id: img_person
+    version: 1
+    trial: pass
+    group: C_content
+    type: choice
+    objective: "yes"
+    ask: 图里有没有人？
+    options:
+      - value: 没有人
+      - value: 只有手或身体一部分
+        means: 手、手臂、腿、背这类局部，看不出是谁
+      - value: 有人但看不到脸
+        means: 有大半个人，脸被挡住、背对或截掉了
+      - value: 看得到脸
+        means: 能看到脸（真人；卡通和包装上印的人不算）
+    use: 拍不拍人、露不露脸
+
+  - id: img_product
+    version: 1
+    trial: pass
+    group: C_content
+    type: choice
+    objective: mostly
+    ask: 图里有没有出现产品或它的包装？
+    options:
+      - value: 没有
+      - value: 有但在背景里或很小
+      - value: 有而且是主体
+    use: 封面上放不放产品，还是留到后面的图
+
+  - id: img_brand_readable
+    version: 1
+    trial: pass_ask_alone
+    group: S_brand
+    type: choice
+    objective: "yes"
+    ask: 图上任何地方，能不能读出一个品牌名或认出一个商标？
+    options:
+      - value: 能
+      - value: 不能
+    use: 封面上露不露品牌
+
+  - id: img_scene
+    version: 1
+    trial: too_few
+    group: C_content
+    type: choice
+    objective: mostly
+    ask: 这张图是在哪儿拍的？
+    options:
+      - value: 生活场景
+        means: 家里、街上、店里、办公室这类有人过日子的地方
+      - value: 纯色或棚拍背景
+        means: 干净的纯色背景、桌面摆拍、影棚
+      - value: 没有拍摄场景
+        means: 文字卡片、截图、纯设计图，没有实拍的场景
+    use: 生活场景还是产品摆拍

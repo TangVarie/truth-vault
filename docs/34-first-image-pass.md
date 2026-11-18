@@ -186,6 +186,7 @@
 - `scripts/check_first_image_pass.py`（CI python job，全是合成数据，不连网）：题库 fi-v0.2 的结构；每晚和一次性的上限按价格表不超过 1 元和 2 元、只能调低；不是便宜档一个请求都不发；一次预留只发一个请求（假 SDK 数请求）；整趟走一遍（假库、假下载、假模型）各种情况记成什么；三道上限在跑的时候管用，问到一半撞了上限的那一篇不写；迁移没跑、缺环境变量时零动作而且退出 0，名单照样同步；排第一的帖被拒卡不住后面的；输出里没有任何客户材料；workflow 的接线（一天只起一趟、不传备用站的钥匙）；「新帖从哪天算」和经 PostgREST 调三个函数的参数。
   第 8 节（11-16 首跑之后加的）：没答成的每一篇在摘要里都有一个写死的原因词；认什么和首跑时逐字相同（`parse_answers` 的源码钉住，固定的一批回包逐条对过，第 10 节），没有放宽；「假如放宽」只是另数一行，一个答案都不因为它被认下来。
   第 9 节（D-160）：整行照抄只认 52 个写死的字符串，逐个位置删一个字、插一个字、换冒号、加否定和没勾的框都不认；整行一字不差但回包不够格的（同一题两遍、多出来的键、前后有字、撞上限）不认；评审核实过的 21 种认下来的和老读法逐字相同；两份题库的提示词 sha256 钉住。自相矛盾只作废 `void` 里的题：三条规则各走一遍；规则中了的帖，留下的答案里没有一个在说图上有没有字（字数、大字、字的种类、两道代码题、版式「纯文字卡片」，是守卫自己的一张单子，不是把题库里的规则再跑一遍：那几条都要 `img_text_amount`，它一作废，再跑一遍什么都查不出来）；说了没有字、抄出来的是「没有」的那种照旧整轮作废；去掉 `void`、换回老的 `assemble`、第二条的 `void` 里拿掉版式、认不出「没有」的说法，各有一处会红。
+  第 10 节（D-162，fi-v0.3 备好了、没换上，第 13 节）：每晚读的还是 fi-v0.2，v0.1、v0.2 两份文件的 sha256 钉住；v0.3 和 v0.2 只差白名单里的几处；加的那一句两道题里逐字节相同、不带「屏幕」；第一组的提示词和 v0.2 逐字节相同；第四条规则中和不中的几种；改了问法的题不往外给。
 - `scripts/check_first_image_pg.py`（CI sql job，真 Postgres）：迁移跑两遍；取列规则；该做哪些帖（含整张表刚接进来的情形）；写结果的规矩；重试；读的那一面（含做完之后加了图、换了图、图没了）；权限；自检 #87 不把「不是封面只存一行」数成半写；再用 `first_image_pass.py` 在真库上跑一趟（假下载、假模型），其中一篇答案自相矛盾：库收下带 `inconsistent:` 的行，读的那一面 `usable = true`、`answers` 里没有字那两道题；一篇说了有字、大字是空的、版式是纯文字卡片：`answers` 里连 `img_layout` 也没有；一篇说了没有字、抄出来的是「没有」：`no_answer`、一行答案都不写、`attempts` 是 1、排了下一次。
 - `scripts/check_sync_watchdog.py`：首图那一趟手动停用不报红，别的照旧。
 - `scripts/check_first_image.py`（试跑的守卫）照旧。
@@ -407,3 +408,51 @@ Summary 还多一句「说了没有字的封面 N 篇，其中又抄出了字 M 
 - 换版之后怎么判：同一批 22 张说了没有字的封面里，第一条规则还中几篇（11-17 晚的比是 10/14）；理想是 3 篇以内；第二条（说了有字、没抄出来）不能涨；第一组的「没有字」比例应该差不多。只看「低于全部封面的两成」不够：不改也可能低于两成。
 
 **顺带看到的。** 第二趟的 11 篇第三趟换了第一个附件的 token，又被问了一遍（其中 5 篇本来已经定了，约 29 次调用、约 0.06 元）。飞书同步为什么换 token 没查，钱小，先记在 I-38。
+
+## 13. fi-v0.3 备好了，没换上（D-162，11-18）
+
+**每晚的首图步骤读的还是 fi-v0.2。** `scripts/first_image_pass.py` 的 `BANK_PATH`、`BANK_VERSION` 没动，夜跑一点没变；这一步没有 SQL、没有调模型、没有写库。换不换照第 12 节「下一步」看证据：第一条规则攒到中了 6 篇以上、一半以上是 `brand:name` / `brand:product` 才换；一半以上是 `title:same`，或者别的说不清的情况，不换、回来问 owner。
+
+文件 `prompts/first_image_questions_v0_3.yaml`（`fi-v0.3`，草案）。和 fi-v0.2 只差这几处：
+
+| 哪里 | fi-v0.3 |
+|---|---|
+| `img_main_text`（抄最大那句字） | 原来那句一字不动（最多 40 个字、没有就给空字符串），后面加「只算加在图上的字，产品包装、招牌、商标上本来就有的字不算。」；version 1 → 2 |
+| `img_text_kind`（字是哪一种） | 问句改成「图上后期加的、最大的那句字是哪一种？」，后面加同一句（逐字节相同）；选项没动；version 1 → 2 |
+| 第四条自检规则 `text_kind_without_text` | 说了没有字，「字是哪一种」却答了提问 / 结果或结论 / 清单或教程标题 / 只是名称 → 作废 `img_text_amount`、`img_main_text`、`img_text_kind`（两道代码题跟着 `source_invalid`）。「字是哪一种」也答没有字、「多少字」自己没读出来，都不中。前三条一字不差 |
+| `trial` | 改了问法的两道、从 `img_main_text` 算的两道代码题，都是新词 `reworded_unverified` |
+| 往外给的题 | 五道：比 fi-v0.2 少了 `img_text_kind`、`img_text_has_number` |
+
+那一句不带「屏幕」（D-162 评审：照抄「多少字」那句的话，截图样式的封面两次调用会一起答成没有字）。第一组（`A_kind`）和没改的另外四组（`B_composition`、`C_content`、`S_decoration`、`S_brand`）印出来的提示词和 fi-v0.2 逐字节相同，换上之后拿第一组当对照。
+
+**两道代码题的 `trial` 为什么也改、往外给的为什么少了两道。** 试跑的结论是在老问法上量的。`img_text_has_number`、`img_text_matches_title` 的代码没变，可它们算的就是 `img_main_text` 抄出来的那句字；抄字题不再抄包装上的字，这两道的答案也跟着变（比如包装上印着「3 天」的那种）。只给改了问法的两道换词、让 `img_text_has_number` 留着 `pass_ask_alone` 往外给，等于拿老问法的结论替新问法担保。所以四道都记 `reworded_unverified`：它在 `TRIAL_VERDICTS` 里、不在 `SURFACE_TRIALS` 里，题库检查不许这几道进 `surfaced_questions`。换上之后照样问、照样存，只是不往外给（`img_text_matches_title` 本来就不给）。D-162 说的那 4 篇「只是名称」配「没有字」，重问之后就不只是收回那几篇：这两道一篇都不往外给。还没有下游在读；按第 6 节第 2、3 条，少了键就是这道题没答成。
+
+**什么时候放回来。** 换上之后照 D-162「换版之后怎么判」那一条核（同一批说了没有字的封面里第一条规则还中几篇，理想 3 篇以内；第二条不涨；第一组「没有字」的比例差不多）。过了，再改题库文件：这几道的 `trial` 换掉、题号加回 `surfaced_questions`，不重问、不跑 SQL（第 3 节的老规矩）。用哪个词到时候定：现有的 `pass` / `pass_ask_alone` 说的是两轮试跑，前后对比不是那个；要新词就在 `SURFACE_TRIALS` 里加一个，是一行代码。
+
+**换的那个 PR 要改的**（11-18 在一份拷贝里把两个常量换成 v0.3，把守卫里的断言都改成「记下、不停」跑了一遍 python 那一半，又在本机 Postgres 16 上跑了 CI 的 sql job：下面是红的每一处。python 那一半整套是 107 步红 1 步，就是首图这份守卫；sql job 60 步红 1 步，就是 `check_first_image_pg.py`）：
+
+1. `scripts/first_image_pass.py`：`BANK_PATH` 指到 `first_image_questions_v0_3.yaml`、`BANK_VERSION` 改成 `fi-v0.3`，两行一起改。只改一行，题库检查不过，首图步骤打一行「题库不合法」就停，不花钱。
+2. `scripts/check_first_image_pass.py`：第 1 节（版本号；试跑结论那几个集合；和 fi-v0.1 比问法那一段要把改了的两道除外）、第 3 节（写的行的版本号；`CONTRA1` 在 v0.3 里第四条也中，`partial_void` 的数要改）、第 7 节（两个函数调用里的 `p_bank_version`）、第 9 节（作废哪几道题那张单子从三条变四条；和 fi-v0.1 比 `assemble` 结果的那一段（只中第四条的轮次，去掉 `void` 的 v0.3 整轮作废、fi-v0.1 没有第四条照留，要把这种轮次除外）；③ 那趟假跑里 `NTBT1`、`BOTH1`、`CARDONLY1` 第四条也中，`partial_void` 要加 `text_kind_without_text`；计数那一节「抄了 40 个字以上」的夹具配的是「只是名称」，第四条会中，要改成配「没有字」）、第 10 节（「没换上」那几条反过来）。v0.3 整套提示词的 sha256 这次已经钉在第 9 节的 `PROMPT_SHA256` 里。
+3. `scripts/check_first_image_pg.py` 的 B 段读的是步骤自己的题库，**要改两处**（11-18 评审在本机 Postgres 16 上跑出来的）：`CONTRA` 夹具「字是哪一种」答的是「结果或结论」，第四条也中，`partial_void` 的断言要加 `text_kind_without_text: 1`；卡片那一篇从 `v_first_image_features` 读 `img_text_has_number`，v0.3 里这道不往外给、视图里没有这个键，要改成断言这个键不在，或者去 `note_feature_answers` 那一行读。
+4. 文档第 3、6 节的表（往外给的题、`answers` 里可能出现的键）。workflow 和迁移里写着 fi-v0.2 的只是注释。不用跑 SQL：读的那一面按题库镜像的版本放行，换上之后 fi-v0.2 的行自己就 `usable = false`，重问完才回来。
+5. **合并之前先只读 SELECT，把 fi-v0.2 的闭集答案按计数记下来**（重问会删掉老的行），计数写进那个 PR 和 I-38：
+
+   ```sql
+   select question_id, coalesce(answer, '无效:' || invalid_reason) as answer, count(*)
+   from truth_vault.note_feature_answers
+   where run_tag = 'img-primary' and bank_version = 'fi-v0.2' and question_id <> 'img_main_text'
+   group by 1, 2 order by 1, 2;
+   ```
+
+   「同一批图前后比」要按篇配对：配对用的那一份（每篇的 `img_text_amount`、第一条规则中没中）只留在工程本机，不进仓、不进日志。抄下来的字不查。
+
+钱和重问照 D-162。约 391 次调用、约 0.77 元（最多约 0.84 元）是 11-18 那 61 篇的数；换的条件本身就要等新帖攒出证据，换的时候做完的帖只会更多，每多一篇答成的封面多 7 次调用、约 0.014 元（按 11-17 晚的比，攒到 6 篇中了大约要新答成 19 张封面，到时候约 520 次调用、约 1.0 元，40 张一晚的上限下要三晚）。所以合并之前先数一次：
+
+   ```sql
+   select count(*) as done, sum((status = 'answered')::int) as answered
+   from truth_vault.note_first_image where bank_version = 'fi-v0.2';
+   ```
+
+   照这个数重算调用、钱和要几晚，写进那个 PR 和 I-38；**超过 owner 11-18 点头的约 0.84 元，先把新的数告诉 owner、等一句话再换**。那几晚现在 `usable` 的帖读不到答案。
+
+守卫：`scripts/check_first_image_pass.py` 第 10 节。
