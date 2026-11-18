@@ -464,32 +464,53 @@ class Pass:
         why = next((w for w in res["invalid"].values() if str(w).startswith("inconsistent:")), "")
         return "round:" + (self._rule_detail(why.split(":", 1)[-1], parsed) or "other")
 
-    def _brand_words(self, project_id: Any) -> Optional[list[str]]:
-        """项目映射文件里的品牌、产品名和品牌别名 (去掉空格标点、转小写, 两个字以上); 读不到 / 一个都没有 → None。
+    def _brand_words(self, project_id: Any) -> Optional[dict[str, list[str]]]:
+        """项目映射文件里的词 (去掉空格标点、转小写, 两个字以上), 分两组: name = 品牌和品牌别名, product = 产品名
+        (有的项目这一格写的是一长串描述, 所以和品牌分开数)。读不到 / 两组都空 → None。
         只读仓里的 mappings/<项目>.yaml, 不查库。占位 (「(未填)」「待确认」这种) 不算。"""
         pid = project_id if isinstance(project_id, str) else ""
         if pid in self._brand_cache:
             return self._brand_cache[pid]
-        words: list[str] = []
+        groups: dict[str, list[str]] = {"name": [], "product": []}
         try:
             if re.fullmatch(r"[A-Za-z0-9_]{1,64}", pid):
                 import yaml
-                m = yaml.safe_load((MAPPINGS_DIR / f"{pid}.yaml").read_text(encoding="utf-8")) or {}
-                raw = [m.get("brand"), m.get("product")] + list(m.get("brand_aliases") or [])
-                for v in raw:
-                    if not isinstance(v, str) or v.strip().startswith(("(", "（")) or ("待" in v and len(v.strip()) <= 4):
-                        continue                                  # 和 feature_bank.brand_dictionary 同一道形状过滤
-                    w = FI.normalise(v)
-                    if len(w) >= 2 and w not in words:
-                        words.append(w)
+                m = yaml.safe_load((MAPPINGS_DIR / f"{pid}.yaml").read_text(encoding="utf-8"))
+                m = m if isinstance(m, dict) else {}
+                aliases = m.get("brand_aliases")
+                aliases = aliases if isinstance(aliases, list) else []
+                for group, raw in (("name", [m.get("brand"), *aliases]), ("product", [m.get("product")])):
+                    for v in raw:
+                        if not isinstance(v, str) or v.strip().startswith(("(", "（")) or ("待" in v and len(v.strip()) <= 4):
+                            continue                              # 和 feature_bank.brand_dictionary 同一道形状过滤
+                        w = FI.normalise(v)
+                        if len(w) >= 2 and w not in groups[group]:
+                            groups[group].append(w)
         except Exception:  # noqa: BLE001 — 计数用的, 读不到就记 no_list, 不影响这一篇
-            words = []
-        self._brand_cache[pid] = words or None
+            groups = {"name": [], "product": []}
+        self._brand_cache[pid] = groups if (groups["name"] or groups["product"]) else None
         return self._brand_cache[pid]
+
+    def _brand_word(self, project_id: Any, nt: str) -> str:
+        """抄出来的字 (已经 normalise) 和项目映射对一下, 回一个写死的词。先看强的:
+        name = 里面有品牌 / 品牌别名; product = 没有品牌、但整个产品名都在里面; part = 都没有、但抄出来的整句是
+        品牌 / 产品名里的一截 (「戒烟」「营养」这种常用词也会落在长的产品描述里, 所以只当弱的旁证); no = 都不沾;
+        no_list = 映射读不到。"""
+        g = self._brand_words(project_id)
+        if g is None:
+            return "no_list"
+        if any(w in nt for w in g["name"]):
+            return "name"
+        if any(w in nt for w in g["product"]):
+            return "product"
+        if len(nt) >= 2 and any(nt in w for w in g["name"] + g["product"]):
+            return "part"
+        return "no"
 
     def _count_no_text(self, cand: dict, parsed: dict, voided: list[str]) -> None:
         """答成的封面: 「说了没有字」的数一篇; 其中第一条规则 (说了没有字、却抄出了字) 中了的, 再数抄出来的是什么。
-        出去的只有写死的词 (brand / title / len / kind / amount_by) 和题库里的选项词, 抄出来的字本身不出这个函数。"""
+        出去的只有写死的词 (brand / title / len / kind / amount_by / text_invalid) 和题库里的选项词,
+        抄出来的字本身不出这个函数。"""
         for rule in self.bank.get("consistency") or []:
             text_q, cond = rule.get("then_empty"), rule.get("if") or {}
             if not text_q or len(cond) != 1:
@@ -498,18 +519,18 @@ class Pass:
             value, why = parsed.get(amount_q, (None, None))
             if why is not None or value not in said:
                 continue
+            text, text_why = parsed.get(text_q, (None, FI.INVALID_MISSING))
+            if text_why is not None:
+                # 抄字那道题自己没读出来 (比如抄了 40 个字以上): 规则判不了, 不进分母, 另记一个写死的原因
+                word = text_why if isinstance(text_why, str) and re.fullmatch(r"[a-z0-9_]{1,40}", text_why) else "other"
+                self.no_text_void["text_invalid:" + word] += 1
+                continue
             self.no_text_void["covers_said_no_text"] += 1
             if f"{rule.get('name')}:{TRANSCRIBED}" not in voided:
                 continue
             self.no_text_void["fired"] += 1
-            text = parsed.get(text_q, (None, None))[0]
             nt = FI.normalise(text if isinstance(text, str) else "")
-            words = self._brand_words(cand.get("project_id"))
-            if words is None:
-                brand = "no_list"
-            else:
-                brand = "yes" if any(w in nt or (len(nt) >= 2 and nt in w) for w in words) else "no"
-            self.no_text_void["brand:" + brand] += 1
+            self.no_text_void["brand:" + self._brand_word(cand.get("project_id"), nt)] += 1
             title_ans, _why, _grey = FI.text_matches_title(text if isinstance(text, str) else "", cand.get("title") or "")
             self.no_text_void["title:" + _TITLE_WORD.get(title_ans or "", "no_title")] += 1
             self.no_text_void["len:" + next((lab for top, lab in _LEN_BUCKETS if len(nt) <= top), "13_plus")] += 1

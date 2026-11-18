@@ -2018,7 +2018,7 @@ def check_line_and_void() -> None:
     assert by0["TBNTCARD1"][2]["img_layout"] == ("纯文字卡片", None) \
         and _claims({q: a for q, (a, _w) in by0["TBNTCARD1"][2].items() if a is not None}) == {"img_layout"}, "反证没成立"
 
-    for doc, needles in (("docs/34-first-image-pass.md", ("D-162", "## 12", "no_text_void", "covers_said_no_text", "brand:no_list",
+    for doc, needles in (("docs/34-first-image-pass.md", ("D-162", "## 12", "no_text_void", "covers_said_no_text", "brand:no_list", "brand:part", "text_invalid",
                                                           "不加「屏幕」")),
                          ("DECISIONS.md", ("D-162", "no_text_void", "不加「屏幕」", "mappings/<项目>.yaml")),
                          ("OPEN-ITEMS.md", ("D-162", "no_text_void")),
@@ -2038,69 +2038,112 @@ def check_line_and_void() -> None:
 def check_no_text_counts() -> None:
     """11-18 (I-38): 「说了没有字、又抄出了字」那几篇抄的是什么。只出写死的词和计数, 抄出来的字一个都不出去。"""
     cover = ("封面", None)
+    G = {"name": ["abc品牌", "品牌甲"], "product": ["营养液体", "nrt系列戒烟产品咀嚼胶喷雾戒烟贴"]}   # 假的映射 (不靠仓里的品牌词)
+    NEW = lambda: P.Pass(bank=BANK, store=None, budget=None, download=None, shrinker=None, ask=None)  # noqa: E731
 
-    def count(text, *, project="OKMAN_phase1", title=None, kind=("结果或结论", None), amount=("没有字", None), lined=(),
-              rule_fired=True):
-        p = P.Pass(bank=BANK, store=None, budget=None, download=None, shrinker=None, ask=None)
+    def count(text, *, project="FAKE_phase1", groups=G, title=None, kind=("结果或结论", None), amount=("没有字", None),
+              lined=(), rule_fired=True, text_why=None):
+        p = NEW()
+        if project == "FAKE_phase1":
+            p._brand_cache[project] = groups
         p._lined = set(lined)
-        parsed = {"img_kind": cover, "img_text_amount": amount, "img_main_text": (text, None), "img_text_kind": kind}
+        parsed = {"img_kind": cover, "img_text_amount": amount, "img_main_text": (text, text_why), "img_text_kind": kind}
         voided = ["no_text_but_transcribed:transcribed_text"] if rule_fired else []
         p._count_no_text({"project_id": project, "title": title}, parsed, voided)
-        return dict(p.no_text_void), p
+        return dict(p.no_text_void)
 
-    words = P.Pass(bank=BANK, store=None, budget=None, download=None, shrinker=None, ask=None)._brand_words("OKMAN_phase1")
-    assert words and all(len(w) >= 2 and w == FI.normalise(w) for w in words), "夹具: OKMAN 的映射里要有品牌词"
-    w = words[0]
     base = {"covers_said_no_text": 1, "fired": 1, "kind:结果或结论": 1, "amount_by:value": 1}
-    # 品牌名: 抄出来的字里有品牌 / 产品 / 别名 (去掉空格标点、不分大小写), 或者抄出来的就是品牌名的一截 (两个字以上)
-    got, _ = count(f"  {w.upper()}！！ ")
-    assert got == dict(base, **{"brand:yes": 1, "title:no_title": 1,
-                                "len:" + ("1_4" if len(w) <= 4 else "5_12" if len(w) <= 12 else "13_plus"): 1}), got
-    got, _ = count(f"{TEXT_CANARY}{w}", title=f"{TEXT_CANARY}{w}")
-    assert got["brand:yes"] == 1 and got["title:same"] == 1 and got["len:13_plus"] == 1, got
-    if len(w) >= 3:
-        got, _ = count(w[:2])
-        assert got["brand:yes"] == 1 and got["len:1_4"] == 1, got
-    got, _ = count("三天见效", title="完全不一样的一句标题")
-    assert got == dict(base, **{"brand:no": 1, "title:different": 1, "len:1_4": 1}), got
-    got, _ = count("一二三四五六七八九十甲乙", title="")      # 12 个字 → 5_12; 没有标题 → no_title
+    # brand: 先看强的。name = 有品牌 / 别名 (去掉空格标点、不分大小写); product = 没有品牌、但整个产品名都在里面;
+    # part = 都没有、抄出来的整句是品牌 / 产品名的一截 (「戒烟」这种常用词也会落在长的产品描述里: 只是弱的旁证); no; no_list
+    got = count("  ABC品牌！！ ")                    # 去掉空格标点、转小写之后是 abc品牌, 5 个字
+    assert got == dict(base, **{"brand:name": 1, "title:no_title": 1, "len:5_12": 1}), got
+    assert count("品牌甲营养液体")["brand:name"] == 1, "两样都有: 算 name (强的那个)"
+    assert count("营养液体到了")["brand:product"] == 1
+    for frag in ("戒烟", "喷雾", "产品", "营养", "品牌"):
+        got = count(frag)
+        assert got["brand:part"] == 1 and "brand:name" not in got and "brand:product" not in got, (frag, got)
+    assert count("戒烟第30天")["brand:no"] == 1, "常用词加了别的字: 不算一截, 也不算产品名"
+    assert count("三天见效", title="完全不一样的一句标题") == dict(base, **{"brand:no": 1, "title:different": 1, "len:1_4": 1})
+    assert count("营")["brand:no"] == 1, "一个字的不算一截"
+    got = count(f"{TEXT_CANARY}品牌甲", title=f"{TEXT_CANARY}品牌甲")
+    assert got["brand:name"] == 1 and got["title:same"] == 1 and got["len:5_12"] == 1, got      # 9 + 3 = 12 个字
+    assert count(TEXT_CANARY * 2)["len:13_plus"] == 1
+    got = count("一二三四五六七八九十甲乙", title="")      # 12 个字 → 5_12; 没有标题 → no_title
     assert got["len:5_12"] == 1 and got["title:no_title"] == 1, got
-    # 映射读不到 / 项目名不像项目名 → no_list (不猜、不报错); 同一个项目只读一次
+    assert count("品牌甲", groups=None)["brand:no_list"] == 1
+    # 真的映射: 读得出、分两组、都 normalise 过; 同一个项目只读一次
+    p = NEW()
+    g = p._brand_words("OKMAN_phase1")
+    assert g and set(g) == {"name", "product"} and g["name"] and all(len(w) >= 2 and w == FI.normalise(w) for w in g["name"] + g["product"])
+    assert p._brand_words("OKMAN_phase1") is g and set(p._brand_cache) == {"OKMAN_phase1"}
+    got = count(f"  {g['name'][0].upper()}！ ", project="OKMAN_phase1")
+    assert got["brand:name"] == 1, got
+    # 映射读不到 / 项目名不像项目名 / 文件形状不对 / 只有占位 → no_list 或照能读的读 (不猜、不报错)
     for proj in ("NOPE_phase9", "../prompts/first_image_questions_v0_2", "", None):
-        got, p = count("三天见效", project=proj)
-        assert got["brand:no_list"] == 1 and "brand:yes" not in got and "brand:no" not in got, (proj, got)
-    p = P.Pass(bank=BANK, store=None, budget=None, download=None, shrinker=None, ask=None)
-    assert p._brand_words("OKMAN_phase1") is p._brand_words("OKMAN_phase1") and set(p._brand_cache) == {"OKMAN_phase1"}
+        got = count("品牌甲", project=proj)
+        assert got["brand:no_list"] == 1 and not any(k in got for k in ("brand:name", "brand:product", "brand:part", "brand:no")), (proj, got)
+    import tempfile
+    real_dir = P.MAPPINGS_DIR
+    with tempfile.TemporaryDirectory() as td:
+        d = pathlib.Path(td)
+        (d / "BADA_phase1.yaml").write_text("- 品牌甲\n- 品牌乙\n", encoding="utf-8")
+        (d / "BADB_phase1.yaml").write_text("brand: 品牌乙\nbrand_aliases: 不是列表\nproduct: 7\n", encoding="utf-8")
+        (d / "PLACE_phase1.yaml").write_text("brand: (未填)\nproduct: 待确认\nbrand_aliases: [（待补）, 'x']\n", encoding="utf-8")
+        (d / "BROKEN_phase1.yaml").write_text("brand: [未闭合\n", encoding="utf-8")
+        P.MAPPINGS_DIR = d
+        try:
+            q = NEW()
+            assert q._brand_words("BADA_phase1") is None and q._brand_words("PLACE_phase1") is None
+            assert q._brand_words("BROKEN_phase1") is None
+            assert q._brand_words("BADB_phase1") == {"name": [FI.normalise("品牌乙")], "product": []}
+        finally:
+            P.MAPPINGS_DIR = real_dir
     # 「字是哪一种」: 闭集里的词照记; 无效 / 闭集外 → invalid。「没有字」靠认整行认下的 → amount_by:line
-    got, _ = count("三天见效", kind=(None, FI.INVALID_OOV))
-    assert got["kind:invalid"] == 1, got
-    got, _ = count("三天见效", kind=("不在闭集里的词", None))
-    assert got["kind:invalid"] == 1, got
-    got, _ = count("三天见效", kind=("只是名称", None), lined=("img_text_amount",))
+    assert count("三天见效", kind=(None, FI.INVALID_OOV))["kind:invalid"] == 1
+    assert count("三天见效", kind=("不在闭集里的词", None))["kind:invalid"] == 1
+    got = count("三天见效", kind=("只是名称", None), lined=("img_text_amount",))
     assert got["kind:只是名称"] == 1 and got["amount_by:line"] == 1, got
-    got, _ = count("三天见效", lined=("img_kind",))
-    assert got["amount_by:value"] == 1, "只看 img_text_amount 是不是靠认整行认下的"
-    # 分母: 说了没有字、规则没中 (抄出来是空的) → 只数分母; 没说没有字 / 那道题无效 → 什么都不数
-    got, _ = count("", rule_fired=False)
-    assert got == {"covers_said_no_text": 1}, got
-    assert count("三天见效", amount=("一句大字", None), rule_fired=False)[0] == {}
-    assert count("三天见效", amount=(None, FI.INVALID_OOV), rule_fired=False)[0] == {}
+    assert count("三天见效", lined=("img_kind",))["amount_by:value"] == 1, "只看 img_text_amount 是不是靠认整行认下的"
+    # 分母: 说了没有字、规则没中 (抄出来是空的) → 只数分母; 没说没有字 / 那道题无效 → 什么都不数;
+    # 说了没有字、抄字那道题自己没读出来 (抄了 40 个字以上 / 没有这一题) → 不进分母, 另记写死的原因 (评审 11-18)
+    assert count("", rule_fired=False) == {"covers_said_no_text": 1}
+    assert count("三天见效", amount=("一句大字", None), rule_fired=False) == {}
+    assert count("三天见效", amount=(None, FI.INVALID_OOV), rule_fired=False) == {}
+    assert count(None, text_why=FI.INVALID_TEXT_LONG, rule_fired=False) == {"text_invalid:text_too_long": 1}
+    assert count(None, text_why="Not A Fixed Word!", rule_fired=False) == {"text_invalid:other": 1}
+    p = NEW()
+    p._count_no_text({"project_id": "FAKE_phase1"}, {"img_text_amount": ("没有字", None)}, [])
+    assert dict(p.no_text_void) == {"text_invalid:" + FI.INVALID_MISSING: 1}
+    # 走一遍 assemble: 抄了 40 个字以上 → 第一条规则不中, 这一篇不进分母 (原来会算成「没抄出字」, 比偏低)
+    long_text = "包" * 41
+    parsed = FI.parse_answers(BANK, ["img_main_text"], json.dumps({"answers": [{"id": "img_main_text", "answer": long_text}]},
+                                                                  ensure_ascii=False))
+    assert parsed["img_main_text"] == (None, FI.INVALID_TEXT_LONG), parsed
+    full = {"img_kind": cover, "img_text_amount": ("没有字", None), "img_text_kind": ("只是名称", None), **parsed}
+    res = FI.assemble(BANK, full, "标题")
+    assert res["voided"] == [], res
+    p = NEW()
+    p._count_no_text({"project_id": "FAKE_phase1"}, full, [p._rule_detail(n, full) or "other" for n in res["voided"]])
+    assert dict(p.no_text_void) == {"text_invalid:text_too_long": 1}, dict(p.no_text_void)
     # 只出写死的词: 键的形状钉死, 抄出来的字 (探针) 不出现在任何一个键里
     keys = set()
-    for text in (f"{TEXT_CANARY}{w}", TEXT_CANARY, f"{w}{TITLE_CANARY}"):
-        got, _ = count(text, title=TITLE_CANARY)
+    for text in (f"{TEXT_CANARY}品牌甲", TEXT_CANARY, f"营养液体{TITLE_CANARY}", "戒烟"):
+        got = count(text, title=TITLE_CANARY)
         keys |= set(got)
         _no_leak("计数", json.dumps(got, ensure_ascii=False))
+    keys |= set(count(None, text_why=FI.INVALID_TEXT_LONG)) | set(count("品牌甲", groups=None))
     kinds = {o["value"] for q in BANK["questions"] if q["id"] == "img_text_kind" for o in q["options"]} | {"invalid"}
-    pat = r"covers_said_no_text|fired|brand:(yes|no|no_list)|title:(same|different|no_title)|len:(1_4|5_12|13_plus)|" \
-          r"amount_by:(line|value)|kind:(" + "|".join(map(re.escape, sorted(kinds))) + ")"
+    pat = r"covers_said_no_text|fired|brand:(name|product|part|no|no_list)|title:(same|different|no_title)|" \
+          r"len:(1_4|5_12|13_plus)|amount_by:(line|value)|text_invalid:[a-z0-9_]{1,40}|kind:(" + "|".join(map(re.escape, sorted(kinds))) + ")"
     assert all(re.fullmatch(pat, k) for k in keys), sorted(keys)
-    # 反证: 把品牌词换成空表 → 同一句只会记 no_list, 上面「brand:yes」的断言就会红
-    p = P.Pass(bank=BANK, store=None, budget=None, download=None, shrinker=None, ask=None)
-    p._brand_cache["OKMAN_phase1"] = None
-    p._count_no_text({"project_id": "OKMAN_phase1", "title": None},
-                     {"img_text_amount": ("没有字", None), "img_main_text": (w, None)}, ["no_text_but_transcribed:transcribed_text"])
-    assert p.no_text_void["brand:no_list"] == 1 and p.no_text_void["kind:invalid"] == 1, "反证没成立"
+    assert {k.split(":")[0] for k in keys} >= {"brand", "title", "len", "kind", "amount_by", "text_invalid"}
+    # 反证: 去掉「先看强的」(一截也算品牌) → 「戒烟」会记成 name / product, 上面「只是弱的旁证」那条就会红
+    real = P.Pass._brand_word
+    P.Pass._brand_word = lambda self, pid, nt: "name" if any(nt in w or w in nt for w in G["name"] + G["product"]) else "no"
+    try:
+        assert count("戒烟")["brand:name"] == 1, "反证没成立"
+    finally:
+        P.Pass._brand_word = real
 
 
 def main() -> int:
