@@ -533,7 +533,8 @@ def check_pass() -> None:
     assert res["partial_void"] == {"no_text_but_transcribed:transcribed_text": 1}, res["partial_void"]
     # 11-18 (I-38): 说了没有字的封面只有 CONTRA1 一篇, 它抄出了字: 不是品牌名、和标题不像、13 个字以上 (细的在 §9)
     assert res["no_text_void"] == {"covers_said_no_text": 1, "fired": 1, "brand:no": 1, "title:different": 1, "len:13_plus": 1,
-                                   "kind:结果或结论": 1, "amount_by:value": 1}, res["no_text_void"]
+                                   "kind:结果或结论": 1, "amount_by:value": 1, "script:cjk": 1,
+                                   "packaging_like:no": 1}, res["no_text_void"]
     assert res["line_accepted"] == {} and res["line_refused"] == {}, "没有人抄整行: 这两行是空的"
     assert res["invalid_by_question"] == {"img_kind:oov_other": 1, "img_layout:oov_other": 1, "img_text_matches_title:source_invalid": 1,
                                           "img_text_has_number:source_invalid": 1}, res["invalid_by_question"]
@@ -1988,7 +1989,8 @@ def check_line_and_void() -> None:
     # 11-18 (I-38): 答成的封面里说了没有字的 4 篇 (NTBT1 / BOTH1 / CARDONLY1 / CARDOOV1), 抄出了字的 2 篇 (NTBT1 / BOTH1);
     # 说了没有字、抄的是「没有」的两篇整轮作废、没答成, 不进分母
     assert res["no_text_void"] == {"covers_said_no_text": 4, "fired": 2, "brand:no": 2, "title:different": 2, "len:13_plus": 2,
-                                   "kind:结果或结论": 2, "amount_by:value": 2}, res["no_text_void"]
+                                   "kind:结果或结论": 2, "amount_by:value": 2, "script:cjk": 2,
+                                   "packaging_like:no": 2}, res["no_text_void"]
     assert "说了没有字的封面 4 篇，其中又抄出了字 2 篇（50%；有字的封面不会中这一条，所以看这个比，不看占全部封面的比）" in out
     assert "说了没有字的封面、其中又抄出了字的抄的是什么（只有是/否和计数，字本身不出库、不进日志）：amount_by:value=2，" in out
     check_no_text_counts()
@@ -2032,8 +2034,9 @@ def check_line_and_void() -> None:
         and _claims({q: a for q, (a, _w) in by0["TBNTCARD1"][2].items() if a is not None}) == {"img_layout"}, "反证没成立"
 
     for doc, needles in (("docs/34-first-image-pass.md", ("D-162", "## 12", "no_text_void", "covers_said_no_text", "brand:no_list", "brand:part", "text_invalid",
+                                                          "packaging_like", "script:latin",
                                                           "不加「屏幕」")),
-                         ("DECISIONS.md", ("D-162", "no_text_void", "不加「屏幕」", "mappings/<项目>.yaml")),
+                         ("DECISIONS.md", ("D-162", "no_text_void", "不加「屏幕」", "mappings/<项目>.yaml", "packaging_like")),
                          ("OPEN-ITEMS.md", ("D-162", "no_text_void")),
                          ("docs/34-first-image-pass.md", ("D-160", "## 11", "line_accepted", "line_refused", "partial_void", "一字不差",
                                                           "没有人对着图核过", "inconsistent:", "void", "said_none_in_words",
@@ -2069,14 +2072,25 @@ def check_no_text_counts() -> None:
     # brand: 先看强的。name = 有品牌 / 别名 (去掉空格标点、不分大小写); product = 没有品牌、但整个产品名都在里面;
     # part = 都没有、抄出来的整句是品牌 / 产品名的一截 (「戒烟」这种常用词也会落在长的产品描述里: 只是弱的旁证); no; no_list
     got = count("  ABC品牌！！ ")                    # 去掉空格标点、转小写之后是 abc品牌, 5 个字
-    assert got == dict(base, **{"brand:name": 1, "title:no_title": 1, "len:5_12": 1}), got
+    assert got == dict(base, **{"brand:name": 1, "title:no_title": 1, "len:5_12": 1, "script:mixed": 1,
+                                "packaging_like:yes": 1}), got
     assert count("品牌甲营养液体")["brand:name"] == 1, "两样都有: 算 name (强的那个)"
     assert count("营养液体到了")["brand:product"] == 1
     for frag in ("戒烟", "喷雾", "产品", "营养", "品牌"):
         got = count(frag)
         assert got["brand:part"] == 1 and "brand:name" not in got and "brand:product" not in got, (frag, got)
     assert count("戒烟第30天")["brand:no"] == 1, "常用词加了别的字: 不算一截, 也不算产品名"
-    assert count("三天见效", title="完全不一样的一句标题") == dict(base, **{"brand:no": 1, "title:different": 1, "len:1_4": 1})
+    assert count("三天见效", title="完全不一样的一句标题") == dict(base, **{"brand:no": 1, "title:different": 1, "len:1_4": 1,
+                                                                          "script:cjk": 1, "packaging_like:no": 1})
+    # 11-19 加: 抄出来的是什么字。映射里的品牌 / 产品名多半只有中文, 包装上常印英文名: brand:no 配 script:latin 就是这种
+    for text, word in (("Brand X 2026", "latin"), ("ABC", "latin"), ("三天见效", "cjk"), ("ABC品牌", "mixed"),
+                       ("12 3", "digits"), ("Ｂｒａｎｄ", "latin"), ("ｂｒａｎｄ品牌", "mixed")):
+        assert count(text)["script:" + word] == 1, (text, word)
+        assert P._script_word(FI.normalise(text)) == word
+    # 「像包装上的字」: 品牌 / 整个产品名, 或者整句只有英文; 中文、混排、只有数字又不是品牌名的都不算
+    assert count("Brand X")["packaging_like:yes"] == 1 and count("Brand X")["brand:no"] == 1
+    assert count("营养液体到了")["packaging_like:yes"] == 1                        # brand:product
+    assert count("戒烟")["packaging_like:no"] == 1 and count("12 3")["packaging_like:no"] == 1
     assert count("营")["brand:no"] == 1, "一个字的不算一截"
     got = count(f"{TEXT_CANARY}品牌甲", title=f"{TEXT_CANARY}品牌甲")
     assert got["brand:name"] == 1 and got["title:same"] == 1 and got["len:5_12"] == 1, got      # 9 + 3 = 12 个字
@@ -2147,7 +2161,7 @@ def check_no_text_counts() -> None:
     keys |= set(count(None, text_why=FI.INVALID_TEXT_LONG)) | set(count("品牌甲", groups=None))
     kinds = {o["value"] for q in BANK["questions"] if q["id"] == "img_text_kind" for o in q["options"]} | {"invalid"}
     pat = r"covers_said_no_text|fired|brand:(name|product|part|no|no_list)|title:(same|different|no_title)|" \
-          r"len:(1_4|5_12|13_plus)|amount_by:(line|value)|text_invalid:[a-z0-9_]{1,40}|kind:(" + "|".join(map(re.escape, sorted(kinds))) + ")"
+          r"len:(1_4|5_12|13_plus)|script:(latin|cjk|mixed|digits)|packaging_like:(yes|no)|amount_by:(line|value)|text_invalid:[a-z0-9_]{1,40}|kind:(" + "|".join(map(re.escape, sorted(kinds))) + ")"
     assert all(re.fullmatch(pat, k) for k in keys), sorted(keys)
     assert {k.split(":")[0] for k in keys} >= {"brand", "title", "len", "kind", "amount_by", "text_invalid"}
     # 反证: 去掉「先看强的」(一截也算品牌) → 「戒烟」会记成 name / product, 上面「只是弱的旁证」那条就会红
