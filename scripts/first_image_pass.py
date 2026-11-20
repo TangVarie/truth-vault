@@ -108,6 +108,20 @@ _LEN_BUCKETS = ((4, "1_4"), (12, "5_12"))    # 去掉空格标点后的字数; �
 _TITLE_WORD = {"一样或差不多": "same", "不一样": "different"}
 
 
+def _script_word(nt: str) -> str:
+    """抄出来的字 (已经 normalise) 是什么字: latin = 只有英文字母 (可带数字), cjk = 没有英文字母、有中文等非 ASCII 字,
+    mixed = 两样都有, digits = 只有数字。11-19 加: 映射里多半只有中文的品牌 / 产品名, 包装上常印英文名, 只看 brand 分不出来。"""
+    has_latin = any(c.isascii() and c.isalpha() for c in nt)
+    has_other = any(not c.isascii() for c in nt)
+    if has_latin and has_other:
+        return "mixed"
+    if has_latin:
+        return "latin"
+    if has_other:
+        return "cjk"
+    return "digits"
+
+
 class PassConfigError(Exception):
     """配置不对 (题库 / 模型 / 价格)。带一句不含任何客户材料的话。"""
 
@@ -534,10 +548,14 @@ class Pass:
                 continue
             self.no_text_void["fired"] += 1
             nt = FI.normalise(text if isinstance(text, str) else "")
-            self.no_text_void["brand:" + self._brand_word(cand.get("project_id"), nt)] += 1
+            bw, sw = self._brand_word(cand.get("project_id"), nt), _script_word(nt)
+            self.no_text_void["brand:" + bw] += 1
             title_ans, _why, _grey = FI.text_matches_title(text if isinstance(text, str) else "", cand.get("title") or "")
             self.no_text_void["title:" + _TITLE_WORD.get(title_ans or "", "no_title")] += 1
             self.no_text_void["len:" + next((lab for top, lab in _LEN_BUCKETS if len(nt) <= top), "13_plus")] += 1
+            self.no_text_void["script:" + sw] += 1
+            # D-162 换不换看这一个: 抄的是品牌 / 整个产品名, 或者整句只有英文 (中文封面上后期加的字很少是纯英文, 多半是包装上的英文名)
+            self.no_text_void["packaging_like:" + ("yes" if bw in ("name", "product") or sw == "latin" else "no")] += 1
             kind, kind_why = parsed.get(TEXT_KIND_Q, (None, None))
             opts = {o.get("value") for q in self.bank.get("questions") or [] if q.get("id") == TEXT_KIND_Q
                     for o in q.get("options") or []}
