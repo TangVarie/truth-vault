@@ -391,14 +391,14 @@ SELECT '83', 'H · 跨 schema 孤儿',
     '> 0 表示笔记被删而答案还在. 修法: DELETE FROM note_feature_answers WHERE subject_type=''note'' AND subject_id NOT IN (SELECT note_id FROM notes).'
 UNION ALL
 SELECT '84', 'H · 跨 schema 孤儿',
-    'truth_vault.note_feature_answers (subject_type=aw_version) 指向不存在的 autowriter.versions 数量',
+    'truth_vault.note_feature_answers (subject_type=aw_version) 指向不存在的 autowriter.versions 数量 (含 :pN 段级行剥后缀核对)',
     COALESCE(pg_temp.safe_count(
         $q$SELECT COUNT(*) FROM truth_vault.note_feature_answers a
-        LEFT JOIN autowriter.versions v ON v.id::TEXT = a.subject_id
+        LEFT JOIN autowriter.versions v ON v.id::TEXT = regexp_replace(a.subject_id, ':p[0-9]+$', '')
         WHERE a.subject_type = 'aw_version' AND v.id IS NULL$q$
     )::TEXT, 'N/A'),
     '0',
-    '> 0 表示写作台版本被删. 同 #83 处理.'
+    '> 0 表示写作台版本被删. 同 #83 处理. shadow-human 的段级行 subject_id 形如 <version_id>:pN, 剥掉 :pN 后核对版本是否存在.'
 UNION ALL
 SELECT '85', 'H · 跨 schema 孤儿',
     'truth_vault.note_feature_answers (subject_type=comment) 指向不存在的 comments 数量 (v1.17 / D-085)',

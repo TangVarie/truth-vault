@@ -580,9 +580,25 @@ def apply_linkcheck_plans(sb, plans: list[dict], dry_run: bool) -> tuple[int, in
     tbl = lambda: sb.schema("truth_vault").table("comments")  # noqa: E731
     for i in range(0, len(deletes), _LC_DELETE_CHUNK):
         tbl().delete().in_("comment_id", deletes[i:i + _LC_DELETE_CHUNK]).execute()
-    # 一级评论先于它下面的回复 (plan 里就是这个顺序); 分批也按这个顺序, 父行总是先到
-    for i in range(0, len(upserts), _LC_WRITE_CHUNK):
-        tbl().upsert(upserts[i:i + _LC_WRITE_CHUNK], on_conflict="comment_id").execute()
+    # 一级评论先于它下面的回复; 按篇合批, 绝不在同一篇的父评论和回复中间切开 (防 parent_comment_id 外键跨批报 23503)
+    chunk: list[dict] = []
+    for p in plans:
+        note_rows = sorted(p["upserts"], key=lambda r: (r.get("parent_comment_id") is not None, r.get("comment_order") or 0))
+        if not note_rows:
+            continue
+        if chunk and len(chunk) + len(note_rows) > _LC_WRITE_CHUNK:
+            tbl().upsert(chunk, on_conflict="comment_id").execute()
+            chunk = []
+        if len(note_rows) > _LC_WRITE_CHUNK:
+            parents = [r for r in note_rows if r.get("parent_comment_id") is None]
+            replies = [r for r in note_rows if r.get("parent_comment_id") is not None]
+            for group in (parents, replies):
+                for i in range(0, len(group), _LC_WRITE_CHUNK):
+                    tbl().upsert(group[i:i + _LC_WRITE_CHUNK], on_conflict="comment_id").execute()
+        else:
+            chunk.extend(note_rows)
+    if chunk:
+        tbl().upsert(chunk, on_conflict="comment_id").execute()
     return len(upserts), len(deletes)
 
 
