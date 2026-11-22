@@ -41,8 +41,8 @@ from fastapi import FastAPI, Header, HTTPException, Request
 
 from starlette.concurrency import run_in_threadpool
 
-from .core import (MERGE_STATS, STATUS_DEGRADED, gate_health, librarian_select_full, paid_health,
-                   vanished_health)
+from .core import (MERGE_STATS, STATUS_DEGRADED, gate_health, librarian_select_full, merge_health,
+                   paid_health, vanished_health)
 
 STATUS_ERROR = "error"   # 应用层崩溃(core 之外), 与 core 的 degraded 区分开
 
@@ -93,6 +93,9 @@ def health() -> dict:
        容器起不来(重启治不好配置, 只会变成重启风暴)。要看的是 ``auth.ok``。
     """
     from . import clients as _clients   # 延迟 import: /health 不该因 SDK 缺失起不来
+    with _clients._PROMPT_CACHE_LOCK:
+        pc_fallbacks = dict(_clients.PROMPT_CACHE_FALLBACKS)
+        pc_usage = dict(_clients.PROMPT_CACHE_USAGE)
     return {
         "ok": True,
         "service": "flywheel-librarian",
@@ -101,9 +104,9 @@ def health() -> dict:
         # 这个中转站不支持 cache_control, 每次借阅都在多付 input token; select_ms 里也掺着这次重试。
         # last_error 只是异常类型名 (这个端点没鉴权, 异常文本可能带 URL / 凭据; codex review on #169)。
         "config": {"prompt_cache_enabled": _clients.prompt_cache_enabled(),   # D-113: 默认 false
-                   "prompt_cache_fallbacks": dict(_clients.PROMPT_CACHE_FALLBACKS),
+                   "prompt_cache_fallbacks": pc_fallbacks,
                    # 2026-10-12: 实际缓存读写 (cache_write / cache_read 都是 0 = 缓存标记没到上游)
-                   "prompt_cache_usage": dict(_clients.PROMPT_CACHE_USAGE)},
+                   "prompt_cache_usage": pc_usage},
         # D-148 备用中转站: 模式 / 是否配了 / RELAY_FORCE / 熔断 + 本进程计数。只有布尔、枚举和整数, 从不回显地址或 key。
         "relay": _relay_health(True),
         # AU-F09: 在飞合并的本进程计数 (merged = 后到的同一个请求并到了在飞的那次, 没再选一遍; wait_timeouts = 等满了
@@ -116,7 +119,7 @@ def health() -> dict:
         # D-154 出处帖已经删了的卡 (vanished): 开没开 (默认开)、上次读 v_notes_vanished 成没成 (read_ok)、视图里缺席满
         # 36 小时 / 还在宽限里各几篇 (long_gone / in_grace)、最近一次筛书架拿掉几张卡 (dropped)、保底留了几个品牌
         # (brands_kept)、累计读失败 / 没等到几次 (read_errors)。同样只有数、布尔和 None, 不带 note_id、品牌名。
-        "select": {**MERGE_STATS,
+        "select": {**merge_health(),
                    "primary_timeout_s": _clients.primary_limit_s(),
                    "call_timeout_s": _clients.CALL_TIMEOUT_S, "request_budget_s": _clients.REQUEST_BUDGET_S,
                    "return_gate": gate_health(), "paid_boost": paid_health(), "vanished": vanished_health()},
