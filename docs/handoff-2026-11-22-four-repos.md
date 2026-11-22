@@ -28,7 +28,7 @@
 ## 1. 新会话怎么接上四个库
 
 1. 对四个库逐个调用 `add_repo`（owner `TangVarie`；repo `truth-vault`、`autowriter`、`JevforCoentent`、`linkcheck`；要推代码就用 access `push`），按返回的命令克隆，再 `register_repo_root`。**四个都接上之前不要开始做事。** 建议的克隆位置：`/home/user/truth-vault`、`/home/user/autowriter`、`/home/user/jevforcoentent`、`/home/user/linkcheck`。
-2. 每个库 `git fetch origin`，从**各自的默认分支**拉出你这个会话的开发分支（aw 从 `origin/claude/xhs-content-workstation-BSEuH` 拉，不是本地那条同名分支，本地那条可能很旧）。上一个会话的分支 `claude/zen-johnson-m2f14s` 在四个库里都已全部合进默认分支（用 `git diff origin/<默认分支> origin/claude/zen-johnson-m2f14s` 核，`git log` 会列出早已 squash 进去的旧提交，别被骗），不用接着用它。
+2. 每个库 `git fetch origin`，从**各自的默认分支**拉出你这个会话的开发分支（aw 从 `origin/claude/xhs-content-workstation-BSEuH` 拉，不是本地那条同名分支，本地那条可能很旧）。上一个会话的分支 `claude/zen-johnson-m2f14s` 在四个库里都已全部合进默认分支（TV 那条要等交接 PR TangVarie/truth-vault#303 合并），不用接着用它。核法：`git diff origin/<默认分支>...origin/claude/zen-johnson-m2f14s`（**三个点**，应当为空）。两个点的写法在 aw、linkcheck 会列出一大串改动，那是默认分支后来又往前走了（aw#174–#176、linkcheck#87–#90），不是没合；`git log` 也会列出早已 squash 进去的旧提交，别被骗。
 3. 装本地环境，跑一遍各库的检查（第 5 节），确认起点是绿的。
 4. 会话需要两个连接器：Supabase（只读用）、Vercel（看部署和日志）。GitHub 用 MCP 工具；本环境 `gh` 的 GraphQL 被代理拦了，要用 `gh api repos/...` 走 REST。
 5. 把第 6 节「今晚」那件事的提醒排上（`send_later`）。上一个会话排的提醒已经撤了。
@@ -39,7 +39,7 @@
 1. `OPEN-ITEMS.md`：顶部横幅（最新在最上）、第 0 节「按时间」、第 8 节「你要做的」。规矩在开头：凡是「后做 / 等 X / owner 待定」的事，同一个 PR 里在这里加一行；关一行要有证据（查询、run id、PR 号），挪到「已关」，不删行。
 2. `CURRENT_STATE.md` 的「2026-11-13 现状」一节（往里加行时，在标题括号里补一句「MM-DD 补…」）。
 3. `DECISIONS.md`：只追加不修改；最新是 D-162，下一个号是 D-163；后续补充写成同一条下面的「**MM-DD 补（工程 / owner）**：」。
-4. `docs/00-START-HERE.md` §2、§3、§6、§7。注意：它顶上说交接入口是 HANDOFF.md，§3.4、§7 第 1 条说「模型调用都在 Railway」，这两处都过时了：入口是本文和 OPEN-ITEMS 横幅；D-100 起 essence 和书架策展从 GitHub runner 直接调中转站，只有特征层还走 Railway worker。
+4. `docs/00-START-HERE.md` §2、§3、§6、§7。注意：§3.4、§7 第 1 条说「模型调用都在 Railway」已过时：D-100 起 essence 和书架策展从 GitHub runner 直接调中转站，只有特征层还走 Railway worker。
 5. 首图：`docs/34-first-image-pass.md` 第 12、13 节（第 13 节是换 fi-v0.3 的步骤）。
 6. 按需：`docs/29-lights-registry.md`（每盏灯谁看、多久看、红了谁管）、`docs/12-daily-sync-troubleshooting.md`、`scripts/README.md`、`docs/09-system-integration.md`。
 7. `HANDOFF.md` 里只有「owner 定的规矩，接手照办」那一小节还有效，其余是 10 月的历史。
@@ -47,7 +47,7 @@
 **aw**
 1. `README.md`（四份 requirements 各管什么）。
 2. `docs/deskcore.md`：设计和对接的唯一真源。§3.x 按时间排，最新到 §3.37 client_mark；§4 部署和环境变量表；§5 踩过的坑。
-3. `docs/deskcore-runbook.md`：§6.5 协议升版怎么发（发版顺序见第 7 节）。注意 §1.2（说 019 / 020 没跑）和 §1.16（说回流闸默认关）已过时：019、020 都跑了，`deskcore/config.py` 里回流闸默认是开（aw#163）。
+3. `docs/deskcore-runbook.md`：§6.5 协议升版怎么发（发版顺序见第 7 节）。注意 §1.2（说 019 / 020 没跑）和 §1.16（说回流闸默认关）已过时：019、020 都跑了，仓库根目录 `config.py` 里回流闸默认是开（`RETURN_GATE_ENFORCE_DEFAULT = "1"`，aw#163）。
 4. `migrations/README.md`：每个迁移不跑会怎样的唯一真源。
 5. `clients/dsh-plugin/README.md`、`clients/dsh-plugin-compat-021/README.md`、`clients/dsh-plugin-index/README.md`、`docs/dsh-pilot-step1.md`。
 6. `HANDOFF.md` 停在 10-22，只有 11-17「客户端标记」那一行是新的；以本文为准。
@@ -90,10 +90,11 @@
 **合并和部署**
 
 - 每个 PR 都过 Codex 和 CI（第 4 节）。Codex 回「额度用完」就别合，告诉 owner。
-- **TV 在 12:47–16:47 UTC 不合并。** 这是会话间的约定，文档里没写：features-sync 从 12:47 起最长 240 分钟一直在用 Railway worker，这时合进 main 会让 worker 半路重新部署。
+- **TV 合并前先看当天的 features-sync：在排队或在跑就不合。** 它最长 240 分钟一直在用 Railway worker，这时合进 main 会让 worker 半路重新部署（`worker/railway.json` 没有 watch paths）。定时是 12:47 UTC，可 GitHub 排队漂移之后，11 月实际都在约 17:50–22:45 UTC 起跑（11-09 跑到 23:20）。以前会话间约定的「12:47–16:47 UTC 不合」照旧守，但它挡不住漂移后的那一趟：当天那趟没跑完之前，约 16:00–23:30 UTC 都别合。核法：`curl -s 'https://api.github.com/repos/TangVarie/truth-vault/actions/workflows/features-sync.yml/runs?per_page=1'`，看最新一趟是不是今天的、`status` 是不是 `completed`。
 - 不 force-push；不 rebase 别人的分支；只往会话指定的开发分支推。
 - 不让 Codex 往 `codex/audit-fixes-20261114` 这类分支推代码；Jev 的 `codex/audit-fixes-20261114`（#34，已关）不要复活，它会把 owner 否决过的 hard_ambiguous 加回来（owner 11-04 定的是宁严勿松）。
 - Jev、aw、linkcheck 合进默认分支都会重启 Railway 服务；纯文档改动不值得单独为它重启，攒到下一次有代码的 PR 一起上。
+- 实质性的改动用多路并行的 workflow 做，合并前做一轮对抗复审（owner 叫它 ultracode）。
 
 ## 4. 合并流程（四个库一样）
 
@@ -103,23 +104,27 @@
 4. Codex 干净、CI 绿：把 PR 转成 ready（`update_pull_request` draft=false）。转 ready 会触发 Codex 再审一次（「Draft marked ready」），**等它审完**。
 5. 在 TV 的克隆里跑：`python3 scripts/codex_gate.py TangVarie/<repo> <PR号>`。输出 `PASS`（退出码 0）才行；`FINDINGS`（1）要修；`WAIT`（2）是还没审完、head 变了、或者读不到，**WAIT 不算过**。它用不带登录的 curl 读公开仓（每小时 60 次）。
 6. 再核：CI 在当前 head 上全绿、没有未解决的 review thread、没有冲突。
-7. squash 合并：带 `expectedHeadSha`，并且**显式给 `commit_message`**（不给的话，开发分支上的旧提交会全被塞进合并信息）。TV 避开 12:47–16:47 UTC。
+7. squash 合并：带 `expectedHeadSha`，并且**显式给 `commit_message`**（不给的话，开发分支上的旧提交会全被塞进合并信息）。TV 先确认当天的 features-sync 没在排队或在跑（第 3 节）。
 8. 取消订阅；把默认分支合回开发分支并推（`git fetch origin <默认分支> && git merge --no-edit origin/<默认分支> && git push`）。
-9. 合完核部署：TV 改到服务的核 Railway `/health` 的 `build.commit`、Vercel production；aw 核 `https://autowriter-production.up.railway.app/health` 的 `build.commit` 和 `protocol_version`；Jev 核 `https://judge-production-601c.up.railway.app/health`（**要带 `-601c`**，不带的是另一个服务）；linkcheck 看下一轮 cron 的日志。
+9. 合完核部署：Railway 每次部署都会在 GitHub 留一条 deployment（creator `railway-app[bot]`，environment 是 ` / production`，前面有个空格）。不带登录就能查（和 codex_gate 共用每小时 60 次）：`curl -s 'https://api.github.com/repos/TangVarie/<repo>/deployments?environment=%20%2F%20production&per_page=5'`，找 `sha` 等于合并提交的那条，再读它的 `statuses_url`，要有 `success`。四个库都这么核。另外：
+   - aw 再核 `https://autowriter-production.up.railway.app/health` 的 `build.commit`（合并提交前 12 位）和 `build.protocol_version`。
+   - TV 一次合并只有一条 Railway deployment，librarian、worker、onboarder 分不开；它们的 `/health` 不报提交号（librarian 是 `https://truth-vault-production.up.railway.app/health`）。看板用 Vercel 连接器看 production 部署（TV 的 deployments 列表里也混着 `vercel[bot]` 的 Preview / Production，所以要带 environment 过滤）。
+   - Jev 的 `/health`（`https://judge-production-601c.up.railway.app/health`，**要带 `-601c`**，不带的是另一个服务）只证明服务起来了：`version` 一直是 0.1.0，`policy_sha256` 只在改了 `config/data_policy.yaml` 时才变。
+   - linkcheck 免口令的只有面板的 `/healthz`（回 `ok`）。会话没有 Railway 和飞书的权限，看不到 cron 日志；动了花钱路径的 PR，合之前和 owner 约好由 owner 在 Railway 看下一轮 cron。
 
 ## 5. 本地环境和检查命令
 
 四个库 CI 都是 Python 3.11；本机默认 3.13 也能跑绿，但别用 3.12 以后才有的语法；要和 CI 完全一致就用 `/usr/bin/python3.11`（本机有 `uv`）。每个库各建一个 venv。上一个会话的 venv 和草稿目录不会带过来。
 
-**TV**（上一个会话 11-22 在 7312ede 上实跑：python 107/107，sql 60/60，yaml 4/4）
+**TV**（11-22 实跑：python 108/108、yaml 4/4 是 `scripts/ci_local.py` 在本 PR 上跑的；sql 60/60 是在 7312ede 上手动照 sql job 跑的）
 - 环境：`pip install -r scripts/requirements.lock pyyaml fastapi 'httpx<0.28' starlette uvicorn`（`scripts/requirements-first-image.txt` 只给两个首图 workflow 用）。
 - 照 CI 跑一遍：`python scripts/ci_local.py <TV 的 git 克隆> [--job python|yaml] [--out 结果.json]`。必须是 git 克隆（`check_gate1_review.py` 要 `git check-ignore`），不能是 `git archive` 出来的目录。
 - sql job 要一个临时的 Postgres 16（`/usr/lib/postgresql/16/bin`），数据库名必须是 `tv_ci`（`check_first_image_pg.py` 等只认 `tv_ci` / `tv_repair` / `tv_full_ci`）；`PGHOST=localhost PGPORT=5433 PGUSER=postgres PGPASSWORD=postgres PGDATABASE=tv_ci`，从仓库根目录依次跑 ci.yml 里 `sql` job 的每个 `run:`（跳过 apt-get）。先跑 `scripts/bootstrap_ci_supabase_roles.sql`，每份 `schemas/*.sql` 跑两次证明可重跑。
 - 单项：`python3 scripts/check_system_map.py`、`python3 scripts/check_codex_gate.py`、`cd scripts && python3 check_first_image_pass.py`（10 节）。
 - 看板：`cd dashboard && npm ci && npm run typecheck && npm run test:check && node scripts/check-public-wording.mjs --source-only`（完整构建要拉 Google Fonts，离线会失败；ci.yml 里没有看板的 job）。
 
-**aw**（11-22 在默认分支 `ef7d531` 上实跑：4764 passed / 34 skipped / 7 xfailed）
-- 环境：`pip install -r requirements.lock -r requirements-dev.txt -r deskcore/requirements.txt httpx`（装全才不会跳过约 33 个依赖 fastapi / mcp 的用例）。不用设 PYTHONPATH，`tests/conftest.py` 会处理。
+**aw**（11-22 在默认分支 `ef7d531` 上、Python 3.11、装全依赖实跑：5027 passed / 1 skipped / 7 xfailed；唯一的 skip 是 `tests/test_generation_service.py` 在浅克隆里取不到旧提交）
+- 环境：`pip install -r requirements.lock -r requirements-dev.txt -r deskcore/requirements.txt httpx`。不用设 PYTHONPATH，`tests/conftest.py` 会处理。要是跑出来约 4764 passed / 34 skipped、skip 原因是 could not import fastapi / mcp，就是没装 `deskcore/requirements.txt`；CI 第二遍装全之后，日志里出现 "could not import" 会判红。
 - `python -m pytest tests/ -q -ra`；`python -m deskcore.cli selftest`；`python -m deskcore.cli sync-skill --check`（要输出协议一致，现在是 `6f23eba491fd`）；`python3.11 -m compileall -q app.py *.py deskcore/`。
 - Node（本机 v22，不用装依赖）：`node --test clients/dsh-plugin/test/*.test.js`、`clients/dsh-plugin-compat-021/test/*.test.js`、`clients/dsh-plugin-index/test/*.test.js`（最后这组要完整 git 历史）。
 - `tests/sql_parity_check.py` 要活的 Postgres，CI 单独跑。
@@ -142,41 +147,53 @@
 ### 6.1 今晚：首图换 fi-v0.3（I-38、D-162；owner 11-22 已同意，最多约 3.5 元）
 
 - **现状**：攒证据攒到「说了没有字又抄出了字」6 篇，都是同一个项目的随手拍产品照；记了 `packaging_like` 的 3 篇全是纯英文（多半是包装上的英文名）。owner 11-22 回「同意」，重问的钱最多约 3.5 元。
-- **第 1 步（今晚）**：今晚的 First image sync（cron `37 15 * * *`，实际 21:05–22:45 UTC 才起跑）是 TV#302 合并后第一晚把输入、输出 token 分开记。读它的 Summary：`status`、`partial_void`、`no_text_void`（含 `script:*`、`packaging_like:*`）和新的「用量拆开」那一行。11-20 那晚每次调用的输入当量约 5,388 token，前几晚约 1,500，图一样大（768×1024），推测是输出变长了。**要是每次调用的输出变得很长，或者别的走中转站的任务（daily-sync 的 essence 和书架策展、features-sync）也一起变贵，先用中文告诉 owner，再换。** 提醒自己排（`send_later`，约 23:50 UTC）。
-- **第 2 步**：照 `docs/34` 第 13 节先只读：SELECT 记下 fi-v0.2 闭集答案的计数（重问会删掉旧的行，之后就查不到了）；数 `note_first_image` 里 `bank_version='fi-v0.2'` 做完了几篇；按这个数重算调用次数和钱（11-22 的数：72 篇、462 次调用，最多 504）。
-- **第 3 步**：没超过约 3.5 元就开换版 PR：`scripts/first_image_pass.py` 的 `BANK_PATH` 指到 `prompts/first_image_questions_v0_3.yaml`、`BANK_VERSION` 改成 `fi-v0.3`（两行一起改）；`scripts/check_first_image_pass.py` 第 1、3、7、9、10 节；`scripts/check_first_image_pg.py` B 段两处；`docs/34` 第 3、6 节的表。不用跑 SQL。避开 12:47–16:47 UTC。超过约 3.5 元就带着新的数回去问 owner。
-- **换上之后**：每晚最多 40 张图，重问分 2–3 晚。按 D-162 判改没改好：同一批说了没有字的封面里第一条规则还中几篇、第二条规则涨没涨（涨了就退回）。连带：写作台的封面参考那一句（aw#171，deskcore.md §3.36）读 `v_first_image_features`，重问完之前那一句会暂时没有。
+- **第 1 步（今晚）**：今晚的 First image sync（cron `37 15 * * *`，实际 21:05–23:50 UTC 才起跑，11-16 是 23:49）是 TV#302 合并后第一晚把输入、输出 token 分开记。读它的 Summary：`status`、`partial_void`、`no_text_void`（含 `script:*`、`packaging_like:*`）和新的「用量拆开」那一行。提醒自己排（`send_later`，约 23:50 UTC）；醒来时今晚那一趟还没跑完，就再排 60 分钟后看，**别手动点**（手动真跑另有一份每晚上限，会多花钱）。
+  - **为什么贵还不知道**：11-20 那晚每次调用的输入当量约 5,388 token，前几晚约 1,500，图一样大（768×1024）。输入当量 = 输入 + 5×输出，输入涨和输出涨都会让它变大，光看总数分不出来。11-09 有过先例：代码和模型都没变，中转站每次调用记的输入 token 大了约 5 倍（OPEN-ITEMS S-14：OKMAN essence 约 9.9k，11-08 约 1.7k），缓存关着却记了 cache_write / cache_read，输出照旧约 640，结论是中转站那边变了。首图 Summary 的「输入」已经把 cache_write、cache_read 加进去了（`scripts/first_image.py` 的 settle），看不出缓存那部分。
+  - **和别的任务比**：拿 daily-sync 的 job 日志，essence 看 `Done:` 行里的 `prompt_cache`（calls / input / cache_write / cache_read / output），遮名字看「用量: 调用 … 输入 … 输出」那一行；同一个项目按每次调用比 11-08～11-21 这几晚。走了备用站的那几晚（看 relay summary 那一行）每次只记约 1 个输入 token，不能拿来比。
+  - **要是每次调用的输出变得很长，或者输入涨了、而 essence / 遮名字每次调用的输入也一起涨了，先用中文告诉 owner，再换。**
+  - **今晚可能读不到**：没有新帖的晚上（11-21 就是 0 次调用）Summary 里是「这一晚要做的帖：0 篇」，没有「用量拆开」那一行；调用了但中转站一次用量都没回报（「没拿到用量、按预留记的」次数等于调用次数）也没有这一行。那不等于「没变贵」：别开换版 PR（第 2 步只读的 SELECT 可以先做），提醒顺延到下一晚约 23:50 UTC，等第一个有这一行的晚上再判。手动点一趟也没用：候选还是同一批（`first_image_candidates` 只取 11-16 以后入库、还没做的帖）。连着三晚都读不到，就用中文告诉 owner，建议换上之后看第一晚的「用量拆开」（每晚 token 上限写死在代码里，超了当晚就停）。
+- **第 2 步**：照 `docs/34` 第 13 节先只读：SELECT 记下 fi-v0.2 闭集答案的计数（重问会删掉旧的行，之后就查不到了）；数 `note_first_image` 里 `bank_version='fi-v0.2'` 做完了几篇；按这个数重算调用次数和钱（11-22 的数：72 篇、462 次调用，最多 504）。`docs/34` 第 12、13 节里写的「超过约 0.84 元先问」是 11-18 的线，已被 D-162「11-22 再补（owner）」换成约 3.5 元。
+  - 再按篇存一份配对：D-162 换版后要比「同一批说了没有字的封面」前后中了几篇，重问删掉 fi-v0.2 的行之后就拼不回来了。只读查 `truth_vault.note_feature_answers` 里 `run_tag = 'img-primary' and bank_version = 'fi-v0.2'` 的 `img_text_amount`（答案是 `无效:inconsistent:no_text_but_transcribed` 就是中了第一条）和 `img_main_text`（只看有没有答案、无效原因，**抄下来的字不查**），按 `subject_id` 排好。结果不进仓、不进日志（完整 note_id 也不进）；草稿目录不跨会话，判的时候已是好几晚以后，所以至少留在会话对话里；要更稳就写一份 `create table truth_vault.backup_fi_v02_text_pairs_<YYYYMMDD> as …` 的 SQL 给 owner 在合并换版 PR 之前跑（照已有的备份表惯例，判完再说删不删）。
+- **第 3 步**：没超过约 3.5 元就开换版 PR：`scripts/first_image_pass.py` 的 `BANK_PATH` 指到 `prompts/first_image_questions_v0_3.yaml`、`BANK_VERSION` 改成 `fi-v0.3`（两行一起改）；`scripts/check_first_image_pass.py` 第 1、3、7、9、10 节；`scripts/check_first_image_pg.py` B 段两处；`docs/34` 第 3、6 节的表；顺手把 `docs/34` 第 13 节里 0.84 元那句改成指向 D-162 的 3.5 元。不用跑 SQL。合并前先确认 features-sync 没在排队或在跑（第 3 节）。超过约 3.5 元就带着新的数回去问 owner。
+- **换上之后**：每晚两道上限，40 张图和 750,000 输入当量 token（`NIGHTLY_MAX_WEIGHTED`，约 0.97 元），先到哪道停哪道；一张图开始之前要放得下它 7 次调用的预留（约 75,000），所以一晚真正能花的约 680,000。按前几晚每次约 1,500，40 张那道先到，72 篇分 2–3 晚；按 11-20 每次约 5,388，token 那道先到，一晚只做得了约 18 张，462 次调用要约 4 晚，新帖另算。要几晚，用第 2 步数出的调用数 × 第 1 步读到的每次调用输入当量 ÷ 约 680,000 算，写进换版 PR 和 I-38。按 D-162 判改没改好：同一批说了没有字的封面里第一条规则还中几篇、第二条规则涨没涨（涨了就退回）；要等最后一晚做完才能比。连带：写作台的封面参考那一句（aw#171，deskcore.md §3.36）读 `v_first_image_features`，重问完之前 fi-v0.2 的行读出来是 `usable = false`，那一句这几晚一直没有。
 - 每晚的计数攒着，在下一个文档 PR 里记进 I-38。
 
 ### 6.2 交接时还开着、不是上一个会话开的 PR：四个「审计加固」
 
 11-22 05:46 UTC 用 owner 的账号在四个库各开了一个，分支都是 `audit/hardening-2026-11-21`，标题都是「Audit hardening 11-21」。交接时四个都是 CI 绿、Codex 没意见、没有冲突、没合并。谁在推它们不知道；OPEN-ITEMS 和 DECISIONS 里都还没有记录。
 
-- [TangVarie/truth-vault#301](https://github.com/TangVarie/truth-vault/pull/301)：馆员回流闸的刷新改成有界等待、加锁；worker 校验项目参数；飞书媒体 401 重试；评论父子行的写入顺序；日志脱敏；看板登录表单坏了回 400；新加的 `scripts/check_audit_hardening.py` **没接进 ci.yml**。合并会让 Railway 的 librarian、worker 和 Vercel 看板重新部署。
-- [TangVarie/autowriter#177](https://github.com/TangVarie/autowriter/pull/177)：MCP `allowed_origins`、日志里屏蔽两个密钥变量、客户端加锁、UTC 排序、馆员连接和读取分开超时。**要先核 `allowed_origins` 会不会把写手挡在外面**：WorkBuddy 的请求不带 Origin（deskcore.md §3.37 实测），DSH 插件走 Node 多半也不带，这一点没核过。不动协议，没有迁移。
-- [TangVarie/JevforCoentent#40](https://github.com/TangVarie/JevforCoentent/pull/40)：行为会变：未知的 `subject_type` 回 422（允许 note、comment、external_note、aw_version、ssll_sample）；hard_rules 里写了暗题题号回 422；模板填充改成单遍替换；修改单定义的措辞变了；账本拒收非 dict 的答案、bool 和 NaN 概率；内部 MCP 传 `banks=[]` 不再自动换默认题库。合并会重启判定服务。
+- [TangVarie/truth-vault#301](https://github.com/TangVarie/truth-vault/pull/301)：馆员回流闸的刷新改成有界等待、加锁；worker 校验项目参数；飞书媒体 401 重试；评论父子行的写入顺序；日志脱敏；看板登录表单坏了回 400；新加的 `scripts/check_audit_hardening.py` **没接进 ci.yml**。合并会让 Railway 的 librarian、worker 和 Vercel 看板重新部署；它也改了 GitHub 夜跑直接从 main 跑的脚本，下一趟就是新代码：daily-sync 的 essence 写回（`annotate_essence_pass.py`：写库异常从只接 RuntimeError 改成全接，只跳这一篇、记 systemic，没加重试。这正是 OPEN-ITEMS S-14 ① 记着「只盯、先不修」的那处，合之前按 S-14 ① 原来的打算对一下，合了在 S-14 记一笔）、评论父子行分批（`sync_comments_from_raw_extra.py`）、遮名字的日志（`mask_external_names.py`）、首图下载（`feishu_media.py`：401 换 token 重试一次，`first_image_pass.py` 直接调它）。这些不动提示词和 token 记账，但最好等 6.1 那一晚的首图读完再合，免得那一晚的下载计数混进新代码。合完除了部署，再看下一趟 daily-sync（essence 的 `Done:` 行、comments 那一步）和 First image sync。
+- [TangVarie/autowriter#177](https://github.com/TangVarie/autowriter/pull/177)：MCP `allowed_origins`、日志里屏蔽 `DESKCORE_API_KEY`、`DESKCORE_VIEW_SECRET` 和 `DESKCORE_KEYS` 里的每一把钥匙、客户端加锁、UTC 排序、馆员连接和读取分开超时。`allowed_origins` 那一改线上不起作用：`DESKCORE_ALLOWED_HOSTS` 没配（`/health` 回 `mcp_allowed_hosts` 是「不校验」），MCP 的 Host / Origin 校验整个关着；就算以后配上，这一改也只会多放行，挡不住写手。真正会变的：`/health` 的 `librarian.configured` 要 `LIBRARIAN_URL` 和 `LIBRARIAN_API_KEY` 都配了才是 true（合并后核一眼还是不是 true）；馆员连接超时封顶 3 秒；比 `extracted_at` 改用 UTC 时间。不动协议，没有迁移。
+- [TangVarie/JevforCoentent#40](https://github.com/TangVarie/JevforCoentent/pull/40)：行为会变：未知的 `subject_type` 回 422（允许 note、comment、external_note、aw_version、ssll_sample）；hard_rules 里写了暗题题号回 422；模板填充改成单遍替换；修改单定义的措辞变了；判定那一步（`apply_evidence`）不认非 dict 的答案、bool 选项和非有限或 bool 的概率；`interpret()` 的 noul 判断改了；内部 MCP 传 `banks=[]` 不再自动换默认题库，`comment_repair_plan_for` 的 `passed` 也改了。合并会重启判定服务。
 - [TangVarie/linkcheck#91](https://github.com/TangVarie/linkcheck/pull/91)：动了判定和花钱的路径：熔断作废时 STATUS_OK 的行也清掉耦合列和蓝词账；TikHub 小红书详情只有 `data==[]` 或 `note_list==[]` 才判失效，形状不对改判传输错误、交给备胎；余额拒收 bool / NaN / Inf；试跑租约只在 `kind==run` 时算自己的；面板 `/api/queue` 同时校验表和 base。合并后下一轮 cron 就是新代码在花钱。
 
-**建议的做法**（照 D-153 的先例：外面推来的审查分支，合并前逐条独立复核，和 owner 定过的规矩冲突的拿掉）：每个 PR 读 diff、在本地跑全量检查、对照第 3 节的规矩和本节点到的风险；过了第 4 节的合并闸再合（TV 避开 12:47–16:47 UTC；aw、Jev 避开写手在用的北京白天）；合完核各服务的 `/health` 和下一轮日志；在 TV 的 DECISIONS 记一条（跨仓的决定都记在 TV）。四个 PR 之间有没有部署顺序要求还没核（推测没有）。
+**建议的做法**（照 D-153 的先例：外面推来的审查分支，合并前逐条独立复核，和 owner 定过的规矩冲突的拿掉）：每个 PR 读 diff、在本地跑全量检查、对照第 3 节的规矩和本节点到的风险。
+
+- 这四条分支不是本会话的：按第 3 节，不往 `audit/hardening-2026-11-21` 推，也不让 Codex 往上推。
+- **照原样合的**：它们不是 draft，交接时 `codex_gate.py` 四个都是 PASS，直接走第 4 节第 5–9 步（TV 先确认 features-sync 没在跑；aw、Jev 避开写手在用的北京白天；linkcheck 先和 owner 约好看下一轮 cron）。head 变了才要再 `@codex review`。
+- **要拿掉或改一处的**：照 D-153 的实际做法（TV#282 `codex/audit-fixes-20261114` 关掉不合，复核改好的版本从 Claude 自己的开发分支开 TV#283 合进去），把要留的改动搬到自己的开发分支，新开 PR，走第 4 节全流程；新 PR 正文写清从哪个 PR 来、留了什么、拿掉了什么、为什么；原 PR 关掉时留一句指向新 PR。
+- 合完在 TV 的 DECISIONS 记一条（跨仓的决定都记在 TV），写上原 PR 和新 PR 的号。四个 PR 之间有没有部署顺序要求还没核（推测没有）。
+
+**最近别的会话合过的**：aw#174–#176（DSH 插件给 Intel Mac 的 0.2.1 兼容版，真机上的复测在等 owner）、linkcheck#87–#90（处置底稿导出、面板按 BYWOOD 设计系统 v6.1 / v6.3 换样式）。动 DSH 插件或 linkcheck 面板之前，先看这两条线有没有新的 PR，别撞上。
 
 ### 6.3 已经过期、还没做的读数（工程自己做，做完把结果告诉 owner，不用 owner 拍板）
 
 - **11-20 那一行**（OPEN-ITEMS 第 0 节）：L-07（写作台第二批上线满四周，判接住率走向，按三支照实报：在动 / 不动且是写作台稿改的 / 不动且在别处写的；只拿北京日同口径的周比，换版之后的周单独标；docs/32 §4）；J-15 软规则标定（剔掉 11-11 那 15 行误报，加 11-12 硬规则命中的 SQL 仿算，记着 11-13 结尾规则改过，W-56）；W-26（按项目看稿长、段数，定要不要重议「按段判」）；AU-F13（patterns 臂里 `flywheel_patterns_shown` 为 null 的批占多少）；W-53 排在标定之后。取数时按 `params.client_mark` 把 owner 自己在 DSH 上试的批次分开（owner 说过 DSH 先只有 owner 自己在试；deskcore.md §3.37）。
 - **11-16 周一周检**一项结果都没进清单：W-42、W-51、F-14、L-03、W-33、AU-F07、I-27、S-14、F-04 的 `select_ms`、G-03 每周进度、D-152 的 `/skill-versions` 和两项重数、W-56。原因：那次定时检查 11-16 跑完了，但推分支被拒（403：那个定时任务的环境里 truth-vault 没有写权限），结果只发到了 owner 的通知里。
-- **合并后「第一晚」没收尾的**：D-155 / v1_27（owner 11-16 跑了）的 ②③⑤：`source` 分布、`v_note_observations`、verify 那几条；D-154 第一晚：馆员 `/health` 的 `select.vanished`、daily-sync 的 retract summary。
-- **写作台下一场**那几行（第 0 节）：`/skill-versions` 里 `writers_24h.outdated` 还有多少；「查了重没发牌」「查了重没存」的重数；W-56 结尾那条规则重编了没有；W-45、W-33、W-28、W-07、W-38。
+- **合并后「第一晚」没收尾的**：D-155 / v1_27（owner 11-16 跑了）的 ②③⑤：`source` 分布、`v_note_observations`、verify 那几条；D-154 第一晚：馆员 `/health` 的 `select.vanished`、daily-sync 的 retract summary。`select.*` 是进程里的计数，TV 每次合并都会重启馆员、清成 null，写作台借一次卡才重新读出来；`long_gone` / `in_grace` 也可以直接只读查 `truth_vault.v_notes_vanished`。
+- **写作台下一场**那几行（第 0 节）：写手手上的 skill 还有多少是旧的（不用 key：用 Supabase 只读跑 aw `docs/deskcore.md` §3.8 末尾那两段 SQL，`autowriter.batch_metrics` 里 tool_call 行的 `meta->>'skill'` 按天数、deskcore_commit 行的 `meta->'skill_versions'->>'outdated'`；aw#153 起落库，重新部署不清零。`/skill-versions` 只是同一份计数的进程内副本，要 key、部署就清零，不用去要钥匙）；「查了重没发牌」「查了重没存」的重数；W-56 结尾那条规则重编了没有；W-45、W-33、W-28、W-07、W-38。
 
 ### 6.4 在等 owner 或运营的（照 OPEN-ITEMS 第 8 节，别重复问）
 
-- 写手重导 skill（协议 `6f23eba491fd`，D-152）：owner 让写手说一次「更新技能/bywood-writing-desk」再开新对话；导没导完工程读 `/skill-versions`（要带 key）。
+- 写手重导 skill（协议 `6f23eba491fd`，D-152）：owner 让写手说一次「更新技能/bywood-writing-desk」再开新对话；导没导完工程用上面 §3.8 那两段 SQL 只读看。
 - W-45：要 owner 去问写手开场有没有看到「这个项目现在怎么样」那一句。W-57：owner 不说就不动。
 - I-32 搜索可见试跑（linkcheck 面板上点）：第 0 步是 Railway 面板服务的变量里加 TikHub 钥匙（做没做未核）；运营在项目表 `搜索关键词` 列填词；owner 先空跑，再跑第一轮（最多 ¥3.24），总上限 ¥20。还没有任何结果。
 - I-26：运营给西屋911gt 在 linkcheck 登记表填「蓝词排除词」；填完之后的核对是工程的事。
 - DSH 客户端标记（aw deskcore.md §3.37）：owner 下次在 DSH 里用写作台时，在测试项目上新开一场、调一次 `open_project`，工程再跑 §3.37 的第四条 SQL。认出来不是 `dsh_plugin` 就改 `deskcore/clientmark.py`，历史用第五条 SQL 的 CASE 重读，不回写库。
 - I-35（全量封面约 16 元，还要在 TV 加 TikHub 钥匙）、I-36、I-37：都先放着，等经验卡的封面那一行真要做时再带着数问 owner。
 - F-18：闸二判定规则改不改，owner 在 2027-01-02 前定；工程先在只读的一趟上比出哪些结论会动。
-- aw 迁移 021、022：先用 `python -m deskcore.cli doctor` 只读核；没跑就把文件给 owner 跑（不跑也不坏）。
-- 每周一的定时检查要推分支：要 owner 在那个定时任务的环境里给 truth-vault 写权限；不给就只汇报，工作会话手动把结果补进 OPEN-ITEMS。
+- aw 迁移 021、022：会话没有库的 service_role 凭据，`python -m deskcore.cli doctor` 跑不了，也不要去要钥匙。用 Supabase 连接器只读查：021 的函数 `select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'autowriter' and p.proname = 'deskcore_save_style_cas';`、021 的触发器 `select count(*) from pg_trigger where tgrelid = 'autowriter.user_calibration_notes'::regclass and tgname = 'deskcore_user_calib_updated_at' and not tgisinternal;`、022 `select count(*) from information_schema.columns where table_schema = 'autowriter' and table_name = 'draft_snapshots' and column_name = 'lesson_exposure';`。是 0 就是没跑，把 `migrations/021_style_distillation_cas.sql` / `022_lesson_exposure.sql` 给 owner 在 SQL editor 跑（不跑也不坏），跑完再用同样的 SELECT 回查。
+- 每周一的定时检查推不了 TV（它的环境里 truth-vault 没有写权限），也没挂 Supabase / GitHub 连接器，依赖线上的条目它都会写「未核」。owner 知道，不用再问。要看它写了什么：`list_triggers` 找「OPEN-ITEMS weekly review」的 `last_run.session_id`，再用 `list_events`（kinds `assistant`、`result`）读它最后的回复，按需补进 OPEN-ITEMS。
 
 ### 6.5 定了日子的
 
@@ -216,11 +233,13 @@ W-56（下一次 `check_rules` 之后核新的题）、AU-F07、W-33、W-28、S-
 **aw**
 - 默认分支名嵌在插件索引地址和 skill 升级提醒里，**改名会让写手那边全部失效**。
 - 改 `deskcore/protocol.md` 或 `skills/bywood-writing-desk/SKILL.md` 标记行以上的头，协议版本号（sha256 前 12 位）就变，WorkBuddy 写手就得重导 skill。能写进 `deskcore/tools.py` docstring 的口径就写那里（部署即生效）。改了 protocol.md 必须 `sync-skill` 并两个文件一起提交。
-- 协议发版顺序（runbook §6.5）：改完 `sync-skill` + `--check` → 按需在 `deskcore/skillcheck.py` 的 WHATS_NEW 加一行 → docs/deskcore.md 加一节 → CI 绿合并 → **等 `/health` 的 `build.commit` 和 `protocol_version` 都变成新值**，才通知写手在 WorkBuddy 里说「更新技能/bywood-writing-desk」并开新对话 → 一两天后带 key 查 `GET /skill-versions` 看 `writers_24h.outdated` 是不是 0。DSH 插件每 30 分钟自己取一次协议，不用重导。
-- 服务端改工具名、`project_id`、`get_protocol` 回包字段或鉴权头之前，先改两个插件包（正常版和 compat-021）各发一版。插件发版：改 `clients/dsh-plugin` 提版本号合并 → `node clients/dsh-plugin-index/release.mjs <40 位合并提交号>` → 第二个 PR 合并 index.json。
+- 协议发版顺序（runbook §6.5）：改完 `sync-skill` + `--check` → 按需在 `deskcore/skillcheck.py` 的 WHATS_NEW 加一行 → docs/deskcore.md 加一节 → CI 绿合并 → **等 `/health` 的 `build.commit` 和 `protocol_version` 都变成新值**，才通知写手在 WorkBuddy 里说「更新技能/bywood-writing-desk」并开新对话 → 一两天后用 §3.8 末尾那两段 SQL 只读看旧版 skill 还有多少（或带 key 查 `GET /skill-versions`）。DSH 插件每 30 分钟自己取一次协议，不用重导。
+- 服务端改工具名、`project_id`、`get_protocol` 回包字段或鉴权头之前，先改两个插件包（正常版和 compat-021）各发一版，两边的写手都升上去了再改服务端。
+  - 正常版发版：改 `clients/dsh-plugin` 提版本号合并 → `node clients/dsh-plugin-index/release.mjs <40 位合并提交号>` → 第二个 PR 合并 index.json。
+  - compat-021（Intel Mac、DSH 0.2.1）**不在插件索引里**，`release.mjs` 只认 `clients/dsh-plugin`：把改动手工搬进 `clients/dsh-plugin-compat-021`（`lib/plugin.js` 和预设不会自动同步，见它 README 的维护一节）→ 提它 package.json 的版本号 → `node --test clients/dsh-plugin-compat-021/test/*.test.js` → 合并 → 把新的安装地址 `git+https://github.com/TangVarie/autowriter.git#<40 位合并提交号>&path:/clients/dsh-plugin-compat-021` 发给 Intel Mac 的写手，在插件页重新添加（包名相同，会替换旧的），⌘Q 完全退出 DSH 再打开，用 `/desk-status` 确认。这些写手不会收到升级提示。
 - deskcore 里不许有任何 LLM 调用（CI 用 AST 钉住）；不许新增 fail-open 工具（ci.yml 的 `SAFE_OK` 钉死了四个）；新迁移的文件名要同时写进 docs/deskcore.md、migrations/README.md、runbook（`test_migration_doctor` 会查）；迁移都是人工跑。
 - CI 第一轮 pytest 没装 fastapi / mcp，新的 HTTP / MCP 用例要 `pytest.importorskip`；第二轮装全后日志里出现 "could not import" 就判红。
-- `/health` 永远 200，`ok=true` 不代表业务链路健康。迁移 021、022 在生产跑没跑过不确定，用 `python -m deskcore.cli doctor` 只读核（要库的凭据）；两个都能降级，不跑也不坏。
+- `/health` 永远 200，`ok=true` 不代表业务链路健康。迁移 021、022 在生产跑没跑过不确定，会话里没有库的凭据、`doctor` 跑不了，用第 6.4 节那三条 SELECT 经 Supabase 连接器只读核；两个都能降级，不跑也不坏。
 
 **Jev**
 - 正确的生产地址带 `-601c`。`/health` 的 `policy_sha256` 要和本地 `sha256sum config/data_policy.yaml` 对上。
@@ -243,6 +262,6 @@ W-56（下一次 `check_rules` 之后核新的题）、AU-F07、W-33、W-28、S-
 ## 8. 交接时顺手做了的事
 
 - TV#302 合并（277727f）：首图 Summary 起把中转站回报的输入、输出 token 分开记。
-- 本 PR：本文；`scripts/ci_local.py`（照 ci.yml 在本地跑 python / yaml 两个 job，进了 CI 的编译列表）；OPEN-ITEMS 标题和 CURRENT_STATE 改成四个库；HANDOFF.md、docs/00 顶部指向本文；D-162 / I-38 记下 owner 11-22 的「同意」。
+- 本 PR（TangVarie/truth-vault#303）：本文；`docs/34` 第 13 节第 5 步注明 0.84 元的线已换成 3.5 元；`scripts/ci_local.py`（照 ci.yml 在本地跑 python / yaml 两个 job，进了 CI 的编译列表）；OPEN-ITEMS 标题和 CURRENT_STATE 改成四个库；HANDOFF.md、docs/00 顶部指向本文；D-162 / I-38 记下 owner 11-22 的「同意」。
 - 每周一的「OPEN-ITEMS weekly review」定时任务的提示词改成四个库（加了 linkcheck）。
-- 上一个会话排的首图读数提醒（原定 11-22 23:50 UTC 唤醒旧会话）已删，改由新会话自己排（第 6 节）。
+- 上一个会话排的首图读数提醒（原定 11-22 23:50 UTC 唤醒旧会话）已删，改由新会话自己排（第 6.1 节）。
