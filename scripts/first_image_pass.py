@@ -746,8 +746,12 @@ def run_pass(*, bank: dict, store: Any, mode: str = "nightly", dry_run: bool = F
                 "line_accepted": dict(p.line_accepted), "line_refused": dict(p.line_refused),
                 "partial_void": dict(p.partial_void), "no_text_void": dict(p.no_text_void)})
     spent_yuan = MP.yuan_of_weighted(cheap_model(), budget.spent)
+    bm = list(budget.by_model.values())
     res["budget"] = {"images": budget.images, "calls": budget.calls, "spent": budget.spent,
-                     "usage_missing": budget.usage_missing, "yuan": spent_yuan}
+                     "usage_missing": budget.usage_missing, "yuan": spent_yuan,
+                     # 11-22 加: 中转站回报的输入 / 输出分开记 (11-20 那晚每次调用的输入当量 token 是前几晚的 3 倍多, 看不出是哪一头)
+                     "input": sum(m["input"] for m in bm), "output": sum(m["output"] for m in bm),
+                     "usage_calls": sum(m["calls"] - m["est_calls"] for m in bm)}
     return res
 
 
@@ -781,6 +785,9 @@ def summary(res: dict) -> str:
     b = res["budget"]
     lines.append(f"实际：问了 {b['images']} 张图，调用 {b['calls']} 次，{b['spent']:,} 输入当量 token，约 {b['yuan']:.3f} 元；"
                  f"没拿到用量、按预留记的 {b['usage_missing']} 次")
+    if b.get("usage_calls"):
+        lines.append(f"用量拆开（中转站回报的）：输入 {b['input']:,}、输出 {b['output']:,} token；拿到用量的 {b['usage_calls']} 次调用里，"
+                     f"平均每次输入 {b['input'] // b['usage_calls']:,}、输出 {b['output'] // b['usage_calls']:,}")
     for title, key in (("写进库的结果", "status"), ("其中", "flags"), ("之后", "written"), ("失败的状态词", "detail"),
                        ("没答成（no_answer）的原因", "no_answer_why"), ("逐题无效（题号:原因=调用次数）", "invalid_by_question"),
                        ("回包", "reply"), ("假如放宽读法会多读出（没有放宽，这些答案照旧无效）", "would_read"),

@@ -542,6 +542,9 @@ def check_pass() -> None:
     assert res["status"] == {"answered": 5, "not_a_cover": 1, "first_is_video": 1, "too_large": 2, "decode_failed": 1,
                              "download_failed": 2, "no_answer": 1}, res["status"]
     assert res["budget"]["calls"] == len(fk.asks) == 7 * 5 + 1 + 1 == 37 and res["budget"]["images"] == 11
+    # 11-22: 用量拆开记 (假模型每次回 input 1500 / output 60)
+    assert res["budget"]["usage_calls"] == 37 and res["budget"]["input"] == 37 * 1500 and res["budget"]["output"] == 37 * 60, res["budget"]
+    assert "用量拆开（中转站回报的）：输入 55,500、输出 2,220 token；拿到用量的 37 次调用里，平均每次输入 1,500、输出 60" in out
     assert store.synced == [{"confirmed": [], "excluded": ["RIO_phase1", "TXQ_phase1", "WTG_phase1"],
                              "surfaced": P.surfaced_questions(BANK)}] and store.asked == [(False, 80)]
     for _m, _k, prompt in fk.asks:
