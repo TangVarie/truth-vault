@@ -37,6 +37,7 @@ jobs:
             service_auth.py \
             scripts/codex_gate.py \
             scripts/check_codex_gate.py \
+            scripts/ci_local.py \
             scripts/_common.py \
             scripts/sync_feishu_notes_to_truth_vault.py \
             scripts/sync_comments_from_raw_extra.py \

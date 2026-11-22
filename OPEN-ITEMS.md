@@ -1,4 +1,6 @@
-# OPEN-ITEMS · 三仓未完成清单（truth-vault / autowriter·deskcore / JevforCoentent）
+# OPEN-ITEMS · 四仓未完成清单（truth-vault / autowriter·deskcore / JevforCoentent / linkcheck）
+
+> **11-22（再续）· 四库交接：换新会话接手整个项目，入口是 [docs/handoff-2026-11-22-four-repos.md](docs/handoff-2026-11-22-four-repos.md)。** 项目是四个库（truth-vault、autowriter、JevforCoentent、linkcheck），这份清单管四个库；linkcheck 的事以前散在各条里，以后照样记在这里。交接时还开着、不是上一个会话开的 PR：四个库各一个「审计加固」（TangVarie/truth-vault#301、TangVarie/autowriter#177、TangVarie/JevforCoentent#40、TangVarie/linkcheck#91，11-22 05:46 UTC 开，CI 绿、Codex 没意见、都没合），怎么处理见交接文档第 6 节。
 
 > **11-22 · 首图攒到 6 篇「说没有字又抄出了字」：全是同一个项目的产品照，记了新计数的 3 篇抄的都是纯英文（多半是包装上的英文名），和「改提示词」的判断对得上。重问的钱重算过了 0.84 元，而且 11-20 那晚每次调用贵了 3 倍多，问了你；同时把输入、输出 token 分开记，看清为什么贵。**
 
