@@ -8942,6 +8942,13 @@ owner 11-16：开。
 
 **11-23 补（工程）**：这四个 PR 是另一个 AI 工具 11-21 做的一次四仓审计开的；owner 11-23 把它的报告给了工程（报告不入仓）。报告里没进 PR 的发现（跨库漂移 5 条、架构风险 4 组、建议 owner 拍板的 3 件）逐条核过：多数说得对或部分对，但线上没影响、或者是故意这样，不动；值得做的都小，记在 OPEN-ITEMS S-20，跟各库下一个有代码的 PR 走、或者到了触发条件再做；过期的文档（写作台运维手册说 019～022 没跑、回流闸默认关，TV 的 docs/09 说 v1_27 先别跑）顺手改了（aw#178、TV 本 PR）。报告建议 owner 拍的三件（「链接失效 / 观察中」进不进判档规则、拆不拆 TikHub 账号、重新 vendor 题库的规矩）工程都能判、不花钱，没有问 owner。报告里「core.py 已经碰到递归深度」那一句没复现。
 
+**11-23 合并（工程）**：北京 23:05 之后的窗口里合了三个，加上 aw#178（D-163）。合之前核了：14:00 UTC 那趟 tv-sync 14:04 UTC 跑完；Jev 周一外部语料那一趟 12:12–12:24 UTC 跑完（调用 378 次、3.78 美元，写进外部帖 289 篇、答案 6,936 行）；四个 `codex_gate.py` 都 PASS、CI 绿、没有未解决的评审。都是 squash，带 `expectedHeadSha` 和显式提交说明。
+- TangVarie/autowriter#178：15:06 UTC 合，合并提交 `d49bfc6`；Railway 部署成功，`/health` 的 `build.commit` `d49bfc64ee93`、`protocol_version` `6f23eba491fd`、`librarian.configured` true；默认分支合回了开发分支。
+- TangVarie/JevforCoentent#40：15:10 UTC 合，`5bf66b5`；Railway 15:11 成功；`/health` ok，`policy_sha256` 前 12 位 `34fbe665bfb7`，和仓里 `config/data_policy.yaml` 一致。
+- TangVarie/linkcheck#91：15:10 UTC 合，`99a8eb2`；两个服务 15:11–15:12 部署成功；面板 `/healthz` GET、HEAD 都回 200（HEAD 是这个 PR 加的）；换版后第一轮巡查（15:15 UTC，queue）正常起跑、五张表都读了、没有要刷新的行、没花钱；第一轮真刷到行的巡查工程再看一次日志（报错、花费）。
+- TangVarie/autowriter#177：等 aw#178 部署好了才合（两次部署不叠在一起），15:12 UTC 合，`fefce82`；合之前在本机把它叠在新的默认分支上跑了全套（pytest 5048 passed / 7 xfailed、selftest、`sync-skill --check`、compileall、三组 node 测试都过）；15:14 UTC `/health` 的 `build.commit` `fefce82409aa`、协议不变、`librarian.configured` 还是 true；启动日志没有报错。
+- 剩下 TangVarie/truth-vault#301：照原计划 11-24 上午（UTC）首图那一晚读完之后合。
+
 ## D-165 · 补做 11-16 / 11-20 两次过期的读数，工程定的几件：L-07 照实报、关；按段判不重议；AU-F13 记法不改；软规则这一轮不标定；结尾那条规则改问法（重编那一次约几毛钱，问了 owner）；F-04、W-07 关（2026-11-23，工程；owner 可以否决）
 
 **What**
