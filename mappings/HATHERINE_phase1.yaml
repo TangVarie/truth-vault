@@ -258,8 +258,14 @@ onboarding_meta:
 
 sync_config:
   source_type: feishu_api
-  feishu_app_token: S72ObviZAa7P0AsueX1cpsYRnN6   # 表标识(非密钥), 接表时已知
-  feishu_table_id: tblWIv6J2G3JW9Jv
-  feishu_view_id: null            # 链接里的 view=vewzBBS9Rs 不钉: 视图可能带筛选, 同步要全表
+  # 2026-11-23 改成两张表(owner 11-23 给的新表; 老表 10-23 之后没有新帖, 新帖发在同一个 base 的另一张表)。
+  # 视图都不钉: 视图可能带筛选, 同步要全表。两表共用下面的 field_mapping / raw_extra(列结构须一致, 先 preflight)。
+  tables:
+    - feishu_app_token: S72ObviZAa7P0AsueX1cpsYRnN6   # 表标识(非密钥), 接表时已知; 表1(老表, 09-17 起 daily)
+      feishu_table_id: tblWIv6J2G3JW9Jv
+      feishu_view_id: null
+    - feishu_app_token: S72ObviZAa7P0AsueX1cpsYRnN6   # 表2(新表, 同一个 base, 11-23 接; 先 preflight 再合并)
+      feishu_table_id: tblogN8IiCOplBPg
+      feishu_view_id: null
   sync_interval: daily            # 2026-09-17 翻 daily: preflight(run #36) + 干跑(#172) + 实跑(#173, 195 行入库/0 隔离/0 错)验证 OK;
                                   # essence 只标了 24/195(worker 一批 502 瞬时失败), 进夜间 cron 才会续标
