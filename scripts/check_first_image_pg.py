@@ -19,7 +19,8 @@
   B 段 (要 pyyaml; 没有就跳过并打一条 ::warning::): 用 scripts/first_image_pass.py 真跑一趟 (假下载、假缩图、假模型, 库是真的),
     再跑一趟确认不重复做、不重复问。排第一的经验卡帖飞书不给下载: 记一笔、别的照做, 到了重试时间再试也卡不住别的帖。
     其中一篇答案自相矛盾 (说了没有字、又抄出了字; D-160): 库收下带 inconsistent:<规则名> 的行, 这一篇是 answered、13 行、
-    读的那一面 usable = true, answers 里没有 img_text_kind 和 img_text_has_number (没有键 = 没答成), 别的往外给的题照有。
+    读的那一面 usable = true, answers 里没有 img_text_kind 和 img_text_has_number (没有键 = 没答成; fi-v0.3 里这两道本来就不往外给,
+    作废了几道看库里那几行的原因), 别的往外给的题照有。
     一篇说了有字、大字是空的、版式是纯文字卡片: answers 里连 img_layout 也没有。一篇说了没有字、抄出来的是「没有」
     (said_none_in_words, 两次说的是一回事): 照旧 no_answer、一行答案都不写、按日程重问。
 
@@ -416,7 +417,9 @@ def part_b() -> None:
     res = go()
     assert res["ended"] == "done" and res["candidates"] == 8, res
     assert res["status"] == {"answered": 4, "not_a_cover": 1, "first_is_video": 1, "download_failed": 1, "no_answer": 1}, res["status"]
-    assert res["partial_void"] == {"no_text_but_transcribed:transcribed_text": 1, "text_but_not_transcribed:empty_text": 1} \
+    # fi-v0.3: CONTRA 「字是哪一种」答的是「结果或结论」, 第四条 (text_kind_without_text) 也中 (作废的题、原因和第一条一样)
+    assert res["partial_void"] == {"no_text_but_transcribed:transcribed_text": 1, "text_but_not_transcribed:empty_text": 1,
+                                   "text_kind_without_text": 1} \
         and res["no_answer_why"] == {"round:no_text_but_transcribed:said_none_in_words": 1}, res
     assert downloads[0] == tok("DENY"), "夹具: 被拒的那一篇要排第一"
     tries = lambda: sql(f"SELECT attempts || ',' || tries || ',' || (next_try_at IS NOT NULL) FROM truth_vault.note_first_image "  # noqa: E731
@@ -425,7 +428,10 @@ def part_b() -> None:
     assert len(asks) == 7 + 7 + 7 + 7 + 7 + 1 and tok("old") not in downloads and tok("x") not in downloads and tok("video") not in downloads
     v = view(ids["card"])
     assert v["usable"] is True and v["model"] == P.cheap_model() and set(v["answers"]) == set(P.surfaced_questions(bank)), v
-    assert v["answers"]["img_text_has_number"] == "有" and "img_main_text" not in v["answers"]
+    # fi-v0.3: img_text_has_number 是 reworded_unverified, 不往外给 —— 视图里没有这个键; 库里那一行照存, 去 note_feature_answers 读
+    assert "img_text_has_number" not in v["answers"] and "img_text_kind" not in v["answers"] and "img_main_text" not in v["answers"], v
+    assert sql("SELECT answer FROM truth_vault.note_feature_answers "
+               f"WHERE subject_id = '{ids['card']}' AND run_tag = 'img-primary' AND question_id = 'img_text_has_number';") == "有"
     assert (view(ids["multi"])["usable"], view(ids["multi"])["cover_unconfirmed"], view(ids["multi"])["answers"]) == (False, True, None)
     assert (view(ids["notcover"])["status"], view(ids["notcover"])["answers"]) == ("not_a_cover", None)
     assert view(ids["video"])["status"] == "first_is_video" and view(ids["video"])["model"] is None

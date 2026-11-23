@@ -3648,7 +3648,7 @@ jobs:
       - name: 首图试跑 (D-157) · 题库一组四题 / 抽样 / 过线 / token 硬上限 / 不写库不写盘 / 输出只有计数 / 只能手动且默认干跑
         working-directory: scripts
         run: python check_first_image.py
-      - name: 每晚的首图步骤 (D-158) · 题库 fi-v0.2 / 只许便宜档 / 每晚约 1 元的硬上限 / 迁移没跑不拦夜跑 / 输出只有计数
+      - name: 每晚的首图步骤 (D-158) · 题库 fi-v0.3 / 只许便宜档 / 每晚约 1 元的硬上限 / 迁移没跑不拦夜跑 / 输出只有计数
         working-directory: scripts
         run: python check_first_image_pass.py
       - name: sanshengliubu sync shape self-check (build_reference_sample ↔ preflight ↔ ssll v2 schema)
