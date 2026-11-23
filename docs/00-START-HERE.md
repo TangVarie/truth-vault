@@ -1,6 +1,6 @@
 # 00 · START HERE — Truth Vault 从零到现在的完整对齐
 
-> **当前交接入口（2026-10-21）：[HANDOFF.md](../HANDOFF.md)**；已做检查、改动和验证见交接，待办见[OPEN-ITEMS.md](../OPEN-ITEMS.md)。本文演进路线中的早期状态与数字保留为历史。
+> **当前交接入口（2026-11-22）：[四库交接](handoff-2026-11-22-four-repos.md)**。项目是四个库：truth-vault、autowriter、JevforCoentent、linkcheck；待办见[OPEN-ITEMS.md](../OPEN-ITEMS.md)（四个库统一的清单）。本文演进路线中的早期状态与数字保留为历史；§3.4、§7 第 1 条「模型调用都在 Railway」已过时（D-100 起 essence 和书架策展从 GitHub runner 直接调中转站，只有特征层还走 Railway worker）。
 
 > **第一次接手就从这里读。** 读完这一篇,你能把"项目为什么存在 → 核心设计内核 → 每一轮迭代
 > → 当前状态"整条线串起来,并且**不会被仓库里的过时描述带偏**(§6 专门列了哪些说法已作废)。

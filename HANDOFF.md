@@ -1,3 +1,5 @@
+> **11-22 · 四库交接（先读这条）：** 接手入口改成 [docs/handoff-2026-11-22-four-repos.md](docs/handoff-2026-11-22-four-repos.md)。这个项目是**四个库**：truth-vault、autowriter（默认分支 `claude/xhs-content-workstation-BSEuH`）、JevforCoentent、linkcheck，新会话四个都要接上。本文件下面各节都是 10 月的历史快照；「owner 定的规矩，接手照办」那一小节的规矩以新交接文档第 3 节为准。
+
 > **10-23 更新（先读这条）：** Railway 已恢复，钥匙已换完；交接执行书 A、B、C 已完成（#121、模板 + 迁移 015、#117 `e3bc3fb`）。下面 10-22 这一节里「暂停期间不改 Railway」「等恢复」都已过时，现状看 [OPEN-ITEMS](OPEN-ITEMS.md) 顶部。
 
 # ⚠️ Railway 泄露 · 2026-10-22（先读这条）
