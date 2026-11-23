@@ -1,6 +1,6 @@
 # 四库交接 · 2026-11-22
 
-> 快照时间：**2026-11-22 约 10:30 UTC**。上一个会话（标题「多库联动进度评估」）到这里停手，由 owner 新开的会话接手**整个项目**。本文是接手入口：先读完本文，再读 [OPEN-ITEMS](../OPEN-ITEMS.md) 顶部、第 0 节、第 8 节。本文和更早的交接文档（[10-22 执行书](handoff-2026-10-22-next-owner.md)、[HANDOFF.md](../HANDOFF.md) 里 10-21 / 10-15 那几节、aw 和 Jev 的 HANDOFF.md）冲突时，以本文为准；任何「线上现在是什么」都要动手前重新核。11-23 约 02:30 UTC 补了一次：11-22 那晚首图是 0 篇，没有「用量拆开」那一行（6.1）；第二轮复审的改动也在这一版里。
+> 快照时间：**2026-11-22 约 10:30 UTC**。上一个会话（标题「多库联动进度评估」）到这里停手，由 owner 新开的会话接手**整个项目**。本文是接手入口：先读完本文，再读 [OPEN-ITEMS](../OPEN-ITEMS.md) 顶部、第 0 节、第 8 节。本文和更早的交接文档（[10-22 执行书](handoff-2026-10-22-next-owner.md)、[HANDOFF.md](../HANDOFF.md) 里 10-21 / 10-15 那几节、aw 和 Jev 的 HANDOFF.md）冲突时，以本文为准；任何「线上现在是什么」都要动手前重新核。11-23 约 02:30 UTC 补了一次：11-22 那晚首图是 0 篇，没有「用量拆开」那一行（6.1）；第二、三轮复审的改动也在这一版里。
 
 ## 0. 先记住：这个项目是四个库
 
@@ -30,7 +30,7 @@
 1. 对四个库逐个调用 `add_repo`（owner `TangVarie`；repo `truth-vault`、`autowriter`、`JevforCoentent`、`linkcheck`；要推代码就用 access `push`），按返回的命令克隆，再 `register_repo_root`。**四个都接上之前不要开始做事。** 建议的克隆位置：`/home/user/truth-vault`、`/home/user/autowriter`、`/home/user/jevforcoentent`、`/home/user/linkcheck`。
 2. 每个库 `git fetch origin`，从**各自的默认分支**拉出你这个会话的开发分支（aw 从 `origin/claude/xhs-content-workstation-BSEuH` 拉，不是本地那条同名分支，本地那条可能很旧）。上一个会话的分支 `claude/zen-johnson-m2f14s` 在 aw、Jev、linkcheck 里已全部合进默认分支；TV 那条要等交接 PR TangVarie/truth-vault#303 合并。不用接着用它，也**不要往它推**。核法：`git diff origin/<默认分支>...origin/claude/zen-johnson-m2f14s`（**三个点**，应当为空）。两个点的写法在 aw、linkcheck 会列出一大串改动，那是默认分支后来又往前走了（aw#174–#176、linkcheck#87–#90），不是没合；`git log` 也会列出早已 squash 进去的旧提交，别被骗。TV 先看 #303 的状态：
    - 是 merged：squash 合并不挪合并基点，三个点只有在上一个会话把 main 合回 zen 之后才是空的（第 4 节第 8 步）。要是还列出 #303 那几个文件，就是合回那一步没做，内容已经在 main 上了，不用管。
-   - 还开着：本文、`scripts/ci_local.py`、D-162 的「11-22 再补（owner）」都还不在 main 上，先从 `origin/claude/zen-johnson-m2f14s` 读，并告诉 owner。#303 不用改就照第 4 节第 4–9 步合掉（它是 draft：转 ready、等 Codex、`codex_gate.py` PASS、看 features-sync、squash），第 8 步不做；要改就照 D-153 的做法把改动搬到自己的开发分支新开 PR，#303 关掉时留一句指向新 PR。
+   - 还开着：#303 改的东西都还不在 main 上（本文、`scripts/ci_local.py`、OPEN-ITEMS 的 11-22 横幅和 I-38、D-162 的「11-22 再补（owner）」、`docs/34` 第 13 节的 3.5 元和几晚怎么算），从 main 拉的分支读到的是旧的。先从 `origin/claude/zen-johnson-m2f14s` 读这几份，并告诉 owner；#303 合并之前别在自己的分支上改 I-38 那一格（会和 #303 冲突）。#303 不用改就照第 4 节第 4–9 步合掉（它是 draft：转 ready、等 Codex、`codex_gate.py` PASS、看 features-sync、squash），第 8 步不做；要改就照 D-153 的做法把改动搬到自己的开发分支新开 PR，#303 关掉时留一句指向新 PR。
 3. 装本地环境，跑一遍各库的检查（第 5 节），确认起点是绿的。
 4. 会话需要两个连接器：Supabase（只读用）、Vercel（看部署和日志）。GitHub 用 MCP 工具；本环境 `gh` 的 GraphQL 被代理拦了，要用 `gh api repos/...` 走 REST。
 5. 把第 6.1 节首图那件事的提醒排上（`send_later`）。上一个会话排的提醒已经撤了；`list_triggers` 里另有三条已停用的「Re-check autowriter PR 174 / 175 / 176」，是别的会话的，别动。
@@ -108,7 +108,7 @@
 4. Codex 干净、CI 绿：把 PR 转成 ready（`update_pull_request` draft=false）。转 ready 会触发 Codex 再审一次（「Draft marked ready」），**等它审完**。
 5. 在 TV 的克隆里跑：`python3 scripts/codex_gate.py TangVarie/<repo> <PR号>`。输出 `PASS`（退出码 0）才行；`FINDINGS`（1）要修；`WAIT`（2）是还没审完、head 变了、或者读不到，**WAIT 不算过**。它用不带登录的 curl 读公开仓（每小时 60 次）。
 6. 再核：CI 在当前 head 上全绿、没有未解决的 review thread、没有冲突。
-7. squash 合并：带 `expectedHeadSha`，并且**显式给 `commit_message`**（不给的话，开发分支上的旧提交会全被塞进合并信息）。TV 先确认当天的 features-sync 没在排队或在跑（第 3 节）。
+7. squash 合并：带 `expectedHeadSha`，并且**显式给 `commit_message`**（不给的话，开发分支上的旧提交会全被塞进合并信息）。TV 先照第 3 节那两条核 features-sync（今天的定时那一趟已 completed，否则 16:00–23:30 UTC 不合；且没有任何一趟 queued / in_progress）。
 8. 取消订阅；把默认分支合回开发分支并推（`git fetch origin <默认分支> && git merge --no-edit origin/<默认分支> && git push`）。
 9. 合完核部署：Railway 每次部署都会在 GitHub 留一条 deployment（creator `railway-app[bot]`，environment 是 ` / production`，前面有个空格）。不带登录就能查（和 codex_gate 共用每小时 60 次）：`curl -s 'https://api.github.com/repos/TangVarie/<repo>/deployments?environment=%20%2F%20production&per_page=5'`，找 `sha` 等于合并提交的那条，再读它的 `statuses_url`，要有 `success`。四个库都这么核。另外：
    - aw 再核 `https://autowriter-production.up.railway.app/health` 的 `build.commit`（合并提交前 12 位）和 `build.protocol_version`。
@@ -157,10 +157,10 @@
   - **为什么贵还不知道**：11-20 那晚每次调用的输入当量约 5,388 token，前几晚约 1,500，图一样大（768×1024）。输入当量 = 输入 + 5×输出，输入涨和输出涨都会让它变大，光看总数分不出来。11-09 有过先例：代码和模型都没变，中转站每次调用记的输入 token 大了约 5 倍（OPEN-ITEMS S-14：OKMAN essence 约 9.9k，11-08 约 1.7k），缓存关着却记了 cache_write / cache_read，输出照旧约 640，结论是中转站那边变了。首图 Summary 的「输入」已经把 cache_write、cache_read 加进去了（`scripts/first_image.py` 的 settle），看不出缓存那部分。
   - **和别的任务比**：拿 daily-sync 的 job 日志，essence 看 `Done:` 行里的 `prompt_cache`（calls / input / cache_write / cache_read / output），遮名字看「用量: 调用 … 输入 … 输出」那一行；同一个项目按每次调用比 11-08～11-21 这几晚。essence 走了备用站的那几晚每次只记约 1 个输入 token，不能拿来比：看同一行 `Done:` 里的 `relay`，`backup_ok` 大于 0 就是有调用走了备用站（`relay summary:` 那一行不带 `relay: ` 前缀，进不了 job 日志，搜不到，见 docs/12 §8）。遮名字走备用站时用量照常记全，可以比（S-14）。
   - **要是每次调用的输出变得很长，或者输入涨了、而 essence / 遮名字每次调用的输入也一起涨了，先用中文告诉 owner，再换。**
-  - **可能读不到**：没有新帖的晚上（11-21、11-22 都是 0 次调用）Summary 里是「这一晚要做的帖：0 篇」，没有「用量拆开」那一行；调用了但中转站一次用量都没回报（「没拿到用量、按预留记的」次数等于调用次数）也没有这一行。那不等于「没变贵」：别开换版 PR（第 2 步只读的 SELECT 可以先做，但合换版 PR 之前要再跑一遍计数和配对那两条：中间几晚新做的帖也是 fi-v0.2，重问会把它们删掉），提醒顺延到下一晚约 23:50 UTC，等第一个有这一行的晚上再判。手动点一趟也没用：手动拿到的候选和定时那一趟一样（经验卡的帖、11-16 以后入库还没做的、首图换了的、题库版本不同的、到了重试时间的）。从 11-22 算起连着三晚都读不到（也就是 11-24 那晚还没有），就用中文告诉 owner，建议换上之后看第一晚的「用量拆开」（每晚 token 上限写死在代码里，超了当晚就停）。
+  - **可能读不到**：没有新帖的晚上（11-21、11-22 都是 0 次调用）Summary 里是「这一晚要做的帖：0 篇」，没有「用量拆开」那一行；调用了但中转站一次用量都没回报（「没拿到用量、按预留记的」次数等于调用次数）也没有这一行。那不等于「没变贵」：别开换版 PR（第 2 步只读的 SELECT 可以先做，合之前照第 3 步再跑一遍），提醒顺延到下一晚约 23:50 UTC，等第一个有这一行的晚上再判。手动点一趟也没用：手动拿到的候选和定时那一趟一样（经验卡的帖、11-16 以后入库还没做的、首图换了的、题库版本不同的、到了重试时间的）。从 11-22 算起连着三晚都读不到（也就是 11-24 那晚还没有），就用中文告诉 owner，建议换上之后看第一晚的「用量拆开」（每晚 token 上限写死在代码里，超了当晚就停）。
 - **第 2 步**：照 `docs/34` 第 13 节先只读：SELECT 记下 fi-v0.2 闭集答案的计数（重问会删掉旧的行，之后就查不到了）；数 `note_first_image` 里 `bank_version='fi-v0.2'` 做完了几篇；按这个数重算调用次数和钱（11-22 的数：72 篇、462 次调用，最多 504）。`docs/34` 第 12、13 节里写的「超过约 0.84 元先问」是 11-18 的线，已被 D-162「11-22 再补（owner）」换成约 3.5 元。
   - 再按篇存一份配对：D-162 换版后要比「同一批说了没有字的封面」前后中了几篇，重问删掉 fi-v0.2 的行之后就拼不回来了。只读查 `truth_vault.note_feature_answers` 里 `run_tag = 'img-primary' and bank_version = 'fi-v0.2'` 的 `img_text_amount`（答案是 `无效:inconsistent:no_text_but_transcribed` 就是中了第一条）和 `img_main_text`（只看有没有答案、无效原因，**抄下来的字不查**），按 `subject_id` 排好。结果不进仓、不进日志（完整 note_id 也不进）；草稿目录不跨会话，判的时候已是好几晚以后，所以至少留在会话对话里；要更稳就写一份 `create table truth_vault.backup_fi_v02_text_pairs_<YYYYMMDD> as …` 的 SQL 给 owner 在合并换版 PR 之前跑（照已有的备份表惯例，判完再说删不删）。
-- **第 3 步**：没超过约 3.5 元就开换版 PR：`scripts/first_image_pass.py` 的 `BANK_PATH` 指到 `prompts/first_image_questions_v0_3.yaml`、`BANK_VERSION` 改成 `fi-v0.3`（两行一起改）；`scripts/check_first_image_pass.py` 第 1、3、7、9、10 节；`scripts/check_first_image_pg.py` B 段两处；`docs/34` 第 3、6 节的表；顺手把 `docs/34` 第 13 节里 0.84 元那句改成指向 D-162 的 3.5 元。不用跑 SQL。合并前先确认 features-sync 没在排队或在跑（第 3 节）。超过约 3.5 元就带着新的数回去问 owner。
+- **第 3 步**：没超过约 3.5 元就开换版 PR：`scripts/first_image_pass.py` 的 `BANK_PATH` 指到 `prompts/first_image_questions_v0_3.yaml`、`BANK_VERSION` 改成 `fi-v0.3`（两行一起改）；`scripts/check_first_image_pass.py` 第 1、3、7、9、10 节；`scripts/check_first_image_pg.py` B 段两处；`docs/34` 第 3、6 节的表；顺手把 `docs/34` 第 13 节里 0.84 元那句改成指向 D-162 的 3.5 元。不用 owner 跑迁移。**合并之前（不管第 2 步什么时候做的）再跑一遍计数和配对那两条 SELECT、重算一次钱**：第 2 步之后的每一晚新做的帖也是 fi-v0.2，重问会把它们删掉，不重跑就从前后对比里永远丢了。合并前照第 3 节那两条核 features-sync。超过约 3.5 元就带着新的数回去问 owner。
 - **换上之后**：每晚两道上限，40 张图和 750,000 输入当量 token（`NIGHTLY_MAX_WEIGHTED`，约 0.97 元），先到哪道停哪道；一张图开始之前要放得下它 7 次调用的预留（约 75,000，`PassBudget.take_image`），所以已花到约 675,000 就不再开新图。按前几晚每次约 1,500，40 张那道先到，72 篇分 2 晚；按 11-20 每次约 5,388，token 那道先到，一晚只做得了约 18 张，462 次调用要约 4 晚。要几晚取两者里大的那个：调用数 × 每次调用输入当量 ÷ 约 675,000，和篇数 ÷ 40，都往上取整，再加上这几晚的新帖；调用数、篇数用第 2 步数的，每次的当量用第 1 步读到的。写进换版 PR 和 I-38。按 D-162 判改没改好：同一批说了没有字的封面里第一条规则还中几篇、第二条规则涨没涨（涨了就退回）；要等最后一晚做完才能比。连带：写作台的封面参考那一句（aw#171，deskcore.md §3.36）读 `v_first_image_features`，重问完之前 fi-v0.2 的行读出来是 `usable = false`，那一句这几晚一直没有。
 - 每晚的计数攒着，在下一个文档 PR 里记进 I-38。
 
@@ -168,7 +168,7 @@
 
 11-22 05:46 UTC 用 owner 的账号在四个库各开了一个，分支都是 `audit/hardening-2026-11-21`，标题都是「Audit hardening 11-21」。交接时四个都是 CI 绿、Codex 没意见、没有冲突、没合并。谁在推它们不知道；OPEN-ITEMS 和 DECISIONS 里都还没有记录。
 
-- [TangVarie/truth-vault#301](https://github.com/TangVarie/truth-vault/pull/301)：馆员回流闸的刷新改成有界等待、加锁；worker 校验项目参数；飞书媒体 401 重试；评论父子行的写入顺序；日志脱敏；看板登录表单坏了回 400；新加的 `scripts/check_audit_hardening.py` **没接进 ci.yml**。合并会让 Railway 的 librarian、worker 和 Vercel 看板重新部署；它也改了 GitHub 夜跑直接从 main 跑的脚本，下一趟就是新代码：daily-sync 的 essence 写回（`annotate_essence_pass.py`：写库异常从只接 RuntimeError 改成全接，只跳这一篇、记 systemic，没加重试。这正是 OPEN-ITEMS S-14 ① 记着「只盯、先不修」的那处，合之前按 S-14 ① 原来的打算对一下，合了在 S-14 记一笔）、评论父子行分批（`sync_comments_from_raw_extra.py`）、遮名字的日志（`mask_external_names.py`）、首图下载（`feishu_media.py`：401 换 token 重试一次，`first_image_pass.py` 直接调它）。这些不动提示词和 token 记账，但最好等 6.1 那一晚的首图读完再合，免得那一晚的下载计数混进新代码。合完除了部署，再看下一趟 daily-sync（essence 的 `Done:` 行、comments 那一步）和 First image sync。回流闸那一改的后果：馆员每次重启后第一次读闸要是超过 4 秒，那一次借卡不过回流闸（D-156 默认开），`read_errors` 还会加一；合完等写作台借过一次卡，看馆员 `/health` 的 `select.return_gate`（`read_ok`、`read_errors`）。
+- [TangVarie/truth-vault#301](https://github.com/TangVarie/truth-vault/pull/301)：馆员回流闸的刷新改成有界等待、加锁；worker 校验项目参数；飞书媒体 401 重试；评论父子行的写入顺序；日志脱敏；看板登录表单坏了回 400；新加的 `scripts/check_audit_hardening.py` **没接进 ci.yml**。合并会让 Railway 的 librarian、worker 和 Vercel 看板重新部署；它也改了 GitHub 夜跑直接从 main 跑的脚本，下一趟就是新代码：daily-sync 的 essence 写回（`annotate_essence_pass.py`：写库异常从只接 RuntimeError 改成全接，只跳这一篇、记 systemic，没加重试。这正是 OPEN-ITEMS S-14 ① 记着「只盯、先不修」的那处，合之前按 S-14 ① 原来的打算对一下，合了在 S-14 记一笔）、评论父子行分批（`sync_comments_from_raw_extra.py`）、遮名字的日志（`mask_external_names.py`）、首图下载（`feishu_media.py`：401 换 token 重试一次，`first_image_pass.py` 直接调它）。这些不动提示词和 token 记账，但最好等 6.1 那一晚的首图读完再合，免得那一晚的下载计数混进新代码。合完除了部署，再看下一趟 daily-sync（essence 的 `Done:` 行、comments 那一步）和 First image sync。回流闸那一改的后果：馆员每次重启后第一次读闸要是超过 4 秒，在它读回来之前（最长约 120 秒的 PostgREST 超时）到的每一次借卡都不过回流闸（D-156 默认开）；那一次读最后要是失败，600 秒之内不重读，这 10 分钟里借出去的都不过闸。读晚了 `read_errors` 加一，失败再加一。合完等写作台借过一次卡，看馆员 `/health` 的 `select.return_gate`（`read_ok`、`read_errors`）。
 - [TangVarie/autowriter#177](https://github.com/TangVarie/autowriter/pull/177)：MCP `allowed_origins`、日志里屏蔽 `DESKCORE_API_KEY`、`DESKCORE_VIEW_SECRET` 和 `DESKCORE_KEYS` 里的每一把钥匙、客户端加锁、UTC 排序、馆员连接和读取分开超时。`allowed_origins` 那一改线上不起作用：`DESKCORE_ALLOWED_HOSTS` 没配（`/health` 回 `mcp_allowed_hosts` 是「不校验」），MCP 的 Host / Origin 校验整个关着；就算以后配上，这一改也只会多放行，挡不住写手。真正会变的：`/health` 的 `librarian.configured` 要 `LIBRARIAN_URL` 和 `LIBRARIAN_API_KEY` 都配了才是 true（合并后核一眼还是不是 true）；馆员连接超时封顶 3 秒；比 `extracted_at` 改用 UTC 时间。不动协议，没有迁移。
 - [TangVarie/JevforCoentent#40](https://github.com/TangVarie/JevforCoentent/pull/40)：行为会变：未知的 `subject_type` 回 422（允许 note、comment、external_note、aw_version、ssll_sample）；hard_rules 里写了暗题题号回 422；模板填充改成单遍替换；修改单定义的措辞变了；判定那一步（`apply_evidence`）不认非 dict 的答案、bool 选项和非有限或 bool 的概率；`interpret()` 的 noul 判断改了；内部 MCP 传 `banks=[]` 不再自动换默认题库，`comment_repair_plan_for` 的 `passed` 也改了。合并会重启判定服务。
 - [TangVarie/linkcheck#91](https://github.com/TangVarie/linkcheck/pull/91)：动了判定和花钱的路径：熔断作废时 STATUS_OK 的行也清掉耦合列和蓝词账；TikHub 小红书详情只有 `data==[]` 或 `note_list==[]` 才判失效，形状不对改判传输错误、交给备胎；余额拒收 bool / NaN / Inf；试跑租约只在 `kind==run` 时算自己的；面板 `/api/queue` 同时校验表和 base。合并后下一轮 cron 就是新代码在花钱。
@@ -176,7 +176,7 @@
 **建议的做法**（照 D-153 的先例：外面推来的审查分支，合并前逐条独立复核，和 owner 定过的规矩冲突的拿掉）：每个 PR 读 diff、在本地跑全量检查、对照第 3 节的规矩和本节点到的风险。
 
 - 这四条分支不是本会话的：按第 3 节，不往 `audit/hardening-2026-11-21` 推，也不让 Codex 往上推。
-- **照原样合的**：它们不是 draft，交接时 `codex_gate.py` 四个都是 PASS，走第 4 节第 5–7 步和第 9 步（要收 PR 动态就先订阅，合完取消；第 8 步的合回、推送不做，分支不是本会话的。TV 先确认 features-sync 没在跑；aw、Jev 避开写手在用的北京白天；linkcheck 先和 owner 约好看下一轮 cron）。head 变了才要再 `@codex review`。
+- **照原样合的**：它们不是 draft，交接时 `codex_gate.py` 四个都是 PASS，走第 4 节第 5–7 步和第 9 步（要收 PR 动态就先订阅，合完取消；第 8 步的合回、推送不做，分支不是本会话的。TV 先照第 3 节那两条核 features-sync；aw、Jev 避开写手在用的北京白天；linkcheck 先和 owner 约好看下一轮 cron）。head 变了才要再 `@codex review`。
 - **要拿掉或改一处的**：照 D-153 的实际做法（TV#282 `codex/audit-fixes-20261114` 关掉不合，复核改好的版本从 Claude 自己的开发分支开 TV#283 合进去），把要留的改动搬到自己的开发分支，新开 PR，走第 4 节全流程；新 PR 正文写清从哪个 PR 来、留了什么、拿掉了什么、为什么；原 PR 关掉时留一句指向新 PR。
 - 合完在 TV 的 DECISIONS 记一条（跨仓的决定都记在 TV），写上原 PR 和新 PR 的号。四个 PR 之间有没有部署顺序要求还没核（推测没有）。
 
@@ -271,5 +271,5 @@ W-56（下一次 `check_rules` 之后核新的题）、AU-F07、W-33、W-28、S-
 - TV#302 合并（277727f）：首图 Summary 起把中转站回报的输入、输出 token 分开记。
 - 本 PR（TangVarie/truth-vault#303）：本文；`docs/34` 第 13 节第 5 步注明 0.84 元的线已换成 3.5 元；`scripts/ci_local.py`（照 ci.yml 在本地跑 python / yaml 两个 job，进了 CI 的编译列表）；OPEN-ITEMS 标题和 CURRENT_STATE 改成四个库；HANDOFF.md、docs/00 顶部指向本文；D-162 / I-38 记下 owner 11-22 的「同意」。
 - 每周一的「OPEN-ITEMS weekly review」定时任务的提示词改成四个库（加了 linkcheck）。
-- 11-23 补：第二轮独立复审的改动（features-sync 核法、zen 分支的核法、备用站怎么认、几晚怎么算、skill 读数分不出人数、compat-021 同 PR 同步、TV#301 回流闸、I-38 那句「多半是输出变长了」改成还分不出）。
+- 11-23 补：第二、三轮独立复审的改动（#303 没合时哪些要从分支读、合换版 PR 前重跑 SELECT、features-sync 核法、zen 分支的核法、备用站怎么认、几晚怎么算、skill 读数分不出人数、compat-021 同 PR 同步、TV#301 回流闸、I-38 那句「多半是输出变长了」改成还分不出）。
 - 上一个会话排的首图读数提醒（原定 11-22 23:50 UTC 唤醒旧会话）已删，改由新会话自己排（第 6.1 节）。
