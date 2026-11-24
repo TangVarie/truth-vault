@@ -8947,7 +8947,7 @@ owner 11-16：开。
 - TangVarie/JevforCoentent#40：15:10 UTC 合，`5bf66b5`；Railway 15:11 成功；`/health` ok，`policy_sha256` 前 12 位 `34fbe665bfb7`，和仓里 `config/data_policy.yaml` 一致。
 - TangVarie/linkcheck#91：15:10 UTC 合，`99a8eb2`；两个服务 15:11–15:12 部署成功；面板 `/healthz` GET、HEAD 都回 200（HEAD 是这个 PR 加的）；换版后第一轮巡查（15:15 UTC，queue）正常起跑、五张表都读了、没有要刷新的行、没花钱；第一轮真刷到行的是 15:26 UTC 那轮 sweep：刷了 1 行、¥0.072（开跑前预估 ¥0.07，主通道 1 次、没有切备胎、没有熔断、写回成功），之后到 16:40 UTC 每 5 分钟两轮都是 0 行、0 元、`exit_code` 0，日志里没有 Traceback 或 `unexpected_shape`。
 - TangVarie/autowriter#177：等 aw#178 部署好了才合（两次部署不叠在一起），15:12 UTC 合，`fefce82`；合之前在本机把它叠在新的默认分支上跑了全套（pytest 5048 passed / 7 xfailed、selftest、`sync-skill --check`、compileall、三组 node 测试都过）；15:14 UTC `/health` 的 `build.commit` `fefce82409aa`、协议不变、`librarian.configured` 还是 true；启动日志没有报错。
-- TangVarie/truth-vault#301：11-23 晚首图那一趟 GitHub 没起跑；它对首图只改了下载遇 401 换钥匙重试一次、不改模型调用和每次的 token，所以没等首图读数，11-24 03:40 UTC 合了，`43f6c76`（合之前在本机把它和 TangVarie/truth-vault#304 一起叠在当前 main 上跑：ci_local 108/108、`check_audit_hardening.py` 全 PASS；没有 features-sync 在排队或在跑）。librarian、onboarder、tv-worker 03:41 UTC 部署成功，馆员 `/health` ok；看板 Vercel 生产部署 READY。读闸 `select.return_gate` 等写作台下一次借卡再看 `read_ok`。
+- TangVarie/truth-vault#301：11-23 晚首图那一趟 GitHub 没起跑；它对首图只改了下载遇 401 换钥匙重试一次、不改模型调用和每次的 token，所以没等首图读数，11-24 03:40 UTC 合了，`43f6c76`（合之前在本机把它和 TangVarie/truth-vault#304 一起叠在当前 main 上跑：ci_local 108/108、`check_audit_hardening.py` 全 PASS；没有 features-sync 在排队或在跑）。librarian、onboarder、tv-worker 03:41 UTC 部署成功，馆员 `/health` ok；看板 Vercel 生产部署 READY。读闸 `select.return_gate` 等写作台下一次借卡再看 `read_ok`。**11-24 补**：写作台借过卡之后读闸 `read_ok` true、`read_errors` 0、判过 101 次；合并后第一趟 daily-sync（GitHub 定时晚到 12:26–13:22 UTC）评论那一步没有 23503、没有整批失败，essence 各项目 `systemic_failed` 都是 0（单条失败的下一晚续标），整趟 56 / 240 分钟。
 
 ## D-165 · 补做 11-16 / 11-20 两次过期的读数，工程定的几件：L-07 照实报、关；按段判不重议；AU-F13 记法不改；软规则这一轮不标定；结尾那条规则改问法（重编那一次约几毛钱，问了 owner）；F-04、W-07 关（2026-11-23，工程；owner 可以否决）
 
@@ -9044,3 +9044,23 @@ owner 11-23 发了一张小红书评论区截图（一条 AI 定时自学的做�
 
 - OPEN-ITEMS：S-18 ① TV 那两项、S-20 ① 随 TangVarie/truth-vault#306 合了就算做完（S-18 ① 里 essence 收尾那句「(已各重试一次)」还开着，S-14）；S-18 ②、S-20 ③ 随写作台 PR；S-20 ④ ⑦ 随 Jev#42；S-18 ④、S-20 ⑧ ⑩ 随 linkcheck#93（Railway 边缘遇到客户端自带的 `X-Real-IP` 是覆盖还是追加没实测，代码按两种都能防来写）。W-62 记下试算模块已收、跑数脚本之前还要补的几件（品类多时的多重比较、发布版被切碎又改了字时很慢、品类为空和 `lag_days` 不是数字时的处理）。
 - 四个替代 PR 合了以后关掉原来那四个（不在原分支上推）。
+
+## D-168 · 飞书每天只同步一次，不加中午的轻量同步；当天填的格子写手手边有就直接贴（2026-11-24，owner 11-24：「不加中午的轻量同步」）
+
+**What**
+
+- 11-24 一位评论写手在写作台拿不到途鸽一篇帖「维护评论50条」那一格的内容，模型说成写作台读不了这一格。实际是写作台读的是 TV 里那份飞书数据，飞书进 TV 每天一次（daily-sync，定时北京 10:17，GitHub 实际北京约 17–19 点起跑，跑 15–60 分钟）；那一格在上次同步时是空的。
+- 工程问了 owner 要不要中午加一趟只同步飞书表格的轻量同步（不跑调模型的步骤，不花钱）。**owner 定了不加。**
+- 照旧：运营当天才填的格子，当天傍晚那一趟跑完写作台才看得到；写手手边有就直接贴进对话。写作台那一格在库里是空的时，回包会说清楚这一点（TangVarie/autowriter#180，`existing_comments_cell_note`），不再让模型说成「读不了」。
+
+**Why**
+
+- owner 的决定。现状下写手多一个「直接贴」的办法就能用，不用多一趟定时任务。
+
+**Rejected**
+
+- 中午加一趟轻量同步；写作台直接实时读飞书（要给写作台配飞书读取权限，改动大）。
+
+**Implications**
+
+- 以后再有人问「为什么写作台看不到今天填的」，答案就是这一条；真有大量当天要用的需求，再提一次。
