@@ -8,7 +8,12 @@ function sanitizeNext(n: string): string {
 }
 
 export async function POST(req: Request) {
-  const form = await req.formData();
+  let form: FormData;
+  try {
+    form = await req.formData();
+  } catch {
+    return NextResponse.json({ error: "Invalid form data" }, { status: 400 });
+  }
   const pw = String(form.get("password") || "");
   const next = sanitizeNext(String(form.get("next") || "/console"));
 

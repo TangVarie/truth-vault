@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -61,29 +62,42 @@ def parse_json(text: str):
 # prompt caching 降级计数 (2026-10-08 审计 C-02): 以前降级只打一行 warning 进 Railway stdout, 没人看;
 # 于是"这个中转站根本不支持 cache_control、每次都在多付一倍 input token"这件事可以持续几个月。
 # 进程内计数, /health 回显 (重启清零 —— 它答的是"这个实例最近有没有在降级", 不是历史总量)。
+_PROMPT_CACHE_LOCK = threading.Lock()
 PROMPT_CACHE_FALLBACKS: dict = {"count": 0, "last_at": None, "last_error": ""}
 # 实际缓存读写 (2026-10-12): 降级计数只抓得到"网关拒收 cache_control"; 网关静默丢掉标记、或轮转到不同上游
 # 账号时它恒为 0。按 usage 累加, /health 回显 (同进程、重启清零)。判读见 scripts/annotate_essence_pass.py。
 PROMPT_CACHE_USAGE: dict = {"calls": 0, "input": 0, "cache_write": 0, "cache_read": 0, "output": 0}
 
 
+def prompt_cache_fallbacks_snapshot() -> dict:
+    with _PROMPT_CACHE_LOCK:
+        return dict(PROMPT_CACHE_FALLBACKS)
+
+
+def prompt_cache_usage_snapshot() -> dict:
+    with _PROMPT_CACHE_LOCK:
+        return dict(PROMPT_CACHE_USAGE)
+
+
 def _record_usage(msg) -> None:
     u = getattr(msg, "usage", None)
     if u is None:
         return
-    PROMPT_CACHE_USAGE["calls"] += 1
-    for key, attr in (("input", "input_tokens"), ("cache_write", "cache_creation_input_tokens"),
-                      ("cache_read", "cache_read_input_tokens"), ("output", "output_tokens")):
-        PROMPT_CACHE_USAGE[key] += int(getattr(u, attr, 0) or 0)
+    with _PROMPT_CACHE_LOCK:
+        PROMPT_CACHE_USAGE["calls"] += 1
+        for key, attr in (("input", "input_tokens"), ("cache_write", "cache_creation_input_tokens"),
+                          ("cache_read", "cache_read_input_tokens"), ("output", "output_tokens")):
+            PROMPT_CACHE_USAGE[key] += int(getattr(u, attr, 0) or 0)
 
 
 def _note_cache_fallback(exc: BaseException) -> None:
-    PROMPT_CACHE_FALLBACKS["count"] += 1
-    PROMPT_CACHE_FALLBACKS["last_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    # 只记异常**类型**, 不记 str(exc): 这个 dict 会被没鉴权的 /health 原样回显, 而 SDK / 网关异常的文本里可能带
-    # 请求 URL、租户路径、query 里的凭据 —— 它不经 SecretMaskingFormatter (codex review on #169, P1)。
-    # 真正的错误文本在日志里 (那条过掩码)。
-    PROMPT_CACHE_FALLBACKS["last_error"] = type(exc).__name__
+    with _PROMPT_CACHE_LOCK:
+        PROMPT_CACHE_FALLBACKS["count"] += 1
+        PROMPT_CACHE_FALLBACKS["last_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        # 只记异常**类型**, 不记 str(exc): 这个 dict 会被没鉴权的 /health 原样回显, 而 SDK / 网关异常的文本里可能带
+        # 请求 URL、租户路径、query 里的凭据 —— 它不经 SecretMaskingFormatter (codex review on #169, P1)。
+        # 真正的错误文本在日志里 (那条过掩码)。
+        PROMPT_CACHE_FALLBACKS["last_error"] = type(exc).__name__
 
 
 def prompt_cache_enabled() -> bool:

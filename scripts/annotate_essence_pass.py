@@ -66,6 +66,7 @@ from _common import (
     get_supabase_client,
     is_gateway_filtered,
     load_mapping,
+    mask_secrets,
     notes_content_sha_supported,
     setup_logger,
     _direction_key,
@@ -674,8 +675,6 @@ def call_claude(prompt: str, model: str, *, cached_system: str | None = None,
             PROMPT_CACHE_FALLBACKS["count"],
         )
         return _run(cached_system)  # 纯字符串 system(无 cache_control)
-    # Unreachable: the final attempt always either returns or raises.
-    raise RuntimeError("call_claude exhausted retries without raising")
 
 
 def parse_claude_json(text: str) -> Optional[dict]:
@@ -1134,20 +1133,21 @@ def main() -> int:
         try:
             write_essence_back(sb, note["note_id"], model, parsed,
                                 sub_dir_result, dry_run=False, content_sha=note.get("content_sha"))
-        except RuntimeError as exc:
-            # write_essence_back raises on payload size cap / structural
-            # post-validation failures. Route to failed_queue instead of
-            # crashing the loop so the rest of the batch still runs.
-            logger.warning("write_essence_back rejected %s: %s",
-                           note["note_id"], exc)
+        except Exception as exc:  # noqa: BLE001
+            # write_essence_back raises RuntimeError on payload size cap / structural
+            # post-validation failures, and APIError / network errors on transient
+            # Supabase / Cloudflare 520/522 blips (S-14). Route to failed_queue instead
+            # of crashing the loop so the rest of the batch still runs.
+            logger.warning("write_essence_back failed %s (%s): %s",
+                           note["note_id"], type(exc).__name__, mask_secrets(str(exc))[:300])
             stats["failed_after_retry"] += 1
-            # 写入端拒绝(payload 超限 / 结构/schema 后校验)= 非内容校验类 → 计 systemic:
-            # 若所有笔记都因此被拒(ok==0), 必须判红, 否则 schema/payload 持续回归会每晚静默
-            # 绿过、一条不标(codex PR#100 review)。
+            # 写入端拒绝 / 写库异常 = 非内容校验类 → 计 systemic:
+            # 若所有笔记都因此失败(ok==0), 必须判红, 否则 schema/payload 持续回归或库故障
+            # 会每晚静默绿过、一条不标(codex PR#100 review)。
             stats["systemic_failed"] += 1
             _append_failed_queue(
                 failed_queue_path, note, args.project_id,
-                [f"write_rejected: {exc}"], last_raw,
+                [f"write_failed: {type(exc).__name__}"], last_raw,
             )
             continue
         stats["ok"] += 1
