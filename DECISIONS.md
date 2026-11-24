@@ -8947,7 +8947,7 @@ owner 11-16：开。
 - TangVarie/JevforCoentent#40：15:10 UTC 合，`5bf66b5`；Railway 15:11 成功；`/health` ok，`policy_sha256` 前 12 位 `34fbe665bfb7`，和仓里 `config/data_policy.yaml` 一致。
 - TangVarie/linkcheck#91：15:10 UTC 合，`99a8eb2`；两个服务 15:11–15:12 部署成功；面板 `/healthz` GET、HEAD 都回 200（HEAD 是这个 PR 加的）；换版后第一轮巡查（15:15 UTC，queue）正常起跑、五张表都读了、没有要刷新的行、没花钱；第一轮真刷到行的是 15:26 UTC 那轮 sweep：刷了 1 行、¥0.072（开跑前预估 ¥0.07，主通道 1 次、没有切备胎、没有熔断、写回成功），之后到 16:40 UTC 每 5 分钟两轮都是 0 行、0 元、`exit_code` 0，日志里没有 Traceback 或 `unexpected_shape`。
 - TangVarie/autowriter#177：等 aw#178 部署好了才合（两次部署不叠在一起），15:12 UTC 合，`fefce82`；合之前在本机把它叠在新的默认分支上跑了全套（pytest 5048 passed / 7 xfailed、selftest、`sync-skill --check`、compileall、三组 node 测试都过）；15:14 UTC `/health` 的 `build.commit` `fefce82409aa`、协议不变、`librarian.configured` 还是 true；启动日志没有报错。
-- 剩下 TangVarie/truth-vault#301：照原计划 11-24 上午（UTC）首图那一晚读完之后合。
+- TangVarie/truth-vault#301：11-23 晚首图那一趟 GitHub 没起跑；它对首图只改了下载遇 401 换钥匙重试一次、不改模型调用和每次的 token，所以没等首图读数，11-24 03:40 UTC 合了，`43f6c76`（合之前在本机把它和 TangVarie/truth-vault#304 一起叠在当前 main 上跑：ci_local 108/108、`check_audit_hardening.py` 全 PASS；没有 features-sync 在排队或在跑）。librarian、onboarder、tv-worker 03:41 UTC 部署成功，馆员 `/health` ok；看板 Vercel 生产部署 READY。读闸 `select.return_gate` 等写作台下一次借卡再看 `read_ok`。
 
 ## D-165 · 补做 11-16 / 11-20 两次过期的读数，工程定的几件：L-07 照实报、关；按段判不重议；AU-F13 记法不改；软规则这一轮不标定；结尾那条规则改问法（重编那一次约几毛钱，问了 owner）；F-04、W-07 关（2026-11-23，工程；owner 可以否决）
 
