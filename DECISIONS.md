@@ -9045,6 +9045,11 @@ owner 11-23 发了一张小红书评论区截图（一条 AI 定时自学的做�
 - OPEN-ITEMS：S-18 ① TV 那两项、S-20 ① 随 TangVarie/truth-vault#306 合了就算做完（S-18 ① 里 essence 收尾那句「(已各重试一次)」还开着，S-14）；S-18 ②、S-20 ③ 随写作台 PR；S-20 ④ ⑦ 随 Jev#42；S-18 ④、S-20 ⑧ ⑩ 随 linkcheck#93（Railway 边缘遇到客户端自带的 `X-Real-IP` 是覆盖还是追加没实测，代码按两种都能防来写）。W-62 记下试算模块已收、跑数脚本之前还要补的几件（品类多时的多重比较、发布版被切碎又改了字时很慢、品类为空和 `lag_days` 不是数字时的处理）。
 - 四个替代 PR 合了以后关掉原来那四个（不在原分支上推）。
 
+**11-24 合并（工程）**：原来那四个 11-24 回复说明后关了（owner 11-24：「gemini 的 pr 给个回复然后关掉就行了」）。替代的：TangVarie/truth-vault#306 04:33 UTC 合（`08bf8a2`）；北京 23:05 之后（14:00 UTC 那趟 tv-sync 14:01 跑完）三个都先标 ready、等 Codex 对当前 head 再审一遍无意见、`codex_gate.py` PASS、CI 绿再 squash：
+- TangVarie/linkcheck#93 15:08 UTC（`8f194fa`）：两个服务部署成功，面板 `/healthz` 200；换版后第一轮 sweep（15:11 UTC）刷 7 行、¥0.504、`exit_code` 0。
+- TangVarie/JevforCoentent#42 15:08 UTC（`fb1a4cb`）：`/health` ok，`policy_sha256` 前 12 位 `34fbe665bfb7` 和仓里一致。
+- TangVarie/autowriter#180 15:09 UTC（`a9c368b`）：Codex 在这个 PR 上先后提了四条（都在试算模块的对齐和挑词口径上），都修了、各有测试钉住；同一个 PR 里还加了评论写手 11-24 反馈的两句说明（D-168、W-51）。`/health` 的 `build.commit` `a9c368b7190c`、协议 `6f23eba491fd`、`librarian.configured` true。
+
 ## D-168 · 飞书每天只同步一次，不加中午的轻量同步；当天填的格子写手手边有就直接贴（2026-11-24，owner 11-24：「不加中午的轻量同步」）
 
 **What**
