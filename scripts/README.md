@@ -139,9 +139,8 @@ CI 和 daily-sync workflow 都优先读 `.lock`; `.txt` 仅作为 "high-level in
 #         评论分得开: source 为空 = 运营贴的, linkcheck_digest / linkcheck_records = 巡查工具看到的评论区第一页) + 视图
 #         v_note_observations (每篇每个北京日、指标变了的那些天, 从 audit_log 读; 评论数带量到的时刻) + metric_snapshots 的注释
 #         (collected_at / window_label 不是观测时刻)。代码宽容: 没跑之前 sync_comments_from_raw_extra.py 只解析随贴评论、
-#         带快照的项目喊一次 warning。可重跑, TV 这边先合代码还是先跑它都行, 但要等写作台的评论工具
-#         按 source 分开之后再跑 (OPEN-ITEMS W-59) (D-155; 夹具 check_reader_comments_observations.sql /
-#         check_reader_comments.py)。
+#         带快照的项目喊一次 warning。可重跑 (D-155; 夹具 check_reader_comments_observations.sql /
+#         check_reader_comments.py)。owner 11-16 跑了; 写作台的评论工具 aw#162 起只读 source 为空的行 (W-59 11-23 关)。
 #   - schemas/notes_v1_28_first_image.sql → 首图特征 (I-29, D-158): 表 note_first_image (每篇做过的帖一行: 哪一列、第一个附件的指纹、
 #         结果、重试) + 表 first_image_bank_state (题库三张名单的镜像, 一行) + 三个函数 (该做哪些帖 / 一张图的结果一次写完 /
 #         同步名单) + 视图 v_note_first_image_source (取列规则) 和 v_first_image_features (给下游读的那一面)。全是加法。
