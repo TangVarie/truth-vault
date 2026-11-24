@@ -87,44 +87,52 @@ def download(client: Any, f: dict, max_bytes: int, *, http_get=None) -> bytes:
     if http_get is None:
         import requests
         http_get = requests.get
-    try:
-        bearer = client._ensure_token()
-    except Exception:  # noqa: BLE001 — FeishuClient 的报错里带着接口回的整个对象, 不能往外传
-        raise MediaError(AUTH_FAILED) from None
     params = {}
     extra = _extra_param(f)
     if extra:
         params["extra"] = extra
-    resp = None
-    try:
-        resp = http_get(MEDIA_URL.format(file_token=token), headers={"Authorization": f"Bearer {bearer}"},
-                        params=params, stream=True, timeout=TIMEOUT_S)
-        status = int(getattr(resp, "status_code", 0) or 0)
-        if status in (400, 403):
-            raise MediaError(NO_PERMISSION, _refusal_detail(resp, status, bool(extra)))
-        if status == 401:
-            raise MediaError(AUTH_FAILED)
-        if status == 404:
-            raise MediaError(NOT_FOUND)
-        if status != 200:
-            raise MediaError(HTTP_ERROR)
-        buf = bytearray()
-        for chunk in resp.iter_content(CHUNK):
-            if not chunk:
-                continue
-            buf.extend(chunk)
-            if len(buf) > max_bytes:
-                raise MediaError(TOO_LARGE)
-        if not buf:
-            raise MediaError(HTTP_ERROR)
-        return bytes(buf)
-    except MediaError:
-        raise
-    except Exception:  # noqa: BLE001 — requests 的报错里带着完整链接
-        raise MediaError(NETWORK) from None
-    finally:
+    for attempt in range(2):
         try:
-            if resp is not None:
-                resp.close()
-        except Exception:  # noqa: BLE001
-            pass
+            bearer = client._ensure_token()
+        except Exception:  # noqa: BLE001 — FeishuClient 的报错里带着接口回的整个对象, 不能往外传
+            raise MediaError(AUTH_FAILED) from None
+        resp = None
+        try:
+            resp = http_get(MEDIA_URL.format(file_token=token), headers={"Authorization": f"Bearer {bearer}"},
+                            params=params, stream=True, timeout=TIMEOUT_S)
+            status = int(getattr(resp, "status_code", 0) or 0)
+            if status in (400, 403):
+                raise MediaError(NO_PERMISSION, _refusal_detail(resp, status, bool(extra)))
+            if status == 401:
+                if attempt == 0:
+                    if hasattr(client, "_token"):
+                        client._token = None
+                    if hasattr(client, "_token_expires_at"):
+                        client._token_expires_at = 0
+                    continue
+                raise MediaError(AUTH_FAILED)
+            if status == 404:
+                raise MediaError(NOT_FOUND)
+            if status != 200:
+                raise MediaError(HTTP_ERROR)
+            buf = bytearray()
+            for chunk in resp.iter_content(CHUNK):
+                if not chunk:
+                    continue
+                buf.extend(chunk)
+                if len(buf) > max_bytes:
+                    raise MediaError(TOO_LARGE)
+            if not buf:
+                raise MediaError(HTTP_ERROR)
+            return bytes(buf)
+        except MediaError:
+            raise
+        except Exception:  # noqa: BLE001 — requests 的报错里带着完整链接
+            raise MediaError(NETWORK) from None
+        finally:
+            try:
+                if resp is not None:
+                    resp.close()
+            except Exception:  # noqa: BLE001
+                pass
+    raise MediaError(AUTH_FAILED)

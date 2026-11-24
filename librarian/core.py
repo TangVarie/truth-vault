@@ -317,10 +317,12 @@ def _drop_vanished(sb, cards: list[dict]) -> list[dict]:
 def vanished_health() -> dict:
     """/health 的 select.vanished: 开没开、上次读视图成没成、视图里满 36 小时 / 还在宽限里各几篇、最近一次筛书架拿掉
     几张卡、保底留了几个品牌、累计读失败 / 没等到几次。只有数、布尔和 None。"""
-    at = _VANISHED["at"]
+    with _VANISHED_LOCK:
+        at = _VANISHED["at"]
+        stats = dict(VANISHED_STATS)
     return {"on": vanished_filter_enabled(),
             "read_age_s": None if at is None else int(max(0.0, _gate_clock() - at)),
-            **VANISHED_STATS}
+            **stats}
 
 
 # ── 回流闸 (D-151): 出处帖被闸判成「不能学」的经验卡不借出去 ─────────────────────────────────
@@ -346,6 +348,7 @@ def vanished_health() -> dict:
 RETURN_GATE_DEFAULT = True
 RETURN_GATE_ENV = "LIBRARIAN_RETURN_GATE"
 RETURN_GATE_TTL_S = 600.0
+RETURN_GATE_WAIT_S = 4.0      # 同 VANISHED_WAIT_S: 在后台线程读 tv_note_links, 不在锁里同步等 120s PostgREST 超时
 RETURN_GATE_CHUNK = 200       # .in_() 走 URL (D-080), 一批 ≤200 个 id
 CARD_BLOCKING_REASONS = frozenset({"withdrawn", "hold", "risk", "efficacy", "unsure"})
 # 闸的五个类别; 有原因可挡的只有后四个 (pass = 查过的几项都没事)。别的值、空值 = 没有结论。
@@ -354,7 +357,7 @@ _GATE_COLUMNS = ("gate", "gate_reasons")
 # 进程内计数, /health 回显 (重启清零): 只有布尔、整数和 None。would_drop / brands_kept 是最近一次筛书架的结果。
 GATE_STATS: dict = {"read_ok": None, "columns": None, "read_errors": 0, "verdicts": 0, "unreadable": 0,
                     "would_drop": 0, "brands_kept": 0}
-_GATE: dict = {"at": None, "blocked": None}   # at = 上次去读的时刻 (_gate_clock); blocked = 上次读成的 {note_id: 挡卡的原因}
+_GATE: dict = {"at": None, "blocked": None, "thread": None, "started": 0.0, "late": None}
 _GATE_LOCK = threading.Lock()
 
 
@@ -363,7 +366,7 @@ def _gate_clock() -> float:    # 10 分钟那个钟; 检查脚本会换掉它
 
 
 def return_gate_enabled() -> bool:
-    """馆员按不按回流闸筛书架。代码默认 RETURN_GATE_DEFAULT (关); LIBRARIAN_RETURN_GATE 设了非空值就听它的
+    """馆员按不按回流闸筛书架。代码默认 RETURN_GATE_DEFAULT (开, D-156); LIBRARIAN_RETURN_GATE 设了非空值就听它的
     (1 / true / yes / on = 开, 别的 = 关)。"""
     raw = (os.environ.get(RETURN_GATE_ENV) or "").strip().lower()
     if not raw:
@@ -411,31 +414,61 @@ def _read_gate(sb, note_ids: list[str]) -> tuple[dict, int, int]:
     return blocked, verdicts, unreadable
 
 
-def _gate_blocked(sb, cards: list[dict]) -> Optional[dict]:
-    """{note_id: 挡卡的原因}; None = 一次都没读成过 (不筛)。10 分钟内不重读; 读失败留着上一次读成的那份。不抛。"""
-    with _GATE_LOCK:      # 同时到的几次借阅只读一次: 后到的等这一次读完, 拿同一份
-        now = _gate_clock()
-        if _GATE["at"] is not None and now - _GATE["at"] < RETURN_GATE_TTL_S:
-            return _GATE["blocked"]
-        _GATE["at"] = now
-        ids = sorted({str(c.get("source_note_id")) for c in cards if c.get("source_note_id")})
-        try:
-            blocked, verdicts, unreadable = _read_gate(sb, ids)
-        except Exception as exc:  # noqa: BLE001 — 表 / 列不在、权限、网络: 都不许挡住借阅
-            if _gate_columns_missing(exc):      # 020 没跑: 不是故障, 就是还没有结论
-                if GATE_STATS["columns"] is not False:
-                    logger.info("回流闸: tv_note_links 上还没有 gate / gate_reasons 两列 (aw 迁移 020 没跑), 书架不筛")
-                GATE_STATS.update(read_ok=True, columns=False, verdicts=0, unreadable=0)
-                _GATE["blocked"] = {}
-                return _GATE["blocked"]
+def _refresh_gate(sb, ids: list[str]) -> None:
+    """读一次回流闸 (在后台线程里跑, 不拿锁), 读完在锁里写回。失败不动上一次读成的那份。不抛。"""
+    got = missing_cols = err = None
+    try:
+        got = _read_gate(sb, ids)
+    except Exception as exc:  # noqa: BLE001 — 表 / 列不在、权限、网络: 都不许挡住借阅
+        missing_cols = _gate_columns_missing(exc)
+        err = type(exc).__name__
+    with _GATE_LOCK:
+        if got is not None:
+            blocked, verdicts, unreadable = got
+            GATE_STATS.update(read_ok=True, columns=True, verdicts=verdicts, unreadable=unreadable)
+            _GATE["blocked"] = blocked
+        elif missing_cols:      # 020 没跑: 不是故障, 就是还没有结论
+            if GATE_STATS["columns"] is not False:
+                logger.info("回流闸: tv_note_links 上还没有 gate / gate_reasons 两列 (aw 迁移 020 没跑), 书架不筛")
+            GATE_STATS.update(read_ok=True, columns=False, verdicts=0, unreadable=0)
+            _GATE["blocked"] = {}
+        else:
             GATE_STATS["read_errors"] += 1
             GATE_STATS["read_ok"] = False
-            logger.warning("回流闸: 读 tv_note_links 的 gate 失败 (%s), %s", type(exc).__name__,
+            logger.warning("回流闸: 读 tv_note_links 的 gate 失败 (%s), %s", err,
                            "沿用上一次读到的结论" if _GATE["blocked"] is not None else "这次书架不筛")
-            return _GATE["blocked"]
-        GATE_STATS.update(read_ok=True, columns=True, verdicts=verdicts, unreadable=unreadable)
-        _GATE["blocked"] = blocked
-        return blocked
+        _GATE["thread"] = None
+
+
+def _gate_blocked(sb, cards: list[dict]) -> Optional[dict]:
+    """{note_id: 挡卡的原因}; None = 一次都没读成过 (不筛)。10 分钟内不重读; 后台线程读, 最多等 RETURN_GATE_WAIT_S 秒,
+    读失败留着上一次读成的那份。不抛。"""
+    with _GATE_LOCK:
+        now = _gate_clock()
+        t = _GATE.get("thread")
+        reading = t is not None and t.is_alive()
+        if not reading:
+            t = None
+            if _GATE["at"] is None or now - _GATE["at"] >= RETURN_GATE_TTL_S:
+                ids = sorted({str(c.get("source_note_id")) for c in cards if c.get("source_note_id")})
+                t = threading.Thread(target=_refresh_gate, args=(sb, ids), name="librarian-return-gate", daemon=True)
+                _GATE["thread"], _GATE["at"], _GATE["started"] = t, now, time.monotonic()
+                try:
+                    t.start()
+                except RuntimeError:
+                    _GATE["thread"], t = None, None
+                    GATE_STATS["read_errors"] += 1
+                    GATE_STATS["read_ok"] = False
+        started = _GATE.get("started", 0.0)
+    if t is not None:
+        t.join(max(0.0, RETURN_GATE_WAIT_S - (time.monotonic() - started)))
+    with _GATE_LOCK:
+        if t is not None and _GATE.get("thread") is t and _GATE.get("late") is not t:
+            _GATE["late"] = t
+            GATE_STATS["read_errors"] += 1
+            GATE_STATS["read_ok"] = False
+            logger.warning("回流闸: 这次读超过 %.0f 秒还没回来, 先用手上那份结论", RETURN_GATE_WAIT_S)
+        return _GATE["blocked"]
 
 
 def _drop_gated(sb, cards: list[dict]) -> list[dict]:
@@ -446,10 +479,12 @@ def _drop_gated(sb, cards: list[dict]) -> list[dict]:
     try:
         blocked = _gate_blocked(sb, cards)
         if not blocked:
-            GATE_STATS.update(would_drop=0, brands_kept=0)
+            with _GATE_LOCK:
+                GATE_STATS.update(would_drop=0, brands_kept=0)
             return cards
         out, kept = _drop_blocked(cards, blocked)   # 品牌保底在里面 (和「出处帖已经删了」那个筛子同一条)
-        GATE_STATS.update(would_drop=len(cards) - len(out), brands_kept=kept)
+        with _GATE_LOCK:
+            GATE_STATS.update(would_drop=len(cards) - len(out), brands_kept=kept)
         if kept:
             logger.warning("回流闸: %d 个品牌的卡全被挡, 按保底全留 (/health select.return_gate.brands_kept)", kept)
         return out
@@ -460,10 +495,12 @@ def _drop_gated(sb, cards: list[dict]) -> list[dict]:
 
 def gate_health() -> dict:
     """/health 的 select.return_gate: 开没开、上次读库成没成、最近一次会拿掉几张卡、保底留了几个品牌。只有数和布尔。"""
-    at = _GATE["at"]
+    with _GATE_LOCK:
+        at = _GATE["at"]
+        stats = dict(GATE_STATS)
     return {"on": return_gate_enabled(),
             "read_age_s": None if at is None else int(max(0.0, _gate_clock() - at)),
-            **GATE_STATS}
+            **stats}
 
 
 # ── 出处帖投过流的卡照借, 卡上写明 (D-151 第 13 条, owner 11-12) ───────────────────────────────
@@ -640,8 +677,10 @@ def _label_paid(selected: Any, paid: _Paid) -> Any:
 def paid_health() -> dict:
     """/health 的 select.paid_boost: 上次读成没成、累计读失败 / 没等到几次、读到几篇、累计回了几张内部卡、其中标了几张。
     只有数、布尔和 None。"""
-    at = _PAID["at"]
-    return {"read_age_s": None if at is None else int(max(0.0, _gate_clock() - at)), **PAID_STATS}
+    with _PAID_LOCK:
+        at = _PAID["at"]
+        stats = dict(PAID_STATS)
+    return {"read_age_s": None if at is None else int(max(0.0, _gate_clock() - at)), **stats}
 
 
 def _card_digest(card: dict) -> str:
@@ -1120,9 +1159,12 @@ _ANSWER_GRACE_S = 48 * 3600
 
 
 def _recently_curated(card: dict, now: float) -> bool:
-    from datetime import datetime
+    from datetime import datetime, timezone
     try:
-        ts = datetime.fromisoformat(str(card.get("curated_at") or "").replace("Z", "+00:00")).timestamp()
+        dt = datetime.fromisoformat(str(card.get("curated_at") or "").replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        ts = dt.timestamp()
     except ValueError:
         return False
     return now - ts < _ANSWER_GRACE_S
@@ -1159,6 +1201,11 @@ MERGE_WAIT_S = 75.0   # 比领头那次最坏的情况长一点: 模型整轮 60
 MERGE_STATS: dict = {"merged": 0, "wait_timeouts": 0}   # 进程内计数, /health 回显 (重启清零)
 _FLIGHTS: dict = {}
 _FLIGHTS_LOCK = threading.Lock()
+
+
+def merge_health() -> dict:
+    with _FLIGHTS_LOCK:
+        return dict(MERGE_STATS)
 
 
 class _Flight:

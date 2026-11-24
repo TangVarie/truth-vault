@@ -216,7 +216,7 @@ def run(sb, ask: Callable[[str], object], *, model: str, limit: int, batch_size:
             except Exception as exc:  # noqa: BLE001 —— 调用失败: 记一次, 下一晚重列
                 st["api_errors"] += 1
                 fails += 1
-                print(f"  ⚠️  第 {st['batches']} 批调用失败: {type(exc).__name__}: {str(exc)[:160]}")
+                print(f"  ⚠️  第 {st['batches']} 批调用失败: {type(exc).__name__}")
                 continue
             fails = 0
             got = None if stop == "max_tokens" else parse_reply(raw, part)
@@ -229,8 +229,7 @@ def run(sb, ask: Callable[[str], object], *, model: str, limit: int, batch_size:
                     print(f"  第 {st['batches']} 批 ({len(part)} 篇) {why}, 拆成 {half} + {len(part) - half} 篇重列")
                     continue
                 st["junk"] += 1
-                print(f"  ⚠️  第 {st['batches']} 批拆到一篇还{why} (stop_reason={stop}), 跳过 (下一晚重列): "
-                      f"{raw[:120]!r}")
+                print(f"  ⚠️  第 {st['batches']} 批拆到一篇还{why} (stop_reason={stop}, raw_len={len(raw)}), 跳过 (下一晚重列)")
                 continue
             rows = mask_rows(part, got, model, now_iso)
             st["missing"] += len(part) - len(rows)
@@ -242,7 +241,7 @@ def run(sb, ask: Callable[[str], object], *, model: str, limit: int, batch_size:
                     st["written"] += len(rows)
                 except Exception as exc:  # noqa: BLE001
                     st["write_errors"] += 1
-                    print(f"  ⚠️  第 {st['batches']} 批写库失败: {type(exc).__name__}: {str(exc)[:160]}")
+                    print(f"  ⚠️  第 {st['batches']} 批写库失败: {type(exc).__name__}")
                     continue
             st["with_terms"] += sum(1 for r in rows if r["terms"])
             st["terms"] += sum(len(r["terms"]) for r in rows)
@@ -490,7 +489,7 @@ def main() -> int:
                       f"写库失败 {st['write_errors']} 批 · 留到下一晚 {st['left']} 篇")
             print(usage_line(model))
     except Exception as exc:  # noqa: BLE001 —— advisory: 不让夜跑崩, 但哨兵照打
-        print(f"  ⚠️  出错: {type(exc).__name__}: {str(exc)[:200]}")
+        print(f"  ⚠️  出错: {type(exc).__name__}")
         rc = 1
     print(f"{SENTINEL} rc={rc}")
     return 0

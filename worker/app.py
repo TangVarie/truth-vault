@@ -280,6 +280,19 @@ def health() -> dict:
     }
 
 
+_PROJECT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")
+
+
+def _validate_project(raw, *, required: bool = True) -> str | None:
+    if raw is None or raw == "":
+        if required:
+            raise HTTPException(status_code=400, detail="missing required field: project")
+        return None
+    if not isinstance(raw, str) or not _PROJECT_RE.match(raw):
+        raise HTTPException(status_code=400, detail="project must match [A-Za-z0-9][A-Za-z0-9_.-]{0,79}")
+    return raw
+
+
 @app.post("/annotate-essence")
 async def annotate_essence(
     request: Request,
@@ -287,10 +300,8 @@ async def annotate_essence(
 ) -> dict:
     _check_auth(x_worker_key)
     body = await _json_body(request)
-    project = body.get("project")
-    if not project:
-        raise HTTPException(status_code=400, detail="missing required field: project")
-    args = [str(project), "--limit", _limit_arg(body)]
+    project = _validate_project(body.get("project"), required=True)
+    args = [project, "--limit", _limit_arg(body)]
     if body.get("dry_run"):
         args.append("--dry-run")
     if body.get("reannotate"):
@@ -338,10 +349,8 @@ async def annotate_features(
     """
     _check_auth(x_worker_key)
     body = await _json_body(request)
-    project = body.get("project")
-    if not project:
-        raise HTTPException(status_code=400, detail="missing required field: project")
-    args = [str(project), "--limit", _limit_arg(body)]
+    project = _validate_project(body.get("project"), required=True)
+    args = [project, "--limit", _limit_arg(body)]
     for flag in ("dry_run", "reannotate", "single", "code_only"):
         if body.get(flag):
             args.append("--" + flag.replace("_", "-"))
@@ -431,9 +440,10 @@ async def curate(
 ) -> dict:
     _check_auth(x_worker_key)
     body = await _json_body(request)
+    project = _validate_project(body.get("project"), required=False)
     args = ["--limit", _limit_arg(body)]
-    if body.get("project"):
-        args += ["--project", str(body["project"])]
+    if project:
+        args += ["--project", project]
     if body.get("dry_run"):
         args.append("--dry-run")
     # recurate: "stale" = 只重策展 essence 比卡新的已有卡 (D-096, 审计 B-02); "all" / true = 全部重策展
