@@ -28,29 +28,48 @@ def check_librarian_gate_bounded_and_recently_curated():
     orig_wait = lc.RETURN_GATE_WAIT_S
     with lc._GATE_LOCK:
         orig_state = dict(lc._GATE)
+        orig_stats = dict(lc.GATE_STATS)
+    # Cold state = the module's own initial _GATE; fail if core.py renames or adds keys so this test is updated with it.
+    cold = {"at": None, "blocked": None, "thread": None, "started": 0.0, "late": None}
+    assert set(cold) == set(orig_state), f"_GATE keys changed: {sorted(orig_state)}"
     stall_ev = threading.Event()
+    reader = None
     try:
         with lc._GATE_LOCK:
-            lc._GATE.update({"at": None, "blocked": None, "counts": {}, "error": None, "thread": None, "pending": None})
+            lc._GATE.update(cold)
         lc.RETURN_GATE_WAIT_S = 0.08
-        lc._read_gate = lambda _sb, _ids: (stall_ev.wait(2.0), ({}, {}, False))[1]
+        # Same shape as the real _read_gate: ({note_id: reasons}, verdicts, unreadable).
+        lc._read_gate = lambda _sb, _ids: (stall_ev.wait(2.0), ({}, 0, 0))[1]
         t0 = time.monotonic()
         res = lc._gate_blocked(object(), [{"source_note_id": "n1"}])
         elapsed = time.monotonic() - t0
+        with lc._GATE_LOCK:
+            reader = lc._GATE["thread"]
         assert res is None, f"expected None fail-open on cold timeout, got {res!r}"
         assert elapsed < 0.5, f"_gate_blocked stalled for {elapsed:.2f}s"
+        assert reader is not None and reader.is_alive(), "the stalled read should still be running in the background"
         assert isinstance(lc.gate_health(), dict)
         assert isinstance(lc.vanished_health(), dict)
         assert isinstance(lc.paid_health(), dict)
         assert isinstance(lc.merge_health(), dict)
+        # Let the late read land, then check _refresh_gate stored what the real shape gives.
+        stall_ev.set()
+        reader.join(2.0)
+        assert not reader.is_alive(), "background gate read did not finish"
+        with lc._GATE_LOCK:
+            assert lc._GATE["blocked"] == {} and lc._GATE["thread"] is None, dict(lc._GATE)
+            assert lc.GATE_STATS["read_ok"] is True and lc.GATE_STATS["verdicts"] == 0, dict(lc.GATE_STATS)
     finally:
         stall_ev.set()
-        time.sleep(0.05)
+        if reader is not None:
+            reader.join(2.0)   # restore only after the background read has written back, or it overwrites the restore
         lc._read_gate = orig_read
         lc.RETURN_GATE_WAIT_S = orig_wait
         with lc._GATE_LOCK:
             lc._GATE.clear()
             lc._GATE.update(orig_state)
+            lc.GATE_STATS.clear()
+            lc.GATE_STATS.update(orig_stats)
     print("[PASS] librarian._gate_blocked bounded wait + _recently_curated UTC + merge_health")
 
 
