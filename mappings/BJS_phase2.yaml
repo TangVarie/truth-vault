@@ -60,7 +60,7 @@ field_mapping:
 # 它们说的是哪一款产品, 不是内容方向, 查 direction_decomposition 和判内容层之前去掉:
 #   「提问贴, 成人款」→ 按 提问贴 抬 (层 Q); 只有「成人款」→ 什么都不抬, 人群 / 痛点 / 产品焦点送 None,
 #   content_format 回到 essence 的判断 (11-21 已经改过方向的 33 篇由 schemas/notes_v1_33 一次补上)。
-# 要不要按款拆人群 (成人款 → 通用、儿童款 → 宝妈): owner 10-27 定的是混合口径, 先不拆 (问 owner 的单子里有这一条)。
+# 要不要按款拆人群 (成人款 → 通用、儿童款 → 宝妈): owner 10-27 定的是混合口径, 先不拆 (工程定, owner 可以否决; D-178)。
 direction_ignore_tokens:
   - 成人款
   - 儿童款
