@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 import feature_bank as fb
+from secret_mask import mask_secrets
 
 Z95 = 1.959964
 STATUSES = ("validated", "no_signal", "reversed", "confounded", "unreliable", "insufficient")
@@ -1414,7 +1415,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                            confound_delta=args.confound_delta, unreliable=unreliable, allow_draft=args.allow_draft,
                            ignore_placebo_alarm=args.ignore_placebo_alarm)
     except Gate2Refused as exc:
-        print(f"闸二没跑: {exc}", file=sys.stderr)
+        print(f"闸二没跑: {mask_secrets(str(exc))}", file=sys.stderr)
         return 2
     report = render_report(result)
     rows = validation_rows(result)

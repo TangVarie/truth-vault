@@ -378,6 +378,14 @@
   一处代码调用" (再变死代码就红); Jev `apply_rows` 打印前抹掉 key。**挡不住什么**: 直接
   `print()` 的、不走 `setup_logger` 自建 handler 的, 不经这里 (守卫 §5 明说)。"三仓已闭"这种
   结论以后要附一条 CI 守卫, 不然就是写在纸上的关闭。
+- **再后记 (2026-11-25 S-09)**: 上面「挡不住直接 `print()` 的」查了一遍。同步主路径的隔离区打印 (`sync_feishu_notes_to_truth_vault.py`)
+  现在只打计数、列名和记录号, 原来那个例子已经不漏了。真正剩下的是 17 处把异常文本直接 `print` 出去的
+  (backfill_content_layer ×5、mask_external_names ×2、preflight_mapping ×2、闸一 / 闸二几个脚本各 1、onboarder/batch.py 1、
+  check_external_direction 1), 加上 4 处 CI 自检的 import 失败提示: 都改成 `mask_secrets(str(exc))`。
+  正则搬到只用标准库的 `scripts/secret_mask.py`, `_common` 原样转出, 不连库的离线脚本也能用。
+  `check_secret_masking.py` §6 扫 scripts/ onboarder/ worker/ librarian/: `except … as X` 里 print 用到 X 却没包就红。
+  **仍挡不住**: 先把异常存进别的变量再打、`sys.stderr.write`、写进文件或 PR 正文的异常文本 (onboarder 批量那一处顺手包了)。
+  故意不全局包 sys.stdout: 正常输出里有 `eyJ` 开头的 base64-JSON, 全局打码会悄悄改掉它们。
 
 ### R-024 · autowriter worker 多次启动重叠 + stacktrace 泄漏 [audit 2026-05-22 deep-dive P1] ✅ 已关闭 2026-05-22 (重复启动已被 phase 状态机阻止 + 错误脱敏并入 R-023)
 
@@ -555,32 +563,41 @@ sync 脚本只查 `_status_raw`, 不查 `_note_for_tier` (备注字段). TGV_1 �
   漏掉一个持有者就是一个静默坏掉的夜跑 (B-10 修了"缺 secret 要红", 但"换错 / 漏换"仍靠人记)。
 - **后果**: 轮换不敢做 (怕漏), 于是一把 2026-05 的 service_role 一直用到现在; 看板上多挂一把
   service_role 是多余的爆炸半径 (代码 2026-06 起优先读 anon, README 直到 10-08 还教人配 service_role)。
-- **矩阵 (2026-10-09 按三仓源码盘点; Railway 列按代码读取的变量名, 用 `os.environ[...]` 方括号读的
-  没盘到, 以各服务 Variables 页为准; ✓ = 读/持有, 🔑 = 这把钥匙的签发方)**:
+- **矩阵 (2026-10-09 按三仓源码盘点; 2026-11-25 按四个库的 workflow 和代码重盘, S-05; 只看变量名, 没读值;
+  Railway 列按代码读取的变量名, 用 `os.environ[...]` 方括号读的没盘到, 以各服务 Variables 页为准;
+  ✓ = 读/持有, 🔑 = 这把钥匙的签发方)**:
 
-| secret | TV Actions | TV Railway worker | TV Railway librarian | TV Railway onboarder | aw Railway deskcore / tv-sync | Jev Railway judge | Jev Actions external-corpus | Vercel dashboard | 写手机器 (MCP) |
-|---|---|---|---|---|---|---|---|---|---|
-| `SUPABASE_SERVICE_ROLE_KEY` | ✓ daily-sync · features-sync · backfill-features · backfill-essence | ✓ | ✓ | ✓ | ✓ (`db.py` / `deskcore/app.py`) | ✓ (write=true 写账本) | ✓ (`apply_rows`) | ⚠️ 历史配置, 应换 anon 后删 | — |
-| `SUPABASE_ANON_KEY` | — | — | — | — | — | — | — | ✓ 只读 `v_dash_*` | — |
-| `ANTHROPIC_API_KEY` + `ANTHROPIC_BASE_URL` (中转站) | ✓ gateway-probe · **daily-sync / backfill-essence / recurate-lessons (D-100 起 essence / curate 直跑)** · feature-discovery | ✓ features (essence / curate 端点 D-100 起没有调用方) | ✓ 冷路径馆员 | ✓ | ✓ deskcore (蒸馏 / 校准) | ✓ `loop.py` 修改单 (另有 `MOONSHOT_API_KEY`) | — | — | — |
-| `ANTHROPIC_BASE_URL_BACKUP` + `ANTHROPIC_API_KEY_BACKUP` (备用中转站, **可选**, D-148; 两个都配才启用, 地址也放 secret) | ✓ gateway-probe (`target`) · daily-sync / backfill-essence / recurate-lessons / feature-discovery | ✓ features (子进程继承) | ✓ | ✓ | — (deskcore 不调中转站; Streamlit / `worker.py` 重新开时加) | ✓ `loop.py` 规则编译 | — | — | — |
-| `RELAY_FORCE` (repo **variable**, 不是 secret; 可选, D-148: `backup` / `primary` / 空) | ✓ 同上 4 个 workflow | 可选 | 可选 | 可选 | — | 可选 | — | — | — |
-| `GOOGLE_API_KEY` (embedding) | — | — | — | — | ✓ `dedup` / 回填 / 补录 | — | — | — | — |
-| `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | ✓ daily-sync · preflight | — | — | ✓ | — | — | — | — | — |
-| `WORKER_API_KEY` | ✓ (调用方) | 🔑 | — | — | — | — | — | — | — |
-| `ONBOARDER_API_KEY` | ✓ onboard-table (调用方) | — | — | 🔑 | — | — | — | — | — |
-| `LIBRARIAN_API_KEY` | — | — | 🔑 | — | ✓ (调用方 `librarian_client`) | — | — | — | — |
-| `DESKCORE_KEYS` / `DESKCORE_API_KEY` | — | — | — | — | 🔑 | — | — | — | ✓ 每个写手一把 |
-| `JUDGE_API_KEY` | — | — | — | — | ✓ (调用方 `judge_client`) | 🔑 | — | — | — |
-| `TYPESAFE_API_KEY` (Jev) | — | — | — | — | — | ✓ | ✓ | — | ⚠️ `judge/mcp_server.py` 带到写手机器 (A-09, owner 决定) |
-| `TIKHUB_API_KEY` | — | — | — | — | — | — | ✓ | — | — |
-| `GITHUB_TOKEN` (自动) | ✓ sync-watchdog | — | — | — | — | — | — | — | — |
+| secret | TV Actions | TV Railway worker | TV Railway librarian | TV Railway onboarder | aw Railway deskcore / tv-sync | Jev Railway judge | Jev Actions | linkcheck (Actions refresh + Railway) | Vercel dashboard | 写手机器 (MCP) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `SUPABASE_SERVICE_ROLE_KEY` | ✓ daily-sync · features-sync · backfill-features · backfill-essence · feature-discovery · first-image-sync · first-image-trial · gate2-run · recurate-lessons (9 个 workflow, 仍是 1 个 repo secret) | ✓ | ✓ | ✓ | ✓ (`db.py` / `deskcore/app.py`) | ✓ (write=true 写账本) | ✓ external-corpus · backfill-comments · comment-gate-eval · cover-pilot | — | ⚠️ 历史配置, 应换 anon 后删 | — |
+| `SUPABASE_ANON_KEY` | — | — | — | — | — | — | — | — | ✓ 只读 `v_dash_*` | — |
+| `ANTHROPIC_API_KEY` + `ANTHROPIC_BASE_URL` (中转站) | ✓ gateway-probe · **daily-sync / backfill-essence / recurate-lessons (D-100 起 essence / curate 直跑)** · feature-discovery · first-image-sync · first-image-trial | ✓ features (essence / curate 端点 D-100 起没有调用方) | ✓ 冷路径馆员 | ✓ | ✓ deskcore (蒸馏 / 校准) | ✓ `loop.py` 修改单 (另有 `MOONSHOT_API_KEY`) | — | — | — | — |
+| `ANTHROPIC_BASE_URL_BACKUP` + `ANTHROPIC_API_KEY_BACKUP` (备用中转站, **可选**, D-148; 两个都配才启用, 地址也放 secret) | ✓ gateway-probe (`target`) · daily-sync / backfill-essence / recurate-lessons / feature-discovery / first-image-trial | ✓ features (子进程继承) | ✓ | ✓ | — (deskcore 不调中转站; Streamlit / `worker.py` 重新开时加) | ✓ `loop.py` 规则编译 | — | — | — | — |
+| `ANTHROPIC_API_KEY_BACKUP_HAIKU` (备用中转站上 haiku 专用的 key, **可选**; 模型名带 haiku 时用, 地址同 `ANTHROPIC_BASE_URL_BACKUP`; 代码只在 `annotate_essence_pass.py` 读) | ✓ daily-sync · first-image-trial · gateway-probe | 没核 (要看 Variables 页) | — | — | — | — | — | — | — | — |
+| `RELAY_FORCE` (repo **variable**, 不是 secret; 可选, D-148: `backup` / `primary` / 空) | ✓ 同上 4 个 workflow | 可选 | 可选 | 可选 | — | 可选 | — | — | — | — |
+| `GOOGLE_API_KEY` (embedding) | — | — | — | — | ✓ `dedup` / 回填 / 补录 | — | — | — | — | — |
+| `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | ✓ daily-sync · preflight · first-image-sync · first-image-trial | — | — | ✓ | — | — | — | ✓ refresh + Railway (`cli.py`; 和 TV 是不是同一个飞书应用没核, 没读值) | — | — |
+| `FEISHU_APP_TOKEN` / `FEISHU_TABLE_ID` (linkcheck 的表位置, 是配置不是钥匙, 但放在 secret 里) | — | — | — | — | — | — | — | ✓ refresh + Railway | — | — |
+| `WORKER_API_KEY` | ✓ features-sync · backfill-features (调用方) | 🔑 | — | — | — | — | — | — | — | — |
+| `ONBOARDER_API_KEY` | ✓ onboard-table (调用方) | — | — | 🔑 | — | — | — | — | — | — |
+| `LIBRARIAN_API_KEY` | — | — | 🔑 | — | ✓ (调用方 `librarian_client`) | — | — | — | — | — |
+| `DESKCORE_KEYS` / `DESKCORE_API_KEY` | — | — | — | — | 🔑 | — | — | — | — | ✓ 每个写手一把 |
+| `JUDGE_API_KEY` | — | — | — | — | ✓ (调用方 `judge_client`) | 🔑 | — | — | — | — |
+| `JUDGE_WRITER_API_KEYS` (Jev 发给写手机器的 key, 逗号分隔可多把; 只够 `/banks` 和 `/judge_draft`) | — | — | — | — | — | 🔑 | — | — | — | 按 Jev README 发给写手机器; 现在谁手里有没核 |
+| `TYPESAFE_API_KEY` (Jev) | — | — | — | — | — | ✓ | ✓ external-corpus · backfill-comments · comment-gate-eval | — | — | ⚠️ `judge/mcp_server.py` 带到写手机器 (A-09, owner 决定) |
+| `TIKHUB_API_KEY` | — | — | — | — | — | — | ✓ external-corpus · cover-pilot | ✓ refresh + Railway | — | — |
+| `SOCIALDATAX_API_KEY` (linkcheck 的第二个数据源) | — | — | — | — | — | — | — | ✓ refresh + Railway | — | — |
+| `RAILWAY_PROJECT_TOKEN` / `RAILWAY_API_TOKEN` (linkcheck 面板管自己的定时服务; 可选) | — | — | — | — | — | — | — | ✓ Railway 面板 | — | — |
+| `GITHUB_TOKEN` (自动) | ✓ sync-watchdog | — | — | — | — | — | — | — | — | — |
 
-- **轮换 SOP (照矩阵走, 一行一行勾)**: ① Supabase 控制台生成新 service_role → ② 按列更新 TV Actions 4 个
+- **轮换 SOP (照矩阵走, 一行一行勾)**: ① Supabase 控制台生成新 service_role → ② 按列更新 TV Actions 9 个
   workflow 共用的 repo secret (1 处)、TV Railway 3 服务、aw Railway 2 服务、Jev Railway 1 服务、Jev Actions
-  repo secret (1 处) → ③ Vercel **不配** service_role (anon 即可) → ④ 各仓手动跑一次 workflow / 打一次
+  repo secret (1 处, 4 个 workflow 共用)。换飞书或 TikHub 的钥匙时, ② 还要换 **linkcheck 的 Actions secret 和 Railway 服务**
+  (飞书: TV Actions + TV Railway onboarder + linkcheck 两处; TikHub: Jev Actions + linkcheck 两处), 漏了 linkcheck
+  巡查会悄悄停, TV 这边不会红 → ③ Vercel **不配** service_role (anon 即可) → ④ 各仓手动跑一次 workflow / 打一次
   `/health` 验证 → ⑤ 作废旧钥匙 → ⑥ 当晚看 sync-watchdog (B-10 起缺 secret 会红, 换错也会红)。
-- **挡不住什么**: 矩阵是手抄的, 新加一个消费者不会自动出现在这里 —— 加消费者的 PR 要改这张表 (下次改
-  `docs/04` 接新服务 SOP 时把它写进 checklist, 10-09 还没写); 写手机器上的 `DESKCORE_KEYS` / `TYPESAFE_API_KEY` 不在任何
-  集中管理里。
+- **挡不住什么**: 矩阵是手抄的。TV 自己的 workflow 有 CI 守卫 `scripts/check_secret_matrix.py` (11-25 起): 用到的
+  `secrets.X` (去掉 `GITHUB_TOKEN` 和 `*_URL`) 不在这一节、或者那一行的 TV Actions 格没写这个 workflow, CI 就红。
+  另外三个库 TV 的 CI 看不到, 靠 `docs/handoff-2026-11-22-four-repos.md` §4.1 那份「新服务 / 新密钥」清单 (docs/04 验收清单也指过去)。
+  Railway 服务用 `os.environ[...]` 读的变量和写手机器上的 `DESKCORE_KEYS` / `TYPESAFE_API_KEY` 不在任何集中管理里。
 - **Owner**: owner. 看板那把 service_role 换 anon 是 5 分钟的事, 先做。

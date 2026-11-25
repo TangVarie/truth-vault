@@ -1431,36 +1431,10 @@ def update_project_date_range(client: Client, project_id: str) -> None:
 # Secret masking (2026-05-22 audit P3)
 # ─────────────────────────────────────────────────────────────────────────
 
-import re as _re
-
-# 已知 secret 前缀正则. 加新格式时往这里加, 让 mask_secrets 覆盖所有 logger.
-_SECRET_PATTERNS = [
-    _re.compile(r"sk-ant-[A-Za-z0-9_\-]{20,}"),       # Anthropic
-    _re.compile(r"sb_secret_[A-Za-z0-9]{20,}"),       # Supabase 2024+
-    _re.compile(r"sbp_[A-Za-z0-9]{20,}"),             # Supabase service token
-    _re.compile(r"eyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}"),  # JWT
-    _re.compile(r"AIza[A-Za-z0-9_\-]{20,}"),          # Google API key
-    _re.compile(r"sk-proj-[A-Za-z0-9_\-]{20,}"),      # OpenAI
-    _re.compile(r"sk-[A-Za-z0-9]{40,}"),              # OpenAI 老格式
-]
-
-
-def mask_secrets(s: str) -> str:
-    """Mask known secret patterns in a string before logging it.
-
-    Logger formatters / exception handlers / telemetry events should pipe
-    user-visible strings through this before writing. Conservative — won't
-    catch every secret shape, but catches Anthropic / Supabase / Google /
-    OpenAI / JWT default formats.
-
-    For exception messages from supabase-py / requests that may include
-    bearer tokens in URLs or stacktrace, pass `mask_secrets(str(exc))`.
-    """
-    if not isinstance(s, str) or not s:
-        return s
-    for pat in _SECRET_PATTERNS:
-        s = pat.sub("***REDACTED***", s)
-    return s
+# 2026-11-25 S-09: 正则和 mask_secrets 搬到只用标准库的 secret_mask.py (离线脚本不 import _common 也能打码);
+# 这里原样转出, 老的 `from _common import mask_secrets` / `_common._SECRET_PATTERNS` 照常能用。
+from secret_mask import SECRET_PATTERNS as _SECRET_PATTERNS  # noqa: E402,F401
+from secret_mask import mask_secrets  # noqa: E402,F401
 
 
 # ─────────────────────────────────────────────────────────────────────────

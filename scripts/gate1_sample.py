@@ -43,6 +43,7 @@ from pathlib import Path
 import feature_bank as fb
 from discover_feature_candidates import in_discovery_half
 from gate1_agreement import load_pivot
+from secret_mask import mask_secrets
 
 ROOT = Path(__file__).resolve().parent.parent
 SEED = "fqr-g1-2026-10-26"
@@ -306,7 +307,7 @@ def main(argv: list[str] | None = None) -> int:
             ap.error("要 --print-sql 或 --from-json")
         rows, st = build_sample(load_pool(a.from_json), half=a.half, take=parse_take(a.take, a.half), seed=a.seed)
     except SampleRefused as exc:
-        print(f"拒绝: {exc}", file=sys.stderr)
+        print(f"拒绝: {mask_secrets(str(exc))}", file=sys.stderr)
         return 2
     print(summary_text(st))
     text = to_csv(rows)

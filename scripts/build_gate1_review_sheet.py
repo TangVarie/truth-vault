@@ -36,6 +36,7 @@ from gate1_agreement import load_pivot
 from gate1_labels import SHORT
 from gate1_models import Gate1Refused, load_secondary, read_cells
 from gate1_sample import SampleRefused, read_manifest
+from secret_mask import mask_secrets
 
 ROOT = Path(__file__).resolve().parent.parent
 SEED = "fqr-g1-2026-10-26:review"
@@ -284,7 +285,7 @@ def main(argv: list[str] | None = None) -> int:
         plan = plan_review(cells, bank, load_texts(a.texts, needed, manifest), manifest, a.seed)
         build_workbook(plan, bank, a.out)
     except (ReviewRefused, Gate1Refused, SampleRefused) as exc:
-        print(f"拒绝: {exc}", file=sys.stderr)
+        print(f"拒绝: {mask_secrets(str(exc))}", file=sys.stderr)
         return 2
     n = {q: len(v) for q, v in plan["pages"].items()}
     print(f"写到 {a.out}: 不一致 {n} · 抽查 {len(plan['spot'])} 格。直接交给 owner, 不进仓库 / GitHub。")
