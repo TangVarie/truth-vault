@@ -130,8 +130,19 @@ def check_label_query() -> None:
         raise AssertionError("hit 的错不该换成 reads 的提示")
     except RuntimeError as exc:
         assert "42P01" in str(exc)
+    # 原错误先打码再截 200 字: 钥匙跨着第 200 个字时, 先截会剩不到 20 个字, 打码认不出来, 漏半截
+    fake_key = "sb_secret_" + "Q" * 40
+
+    def _leaky(_q, order_by="note_id"):
+        raise RuntimeError("x" * 180 + " apikey=" + fake_key)
+    try:
+        l2_outcome.fetch_labels(_leaky, None, "reads")
+        raise AssertionError("reads 出错也没报")
+    except l2_outcome.OutcomeUnavailable as exc:
+        shown = G2.mask_secrets(str(exc))             # 调用方照旧再打一遍码
+        assert "sb_secret_" not in shown and "QQ" not in shown, shown
     print("  ✓ §1 label_query: hit = v_l2_labels 原样; reads = v_l2_outcomes + y 别名 + 只取非空; 闭集外拒; "
-          "reads 读不到视图 → 提示跑 notes_v1_35, hit 的错原样抛")
+          "reads 读不到视图 → 提示跑 notes_v1_35, hit 的错原样抛; 原错误先打码再截")
 
 
 # ── §2 gate2_run ─────────────────────────────────────────────────────────────

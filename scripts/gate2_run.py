@@ -581,28 +581,39 @@ def body_len_bucket(body_len) -> str:
     return BODY_LEN_TOP
 
 
-# notes.pinned_comment 是 TEXT: 同步写进去的 list 存成 JSON 串 ('["待置顶"]'), 文本格原样存 ('成功, 待做评论')。
-_PIN_JSON_START = ("[", "{", '"')
-_PIN_JSON_PUNCT_RE = re.compile(r'[\[\]{}"]')
+# notes.pinned_comment 是 TEXT。同步判的是 _coerce_value 之后的值 (同一个值再存进库): 文本格原样是串, 存进去也原样;
+# 全是 {text} 的多选被拼成「a, b」的串; 不全是 {text} 的 list (字符串多选) 原样留着, 存成 JSON 串 ('["待置顶"]');
+# 勾选格是 true / false。所以库里的串只有两种来路: 同步当时就是这个串, 或者是那几种非串值的 JSON。
+def _pin_sync_kept(v: Any) -> bool:
+    """v 是不是同步当时可能拿着的非串值 (存进库才变成 JSON): 勾选格的 bool, 或 _coerce_value 原样放过的 list
+    (不全是 {text}; 全是 {text} 的和空 list 在同步里已经拼成串了, 库里不会是 JSON 列表; 空 list 的 all() 为真, 一样不算)。"""
+    if isinstance(v, bool):
+        return True
+    return isinstance(v, list) and not all(isinstance(x, dict) and "text" in x for x in v)
 
 
 def pinned_done_labels(raw: Any) -> list[str]:
     """notes.pinned_comment 一格 → 里面「做过」的置顶 / 控评标签 (G-25, D-128 11-25 补: 敏感性重跑剔除条件三只认做过的)。
-    判法就是夜跑同步那一个 _common.posthoc_done_labels (同一个函数对象), 这里只管把库里的 TEXT 还原成同步当时看到的格子:
-    像 JSON 的 (去掉前导空白后以 [ { " 开头) 先 json.loads, 解析出来还是串的再看一遍 (套了两层的也认得);
-    解析不了的 (半截 JSON) 把 [ ] { } " 去掉, 剩下的按文本判 —— 半截的 '["待置顶"' 照样认成待办;
-    不像 JSON 的纯文本原样交给 posthoc_done_labels, 和同步逐字同一个判法; NULL / 空串 / list / dict 也原样交过去。"""
+    判法就是夜跑同步那一个 _common.posthoc_done_labels (同一个函数对象); 这里只管把库里的 TEXT 还原成同步当时判的那个值:
+    整串 (前后不带空白) 是 JSON、解析出来是 _pin_sync_kept 认的 list / bool → 用解析出来的值; 别的一律原样交过去 ——
+    文本格本来就原样存, 同步判的就是这个串 (以 [ { " 开头的、半截的、两层引号的、空的 "[]" 都按文本, 和同步一样)。
+    唯一分不开的: 文本格里一字不差打成 JSON 列表或 true / false 的, 按 JSON 算 (生产上这一列 11-25 全是 JSON 列表)。
+    NULL / 空串 / 已经是 list 的原样交过去。"""
     from _common import posthoc_done_labels
-    while isinstance(raw, str) and raw.lstrip().startswith(_PIN_JSON_START):
+    cell = raw
+    if isinstance(raw, str) and raw == raw.strip():
         try:
-            raw = json.loads(raw)
+            v = json.loads(raw)
         except (ValueError, RecursionError):
-            raw = _PIN_JSON_PUNCT_RE.sub("", raw)
-    return posthoc_done_labels(raw)
+            v = None
+        if _pin_sync_kept(v):
+            cell = v
+    return posthoc_done_labels(cell)
 
 
 def sensitivity_flags(dq: Optional[dict], has_pinned_done: bool = False) -> list[str]:
-    """敏感性重跑要剔的篇 (D-128: 记过置顶 / 控评 / 铺评 / 投流)。读的是同步引擎写好的标记, 不重判:
+    """敏感性重跑要剔的篇 (D-128: 记过置顶 / 控评 / 铺评 / 投流)。前两条读同步引擎写好的标记, 不重判;
+    第三条 (置顶) 闸二取数时自己判, 用的是和同步同一个 posthoc_done_labels:
       · data_quality_flags.comment_maintained_routes 非空: 铺评工单 / 起量后干预 (控评、置顶、改评) / 铺评未跨线;
         只写了 comment_maintained=true 没写 routes 的老行也算;
       · data_quality_flags.paid_promoted = true (投流三态里只认 true; 缺键 = 不知道, 不剔);

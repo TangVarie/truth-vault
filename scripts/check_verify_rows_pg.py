@@ -16,6 +16,9 @@ v1_29 和 Step 0b 的看板 / 安全文件都跑过之后)。
      没有原文键也没换发布时间的篇、改指之后才推的样本都不动), 判分行跟着删,
      备份表有那几行、anon / authenticated 一样权限都没有; 再照表注释里的回滚语句跑一遍 → 全回来
   §6 改指的认法 (rp 那一段) 在 #109、#110、两份 owner SQL 里 7 处一字不差; 「第 ③ 条」在 4 处都有
+  §7 批 3 的 #111 / #112 (v1_34、v1_35 在这一步之前跑过): 底数都是 0 (不是 N/A —— 查询写坏了 safe_count 回 NULL 显示 N/A,
+     和「迁移还没跑」长得一样, 所以底数必须是 0); #111 把书架视图换成一张有空 rank_score、先验越界的假视图 → 2,
+     没有 account_prior 列 → N/A; #112 给 anon → 1、anon + authenticated → 2 (都在事务里, 回滚)
 反证 (改坏之后必须红):
   · #92 的 VALUES 删掉 D-129 那一条 → §1「登记过的名字不算」红
   · #92b 只留 anon → §2 authenticated 那一步红
@@ -105,7 +108,7 @@ def main() -> int:
     # §0 + 底数
     base = verify()
     for o, v in (("92", "0"), ("92b", "0"), ("105", "18"), ("106", "0"), ("107", "0"), ("108", "0"),
-                 ("109", "0"), ("110", "0")):
+                 ("109", "0"), ("110", "0"), ("111", "0"), ("112", "0")):
         want(base, o, v, "CI 库上跑完所有迁移之后的底数 (批 2 的三张备份表这时还在, 名字要登记、anon / authenticated 碰不到)")
     print("  §0 整份 verify 跑得通; 本批新行底数都对 ✓")
 
@@ -163,7 +166,9 @@ def main() -> int:
         sql(UNDO_DEFAULT_GRANT)
     # §6 规则文本一致
     s6_rule_text()
-    print("✅ check_verify_rows_pg: §0–§6 全过")
+    # §7 批 3 的 #111 / #112
+    s7_batch3_rows()
+    print("✅ check_verify_rows_pg: §0–§7 全过")
     return 0
 
 
@@ -304,6 +309,23 @@ def s5_repoint() -> None:
     _cleanup_fixture()
     print("  §5 #109 / #110 和两份 AU-F02b ④ owner SQL: 只删旧帖评论和判分、只撤旧样本和标记 (改指之后的、只差空白的、"
           "源清空的不动), 跑两遍不多删, 默认授权下备份表也收住, 回滚都对 ✓")
+
+
+def s7_batch3_rows() -> None:
+    """#111 / #112 的查询写坏了只会显示 N/A (safe_count 吞错), 底数 0 在 §0 已核; 这里再核它们真数得对。都在事务里, 回滚。"""
+    swap = ("BEGIN;\nALTER VIEW truth_vault.v_flywheel_lesson_cards RENAME TO v_flywheel_lesson_cards_ci_real;\n"
+            "CREATE VIEW truth_vault.v_flywheel_lesson_cards AS SELECT * FROM (VALUES (NULL::float8, 0.2::float8), "
+            "(0.5, 1.5), (0.5, -0.1), (0.5, NULL), (0.5, 0.0), (0.5, 1.0)) t(rank_score, account_prior);\n")
+    want(verify(swap, "\nROLLBACK;\n"), "111", "4", "空 rank_score 1 张 + 先验 > 1、< 0、为空各 1 张; 先验正好 0 和 1 不算")
+    na = "BEGIN;\nALTER TABLE truth_vault.v_flywheel_lesson_cards RENAME COLUMN account_prior TO account_prior_ci;\n"
+    want(verify(na, "\nROLLBACK;\n"), "111", "N/A", "书架视图没有 account_prior 列 (v1_34 没跑)")
+    want(verify("BEGIN;\nGRANT SELECT ON truth_vault.v_l2_outcomes TO anon;\n", "\nROLLBACK;\n"), "112", "1", "anon 能读")
+    want(verify("BEGIN;\nGRANT SELECT ON truth_vault.v_l2_outcomes TO anon, authenticated;\n", "\nROLLBACK;\n"),
+         "112", "2", "anon、authenticated 都能读")
+    got = verify()
+    want(got, "111", "0", "事务回滚之后")
+    want(got, "112", "0", "事务回滚之后")
+    print("  §7 #111 书架空分 / 先验越界数得对 (边界 0、1 不算), 没列 → N/A · #112 anon / authenticated 能读 v_l2_outcomes 数得对 ✓")
 
 
 RP_BLOCK = re.compile(r"WITH rp AS \((.*?)GROUP BY a\.row_id", re.S)

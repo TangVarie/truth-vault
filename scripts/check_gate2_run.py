@@ -42,7 +42,8 @@
      (记号传失败、读完取消) / Guard 不拒仓库里已有的同名报告                        → §8o 红
   ㉖ 大项目分层内方向按合并 2×2 算 / 有支持的大项目不筛「有这个取值」/ 一篇两种都缺归到分层题 / 缺代码特征那行也算掉 → §8d / §8e / §8q 红
   ㉗ 按名单写死时的 y 算 / 按名单写死时的项目分层 (补记 4 要的是现在的)              → §8p 红
-  ㉘ 置顶回到「非空就剔」/ 不解析库里的 JSON 串 / 半截 JSON 不去括号引号 / 不认以 " 开头或带前导空白的 JSON /
+  ㉘ 置顶回到「非空就剔」/ 不解析库里的 JSON 串 / 以 [ { " 开头的文本也剥括号引号 (同步不剥) / 两层引号再解析一层 /
+     空的 "[]" 或全是 {text} 的 JSON 当 list / 勾选格 true 当文本 / 带前后空白的也当 JSON / 存库往返不过 _coerce_value /
      不用 _common.posthoc_done_labels (同步或闸二自己留一份) / 报告的剔除依据和计数名没改 / 旧键 has_pinned_comment 照跑
      (G-25, D-128 11-25 补; 11-25 逐个改坏确认变红)                                → §8n / §8r 红
 
@@ -1289,12 +1290,12 @@ class _FakeSB:
         return _FakeQ(self.tables.get(name, []), self.log, name)
 
 
-# notes.pinned_comment 在库里的样子 (TEXT; 同步写的 list 存成 JSON 串, 文本格原样): 做过的 (含混着待办的) / 只有待办、
-# 做不成的、空的、坏的。假库里 has_pinned_done 的篇轮流用前一组, 另挑几篇没有任何标记的篇用后一组 —— 取数后后一组
-# 一篇都不许剔 (G-25: 敏感性重跑的「置顶」只认做过的, D-128 11-25 补)。
+# notes.pinned_comment 在库里的样子 (TEXT; 同步留着的 list 存成 JSON 串, 勾选格 true / false, 文本格原样): 做过的
+# (含混着待办的) / 只有待办、做不成的、空的、没勾的。假库里 has_pinned_done 的篇轮流用前一组, 另挑几篇没有任何标记的篇
+# 用后一组 —— 取数后后一组一篇都不许剔 (G-25: 敏感性重跑的「置顶」只认做过的, D-128 11-25 补)。
 PIN_DONE_TEXT = ('["成功"]', '["待做评论", "控住后掉了"]', "补控成功")
-PIN_NOT_DONE_TEXT = ('["待置顶"]', '["待置顶", "待做评论"]', "待做评论", "素人退出无法回收", "[]", "", "   ", '["待置顶"',
-                     '"待置顶"', '"[\\"等解封后控评\\"]"')
+PIN_NOT_DONE_TEXT = ('["待置顶"]', '["待置顶", "待做评论"]', "待做评论", "素人退出无法回收", '[""]', "", "   ", "false",
+                     "true", "待安排贴主自评", '["等解封后控评"]')
 
 
 def _pin_not_done_ids(notes: list[dict]) -> list[str]:
@@ -1331,7 +1332,7 @@ def check_secondary_fetch() -> None:
     got = G.fetch_dataset_secondary(sb, bank=SEC_BANK, primary=SEC_PRIMARY)
     assert got["half_alias"] == ds["half_alias"] and got["vanished"] == ds["vanished"]
     assert all("raw_content" not in n and "pinned_comment" not in n for n in got["notes"]), "正文 / 置顶评论文字不取"
-    # 置顶只认做过的 (G-25): 库里只有待办 / 做不成 / 空 / 坏的那几篇取数后是 False, 做过的 (含混着待办的) 是 True
+    # 置顶只认做过的 (G-25): 库里只有待办 / 做不成 / 空 / 没勾的那几篇取数后是 False, 做过的 (含混着待办的) 是 True
     gotpin = {n["note_id"]: n["has_pinned_done"] for n in got["notes"]}
     assert gotpin == {n["note_id"]: n["has_pinned_done"] for n in ds["notes"]}, "取数后的 has_pinned_done 和夹具对不上"
     not_done = _pin_not_done_ids(ds["notes"])
@@ -1358,7 +1359,7 @@ def check_secondary_fetch() -> None:
     _refused(lambda: _sec_run(bad, man), "不是题库版本", "取数时混进的 invites_sharing v1")
     print("  §8n 取数 (假库, 过滤 / 投影 / 翻页都真做): 结果和直接给 dataset 相同; 只查 Sonnet / code:v1、全 sha、钉版本; "
           "快照外的行 (Opus / Haiku / 别的 sha) 只数不取、数对; 不取正文; 版本不对的行被探针捞出来 → 拒; "
-          f"置顶只认做过的: 库里只有待办 / 空 / 坏的 {len(PIN_NOT_DONE_TEXT)} 篇取数后一篇不剔 (G-25) ✓")
+          f"置顶只认做过的: 库里只有待办 / 做不成 / 空 / 没勾的 {len(PIN_NOT_DONE_TEXT)} 篇取数后一篇不剔 (G-25) ✓")
 
 
 # ── §8o CLI / workflow / 进了仓库的第一波名单 ──────────────────────────────────────────
@@ -1676,22 +1677,28 @@ def check_secondary_big_support() -> None:
 
 
 # ── §8r 敏感性重跑的「置顶」只认做过的 (G-25, D-128 11-25 补) ─────────────────────────────────────────
-# (库里的样子, 应得的做过标签)。库里 pinned_comment 是 TEXT: 同步写进去的 list 存成 JSON 串, 文本格原样存。
+# (库里的样子, 应得的做过标签)。库里 pinned_comment 是 TEXT: 同步留着的 list 存成 JSON 串、勾选格存成 true / false,
+# 别的 (文本格、拼好的多选) 就是同步当时判的那个串, 原样存。
 PIN_CASES = (
-    (None, []), ("", []), ("   ", []), ("[]", []), ('[""]', []),                                   # NULL / 空
-    ('["待置顶"]', []), ('["待置顶", "待做评论"]', []), ("待做评论", []), ("素人退出无法回收", []),       # 只有待办 / 做不成
-    ('["等解封后控评"]', []), ('[{"text": "待做评论"}]', []),
-    ('["成功"]', ["成功"]), ("补控成功", ["补控成功"]), ('[{"text": "交付前补控成功"}]', ["交付前补控成功"]),   # 做过的
-    ('["待做评论", "控住后掉了"]', ["控住后掉了"]), ("成功, 待做评论", ["成功"]),                         # 混着的
-    ('["待置顶"', []), ('["成功"', ["成功"]), ('["待置顶", "成功"', ["成功"]), ("[" * 100000, []),       # 坏 JSON
-    ('"待置顶"', []), ('"成功"', ["成功"]), ('"[\\"等解封后控评\\"]"', []), ('\n ["待置顶"]', []),  # 串 / 两层 / 前导空白
-    ("待置顶", []), ("置顶评论", ["置顶评论"]),                                                         # 纯文本
+    (None, []), ("", []), ("   ", []), ('[""]', []),                                                 # NULL / 空
+    ('["待置顶"]', []), ('["待置顶", "待做评论"]', []), ('["等解封后控评"]', []), ('["待置顶","待做评论"]', []),  # 存成 JSON 的 list
+    ('["成功"]', ["成功"]), ('["待做评论", "控住后掉了"]', ["控住后掉了"]), ('[{"text": "成功"}, "待置顶"]', ["成功"]),
+    ("true", []), ("false", []),                                                                       # 勾选格
+    ("待做评论", []), ("素人退出无法回收", []), ("待置顶", []), ("补控成功", ["补控成功"]),                   # 文本格
+    ("成功, 待做评论", ["成功"]), ("置顶评论", ["置顶评论"]), ("成功；待置顶\n控住后掉了", ["成功", "控住后掉了"]),
+    # 以 [ { " 开头但不是同步存的 JSON → 按文本判, 和同步对这个串的判法一样 (同步不剥括号引号)
+    ("[待置顶]", ["[待置顶]"]), ('"待置顶"', ['"待置顶"']), ("[]", ["[]"]), ('""', ['""']), ("{}", ["{}"]),
+    ('["待置顶"', ['["待置顶"']), ('[{"text": "待做评论"}]', ['[{"text": "待做评论"}]']), ("{待置顶}", ["{待置顶}"]),
+    ('"[\\"等解封后控评\\"]"', ['"[\\"等解封后控评\\"]"']), ('\n ["待置顶"]', ['["待置顶"]']),
+    ("  [待置顶]", ["[待置顶]"]), ("[" * 100000, ["[" * 100000]),
     (["待置顶"], []), (["成功", "待做评论"], ["成功"]), ([{"text": "待做评论"}], []),                    # 已经是 list
 )
-# 飞书格子 → 同步当时看到的值; 存进库 (list → JSON 串, 文本原样) 再由闸二读回来, 判出来要和同步逐字一样
+# 飞书格子 → 同步 _coerce_value 之后判的值 → 存进库 (像 PostgREST: 串原样, 别的存 JSON) → 闸二读回来再判, 要和同步逐字一样
 SYNC_CELLS = (["成功"], ["补控成功"], ["交付前补控成功"], ["控住后掉了"], ["成功", "待做评论"], ["待安排贴主自评回复", "控住后掉了"],
-              "成功, 待做评论", [{"text": "成功"}], ["待置顶"], ["待做评论"], ["待安排贴主自评"], ["等解封后控评"], ["待解封后控评"],
-              ["素人退出无法回收"], "待置顶", [{"text": "待做评论"}], ["待置顶", "待做评论"], "成功；待置顶\n控住后掉了")
+              "成功, 待做评论", [{"text": "成功"}], [{"text": "成功"}, {"text": "待置顶"}], ["待置顶"], ["待做评论"],
+              ["待安排贴主自评"], ["等解封后控评"], ["待解封后控评"], ["素人退出无法回收"], "待置顶", [{"text": "待做评论"}],
+              ["待置顶", "待做评论"], "成功；待置顶\n控住后掉了", [], [""], [{"text": "成功"}, "待置顶"],
+              "[待置顶]", '"待置顶"', "[]", "{}", '["待置顶"', "  [待置顶]", "[待置顶] 成功", True, False, 3)
 
 
 def check_secondary_pinned_done_only() -> None:
@@ -1700,8 +1707,10 @@ def check_secondary_pinned_done_only() -> None:
     for raw, want in PIN_CASES:
         assert G.pinned_done_labels(raw) == want, (repr(raw)[:40], G.pinned_done_labels(raw), want)
     for cell in SYNC_CELLS:
-        stored = json.dumps(cell, ensure_ascii=False) if isinstance(cell, list) else cell
-        assert G.pinned_done_labels(stored) == engine.posthoc_done_labels(cell), (cell, stored)
+        seen_by_sync = engine._coerce_value("pinned_comment", cell)
+        stored = seen_by_sync if isinstance(seen_by_sync, str) or seen_by_sync is None else \
+            json.dumps(seen_by_sync, ensure_ascii=False)
+        assert G.pinned_done_labels(stored) == engine.posthoc_done_labels(seen_by_sync), (cell, seen_by_sync, stored)
     # 同一个函数对象: 同步脚本 import 的就是 _common 那个; 闸二每次调用都去 _common 取 (换掉它闸二跟着换)
     assert engine.posthoc_done_labels is C.posthoc_done_labels, "同步脚本又有了自己的一份 posthoc_done_labels"
     seen, real = [], C.posthoc_done_labels
@@ -1720,8 +1729,9 @@ def check_secondary_pinned_done_only() -> None:
     stale = dict(ds, notes=[dict(n) for n in ds["notes"]])
     stale["notes"][0]["has_pinned_comment"] = stale["notes"][0].pop("has_pinned_done")
     _refused(lambda: _sec_run(stale, man), "has_pinned_comment", "dataset 还是旧键")
-    print(f"  §8r 置顶只认做过的 (G-25): {len(PIN_CASES)} 种库里的写法 (只有待办 / 做过 / 混着 / NULL / 空 / 坏 JSON / 纯文本 / list) "
-          f"判对; {len(SYNC_CELLS)} 种飞书格子存进库再读回来, 和同步逐字一样; 同步和闸二是同一个函数对象; 报告只换了两处文字; "
+    print(f"  §8r 置顶只认做过的 (G-25): {len(PIN_CASES)} 种库里的写法 (只有待办 / 做过 / 混着 / NULL / 空 / JSON list / 勾选 / "
+          f"文本格, 含以 [ \" 开头的) 判对; {len(SYNC_CELLS)} 种飞书格子过 _coerce_value、存进库再读回来, 和同步逐字一样; "
+          "同步和闸二是同一个函数对象; 报告只换了两处文字; "
           "旧键拒跑 ✓")
 
 

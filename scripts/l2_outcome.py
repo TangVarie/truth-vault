@@ -7,8 +7,11 @@
 默认永远是 hit, 而且 hit 那条查询和改之前一模一样 (表名、select 串都不变; check_l2_outcome_switch 钉着)。
 reads 只给并排读数: 三个脚本在 reads 下都不写库, 报告里两种口径一起给。把 reads 换成默认是 owner 的决定, 不在这里。
 reads 读不到视图 (owner 还没跑 notes_v1_35) → OutcomeUnavailable, 话里直接说要跑哪个文件; 三个脚本都退出 2。
+原错误先打码再截 200 字 (先截再打码, 截断处跨着的钥匙不够长、认不出来, 会漏半截)。
 """
 from __future__ import annotations
+
+from secret_mask import mask_secrets
 
 OUTCOMES = ("hit", "reads")
 DEFAULT_OUTCOME = "hit"
@@ -33,7 +36,7 @@ def fetch_labels(fetch_all_pages, query, outcome: str, order_by: str = "note_id"
     except Exception as exc:  # noqa: BLE001 —— PostgREST / 网络的错误种类很多, 这里只换一句能照着做的话
         raise OutcomeUnavailable(
             f"--outcome {outcome}: 读不到 truth_vault.{READS_VIEW}。多半是 owner 还没跑 {READS_MIGRATION} (只建视图, ¥0), "
-            f"跑完再试。原错误: {type(exc).__name__}: {str(exc)[:200]}") from exc
+            f"跑完再试。原错误: {type(exc).__name__}: {mask_secrets(str(exc))[:200]}") from exc
 
 
 def label_query(sb, cols: str, outcome: str = DEFAULT_OUTCOME):

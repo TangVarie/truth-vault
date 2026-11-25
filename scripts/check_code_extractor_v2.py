@@ -18,7 +18,8 @@
   §5 backfill-features.yml (bash 真跑): 输入校验 (v2 只配 code_only、只给主题库、闭集); note_ids 探针要 worker 回显
      code_extractor, 请求体只在 v2 时带它; 整项目循环: 先探一次、计数带 --extractor code:v2、请求体带 code_extractor;
      两种模式都是探针回显了、某一批没回显 → 停。
-     gate2-run.yml: extractors 含 code:v2 (只限主题库) 时先跑 measure_g24_withdrawal.py; 过 / 没过都往下走, 数不出来停。
+     gate2-run.yml: extractors 含 code:v2 (只限主题库) 时先跑 measure_g24_withdrawal.py; 过 / 没过都往下走, 数不出来停;
+     退出码要和最后一行判定对得上 (崩了的 1 不算「没过」), stderr 不进 step summary; 脚本连库出错退出 2、只打打过码的一句。
   §6 worker: _CODE_EXTRACTORS 与 fb.CODE_EXTRACTORS 逐字相同; 端点 (要 fastapi): 拼 --code-extractor 并回显,
      不带 code_only / 副题库 / 闭集外 → 400 不起子进程; 不带这个键时参数和响应和以前一样。
 挡不住什么: 生产上 v2 抽得对不对 (撤回条件要等回填之后按 measure_g24_withdrawal.py 量); 闸二重读本身。
@@ -418,21 +419,45 @@ def check_gate2_measure_step() -> None:
     assert st.get("if", "").strip() == "env.IN_BANK == 'primary'", st.get("if")   # 副题库不量; check_gate2_run 的模拟认这种写法
     assert st.get("working-directory") == "scripts", st
 
-    def run(extractors: str, rc_py: int):
+    secret = "sb_secret_" + "Z" * 30          # 假 python 往 stderr 打的东西 (traceback 之类) 不许进 step summary
+
+    def run(extractors: str, rc_py: int, last: str = ""):
         with tempfile.TemporaryDirectory() as td:
-            fake = f'python() {{ echo "fake $*" >> "{td}/argv"; echo "fake $*"; return {rc_py}; }}\n'
+            fake = (f'python() {{ echo "fake $*" >> "{td}/argv"; echo "fake $*"; echo "Traceback {secret}" >&2; '
+                    f'{"echo " + repr(last) + "; " if last else ""}return {rc_py}; }}\n')
             r = _bash(fake + st["run"], {"IN_SHA": "ba0f570c", "IN_EXTRACTORS": extractors, "RUNNER_TEMP": td,
                                         "GITHUB_STEP_SUMMARY": str(Path(td, "sum.md"))})
             summ = Path(td, "sum.md").read_text(encoding="utf-8") if Path(td, "sum.md").exists() else ""
             called = Path(td, "argv").exists()
         return r, summ, called
-    for rc_py, want_rc, needle in ((0, 0, "过了"), (1, 0, "没过"), (2, 2, "数不出来")):
-        r, summ, called = run("code:v2, llm:claude-sonnet-5-5", rc_py)
+    ok, bad = "撤回条件 (≤ 10%): 过", "撤回条件 (≤ 10%): 没过"
+    # 退出码和最后一行判定对得上才认; Python 崩了 (1, 没有判定行) / 码和行对不上 → 当数不出来停
+    for rc_py, last, want_rc, needle in ((0, ok, 0, "过了"), (1, bad, 0, "没过"), (2, "", 2, "数不出来"), (1, "", 2, "数不出来"),
+                                         (0, bad, 2, "数不出来"), (1, ok, 2, "数不出来"), (3, "", 2, "数不出来")):
+        r, summ, called = run("code:v2, llm:claude-sonnet-5-5", rc_py, last)
         assert called and r.returncode == want_rc and needle in r.stdout and "measure_g24_withdrawal.py --sha ba0f570c" in summ, \
-            (rc_py, r.returncode, r.stdout[-300:], summ[-300:])
+            (rc_py, last, r.returncode, r.stdout[-300:], summ[-300:])
+        assert secret not in summ and secret in r.stderr, ("stderr 进了 step summary / 没进日志", rc_py, summ[-300:])
     for ext in ("code:v1,llm:claude-sonnet-5-5", "code:v22,llm:x", ""):
         r, summ, called = run(ext, 1)
         assert r.returncode == 0 and not called and not summ and "不量" in r.stdout, (ext, r.returncode, r.stdout[-200:])
+    # 脚本本身: 连库 / 取数出错 → 2 (不是 Python 的 1), stderr 只有打过码的一句; 判定行的字样和 workflow 认的一样
+    import measure_g24_withdrawal as mw
+    import _common
+    real = _common.get_supabase_client
+
+    def boom():
+        raise RuntimeError("x" * 250 + " apikey=" + secret)
+    _common.get_supabase_client = boom
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            rc = mw.main(["--sha", "ba0f570c"])
+    finally:
+        _common.get_supabase_client = real
+    assert rc == 2 and "数不出来" in err.getvalue() and "sb_secret_" not in err.getvalue() and "ZZ" not in err.getvalue(), \
+        (rc, err.getvalue()[-200:])
+    assert f"撤回条件 (≤ {mw.THRESHOLD:.0%}): " == ok[:-1] and ok in st["run"] and bad in st["run"]
 
 
 # ── §6 worker ────────────────────────────────────────────────────────────────

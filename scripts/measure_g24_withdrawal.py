@@ -6,7 +6,9 @@
 分母只数词典不空的篇; 同时打出 code:v1 的同一个数作对照 (10-30 是 162/199)。
 
     cd scripts && python measure_g24_withdrawal.py --sha ba0f570c            # 回填 code:v2 之后跑
-输出只有计数和项目代号。退出码: 0 = 条件过; 1 = 没过; 2 = 数不出来 (code:v2 一行都没有等)。
+输出只有计数和项目代号。退出码: 0 = 条件过; 1 = 没过; 2 = 数不出来 (code:v2 一行都没有、连库 / 取数出错等)。
+判定那一行 (「撤回条件 (≤ 10%): 过 / 没过」) 总是 stdout 的最后一行; gate2-run 要退出码和这一行对得上才认。
+出错时只往 stderr 打打过码的一句 (gate2-run 不把 stderr 写进 step summary)。
 """
 from __future__ import annotations
 
@@ -16,6 +18,7 @@ from collections import defaultdict
 from typing import Iterable, Optional
 
 import feature_bank as fb
+from secret_mask import mask_secrets
 
 THRESHOLD = 0.10
 POSITION = "后20%"
@@ -72,9 +75,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     a = ap.parse_args(argv)
     if len(a.sha) < 8:
         ap.error("--sha 至少 8 位")
-    from _common import get_supabase_client
-    sb = get_supabase_client()
-    res = {ext: withdrawal_share(_rows_for(sb, a.sha.lower(), ext)) for ext in fb.CODE_EXTRACTORS}
+    try:
+        from _common import get_supabase_client
+        sb = get_supabase_client()
+        res = {ext: withdrawal_share(_rows_for(sb, a.sha.lower(), ext)) for ext in fb.CODE_EXTRACTORS}
+    except Exception as exc:  # noqa: BLE001 —— 连库 / 取数出错 = 数不出来 (2); 别让 Python 崩溃的退出码 1 冒充「没过」
+        print(f"数不出来: {type(exc).__name__}: {mask_secrets(str(exc))[:300]}", file=sys.stderr)
+        return 2
     for ext, r in res.items():
         share = "—" if r["share"] is None else f"{r['share']:.1%}"
         print(f"{ext}: {POSITION} {r['den']} 篇, 品牌只在标签里 {r['num']} 篇 ({share})")
@@ -82,7 +89,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"    {p}: {k}/{n}")
     v2 = res[fb.CODE_EXTRACTOR_V2]
     if not v2["den"]:
-        print("code:v2 下没有「后20%」的篇 (回填还没跑?) —— 数不出来", file=sys.stderr)
+        print("code:v2 下没有「后20%」的篇 (回填还没跑?) —— 数不出来")
         return 2
     print(f"撤回条件 (≤ {THRESHOLD:.0%}): {'过' if v2['passed'] else '没过'}")
     return 0 if v2["passed"] else 1
