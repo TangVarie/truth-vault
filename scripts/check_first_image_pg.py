@@ -8,7 +8,7 @@
       做过的不再出, 图换了 / 到了重试时间再出; 经验卡的帖排前面
     · 整张表刚接进来 (所有帖的入库时刻都是当天): 发布超过 30 天的、没有发布时间的都不算新帖; 刚发布的算; 经验卡的帖照出
     · 写结果: 不是封面只许带 img_kind 一行; 答完了必须有 img_kind = 封面; 别的 run_tag、别的帖的行被拒;
-      重写一篇先删它旧的首图答案, 文字题库的行 (run_tag = primary) 不动
+      重写一篇先删它旧的首图答案, 文字题库的行 (run_tag = primary) 不动; 题库换了版本, 做过的帖再出来, 用新版本重写只换掉这一篇的首图行
     · 重试: 算数的失败 3 次、或一共试 6 次之后不再自动试; 换了图从头算
     · 读的那一面: 题库镜像那一行不在时没有一篇能用; 多图的帖在项目被确认之前 answers 是 NULL, 确认之后不用重写就放开;
       项目被列为先不做 → 不能用; answers 只出往外给的题里答成了的; 抄下来的字不出;
@@ -19,14 +19,17 @@
   B 段 (要 pyyaml; 没有就跳过并打一条 ::warning::): 用 scripts/first_image_pass.py 真跑一趟 (假下载、假缩图、假模型, 库是真的),
     再跑一趟确认不重复做、不重复问。排第一的经验卡帖飞书不给下载: 记一笔、别的照做, 到了重试时间再试也卡不住别的帖。
     其中一篇答案自相矛盾 (说了没有字、又抄出了字; D-160): 库收下带 inconsistent:<规则名> 的行, 这一篇是 answered、13 行、
-    读的那一面 usable = true, answers 里没有 img_text_kind 和 img_text_has_number (没有键 = 没答成), 别的往外给的题照有。
-    一篇说了有字、大字是空的、版式是纯文字卡片: answers 里连 img_layout 也没有。一篇说了没有字、抄出来的是「没有」
-    (said_none_in_words, 两次说的是一回事): 照旧 no_answer、一行答案都不写、按日程重问。
+    读的那一面 usable = true, answers 的键正好是往外给的五道 (fi-v0.3 里 img_text_kind / img_text_has_number 本来就不往外给,
+    作废了几道看库里那几行的原因)。
+    一篇说了有字、大字是空的、版式是纯文字卡片: 往外给的 img_layout 作废了, answers 里没有它 (没有键 = 没答成; 这一条由它来查)。
+    一篇说了没有字、抄出来的是「没有」(said_none_in_words, 两次说的是一回事): 照旧 no_answer、一行答案都不写、按日程重问。
 
 反证 (改坏迁移之后必须红):
     · v_note_first_image_source 的 ORDER BY k.ord 去掉或调换                       → 取列
     · first_image_candidates 去掉 v_notes_vanished / p_excluded 那一行             → 该做哪些
     · write_first_image_result 去掉先删旧答案那一句                                → 「换了图之后旧答案还在」
+    · first_image_candidates 去掉 st.bank_version <> p_bank_version 那一行         → 「题库版本换了: 做过的帖要再出来」
+    · write_first_image_result 先删旧答案那一句去掉 subject_id = v_note             → 「新版本重写 a: b 的行一行都不许动」
     · v_first_image_features 的 usable 去掉 NOT g.cover_unconfirmed                → 「多图没确认不能用」
     · v_first_image_features 的 n_files 改回读状态表里记的数 (s.n_files)            → 「做完之后又加了图」
     · v_first_image_features 的 usable 去掉 NOT cur.image_changed                  → 「图片列没了 / 首图换了」
@@ -105,8 +108,8 @@ def note(nid: str, project: str, raw_extra: dict, *, new: bool, card: bool = Fal
             f"ingested_at, raw_extra) VALUES ('{nid}', '{project}', '合成正文', '合成标题', {tier}, {ing}, {J(raw_extra)});")
 
 
-def cands(cards_only: bool = False, limit: str = "100", excluded=(PX,)) -> list[dict]:
-    out = sql(f"SELECT to_jsonb(c) FROM truth_vault.first_image_candidates('{BANK_V}', '{SINCE}', {arr(excluded)}, "
+def cands(cards_only: bool = False, limit: str = "100", excluded=(PX,), bank: str = BANK_V) -> list[dict]:
+    out = sql(f"SELECT to_jsonb(c) FROM truth_vault.first_image_candidates('{bank}', '{SINCE}', {arr(excluded)}, "
               f"{'true' if cards_only else 'false'}, {limit}) c WHERE c.note_id LIKE '{P1}%';")
     return [json.loads(line) for line in out.splitlines() if line]
 
@@ -210,6 +213,23 @@ def part_a() -> None:
     sync(confirmed=(P1,))
     v = view(b)
     assert (v["usable"], v["cover_unconfirmed"]) == (True, False) and v["answers"] == {"img_layout": "一张照片"}, "确认之后不用重写就放开"
+    # 题库换了版本 (像 fi-v0.2 → fi-v0.3): 做过的帖按新版本再出来; 用新版本重写 a 只换掉 a 自己的首图行 (新版本少一行, 旧行不许剩),
+    #   b 的首图行、a 的文字题库行都不动。写完换回 BANK_V, 下面的夹具照旧
+    bank_n = "fi-v9"
+    rows_of = lambda nid: sql("SELECT string_agg(question_id || ':' || run_tag || ':' || bank_version || ':' || coalesce(answer, '-'), "  # noqa: E731
+                              f"',' ORDER BY question_id) FROM truth_vault.note_feature_answers WHERE subject_id = '{nid}';")
+    b_before = rows_of(b)
+    assert b_before.count(f":img-primary:{BANK_V}:") == 5, b_before
+    assert a not in [r["note_id"] for r in cands()] and {a, b} <= {r["note_id"] for r in cands(bank=bank_n)}, "题库版本换了: 做过的帖要再出来"
+    assert write(dict(state(a, "a1", "answered", "final"), bank_version=bank_n),
+                 [dict(r, bank_version=bank_n) for r in COVER_ROWS(a)[:2]]) == "final"
+    assert rows_of(a) == f"has_specific_time:primary:fq-v0.1:是,img_kind:img-primary:{bank_n}:封面,img_layout:img-primary:{bank_n}:一张照片", \
+        f"新版本重写: 只换掉 a 的首图行, 文字题库的行留着: {rows_of(a)}"
+    assert rows_of(b) == b_before, "新版本重写 a: b 的行一行都不许动"
+    assert a not in [r["note_id"] for r in cands(bank=bank_n)] and b in [r["note_id"] for r in cands(bank=bank_n)]
+    assert (view(a)["bank_version"], view(a)["usable"], view(a)["answers"]) == (bank_n, False, None), "做的版本和题库镜像对不上: 不能用"
+    assert write(state(a, "a1", "answered", "final"), COVER_ROWS(a)) == "final" and a not in [r["note_id"] for r in cands()]
+    assert view(a)["answers"] == {"img_layout": "一张照片"} and rows_of(b) == b_before
     sync(excluded=(PX, P1))
     assert (view(a)["usable"], view(a)["project_excluded"], view(a)["answers"]) == (False, True, None), "项目先不做 → 不能用"
     sync(surfaced=("img_layout", "img_scene"))
@@ -416,7 +436,9 @@ def part_b() -> None:
     res = go()
     assert res["ended"] == "done" and res["candidates"] == 8, res
     assert res["status"] == {"answered": 4, "not_a_cover": 1, "first_is_video": 1, "download_failed": 1, "no_answer": 1}, res["status"]
-    assert res["partial_void"] == {"no_text_but_transcribed:transcribed_text": 1, "text_but_not_transcribed:empty_text": 1} \
+    # fi-v0.3: CONTRA 「字是哪一种」答的是「结果或结论」, 第四条 (text_kind_without_text) 也中 (作废的题、原因和第一条一样)
+    assert res["partial_void"] == {"no_text_but_transcribed:transcribed_text": 1, "text_but_not_transcribed:empty_text": 1,
+                                   "text_kind_without_text": 1} \
         and res["no_answer_why"] == {"round:no_text_but_transcribed:said_none_in_words": 1}, res
     assert downloads[0] == tok("DENY"), "夹具: 被拒的那一篇要排第一"
     tries = lambda: sql(f"SELECT attempts || ',' || tries || ',' || (next_try_at IS NOT NULL) FROM truth_vault.note_first_image "  # noqa: E731
@@ -425,7 +447,10 @@ def part_b() -> None:
     assert len(asks) == 7 + 7 + 7 + 7 + 7 + 1 and tok("old") not in downloads and tok("x") not in downloads and tok("video") not in downloads
     v = view(ids["card"])
     assert v["usable"] is True and v["model"] == P.cheap_model() and set(v["answers"]) == set(P.surfaced_questions(bank)), v
-    assert v["answers"]["img_text_has_number"] == "有" and "img_main_text" not in v["answers"]
+    # fi-v0.3: img_text_has_number 是 reworded_unverified, 不往外给 —— 视图里没有这个键; 库里那一行照存, 去 note_feature_answers 读
+    assert "img_text_has_number" not in v["answers"] and "img_text_kind" not in v["answers"] and "img_main_text" not in v["answers"], v
+    assert sql("SELECT answer FROM truth_vault.note_feature_answers "
+               f"WHERE subject_id = '{ids['card']}' AND run_tag = 'img-primary' AND question_id = 'img_text_has_number';") == "有"
     assert (view(ids["multi"])["usable"], view(ids["multi"])["cover_unconfirmed"], view(ids["multi"])["answers"]) == (False, True, None)
     assert (view(ids["notcover"])["status"], view(ids["notcover"])["answers"]) == ("not_a_cover", None)
     assert view(ids["video"])["status"] == "first_is_video" and view(ids["video"])["model"] is None
@@ -441,13 +466,16 @@ def part_b() -> None:
     assert sql(f"SELECT count(*) FROM truth_vault.note_feature_answers WHERE subject_id = '{ids['contra']}' AND run_tag = 'img-primary';") == "13"
     v = view(ids["contra"])
     assert (v["status"], v["usable"]) == ("answered", True), v
-    assert set(v["answers"]) == set(P.surfaced_questions(bank)) - {"img_text_kind", "img_text_has_number"} and len(v["answers"]) == 5, \
-        f"没有键 = 这道题没答成; 别的往外给的题照有: {v['answers']}"
+    # fi-v0.3: img_text_kind / img_text_has_number 本来就不往外给, 这一篇往外给的五道全有。「作废了的往外给的题从视图里掉出去」
+    #   这一条现在由下面纯文字卡片那一篇 (TCARD) 的 img_layout 来查; 这里只钉住视图里的键正好是往外给的那几道
+    surfaced = set(P.surfaced_questions(bank))
+    assert not {"img_text_kind", "img_text_has_number"} & surfaced, f"这两道不往外给 (fi-v0.3 reworded_unverified): {sorted(surfaced)}"
+    assert set(v["answers"]) == surfaced and len(v["answers"]) == 5, f"往外给的题照有: {v['answers']}"
     assert sql(f"SELECT next_try_at IS NULL FROM truth_vault.note_first_image WHERE note_id = '{ids['contra']}';") == "t", "定了, 不重试"
     # 说了有字、大字是空的、版式是纯文字卡片 (第二条): 版式也作废 —— 纯文字卡片说的就是有字, 留着它等于信了一边
     v = view(ids["tcard"])
-    assert (v["status"], v["usable"]) == ("answered", True) and set(v["answers"]) == set(P.surfaced_questions(bank)) - {
-        "img_text_kind", "img_text_has_number", "img_layout"}, v
+    assert "img_layout" in surfaced and (v["status"], v["usable"]) == ("answered", True) \
+        and set(v["answers"]) == surfaced - {"img_layout"}, f"作废了的往外给的题 (img_layout) 从视图里掉出去, 别的照有: {v}"
     assert sql("SELECT invalid_reason FROM truth_vault.note_feature_answers "
                f"WHERE subject_id = '{ids['tcard']}' AND run_tag = 'img-primary' AND question_id = 'img_layout';") \
         == "inconsistent:text_but_not_transcribed"

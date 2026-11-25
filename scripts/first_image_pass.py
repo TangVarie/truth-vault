@@ -2,7 +2,7 @@
 """first_image_pass.py —— 每晚的首图步骤 (I-29, D-158, 2026-11-16; 读法: docs/34-first-image-pass.md)。
 
 owner 11-16 同意的小的那一版:
-  1. 只用便宜档模型 (first_image.TIERS["cheap"]); 题库 fi-v0.2 (没有 img_colour; 五道「过, 但要单独问」的题一次只问一道)
+  1. 只用便宜档模型 (first_image.TIERS["cheap"]); 题库 fi-v0.3 (D-162 从 fi-v0.2 换过来; 没有 img_colour; 四道题各自单独问一次)
   2. RIO / TXQ / WTG 先不做 (题库文件的 excluded_projects)
   3. 模型说首图不是封面的帖: 后面的题不问, 不存能用的特征, 不上经验卡
   4. 多图的帖照样答, 但带 cover_unconfirmed, 读的那一面不给出它的答案, 直到有人按表确认「第一个附件就是封面」
@@ -35,7 +35,7 @@ owner 11-16 同意的小的那一版:
   「假如放宽某一条读法会多读出几个」另数一行 (would_read), 那只是给下一步做决定用的数, 不是认下来的答案。
 认什么 (D-160, docs/34 §11): first_image.parse_answers 一个字没动。在它判了 out_of_vocab 的选择题上多认一种: 答案和提示词里
   那个选项的整行【一字不差】(first_image.accept_option_lines; 回包还得是一整个模板 JSON、前后没有别的字、没撞上限)。
-  别的读法一条都没放宽。自相矛盾的自检: fi-v0.2 的规则写了 void, 只把有关的那几道题记无效, 别的照存; 这一篇算答成了。
+  别的读法一条都没放宽。自相矛盾的自检: fi-v0.2 起规则写了 void, 只把有关的那几道题记无效, 别的照存; 这一篇算答成了。
   只有一种照 D-160 之前整轮作废、按日程重问: 说了「没有字」, 抄出来的又是一句「没有」的话 (said_none_in_words) ——
   两次调用说的是一回事, 不是真的对不上, 不该让这一篇定下来、字那几道题再也不问。
 
@@ -67,17 +67,17 @@ sys.path.insert(0, str(HERE.parent))
 import first_image as FI  # noqa: E402
 import model_prices as MP  # noqa: E402
 
-# fi-v0.3 (prompts/first_image_questions_v0_3.yaml) 备好了、还没换上 (D-162, docs/34 §13): 换不换看 no_text_void 攒的证据。
-# 换是另一个 PR: 这两行一起改 (只改一行, 题库检查不过, 首图步骤打一行「题库不合法」就停、不花钱), 再加上守卫里的钉子。
-BANK_PATH = HERE.parent / "prompts" / "first_image_questions_v0_2.yaml"
-BANK_VERSION = "fi-v0.2"
+# fi-v0.3 换上了 (D-162, docs/34 §13; 原来是 fi-v0.2, 那份文件原样留着)。这两行一起改: 只改一行, 题库检查不过,
+# 首图步骤打一行「题库不合法」就停、不花钱。守卫: check_first_image_pass.py 第 10 节。
+BANK_PATH = HERE.parent / "prompts" / "first_image_questions_v0_3.yaml"
+BANK_VERSION = "fi-v0.3"
 RUN_TAG = "img-primary"
 CODE_EXTRACTOR = "code:fi"
 FIRST_GROUP = "A_kind"                       # 先问这一组; img_kind 不是「封面」后面就不问
 NEW_SINCE = "2026-11-16 00:00:00"            # 「新帖」先要 notes.ingested_at (第一次入库, UTC) 不早于这一刻; 老帖不回头补 (D-157)
 SURFACE_TRIALS = ("pass", "pass_ask_alone")  # 往外给的题只能是试跑里两轮对得上的
 # reworded_unverified (fi-v0.3, D-162): 试跑之后改了问法 (或者它靠的那道题改了问法), 试跑的结论不再作数、还没有新的核对。
-# 它不在 SURFACE_TRIALS 里: 这样的题照样问、照样存, 不往外给。fi-v0.2 里没有一道题用它。
+# 它不在 SURFACE_TRIALS 里: 这样的题照样问、照样存, 不往外给。fi-v0.3 里有四道用它 (fi-v0.2 里没有)。
 TRIAL_VERDICTS = ("pass", "pass_ask_alone", "too_few", "kappa_undefined", "reworded_unverified")
 
 # ── 钱: 写死的上限 (命令行只能调低) ──
@@ -191,7 +191,7 @@ class PassBudget(FI.Budget):
 
 
 # ════════════════════════════════════════════════════════════════════
-# 题库 fi-v0.2
+# 题库 (fi-v0.2 起; 现在是 fi-v0.3)
 # ════════════════════════════════════════════════════════════════════
 
 def load_bank(path: Path | str = BANK_PATH) -> dict:
@@ -208,12 +208,12 @@ def surfaced_questions(bank: dict) -> list[str]:
 
 
 def validate_bank(bank: dict) -> list[str]:
-    """fi-v0.1 的结构校验 (一组 ≤ 4 题等) 再加 fi-v0.2 自己的几条。空 = 合法。"""
+    """fi-v0.1 的结构校验 (一组 ≤ 4 题等) 再加每晚题库 (fi-v0.2 起) 自己的几条。空 = 合法。"""
     errs = list(FI.validate_bank(bank, BANK_VERSION))
     idx = FI.question_index(bank)
     groups = bank.get("call_groups") or {}
     if "img_colour" in idx:
-        errs.append("fi-v0.2 里不该有 img_colour (试跑没过线)")
+        errs.append("每晚的题库里不该有 img_colour (试跑没过线)")
     if bank.get("status") == "validated":
         errs.append("status 不能写 validated: 没有人对着图核过")
     if not groups or next(iter(groups)) != FIRST_GROUP or "img_kind" not in (groups.get(FIRST_GROUP) or []):

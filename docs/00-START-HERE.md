@@ -333,7 +333,7 @@ flowchart TD
 | **`28-content-feature-layer`** | 内容特征层(D-065 拍板 D-065 续, **P1 已实现 D-070**): 20 道闭集原子题进事实层, 过三道闸(测得准/有区分度/对新笔记成立)才进 L2/经验卡/写作台; 问题库 `prompts/feature_questions_v0_1.yaml`; 迁移 `notes_v1_13`, 抽取 `annotate_feature_pass.py`, worker `/annotate-features`; 下一步闸一 |
 | `32-desk-quality` | 写作台出稿质量(第二批设计, 10-20): 版式由代码拼 / 能数能比的规则由代码查 / 简报带最近稿子的结构分布 / 每周一的用上率灯 `check_desk_use_rate.py`; 规则编成 Jev 题等 owner 拍板数据政策, 分段判不做 |
 | `33-first-image-trial` | 首图试跑(I-29, D-157, 11-16): 手动点的 workflow、默认干跑、token 硬上限、不写库、报告只有计数; 怎么跑、花多少、报告怎么读; 第 7 节: 爆帖的封面现在付的钱里拿不到(只读查清) |
-| `34-first-image-pass` | 每晚的首图步骤(I-29, D-158, 11-16): 试跑的结果、owner 同意的四条(只用便宜档 / RIO·TXQ·WTG 先不做 / 不是封面的跳过 / 多图的等人确认)、题库 fi-v0.2、每晚约 1 元的硬上限、要跑的一份 SQL(v1.28, 它就是开关)、给写作台那一步的读法契约(`v_first_image_features`); 答得对不对没有人对着图核过 |
+| `34-first-image-pass` | 每晚的首图步骤(I-29, D-158, 11-16): 试跑的结果、owner 同意的四条(只用便宜档 / RIO·TXQ·WTG 先不做 / 不是封面的跳过 / 多图的等人确认)、题库 fi-v0.2(11-25 晚起每晚换成 fi-v0.3, 见第 13 节)、每晚约 1 元的硬上限、要跑的一份 SQL(v1.28, 它就是开关)、给写作台那一步的读法契约(`v_first_image_features`); 答得对不对没有人对着图核过 |
 | `archive/17` `archive/18` `archive/20` `archive/21` `archive/22` `archive/25` `archive/26` | **已归档**:带日期的交接快照与一次全库审计。**只作历史,不要照着做决定** —— 见 `docs/archive/README.md` |
 | `99-rejected-ideas` | 否决过的想法(别重复提) |
 

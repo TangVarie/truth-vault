@@ -2,8 +2,9 @@
 """每晚首图步骤的守卫 (D-158, docs/34-first-image-pass.md)。全是合成数据; 不连库、不联网、不调模型、不碰飞书。
 库那一半 (迁移、三个函数、两张视图) 在 ci.yml 的 sql job: scripts/check_first_image_pg.py (真 Postgres)。
 
-  §1  题库 fi-v0.2: 没有 img_colour; 13 题 (11 道模型题 + 2 道代码题); 七个调用组, 先问 A_kind; 四道单独问的题各占一组;
-      往外给的题只能是试跑里过线的闭集题; status 不许写 validated; fi-v0.1 那份文件一个字没动
+  §1  题库 fi-v0.3 (D-162 换上): 没有 img_colour; 13 题 (11 道模型题 + 2 道代码题); 七个调用组, 先问 A_kind; 四道单独问的题各占一组;
+      往外给的题只能是试跑里过线的闭集题 (五道; 改了问法的两道和两道代码题是 reworded_unverified, 不往外给);
+      status 不许写 validated; fi-v0.1 那份文件一个字没动, 和它比只有改了问法的两道问句、版本不一样
   §2  钱: 每晚 ≤ 约 1 元、一次性 ≤ 约 2 元 (按价格表); 上限只能调低; 涨价上限跟着降、降价抬不过写死的数;
       只许便宜档 —— TIERS["cheap"] 被指到贵的模型上、或有人改了 Pass 里的模型名, 一个请求都不发; 没有换模型的参数;
       一次预留对一个真发出去的请求: default_ask 只试一次、SDK 不重试、只走主中转站 (配了备用站又没定成 primary → 一个请求都不发)
@@ -32,20 +33,22 @@
   §9  D-160 的两处改动 (docs/34 §11):
       ① 整行照抄: 只认和提示词里那一行一字不差的 (两头的空白、提示词自己印的那个「- 」之外, 多一个字少一个字换一个字都不认);
         回包得是一整个模板 JSON、前后没有别的字 (至多包在一个 ``` 围栏里)、没撞上限、没有写了两遍的键和题号;
-        没有解释的选项什么都没多认; 评审核实过的 21 种一种都没多认; 两份题库的提示词一个字节没变 (sha256 钉住)
-      ② 自相矛盾: fi-v0.2 的规则写了 void, 只作废有关的题 —— 这一篇答成了、13 行、有关的题是空的而且带原因、
+        没有解释的选项什么都没多认; 评审核实过的 21 种一种都没多认; 三份题库的提示词一个字节没变 (sha256 钉住)
+      ② 自相矛盾: fi-v0.2 起规则写了 void (fi-v0.3 多第四条), 只作废有关的题 —— 这一篇答成了、13 行、有关的题是空的而且带原因、
         靠那句大字算的两道代码题跟着无效、别的题照存、不重问; 两条规则都中取并集; img_kind 不是「封面」的照旧不是封面;
         规则中了的帖, 留下的答案里没有一个在说图上有没有字 (守卫自己的单子 TEXT_CLAIMS: 字数、大字、字的种类、两道代码题、
         版式是「纯文字卡片」), 不只是不再中题库里的规则; 说了没有字、抄出来的是一句「没有」的话 (said_none_in_words) 不是
-        真的对不上, 照 D-160 之前整轮作废、按日程重问; fi-v0.1 (没写 void) 照旧整轮作废; 没有矛盾的轮次 assemble 的结果和原来一样
-  §10 fi-v0.3 备好了、没换上 (D-162, docs/34 §13): BANK_PATH / BANK_VERSION 还是 fi-v0.2, 注释之外没有一行代码碰 v0.3;
-      v0.1、v0.2 两份文件的 sha256 钉住; v0.3 只有把 BANK_VERSION 临时改成 fi-v0.3 才过题库检查 (只换文件不换版本 → 不收);
+        真的对不上, 照 D-160 之前整轮作废、按日程重问; fi-v0.1 (没写 void) 照旧整轮作废 (只中第四条的轮次 fi-v0.1 没有这一条, 照留);
+        没有矛盾的轮次 assemble 的结果和原来一样
+  §10 fi-v0.3 换上了 (D-162, docs/34 §13): BANK_PATH / BANK_VERSION 是 fi-v0.3, 注释和 docstring (按 ast 认) 之外碰 v0.3 的
+      只有那两行、没有一行再碰 v0.2 (写在别的三引号字符串里的也算); v0.1、v0.2、v0.3 三份文件整个的 sha256 钉住;
+      v0.3 过题库检查、v0.2 的文件不收, 两个常量只改回一个 → 不收;
       和 v0.2 比只差白名单里的几处 (读出来比一遍、不是注释的行再比一遍): bank_version、两道改了问法的题 (问句、version +1、
       trial)、两道从 img_main_text 算的代码题的 trial、surfaced_questions 拿掉这两道、规则末尾多第四条;
       加的那一句在两道题里逐字节相同、不带「屏幕」; 第一组 (A_kind) 和没改的另外四组的提示词和 v0.2 逐字节相同, v0.3 整套提示词钉住;
       reworded_unverified 在 TRIAL_VERDICTS 里、不在 SURFACE_TRIALS 里 (改了问法的题不往外给);
       第四条规则走 assemble: 没有字 + 有字的四个选项 → 作废字那三道题、代码题算不成, 没有字 + 没有字 / 字数没读出来 / 说了有字 → 不中;
-      再用 v0.3 整趟走一遍 (假库 / 假下载 / 假模型)
+      用每晚的题库 (v0.3) 整趟走一遍 (假库 / 假下载 / 假模型)
 
 反证 (改坏之后必须变红):
   ① 题库里把 img_colour 加回来 / 把单独问的题并回组里 / surfaced_questions 里放一道没验证的题        → §1
@@ -72,7 +75,7 @@
   ㉒ build_prompt 的选项那一行改一个字                                                                              → §9 ① (提示词的 sha256)
   ㉓ 第二条规则 (说了有字、没抄出来) 的 void 里拿掉 img_layout (纯文字卡片留下来, 信了「有字」那一边)                   → §9 ② / §8 ③
   ㉔ said_none_in_words 也走「只作废有关的题」(这一篇定下来, 字那几道题再也不问)                                       → §8 ③ / §9 ②
-  ㉕ 改了 v0.2 的文件 / BANK_PATH 指到 v0.3 / 代码里读 v0.3                                                           → §10 ①
+  ㉕ 改了 v0.1 / v0.2 / v0.3 的文件 / BANK_PATH 指回 v0.2 / 两个常量只改回一个 / 代码里别处读 v0.2 或 v0.3 (含不是 docstring 的三引号字符串) → §10 ① ③
   ㉖ v0.3 里白名单之外动一处 (第一组的问句、选项的解释、调用组的顺序、名单、前三条规则) / 那一句带上「屏幕」/ 两道题里写得不一样  → §10 ④ ⑤ ⑥
   ㉗ 把 reworded_unverified 放进 SURFACE_TRIALS / 把改了问法的题加回 surfaced_questions                                  → §10 ② ③
   ㉘ 第四条规则拿掉 / 它的 void 少了 img_main_text (空的大字算出「没有字」, 信了一边)                                    → §10 ④ ⑦
@@ -81,6 +84,7 @@
 """
 from __future__ import annotations
 
+import ast
 import base64
 import contextlib
 import copy
@@ -235,27 +239,36 @@ def check_bank() -> None:
     idx = FI.question_index(BANK)
     assert "img_colour" not in idx and len(BANK["questions"]) == 13
     assert len(FI.model_question_ids(BANK)) == 11 and FI.code_question_ids(BANK) == ["img_text_matches_title", "img_text_has_number"]
-    assert BANK["bank_version"] == "fi-v0.2" and BANK["status"] == "draft" and BANK["run_tag_prefix"] == "img-"
+    assert BANK["bank_version"] == "fi-v0.3" and BANK["status"] == "draft" and BANK["run_tag_prefix"] == "img-"
     assert BANK["cover_confirmed_projects"] == [] and BANK["excluded_projects"] == ["RIO_phase1", "TXQ_phase1", "WTG_phase1"]
     for p in BANK["excluded_projects"]:
         assert (ROOT / "mappings" / f"{p}.yaml").is_file(), f"{p} 不是 mappings/ 里的项目名"
     units = P.call_units(BANK)
     assert [len(u) for u in units] == [2, 2, 3, 1, 1, 1, 1] and units[0] == ["img_kind", "img_text_amount"]
     assert BANK["ask_alone"] == ["img_main_text", "img_text_kind", "img_decoration", "img_brand_readable"]
-    assert sorted(q["id"] for q in BANK["questions"] if q["trial"] == "pass_ask_alone") == sorted(
-        BANK["ask_alone"] + ["img_text_has_number"]), "试跑里「要单独问」的五道 (第五道是代码从 img_main_text 算的)"
+    # fi-v0.3 (D-162): 试跑里「要单独问」的五道里, 改了问法的两道和代码从 img_main_text 算的那一道换成 reworded_unverified,
+    # 剩下单独问的两道; 另一道代码题 (img_text_matches_title, 原来 kappa_undefined) 也是 reworded_unverified
+    assert sorted(q["id"] for q in BANK["questions"] if q["trial"] == "pass_ask_alone") == ["img_brand_readable", "img_decoration"]
+    assert sorted(q["id"] for q in BANK["questions"] if q["trial"] == UNVERIFIED) == sorted(REWORDED + FROM_MAIN_TEXT)
+    assert set(REWORDED) | {"img_brand_readable", "img_decoration"} == set(BANK["ask_alone"]), "单独问的四道没变"
     assert sorted(q["id"] for q in BANK["questions"] if q["trial"] == "pass") == ["img_layout", "img_person", "img_product"]
     assert sorted(P.surfaced_questions(BANK)) == sorted(
-        q["id"] for q in BANK["questions"] if q["trial"] in P.SURFACE_TRIALS and q["type"] != "text"), "往外给的就是过线的七道闭集题"
+        q["id"] for q in BANK["questions"] if q["trial"] in P.SURFACE_TRIALS and q["type"] != "text"), "往外给的就是过线的五道闭集题"
+    assert len(P.surfaced_questions(BANK)) == 5
     assert "img_main_text" not in P.surfaced_questions(BANK) and "img_kind" not in P.surfaced_questions(BANK)
+    assert not set(REWORDED + FROM_MAIN_TEXT) & set(P.surfaced_questions(BANK)), "试跑结论不再作数的题不往外给"
 
-    # 和 fi-v0.1 比: 留下的题问法、选项、版本一个字没动
+    # 和 fi-v0.1 比: 留下的题问法、选项、版本一个字没动; 改了问法的两道 (D-162) 只差问句和版本 (+1), 选项、类型、字数上限没动
     old = FI.load_bank()
     assert FI.validate_bank(old) == [] and old["bank_version"] == "fi-v0.1" and len(old["questions"]) == 14
     oidx = FI.question_index(old)
     for qid, q in idx.items():
         for key in ("ask", "options", "type", "version", "max_chars"):
+            if qid in REWORDED and key in ("ask", "version"):
+                continue
             assert q.get(key) == oidx[qid].get(key), f"{qid}.{key} 和 fi-v0.1 不一样"
+    for qid in REWORDED:
+        assert idx[qid]["ask"] == V03_ASK[qid] != oidx[qid]["ask"] and idx[qid]["version"] == oidx[qid]["version"] + 1, qid
     raw01 = (ROOT / "prompts" / "first_image_questions_v0_1.yaml").read_bytes()
     assert hashlib.sha256(raw01).hexdigest() == "34959ef29036d59f5e7b20f337f345785efd39c70b7eb6229169ceba88380786", "fi-v0.1 那份文件不许改"
 
@@ -282,7 +295,7 @@ def check_bank() -> None:
         prompt = FI.build_prompt(BANK, u)
         for word in ("爆", "趴", "点赞", "tier", TITLE_CANARY):
             assert word not in prompt, f"提示词里出现了 {word!r}"
-    print("  §1 题库 fi-v0.2: 13 题 / 七个调用组 / 四道单独问 / 没有 img_colour / 往外给七道; fi-v0.1 没动 ✓")
+    print("  §1 题库 fi-v0.3: 13 题 / 七个调用组 / 四道单独问 / 没有 img_colour / 往外给五道; fi-v0.1 没动 ✓")
 
 
 # ── §2 ────────────────────────────────────────────────────────────────────────
@@ -489,7 +502,7 @@ def check_pass() -> None:
     assert s["file_sha"] == hashlib.sha256(f"{TOKEN_CANARY}ok1".encode()).hexdigest() and "file_token" not in json.dumps(s)
     assert len(calls["ok1"]) == 7 and calls["ok1"][0] == ["img_kind", "img_text_amount"], "是封面: 七次调用, 先问 A_kind"
     assert sorted(len(q) for q in calls["ok1"]) == [1, 1, 1, 1, 2, 2, 3]
-    assert len(rows) == 13 and {r["run_tag"] for r in rows} == {"img-primary"} and {r["bank_version"] for r in rows} == {"fi-v0.2"}
+    assert len(rows) == 13 and {r["run_tag"] for r in rows} == {"img-primary"} and {r["bank_version"] for r in rows} == {"fi-v0.3"}
     got = {r["question_id"]: r for r in rows}
     assert got["img_kind"]["answer"] == "封面" and got["img_layout"]["answer"] == "一张照片"
     assert got["img_text_has_number"]["answer"] == "有" and got["img_text_has_number"]["extractor"] == "code:fi"
@@ -514,7 +527,8 @@ def check_pass() -> None:
     for t in ("GONE1", "NET1", "HUGE1", "BROKEN1"):
         assert t not in calls and by[t][1] == [], f"{t}: 没拿到图不该问模型、不该写答案"
     assert (by["NOKIND1"][0]["status"], by["NOKIND1"][0]["outcome"]) == ("no_answer", "counted") and len(calls["NOKIND1"]) == 1
-    # 自相矛盾 (说没有字、却抄出了字): 只作废有关的题 (D-160), 这一篇答成了, 13 行照写; 细的在 §9
+    # 自相矛盾 (说没有字、却抄出了字): 只作废有关的题 (D-160), 这一篇答成了, 13 行照写; 细的在 §9。
+    # fi-v0.3: 「字是哪一种」答的是「结果或结论」, 第四条 (text_kind_without_text) 也中; 作废的题一样, 原因记排在前面的第一条
     s, rows = by["CONTRA1"]
     con = {r["question_id"]: (r["answer"], r["invalid_reason"]) for r in rows}
     assert (s["status"], s["outcome"]) == ("answered", "final") and len(rows) == 13 and len(calls["CONTRA1"]) == 7
@@ -530,7 +544,7 @@ def check_pass() -> None:
     assert by["heic1"][0]["file_kind"] == "empty_type" and by["heic1"][0]["status"] == "answered"
 
     assert res["no_answer_why"] == {"first_call:oov_other": 1}, res["no_answer_why"]
-    assert res["partial_void"] == {"no_text_but_transcribed:transcribed_text": 1}, res["partial_void"]
+    assert res["partial_void"] == {"no_text_but_transcribed:transcribed_text": 1, "text_kind_without_text": 1}, res["partial_void"]
     # 11-18 (I-38): 说了没有字的封面只有 CONTRA1 一篇, 它抄出了字: 不是品牌名、和标题不像、13 个字以上 (细的在 §9)
     assert res["no_text_void"] == {"covers_said_no_text": 1, "fired": 1, "brand:no": 1, "title:different": 1, "len:13_plus": 1,
                                    "kind:结果或结论": 1, "amount_by:value": 1, "script:cjk": 1,
@@ -551,7 +565,7 @@ def check_pass() -> None:
         assert TITLE_CANARY not in prompt and NOTE_CANARY not in prompt, "标题和 note_id 不进提示词"
     _no_leak("走一遍", out, json.dumps(res, ensure_ascii=False, default=str))
     assert "按假设价估算" in out and "answered=5" in out and "not_a_cover=1" in out
-    assert "自相矛盾只作废有关的题（规则:细项=帖数）：no_text_but_transcribed:transcribed_text=1" in out
+    assert "自相矛盾只作废有关的题（规则:细项=帖数）：no_text_but_transcribed:transcribed_text=1，text_kind_without_text=1" in out
 
     # mode=cards: 只问库要经验卡的帖, 上限是一次性的那一组
     fk, store = Fakes(), FakeStore([_cand("c1")])
@@ -838,12 +852,12 @@ def check_wiring() -> None:
     assert st.candidates(bank2, True, 7) == [] and st.candidates(bank2, False, 80) == []
     assert st.write({"note_id": "n"}, [{"q": 1}]) == "final"
     assert sb.calls == [
-        ("truth_vault", "sync_first_image_bank", {"p_bank_version": "fi-v0.2", "p_bank_sha256": BANK["_sha256"],
+        ("truth_vault", "sync_first_image_bank", {"p_bank_version": "fi-v0.3", "p_bank_sha256": BANK["_sha256"],
                                                   "p_confirmed": ["OKMAN_phase1"], "p_excluded": BANK["excluded_projects"],
                                                   "p_surfaced": P.surfaced_questions(BANK)}),
-        ("truth_vault", "first_image_candidates", {"p_bank_version": "fi-v0.2", "p_new_since": "2026-11-16 00:00:00",
+        ("truth_vault", "first_image_candidates", {"p_bank_version": "fi-v0.3", "p_new_since": "2026-11-16 00:00:00",
                                                    "p_excluded": BANK["excluded_projects"], "p_cards_only": True, "p_limit": 7}),
-        ("truth_vault", "first_image_candidates", {"p_bank_version": "fi-v0.2", "p_new_since": "2026-11-16 00:00:00",
+        ("truth_vault", "first_image_candidates", {"p_bank_version": "fi-v0.3", "p_new_since": "2026-11-16 00:00:00",
                                                    "p_excluded": BANK["excluded_projects"], "p_cards_only": False, "p_limit": 80}),
         ("truth_vault", "write_first_image_result", {"p_state": {"note_id": "n"}, "p_rows": [{"q": 1}]})], sb.calls
 
@@ -1458,7 +1472,7 @@ def check_reply_reading() -> None:
 PROMPT_SHA256 = {   # 每个调用组的提示词用 \x00 连起来的 sha256 (在 D-160 改动之前的 main 上算的): 提示词一个字节没变
     "fi-v0.1": "4ef2073f0b7c58908165d58caa7ac73789b330b7c04843e8298eeb98425aabdb",
     "fi-v0.2": "40bc2364812bd88eb2188082426a30e02d43313df9818f9275435592d7e2da6f",
-    "fi-v0.3": "fb4b0c6baeaab72d6287ad8ed97ea25aa9e5d9dbb4cbaa8c5d0416b43338ee49"}   # 备好了、没换上 (D-162, §10)
+    "fi-v0.3": "fb4b0c6baeaab72d6287ad8ed97ea25aa9e5d9dbb4cbaa8c5d0416b43338ee49"}   # D-162 换上了 (§10)
 LINE_OPTIONS = {"img_kind": 3, "img_text_amount": 4, "img_text_kind": 5, "img_layout": 5, "img_finish": 3, "img_person": 3, "img_scene": 3}
 VOID_TEXT = ["img_text_amount", "img_main_text", "img_text_kind"]
 # 守卫自己的一张单子: 这几个答案在说「图上有没有后期加的字」(None = 答什么都在说; 一组值 = 只有这几个值在说)。
@@ -1584,9 +1598,9 @@ def check_line_and_void() -> None:
     forms = {q: _line_forms(BANK, q) for q in choice}
     assert {q: len(f) // 2 for q, f in forms.items() if f} == LINE_OPTIONS and sum(len(f) for f in forms.values()) == 52, \
         "认的整行: 26 个有解释的选项 × 两种写法"
-    # 提示词一个字节没变; 认的那一行就是提示词里印的那一行 (带「- 」的那种逐字节在提示词里)
+    # 提示词一个字节没变 (fi-v0.1、换下来的 fi-v0.2、每晚的 fi-v0.3); 认的那一行就是提示词里印的那一行 (带「- 」的那种逐字节在提示词里)
     old_bank = FI.load_bank()
-    for bank in (old_bank, BANK):
+    for bank in (old_bank, P.load_bank(V02_PATH), BANK):
         joined = "\x00".join(FI.build_prompt(bank, u) for u in P.call_units(bank))
         assert hashlib.sha256(joined.encode("utf-8")).hexdigest() == PROMPT_SHA256[bank["bank_version"]], \
             f"{bank['bank_version']} 的提示词变了 (整行照抄认的是老提示词里的那一行; 改提示词要换题库版本)"
@@ -1779,8 +1793,8 @@ def check_line_and_void() -> None:
     bad(lambda b: rule_of(b, "no_text_but_transcribed")["void"].append("img_kind"), "img_kind 不能进")
     bad(lambda b: rule_of(b, "no_text_but_transcribed")["if"].__setitem__("img_kind", ["封面"]), "img_kind 不能进")
     bad(lambda b: rule_of(b, "text_card_without_text")["then_not"].__setitem__("img_kind", ["看不清或空白"]), "img_kind 不能进")
-    assert [r["void"] for r in BANK["consistency"]] == [VOID_TEXT, ["img_layout"] + VOID_TEXT, ["img_layout"] + VOID_TEXT], \
-        "作废哪几道题钉住 (第二条连版式也作废: 纯文字卡片说的就是有字)"
+    assert [r["void"] for r in BANK["consistency"]] == [VOID_TEXT, ["img_layout"] + VOID_TEXT, ["img_layout"] + VOID_TEXT, VOID_TEXT], \
+        "作废哪几道题钉住 (第二条连版式也作废: 纯文字卡片说的就是有字; 第四条 (fi-v0.3) 和第一条一样只作废字那三道)"
 
     # 走一遍 ①: 第一次调用抄了整行
     class Lines(Fakes):
@@ -1855,7 +1869,7 @@ def check_line_and_void() -> None:
     no_void = copy.deepcopy(BANK)
     for r in no_void["consistency"]:
         r.pop("void")
-    n_same = n_part = n_card = 0
+    n_same = n_part = n_card = n_r4_only = 0
     seen_rules: set = set()
     assert "纯文字卡片" in FI.option_values(idx["img_layout"]) and set(TEXT_CLAIMS) <= set(idx), "守卫的单子对得上题库"
     for kind in kinds:
@@ -1871,10 +1885,19 @@ def check_line_and_void() -> None:
                             old = _old_assemble(BANK, parsed, title)
                             assert parsed == before, "assemble 不改传进来的 parsed"
                             assert set(new) == {"answers", "invalid", "grey", "voided"}
-                            assert FI.assemble(no_void, parsed, title) == dict(old, voided=[]) == FI.assemble(old_bank, parsed, title), \
-                                "没写 void 的题库 (fi-v0.1 就是): 和原来一样, 整轮作废"
+                            assert FI.assemble(no_void, parsed, title) == dict(old, voided=[]), \
+                                "没写 void 的题库: 和原来一样, 整轮作废"
                             valid = {q: v for q, (v, why) in parsed.items() if why is None}
                             hit = [r for r in BANK["consistency"] if _violated(r, valid)]
+                            # fi-v0.1 没有第四条 (fi-v0.3 加的): 只中第四条的轮次, 去掉 void 的 v0.3 整轮作废、fi-v0.1 照留, 这种轮次除外
+                            # (fi-v0.1 自己照旧和老的 assemble 逐字相同); 别的轮次三方逐字相同
+                            v01 = FI.assemble(old_bank, parsed, title)
+                            if [r["name"] for r in hit] == [RULE4["name"]]:
+                                assert v01 == dict(_old_assemble(old_bank, parsed, title), voided=[]) and v01["answers"] != {} \
+                                    and old["answers"] == {}, "只中第四条: fi-v0.1 没有这一条, 照留; 去掉 void 的 v0.3 整轮作废"
+                                n_r4_only += 1
+                            else:
+                                assert v01 == dict(old, voided=[]), "没写 void 的题库 (fi-v0.1 就是): 和原来一样, 整轮作废"
                             assert new["voided"] == [r["name"] for r in hit]
                             assert not any(_violated(r, new["answers"]) for r in BANK["consistency"]), "留下来的答案里不许还有自相矛盾的一对"
                             if hit:
@@ -1906,6 +1929,7 @@ def check_line_and_void() -> None:
                             assert old["answers"] == {} and new["grey"] is False
     assert n_same > 1000 and n_part > 500 and seen_rules == {r["name"] for r in BANK["consistency"]}, (n_same, n_part, seen_rules)
     assert n_card >= 50, f"夹具: 只中第二条、版式是纯文字卡片的组合要走到 ({n_card})"
+    assert n_r4_only >= 50, f"夹具: 只中第四条 (fi-v0.3) 的组合要走到 ({n_r4_only})"
 
     # 一条写了 void、一条没写, 两条都中: 没写的那条说了算, 整轮作废 (这样的题库每晚的步骤不收, 这里只钉 assemble)
     mixed = copy.deepcopy(BANK)
@@ -1984,11 +2008,12 @@ def check_line_and_void() -> None:
     said = "round:no_text_but_transcribed:said_none_in_words"
     assert res["status"] == {"answered": 7, "not_a_cover": 1, "no_answer": 3} \
         and res["no_answer_why"] == {"first_call:oov_other": 1, said: 2}, res
+    # fi-v0.3: 「字是哪一种」都答「结果或结论」, 说了没有字的 NTBT1 / BOTH1 / CARDONLY1 第四条也中 (作废的题、原因都没变: 原因记排在前面的那条)
     assert res["partial_void"] == {"no_text_but_transcribed:transcribed_text": 2, "text_but_not_transcribed:empty_text": 2,
-                                   "text_card_without_text": 3}, res["partial_void"]
+                                   "text_card_without_text": 3, "text_kind_without_text": 3}, res["partial_void"]
     assert res["flags"] == {"usable": 7}, res["flags"]
     assert "自相矛盾只作废有关的题（规则:细项=帖数）：no_text_but_transcribed:transcribed_text=2，text_but_not_transcribed:empty_text=2，" \
-           "text_card_without_text=3" in out and said + "=2" in out
+           "text_card_without_text=3，text_kind_without_text=3" in out and said + "=2" in out
     # 11-18 (I-38): 答成的封面里说了没有字的 4 篇 (NTBT1 / BOTH1 / CARDONLY1 / CARDOOV1), 抄出了字的 2 篇 (NTBT1 / BOTH1);
     # 说了没有字、抄的是「没有」的两篇整轮作废、没答成, 不进分母
     assert res["no_text_void"] == {"covers_said_no_text": 4, "fired": 2, "brand:no": 2, "title:different": 2, "len:13_plus": 2,
@@ -2149,7 +2174,8 @@ def check_no_text_counts() -> None:
     parsed = FI.parse_answers(BANK, ["img_main_text"], json.dumps({"answers": [{"id": "img_main_text", "answer": long_text}]},
                                                                   ensure_ascii=False))
     assert parsed["img_main_text"] == (None, FI.INVALID_TEXT_LONG), parsed
-    full = {"img_kind": cover, "img_text_amount": ("没有字", None), "img_text_kind": ("只是名称", None), **parsed}
+    # (「字是哪一种」配「没有字」: 配「只是名称」的话 fi-v0.3 的第四条会中, 这里要看的是第一条)
+    full = {"img_kind": cover, "img_text_amount": ("没有字", None), "img_text_kind": ("没有字", None), **parsed}
     res = FI.assemble(BANK, full, "标题")
     assert res["voided"] == [], res
     p = NEW()
@@ -2177,13 +2203,16 @@ def check_no_text_counts() -> None:
 
 
 # ── §10 ───────────────────────────────────────────────────────────────────────
-# fi-v0.3 备好了、还没换上 (D-162, docs/34 §13)。每晚的步骤读的还是 fi-v0.2; 这一节只拿 v0.3 的文件做合成的检查。
+# fi-v0.3 换上了 (D-162, docs/34 §13; 11-18 备好, owner 11-22 同意之后换上)。每晚的步骤读 fi-v0.3; fi-v0.2 的文件原样留着 (库里还有它的行),
+# 这一节拿两份文件比, 钉住 v0.3 和 v0.2 只差白名单里的几处。
 V01_PATH = ROOT / "prompts" / "first_image_questions_v0_1.yaml"
 V02_PATH = ROOT / "prompts" / "first_image_questions_v0_2.yaml"
 V03_PATH = ROOT / "prompts" / "first_image_questions_v0_3.yaml"
-FILE_SHA256 = {   # 整个文件 (含注释) 的 sha256: v0.1 试跑用的、v0.2 现在每晚在用的, 一个字节都不许动
+FILE_SHA256 = {   # 整个文件 (含注释) 的 sha256, 一个字节都不许动: v0.1 试跑用的、v0.2 换上 v0.3 之前每晚用的 (库里还有它的行)、
+    #               v0.3 每晚在用的 (改名单、把题放回 surfaced_questions 也算改: 连这个钉子和 _v03_diff 的白名单一起改, 改动在守卫里看得见)
     V01_PATH.name: "34959ef29036d59f5e7b20f337f345785efd39c70b7eb6229169ceba88380786",
-    V02_PATH.name: "73385566e3d64456d59354f63e837949ba508431a37bd3bb0553d220fb069d2a"}
+    V02_PATH.name: "73385566e3d64456d59354f63e837949ba508431a37bd3bb0553d220fb069d2a",
+    V03_PATH.name: "e08f0fd3ca111a636317bbe20d3f05dc58fb0114cf44d68cfbf05928df1b0faa"}
 EXCLUSION = "只算加在图上的字，产品包装、招牌、商标上本来就有的字不算。"       # 两道改了问法的题后面加的同一句; 不带「屏幕」
 REWORDED = ("img_main_text", "img_text_kind")
 FROM_MAIN_TEXT = ("img_text_matches_title", "img_text_has_number")              # 代码从 img_main_text 算的两道
@@ -2206,6 +2235,25 @@ V03_LINES_ADDED = {"bank_version: fi-v0.3": 1, "  - name: text_kind_without_text
 
 def _code_lines(raw: str) -> list[str]:
     return [ln for ln in raw.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
+
+
+def _src_code_lines(text: str, *, python: bool) -> list[str]:
+    """① 用: 去掉注释和 docstring 之后的行。.py 用 ast 认真 docstring (模块 / 类 / 函数体的第一句、是字符串常量), 把它占的那几行
+    换成空行; 赋值、传参、return 里的三引号字符串不是 docstring, 照算代码。docstring 和代码挤在同一行的不去 (只会更严)。
+    .yml 没有 docstring, 只去整行的 # 注释。"""
+    lines = text.split("\n")
+    if python:
+        for node in ast.walk(ast.parse(text)):
+            if not (isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and node.body):
+                continue
+            d = node.body[0]
+            if not (isinstance(d, ast.Expr) and isinstance(d.value, ast.Constant) and isinstance(d.value.value, str)):
+                continue
+            head, tail = lines[d.lineno - 1].encode(), lines[d.end_lineno - 1].encode()      # col_offset 按 UTF-8 字节算
+            if head[:d.col_offset].strip() or tail[d.end_col_offset:].split(b"#")[0].strip():
+                continue
+            lines[d.lineno - 1:d.end_lineno] = [""] * (d.end_lineno - d.lineno + 1)
+    return [ln for ln in lines if not ln.lstrip().startswith("#")]
 
 
 def _v03_line_diff(raw02: str, raw03: str) -> list[str]:
@@ -2256,17 +2304,36 @@ def _v03_diff(old: dict, new: dict) -> list[str]:
     return errs
 
 
-def check_v03_prepared() -> None:
-    # ① 没换上: 每晚的步骤读的还是 fi-v0.2; 代码里没有一行 (注释之外) 碰 v0.3 的文件; workflow 不认识它
-    assert P.BANK_PATH == V02_PATH and P.BANK_VERSION == "fi-v0.2" and BANK["bank_version"] == "fi-v0.2", "fi-v0.3 只是备好了, 还没换上"
+def check_v03_switched() -> None:
+    # ① 换上了: 每晚的步骤读 fi-v0.3; 代码里 (注释和 docstring 之外) 碰 v0.3 的只有 BANK_PATH / BANK_VERSION 那两行,
+    #   没有一行再碰 v0.2; first_image.py 和 workflow 两个版本都不认识。docstring 按 ast 认 (_src_code_lines), 别的三引号字符串照算代码
+    assert P.BANK_PATH == V03_PATH and P.BANK_VERSION == "fi-v0.3" and BANK["bank_version"] == "fi-v0.3", "fi-v0.3 换上了"
+    switch = ['BANK_PATH = HERE.parent / "prompts" / "first_image_questions_v0_3.yaml"', 'BANK_VERSION = "fi-v0.3"']
     for src in (HERE / "first_image_pass.py", HERE / "first_image.py", *sorted((ROOT / ".github" / "workflows").glob("first-image*.yml"))):
-        code = [ln for ln in src.read_text(encoding="utf-8").splitlines() if not ln.lstrip().startswith("#")]
-        assert not any("v0_3" in ln or "fi-v0.3" in ln for ln in code), f"{src.name}: 注释之外不该有 v0.3"
-    # v0.1、v0.2 两份文件一个字节没动
-    for path in (V01_PATH, V02_PATH):
+        code = _src_code_lines(src.read_text(encoding="utf-8"), python=src.suffix == ".py")
+        assert [ln.strip() for ln in code if "v0_3" in ln or "fi-v0.3" in ln] == (switch if src.name == "first_image_pass.py" else []), \
+            f"{src.name}: 注释之外碰 v0.3 的只许是 first_image_pass.py 的那两行"
+        assert not any("v0_2" in ln or "fi-v0.2" in ln for ln in code), f"{src.name}: 注释之外不该再有 v0.2"
+    # 反证 (只在内存里的一段假源码上做, 不碰真文件): 赋值里的三引号字符串、不是第一句的字符串点了 v0.2 要抓到 (老写法
+    #   re.sub 掉所有三引号字符串, 这两种都漏); 模块 / 类 / 函数 / async 函数真 docstring 里提到的不算; docstring 和代码挤在同一行的照算代码
+    fake = ('"""模块 docstring: first_image_questions_v0_2.yaml 不算。"""\n'
+            'class K:\n    """类的: fi-v0.2 不算"""\n'
+            'async def g():\n    """async 函数的: fi-v0.2 不算"""\n'
+            'def f():\n    """函数的: first_image_questions_v0_2.yaml 不算"""\n'
+            '    path = """\nprompts/first_image_questions_v0_2.yaml\n"""\n'
+            '    """不是第一句, 不是 docstring: fi-v0.2"""\n'
+            '    return path\n')
+    v02_hits = lambda lines: [ln.strip() for ln in lines if "v0_2" in ln or "fi-v0.2" in ln]  # noqa: E731
+    assert v02_hits(_src_code_lines(fake, python=True)) == ["prompts/first_image_questions_v0_2.yaml",
+                                                           '"""不是第一句, 不是 docstring: fi-v0.2"""'], "反证没成立: 不是 docstring 的三引号字符串漏了"
+    assert v02_hits(re.sub(r'(?s)""".*?"""', "", fake).splitlines()) == [], "老写法 (去掉所有三引号字符串) 确实漏这两处: 反证有意义"
+    assert v02_hits(_src_code_lines(fake.split("    path =")[0], python=True)) == [], "真 docstring 里提到的不算"
+    assert v02_hits(_src_code_lines('def h(): """fi-v0.2"""; return 1\n', python=True)), "docstring 和代码挤在同一行: 照算代码"
+    # v0.1、v0.2、v0.3 三份文件一个字节没动 (v0.3 是每晚在用的那份)
+    for path in (V01_PATH, V02_PATH, V03_PATH):
         assert hashlib.sha256(path.read_bytes()).hexdigest() == FILE_SHA256[path.name], f"{path.name} 不许改"
     v02, v03 = P.load_bank(V02_PATH), P.load_bank(V03_PATH)
-    assert v02["_sha256"] == BANK["_sha256"] and v03["_sha256"] != v02["_sha256"]
+    assert v03["_sha256"] == BANK["_sha256"] and v03["_sha256"] != v02["_sha256"]
     raw02, raw03 = V02_PATH.read_text(encoding="utf-8"), V03_PATH.read_text(encoding="utf-8")
     # (④ 的两道比较先做: 下面 ③ 要按位置取第四条规则, 文件不对的话先在这里红, 话说得清楚)
     assert _v03_diff(v02, v03) == [], _v03_diff(v02, v03)
@@ -2276,30 +2343,31 @@ def check_v03_prepared() -> None:
     assert UNVERIFIED in P.TRIAL_VERDICTS and UNVERIFIED not in P.SURFACE_TRIALS and P.SURFACE_TRIALS == ("pass", "pass_ask_alone")
     assert all(q["trial"] != UNVERIFIED for q in v02["questions"])
 
-    # ③ 读得进、换了版本号才过题库检查: 只换 BANK_PATH 不换 BANK_VERSION → 不收 (首图步骤打一行「题库不合法」, 不花钱)
-    assert any("bank_version 要是 fi-v0.2" in e for e in P.validate_bank(v03)), P.validate_bank(v03)
+    # ③ 换了版本号的题库检查: v0.3 过、v0.2 的文件不收; 两个常量只改回一个 (BANK_VERSION 改回 fi-v0.2、文件还是 v0.3,
+    #   或者反过来) → 不收 (首图步骤打一行「题库不合法」, 不花钱)
+    assert P.validate_bank(v03) == [], P.validate_bank(v03)
+    assert any("bank_version 要是 fi-v0.3" in e for e in P.validate_bank(v02)), "换上之后 v0.2 的文件不收"
     real_version = P.BANK_VERSION
-    P.BANK_VERSION = "fi-v0.3"
+    P.BANK_VERSION = "fi-v0.2"
     try:
-        assert P.validate_bank(v03) == [], P.validate_bank(v03)
-        assert any("bank_version" in e for e in P.validate_bank(v02)), "换上之后 v0.2 的文件不收"
-
-        def bad(mut, needle):
-            b = copy.deepcopy(v03)
-            mut(b)
-            errs = P.validate_bank(b)
-            assert any(needle in e for e in errs), (needle, errs)
-        idx = lambda b: FI.question_index(b)  # noqa: E731
-        bad(lambda b: b["surfaced_questions"].append("img_text_kind"), "surfaced_questions")        # 没核过的不往外给
-        bad(lambda b: b["surfaced_questions"].append("img_text_has_number"), "surfaced_questions")
-        bad(lambda b: idx(b)["img_text_kind"].__setitem__("trial", "reworded"), "trial 只能是")
-        bad(lambda b: b["consistency"][3]["void"].remove("img_text_kind"), "规则里提到的题都要在 void 里")
-        bad(lambda b: b["consistency"][3].pop("void"), "要写 void")
-        bad(lambda b: b["consistency"][3]["then_not"].__setitem__("img_kind", ["封面"]), "img_kind 不能进自检规则")
-        bad(lambda b: b["consistency"][3]["then_not"].__setitem__("img_text_kinds", ["提问"]), "不认识的题号")
+        assert any("bank_version 要是 fi-v0.2" in e for e in P.validate_bank(v03)), "只把 BANK_VERSION 改回去: 不收"
     finally:
         P.BANK_VERSION = real_version
-    assert P.BANK_VERSION == "fi-v0.2"
+    assert P.BANK_VERSION == "fi-v0.3"
+
+    def bad(mut, needle):
+        b = copy.deepcopy(v03)
+        mut(b)
+        errs = P.validate_bank(b)
+        assert any(needle in e for e in errs), (needle, errs)
+    idx = lambda b: FI.question_index(b)  # noqa: E731
+    bad(lambda b: b["surfaced_questions"].append("img_text_kind"), "surfaced_questions")        # 没核过的不往外给
+    bad(lambda b: b["surfaced_questions"].append("img_text_has_number"), "surfaced_questions")
+    bad(lambda b: idx(b)["img_text_kind"].__setitem__("trial", "reworded"), "trial 只能是")
+    bad(lambda b: b["consistency"][3]["void"].remove("img_text_kind"), "规则里提到的题都要在 void 里")
+    bad(lambda b: b["consistency"][3].pop("void"), "要写 void")
+    bad(lambda b: b["consistency"][3]["then_not"].__setitem__("img_kind", ["封面"]), "img_kind 不能进自检规则")
+    bad(lambda b: b["consistency"][3]["then_not"].__setitem__("img_text_kinds", ["提问"]), "不认识的题号")
 
     # ④ 和 v0.2 比只差白名单里的几处 (读出来的比一遍, 不是注释的行再比一遍; 两道比较在 ① 后面已经做了)
     i2, i3 = FI.question_index(v02), FI.question_index(v03)
@@ -2399,7 +2467,7 @@ def check_v03_prepared() -> None:
     assert _claims(res["answers"]) == {"img_main_text", *FROM_MAIN_TEXT} \
         and res["answers"]["img_text_has_number"] == res["answers"]["img_text_matches_title"] == "没有字", "反证没成立"
 
-    # ⑧ 整趟走一遍 (假库 / 假下载 / 假模型), 只在这里把 BANK_VERSION 临时改成 fi-v0.3: 发出去的提示词、写的行、计数
+    # ⑧ 用每晚的题库 (就是 fi-v0.3) 整趟走一遍 (假库 / 假下载 / 假模型): 发出去的提示词、写的行、计数
     class Fakes3(Fakes):
         def ask(self, model, prompt, block):
             text, usage = super().ask(model, prompt, block)
@@ -2409,12 +2477,8 @@ def check_v03_prepared() -> None:
                     a["answer"] = {"img_text_amount": "没有字", "img_main_text": "", "img_text_kind": "只是名称"}.get(a["id"], a["answer"])
                 text = json.dumps(data, ensure_ascii=False)
             return text, usage
-    P.BANK_VERSION = "fi-v0.3"
-    try:
-        fk, store = Fakes3(), FakeStore([_cand("ok1"), _cand("CONTRA1"), _cand("KINDONLY1"), _cand("KINDONLY2", n_files=2)])
-        res, out = _run(store, fk, bank=v03)
-    finally:
-        P.BANK_VERSION = real_version
+    fk, store = Fakes3(), FakeStore([_cand("ok1"), _cand("CONTRA1"), _cand("KINDONLY1"), _cand("KINDONLY2", n_files=2)])
+    res, out = _run(store, fk)
     assert res["ended"] == "done" and res["bank_version"] == "fi-v0.3" and res["status"] == {"answered": 4}, res
     by = {s["note_id"].split("-", 1)[1]: (s, {r["question_id"]: (r["answer"], r["invalid_reason"]) for r in rows})
           for s, rows in store.writes}
@@ -2434,17 +2498,17 @@ def check_v03_prepared() -> None:
     assert sent[("img_kind", "img_text_amount")] == {a2.decode("utf-8")}, "发出去的第一组提示词和 fi-v0.2 逐字节相同"
     assert all(EXCLUSION in p and "屏幕" not in p for q in REWORDED for p in sent[(q,)])
     _no_leak("fi-v0.3 走一遍", out, json.dumps(res, ensure_ascii=False, default=str))
-    assert P.BANK_VERSION == "fi-v0.2" and P.BANK_PATH == V02_PATH
+    assert P.BANK_VERSION == "fi-v0.3" and P.BANK_PATH == V03_PATH
 
     for doc, needles in (("docs/34-first-image-pass.md", ("## 13", "first_image_questions_v0_3.yaml", UNVERIFIED, "text_kind_without_text",
-                                                          "没换上", "check_first_image_pass.py` 第 10 节")),
+                                                          "fi-v0.3 换上了", "check_first_image_pass.py` 第 10 节")),
                          ("DECISIONS.md", ("fi-v0.3 备好了", UNVERIFIED)),
                          ("OPEN-ITEMS.md", ("first_image_questions_v0_3.yaml",)),
                          ("CURRENT_STATE.md", ("first_image_questions_v0_3.yaml",))):
         text = (ROOT / doc).read_text(encoding="utf-8")
         for nd in needles:
             assert nd in text, f"{doc} 里没写 {nd}"
-    print("  §10 fi-v0.3 备好了、没换上 (每晚还是 fi-v0.2; v0.1 / v0.2 文件没动); 和 v0.2 只差白名单里的几处; 那一句两道题一字不差、"
+    print("  §10 fi-v0.3 换上了 (每晚读 fi-v0.3; 别处代码不碰 v0.2 / v0.3, docstring 按 ast 认; v0.1 / v0.2 / v0.3 文件没动); 和 v0.2 只差白名单里的几处; 那一句两道题一字不差、"
           "不带「屏幕」; 第一组提示词逐字节相同; 第四条规则中 / 不中各几种; 改了问法的题不往外给 ✓")
 
 
@@ -2458,7 +2522,7 @@ def main() -> int:
     check_wiring()
     check_reply_reading()
     check_line_and_void()
-    check_v03_prepared()
+    check_v03_switched()
     print("\ncheck_first_image_pass: 10 节全过")
     return 0
 
