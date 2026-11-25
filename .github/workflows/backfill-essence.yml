@@ -125,7 +125,7 @@ jobs:
               exit 1
             fi
             prev=$rem
-            # 直连: 一批 = 一次 pass 调用 (--limit BATCH)。脚本自己按 essence_annotated_at IS NULL 续作、单条各重试一次,
+            # 直连: 一批 = 一次 pass 调用 (--limit BATCH)。脚本自己按 essence_annotated_at IS NULL 续作、校验失败带纠错提示重试一次 (写回失败只跳这一篇、不重试),
             # 只有全军覆没 / hygiene 漂移才退非零 —— 那时等 60s 再试一次 (中转站瞬断), 还不行就停; 已标的不丢 (幂等)。
             rc=1
             for attempt in 1 2; do

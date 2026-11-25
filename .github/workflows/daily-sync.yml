@@ -229,7 +229,7 @@ jobs:
           # 搬回来直跑 (2026-06 搬去 worker 只因旧站 GitHub 连不上, docs/17 §7-D)。以前 ESS_REQ_MAX=8 的分批循环、
           # worker_fail_kind 的瞬时/系统性分类、409 锁, 都是 Railway 边缘 ~5 min 超时和跨 run 共用一个 worker 才有的
           # 东西 —— 直跑没有那道墙: 每项目【一次】调用, --limit 给整份日预算; 脚本自己按 essence_annotated_at IS NULL
-          # 续作、单条失败各重试一次、只有全军覆没 / hygiene 漂移才退非零 (_exit_code_for_stats, 可单测)。
+          # 续作、校验失败带纠错提示重试一次 (写回失败只跳这一篇、不重试, TV#301)、只有全军覆没 / hygiene 漂移才退非零 (_exit_code_for_stats, 可单测)。
           # ⚠️ 跨 workflow 没有互斥 (11-03 更正; 原注释说三者同一个 concurrency.group, 不对): backfill-essence 的组是
           # backfill-essence-<项目>、recurate-lessons 的组是 recurate-lessons, 和本 workflow 不同组, 会并跑。手动起那两个时
           # 避开 daily-sync 的时段; 撞上了也只是同一篇被标两次 (幂等, 后写的赢), 不坏数据。
