@@ -1047,6 +1047,7 @@ def main() -> int:
              "hygiene_failed": 0,
              "sub_dir_ok": 0, "sub_dir_failed": 0, "sub_dir_not_applicable": 0}
     sleep_s = 1.0 / args.qps if args.qps > 0 else 0
+    write_failed = 0   # 写回抛异常的篇数 (TV#301: 只跳这一篇、不重试); 只给收尾那句分开说, 不进 Done 行
     filtered_ctx: Optional[tuple[dict, dict]] = None   # D-125: 最后一篇被中转站拦的 (项目信息, 笔记), 探针借它的项目上下文
     invalid_ctx: Optional[tuple[dict, dict]] = None    # F06: 最后一篇校验类失败的, 同上
     for i, note in enumerate(notes):
@@ -1141,6 +1142,7 @@ def main() -> int:
             logger.warning("write_essence_back failed %s (%s): %s",
                            note["note_id"], type(exc).__name__, mask_secrets(str(exc))[:300])
             stats["failed_after_retry"] += 1
+            write_failed += 1
             # 写入端拒绝 / 写库异常 = 非内容校验类 → 计 systemic:
             # 若所有笔记都因此失败(ok==0), 必须判红, 否则 schema/payload 持续回归或库故障
             # 会每晚静默绿过、一条不标(codex PR#100 review)。
@@ -1209,9 +1211,32 @@ def main() -> int:
             logger.error("essence 全部失败 (%d 条) —— 多半系统性(模型 env / 余额 / 限流), 需排查。",
                          stats["failed_after_retry"])
     elif stats["failed_after_retry"]:
-        logger.warning("essence 有 %d 条失败(已各重试一次), ok=%d;失败行下轮 daily-sync "
-                       "幂等续标, 不拖红本次。", stats["failed_after_retry"], stats["ok"])
+        logger.warning("%s", _partial_failure_message(stats, write_failed))
     return code
+
+
+def _partial_failure_message(stats: dict, write_failed: int) -> str:
+    """收尾那句 (有失败、没判红): 按失败种类分开说, 只放计数和固定的字, 不放笔记内容。
+
+    failed_after_retry = 校验类 (validation_failed) + 模型调用出错 (含中转站拦) + 写回失败, 三种各说各的:
+    - 校验类: _annotate_with_retry 已带纠错提示重试过一次 (坏 JSON / 词表外)。
+    - 模型调用出错: call_claude 里只对限流 / 超时 / 连不上 / 5xx 退避重试 (配了备用站另有切站, 缓存开着另有一次
+      去掉缓存块的重跑), 所以不笼统说「重试过一次」。
+    - 写回失败: write_essence_back 抛任何异常都只跳这一篇、不重试 (TV#301, S-14 ①), 不能说成「重试过」。
+    开头「essence 有 N 条失败」别改: daily-sync / backfill-essence 按「有 [0-9]+ 条失败」grep 这一行进 job 日志。
+    """
+    total = stats.get("failed_after_retry", 0)
+    validation = stats.get("validation_failed", 0)
+    call_err = max(total - validation - write_failed, 0)
+    parts = []
+    if validation:
+        parts.append(f"校验类 {validation} 条, 已带纠错提示重试一次")
+    if call_err:
+        parts.append(f"模型调用出错 {call_err} 条, 调用里只对限流 / 超时 / 连不上 / 5xx 退避重试")
+    if write_failed:
+        parts.append(f"写回失败 {write_failed} 条, 只跳这一篇、不重试")
+    return (f"essence 有 {total} 条失败({'; '.join(parts)}), ok={stats.get('ok', 0)};"
+            "失败行下轮 daily-sync 幂等续标, 不拖红本次。")
 
 
 def _append_failed_queue(path: Path, note: dict, project_id: str,

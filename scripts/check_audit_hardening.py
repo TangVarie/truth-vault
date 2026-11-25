@@ -188,10 +188,79 @@ def check_static_sql_and_redaction_guards():
     print("[PASS] static SQL, stdout redaction, dashboard Greek alphabet & login 400 checks")
 
 
+def check_essence_write_back_failure_not_called_retried():
+    """TV#301 made essence write-back skip just the failing post with no retry (S-14 ①).
+    The closing line must not say those were retried (S-18 ①); the workflows grep it by '有 N 条失败'."""
+    import io
+    import json
+    import logging
+    import os
+    import re
+    import tempfile
+    from unittest.mock import patch
+
+    import annotate_essence_pass as ess
+
+    msg = ess._partial_failure_message
+    only_write = msg({"ok": 2, "failed_after_retry": 1, "validation_failed": 0}, 1)
+    assert "写回失败 1 条, 只跳这一篇、不重试" in only_write, only_write
+    assert "重试一次" not in only_write and "退避重试" not in only_write, only_write
+    mixed = msg({"ok": 5, "failed_after_retry": 4, "validation_failed": 1, "gateway_filtered": 1,
+                 "systemic_failed": 2}, 1)
+    assert "essence 有 4 条失败" in mixed and "ok=5" in mixed, mixed
+    assert "校验类 1 条, 已带纠错提示重试一次" in mixed, mixed
+    assert "模型调用出错 2 条" in mixed and "写回失败 1 条, 只跳这一篇、不重试" in mixed, mixed
+    no_write = msg({"ok": 3, "failed_after_retry": 2, "validation_failed": 2}, 0)
+    assert "写回失败" not in no_write and "模型调用出错" not in no_write, no_write
+    for line in (only_write, mixed, no_write):
+        assert "已各重试一次" not in line and re.search("有 [0-9]+ 条失败", line), line
+
+    # main() end to end: the model answers fine, one write-back raises once -> skipped, not retried, rc 0
+    good = json.dumps({"essence": {"emotional_lever": "焦虑撬动", "emotional_valence": "negative",
+                                   "emotional_intensity": "high", "human_truth_archetype": ["健康焦虑"],
+                                   "trend_dependencies": ["通用"], "content_format": "情感叙事"}, "audience": {}})
+    assert ess.validate_essence(json.loads(good)) == [], "fixture must pass the vocab check"
+    notes = [{"note_id": f"P_{i}", "project_id": "P", "title": f"t{i}", "body": f"b{i}",
+              "raw_content": f"【标题】t{i}\n【正文】b{i}", "hashtags": [], "intent": "种草",
+              "target_blue_keywords": ["推车"], "raw_extra": {"_direction_raw": "带娃出行"},
+              "projects": {"brand": "某牌", "product": "推车"}} for i in range(3)]
+    writes = []
+
+    def write(_sb, note_id, *_a, **_k):
+        writes.append(note_id)
+        if note_id == "P_1":
+            raise RuntimeError("fake 520")
+
+    buf = io.StringIO()
+    handler = logging.StreamHandler(buf)
+    ess.logger.addHandler(handler)
+    try:
+        with tempfile.TemporaryDirectory() as td, \
+                patch.object(sys, "argv", ["x", "P", "--qps", "0", "--pass", "new", "--limit", "15",
+                                           "--failed-queue", f"{td}/q.jsonl"]), \
+                patch.dict(os.environ, {"ANTHROPIC_API_KEY": "fake"}), \
+                patch.object(ess, "load_mapping", return_value={}), \
+                patch.object(ess, "get_supabase_client", return_value=object()), \
+                patch.object(ess, "fetch_unannotated_notes", return_value=notes), \
+                patch.object(ess, "get_sub_directions_for_note", return_value=None), \
+                patch.object(ess, "write_essence_back", side_effect=write), \
+                patch.object(ess, "call_claude", side_effect=lambda p, m, *, cached_system=None: good):
+            rc = ess.main()
+    finally:
+        ess.logger.removeHandler(handler)
+    log = buf.getvalue()
+    assert rc == 0 and writes == ["P_0", "P_1", "P_2"], (rc, writes)
+    line = next((ln for ln in log.splitlines() if re.search("有 [0-9]+ 条失败", ln)), "")
+    assert "essence 有 1 条失败" in line and "写回失败 1 条, 只跳这一篇、不重试" in line, log[-600:]
+    assert "重试一次" not in line and "退避重试" not in line, line
+    print("[PASS] essence closing line: write-back failures are not called retried")
+
+
 if __name__ == "__main__":
     check_librarian_gate_bounded_and_recently_curated()
     check_worker_project_validation()
     check_feishu_media_401_retry()
     check_linkcheck_comment_chunking_keeps_parent_before_reply()
     check_static_sql_and_redaction_guards()
+    check_essence_write_back_failure_not_called_retried()
     print("ALL truth-vault audit hardening checks PASSED")
