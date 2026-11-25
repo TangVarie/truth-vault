@@ -4177,6 +4177,12 @@ jobs:
       - name: "写作台用上率灯自检 (docs/32 D): 接住只认发布前那版 / 未改动只认 diff_rev ≥2 / 下限与分母 / 判不了 rc=2 / 哨兵行 / 每周一接线"
         working-directory: scripts
         run: python check_desk_use_rate.py --selftest   # 判据、口径、取数、main 与 daily-sync 接线都在脚本里 (D-075: 不加内联块)
+      - name: "工作台 v0 (W-63, docs/35) · 规则常量和文档一致 / 八种写法和三条提示 / 权限写法 / 看板两道闸和取数 / 不能说的话"
+        working-directory: scripts
+        run: python check_workbench.py
+      - name: "工作台设密码脚本自检 (W-63, docs/35 第 4 节) · SCRAM-SHA-256 和 RFC 7677 一致 / 密码只许字母数字、≥32 位"
+        working-directory: scripts
+        run: python workbench_role_password.py --selftest
       - name: Autowriter dup-error detection self-check
         working-directory: scripts
         run: |
@@ -7205,6 +7211,14 @@ jobs:
           [ "$got" = "1" ] || { echo "::error::anon 读也被撤了 —— 看板会瞎 (got=$got)"; exit 1; }
           echo "  ✓ REVOKE 后: 写被拒 · 读仍正常"
           psql -v ON_ERROR_STOP=1 -c "DROP VIEW public.v_dash_probe; DROP TABLE public._revoke_probe;"
+      - name: Apply workbench v1 工作台 (+ idempotency; 权限 / 五块 / 影子核对 / 打码, 夹具与反证 scripts/check_workbench_pg.sql, W-63)
+        # 放在造出 anon / authenticated 之后, v1.22 / v1.25 / v1.27 之后。末行 LIMIT 0 核看板要读的列都在。
+        run: |
+          psql -v ON_ERROR_STOP=1 -q -f schemas/workbench_v1.sql
+          psql -v ON_ERROR_STOP=1 -q -f schemas/workbench_v1.sql
+          for r in anon authenticated; do [ "$(psql -tAX -c "SELECT has_schema_privilege('$r','workbench','USAGE') OR has_function_privilege('$r','truth_vault.workbench_take_snapshot(date)','EXECUTE')")" = "f" ] || { echo "::error::$r 能进 workbench 或执行快照函数"; exit 1; }; done
+          psql -v ON_ERROR_STOP=1 -q -f scripts/check_workbench_pg.sql
+          psql -v ON_ERROR_STOP=1 -c "SELECT day, project_id, b1, b2, b3a, b3b, b4, b5 FROM workbench.v_status LIMIT 0; SELECT account_code, name_hint, tier, downgrade, code_clash FROM workbench.v_accounts LIMIT 0; SELECT hint, w64, n_flag, n_unlabeled FROM workbench.v_content_counts LIMIT 0; SELECT note_code, plus_hints, unlabeled, body_empty FROM workbench.v_content_notes LIMIT 0; SELECT note_code, mid_rank, status, seeded_known FROM workbench.v_watch_24h LIMIT 0; SELECT note_code, impressions_72h, rank_in_project FROM workbench.v_watch_72h LIMIT 0; SELECT note_code, evening, weekend, same_acct_3d FROM workbench.v_exposure_hints LIMIT 0; SELECT event_code, comments_base, comments_d7_status FROM workbench.v_boost_curves LIMIT 0; SELECT block, grp, measure, n, n_yes, value FROM workbench.v_shadow_check LIMIT 0;"
 
   yaml:
     name: Mapping yaml lint

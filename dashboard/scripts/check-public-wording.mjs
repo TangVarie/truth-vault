@@ -11,6 +11,9 @@
  *  2. 成品层(有 .next 构建产物时跑；加 --rendered 则没有构建产物就算失败)：起一个本机临时服务，
  *     取 `/` 和 `/board` 实际发给浏览器的 HTML，以及这两页引用的全部脚本，逐个查。
  *     不配数据库时页面走空数据兜底，照样能查到所有写死的字和组件脚本。
+ *  3. 钥匙层(和成品层一起跑)：.next/static 下的全部文件里不许有工作台的取数钥匙和身份
+ *     (WORKBENCH_DATABASE_URL、WORKBENCH_PASSWORD、tv_workbench_ro、postgres://、sb_secret_；docs/35 第 3.4 节)。
+ *     只在本机 build 之后手动跑 npm run check:public 时跑：CI 没有看板构建的 job，Vercel 的 prebuild 用 --source-only，都不跑这一层。
  *
  * 用法：npm run check:public          (先 npm run build 才有成品层)
  *       node scripts/check-public-wording.mjs --rendered
@@ -21,7 +24,7 @@
  * 退出码：0 通过；1 查到内部叫法；2 检查自己没跑成。
  */
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import net from "node:net";
 import path from "node:path";
@@ -42,6 +45,8 @@ const BANNED = [
   // 库表 / 视图名
   "v_dash_", "reference_samples", "lesson_cards", "draft_snapshots", "metric_snapshots", "audit_log",
 ];
+/** 不许出现在任何浏览器脚本 (.next/static) 里的钥匙和取数身份 (工作台, docs/35 第 3.4 节)。区分大小写。 */
+const SECRET_MARKERS = ["WORKBENCH_DATABASE_URL", "WORKBENCH_PASSWORD", "tv_workbench_ro", "postgres://", "postgresql://", "sb_secret_"];
 const PUBLIC_ENTRIES = ["app/layout.tsx", "app/page.tsx", "app/board/page.tsx"];
 const PUBLIC_ROUTES = ["/", "/board"];
 const SOURCE_DIRS = ["app/", "components/", "config/"];
@@ -153,6 +158,25 @@ async function checkRendered() {
   return { problems, scripts };
 }
 
+// ── 3. 钥匙层：.next/static 下的每个文件(发给浏览器的全部脚本和样式，不只是公开页引用的) ──
+function checkStaticSecrets() {
+  const dir = path.join(ROOT, ".next", "static");
+  const problems = [];
+  let files = 0;
+  if (!existsSync(dir)) return { problems, files };
+  const walk = (d) => {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) { walk(p); continue; }
+      files++;
+      const body = readFileSync(p, "latin1");
+      for (const m of SECRET_MARKERS) if (body.includes(m)) problems.push(`${path.relative(ROOT, p)} 里出现 ${m}`);
+    }
+  };
+  walk(dir);
+  return { problems, files };
+}
+
 // ── 主流程 ──
 const requireRendered = process.argv.includes("--rendered");
 const sourceOnly = process.argv.includes("--source-only");
@@ -166,6 +190,9 @@ try {
   if (sourceOnly) {
     console.log("成品层：不跑（--source-only）");
   } else if (existsSync(path.join(ROOT, ".next", "BUILD_ID"))) {
+    const sec = checkStaticSecrets();
+    if (sec.problems.length) { failed = true; console.error(`钥匙层：${sec.problems.length} 处`); for (const p of sec.problems) console.error("  " + p); }
+    else console.log(`钥匙层：通过（.next/static 下 ${sec.files} 个文件没有取数钥匙和身份）`);
     const out = await checkRendered();
     if (out.problems.length) { failed = true; console.error(`成品层：${out.problems.length} 处内部叫法`); for (const p of out.problems) console.error("  " + p); }
     else console.log(`成品层：通过（${PUBLIC_ROUTES.join("、")} 的 HTML + ${out.scripts} 个脚本）`);
