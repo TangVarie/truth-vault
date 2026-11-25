@@ -14,6 +14,13 @@
 --     最近的投流 = not_due · missing 的值一律 NULL, 夹具里没有一个 0
 
 \set QUIET on
+-- 事件行上 ops_effect_metric_flag 该是什么: 只 apply 了 v1_22 时是 unknown (默认); apply 了 v1_32 之后, check_paid_boost_v1_32.sql
+-- 先 \set want_flag increment 再 \i 本文件跑一遍。
+\if :{?want_flag}
+\else
+\set want_flag unknown
+\endif
+SELECT set_config('pb.want_flag', :'want_flag', false) AS want_flag \gset
 CREATE TEMP TABLE pb_cases AS SELECT :'cases'::jsonb AS j;
 
 -- ═══ (a) 元素判据 parity ═══════════════════════════════════════════════
@@ -178,9 +185,9 @@ BEGIN
     IF NOT FOUND THEN RAISE EXCEPTION '(b) spx_both: 🍟 事件, 没配上效果的维护时间同一天只作旁证 (ops_date_agrees)'; END IF;
     PERFORM 1 FROM truth_vault.v_paid_boost_events
      WHERE note_id = 'CI_V22A_hath_pair' AND boost_date = '2026-10-16' AND date_sources = ARRAY['维护时间']
-       AND ops_effect_value = 3116 AND ops_effect_metric_flag = 'unknown' AND paid_promoted_state = 'no'
+       AND ops_effect_value = 3116 AND ops_effect_metric_flag = current_setting('pb.want_flag') AND paid_promoted_state = 'no'
        AND ops_effect_vs_current_impressions = 'impressions_missing';
-    IF NOT FOUND THEN RAISE EXCEPTION '(b) hath_pair: 来源 B 第 2 对 (10月16日 ↔ 3116), 效果口径 unknown, paid_promoted 不动'; END IF;
+    IF NOT FOUND THEN RAISE EXCEPTION '(b) hath_pair: 来源 B 第 2 对 (10月16日 ↔ 3116), 效果口径 %, paid_promoted 不动', current_setting('pb.want_flag'); END IF;
     PERFORM 1 FROM truth_vault.v_paid_boost_events WHERE note_id = 'CI_V22A_spx_effect_str' AND ops_effect_value = 2652;
     IF NOT FOUND THEN RAISE EXCEPTION '(b) spx_effect_str: 维护效果是单个字符串也要配上'; END IF;
     PERFORM 1 FROM truth_vault.v_paid_marker_elements

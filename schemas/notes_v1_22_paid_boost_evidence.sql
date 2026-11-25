@@ -25,6 +25,7 @@
 -- 消费者: 人 / 读数报告 (data-analysis/paid-boost-evidence-readout-*.md) · verify_supabase_state.sql #98–#100 · CI check_paid_boost.sql。
 --   不进 public、没有 v_dash_* (F4 再定曝光面)。truth_vault 的默认权限只给 service_role。
 -- 在 notes_v1_9 (last_seen 两列) / notes_v1_12 (comments_count) / notes_v1_21 (v_notes_vanished) 之后应用; 只建函数与视图, 幂等。
+-- 2026-11-25: v_paid_boost_events.ops_effect_metric_flag 由 notes_v1_32 改成 increment (11-02 口径)。重跑本文件会把它改回 unknown, 之后要再跑一遍 v1_32。
 -- ════════════════════════════════════════════════════════════════════
 
 

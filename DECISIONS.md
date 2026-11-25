@@ -2485,6 +2485,8 @@ D-021 那套之所以成立，前提是**列名本身承载含义**（「链接�
 `records_all_ok` 漏掉 `known_backlog` → COR-002 + (b) 红（报「2 条被盖了 last_seen 戳」）；
 名单里塞进 `pending` → (b) 红。38 个纯 Python 守卫块全绿。
 
+**11-25 补（工程，列体检 11-25）**：A 段说 TUGE 的「评论关键词」是「运营定义的评论区蓝词」，说错了。它是我们自己铺评用的关键词，不是蓝词（运营 10-22 答 I-01 D5 时也说两者不是一回事；D-155 按它给铺的评论标 `is_scripted`）。结论不变：照旧进 raw_extra。TUGE、ANSHEN、OKMAN 三份 mapping 的注释 11-25 改正了（D-175 第 5 条）。
+
 ---
 
 ## D-054 · 运营把列名改了：改的是 field_mapping 的键，不是往 raw_extra 塞
@@ -6991,6 +6993,8 @@ F-02 原定「中转站给不了粘性分组、且对账单显示写缓存按 1.
      - 判法：这条 UPDATE 写进去的 `data_quality_flags` 带 `tier_cleared` 或 `tier_unmapped` 的，`tier` / `tier_source` 置空不算失败。生产 10-20 有 270 篇 `tier_cleared`、62 篇 `tier_unmapped`，第一晚出现这两种是正常的。
    - 跟踪见 OPEN-ITEMS I-16。
 
+**11-25 补（工程，I-17）**：第 5 条之后留着的那件（方向改成抬不了的值时清掉旧方向抬上来的人群 / 痛点 / 产品焦点、content_format 回到 essence）做了，见 D-178。
+
 ## D-123 · 闸三打分器在 D-122 恢复之后重冻：`essence-v1-93035a562b2e`，冻结日仍是 2026-10-17；10-17 起的 80 行分备份后按新版重打；NUC 15 张卡按 note_id 重策展（2026-10-20，G-03 / I-16）
 
 来源：D-122 修复计划第 4 条（选 A）和第 5 条（只重策展 15 张），owner 10-20 授权代定。
@@ -7620,6 +7624,8 @@ owner 10-27 填回裁决表：83 格（不一致 43 + 复核 40），每一格�
 2. owner 在 SQL editor 跑 `schemas/notes_v1_22_paid_boost_evidence.sql`（只建函数和视图，可重跑；或 MCP `apply_migration`，文件与 main 一字不差）。verify #98 应为 0。
 3. 合并后第一晚：上面四个数都不变，`paid_promoted = true` 仍 20 篇，verify #99 = 0、#100 = 0/0。
 4. 读数报告 `data-analysis/paid-boost-evidence-readout-2026-10-29.md` 按骨架填（逐例证据，不做因果；维护效果是运营自报）。
+
+**11-25 补（工程，G-15）**：第 5 条「`metric_flag` 一律 `unknown`，等运营答 O-06」落地了：`ops_effect_metric_flag` 改成 `increment`，owner 跑 `schemas/notes_v1_32_paid_boost_effect_increment.sql` 后生效，见 D-176。
 
 ## D-134 · 「品牌别硬插」只下发指令、不给卡标命中：「后20%」八成是连写话题标签的残渣（2026-10-30，G-20 / G-24）
 
@@ -9263,3 +9269,94 @@ owner 11-23 发了一张小红书评论区截图（一条 AI 定时自学的做�
 3. 没跑 DDL 时：写库报「没有 input_sha 这一列」（PGRST204 / 42703 且带列名），喊一次 warning（`warn_missing_migration_once`），去掉这一列重写这一批，本进程后面的批都不带，不红。一个进程喊一次，夜跑每晚是新进程，所以 owner 跑 DDL 之前，夜跑页面上闸三那一步每晚多一行黄色提醒「迁移还没跑」。别的错照抛，灯照红。
 4. verify #108：第一条带 input_sha 的分之后，又写进来的空 input_sha 行数，期望 0；没这一列时 N/A。
 5. `check_gate3.py` §10 钉住以上几条。
+
+## D-175 · 列体检 11-25 的入库修正：素人编号不进评论、ANSHEN / TUGE 的蓝词字段、置顶控评只认做过的、映射漂移（2026-11-25，工程；W-65，D-170 工程定的第 2 条）
+
+**来源**：`data-analysis/column-audit-2026-11-25.md` §3a 第 1、2、3、6、7 条；D-170 工程定的第 2 条。owner 让工程先做能做的。
+
+**定了什么**
+
+1. **「随贴评论素人」是素人编号，不是评论**（D-170 工程定的第 2 条）。5 张 B 族表（HXZ_FB、HXZ_QD、NRT_phase2、NRT_phase3、NUC_phase1）和 `_template` 改映成 `_commenter_codes`，同步存成 `raw_extra._commenter_codes` 编号列表。评论同步和楼层重建不再读它，旧快照里的 `_comment_text_persona` 也不读。旧名从 `_KNOWN_INTERMEDIATES` 拿掉，哪份 mapping 还写旧名，加载就红。已经灌进来的 29 行假评论和 270 行账本由 `schemas/notes_v1_31_commenter_codes_cleanup.sql` 备份后删掉（owner 跑，代码合并之后）。6 月审计（docs/archive/18）担心的「它其实是评论者画像」这次成真了。
+2. **ANSHEN（75 行）、TUGE（220 行）的「蓝词字段」映到 hit_blue_keywords。** 原样进库，不在入库时剥竞品名（I-26 11-23 已关）。
+3. **「爆帖置顶评论」「爆帖控评置顶」（含 typed 的 pinned_comment）只认做过的标签。** 以「待」「等」开头、或带「无法」的标签（待置顶、待做评论、待安排贴主自评(回复)、等解封后控评、素人退出无法回收）不算「起量后干预」，同「维护情况」的 ✅ 不算已铺。按样子认、不按名单，新加的「待xx」也认得出。reason 文字不变。同步脚本注释里那句「没有把 pinned_comment 收进来、确认前不猜」D-062 之后就过时了，改正。
+4. **映射漂移。** SPX 声明「数据整理」（「数据汇总」早不在表里，871 行落在 `_undeclared`）；HATHERINE、TUGE 用新名「下次检查时间」；TUGE 去掉已删的「点赞数」「收藏数」；linkcheck 写的 整理状态 / 整理时评论数 / 整理时互动数 / 评估基线时间 / 评估基线评论数 / 作品ID / 蓝词来源 / 限流前评论数 / 搜索关键词 / 互动数 / 观众分析（ANSHEN、BJS1）在有它的表里声明进 raw_extra，共 37 个 项目×列。只留痕，一个都不映 typed 列（评估基线评论数、整理时评论数不是评论数；下次检查时间是 Excel 序列日）。ANSHEN / BJS1 的观众分析只留底，解析是列体检 §3b 第 1 条。
+5. **「评论关键词」是我们自己铺评的关键词，不是蓝词。** TUGE、ANSHEN、OKMAN 的注释改正。**更正 D-053 §A**：那里写「运营定义的评论区蓝词」，是错的；结论（进 raw_extra）不变（补在 D-053 末尾）。
+
+**工程定的（owner 可以否决；按 D-170 工程定的第 1 条，不为这些问运营）**
+
+- **「控住后掉了」算做过控评，「素人退出无法回收」算做不成**（第 3 条的读法）。代码就是这么认的，不去问运营。以后数据和这个读法对不上（比如「控住后掉了」的帖其实没控过），再回来改。
+- **ANSHEN / BJS1 的观众分析解析**照 D-169 ④ 排期，这批只声明进 raw_extra 留底。
+- **按需项目补跑一次**（第 3 条和 `_commenter_codes` 在按需项目上要补跑才生效）：工程来跑，0 元。前提是 owner 已经跑了 v1_31（不然补跑会把假评论以新 id 插回来）。每个项目（NUC_phase1、NRT_phase3、NRT_phase2、HXZ_FB、HXZ_QD、TXQ_phase1）先 dry-run、看 Done 行，再真跑；`skip_essence=true`（同时跳过 essence 和策展，不花模型钱；通道 1 本来就挡按需项目，闸三是冻结的代码打分器）。避开 12:47–16:47 UTC，也不在 features-sync 跑的时候跑。补跑后核「起量后干预」的条数：NUC 71、NRT3 33、HXZ_FB 5、TXQ 1，共 110 篇；只有待办不加的 28 篇（NUC 11、NRT3 10、HXZ_FB 4、HXZ_QD 3）。记在 OPEN-ITEMS I-40。
+- **闸二敏感性重跑的「置顶」也改成只认做过的**：现在 `scripts/gate2_run.py` 的 `fetch_dataset_secondary` 把 `pinned_comment` 非空直接算置顶，待办也算，和第 3 条不一致。改，但不在这批改：随批 3 G-24 的闸二重读一起改（同一个文件，批 3 正在改），改的时候另记做法。只影响「只报告」的敏感性那一栏。记在 OPEN-ITEMS G-25。
+
+**生产影响（下一次夜跑）**：hit_blue_keywords 从空变有值 295 篇（ANSHEN 75、TUGE 220；爆 / 大爆 5 和 63），metric_snapshots 同晚的那一行也带上；1,722 篇的 raw_extra 键从 `_undeclared` 挪到顶层、值不变（ANSHEN 201、BJS1 182、BJS2 2、HATHERINE 221、SPX 871、TUGE 245），每篇一条 audit_log；观测视图按「顶层空才看 `_undeclared`」读，不会多出假变化；每晚的未声明列提醒变短。工作台（D-170）取作品ID 先读顶层、再读 `_undeclared`，挪了以后取到的值一样。按需项目夜跑不碰，补跑时 110 篇加「起量后干预」、28 篇只有待办不加；补跑时约 2,003 篇的 raw_extra 换键（`_comment_text_persona` → `_commenter_codes` 列表），评论同步不再出这 29 行。
+
+**挡不住什么**：一个做过的置顶标签恰好以「待」「等」开头，会被当成待办漏掉；素人编号跨项目不统一（46 个平台用户出现在多个项目），存下来的是表里的编号（认人按 D-170 工程定的第 4 条）；隔离区里 ANSHEN 69 行、TUGE 70 行的陈年「待处理」没关；BJS1 其余十几个 linkcheck 列还在 `_undeclared`（不在列体检点名的那批里；这两件记在 OPEN-ITEMS I-42）；闸二敏感性重跑的「置顶」批 3 之前还是旧口径：NUC 11、NRT3 10，共 21 篇只有待办（都在 v_l2_labels 里），敏感性重跑照旧剔掉它们。
+
+守卫：`scripts/check_column_audit_fixes.py`、`scripts/check_comment_parser.py` 最后一节、`scripts/check_owner_sql_b2.sql`。
+
+## D-176 · 「维护效果」= 投流后的曝光增量：v_paid_boost_events.ops_effect_metric_flag 改成 increment（2026-11-25，工程；G-15）
+
+D-133 第 5 条写「metric_flag 一律 unknown，等运营答 O-06」。D-136 第 5 条已经查清运营 09-17 / 09-22 答过：「维护效果」是投流后的曝光增量，12h 是读数的时刻。这一处落地：`schemas/notes_v1_32_paid_boost_effect_increment.sql` 只重建 `v_paid_boost_events`，有 `ops_effect_raw` 的事件标 increment，别的列、行数、类型都不变（CI 守着它和 v1_22 只差这一行）。
+
+XIWU_phase2 那行「一轮 / 二轮维护」+「20条评论 / +20条评论」是铺评条数（O-05 ⑤ / O-06 ⑤）。它不是纯数字，在元素视图里是 `ops_effect_not_numeric`，本来就不进事件，所以也不会标成 increment；夹具 `scripts/check_paid_boost_v1_32.sql` 钉着。
+
+生产：事件 47 行（43 篇），37 行（33 篇）unknown → increment，10 行 🍟 事件仍是 NULL。读这一列的只有人和读数报告。owner 什么时候跑都行，0 元、可重跑；照 D-170 ④ 跟批 1–3 别的 0 元 SQL 一起给。以后谁重跑 v1_22，要再跑一遍 v1_32。
+
+## D-177 · I-01 第 1 部分：观察中 → 未知、链接失效 → 删除、疑似限流不当风控、没命中的标和爆贴门槛只告警、判档版本用 audit_log + 日期表（2026-11-25，工程定，owner 可以否决；I-01）
+
+**来源**：I-01 拆成四部分：第 1 部分是这一条（A3、删帖映射、A4、B4 的替代、C1 / C5 / C6）；第 2 部分在接第一张统一格式表的那个 PR 里做；第 3 部分等真正的使用方（W-63 或 W-62 ②），到时候先看一个视图够不够用；第 4 部分三项这次关掉（见下面）。按 D-119，工程定、owner 可否决。
+
+**定了什么**
+
+1. **观察中 → 未知。** 8 张缺这条的每天同步的表（SPX、XIWU1、ANSHEN、BJS1、LNKT、OKMAN、RIO、WTG）和 `_template` 补上。以前这些行（11-25 夜跑后 47 行：XIWU1 37、SPX 10）每晚报「状态值没映上」。
+2. **链接失效 → 删除。** linkcheck 10-26 起给死链写「链接失效」、热度标照留（运营要爆过的帖留在参考库）。12 张每天同步的表和 `_template` 都加这条普通规则（不是否决位），依据 D-119 #13（删帖状态 → 删除）。`_TIER_RANK` 给 删除 一档，在 趴 之下、评估中 之上：['大爆','链接失效'] → 大爆；['链接失效','观察中'] → 删除；['链接失效','无水花'] → 趴；['爆贴','风控中','链接失效'] → 风控（否决位照旧）。**只有「链接失效」一个标、评论 ≥50 的帖**：以前这个标没命中规则，tier 落 NULL，会按评论数推成 爆；现在命中规则变成 删除，按评论数推的那一步只对 NULL / 未知 生效，不会再推成 爆。今天 0 行（linkcheck 会保留热度标，这种格子很少）。owner 否决这一条时要知道这个影响。
+3. **疑似限流不当风控，不扩 D-124。** linkcheck（analyze.py）和运营都把它定义成评论数异常。HATHERINE 那条 疑似限流 → 风控 的老规则 0 行命中，先留着。
+4. **preflight 告警（A4）。** 状态格里每个标过一遍 tier 规则，没命中的列进提醒，退出码不变。
+5. **爆贴门槛告警（B4 的替代）。** B4 的前提「第一张新表之前必须有、事后补不回来」已过时：audit_log 里 2026-05 到 11 月每月都有逐行 tier 变化的时刻。改成两件：同步在翻转闸旁边，数「这一晚新升成 爆 / 大爆、档来自 爆贴 / 大爆 标、评论数不到 50 / 100」的篇，打 `::warning`，不红、不计 errors（伪爆、诊断信息带「保留高档位」的不算）；`data-analysis/signal-definitions.md` 第九节加 linkcheck 判档规则的改动日期表。
+6. **文档。** C1：`_template` 和 docs/04 改正「未声明列整行隔离」的说法（D-055 起进 `raw_extra._undeclared`）。C5：docs/03 写明 tier 源是机器和人共写的一格，规则要对两边词的组合都成立。C6：预备 / 参考 / 数据异常 在机器词表里没有来源；LNKT、OKMAN 的 预备 / 参考 规则标 DEPRECATED（2026-11-25），规则和理由注释都留着。
+7. **第 4 部分三项关掉。** A8：TGV 是按需同步、数据 2025-08 就停了，规则已经符合 D-119 #13。B1：已被 D-155 的 comments_delta_d1/d3/d7 取代。「状态 vs 流量状态」撞名：运营确认不会同表，坑记在第 2 部分。
+
+**工程定的（owner 可以否决；按 D-170 工程定的第 1 条，不为这些问运营）**
+
+- 第 2 条「链接失效 → 删除」、第 3 条「疑似限流不当风控」、第 2 条里 删除 那一档的位置（趴 之下、评估中 之上）。
+- **爆贴门槛只告警，不问运营哪张登记表改过「爆贴门槛」。** 告警不红、不改档，哪张表门槛不一样，最多多几条黄字；真看到告警再查那张表。
+
+**生产影响**：下一晚 47 行 NULL → 未知，同一批去掉 `tier_unmapped` 旗子；tier_unmapped 50 → 3（只剩 RIO 3 行自由文字；观察中是 48 小时窗口，篇数每天会变）；NULL / 未知 都不是正例，翻转闸不触发；爆+大爆 不变；链接失效 0 行；门槛告警 0 条（评论不够的 爆 / 大爆 20 行，TUGE 18、BJS1 2，全带「保留高档位」，而且不是新升的）。
+
+**挡不住什么**：没命中的标在 sync 里照旧被忽略（只有 preflight 和 tier_unmapped 看得见）；门槛告警只看新升的、只看有评论数的项目（LNKT、OKMAN、RIO、WTG、XIWU1 没有评论数列）；日期表要人维护，linkcheck 再改判档要记一行。
+
+守卫：`scripts/check_tier_vocab.py`。
+
+## D-178 · I-17：方向从抬得了变成抬不了时，清人群 / 痛点 / 产品焦点，content_format 回到 essence；BJS_phase2 款式标忽略；HATHERINE 新方向名只登记层；批 2 一个 PR、v1_33 合并前跑（2026-11-25，工程定，owner 可以否决；I-17）
+
+**来源**：OPEN-ITEMS I-17、D-122「定了什么」第 5 条，和 11-25 查出来的新情况：11-21 运营把 BJS_phase2「方向」改成多选、加了 成人款 / 儿童款。64 篇方向只剩款式标，58 篇变成「提问贴 + 款」。
+
+**定了什么**
+
+1. **Step 0：款式标忽略。** mapping 新顶层键 `direction_ignore_tokens`（BJS_phase2：成人款、儿童款）。查 direction_decomposition、判内容层、查子方向、preflight 算缺方向之前先去掉。「提问贴, 成人款」照常按 提问贴 抬、层 Q；只剩款式标 → 什么都不抬。忽略标不能同时是方向（加载就红）。没配这个键的 mapping 查表键一字不变。
+2. **HATHERINE 9 月下旬起用的 10 个新方向名只登记 layer**（和 产品- / 流量- 前缀判的一样），不写 content_format / 人群 / 痛点。这些名字在老表里就有（audit_log 里最早 09-22 入库），11-25 夜跑后 190 篇，158 篇是 11-20 之前发的。写了抬的值就会用猜的值盖掉 essence 判的 content_format。
+3. **Step 1：方向格有值、抬不了**（mapping 里没有、只登记了 layer、没有正文推断）→ 同步对 人群 / 痛点 / 产品焦点 送 None。这三列只有「直接抬」和 essence 子方向两条来路，抬不了时库里的值只能是旧方向的。无状态，每晚自愈。有 sub_directions 的方向（essence 管）不碰。**方向格清空**、方向列这一轮还在 → 同样送 None；方向列整轮没返回（改名）→ 不动。
+4. **content_format**：essence 每篇都写，可方向抬得了时夜跑每晚用旧方向抬的值盖掉它。同步在 upsert 之前读这些篇库里上一次的方向和 content_format：上一次抬得了、库里正好是它抬的值 → 从 audit_log 取 essence 最后一次写的 content_format 写回去；essence 那一次没改 content_format → 不动，打本轮旗子 `content_format_not_restored`；读库或 audit_log 失败 → 一篇不动；dry-run 不读库。
+5. **Step 2（已经发生的那批）**：`schemas/notes_v1_33_direction_switch_restore.sql`，owner 在合并前跑。备份 69 篇（4 列 + 内容层 + 方向原值），33 篇（全在 BJS_phase2）content_format 换回 essence 的值（场景植入 → 情感叙事 23、认知重构 6、直给推荐 3、反差破圈 1）。另 27 篇（BJS_phase2 23、HATHERINE 4）essence 那次没改 content_format，推不出别的值，不动。认的是最后一次改方向、essence 最后一次写；库里的值不是旧方向抬的值（后来改过）的不动。合并前跑也安全：旧代码对这 33 篇抬不了，不会把换回的值盖掉。
+
+**工程定的（owner 可以否决）**
+
+- **成人款 / 儿童款 是产品款式、不是内容方向**（第 1 条的读法）。按 D-170 工程定的第 1 条不问运营；以后运营往「方向」里加别的非方向标，那些篇会被清三列，看到了再登进 `direction_ignore_tokens`。
+- **BJS_phase2 的人群不按款拆**（成人款 → 通用、儿童款 → 宝妈），照 owner 10-27 定的混合口径。
+- **HATHERINE 10 个新方向名只登记层，不写抬的值**（第 2 条）。
+
+**怎么合（工程定，owner 可以否决）**
+
+- **批 2 一个 PR**，不按原计划拆成「I-01 第 1 部分」「I-17」两个串行 PR。理由：两部分改的列不重叠（I-01 只动 tier / tier_unmapped；I-17 只动 人群 / 痛点 / 产品焦点 / content_layer / content_format），第一晚可以按列分开核，翻转闸照样管 tier；拆开要在 9 个共用文件里按段拆（`_common.py`、同步脚本、preflight、BJS_phase2 / HATHERINE 的 mapping、docs/03、ci.yml、scripts/README、两份 owner SQL 夹具），容易拆错。原计划里「合 I-17 之前先看一晚 I-01」那一步就没有了。
+- **顺序**：owner 先跑 v1_33 → 合并 → owner 跑 v1_31（v1_32 什么时候都行）→ 合并后第一晚一起核（见 OPEN-ITEMS §0）。三份都是 0 元、可重跑，每份结尾自带回读。
+- **和 D-170 ④ 的关系**：D-170 ④ 定的是 0 元 SQL 等批 1–3 做完一次给 owner。v1_33 例外：它必须在批 2 合并之前跑（合并后第一晚就清三列，要先有备份），所以批 2 要等 owner 跑完 v1_33 才合。v1_31、v1_32 照 D-170 ④ 跟别的一起给。
+- **回滚**：第一晚 tier 那几项不对，要整个 PR 回滚，I-17 的清三列也跟着回去。三列是每晚重算的，回滚后下一晚不再清；已经清掉的值在 v1_33 的备份表 `truth_vault.backup_notes_i17_20261125` 里（回滚语句在表注释里）。
+
+**生产影响**：v1_33 换 33 篇 content_format。合并后第一晚：69 篇三列清空（BJS_phase2 62、HATHERINE 6、SPX 1；其中爆 / 大爆 1 篇，在 HATHERINE）；方向格清空那一路 0 篇；BJS_phase2 61 篇内容层补上（Q 58、J 3），只剩款式标的 64 篇仍是 NULL（没有层的词；原来估的 125 偏多）；夜跑那一路的 content_format 换回 0 篇（只认以后新发生的改方向）。按需项目补跑时 0 篇。
+
+**下游**：这几列喂馆员按人群配卡、策展、闸三的 U/F token（已打的分 ignore_duplicates 不动，新打的会变）、写作台按 content_format 切片。要清的 69 篇里只有 1 篇是爆（HATHERINE），经验卡几乎不动。
+
+**挡不住什么**：essence 那一次没改 content_format 的 27 篇推不出它的判断，留着旧方向的值（大概率和 essence 一致）；以后运营往「方向」里加别的非方向标，要先登进 `direction_ignore_tokens`，不然那些篇会被清三列；按款拆人群没做。
+
+守卫：`scripts/check_direction_switch.py`、`scripts/check_content_layer.py` §1–§2、`scripts/check_owner_sql_b2.sql`。

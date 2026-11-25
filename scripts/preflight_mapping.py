@@ -30,7 +30,8 @@ import os
 import sys
 from collections import Counter
 
-from _common import load_mapping, resolve_feishu_tables, _direction_key, mask_secrets
+from _common import (load_mapping, resolve_feishu_tables, _direction_key, _status_tokens, _first_matching_tier,
+                     effective_direction_key, mask_secrets)
 from sync_feishu_notes_to_truth_vault import (
     FeishuClient,
     transform_row,
@@ -66,6 +67,7 @@ def project_rows(mapping: dict, records, show_cap: int) -> dict:
     excluded_dirs = {e.get("direction") for e in (mapping.get("excluded_directions") or [])}
     dir_col = next((k for k, v in fm.items() if v == "_direction_raw"), None)
     status_cols = {k for k, v in fm.items() if v == "_status_raw"}        # tier 源列(可多张表多列)
+    tier_rules = (mapping.get("tier_extraction") or {}).get("rules") or []
     note_status_cols = {k for k, v in fm.items() if v == "_note_status_raw"}  # 伪爆贴检测列(含「关注」)
 
     def _flatval(x):
@@ -83,6 +85,7 @@ def project_rows(mapping: dict, records, show_cap: int) -> dict:
         "dirs_seen": Counter(),
         "dirs_missing": Counter(),
         "status_vals": Counter(),          # tier 源列原始取值分布(看「伪爆贴」等是否在 tier 源里)
+        "status_unmatched": Counter(),     # tier 源里一条规则都没命中的标 (I-01 A4): 只告警, 不挡
         "note_status_vals": Counter(),     # 笔记状态原始取值分布(看「关注」伪爆贴标记是否存在)
         "has_dir_col": dir_col is not None,
         "declared": declared,
@@ -99,6 +102,10 @@ def project_rows(mapping: dict, records, show_cap: int) -> dict:
         for col in status_cols:
             if col in raw and raw[col] not in (None, ""):
                 s["status_vals"][_flatval(raw[col])] += 1
+                if tier_rules:
+                    for tok in _status_tokens(raw[col]):
+                        if _first_matching_tier(tok, tier_rules) is None:
+                            s["status_unmatched"][tok] += 1
         for col in note_status_cols:
             if col in raw and raw[col] not in (None, ""):
                 s["note_status_vals"][_flatval(raw[col])] += 1
@@ -138,9 +145,21 @@ def project_rows(mapping: dict, records, show_cap: int) -> dict:
             dk = _direction_key(rawdir) if rawdir is not None else ""
             if dk:
                 s["dirs_seen"][dk] += 1
-                if dk not in dirdecomp and dk not in excluded_dirs:
+                # 查表用去掉 direction_ignore_tokens 之后的键 (I-17), 和 transform_row 一样; 全被去掉的 (只有「成人款」) 不算缺
+                ek = effective_direction_key(rawdir, mapping)
+                if ek and ek not in dirdecomp and dk not in excluded_dirs:
                     s["dirs_missing"][dk] += 1
     return s
+
+
+def status_unmatched_warning(unmatched: Counter, show: int = 8) -> str:
+    """tier 源里没命中任何规则的标 → 一行告警文字 (空 = 没有)。只告警, 不进 blocking (I-01 A4)。"""
+    if not unmatched:
+        return ""
+    top = "、".join(f"「{t}」×{n}" for t, n in unmatched.most_common(show))
+    more = f" 等 {len(unmatched)} 种" if len(unmatched) > show else ""
+    return (f"tier 源里有 {sum(unmatched.values())} 个标没命中任何规则: {top}{more} "
+            f"(整格都没命中的行 tier 落 NULL; 是新词就补 tier_extraction.rules)")
 
 
 def main() -> int:
@@ -264,6 +283,12 @@ def main() -> int:
         if any("伪爆" in v for v in s["status_vals"]):
             print("     ⚠️ tier 源里出现「伪爆」字样 —— 注意 tier 规则 match_contains 顺序(伪爆贴含「爆贴」会误判成 爆!),且应判 synthetic")
             warnings.append("tier 源含「伪爆贴」(需 tier 规则前置 + 判 synthetic)")
+    # I-01 A4: 状态格里每个标都过一遍 tier 规则, 一条都没命中的列出来。只告警, 退出码不变 —— 这些标在 sync 里被忽略,
+    # 整格都没命中时 tier 落 NULL、打 tier_unmapped。linkcheck 的机器词和运营手写的标共写一格, 规则要对两边的组合都成立。
+    unmatched = status_unmatched_warning(s["status_unmatched"], args.show)
+    if unmatched:
+        print(f"  ⚠️ {unmatched}")
+        warnings.append(unmatched)
     if s["note_status_vals"]:
         print(f"  笔记状态取值 : {dict(s['note_status_vals'].most_common(args.show))}")
         print(f"     含「关注」(伪爆贴标记)行数 = {sum(c for v, c in s['note_status_vals'].items() if '关注' in v)}")

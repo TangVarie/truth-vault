@@ -35,9 +35,9 @@ end_date: 2026-XX-XX            # 可填预估或留空
 # - 其他直接映射到 notes 表的对应字段
 # - 在 field_mapping 和 project_specific_fields_to_raw_extra 中
 #   声明过的字段才会入库。
-# - **未声明的新字段不会静默进 raw_extra**——按 D-021 它们整行进入
-#   `truth_vault.undeclared_fields_quarantine` 等待人工 review。
-#   这样飞书表新加字段时不会被默默吞掉。
+# - 未声明的新字段: D-055 (2026-09-11) 起不再整行隔离。行照常入库, 这些列的值收在
+#   raw_extra._undeclared 下 (和声明过的列分开放), 每晚同步和 preflight 都会点名。
+#   要用哪一列就声明进来; 不用就一直放着。(D-021 那套「整行进 quarantine」已经不用了, 2026-11-25 改正这段说明)
 
 # ════════════════════════════════════════════════════════════════════
 # 标题怎么拿 [内容特征层 docs/28 §3 第 4 条, D-065 续]
@@ -86,7 +86,7 @@ field_mapping:
   实时数据.评论数: comments_count   # D-062: 判爆的唯一依据(实时总评论数, 含铺评), 巡查机器人抓的
   爆帖置顶评论: pinned_comment
   随贴评论: _comment_text                # 进 comments 表
-  随贴评论素人: _comment_text_persona    # 进 comments 表
+  随贴评论素人: _commenter_codes         # 发这条随贴评论的素人编号, 不是评论 (11-25 列体检); 存 raw_extra._commenter_codes, 不进 comments 表
   
   # ── 账号信息 ──
   # 注: truth_vault.notes 表没有 account_name / account_followers 直接列，
@@ -177,6 +177,10 @@ tier_extraction:
       tier: 趴
     - match_contains: ["评估中"]
       tier: 评估中
+    - match_contains: ["观察中"]      # linkcheck 冷启动 48h 窗口 (10-26 起) → 未知。2026-11-25 补 (I-01 第 1 部分): 以前每晚报「状态值没映上」
+      tier: 未知
+    - match_contains: ["链接失效"]    # linkcheck 10-26 起给死链写的标, 热度标照留。→ 删除 (D-119 #13)。删除 的档位低于 爆 / 大爆 / 趴:
+      tier: 删除                        #    爆过的帖照旧是爆 (运营要它留在参考库); 只有这个标、或配 观察中 / 评估中 → 删除。2026-11-25 (I-01)
     - default: null
   
   # C 家族示例（TGV_1）:
@@ -221,9 +225,9 @@ compliance:
 # 这是一个 **allowlist** —— 飞书表里的项目独有字段，必须显式列在这里
 # 才会被收入 notes.raw_extra JSONB。
 # 
-# 未列入这里且未在 field_mapping 中映射的字段 → 整行进 quarantine（D-021），
-# 不会静默进库。设计目的：飞书表加新字段时，团队必须显式决定它是入库
-# 还是忽略，而不是默默吞下导致后续 schema 漂移。
+# 未列入这里且未在 field_mapping 中映射的字段 → 行照常入库, 值收在 raw_extra._undeclared 下 (D-055, 2026-09-11 起;
+# 以前 D-021 是整行进 quarantine)。每晚同步和 preflight 会把它们点名。设计目的不变: 飞书表加新字段时,
+# 团队要显式决定它进 raw_extra 顶层还是放着, 而不是默默和声明过的列混在一起。
 # 
 # 即使当时不知道有什么用，列在这里仍是合理选择（永远存 JSONB，将来可能发现价值）。
 

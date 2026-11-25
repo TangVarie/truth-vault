@@ -212,12 +212,13 @@ FEISHU_APP_ID=… FEISHU_APP_SECRET=… python scripts/preflight_mapping.py <pro
 > 没有本地飞书凭据时:**Actions → `Preflight mapping` → Run workflow → 填项目全名**(用仓库现成的 FEISHU secrets 跑,报告在 job 日志里看;退出码 1=有阻断问题=workflow 红)。
 
 preflight 复用真 `transform_row` 投影全表，一屏看清：
-- **未声明列** → 会被 D-021 整行 quarantine（NRT_2 曾因此丢 482 行真内容）；报告会标出"哪些列没声明、其中多少行有正文＝真笔记会丢"。
+- **未声明列** → D-055（2026-09-11）起不再整行隔离：行照常入库，值收在 `raw_extra._undeclared` 下。报告会点名"哪些列没声明、其中多少行有正文"，要用哪一列就声明进 mapping。（D-021 那时是整行 quarantine，NRT_2 因此丢过 482 行真内容。2026-11-25 改正这段。）
+- **状态格里没命中任何规则的标** → 提醒，不挡（I-01）。流量状态是巡查机器人和运营共写的一格，见 `docs/03-mapping-protocol.md`「tier 源是机器和人共写的」。
 - **品类是否在受控闭集**（否则 sync 撞 `notes.category` CHECK）。
-- **入库投影**：会 upsert 多少 / 空占位静默多少 / 因未声明列丢多少。
+- **入库投影**：会 upsert 多少 / 空占位静默多少 / 带未声明列照常入库多少。
 - **分布**：tier（爆+大爆＝燃料)、intent（`other` 多＝intent_mapping 没覆盖)、**方向是否全部命中 `direction_decomposition`**。
 
-退出码 1 = 有该先修的阻断问题（未声明列丢真内容 / 品类非法）→ 按报告改 mapping，重跑到干净。
+退出码 1 = 有该先修的阻断问题（品类非法 / transform 异常）→ 按报告改 mapping，重跑到干净。未声明列和没命中的状态标只是提醒，不改退出码。
 **这一步把"在 prod 真跑→看炸什么→修"收敛成"接表前一键体检"。**
 
 体检干净 → PR → 合 → **显式** `Daily TV sync`（全名，先 dry_run）→ 实跑验证 → **验证 OK 后把 `sync_config.sync_interval` 改 `daily`**（才进每日 02:00 cron）→ backfill essence。
@@ -260,7 +261,7 @@ field_mapping:
   蓝词记录: hit_blue_keywords
   爆帖置顶评论: pinned_comment
   随贴评论: _comment_text          # 进 comments 表
-  随贴评论素人: _comment_text_persona
+  随贴评论素人: _commenter_codes   # 素人编号, 不是评论 (2026-11-25)
 
 intent_mapping:
   流量帖: traffic

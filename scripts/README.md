@@ -151,6 +151,15 @@ CI 和 daily-sync workflow 都优先读 `.lock`; `.txt` 仅作为 "high-level in
 #         essence_content_sha (打分用的标签来自哪份正文; AU-F02b ②, D-137)。全是加法, 已有的分不回填、不重打。
 #         不是同步的前置: 没跑之前 gate3_score.py 写库报没有这一列时喊一次 warning、去掉这一列重写, 照旧打分。
 #         可重跑, 先合代码还是先跑都行; 跑完对照 verify #108。
+#   - schemas/notes_v1_31_commenter_codes_cleanup.sql → 数据清理 (owner 跑一次): 「随贴评论素人」(素人编号) 被当成评论灌进来的
+#         29 行假评论和 judge 给它们打的 270 行分, 先整行备份再删 (列体检 2026-11-25 §3a #1)。不是同步的前置; 代码合并之后跑。可重跑
+#         (夹具 check_owner_sql_b2.sql)。
+#   - schemas/notes_v1_32_paid_boost_effect_increment.sql → 视图 v_paid_boost_events 的 ops_effect_metric_flag 改成 increment
+#         (「维护效果」= 投流后的曝光增量, 11-02 口径; G-15)。只重建这一个视图, 在 v1_22 之后; 重跑 v1_22 之后要再跑它。
+#         不是同步的前置 (夹具 check_paid_boost_v1_32.sql)。
+#   - schemas/notes_v1_33_direction_switch_restore.sql → 数据修正 (owner 跑一次, I-17 Step 2): 方向改成抬不了的值之后, 备份
+#         人群 / 痛点 / 产品焦点 / content_format, 把 33 篇的 content_format 换回 essence 最后一次写的值。在 I-17 的代码合并【之前】跑
+#         (合并后第一次夜跑清三列, 要先有备份)。不是同步的前置。可重跑 (夹具 check_owner_sql_b2.sql)。
 #   - autowriter-migrations/001_create_autowriter_schema.sql → 把 autowriter 表从 public 迁到 autowriter schema
 #   - autowriter-migrations/002_add_external_source.sql     → items 加 (external_source, external_source_id) 列
 #         + per-user partial UNIQUE (user_id, external_source, external_source_id) WHERE external_source IS NOT NULL.
