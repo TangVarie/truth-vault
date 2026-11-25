@@ -5,6 +5,8 @@
   §1  规则常量: schemas/workbench_v1.sql 里函数的常量一个不多一个不少、值和这里钉的一样; 每一个在 docs/35 里都有对应的原话
       (≥7 天前、≥45 条、≥20 篇、mid_rank ≥ 0.9、第 90 百分位、近 5 / 8 / 14 / 30 天、≥96 小时、18 点以后、前 3 天到当天、90 天、50 个)
   §2  三条发布前提示、八种写法 (名字和加分 / 减分) 在 SQL 和 docs/35 第 2.2、2.4 节一致; 每种写法抄的 W-64 「x/y 项目同向」在文档那一行里
+      块 4 的笔记 ID: 顶层和 raw_extra -> '_undeclared' 的「作品ID」「笔记ID」都读、只认小红书帖; 小时状态词 (没有笔记 ID / 日期对不上 /
+      抖音帖不还原) 在 docs/35 第 2.4 节里都有 (行为在 check_workbench_pg.sql 的 F 段核)
   §3  权限的写法: SQL 不碰 public schema; 不 GRANT 给 anon / authenticated / PUBLIC; 函数 SECURITY DEFINER + search_path 为空 +
       单独 REVOKE ... FROM PUBLIC; EXECUTE 只给 service_role; 九个 v_* 视图正好九个、全在 GRANT SELECT ... TO tv_workbench_ro 里;
       角色建成不带密码; 视图都是 security_invoker = false
@@ -28,6 +30,7 @@
   ⑥ 取数文件去掉 import "server-only" / 页面先取数再验会话 / 给工作台组件加 "use client"     → §4
   ⑦ 页面上写「这个号会爆」「加热这篇」/ SQL 的「看什么」写回「（value = 项目内 AUC）」               → §5
   ⑧ 取数文件把 postgres(url, ...) 挪出 try                                                    → §4
+  ⑨ 块 4 不读 _undeclared 的「作品ID」/ 去掉「只认小红书」/ 文档删了「抖音帖不还原」                → §2
 """
 from __future__ import annotations
 
@@ -75,6 +78,7 @@ CONSTANTS: dict[str, tuple[str, list[str]]] = {
     "c_keep_days":      ("90", ["删 90 天前的快照"]),
 }
 HINTS3 = ["晚上发", "周末发", "同号 3 天内连发"]
+HOUR_STATUS = ["没有笔记 ID", "日期对不上", "抖音帖不还原"]  # 块 4 小时不知道时的状态词 (SQL 和 docs/35 第 2.4 节都要有)
 WRITING = {  # 写法 → 加分 / 减分 (docs/35 第 2.2 节那张表)
     "正文不提品牌": "加分", "产品不出场": "加分", "负面痛点基调": "加分", "求助式写法": "加分",
     "产品当主角": "减分", "产品当解决方案": "减分", "功效承诺": "减分", "场景植入": "减分",
@@ -136,6 +140,18 @@ def check_hints(sql: str, doc: str) -> None:
             fail(f"§2 docs/35 第 2.4 节的表里没有「{h}」")
         if f"'{h}'" not in sql:
             fail(f"§2 SQL 里没有提示「{h}」")
+    sec24 = doc[doc.find("### 2.4"):doc.find("### 2.5")]
+    code = strip_sql_comments(sql)
+    for w in HOUR_STATUS:
+        if f"'{w}'" not in code:
+            fail(f"§2 块 4 的 SQL 里没有小时状态「{w}」")
+        if w not in sec24:
+            fail(f"§2 docs/35 第 2.4 节没写小时状态「{w}」")
+    for key in ("作品ID", "笔记ID"):
+        if f"n.raw_extra ->> '{key}'" not in code or f"n.raw_extra -> '_undeclared' ->> '{key}'" not in code:
+            fail(f"§2 块 4 取笔记 ID 要先读 raw_extra 顶层、再读 _undeclared 的「{key}」")
+    if "CASE WHEN nb.platform = 'xiaohongshu' THEN" not in code:
+        fail("§2 块 4 只认小红书帖的笔记 ID (抖音帖不还原)")
     rows = re.findall(r"\(\d+, '([^']+)',\s*'(加分|减分)',\s*'[^']+',\s*'([^']+)'", sql)
     got = {h: side for h, side, _ in rows}
     if got != WRITING:

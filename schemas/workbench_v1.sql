@@ -466,14 +466,26 @@ BEGIN
     -- ══ 块 4 · 曝光提示 (只有三条发布前提示) ═══════════════════════════════
     -- 小时只能从笔记 ID 的时间戳还原; 还原的日期和记录的日期对不上 → 不知道几点、不算周末。账号为空 → 同号连发不知道。
     -- 笔记 ID 只在这里算时间用, 不出这一步。
+    -- 只认小红书帖的 24 位十六进制笔记 ID: 前 8 位 = unix 秒, 是笔记创建的时刻, 不一定是发出的时刻 (定时发的会早几天),
+    --   所以还原出的北京日期要和记录的北京日期是同一天才用 (同一天里先建后定时发的, 分不出来)。
+    -- 取的顺序: publish_url → raw_extra 顶层的 笔记ID / 作品ID / 笔记链接 / 链接文本 → raw_extra -> '_undeclared' 下同样四列
+    --   (没声明的「作品ID」收在 _undeclared 里, 11-25 只读: HATHERINE、SPX、TUGE、ANSHEN; 值是「ID ← 短链」, 取第一段 24 位十六进制)。
+    -- 抖音帖 (帖或项目的平台是 douyin) 不还原: 仓里和 W-64 都没有解抖音作品 ID 的口径, 平台也没公开 →
+    --   小时是 NULL (不知道, 不当 0 点、不当白天), 状态「抖音帖不还原」; 抖音行里带着的小红书 ID (比如继承来的) 也不用。
     INSERT INTO workbench.snapshot_items (day, block, project_id, item_key, note_id, account_id, data)
     WITH r AS (
-        SELECT nb.note_id, nb.project_id, nb.account_id, nb.bj_date, nb.impressions, a.median_impressions,
-               coalesce(substring(n.publish_url FROM '([0-9a-f]{24})'),
-                        substring(n.raw_extra ->> '笔记ID' FROM '([0-9a-f]{24})'),
-                        substring(n.raw_extra ->> '作品ID' FROM '([0-9a-f]{24})'),
-                        substring(n.raw_extra ->> '笔记链接' FROM '([0-9a-f]{24})'),
-                        substring(n.raw_extra ->> '链接文本' FROM '([0-9a-f]{24})')) AS xid
+        SELECT nb.note_id, nb.project_id, nb.account_id, nb.platform, nb.bj_date, nb.impressions, a.median_impressions,
+               CASE WHEN nb.platform = 'xiaohongshu' THEN
+                   coalesce(substring(n.publish_url FROM '([0-9a-f]{24})'),
+                            substring(n.raw_extra ->> '笔记ID' FROM '([0-9a-f]{24})'),
+                            substring(n.raw_extra ->> '作品ID' FROM '([0-9a-f]{24})'),
+                            substring(n.raw_extra ->> '笔记链接' FROM '([0-9a-f]{24})'),
+                            substring(n.raw_extra ->> '链接文本' FROM '([0-9a-f]{24})'),
+                            substring(n.raw_extra -> '_undeclared' ->> '笔记ID' FROM '([0-9a-f]{24})'),
+                            substring(n.raw_extra -> '_undeclared' ->> '作品ID' FROM '([0-9a-f]{24})'),
+                            substring(n.raw_extra -> '_undeclared' ->> '笔记链接' FROM '([0-9a-f]{24})'),
+                            substring(n.raw_extra -> '_undeclared' ->> '链接文本' FROM '([0-9a-f]{24})'))
+               END AS xid
         FROM pg_temp.wb_nb nb
         JOIN pg_temp.wb_active a ON a.project_id = nb.project_id
         JOIN truth_vault.notes n ON n.note_id = nb.note_id
@@ -493,7 +505,8 @@ BEGIN
            jsonb_build_object(
                'publish_day', r3.bj_date,
                'hour_bj', r3.hr,
-               'hour_status', CASE WHEN r3.xid IS NULL THEN '没有笔记 ID'
+               'hour_status', CASE WHEN r3.platform = 'douyin' THEN '抖音帖不还原'
+                                   WHEN r3.xid IS NULL THEN '没有笔记 ID'
                                    WHEN r3.id_day_diff <> 0 THEN '日期对不上'
                                    ELSE '知道' END,
                'evening', CASE WHEN r3.hr IS NULL THEN NULL ELSE r3.hr >= c_evening_hour END,

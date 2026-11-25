@@ -1,6 +1,7 @@
 -- check_workbench_pg.sql —— schemas/workbench_v1.sql 的 CI 夹具 (W-63, docs/35; ci.yml sql job 调, 迁移已经跑过两遍之后)。
 --   psql -v ON_ERROR_STOP=1 -q -f scripts/check_workbench_pg.sql   (在仓库根目录跑; 任何一条对不上 → RAISE → 这一步红)
--- 全是合成数据: 项目 CI_WB_A (小红书, 活跃)、CI_WB_B (小红书, 60 天前停了)、CI_WB_C (抖音, 活跃); 账号都以 ci_wb_ 开头。
+-- 全是合成数据: 项目 CI_WB_A (小红书, 活跃)、CI_WB_B (小红书, 60 天前停了)、CI_WB_C (抖音, 活跃)、
+--   CI_WB_D (小红书, 活跃; 只放块 4 的笔记 ID 来源: 帖都在 6 天内、没账号、没定级, 不动 A / C 的任何计数); 账号都以 ci_wb_ 开头。
 -- 固定「今天」= 2026-11-25 (周三), 先给 11-15 拍一份快照, 再给 11-25 拍两遍 (第二遍替换当天)。最后删干净。
 --
 -- 守的是:
@@ -14,7 +15,9 @@
 --   D 块 3a: mid_rank 对比本项目更早北京日期的帖 (含 6 天前那篇); 0.952 进; 0.886 不进 (它 ≥ 第 90 百分位 9.9, 按「≥ P90」会进); 24h 没记评论数单列; 别的项目不到 20 篇;
 --     铺评只数运营贴的素人评论 (巡查来的、路人不算); 今天的线 line_now = 11 条 (第 90 百分位是 10, 10 条进不了); 不到 20 篇没有线
 --   E 块 3b: 不到 96 小时的「72h」快照丢掉; 过了中位数的不进; 按快照曝光排
---   F 块 4: 晚上发只认笔记 ID 还原出的小时、且日期对得上; 日期对不上 → 不知道几点、不算周末; 同号连发只往前看 3 天
+--   F 块 4: 晚上发只认笔记 ID 还原出的小时、且日期对得上; 日期对不上 → 不知道几点、不算周末; 同号连发只往前看 3 天;
+--     笔记 ID 先取顶层、再取 raw_extra -> '_undeclared' (没声明的「作品ID」「笔记ID」); _undeclared 里的 ID 一样要日期对得上;
+--     抖音帖不还原 (19 位作品 ID 不解, 抖音行里带的小红书 ID 也不用): 小时 NULL、状态「抖音帖不还原」
 --   G 块 5: 一个投流事件; 缺的点是 NULL 不是 0; 视图里没有 event_id、note_id
 --   H 影子核对: 满 7 天那一笔按发布前最近一份快照分组 (一档 / 二档 / 降档 / 名单外有历史 / 新号 / 没有账号);
 --     第一份快照之前就发了的帖不分组; 同一天重跑不重复记; 90 天前的快照被删; 「已定级为爆」只数爆 / 趴 (评估中是 NULL);
@@ -24,6 +27,8 @@
 --   函数里把 c_hit_lag_days 改成 0 → B 红 (3 天前爆的号进一档); other 那段去掉 platform 条件 → B 红 (抖音号进二档);
 --   fa 去掉 run_tag / invalid_reason 条件或 ORDER BY 去掉 extracted_at DESC → C 红; mid_rank 改成 cc24 ≥ p90_prior → D 红 (W2 也进);
 --   c_min_hours72 改成 0 → E 红 (第 60 小时拍的 X3 进候选); weekend 不看 id_day_diff → F 红 (E3 算周末);
+--   块 4 去掉 _undeclared 那四列 → F 红 (U1 没有笔记 ID); _undeclared 排到顶层前面 → F 红 (U2 成了 22 点);
+--   xid 去掉「平台是小红书」的条件 → F 红 (DY 用了继承来的小红书 ID, 成了 20 点); hour_status 去掉抖音那一支 → F 红;
 --   视图里加一列 i.account_id → A、I 红; GRANT SELECT ... TO anon → A 红; 去掉函数的 REVOKE ... FROM PUBLIC → A 红;
 --   wb_lab 去掉 nf.body_len = 0 的条件 → C 红 (空正文的「未出现」算成不提品牌); outcomes 的 hit 改回 tier IN (...) → H 红;
 --   v_shadow_check 不分晚记 → H 红; line_now 的 >= c_mid_rank 改成 >= c_p90 的百分位 → D 红。
@@ -46,7 +51,8 @@ CREATE TEMP TABLE wb_ci AS SELECT DATE '2026-11-25' AS d;
 INSERT INTO truth_vault.projects (project_id, brand, product, category, platform) VALUES
     ('CI_WB_A', 'b', 'p', '保健品', 'xiaohongshu'),
     ('CI_WB_B', 'b', 'p', '保健品', 'xiaohongshu'),
-    ('CI_WB_C', 'b', 'p', '保健品', 'douyin');
+    ('CI_WB_C', 'b', 'p', '保健品', 'douyin'),
+    ('CI_WB_D', 'b', 'p', '保健品', 'xiaohongshu');
 INSERT INTO truth_vault.accounts (account_id, platform)
 SELECT 'ci_wb_' || a, 'xiaohongshu'
 FROM unnest(ARRAY['t1', 't1r', 't2', 't2old', 'dg', 't2dg', 'dy', 'new', 'fill', 'g5', 's', 'e3', 'e4',
@@ -101,6 +107,36 @@ CROSS JOIN LATERAL (VALUES
     ('A', 'b1',        'bst',   10, NULL,   NULL, NULL, NULL, NULL, 'xiaohongshu', NULL,
         jsonb_build_object('维护时间', jsonb_build_array(to_char(w.d - 5, 'YYYY/MM/DD')), '维护效果', jsonb_build_array('300')))
 ) AS v(p, k, acc, ago, tier, cc, imp, val, fmt, plat, url, rx);
+
+-- 块 4 的笔记 ID 来源 (项目 CI_WB_D): 「作品ID」的值照线上的样子是「24 位十六进制 ← 短链」
+--   U1 周二 19:15 发, ID 只在 _undeclared 的「作品ID」里; U2 周一, 顶层「笔记ID」是 09:00、_undeclared「作品ID」是 22:00 → 先认顶层;
+--   U3 记在周日, _undeclared「笔记ID」是周五 21:00 (定时发: ID 是创建时刻) → 日期对不上;
+--   DY 周六, 这个小红书项目里的一篇抖音帖: 链接里的 19 位作品 ID 高 32 位当 unix 秒是周六 20:00, _undeclared 里还带着一个
+--   周六 20:00 的小红书 ID (像从上一行继承来的) → 都不用, 小时 NULL
+INSERT INTO truth_vault.notes (note_id, project_id, account_id, raw_content, publish_time, platform, publish_url, raw_extra)
+SELECT 'CI_WB_D_' || v.k, 'CI_WB_D', NULL, 'c', (w.d - v.ago)::timestamp - interval '8 hours', v.plat, v.url, v.rx
+FROM wb_ci w
+CROSS JOIN LATERAL (VALUES
+    ('u1', 1, 'xiaohongshu', NULL::text,
+        jsonb_build_object('_undeclared', jsonb_build_object('作品ID',
+            lpad(to_hex(extract(epoch FROM (((w.d - 1)::timestamp + interval '19 hours 15 minutes') AT TIME ZONE 'Asia/Shanghai'))::bigint), 8, '0')
+            || '0123456789abcdef ← https://xhslink.com/o/Ab12Cd34Ef'))),
+    ('u2', 2, 'xiaohongshu', NULL,
+        jsonb_build_object(
+            '笔记ID', lpad(to_hex(extract(epoch FROM (((w.d - 2)::timestamp + interval '9 hours') AT TIME ZONE 'Asia/Shanghai'))::bigint), 8, '0') || '0123456789abcdef',
+            '_undeclared', jsonb_build_object('作品ID',
+                lpad(to_hex(extract(epoch FROM (((w.d - 2)::timestamp + interval '22 hours') AT TIME ZONE 'Asia/Shanghai'))::bigint), 8, '0')
+                || '0123456789abcdef ← https://xhslink.com/o/Ab12Cd34Ef'))),
+    ('u3', 3, 'xiaohongshu', NULL,
+        jsonb_build_object('_undeclared', jsonb_build_object('笔记ID',
+            lpad(to_hex(extract(epoch FROM (((w.d - 5)::timestamp + interval '21 hours') AT TIME ZONE 'Asia/Shanghai'))::bigint), 8, '0') || '0123456789abcdef'))),
+    ('dy', 4, 'douyin',
+        'https://www.douyin.com/video/'
+            || ((extract(epoch FROM (((w.d - 4)::timestamp + interval '20 hours') AT TIME ZONE 'Asia/Shanghai'))::bigint << 32) + 123456789)::text,
+        jsonb_build_object('_undeclared', jsonb_build_object('作品ID',
+            lpad(to_hex(extract(epoch FROM (((w.d - 4)::timestamp + interval '20 hours') AT TIME ZONE 'Asia/Shanghai'))::bigint), 8, '0')
+            || '0123456789abcdef ← https://xhslink.com/o/Ab12Cd34Ef')))
+) AS v(k, ago, plat, url, rx);
 
 -- 20 篇垫底的帖: 11–30 天前, 同一个号, 没定级, 曝光都是 1000; 24h 评论数 0×10、1..10
 INSERT INTO truth_vault.notes (note_id, project_id, account_id, raw_content, publish_time, impressions)
@@ -282,6 +318,7 @@ CREATE TEMP TABLE wb_seen_acc AS SELECT * FROM workbench.v_accounts WHERE projec
 CREATE TEMP TABLE wb_seen_boost AS SELECT * FROM workbench.v_boost_curves WHERE project_id = 'CI_WB_A';
 CREATE TEMP TABLE wb_seen_shadow AS SELECT * FROM workbench.v_shadow_check;
 CREATE TEMP TABLE wb_seen_status AS SELECT * FROM workbench.v_status;
+CREATE TEMP TABLE wb_seen_hints AS SELECT * FROM workbench.v_exposure_hints;
 RESET ROLE;
 
 DO $$
@@ -289,7 +326,8 @@ DECLARE
     bad TEXT;
 BEGIN
     SELECT string_agg(DISTINCT v, ', ') INTO bad FROM wb_seen
-     WHERE t LIKE '%ci\_wb\_%' OR t LIKE '%CI\_WB\_A\_%' OR t LIKE '%CI\_WB\_C\_%' OR t LIKE '%xiaohongshu.com%';
+     WHERE t LIKE '%ci\_wb\_%' OR t LIKE '%CI\_WB\_A\_%' OR t LIKE '%CI\_WB\_C\_%' OR t LIKE '%CI\_WB\_D\_%'
+        OR t LIKE '%xiaohongshu.com%' OR t LIKE '%douyin.com%' OR t LIKE '%xhslink%' OR t ~ '[0-9a-f]{8}0123456789abcdef';
     IF bad IS NOT NULL THEN RAISE EXCEPTION 'I: 这些视图里出现了原始 account_id / note_id / 链接: %', bad; END IF;
     IF (SELECT count(DISTINCT v) FROM wb_seen) <> 9 THEN
         RAISE EXCEPTION 'I: 九个视图里有的读出来是空的 (夹具该让每个视图都有行)';
@@ -444,6 +482,28 @@ BEGIN
     IF j IS DISTINCT FROM '{"notes_14d": 26, "evening": 1, "weekend": 6, "same_acct_3d": 4, "any_hint": 9, "hour_unknown": 24,
                            "date_mismatch": 1, "no_account": 1, "status": "有"}'::jsonb THEN
         RAISE EXCEPTION 'F: CI_WB_A 的 b4 计数不对, 实得 %', j;
+    END IF;
+    -- 笔记 ID 的来源: 顶层先于 _undeclared; _undeclared 的也要日期对得上; 抖音帖不还原 (NULL, 不是 0)
+    SELECT string_agg(item_key || ':' || coalesce(data ->> 'hour_bj', '-') || ':' || (data ->> 'hour_status') || ':'
+                      || coalesce(data ->> 'evening', '-') || ':' || coalesce(data ->> 'weekend', '-') || ':' || coalesce(data ->> 'same_acct_3d', '-'),
+                      ',' ORDER BY item_key COLLATE "C")
+      INTO got FROM workbench.snapshot_items
+     WHERE day = DATE '2026-11-25' AND block = 'exposure_hints' AND project_id = 'CI_WB_D';
+    IF got IS DISTINCT FROM 'CI_WB_D_dy:-:抖音帖不还原:-:true:-,CI_WB_D_u1:19:知道:true:false:-,CI_WB_D_u2:9:知道:false:false:-,CI_WB_D_u3:-:日期对不上:-:-:-' THEN
+        RAISE EXCEPTION 'F: 笔记 ID 的来源 (顶层 → _undeclared、只认小红书) 不对, 实得 %', got;
+    END IF;
+    IF EXISTS (SELECT 1 FROM workbench.snapshot_items
+                WHERE day = DATE '2026-11-25' AND block = 'exposure_hints' AND item_key = 'CI_WB_D_dy' AND data -> 'hour_bj' IS DISTINCT FROM 'null'::jsonb) THEN
+        RAISE EXCEPTION 'F: 抖音帖的小时该是 JSON null (不知道), 不是 0';
+    END IF;
+    SELECT b4 INTO j FROM wb_seen_status WHERE project_id = 'CI_WB_D';
+    IF j IS DISTINCT FROM '{"notes_14d": 4, "evening": 1, "weekend": 1, "same_acct_3d": 0, "any_hint": 2, "hour_unknown": 2,
+                           "date_mismatch": 1, "no_account": 4, "status": "有"}'::jsonb THEN
+        RAISE EXCEPTION 'F: CI_WB_D 的 b4 计数不对, 实得 %', j;
+    END IF;
+    IF (SELECT string_agg(hour_status || ':' || coalesce(hour_bj::text, '-'), ',' ORDER BY hour_status COLLATE "C", hour_bj)
+          FROM wb_seen_hints WHERE project_id = 'CI_WB_D') IS DISTINCT FROM '抖音帖不还原:-,日期对不上:-,知道:9,知道:19' THEN
+        RAISE EXCEPTION 'F: v_exposure_hints 里 CI_WB_D 的小时 / 状态不对';
     END IF;
 END $$;
 
