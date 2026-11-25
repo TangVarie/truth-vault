@@ -764,7 +764,8 @@ def check_secondary_half_alias() -> None:
     _refused(lambda: G.fetch_dataset_secondary(_FakeSB({}, missing={C.D129_ID_MAP_TABLE}), bank=SEC_BANK,
                                                primary=SEC_PRIMARY), "fail closed", "映射表读不了")
     # 映射表永久保留: 名字像备份, 运维清单不能把它当过期备份删 (删了闸二和每季度 G-18 fail closed, 41 篇的半区也算不回来)。
-    # verify #92 (过期备份计数, 「> 0 = 该 drop 了」) 要把它除外; OPEN-ITEMS S-02 「…之后才可删」那一句里不能有它
+    # verify #92 (名字像备份、却没登记的表数, 期望 0; D-172) 要把它除外; OPEN-ITEMS S-02 里说到「可删」的句子不能有它
+    # (S-02 现在可以一句「可删」都没有, D-136 起备份都不删)
     import re as _re
     root = Path(__file__).resolve().parent.parent
     verify = (Path(__file__).resolve().parent / "verify_supabase_state.sql").read_text(encoding="utf-8")
@@ -772,7 +773,7 @@ def check_secondary_half_alias() -> None:
     assert f"(n.nspname, c.relname) <> ('truth_vault', '{C.D129_ID_MAP_TABLE}')" in v92, "verify #92 没把 D-129 映射表除外"
     s02 = next(ln for ln in (root / "OPEN-ITEMS.md").read_text(encoding="utf-8").splitlines() if ln.startswith("| S-02 |"))
     droppable = [seg for seg in _re.split(r"[；。]", s02) if "可删" in seg]
-    assert droppable and not any(C.D129_ID_MAP_TABLE in seg for seg in droppable), "S-02 把 D-129 映射表列进了可删"
+    assert not any(C.D129_ID_MAP_TABLE in seg for seg in droppable), "S-02 把 D-129 映射表列进了可删"
     assert f"`truth_vault.{C.D129_ID_MAP_TABLE}`（old_id → new_id 映射）**永久保留、不删**" in s02
     assert f"COMMENT ON TABLE truth_vault.{C.D129_ID_MAP_TABLE} IS '" in s02 and "永久保留" in s02
     print("  §8c 半区: 换了 id 的按 old_id (两个方向); 去掉映射 / 映射为空 / 读不了 → 拒; 新旧两行同在、点名的篇 → 拒; "

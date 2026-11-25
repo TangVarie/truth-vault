@@ -5881,7 +5881,7 @@ python job 里 import 馆员的 8 步（TV-03 / TV-05 / TV-06 / 守卫 6 / put_c
 - `_KNOWN_NOTE_COLUMNS` 是手抄的快照；生产加了列而这里没加，表现是 `load_mapping` 红（看得见），不是静默。
 - R-032 矩阵是手抄的，新消费者不会自动出现。
 
-**11-25 补记（工程，S-09）**：「挡不住什么」原来写的是直接 print 的不经掩码。现在 scripts/ onboarder/ worker/ librarian/ 里 `except … as X` 的 print 都要包 `mask_secrets`，CI 里 `check_secret_masking.py` §6 扫。仍挡不住：先存进别的变量再打、`sys.stderr.write`、写进文件的异常文本。不全局包 stdout，理由见 D-171 第 5 条。
+**11-25 补（工程，S-09）**：「挡不住什么」原来写的是直接 print 的不经掩码。现在 scripts/ onboarder/ worker/ librarian/ 里 `except … as X` 的 print 都要包 `mask_secrets`，CI 里 `check_secret_masking.py` §6 扫。仍挡不住：先存进别的变量再打、`sys.stderr.write`、写进文件的异常文本。不全局包 stdout，理由见 D-171 第 5 条。
 
 ## D-096 · 经验卡有了"essence 比卡新就重策展"的路；隔离行分得清新冒的和老的又冒；CI job 有超时；核心列闸没跑要看得见（2026-10-09）
 
@@ -7727,7 +7727,7 @@ owner 10-27 填回裁决表：83 格（不一致 43 + 复核 40），每一格�
 - LLM 花费：一次性约 500 篇重标 + 几十张卡重策展，之后每天 1–4 篇，都在现有日预算里。日预算按项目给，OKMAN 318 篇按每天 15 篇要三周左右消完；没标过的永远先标。
 - 规则只看文字：飞书里只改了 hashtags 列、评论区、指标的不算正文改动，不重标。
 
-**11-25 补记（工程）**：AU-F02b ② 见 D-174；④ 见 D-173（删旧帖评论、撤旧样本要 owner 点头，11-25 问了、还没答）。
+**11-25 补（工程）**：AU-F02b ② 见 D-174；④ 见 D-173（删旧帖评论、撤旧样本要 owner 点头，11-25 问了、还没答）。
 
 ## D-138 · 外部参考书架按「最近涨得快」上架，每次借卡至少带 1 张外部卡；品牌表加家居家电 / 个护 / 藻油（2026-11-02，写作台发牌改版 angle cards v2 的 TV 配套，aw#140）
 
@@ -7756,7 +7756,7 @@ owner 10-27 填回裁决表：83 格（不一致 43 + 复核 40），每一格�
 - 新的三个品类没有补 `mask_terms`：本仓公开，别家品牌名不写进来。这三个品类不强塞外部卡（上面第 3 条），但模型自己挑了的，点到的别家品牌名照原样进写作台，只靠 Jev 分诊「没带产品」和 prompt 里「不提它的品牌」挡（OPEN-ITEMS F-10）。
 - 品牌 → 品类表在 TV 和 aw 各一份（OPEN-ITEMS F-09）。
 
-**11-25 补记（工程，J-17）**：旧的 1,419 行回填写成 owner SQL `scripts/backfill_external_publish_time_j17.sql`，不用 Jev 脚本的 `--sql`（那个会把每行 id 写进文件）和 `--apply`（1,419 次逐行 PATCH）。规则和 Jev 逐字一致，CI 夹具钉住边界（正好 2013-01-01 00:00:00 的填、早一秒的不填；正好抓取 + 1 天的填、晚的不填；不足 8 位、非十六进制、已有值不动）。夹具开头查库名，不是 CI 库就停。跑完给 publish_time 加列注释。11-25 只读 dry-run：外部表 3,149 行，空 1,419 行，1,419 行都能解（2016-05-16 到 2026-11-03），越界 0、非十六进制 0；已有值的 1,730 行和规则逐字一样。0 元、几秒、先备份、可重跑，合并后交给 owner 跑（D-170）。`schemas/notes_v1_18_external_notes.sql` 里那句「不推算」的行内注释这次没改：Jev 仓 `migrations/` 里有一份逐字相同的副本，单改 TV 两份就不一样了，留到下一个 Jev PR 两仓一起改；Jev 那边的共享测试向量也放那个 PR（TV 夹具用的向量写在 `scripts/check_backfill_external_publish_time_j17.sql` 开头，可以照抄）。
+**11-25 补（工程，J-17）**：旧的 1,419 行回填写成 owner SQL `scripts/backfill_external_publish_time_j17.sql`，不用 Jev 脚本的 `--sql`（那个会把每行 id 写进文件）和 `--apply`（1,419 次逐行 PATCH）。规则和 Jev 逐字一致，CI 夹具钉住边界（正好 2013-01-01 00:00:00 的填、早一秒的不填；正好抓取 + 1 天的填、晚的不填；不足 8 位、非十六进制、已有值不动）。夹具开头查库名，不是 CI 库就停。跑完给 publish_time 加列注释。11-25 只读 dry-run：外部表 3,149 行，空 1,419 行，1,419 行都能解（2016-05-16 到 2026-11-03），越界 0、非十六进制 0；已有值的 1,730 行和规则逐字一样。0 元、几秒、先备份、可重跑，批 1–3 做完后和别的 0 元 SQL 一起交给 owner 跑（D-170 ④）。`schemas/notes_v1_18_external_notes.sql` 里那句「不推算」的行内注释这次没改：Jev 仓 `migrations/` 里有一份逐字相同的副本，单改 TV 两份就不一样了，留到下一个 Jev PR 两仓一起改；Jev 那边的共享测试向量也放那个 PR（TV 夹具用的向量写在 `scripts/check_backfill_external_publish_time_j17.sql` 开头，可以照抄）。
 
 ## D-139 · 外部语料改成一周两次（周一、周四），新鲜度灯 8 天 → 5 天（2026-11-03）
 
@@ -9170,7 +9170,7 @@ owner 11-23 发了一张小红书评论区截图（一条 AI 定时自学的做�
 **定了什么**
 
 1. **部署清单。** ci.yml 里那段「README Step 0 要列全 notes_v1_*」挪进 `scripts/check_schema_deploy_list.py`（D-075：守卫放 scripts/，ci.yml 只留一行）。范围放宽到 schemas/ 下每一份 .sql（今天 41 份）：
-   - 每份只能在一处：Step 0、Step 0b、或脚本里的 NOT_LISTED（写明理由）。今天 NOT_LISTED 只有 `notes_v1_2_cross_schema_views.sql`（D-029 第 4 步）。
+   - 每份只能在一处：Step 0、Step 0b、或脚本里的 NOT_LISTED（写明理由）。今天 NOT_LISTED 只有 `notes_v1_2_cross_schema_views.sql`（D-029：三个 schema 就绪后才跑；`schemas/notes_v1_2.sql` 末尾部署步骤第 4 步）。
    - 清单里不许有盘上不存在的文件。
    - 每份都要在 ci.yml 的 sql job 里真跑过；不跑的写进 NOT_IN_CI 并写明理由（今天没有）。「真跑过」只认真的 psql 命令：shell 注释、echo 的参数、heredoc 正文里提到的不算。
    - Step 0b 的先后顺序 = sql job 第一次跑它们的顺序。
@@ -9193,7 +9193,7 @@ owner 11-23 发了一张小红书评论区截图（一条 AI 定时自学的做�
 **定了什么**
 
 1. **#92** 改成：名字像备份（含 backup、以 `_bak_` 加四位数字开头、或以 `_YYYYMMDD` 结尾）、却不在登记册里的表数，期望 0。`backup_d129_ids_20261026` 仍单独除外（D-128 补记）。大于 0 = 有新备份没登记，补登记，不删。
-2. **#92b**：anon / authenticated 有任何权限的备份表数，期望 0。11-25 生产 0：16 张没开 RLS，但都没有授权，truth_vault 也不给 anon 用，所以不补开 RLS。
+2. **#92b**：「备份表 × 客户端角色」的组数（角色是 anon、authenticated；一张表两个角色都能碰算 2），期望 0。11-25 生产 0：16 张没开 RLS，但都没有授权，truth_vault 也不给 anon 用，所以不补开 RLS。
 3. **登记册** `docs/backup-registry.md`：25 条规则（正则，对「schema.表名」整串），每条写张数和来源。11-25 生产 82 张全部登记（其中 `_bak_` 开头 18 张）。以前没登记的 15 张 `_bak_` 表这次登记了（`_bak_1102_dup_*` 9 张、`_bak_1102_novelty_rules`、`_bak_1103_spx_rules`、`_bak_1103_tuge_comment_rules`、`_bak_1110_tuge_*` 2 张、`_bak_1123_ending_rule_compile`）；其中 novelty_rules、spx_rules 两张来源没记。另外预先登记了本批 owner SQL 会建的 5 张备份表（3 条规则）。OPEN-ITEMS S-02 里原来那一长串备份名单删了，以登记册为准。
 4. 守卫 `check_verify_backup_registry.py`：#92 的 VALUES 和登记册一条不差；名字规则、d129 除外、提示、#92b 都钉住；带反证。`check_verify_rows_pg.py` 在 CI 的 Postgres 上真跑 #92 / #92b。
 5. **R-032 矩阵**按四个库的 workflow 和代码重盘，只看变量名：
@@ -9229,10 +9229,15 @@ owner 11-23 发了一张小红书评论区截图（一条 AI 定时自学的做�
 5. 旧样本：改指之前推的、正文和现在不一样的通道 1 样本。29 个（全在 OKMAN），由 `scripts/withdraw_repointed_stale_ssll_samples_au_f02b.sql` 撤（先清标记、再删样本，同 `_retract_one`），先备份；下一晚按现在的帖重推。必须先跑第 2 条，否则重推的样本带旧热评（文件里有检查，没先跑会报错、什么都不改）。所以 owner 不同意第 2 条，这一条也不做。
 6. verify #109（旧帖评论数，规则同第 2 条）、#110（旧样本数），期望 0。owner 定了不清的话，期望改成当时的读数（11-25：765、29）。
 7. **写作台链接、指标快照这次不动（工程定，owner 可以否决）**：
-   - 改指之前量的指标快照 572 行 / 303 篇（OKMAN 549 行 / 283 篇）先不动：看板和工作台现在的时间窗都不碰 8 月的 OKMAN。以后有人要用 OKMAN 的时序，再按改指时间切。
+   - 改指之前量的指标快照 572 行 / 303 篇先不动。OKMAN 549 行 / 283 篇现在没有地方读：看板只数快照的总数；工作台只算活跃项目（近 30 天有帖，11-25 是 BJS_phase2、HATHERINE、SPX、TUGE、XIWU_phase2 五个），没有 OKMAN。别的项目 23 行 / 20 篇里，在活跃项目里的会进工作台 3a / 3b 的基线（「本项目更早的帖」，不限日期）。这四个活跃项目改指过的一共 16 篇（TUGE 9、HATHERINE 3、SPX 2、XIWU_phase2 2），带旧快照的只是其中一部分，在本项目更早的帖里是少数，所以也先不动。以后有人要用 OKMAN 的时序，或者发现这几篇把工作台的排名带偏了，再按改指时间切。
    - 改指之前配上的 12 条写作台链接（TUGE 5、HATHERINE 3、SPX 2、XIWU_phase2 2）排进下一个 aw PR：让 aw 的 tv-sync 对改指过的篇重配一次。aw 的指纹和 TV 的 content_sha 算法不同，TV 这边判断不了它们配得对不对。
 
-**owner 点头之后**：先跑 cleanup、再跑 withdraw，看最后一个 SELECT 和 #109、#110 是不是 0（cleanup 回读里 `kept_no_source_text` ≈ 16 是正常的，就是第 3 条那 16 行）。withdraw 之后那一晚通道 1 会新推约 29 篇，加上当晚别的新篇超过 30 时大批首推闸会挡（daily-sync 那一步红），看过名单后用 `allow_bulk_ssll_push` 放行一次。同时在 D-119 末尾加补记、改 OPEN-ITEMS J-02 那一句（文字工程已备好）。**owner 不点头**：第 1、2、4、5、6 条标「不做」，#109 期望改成 765、#110 改成 29，D-119 和 J-02 都不动。
+**owner 怎么答，就怎么做**（删和撤是两问）：
+
+- **删、也撤**：先跑 cleanup、再跑 withdraw，看最后一个 SELECT 和 #109、#110 是不是 0（cleanup 回读里 `kept_no_source_text` ≈ 16 是正常的，就是第 3 条那 16 行）。withdraw 之后那一晚通道 1 会新推约 29 篇，加上当晚别的新篇超过 30 时大批首推闸会挡（daily-sync 那一步红），看过名单后用 `allow_bulk_ssll_push` 放行一次。
+- **删、不撤**：只跑 cleanup；第 5 条标「不做」，#110 期望改成 29。
+- **不删**：两份都不跑（withdraw 开头查旧帖评论，没删就拒跑）；第 1、2、4、5、6 条标「不做」，#109 期望改成 765、#110 改成 29，D-119 和 J-02 都不动。
+- 只要同意删，跑完 cleanup 再补两处：D-119 末尾加一段补，写明第 15 条里 OKMAN 改指篇上这 765 条由 D-173 修订、已经删了，整行备份在 `truth_vault.backup_repoint_stale_comments_20261125` 和判分那张，LNKT 244 条、别的项目、第 3 条那 16 条照旧留着；OPEN-ITEMS J-02 末尾 D-119 那句换成第 4 条的做法（主分析不算这 765 条，要报「带上它们」从两张备份表读；别的照旧报带 / 不带两种），并写上这个 run_tag 跑之前在表里的实数：11-25 是 9,717 条 / 87,453 行，比 J-02 记的少 49 条，和这批无关。
 
 **审计读数（11-25 只读）**
 
@@ -9253,8 +9258,8 @@ owner 11-23 发了一张小红书评论区截图（一条 AI 定时自学的做�
 
 **定了什么**
 
-1. `schemas/notes_v1_29_content_scores_input_sha.sql`（owner 跑；0 元，合并前后都行，可重跑）：content_scores 加可空的 input_sha 和列注释。已有 909 行不回填（D-137 §6 的敏感度检查从 audit_log 还原正文，不靠这一列）。
+1. `schemas/notes_v1_29_content_scores_input_sha.sql`（owner 跑；0 元，合并后随时，可重跑；照 D-170 ④ 批 1–3 做完一起交）：content_scores 加可空的 input_sha 和列注释。已有 909 行不回填（D-137 §6 的敏感度检查从 audit_log 还原正文，不靠这一列）。
 2. `gate3_score.py`：每条新分的 input_sha = 打分那一刻这篇的 essence_content_sha。只在库里有 essence_content_sha 时才去取（v1_23 没跑的库上为空）。写库仍是 ignore_duplicates，不重打（D-118）。冻结文件和 scorer_version 不变。
-3. 没跑 DDL 时：写库报「没有 input_sha 这一列」（PGRST204 / 42703 且带列名），喊一次 warning（`warn_missing_migration_once`），去掉这一列重写这一批，本进程后面的批都不带，不红。别的错照抛，灯照红。
+3. 没跑 DDL 时：写库报「没有 input_sha 这一列」（PGRST204 / 42703 且带列名），喊一次 warning（`warn_missing_migration_once`），去掉这一列重写这一批，本进程后面的批都不带，不红。一个进程喊一次，夜跑每晚是新进程，所以 owner 跑 DDL 之前，夜跑页面上闸三那一步每晚多一行黄色提醒「迁移还没跑」。别的错照抛，灯照红。
 4. verify #108：第一条带 input_sha 的分之后，又写进来的空 input_sha 行数，期望 0；没这一列时 N/A。
 5. `check_gate3.py` §10 钉住以上几条。

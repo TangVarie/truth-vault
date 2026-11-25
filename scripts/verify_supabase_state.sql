@@ -703,7 +703,7 @@ SELECT '90', 'I · 数据一致性',
 -- ── 2026-11-25 batch 1 (S-02 / S-09) 追加的行 ─────────────────────────────
 UNION ALL
 SELECT '92b', 'I · 数据一致性',
-    '客户端角色 (anon / authenticated) 有任何权限的备份表数 (名字规则同 #92; S-02)',
+    '客户端角色 (anon / authenticated) 有任何权限的「备份表 × 角色」数 (一张表两个角色都能碰算 2; 名字规则同 #92; S-02)',
     COALESCE(pg_temp.safe_count(
         $q$SELECT COUNT(*)
         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -787,10 +787,11 @@ SELECT '109', 'I · 数据一致性',
                                            || coalesce(n.raw_extra->>'_comment_text_persona', '')) = 0$q$
     )::TEXT, 'N/A'),
     '0',
-    '11-25 生产 765 (全在 OKMAN_phase1, 242 篇), 都有 Jev 的评论判分。清法: owner 跑 '
-    'scripts/cleanup_repointed_stale_comments_au_f02b.sql (先备份、再删评论和判分, 能重跑)。这一行改了 D-119 #15 的口径 (D-173): '
+    '11-25 生产 765 (全在 OKMAN_phase1, 242 篇), 都有 Jev 的评论判分。这一行按 D-173 的提议数: 要改 D-119 #15, 要 owner 点头; '
+    '11-25 问了还没答, 没答之前 765 是已知的, 不用清。owner 同意删之后的清法: 先跑 '
+    'scripts/cleanup_repointed_stale_comments_au_f02b.sql (先备份、再删评论和判分, 能重跑), 同意撤样本的话再跑 withdraw (见 #110)。'
     'owner 不同意删的话, 把期望改成当时的读数。没有原文键、改指时也没换发布时间的篇上另有 16 条 (OKMAN 13、TUGE 3), '
-    '「找不到」只说明源清空了, 不算进这一行, 照 D-119 #15 留着。'
+    '「找不到」只说明源清空了, 不算进这一行, 照 D-119 #15 留着 (D-173 第 3 条)。'
 
 UNION ALL
 SELECT '110', 'H · 跨 schema 孤儿',

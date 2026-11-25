@@ -39,7 +39,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # 不在 Step 0 / Step 0b 里的文件, 必须显式登记并写明理由 —— 不许静默跳过。
 NOT_LISTED = {
-    "notes_v1_2_cross_schema_views.sql": "D-029 部署顺序第 4 步: 要等 ssll / autowriter 两个 schema 就绪, 不是 sync 的前置",
+    "notes_v1_2_cross_schema_views.sql": "D-029 (notes_v1_2.sql 末尾部署步骤第 4 步): 要等 ssll / autowriter 两个 schema 就绪, 不是 sync 的前置",
 }
 # 不在 ci.yml sql job 里跑的文件, 同样要写明理由。今天没有。
 NOT_IN_CI: dict[str, str] = {}
