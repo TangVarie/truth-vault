@@ -18,7 +18,8 @@
 -- 安全重跑: 备份只补没备份过的行; 删过的行再跑一遍认不到了, 什么都不做。重跑结果一样。
 -- 前提: v1_27 跑过 (comments.source 列; 生产 11-16 已跑)。
 -- 备份: truth_vault.backup_comments_commenter_20261125 / truth_vault.backup_nfa_commenter_20261125。
---   回滚 SQL 写在两张表的 COMMENT 里。按 D-136 备份都留着, 不删; 请登记到 S-02 的备份登记 (verify #92)。
+--   回滚 SQL 写在两张表的 COMMENT 里。按 D-136 备份都留着, 不删; 已登记在 docs/backup-registry.md (verify #92), 你不用做什么。
+--   两张表开 RLS、收回 anon / authenticated 的权限 (同批 1 的 owner SQL; verify #92b)。
 -- 跑完看最后两段回读: 应剩 0 行假评论、0 行悬空账本; 备份表 29 行 / 270 行。
 -- ════════════════════════════════════════════════════════════════════
 
@@ -65,6 +66,18 @@ WHERE c.comment_id IN (SELECT comment_id FROM c31_fake)
 
 CREATE TABLE IF NOT EXISTS truth_vault.backup_nfa_commenter_20261125 AS
 SELECT * FROM truth_vault.note_feature_answers WHERE false;
+ALTER TABLE truth_vault.backup_comments_commenter_20261125 ENABLE ROW LEVEL SECURITY;
+ALTER TABLE truth_vault.backup_nfa_commenter_20261125 ENABLE ROW LEVEL SECURITY;
+DO $$
+DECLARE r TEXT;
+BEGIN
+    FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+            EXECUTE format('REVOKE ALL ON truth_vault.backup_comments_commenter_20261125 FROM %I', r);
+            EXECUTE format('REVOKE ALL ON truth_vault.backup_nfa_commenter_20261125 FROM %I', r);
+        END IF;
+    END LOOP;
+END $$;
 INSERT INTO truth_vault.backup_nfa_commenter_20261125
 SELECT a.* FROM truth_vault.note_feature_answers a
 WHERE a.subject_type = 'comment' AND a.subject_id IN (SELECT comment_id FROM c31_fake)
@@ -77,11 +90,11 @@ COMMENT ON TABLE truth_vault.backup_comments_commenter_20261125 IS
     '列体检 2026-11-25 §3a #1 (v1_31): 「随贴评论素人」(素人编号) 被当成评论灌进来的假评论, 删前整行快照。'
     '回滚: INSERT INTO truth_vault.comments SELECT * FROM truth_vault.backup_comments_commenter_20261125 b '
     'WHERE NOT EXISTS (SELECT 1 FROM truth_vault.comments c WHERE c.comment_id = b.comment_id); '
-    '(要先回滚评论、再回滚 backup_nfa_commenter_20261125。) 按 D-136 留着不删, 登记在 S-02。';
+    '(要先回滚评论、再回滚 backup_nfa_commenter_20261125。) 登记在 docs/backup-registry.md (D-136: 留着, 不删)。';
 COMMENT ON TABLE truth_vault.backup_nfa_commenter_20261125 IS
     '列体检 2026-11-25 §3a #1 (v1_31): judge 给那批假评论打的分 (note_feature_answers, subject_type = comment), 删前整行快照。'
     '回滚 (先回滚 backup_comments_commenter_20261125): INSERT INTO truth_vault.note_feature_answers '
-    'SELECT * FROM truth_vault.backup_nfa_commenter_20261125 ON CONFLICT DO NOTHING; 按 D-136 留着不删, 登记在 S-02。';
+    'SELECT * FROM truth_vault.backup_nfa_commenter_20261125 ON CONFLICT DO NOTHING; 登记在 docs/backup-registry.md (D-136: 留着, 不删)。';
 
 -- ── 3. 删: 先删账本 (没有外键), 再删评论 (楼中楼的子评论 ON DELETE SET NULL; 11-25 是 0 条) ─────────────
 DELETE FROM truth_vault.note_feature_answers

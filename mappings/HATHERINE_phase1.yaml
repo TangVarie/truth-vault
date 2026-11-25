@@ -170,7 +170,7 @@ tier_extraction:
       tier: 大爆
     - match_contains: ["爆贴"]
       tier: 爆
-    - match_contains: ["风控", "疑似限流"]   # 「风控中」「疑似限流」都算风控(docs/05 §10: 被平台限流或风控)
+    - match_contains: ["风控"]   # 「风控中」。2026-11-25 拿掉了「疑似限流」(09-17 照 docs/05 §10 并进来的): 它是评论数异常, 不是风控 (D-177 第 3 条; 当时 0 行)
       tier: 风控
     - match_contains: ["无水花"]
       tier: 趴

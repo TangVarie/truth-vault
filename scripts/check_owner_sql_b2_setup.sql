@@ -1,4 +1,4 @@
--- check_owner_sql_b2_setup.sql · 两份 owner 数据 SQL (v1_31 / v1_33, 列体检 2026-11-25 / I-17) 的夹具: 只铺数据。
+-- check_owner_sql_b2_setup.sql · 两份 owner 数据 SQL (v1_31 / v1_33, 列体检 2026-11-25 / I-17) 的夹具: 铺数据 (开头先删上一次留下的三张备份表, 末尾模拟最坏的默认授权)。
 -- CI 的 sql job 一行 (在仓库根目录; 中间两个 -f 是两份 owner SQL 的第一遍, 批 1 的部署清单守卫 §3 认 `-f schemas/...`):
 --   psql -v ON_ERROR_STOP=1 -q -f scripts/check_owner_sql_b2_setup.sql -f schemas/notes_v1_31_commenter_codes_cleanup.sql \
 --        -f schemas/notes_v1_33_direction_switch_restore.sql -f scripts/check_owner_sql_b2.sql
@@ -7,6 +7,12 @@
 
 \set QUIET on
 \set ON_ERROR_STOP 1
+
+-- 上一次跑留下的三张备份表先删掉。check_owner_sql_b2.sql 收尾时故意不删它们: 留给 ci.yml 最后一步
+-- check_verify_rows_pg.py 的底数 (#92 = 0 名字都登记了、#92b = 0 客户端角色碰不到) 一起核。
+DROP TABLE IF EXISTS truth_vault.backup_comments_commenter_20261125, truth_vault.backup_nfa_commenter_20261125,
+                     truth_vault.backup_notes_i17_20261125;
+ALTER DEFAULT PRIVILEGES IN SCHEMA truth_vault REVOKE SELECT, INSERT ON TABLES FROM anon, authenticated;
 
 INSERT INTO truth_vault.projects (project_id, brand, product, category) VALUES
     ('NUC_phase1', 'b', 'p', '保健品'), ('NRT_phase2', 'b', 'p', '保健品'), ('HXZ_FB', 'b', 'p', '美妆'),
@@ -76,3 +82,7 @@ INSERT INTO truth_vault.audit_log (schema_name, table_name, row_id, operation, c
   ('truth_vault', 'notes', 'CIB2_b7', 'UPDATE', '{"content_format": ["认知重构", "场景植入"]}', '2026-09-11 10:00'),
   ('truth_vault', 'notes', 'CIB2_b7', 'UPDATE', '{"essence_annotated_at": ["2026-09-10", "2026-11-05"], "emotional_lever": ["x", "y"]}', '2026-11-05 10:00'),
   ('truth_vault', 'notes', 'CIB2_b7', 'UPDATE', '{"raw_extra": [{"_direction_raw": "好物分享-产品贴"}, {"_direction_raw": ["成人款"]}]}', '2026-11-21 10:00');
+
+-- 模拟最坏的默认授权 (truth_vault 下新建的表默认给 anon / authenticated; 生产没有), 这样两份 owner SQL 的 REVOKE 才真被考到
+-- (同批 1 的 check_verify_rows_pg.py / J-17 夹具)。check_owner_sql_b2.sql 一开头就收回。
+ALTER DEFAULT PRIVILEGES IN SCHEMA truth_vault GRANT SELECT, INSERT ON TABLES TO anon, authenticated;

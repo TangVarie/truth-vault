@@ -15,7 +15,8 @@
 --   SPX_phase1 1, 共 69 篇); 内容层同一晚补上 61 篇 (BJS_phase2 「提问贴 + 款」58 篇 → Q, 「精品贴 + 成人款」3 篇 → J)。
 -- 备份: truth_vault.backup_notes_i17_20261125, 每篇一行: 四列 (content_format / target_audience / user_pain_point /
 --   product_focus) + content_layer + 方向原值 + 为什么进来。只补没备份过的篇, 重跑不覆盖第一次的值。
---   回滚 SQL 在表的 COMMENT 里。按 D-136 留着不删; 请登记到 S-02 的备份登记 (verify #92)。
+--   回滚 SQL 在表的 COMMENT 里 (只想找回人群 / 痛点 / 产品焦点时, 去掉 content_format 那一项, 见 COMMENT)。
+--   按 D-136 留着不删; 已登记在 docs/backup-registry.md (verify #92), 你不用做什么。表开 RLS、收回 anon / authenticated 的权限 (verify #92b)。
 -- 安全重跑: 换过的篇 content_format 已经不等于旧方向的值, 再跑认不到; 清过的篇三列都是空, 不再进备份。跑几遍结果一样。
 -- 前提: v1_24 跑过 (notes.content_layer; 生产已跑)。下面两张小表 (哪些方向抬得了 / 哪些标要忽略) 和
 --   mappings/*.yaml 逐条一致, CI 的 scripts/check_direction_switch.py 守着。
@@ -110,6 +111,16 @@ CREATE TABLE IF NOT EXISTS truth_vault.backup_notes_i17_20261125 AS
 SELECT note_id, project_id, content_format, target_audience, user_pain_point, product_focus, content_layer,
        raw_extra -> '_direction_raw' AS direction_raw, ''::text AS reason, now() AS backed_up_at
 FROM truth_vault.notes WHERE false;
+ALTER TABLE truth_vault.backup_notes_i17_20261125 ENABLE ROW LEVEL SECURITY;
+DO $$
+DECLARE r TEXT;
+BEGIN
+    FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+            EXECUTE format('REVOKE ALL ON truth_vault.backup_notes_i17_20261125 FROM %I', r);
+        END IF;
+    END LOOP;
+END $$;
 INSERT INTO truth_vault.backup_notes_i17_20261125
 SELECT u.note_id, u.project_id, u.content_format, u.target_audience, u.user_pain_point, u.product_focus, u.content_layer,
        u.direction_raw,
@@ -130,7 +141,8 @@ COMMENT ON TABLE truth_vault.backup_notes_i17_20261125 IS
     '合并后第一次夜跑清人群 / 痛点 / 产品焦点。回滚: UPDATE truth_vault.notes n SET content_format = b.content_format, '
     'target_audience = b.target_audience, user_pain_point = b.user_pain_point, product_focus = b.product_focus '
     'FROM truth_vault.backup_notes_i17_20261125 b WHERE n.note_id = b.note_id; (I-17 的同步代码还在的话, 下一晚会再清一次三列。) '
-    '按 D-136 留着不删, 登记在 S-02。';
+    '只想找回人群 / 痛点 / 产品焦点 (比如 I-17 的代码回滚了) 就去掉 SET 里 content_format 那一项: 整条会连本文件换回的 content_format 一起撤掉 (D-178)。'
+    '登记在 docs/backup-registry.md (D-136: 留着, 不删)。';
 
 -- ── 4. 换回 essence 的 content_format ──────────────────────────────────
 UPDATE truth_vault.notes n

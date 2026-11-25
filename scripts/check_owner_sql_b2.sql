@@ -2,7 +2,9 @@
 --   psql -v ON_ERROR_STOP=1 -q -f scripts/check_owner_sql_b2_setup.sql -f schemas/notes_v1_31_commenter_codes_cleanup.sql \
 --        -f schemas/notes_v1_33_direction_switch_restore.sql -f scripts/check_owner_sql_b2.sql
 -- setup 铺夹具, 中间两个 -f 是两份 owner SQL 的第一遍 (批 1 的部署清单守卫 §3 要在 ci.yml 里看到 `-f schemas/...`);
--- 本文件记下第一遍的备份时刻, 用 \i 把两份各再跑一遍 (幂等), 然后核对, 最后删干净, 三张备份表也 drop 掉。
+-- 本文件记下第一遍的备份时刻, 用 \i 把两份各再跑一遍 (幂等), 然后核对, 最后删掉夹具的行。三张备份表留着 (下一次跑 setup 开头删):
+--   ci.yml 最后一步 check_verify_rows_pg.py 的底数 #92 = 0 / #92b = 0 连它们一起核 —— 表名改了、登记册和 #92 没跟上就红。
+-- setup 在两份 owner SQL 第一遍之前模拟最坏的默认授权, 本文件一开头收回; ④ 核三张备份表开了 RLS、anon / authenticated 碰不到。
 -- 单独跑本文件会红 (没有夹具)。
 --
 -- v1_31 (假评论): 认得出 旧键 _comment_text_persona 和新键 _commenter_codes 里的带字母编号; 编号在随贴评论原文里出现过的、
@@ -20,11 +22,13 @@
 --          essence 取最早一次写 → b6 换成 认知重构, ② 红; 取第一次改方向 → b6 不换, ② 红;
 --          essence 只看改过 content_format 的那几次 → b7 被换, ② 红; 不看 essence 那次改没改 → b3 / b7 换成 NULL, ② 红;
 --          备份每遍都插 → ③ 红; 顺手清人群 → ② 红。
+--   两份都算: 去掉 REVOKE → ④ 红 (最后一步 #92b 也红); 改了备份表名、登记册 / #92 没跟上 → 最后一步 #92 红。
 --   v1_32 那两条 (夹具不设 want_flag / flag 改回 unknown) 在 check_paid_boost_v1_32.sql 那一步红。
 
 \set QUIET on
 \set ON_ERROR_STOP 1
 
+ALTER DEFAULT PRIVILEGES IN SCHEMA truth_vault REVOKE SELECT, INSERT ON TABLES FROM anon, authenticated;
 CREATE TEMP TABLE cib2_first AS SELECT note_id, backed_up_at FROM truth_vault.backup_notes_i17_20261125;
 \i schemas/notes_v1_31_commenter_codes_cleanup.sql
 \i schemas/notes_v1_33_direction_switch_restore.sql
@@ -81,16 +85,29 @@ BEGIN
     RAISE NOTICE '✓ v1_33: 款式标去掉之后抬不了 + 旧方向的值 + essence 改过 → 换回 (BJS 多选 / HATHERINE 单值; 认最后一次改方向和最后一次 essence); 抬得了的 / essence 最后没改的 / 已是 essence 的 / 库里不是旧方向值的不换; 备份 5 篇只补一次';
 END $$;
 
--- ═══ 收尾 ═══════════════════════════════════════════════════════════════
+DO $$
+DECLARE t text;
+BEGIN
+    FOREACH t IN ARRAY ARRAY['truth_vault.backup_comments_commenter_20261125', 'truth_vault.backup_nfa_commenter_20261125',
+                             'truth_vault.backup_notes_i17_20261125'] LOOP
+        IF has_table_privilege('anon', t, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER')
+           OR has_table_privilege('authenticated', t, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER') THEN
+            RAISE EXCEPTION '④ 默认授权下 % 还给 anon / authenticated 留着权限 (REVOKE 没起作用)', t;
+        END IF;
+        IF NOT (SELECT relrowsecurity FROM pg_class WHERE oid = t::regclass) THEN
+            RAISE EXCEPTION '④ % 没开 RLS', t;
+        END IF;
+    END LOOP;
+    RAISE NOTICE '✓ 三张备份表: 开了 RLS, 默认授权下 anon / authenticated 也碰不到';
+END $$;
+
+-- ═══ 收尾 (三张备份表不删, 见文件头) ═══════════════════════════════════════════
 DELETE FROM truth_vault.note_feature_answers WHERE subject_id LIKE 'CIB2\_%';
 DELETE FROM truth_vault.comments WHERE comment_id LIKE 'CIB2\_%';
 DELETE FROM truth_vault.notes WHERE note_id LIKE 'CIB2\_%';
 DELETE FROM truth_vault.audit_log WHERE row_id LIKE 'CIB2\_%';
-DROP TABLE truth_vault.backup_comments_commenter_20261125;
-DROP TABLE truth_vault.backup_nfa_commenter_20261125;
-DROP TABLE truth_vault.backup_notes_i17_20261125;
 DELETE FROM truth_vault.audit_log WHERE table_name = 'projects'
    AND row_id IN ('NUC_phase1', 'NRT_phase2', 'HXZ_FB', 'BJS_phase2', 'HATHERINE_phase1', 'SPX_phase1');
 DELETE FROM truth_vault.projects WHERE project_id IN ('NUC_phase1', 'NRT_phase2', 'HXZ_FB', 'BJS_phase2', 'HATHERINE_phase1', 'SPX_phase1')
    AND NOT EXISTS (SELECT 1 FROM truth_vault.notes n WHERE n.project_id = projects.project_id);
-DO $$ BEGIN RAISE NOTICE '✓ check_owner_sql_b2.sql: all checks passed (夹具已清)'; END $$;
+DO $$ BEGIN RAISE NOTICE '✓ check_owner_sql_b2.sql: all checks passed (夹具的行已清, 三张备份表留给最后一步的 #92 / #92b)'; END $$;

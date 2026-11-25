@@ -34,7 +34,7 @@ cases = [
     ("OKMAN_phase1", ["爆贴", "风控中"], "风控"),
     ("SPX_phase1", ["爆帖预备", "爆贴", "风控中"], "风控"),
     ("WTG_phase1", ["爆贴预备", "风控中"], "风控"),
-    ("HATHERINE_phase1", ["大爆", "疑似限流"], "风控"),   # HATHERINE 把疑似限流也映成 风控
+    ("HATHERINE_phase1", ["大爆", "风控中"], "风控"),   # 11-25 起 HATHERINE 的疑似限流不再判风控 (D-177 第 3 条, 见 check_tier_vocab.py §2)
     ("OKMAN_phase1", ["风控中"], "风控"),
     # 没有风控标的格子照旧按 rank: 旧修复不能被否决位带坏
     ("OKMAN_phase1", ["爆帖预备", "爆贴"], "爆"),
