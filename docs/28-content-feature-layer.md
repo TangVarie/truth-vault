@@ -433,7 +433,7 @@ l2-feasibility §3 的历史数是最低档 3.38%、其余四档平均 7.58%，�
 1. **卡上标出命中的已验证规律**：`v_flywheel_lesson_cards` 加一列 `validated_hits TEXT[]`，内容是这张卡的源笔记命中了哪些 `validated` 的特征值（答案表 join 最新一轮 `feature_validation`）。`why_it_worked` 照旧保留，旁边多一行有对照证据的事实。
 2. **馆员多一个缓存块「已验证规律」**，每条一句人话，取自 `feature_validation.summary`。`ROLE_TASK_INSTR` 加一句：优先借命中已验证规律的卡，`borrow_what` 里写明借的是哪一条。
    ⚠️ `library_version()` 现在由候选数、最新策展时间、月份桶、候选 ID 摘要四项组成，规律更新时这四项可能一项都不变。**必须把 `gate2_run` 并进去**，否则规律换了、馆员缓存不会失效。
-3. **`rank_score` 的账号项**（§11 第 7 条）：把 `COALESCE(personal_bao_rate, 0.3) × 0.3` 换成 `0.3 × (1 − 收缩后的账号先验)`。账号先验只用这条笔记**之前**的清洗后标签，按 m = 10 向项目基线收缩：`(之前的爆款数 + 10 × 项目基线) / (之前的笔记数 + 10)`。意思是：弱账号爆出来的那条，更能说明内容本身的功劳，排前面。
+3. **`rank_score` 的账号项**（§11 第 7 条）：把 `COALESCE(personal_bao_rate, 0.3) × 0.3` 换成 `0.3 × (1 − 收缩后的账号先验)`。账号先验只用这条笔记**之前**的清洗后标签，按 m = 10 向项目基线收缩：`(之前的爆款数 + 10 × 项目基线) / (之前的笔记数 + 10)`。意思是：弱账号爆出来的那条，更能说明内容本身的功劳，排前面。**已落代码（G-06，`schemas/notes_v1_34_shelf_account_prior.sql`，owner 跑了才生效）**：标签只读 `v_l2_labels`；「之前」是严格早于这张卡（同一时刻的不算，同 `gate2_run.account_prior_strata`），账号跨项目算；项目没有正例就用全库平均；新列 `account_prior` / `account_prior_n` 在末尾。前后对照见 G-06 的 D 条目。
 
 ### 7.2 顺手发现：书架准入没挡「铺评工单」（**已修：D-066，`notes_v1_14`，生产 09-19 apply；通道 1 同口径 D-068**）
 
@@ -541,7 +541,7 @@ AND NOT (COALESCE(n.data_quality_flags -> 'comment_maintained_routes', '[]'::jso
    WHERE tier IN ('爆', '大爆');
    ```
 6. **闸二的数认不认。** 单个特征：合并优势比 95% 置信区间不跨 1 + BH q ≤ 0.10 + 大项目最多一个反向 + 加控制后不变。组合进 L2：+0.02 且配对自助置信区间下界 > 0。
-7. **`rank_score` 的账号项换不换**（§7.1 第 3 条）。换了会改变书架前排是哪些卡。
+7. **`rank_score` 的账号项换不换**（§7.1 第 3 条）。换了会改变书架前排是哪些卡。✅ 已写好（G-06，`notes_v1_34`，等 owner 跑）。
 8. **写作台侧三件事。** ✅ 已定（§7.3 / §7.4）：影子期看各项目草稿落在历史最低 20% 的比例；最低档 `revise`；探索比例 15%、batch 级随机、记在 batch 元数据。剩「标记怎么呈现给选稿的人」和 aw 维护者定。
 9. **闸一比哪几个模型。** 建议只比网关便宜档和 Sonnet 档；Jev 等问题库冻结后再比（理由见 §5.7）。
 10. **书架挡铺评工单**（§7.2）：✅ 已做（D-066 书架 + D-068 通道 1）。
@@ -774,7 +774,7 @@ WHERE subject_type = 'note' AND run_tag = 'primary'
 GROUP BY 1, 2 HAVING count(*) > 1;
 ```
 
-用法：`psql -v sha="'<bank_sha256>'" -v extractors="ARRAY['code:v1','llm:<模型>']" -f …`。附录 B.1 / B.2 读的 `v_feature_contrast` 已按 `question_version / bank_version / extractor` 分组，取当轮快照那几行即可。
+用法：`psql -v sha="'<bank_sha256>'" -v extractors="ARRAY['code:v1','llm:<模型>']" -f …`。（G-24 起有第二个代码抽取器 `code:v2`：只修连写话题标签的剥离，8 道代码题 + 3 道占位题另写一份，`code:v1` 的行不动。一跑只放一个代码抽取器，两个一起放 (笔记, 题) 就不唯一、拒跑。）附录 B.1 / B.2 读的 `v_feature_contrast` 已按 `question_version / bank_version / extractor` 分组，取当轮快照那几行即可。
 
 ```sql
 WITH d AS (

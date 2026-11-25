@@ -181,6 +181,24 @@ jobs:
           print(f'✅ 题库 {b[\"bank_version\"]} frozen, digest {fs[:12]}…; gate1 fail 自动 unreliable: ' + ', '.join(sorted(q[\"id\"] for q in fb.llm_questions(b) if q.get(\"gate1_status\") == \"fail\")))" "$IN_SHA"
           echo "TAG=$TAG" >> "$GITHUB_ENV"
           echo "✅ sha=$IN_SHA extractors=$IN_EXTRACTORS run_tag=$TAG projects='${IN_PROJECTS:-(all)}' unreliable='${IN_UNRELIABLE:-(none)}' write=$IN_WRITE"
+      # G-24 (D-179 第 6 条): 抽取器里有 code:v2 就先量撤回条件 (只读, 只出计数和项目代号)。这里有 service key, 开发容器没有。
+      # 过 / 没过都接着跑闸二 (两件事分开判); 数不出来 (code:v2 一行都没有) 就停, 那闸二也没得跑。
+      - name: G-24 撤回条件 (extractors 含 code:v2 时; measure_g24_withdrawal.py, 只读)
+        if: env.IN_BANK == 'primary'
+        working-directory: scripts
+        run: |
+          case ",${IN_EXTRACTORS// /}," in *,code:v2,*) ;; *) echo "抽取器里没有 code:v2, 不量 G-24 撤回条件"; exit 0;; esac
+          set +e
+          G24="${RUNNER_TEMP:-/tmp}/g24-withdrawal.txt"
+          python measure_g24_withdrawal.py --sha "$IN_SHA" > "$G24" 2>&1
+          rc=$?
+          cat "$G24"
+          { echo "## G-24 撤回条件 · sha \`$IN_SHA\` · 退出码 $rc"; echo; echo '```'; cat "$G24"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          case "$rc" in
+            0) echo "::notice::G-24 撤回条件过了 (code:v2 的后20% 里品牌只在标签里 ≤ 10%)";;
+            1) echo "::warning::G-24 撤回条件没过: 「品牌别硬插」的例子照旧关, 另记一个 D";;
+            *) echo "::error::G-24 撤回条件数不出来 (退出码 $rc; code:v2 回填还没跑?)"; exit 2;;
+          esac
       - name: Run gate2_run.py (报告 + feature_validation 行; write=true 才写库)
         if: env.IN_BANK == 'primary'
         working-directory: scripts

@@ -11,6 +11,7 @@
 --   B 块 1: 一档要 ≥7 天前的爆 (3 天前的爆不算); 二档只认同平台别的项目的爆 (抖音项目的爆不算); 二档 90 天没发帖不列;
 --     降档 = 有 ≥7 天前已定级的帖、一篇没爆; 二档同时降档的那一行带降档标; 新号 / 没账号的帖数
 --   C 块 2: 每题取最新一次有效的 primary 答案 (老答案、retest、无效答案都不算); 没标两边都不算, 单独数;
+--     代码题只认 code:v1 (G-24 的 code:v2 行更新也不算, 不然回填一跑「不提品牌」就换口径);
 --     抽特征那一次正文是空的 (note_features.body_len = 0), 代码题「未出现」和模型题都按没标算
 --   D 块 3a: mid_rank 对比本项目更早北京日期的帖 (含 6 天前那篇); 0.952 进; 0.886 不进 (它 ≥ 第 90 百分位 9.9, 按「≥ P90」会进); 24h 没记评论数单列; 别的项目不到 20 篇;
 --     铺评只数运营贴的素人评论 (巡查来的、路人不算); 今天的线 line_now = 11 条 (第 90 百分位是 10, 10 条进不了); 不到 20 篇没有线
@@ -25,7 +26,8 @@
 --   I 打码: 读视图的人看到的码是 8 位十六进制, 名字提示是首字加 **, 任何视图的任何一行里都没有原始 account_id / note_id
 -- 反证 (改坏之后必须变红):
 --   函数里把 c_hit_lag_days 改成 0 → B 红 (3 天前爆的号进一档); other 那段去掉 platform 条件 → B 红 (抖音号进二档);
---   fa 去掉 run_tag / invalid_reason 条件或 ORDER BY 去掉 extracted_at DESC → C 红; mid_rank 改成 cc24 ≥ p90_prior → D 红 (W2 也进);
+--   fa 去掉 run_tag / invalid_reason 条件 → C 红 (ORDER BY 去掉 extracted_at DESC 这个夹具抓不到, 不算反证); fa 去掉抽取器那一条 → C 红 (t1_hit 的 code:v2 盖掉 v1);
+--   mid_rank 改成 cc24 ≥ p90_prior → D 红 (W2 也进);
 --   c_min_hours72 改成 0 → E 红 (第 60 小时拍的 X3 进候选); weekend 不看 id_day_diff → F 红 (E3 算周末);
 --   块 4 去掉 _undeclared 那四列 → F 红 (U1 没有笔记 ID); _undeclared 排到顶层前面 → F 红 (U2 成了 22 点);
 --   xid 去掉「平台是小红书」的条件 → F 红 (DY 用了继承来的小红书 ID, 成了 20 点); hour_status 去掉抖音那一支 → F 红;
@@ -160,13 +162,15 @@ UNION ALL SELECT * FROM (VALUES
     ('CI_WB_A_x4', now(), '72h', 120, NULL, 5000, 500)
 ) AS s(note_id, collected_at, window_label, h, cc, imp, rd);
 
--- 标签: dg_pa 老答案「未出现」、新答案「中间」→ 取中间; e4 只有 retest 的答案; e3 的答案无效 → 都算没标;
---   t2dg_pa 抽特征那一次正文是空的 (body_len = 0): 「未出现」两题都按没标算; t1_hit 正文 300 字, 照常算
+-- 标签: dg_pa 老答案「未出现」(另一个抽取器, 早一次)、新答案「中间」→ 取中间; e4 只有 retest 的答案; e3 的答案无效 → 都算没标;
+--   t2dg_pa 抽特征那一次正文是空的 (body_len = 0): 「未出现」两题都按没标算; t1_hit 正文 300 字, 照常算;
+--   t1_hit 另有一行更新的 code:v2「中间」(G-24 回填会写这种行) → 不算, 仍是 code:v1 的「未出现」
 INSERT INTO truth_vault.note_feature_answers (subject_type, subject_id, question_id, question_version, bank_version, bank_sha256,
                                                extractor, run_tag, answer, invalid_reason, extracted_at) VALUES
     ('note', 'CI_WB_A_t1_hit',  'brand_first_position', 1, 'fq', 's', 'code:v1',  'primary',    '未出现', NULL, '2026-11-10'),
+    ('note', 'CI_WB_A_t1_hit',  'brand_first_position', 1, 'fq', 's', 'code:v2',  'primary',    '中间',   NULL, '2026-11-24'),
     ('note', 'CI_WB_A_t1_hit',  'product_role',         1, 'fq', 's', 'llm:m',    'primary',    '未出现', NULL, '2026-11-10'),
-    ('note', 'CI_WB_A_dg_pa',   'brand_first_position', 1, 'fq', 's', 'code:old', 'primary',    '未出现', NULL, '2026-11-01'),
+    ('note', 'CI_WB_A_dg_pa',   'brand_first_position', 1, 'fq', 's', 'llm:old',  'primary',    '未出现', NULL, '2026-11-01'),
     ('note', 'CI_WB_A_dg_pa',   'brand_first_position', 1, 'fq', 's', 'code:v1',  'primary',    '中间',   NULL, '2026-11-10'),
     ('note', 'CI_WB_A_t2dg_pa', 'brand_first_position', 1, 'fq', 's', 'code:v1',  'primary',    '未出现', NULL, '2026-11-14'),
     ('note', 'CI_WB_A_t2dg_pa', 'product_role',         1, 'fq', 's', 'llm:m',    'primary',    '未出现', NULL, '2026-11-14'),

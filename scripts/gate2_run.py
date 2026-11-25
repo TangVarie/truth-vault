@@ -29,6 +29,8 @@ numpy / statsmodels), 与 statsmodels 的核对靠闭式: 单层时 Robins–Bre
         --counts-only                                                                           # 读之前: 只数行数和覆盖
     … --run-tag gate2-reader-2026-11-03 --out ../data-analysis/feature-gate2-gate2-reader-2026-11-03.md   # 只读一次
 B.3 组合对比 (留一项目 AUC + 配对自助) 与 B.4 置换反证在 gate2_combo.py (D-106) —— 那是「组合进不进 L2」的决定, 不是单个特征值的闸。
+--outcome reads (W-64 ①, 影子读数): 结果换成「阅读过本项目中位数」(v_l2_outcomes, l2_outcome.py), 同一份快照、同一套判据再算一遍,
+    报告先给 reads 的表, 再给两种口径逐行的状态对照。只报不判 (判据是按「爆」预注册的), 不收 --write; 默认 hit 一个字节不变。
 """
 from __future__ import annotations
 
@@ -45,6 +47,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 import feature_bank as fb
+import l2_outcome
 from secret_mask import mask_secrets
 
 Z95 = 1.959964
@@ -466,22 +469,26 @@ def render_report(result: dict) -> str:
 
 # ── 取数 (生产) ───────────────────────────────────────────────────────────────
 
-def fetch_dataset(sb, *, bank: dict, sha: str, extractors: list[str], projects: Optional[set[str]] = None) -> dict:
+def fetch_dataset(sb, *, bank: dict, sha: str, extractors: list[str], projects: Optional[set[str]] = None,
+                  outcome: str = l2_outcome.DEFAULT_OUTCOME) -> dict:
     """``bank`` 必须是 main() 里 --bank 读进来的那一份: 取哪些题按它算 (codex review on #169, P1 —— 以前这里重新
-    load 默认题库, --bank 指向别的冻结题库时, 只在那份里的题永远取不到答案、报告里静默少题)。"""
+    load 默认题库, --bank 指向别的冻结题库时, 只在那份里的题永远取不到答案、报告里静默少题)。
+    outcome=reads (W-64 ①): notes 换成 v_l2_outcomes 的阅读口径, 默认口径的那批放在 notes_hit, 答案只取一次。"""
     from _common import fetch_all_pages, fetch_vanished_note_ids
-    labels = fetch_all_pages(sb.schema("truth_vault").table("v_l2_labels")
-                             .select("note_id, project_id, account_id, publish_time, y"), order_by="note_id")
+    label_cols = "note_id, project_id, account_id, publish_time, y"
+    labels = fetch_all_pages(l2_outcome.label_query(sb, label_cols, l2_outcome.DEFAULT_OUTCOME), order_by="note_id")
     ess = {r["note_id"]: r.get("emotional_lever") is not None
            for r in fetch_all_pages(sb.schema("truth_vault").table("notes").select("note_id, emotional_lever"), order_by="note_id")}
     blen = {r["note_id"]: r.get("body_len")
             for r in fetch_all_pages(sb.schema("truth_vault").table("note_features").select("note_id, body_len"), order_by="note_id")}
     # 飞书里已删 (本项目最近一次完整同步没见到) 的篇不进闸二 (审计 B-21, D-103): 它们的标签是删前的快照, 之后没人维护。
     vanished = fetch_vanished_note_ids(sb)
-    notes = [{"note_id": r["note_id"], "project_id": r["project_id"], "account_id": r.get("account_id"),
-              "publish_time": r.get("publish_time"), "y": int(r["y"]), "has_essence": ess.get(r["note_id"], False),
-              "body_len": blen.get(r["note_id"])}
-             for r in labels if (projects is None or r["project_id"] in projects) and r["note_id"] not in vanished]
+    def _notes(rows: list[dict]) -> list[dict]:
+        return [{"note_id": r["note_id"], "project_id": r["project_id"], "account_id": r.get("account_id"),
+                 "publish_time": r.get("publish_time"), "y": int(r["y"]), "has_essence": ess.get(r["note_id"], False),
+                 "body_len": blen.get(r["note_id"])}
+                for r in rows if (projects is None or r["project_id"] in projects) and r["note_id"] not in vanished]
+    notes = _notes(labels)
     n_vanished = sum(1 for r in labels if r["note_id"] in vanished and (projects is None or r["project_id"] in projects))
     # ⚠️ fetch_all_pages 按 order_by 那一列去重 (它要求唯一列)。账本一篇 31 行, 整表按 subject_id 翻页会把同一篇
     #    合并成一行、重复也看不见。所以按 (题, 抽取器) 一条一条查: 这个切片里 subject_id 唯一 (sha 钉住了版本),
@@ -495,7 +502,33 @@ def fetch_dataset(sb, *, bank: dict, sha: str, extractors: list[str], projects: 
                  .eq("subject_type", "note").eq("run_tag", "primary").like("bank_sha256", f"{sha}%")
                  .eq("question_id", qid).eq("extractor", ext))
             answers.extend(fetch_all_pages(q, order_by="subject_id"))
-    return {"notes": notes, "answers": answers, "vanished_dropped": n_vanished}
+    out = {"notes": notes, "answers": answers, "vanished_dropped": n_vanished}
+    if outcome != l2_outcome.DEFAULT_OUTCOME:
+        out.update({"notes_hit": notes, "outcome": outcome,
+                    "notes": _notes(l2_outcome.fetch_labels(fetch_all_pages, l2_outcome.label_query(sb, label_cols, outcome),
+                                                            outcome))})
+    return out
+
+
+def render_outcome_compare(res_hit: dict, res_alt: dict, outcome: str) -> str:
+    """--outcome reads 的报告尾巴: 两种口径的分析集大小, 再逐行 (题, 取值) 对状态。只报不判。"""
+    st_hit = {(r["question_id"], r["answer"]): r for r in res_hit["rows"]}
+    st_alt = {(r["question_id"], r["answer"]): r for r in res_alt["rows"]}
+    f = lambda v: "—" if v is None else f"{v:.2f}"  # noqa: E731
+    lines = ["", f"## 两种结果口径对照 (W-64 ①; 本报告上面是 {outcome})", "",
+             f"- {l2_outcome.LABEL['hit']}: 分析集 {res_hit['n_notes']:,} 篇, 正例 {res_hit['n_pos']:,}",
+             f"- {l2_outcome.LABEL[outcome]}: 分析集 {res_alt['n_notes']:,} 篇, 正例 {res_alt['n_pos']:,}",
+             "- 判据是按「爆」预注册的; 换口径的这一列只报, 不改 feature_validation、不改写作台。", "",
+             f"| 题 | 取值 | hit 状态 | hit OR | {outcome} 状态 | {outcome} OR | 变了 |", "|---|---|---|---|---|---|---|"]
+    changed = 0
+    for key in sorted(set(st_hit) | set(st_alt)):
+        a, b = st_hit.get(key), st_alt.get(key)
+        sa, sb_ = (a or {}).get("status", "—"), (b or {}).get("status", "—")
+        changed += int(sa != sb_)
+        lines.append(f"| `{key[0]}` | {key[1]} | {sa} | {f((a or {}).get('mh_odds_ratio'))} | {sb_} | "
+                     f"{f((b or {}).get('mh_odds_ratio'))} | {'是' if sa != sb_ else ''} |")
+    lines += ["", f"状态变了的行: {changed} / {len(set(st_hit) | set(st_alt))}"]
+    return "\n".join(lines) + "\n"
 
 
 def write_validation(sb, rows: list[dict]) -> int:
@@ -1389,9 +1422,18 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--reports-dir", default=str(REPORTS_DIR),
                     help="副题库: 到这里找读过的报告 (同一份名单只读一次, 补记 7); 只给 --fixture 的离线跑改, "
                          "连库的正式读只认 data-analysis/ (改了就拒)")
+    ap.add_argument("--outcome", choices=l2_outcome.OUTCOMES, default=l2_outcome.DEFAULT_OUTCOME,
+                    help="结果口径 (W-64 ①): hit = v_l2_labels (默认, 和以前一样); reads = 阅读过本项目中位数 (v_l2_outcomes), "
+                         "影子读数: 两种口径并排报, 不收 --write")
     args = ap.parse_args(argv)
     bank_path = fb.BANKS.get(args.bank, args.bank)
+    if args.outcome != l2_outcome.DEFAULT_OUTCOME and (args.write or args.expect_rows_sha256):
+        print(f"闸二没跑: --outcome {args.outcome} 是影子读数, 不写 feature_validation (W-64 ①)", file=sys.stderr)
+        return 2
     if fb.load_bank(bank_path).get("role") == fb.ROLE_SECONDARY:
+        if args.outcome != l2_outcome.DEFAULT_OUTCOME:
+            print("闸二 (副题库) 没跑: 副题库的读法在 D-128 写死了, 不收 --outcome", file=sys.stderr)
+            return 2
         return main_secondary(args, bank_path)
     if args.manifest or args.counts_only or args.answers_run_tag != SEC_ANSWERS_RUN_TAG:
         ap.error("--manifest / --counts-only / --answers-run-tag 只给副题库 (--bank reader)")
@@ -1408,20 +1450,39 @@ def main(argv: Optional[list[str]] = None) -> int:
         else:
             from _common import get_supabase_client
             sb = get_supabase_client()
-            dataset = fetch_dataset(sb, bank=bank, sha=args.sha, extractors=extractors, projects=projects)
+            if args.outcome == l2_outcome.DEFAULT_OUTCOME:
+                dataset = fetch_dataset(sb, bank=bank, sha=args.sha, extractors=extractors, projects=projects)
+            else:
+                dataset = fetch_dataset(sb, bank=bank, sha=args.sha, extractors=extractors, projects=projects,
+                                        outcome=args.outcome)
         assert_projects_present(dataset, projects)
         result = run_gate2(dataset, bank, sha=args.sha, extractors=extractors, run_tag=args.run_tag, q_max=args.q_max,
                            min_support=args.min_support, min_big=args.min_big, big_pos=args.big_pos,
                            confound_delta=args.confound_delta, unreliable=unreliable, allow_draft=args.allow_draft,
                            ignore_placebo_alarm=args.ignore_placebo_alarm)
-    except Gate2Refused as exc:
+        result_hit = None
+        if args.outcome != l2_outcome.DEFAULT_OUTCOME:
+            if "notes_hit" not in dataset:
+                raise Gate2Refused(f"--outcome {args.outcome}: 取数里没有默认口径那一批 (notes_hit), 对照做不了")
+            result_hit = run_gate2({"notes": dataset["notes_hit"], "answers": dataset["answers"]}, bank, sha=args.sha,
+                                   extractors=extractors, run_tag=args.run_tag, q_max=args.q_max,
+                                   min_support=args.min_support, min_big=args.min_big, big_pos=args.big_pos,
+                                   confound_delta=args.confound_delta, unreliable=unreliable,
+                                   allow_draft=args.allow_draft, ignore_placebo_alarm=args.ignore_placebo_alarm)
+    except (Gate2Refused, l2_outcome.OutcomeUnavailable) as exc:
         print(f"闸二没跑: {mask_secrets(str(exc))}", file=sys.stderr)
         return 2
     report = render_report(result)
+    if result_hit is not None:
+        report = (report.replace("\n", f"\n\n> 结果口径: {l2_outcome.LABEL[args.outcome]}\n", 1)
+                  + render_outcome_compare(result_hit, result, args.outcome))
     rows = validation_rows(result)
     digest = rows_digest(rows)
-    report += (f"\n## 行摘要\n\n`rows_sha256` = `{digest}` —— 写库那次带 `--expect-rows-sha256 {digest[:12]}` 核对, "
-               "摘要对不上就不写 (codex review on #173)。\n")
+    if result_hit is None:
+        report += (f"\n## 行摘要\n\n`rows_sha256` = `{digest}` —— 写库那次带 `--expect-rows-sha256 {digest[:12]}` 核对, "
+                   "摘要对不上就不写 (codex review on #173)。\n")
+    else:
+        report += f"\n## 行摘要\n\n`rows_sha256` = `{digest}` —— 影子读数 (--outcome {args.outcome}), 不写库。\n"
     print(f"rows_sha256 {digest}")
     if args.out:
         Path(args.out).write_text(report, encoding="utf-8")
