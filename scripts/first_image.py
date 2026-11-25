@@ -140,8 +140,8 @@ def option_values(q: dict) -> list[str]:
 
 
 def validate_bank(bank: dict, version: str = BANK_VERSION) -> list[str]:
-    """结构校验。返回错误列表, 空 = 合法。version: 这份文件该是哪一版 (试跑是 fi-v0.1; 每晚的首图步骤传 fi-v0.2,
-    它自己那几条名单的校验在 first_image_pass.py)。"""
+    """结构校验。返回错误列表, 空 = 合法。version: 这份文件该是哪一版 (试跑是 fi-v0.1; 每晚的首图步骤传它自己的 BANK_VERSION,
+    现在是 fi-v0.3; 它自己那几条名单的校验在 first_image_pass.py)。"""
     errs: list[str] = []
     if bank.get("bank_version") != version:
         errs.append(f"bank_version 要是 {version}")

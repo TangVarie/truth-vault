@@ -40,8 +40,9 @@
         版式是「纯文字卡片」), 不只是不再中题库里的规则; 说了没有字、抄出来的是一句「没有」的话 (said_none_in_words) 不是
         真的对不上, 照 D-160 之前整轮作废、按日程重问; fi-v0.1 (没写 void) 照旧整轮作废 (只中第四条的轮次 fi-v0.1 没有这一条, 照留);
         没有矛盾的轮次 assemble 的结果和原来一样
-  §10 fi-v0.3 换上了 (D-162, docs/34 §13): BANK_PATH / BANK_VERSION 是 fi-v0.3, 注释之外碰 v0.3 的只有那两行、没有一行再碰 v0.2;
-      v0.1、v0.2 两份文件的 sha256 钉住; v0.3 过题库检查、v0.2 的文件不收, 两个常量只改回一个 → 不收;
+  §10 fi-v0.3 换上了 (D-162, docs/34 §13): BANK_PATH / BANK_VERSION 是 fi-v0.3, 注释和 docstring (按 ast 认) 之外碰 v0.3 的
+      只有那两行、没有一行再碰 v0.2 (写在别的三引号字符串里的也算); v0.1、v0.2、v0.3 三份文件整个的 sha256 钉住;
+      v0.3 过题库检查、v0.2 的文件不收, 两个常量只改回一个 → 不收;
       和 v0.2 比只差白名单里的几处 (读出来比一遍、不是注释的行再比一遍): bank_version、两道改了问法的题 (问句、version +1、
       trial)、两道从 img_main_text 算的代码题的 trial、surfaced_questions 拿掉这两道、规则末尾多第四条;
       加的那一句在两道题里逐字节相同、不带「屏幕」; 第一组 (A_kind) 和没改的另外四组的提示词和 v0.2 逐字节相同, v0.3 整套提示词钉住;
@@ -74,7 +75,7 @@
   ㉒ build_prompt 的选项那一行改一个字                                                                              → §9 ① (提示词的 sha256)
   ㉓ 第二条规则 (说了有字、没抄出来) 的 void 里拿掉 img_layout (纯文字卡片留下来, 信了「有字」那一边)                   → §9 ② / §8 ③
   ㉔ said_none_in_words 也走「只作废有关的题」(这一篇定下来, 字那几道题再也不问)                                       → §8 ③ / §9 ②
-  ㉕ 改了 v0.1 / v0.2 的文件 / BANK_PATH 指回 v0.2 / 两个常量只改回一个 / 代码里别处读 v0.2 或 v0.3                        → §10 ① ③
+  ㉕ 改了 v0.1 / v0.2 / v0.3 的文件 / BANK_PATH 指回 v0.2 / 两个常量只改回一个 / 代码里别处读 v0.2 或 v0.3 (含不是 docstring 的三引号字符串) → §10 ① ③
   ㉖ v0.3 里白名单之外动一处 (第一组的问句、选项的解释、调用组的顺序、名单、前三条规则) / 那一句带上「屏幕」/ 两道题里写得不一样  → §10 ④ ⑤ ⑥
   ㉗ 把 reworded_unverified 放进 SURFACE_TRIALS / 把改了问法的题加回 surfaced_questions                                  → §10 ② ③
   ㉘ 第四条规则拿掉 / 它的 void 少了 img_main_text (空的大字算出「没有字」, 信了一边)                                    → §10 ④ ⑦
@@ -83,6 +84,7 @@
 """
 from __future__ import annotations
 
+import ast
 import base64
 import contextlib
 import copy
@@ -2206,9 +2208,11 @@ def check_no_text_counts() -> None:
 V01_PATH = ROOT / "prompts" / "first_image_questions_v0_1.yaml"
 V02_PATH = ROOT / "prompts" / "first_image_questions_v0_2.yaml"
 V03_PATH = ROOT / "prompts" / "first_image_questions_v0_3.yaml"
-FILE_SHA256 = {   # 整个文件 (含注释) 的 sha256: v0.1 试跑用的、v0.2 换上 v0.3 之前每晚用的 (库里还有它的行), 一个字节都不许动
+FILE_SHA256 = {   # 整个文件 (含注释) 的 sha256, 一个字节都不许动: v0.1 试跑用的、v0.2 换上 v0.3 之前每晚用的 (库里还有它的行)、
+    #               v0.3 每晚在用的 (改名单、把题放回 surfaced_questions 也算改: 连这个钉子和 _v03_diff 的白名单一起改, 改动在守卫里看得见)
     V01_PATH.name: "34959ef29036d59f5e7b20f337f345785efd39c70b7eb6229169ceba88380786",
-    V02_PATH.name: "73385566e3d64456d59354f63e837949ba508431a37bd3bb0553d220fb069d2a"}
+    V02_PATH.name: "73385566e3d64456d59354f63e837949ba508431a37bd3bb0553d220fb069d2a",
+    V03_PATH.name: "bc21dd737c53df43781395b6d4b85037f20cd0fd9d2a768d611c5290d1e8d999"}
 EXCLUSION = "只算加在图上的字，产品包装、招牌、商标上本来就有的字不算。"       # 两道改了问法的题后面加的同一句; 不带「屏幕」
 REWORDED = ("img_main_text", "img_text_kind")
 FROM_MAIN_TEXT = ("img_text_matches_title", "img_text_has_number")              # 代码从 img_main_text 算的两道
@@ -2231,6 +2235,25 @@ V03_LINES_ADDED = {"bank_version: fi-v0.3": 1, "  - name: text_kind_without_text
 
 def _code_lines(raw: str) -> list[str]:
     return [ln for ln in raw.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
+
+
+def _src_code_lines(text: str, *, python: bool) -> list[str]:
+    """① 用: 去掉注释和 docstring 之后的行。.py 用 ast 认真 docstring (模块 / 类 / 函数体的第一句、是字符串常量), 把它占的那几行
+    换成空行; 赋值、传参、return 里的三引号字符串不是 docstring, 照算代码。docstring 和代码挤在同一行的不去 (只会更严)。
+    .yml 没有 docstring, 只去整行的 # 注释。"""
+    lines = text.split("\n")
+    if python:
+        for node in ast.walk(ast.parse(text)):
+            if not (isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and node.body):
+                continue
+            d = node.body[0]
+            if not (isinstance(d, ast.Expr) and isinstance(d.value, ast.Constant) and isinstance(d.value.value, str)):
+                continue
+            head, tail = lines[d.lineno - 1].encode(), lines[d.end_lineno - 1].encode()      # col_offset 按 UTF-8 字节算
+            if head[:d.col_offset].strip() or tail[d.end_col_offset:].split(b"#")[0].strip():
+                continue
+            lines[d.lineno - 1:d.end_lineno] = [""] * (d.end_lineno - d.lineno + 1)
+    return [ln for ln in lines if not ln.lstrip().startswith("#")]
 
 
 def _v03_line_diff(raw02: str, raw03: str) -> list[str]:
@@ -2283,17 +2306,31 @@ def _v03_diff(old: dict, new: dict) -> list[str]:
 
 def check_v03_switched() -> None:
     # ① 换上了: 每晚的步骤读 fi-v0.3; 代码里 (注释和 docstring 之外) 碰 v0.3 的只有 BANK_PATH / BANK_VERSION 那两行,
-    #   没有一行再碰 v0.2; first_image.py 和 workflow 两个版本都不认识
+    #   没有一行再碰 v0.2; first_image.py 和 workflow 两个版本都不认识。docstring 按 ast 认 (_src_code_lines), 别的三引号字符串照算代码
     assert P.BANK_PATH == V03_PATH and P.BANK_VERSION == "fi-v0.3" and BANK["bank_version"] == "fi-v0.3", "fi-v0.3 换上了"
     switch = ['BANK_PATH = HERE.parent / "prompts" / "first_image_questions_v0_3.yaml"', 'BANK_VERSION = "fi-v0.3"']
     for src in (HERE / "first_image_pass.py", HERE / "first_image.py", *sorted((ROOT / ".github" / "workflows").glob("first-image*.yml"))):
-        text = re.sub(r'(?s)""".*?"""', "", src.read_text(encoding="utf-8"))
-        code = [ln for ln in text.splitlines() if not ln.lstrip().startswith("#")]
+        code = _src_code_lines(src.read_text(encoding="utf-8"), python=src.suffix == ".py")
         assert [ln.strip() for ln in code if "v0_3" in ln or "fi-v0.3" in ln] == (switch if src.name == "first_image_pass.py" else []), \
             f"{src.name}: 注释之外碰 v0.3 的只许是 first_image_pass.py 的那两行"
         assert not any("v0_2" in ln or "fi-v0.2" in ln for ln in code), f"{src.name}: 注释之外不该再有 v0.2"
-    # v0.1、v0.2 两份文件一个字节没动
-    for path in (V01_PATH, V02_PATH):
+    # 反证 (只在内存里的一段假源码上做, 不碰真文件): 赋值里的三引号字符串、不是第一句的字符串点了 v0.2 要抓到 (老写法
+    #   re.sub 掉所有三引号字符串, 这两种都漏); 模块 / 类 / 函数 / async 函数真 docstring 里提到的不算; docstring 和代码挤在同一行的照算代码
+    fake = ('"""模块 docstring: first_image_questions_v0_2.yaml 不算。"""\n'
+            'class K:\n    """类的: fi-v0.2 不算"""\n'
+            'async def g():\n    """async 函数的: fi-v0.2 不算"""\n'
+            'def f():\n    """函数的: first_image_questions_v0_2.yaml 不算"""\n'
+            '    path = """\nprompts/first_image_questions_v0_2.yaml\n"""\n'
+            '    """不是第一句, 不是 docstring: fi-v0.2"""\n'
+            '    return path\n')
+    v02_hits = lambda lines: [ln.strip() for ln in lines if "v0_2" in ln or "fi-v0.2" in ln]  # noqa: E731
+    assert v02_hits(_src_code_lines(fake, python=True)) == ["prompts/first_image_questions_v0_2.yaml",
+                                                           '"""不是第一句, 不是 docstring: fi-v0.2"""'], "反证没成立: 不是 docstring 的三引号字符串漏了"
+    assert v02_hits(re.sub(r'(?s)""".*?"""', "", fake).splitlines()) == [], "老写法 (去掉所有三引号字符串) 确实漏这两处: 反证有意义"
+    assert v02_hits(_src_code_lines(fake.split("    path =")[0], python=True)) == [], "真 docstring 里提到的不算"
+    assert v02_hits(_src_code_lines('def h(): """fi-v0.2"""; return 1\n', python=True)), "docstring 和代码挤在同一行: 照算代码"
+    # v0.1、v0.2、v0.3 三份文件一个字节没动 (v0.3 是每晚在用的那份)
+    for path in (V01_PATH, V02_PATH, V03_PATH):
         assert hashlib.sha256(path.read_bytes()).hexdigest() == FILE_SHA256[path.name], f"{path.name} 不许改"
     v02, v03 = P.load_bank(V02_PATH), P.load_bank(V03_PATH)
     assert v03["_sha256"] == BANK["_sha256"] and v03["_sha256"] != v02["_sha256"]
@@ -2471,7 +2508,7 @@ def check_v03_switched() -> None:
         text = (ROOT / doc).read_text(encoding="utf-8")
         for nd in needles:
             assert nd in text, f"{doc} 里没写 {nd}"
-    print("  §10 fi-v0.3 换上了 (每晚读 fi-v0.3; v0.1 / v0.2 文件没动); 和 v0.2 只差白名单里的几处; 那一句两道题一字不差、"
+    print("  §10 fi-v0.3 换上了 (每晚读 fi-v0.3; 别处代码不碰 v0.2 / v0.3, docstring 按 ast 认; v0.1 / v0.2 / v0.3 文件没动); 和 v0.2 只差白名单里的几处; 那一句两道题一字不差、"
           "不带「屏幕」; 第一组提示词逐字节相同; 第四条规则中 / 不中各几种; 改了问法的题不往外给 ✓")
 
 
