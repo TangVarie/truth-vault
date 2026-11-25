@@ -2212,7 +2212,7 @@ FILE_SHA256 = {   # 整个文件 (含注释) 的 sha256, 一个字节都不许�
     #               v0.3 每晚在用的 (改名单、把题放回 surfaced_questions 也算改: 连这个钉子和 _v03_diff 的白名单一起改, 改动在守卫里看得见)
     V01_PATH.name: "34959ef29036d59f5e7b20f337f345785efd39c70b7eb6229169ceba88380786",
     V02_PATH.name: "73385566e3d64456d59354f63e837949ba508431a37bd3bb0553d220fb069d2a",
-    V03_PATH.name: "bc21dd737c53df43781395b6d4b85037f20cd0fd9d2a768d611c5290d1e8d999"}
+    V03_PATH.name: "e08f0fd3ca111a636317bbe20d3f05dc58fb0114cf44d68cfbf05928df1b0faa"}
 EXCLUSION = "只算加在图上的字，产品包装、招牌、商标上本来就有的字不算。"       # 两道改了问法的题后面加的同一句; 不带「屏幕」
 REWORDED = ("img_main_text", "img_text_kind")
 FROM_MAIN_TEXT = ("img_text_matches_title", "img_text_has_number")              # 代码从 img_main_text 算的两道
