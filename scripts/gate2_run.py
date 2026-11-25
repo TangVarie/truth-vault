@@ -581,12 +581,33 @@ def body_len_bucket(body_len) -> str:
     return BODY_LEN_TOP
 
 
-def sensitivity_flags(dq: Optional[dict], has_pinned_comment: bool = False) -> list[str]:
+# notes.pinned_comment 是 TEXT: 同步写进去的 list 存成 JSON 串 ('["待置顶"]'), 文本格原样存 ('成功, 待做评论')。
+_PIN_JSON_START = ("[", "{", '"')
+_PIN_JSON_PUNCT_RE = re.compile(r'[\[\]{}"]')
+
+
+def pinned_done_labels(raw: Any) -> list[str]:
+    """notes.pinned_comment 一格 → 里面「做过」的置顶 / 控评标签 (G-25, D-128 11-25 补: 敏感性重跑剔除条件三只认做过的)。
+    判法就是夜跑同步那一个 _common.posthoc_done_labels (同一个函数对象), 这里只管把库里的 TEXT 还原成同步当时看到的格子:
+    像 JSON 的 (去掉前导空白后以 [ { " 开头) 先 json.loads, 解析出来还是串的再看一遍 (套了两层的也认得);
+    解析不了的 (半截 JSON) 把 [ ] { } " 去掉, 剩下的按文本判 —— 半截的 '["待置顶"' 照样认成待办;
+    不像 JSON 的纯文本原样交给 posthoc_done_labels, 和同步逐字同一个判法; NULL / 空串 / list / dict 也原样交过去。"""
+    from _common import posthoc_done_labels
+    while isinstance(raw, str) and raw.lstrip().startswith(_PIN_JSON_START):
+        try:
+            raw = json.loads(raw)
+        except (ValueError, RecursionError):
+            raw = _PIN_JSON_PUNCT_RE.sub("", raw)
+    return posthoc_done_labels(raw)
+
+
+def sensitivity_flags(dq: Optional[dict], has_pinned_done: bool = False) -> list[str]:
     """敏感性重跑要剔的篇 (D-128: 记过置顶 / 控评 / 铺评 / 投流)。读的是同步引擎写好的标记, 不重判:
       · data_quality_flags.comment_maintained_routes 非空: 铺评工单 / 起量后干预 (控评、置顶、改评) / 铺评未跨线;
         只写了 comment_maintained=true 没写 routes 的老行也算;
       · data_quality_flags.paid_promoted = true (投流三态里只认 true; 缺键 = 不知道, 不剔);
-      · notes.pinned_comment 非空 (同步时已并进「起量后干预」, 这里再直接看一遍列)。"""
+      · notes.pinned_comment 里有做过的标签 (has_pinned_done, 取数时由 pinned_done_labels 判; 11-25 起只认做过的,
+        只有待办 / 做不成的不剔, 同夜跑同步, G-25 / D-128 11-25 补。以前是「非空就剔」)。"""
     dq = dq if isinstance(dq, dict) else {}
     out = set()
     routes = dq.get("comment_maintained_routes") or []
@@ -596,8 +617,8 @@ def sensitivity_flags(dq: Optional[dict], has_pinned_comment: bool = False) -> l
         out.add("维护")
     if dq.get("paid_promoted") is True:
         out.add("投流")
-    if has_pinned_comment:
-        out.add("置顶")
+    if has_pinned_done:
+        out.add("置顶:做过")
     return sorted(out)
 
 
@@ -816,13 +837,16 @@ def run_gate2_secondary(dataset: dict, bank: dict, primary: dict, *, sha: str, m
                         reports_dirs: Iterable[Path] = (), q_max: float = 0.10, min_support: int = 30,
                         min_big: int = 3, big_pos: int = 20, confound_delta: float = 0.30) -> dict:
     """副题库闸二 (纯函数: dataset + 两份题库 + 名单 → 结果)。dataset = {notes (v_l2_labels 去掉飞书已删的, 带 has_essence /
-    body_len / data_quality_flags / has_pinned_comment), vanished, answers (两份快照的行混在一起, 这里按 run_tag / sha /
+    body_len / data_quality_flags / has_pinned_done), vanished, answers (两份快照的行混在一起, 这里按 run_tag / sha /
     抽取器分开), half_alias ({new_id: old_id}, D-129 映射表), ignored_rows (可无: 生产取数只取快照那一片, 快照外的行数在
     库里数好带过来)}。counts_only = 只数行数和覆盖, 一个 y 都不碰。"""
     from discover_feature_candidates import half_id, in_discovery_half
     from gate1_sample import EXCLUDE
 
     sha = _secondary_prereg(bank, primary, sha)
+    if any("has_pinned_comment" in n for n in dataset.get("notes") or []):
+        raise Gate2Refused("dataset 里还是旧键 has_pinned_comment (G-25 之前「pinned_comment 非空就剔」的口径): "
+                           "换成 has_pinned_done (只认做过的标签, D-128 11-25 补) 再跑")
     full_sha = bank["_sha256"]
     err = fb.check_run_tag(bank, answers_run_tag)
     if err:
@@ -1038,7 +1062,7 @@ def run_gate2_secondary(dataset: dict, bank: dict, primary: dict, *, sha: str, m
         _assign_status(r, q_max=q_max, min_support=min_support, min_big=min_big, confound_delta=confound_delta,
                        unreliable=unreliable)
     # 敏感性重跑 (只报告): 剔掉记过置顶 / 控评 / 铺评 / 投流的篇, 再加一层 body_len_bucket
-    flagged = {n["note_id"]: sensitivity_flags(n.get("data_quality_flags"), bool(n.get("has_pinned_comment")))
+    flagged = {n["note_id"]: sensitivity_flags(n.get("data_quality_flags"), bool(n.get("has_pinned_done")))
                for n in analysis}
     kept = [n for n in analysis if not flagged[n["note_id"]]]
     flag_counts: dict[str, int] = defaultdict(int)
@@ -1187,7 +1211,8 @@ def render_report_secondary(res: dict) -> str:
               "两者和上面分层的 OR 差得多时, 是分层题在混杂 (辛普森那种), 以分层的为准。", "",
               f"## 敏感性重跑 (只报告): 剔掉记过置顶 / 控评 / 铺评 / 投流的 {res['sensitivity_dropped']} 篇, 再加一层 body_len_bucket", "",
               "剔的依据: `notes.data_quality_flags.comment_maintained_routes` 非空 (铺评工单 / 起量后干预 / 铺评未跨线)、"
-              "`data_quality_flags.paid_promoted = true`、`notes.pinned_comment` 非空。命中: "
+              "`data_quality_flags.paid_promoted = true`、`notes.pinned_comment` 里有做过的标签 (只认做过的, 判法同夜跑同步的 "
+              "`posthoc_done_labels`; 只有待办 / 做不成的不剔, D-128 11-25 补)。命中: "
               + (", ".join(f"{k} {v}" for k, v in res["sensitivity_flags"].items()) or "无"), "",
               "| 行 | OR | 95% CI | p | 支持 / 基数 |", "|---|---|---|---|---|"]
     for s in res["sensitivity"]:
@@ -1234,7 +1259,8 @@ def fetch_dataset_secondary(sb, *, bank: dict, primary: dict, answers_run_tag: s
     """run_gate2_secondary 要的 dataset。两份快照分开查, 每次查一个 (题, 抽取器, 版本) 的切片 —— 这个切片里 subject_id 唯一
     (主键 subject_type, subject_id, question_id, question_version, extractor, run_tag), fetch_all_pages 按 subject_id 去重
     不会吞掉行。版本不对的行另用一个有上限的查询捞出来放进 answers, 让 run_gate2_secondary 拒 (不在这里静默丢)。
-    D-129 映射表读不到 / 0 对 → Gate2Refused (fail closed)。正文、置顶评论的文字都不取, 只取「有没有」。快照外的行
+    D-129 映射表读不到 / 0 对 → Gate2Refused (fail closed)。正文不取; 置顶那一列的文字不往外带, 只带「有没有做过的标签」
+    (has_pinned_done, pinned_done_labels 判, G-25)。快照外的行
     (同 run_tag、同题, 别的 sha / 抽取器) 只数不取, 放进 ignored_rows。"""
     from _common import fetch_all_pages, fetch_half_alias, fetch_vanished_note_ids, mask_secrets
     try:
@@ -1258,7 +1284,7 @@ def fetch_dataset_secondary(sb, *, bank: dict, primary: dict, answers_run_tag: s
                       "publish_time": r.get("publish_time"), "y": int(r["y"]),
                       "has_essence": m.get("emotional_lever") is not None, "body_len": blen.get(r["note_id"]),
                       "data_quality_flags": m.get("data_quality_flags") or {},
-                      "has_pinned_comment": m.get("pinned_comment") not in (None, "")})
+                      "has_pinned_done": bool(pinned_done_labels(m.get("pinned_comment")))})
     cols = "subject_type, subject_id, question_id, question_version, bank_sha256, extractor, run_tag, answer, invalid_reason"
     slices = [(answers_run_tag, bank["_sha256"], q["id"], int(q["version"]), SEC_LLM_EXTRACTOR) for q in fb.llm_questions(bank)]
     slices += [(answers_run_tag, bank["_sha256"], c["id"], int(c["version"]), fb.CODE_EXTRACTOR)

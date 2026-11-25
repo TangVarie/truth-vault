@@ -42,6 +42,9 @@
      (记号传失败、读完取消) / Guard 不拒仓库里已有的同名报告                        → §8o 红
   ㉖ 大项目分层内方向按合并 2×2 算 / 有支持的大项目不筛「有这个取值」/ 一篇两种都缺归到分层题 / 缺代码特征那行也算掉 → §8d / §8e / §8q 红
   ㉗ 按名单写死时的 y 算 / 按名单写死时的项目分层 (补记 4 要的是现在的)              → §8p 红
+  ㉘ 置顶回到「非空就剔」/ 不解析库里的 JSON 串 / 半截 JSON 不去括号引号 / 不认以 " 开头或带前导空白的 JSON /
+     不用 _common.posthoc_done_labels (同步或闸二自己留一份) / 报告的剔除依据和计数名没改 / 旧键 has_pinned_comment 照跑
+     (G-25, D-128 11-25 补; 11-25 逐个改坏确认变红)                                → §8n / §8r 红
 
 跑法: cd scripts && python check_gate2_run.py
 """
@@ -565,7 +568,7 @@ def _sec_fixture(*, raf=lambda ear, afh, y: RAF_POS if y else RAF_NEG,
                              "publish_time": (T0 + timedelta(hours=int(_hk('t', nid)[:6], 16) % 5000)).isoformat(),
                              "y": 1 if j < k else 0, "has_essence": True,
                              "body_len": 60 + int(_hk('len', nid)[:4], 16) % 700, "data_quality_flags": {},
-                             "has_pinned_comment": False})
+                             "has_pinned_done": False})
             pos, neg = [r for r in rows if r["y"]], [r for r in rows if not r["y"]]
             a_raf = {**_assign(pos, "raf", raf(ear, afh, 1)), **_assign(neg, "raf", raf(ear, afh, 0))}
             a_inv = {**_assign(pos, "inv", (("是", inv(ear, afh, 1)), ("否", 1 - inv(ear, afh, 1)))),
@@ -603,7 +606,7 @@ def _sec_fixture(*, raf=lambda ear, afh, y: RAF_POS if y else RAF_NEG,
         for n in p2[6:10]:
             n["data_quality_flags"] = {"comment_maintained": True, "comment_maintained_routes": ["起量后干预"]}
         for n in p2[10:13]:
-            n["has_pinned_comment"] = True
+            n["has_pinned_done"] = True
         p2[13]["data_quality_flags"] = {"paid_promoted": False}                   # false 不剔
         # D-129: 一篇新行自己的 id 落在发现半, 旧 id 在留出半 → 按旧 id 算留出半, 进得来
         moved = _half_ids("P3", 1, half="discovery", tag="Moved")[0]
@@ -621,7 +624,7 @@ def _sec_fixture(*, raf=lambda ear, afh, y: RAF_POS if y else RAF_NEG,
             y = i % 2
             notes.append({"note_id": nid, "project_id": "P0", "account_id": "P0_acct0",
                           "publish_time": (T0 + timedelta(hours=i)).isoformat(), "y": y, "has_essence": True,
-                          "body_len": 300, "data_quality_flags": {}, "has_pinned_comment": False})
+                          "body_len": 300, "data_quality_flags": {}, "has_pinned_done": False})
             _sec_answer(answers, nid, "ending_asks_reader", "是", ver=1, ext=SONNET, tag="primary", sha=PRI_SHA)
             _sec_answer(answers, nid, "asks_for_help", "否", ver=1, ext=SONNET, tag="primary", sha=PRI_SHA)
             _sec_answer(answers, nid, "reader_ask_form", "挑一个" if y else "求解答", ver=1, ext=SONNET)
@@ -679,7 +682,13 @@ def _row2(res: dict, qid: str, value: str) -> dict:
 
 # 合成夹具 + 那份报告全文的 sha256 (本地 Python 3.11 / 3.13 两次实测一致)。改了副题库那条路的口径这里就红:
 # 先看是不是本意, 是的话另记 DECISIONS 再换金样。
-SEC_GOLDEN_REPORT_SHA256 = "3a53851041ceffb8ce05bcedc6b4a138ff5f5385f6bf23cd145fa461d60fcf81"
+# 11-25 换过一次 (G-25, D-128 11-25 补): 敏感性那一节的剔除依据写成「只认做过的」、命中计数的名字「置顶」→「置顶:做过」。
+# 只换了这两处文字: 把它们换回旧字, 报告和换之前的金样逐字节相同 (§8r 实算这一条)。
+SEC_GOLDEN_REPORT_SHA256 = "edca596c8b5c7e11d1db3e8a8adf6f8d85234f59a0fcf789f7b12cb17f6cef0b"
+SEC_GOLDEN_PRE_G25_SHA256 = "3a53851041ceffb8ce05bcedc6b4a138ff5f5385f6bf23cd145fa461d60fcf81"
+PIN_RULE_OLD = "`notes.pinned_comment` 非空。命中: "
+PIN_RULE_NEW = ("`notes.pinned_comment` 里有做过的标签 (只认做过的, 判法同夜跑同步的 `posthoc_done_labels`; "
+                "只有待办 / 做不成的不剔, D-128 11-25 补)。命中: ")
 
 
 # ── §8a 金样 + 两行都过 = 一个发现 ───────────────────────────────────────────────────
@@ -1090,7 +1099,7 @@ def check_secondary_sensitivity() -> None:
         ["维护:起量后干预", "维护:铺评工单"]
     assert sf({"comment_maintained_routes": ["铺评未跨线"]}) == ["维护:铺评未跨线"]
     assert sf({"comment_maintained": True}) == ["维护"], "只有 comment_maintained 没有 routes 的老行也剔"
-    assert sf({}, True) == ["置顶"]
+    assert sf({}, True) == ["置顶:做过"] and sf({}, False) == []
     # body_len_bucket 的切点 = 主题库代码特征 (按同一个 body_len)
     for n in (0, 1, 50, 99, 100, 199, 200, 399, 400, 1013):
         spans = fb.build_spans("字" * n, mode="none")
@@ -1100,9 +1109,9 @@ def check_secondary_sensitivity() -> None:
     res = _sec_run(ds, man)
     lab = {n["note_id"]: n for n in ds["notes"]}
     ana = _analysis_ids(res, ds, man)
-    flagged = {n for n in ana if sf(lab[n]["data_quality_flags"], lab[n]["has_pinned_comment"])}
+    flagged = {n for n in ana if sf(lab[n]["data_quality_flags"], lab[n]["has_pinned_done"])}
     assert res["sensitivity_dropped"] == len(flagged) == 13
-    assert res["sensitivity_flags"] == {"投流": 6, "维护:起量后干预": 4, "置顶": 3}, res["sensitivity_flags"]
+    assert res["sensitivity_flags"] == {"投流": 6, "维护:起量后干预": 4, "置顶:做过": 3}, res["sensitivity_flags"]
     raf = {a["subject_id"]: a["answer"] for a in ds["answers"] if a["run_tag"] == SEC_TAG and a["question_id"] == "reader_ask_form"}
     ear = {a["subject_id"]: a["answer"] for a in ds["answers"] if a["run_tag"] == "primary" and a["extractor"] == SONNET
            and a["question_id"] == "ending_asks_reader"}
@@ -1115,7 +1124,7 @@ def check_secondary_sensitivity() -> None:
     s1 = next(s for s in res["sensitivity"] if s["question_id"] == "reader_ask_form")
     assert s1["base_n"] == len(base) and s1["strata"] == sum(1 for v in cells.values() if v > 1), (s1["base_n"], s1["strata"])
     assert len({k[:3] for k in cells}) < s1["strata"], "body_len_bucket 那一层要真的加上"
-    print(f"  §8l 敏感性: 维护 (三条 route) / 投流 true / 置顶 → 剔 {len(flagged)} 篇, false 和缺键不剔; body_len_bucket 切点同主题库; "
+    print(f"  §8l 敏感性: 维护 (三条 route) / 投流 true / 置顶 (做过的) → 剔 {len(flagged)} 篇, false 和缺键不剔; body_len_bucket 切点同主题库; "
           f"重跑基数 {len(base)}、层 {s1['strata']} 与手算一致 ✓")
 
 
@@ -1280,14 +1289,30 @@ class _FakeSB:
         return _FakeQ(self.tables.get(name, []), self.log, name)
 
 
+# notes.pinned_comment 在库里的样子 (TEXT; 同步写的 list 存成 JSON 串, 文本格原样): 做过的 (含混着待办的) / 只有待办、
+# 做不成的、空的、坏的。假库里 has_pinned_done 的篇轮流用前一组, 另挑几篇没有任何标记的篇用后一组 —— 取数后后一组
+# 一篇都不许剔 (G-25: 敏感性重跑的「置顶」只认做过的, D-128 11-25 补)。
+PIN_DONE_TEXT = ('["成功"]', '["待做评论", "控住后掉了"]', "补控成功")
+PIN_NOT_DONE_TEXT = ('["待置顶"]', '["待置顶", "待做评论"]', "待做评论", "素人退出无法回收", "[]", "", "   ", '["待置顶"',
+                     '"待置顶"', '"[\\"等解封后控评\\"]"')
+
+
+def _pin_not_done_ids(notes: list[dict]) -> list[str]:
+    return [n["note_id"] for n in notes if n["project_id"] == "P3" and not n["has_pinned_done"]
+            and not n["data_quality_flags"]][:len(PIN_NOT_DONE_TEXT)]
+
+
 def _fake_tables(ds: dict) -> dict:
     gone = [{"note_id": n, "project_id": n.split("_rec")[0], "account_id": None, "publish_time": None, "y": 0,
-             "has_essence": True, "body_len": 300, "data_quality_flags": {}, "has_pinned_comment": False} for n in ds["vanished"]]
+             "has_essence": True, "body_len": 300, "data_quality_flags": {}, "has_pinned_done": False} for n in ds["vanished"]]
     allnotes = ds["notes"] + gone
+    pin = dict(zip(_pin_not_done_ids(allnotes), PIN_NOT_DONE_TEXT))
+    done = [n["note_id"] for n in allnotes if n["has_pinned_done"]]
+    pin.update({nid: PIN_DONE_TEXT[i % len(PIN_DONE_TEXT)] for i, nid in enumerate(done)})
     return {
         "v_l2_labels": [{k: n[k] for k in ("note_id", "project_id", "account_id", "publish_time", "y")} for n in allnotes],
         "notes": [{"note_id": n["note_id"], "emotional_lever": "x" if n["has_essence"] else None,
-                   "data_quality_flags": n["data_quality_flags"], "pinned_comment": "置顶评论" if n["has_pinned_comment"] else None,
+                   "data_quality_flags": n["data_quality_flags"], "pinned_comment": pin.get(n["note_id"]),
                    "raw_content": "不该取"} for n in allnotes],
         "note_features": [{"note_id": n["note_id"], "body_len": n["body_len"]} for n in allnotes],
         "v_notes_vanished": [{"note_id": n} for n in ds["vanished"]],
@@ -1306,10 +1331,17 @@ def check_secondary_fetch() -> None:
     got = G.fetch_dataset_secondary(sb, bank=SEC_BANK, primary=SEC_PRIMARY)
     assert got["half_alias"] == ds["half_alias"] and got["vanished"] == ds["vanished"]
     assert all("raw_content" not in n and "pinned_comment" not in n for n in got["notes"]), "正文 / 置顶评论文字不取"
+    # 置顶只认做过的 (G-25): 库里只有待办 / 做不成 / 空 / 坏的那几篇取数后是 False, 做过的 (含混着待办的) 是 True
+    gotpin = {n["note_id"]: n["has_pinned_done"] for n in got["notes"]}
+    assert gotpin == {n["note_id"]: n["has_pinned_done"] for n in ds["notes"]}, "取数后的 has_pinned_done 和夹具对不上"
+    not_done = _pin_not_done_ids(ds["notes"])
+    assert len(not_done) == len(PIN_NOT_DONE_TEXT) and not any(gotpin[n] for n in not_done)
     assert not any(a["extractor"] == OPUS for a in got["answers"]), "Opus 的分层行不该查出来"
     res = _sec_run(ds, man)
     r2 = _sec_run(got, man)
     assert _cmp(r2) == _cmp(res) and r2["drops"] == res["drops"] and r2["sensitivity_flags"] == res["sensitivity_flags"]
+    assert r2["sensitivity_flags"].get("置顶:做过") == 3 and set(not_done) <= _analysis_ids(r2, got, man), \
+        "只有待办的那几篇要在分析集里、且一篇都不剔 (这一节才测得出 G-25)"
     # 快照外的行取数时不取、在库里数: 报告里「快照外 N 行」和直接给全部行时一样, 不是恒 0
     n_opus = sum(1 for a in ds["answers"] if a["extractor"] == OPUS and a["question_id"] in ("ending_asks_reader", "asks_for_help"))
     assert r2["ignored_rows"] == res["ignored_rows"] == {"secondary": 2, "condition": n_opus} and n_opus > 0, \
@@ -1325,7 +1357,8 @@ def check_secondary_fetch() -> None:
     bad = G.fetch_dataset_secondary(_FakeSB(t), bank=SEC_BANK, primary=SEC_PRIMARY)
     _refused(lambda: _sec_run(bad, man), "不是题库版本", "取数时混进的 invites_sharing v1")
     print("  §8n 取数 (假库, 过滤 / 投影 / 翻页都真做): 结果和直接给 dataset 相同; 只查 Sonnet / code:v1、全 sha、钉版本; "
-          "快照外的行 (Opus / Haiku / 别的 sha) 只数不取、数对; 不取正文; 版本不对的行被探针捞出来 → 拒 ✓")
+          "快照外的行 (Opus / Haiku / 别的 sha) 只数不取、数对; 不取正文; 版本不对的行被探针捞出来 → 拒; "
+          f"置顶只认做过的: 库里只有待办 / 空 / 坏的 {len(PIN_NOT_DONE_TEXT)} 篇取数后一篇不剔 (G-25) ✓")
 
 
 # ── §8o CLI / workflow / 进了仓库的第一波名单 ──────────────────────────────────────────
@@ -1642,6 +1675,56 @@ def check_secondary_big_support() -> None:
     print("  §8q 有支持的大项目: C1 在 P3 没支持 → 4 个大项目只算 3 个; 占位题只有 2 个大项目有支持 → 不报警 ✓")
 
 
+# ── §8r 敏感性重跑的「置顶」只认做过的 (G-25, D-128 11-25 补) ─────────────────────────────────────────
+# (库里的样子, 应得的做过标签)。库里 pinned_comment 是 TEXT: 同步写进去的 list 存成 JSON 串, 文本格原样存。
+PIN_CASES = (
+    (None, []), ("", []), ("   ", []), ("[]", []), ('[""]', []),                                   # NULL / 空
+    ('["待置顶"]', []), ('["待置顶", "待做评论"]', []), ("待做评论", []), ("素人退出无法回收", []),       # 只有待办 / 做不成
+    ('["等解封后控评"]', []), ('[{"text": "待做评论"}]', []),
+    ('["成功"]', ["成功"]), ("补控成功", ["补控成功"]), ('[{"text": "交付前补控成功"}]', ["交付前补控成功"]),   # 做过的
+    ('["待做评论", "控住后掉了"]', ["控住后掉了"]), ("成功, 待做评论", ["成功"]),                         # 混着的
+    ('["待置顶"', []), ('["成功"', ["成功"]), ('["待置顶", "成功"', ["成功"]), ("[" * 100000, []),       # 坏 JSON
+    ('"待置顶"', []), ('"成功"', ["成功"]), ('"[\\"等解封后控评\\"]"', []), ('\n ["待置顶"]', []),  # 串 / 两层 / 前导空白
+    ("待置顶", []), ("置顶评论", ["置顶评论"]),                                                         # 纯文本
+    (["待置顶"], []), (["成功", "待做评论"], ["成功"]), ([{"text": "待做评论"}], []),                    # 已经是 list
+)
+# 飞书格子 → 同步当时看到的值; 存进库 (list → JSON 串, 文本原样) 再由闸二读回来, 判出来要和同步逐字一样
+SYNC_CELLS = (["成功"], ["补控成功"], ["交付前补控成功"], ["控住后掉了"], ["成功", "待做评论"], ["待安排贴主自评回复", "控住后掉了"],
+              "成功, 待做评论", [{"text": "成功"}], ["待置顶"], ["待做评论"], ["待安排贴主自评"], ["等解封后控评"], ["待解封后控评"],
+              ["素人退出无法回收"], "待置顶", [{"text": "待做评论"}], ["待置顶", "待做评论"], "成功；待置顶\n控住后掉了")
+
+
+def check_secondary_pinned_done_only() -> None:
+    import _common as C
+    import sync_feishu_notes_to_truth_vault as engine
+    for raw, want in PIN_CASES:
+        assert G.pinned_done_labels(raw) == want, (repr(raw)[:40], G.pinned_done_labels(raw), want)
+    for cell in SYNC_CELLS:
+        stored = json.dumps(cell, ensure_ascii=False) if isinstance(cell, list) else cell
+        assert G.pinned_done_labels(stored) == engine.posthoc_done_labels(cell), (cell, stored)
+    # 同一个函数对象: 同步脚本 import 的就是 _common 那个; 闸二每次调用都去 _common 取 (换掉它闸二跟着换)
+    assert engine.posthoc_done_labels is C.posthoc_done_labels, "同步脚本又有了自己的一份 posthoc_done_labels"
+    seen, real = [], C.posthoc_done_labels
+    C.posthoc_done_labels = lambda cell: seen.append(cell) or real(cell)
+    try:
+        assert G.pinned_done_labels('["成功", "待置顶"]') == ["成功"] and seen == [["成功", "待置顶"]], seen
+    finally:
+        C.posthoc_done_labels = real
+    # 报告: 剔除依据写成「只认做过的」, 计数叫「置顶:做过」; 两处文字换回旧字 = 换之前的金样 (别的一个字节没变)
+    ds, man = _sec_fixture()
+    rep = G.render_report_secondary(_sec_run(ds, man))
+    assert PIN_RULE_NEW in rep and "置顶:做过 3" in rep and PIN_RULE_OLD not in rep
+    old = rep.replace(PIN_RULE_NEW, PIN_RULE_OLD).replace("置顶:做过 3", "置顶 3")
+    assert hashlib.sha256(old.encode()).hexdigest() == SEC_GOLDEN_PRE_G25_SHA256, "§8r 除了那两处文字, 报告别处也变了"
+    # 旧键 has_pinned_comment (「非空就剔」的口径) 的 dataset 不跑, 免得旧夹具悄悄少剔
+    stale = dict(ds, notes=[dict(n) for n in ds["notes"]])
+    stale["notes"][0]["has_pinned_comment"] = stale["notes"][0].pop("has_pinned_done")
+    _refused(lambda: _sec_run(stale, man), "has_pinned_comment", "dataset 还是旧键")
+    print(f"  §8r 置顶只认做过的 (G-25): {len(PIN_CASES)} 种库里的写法 (只有待办 / 做过 / 混着 / NULL / 空 / 坏 JSON / 纯文本 / list) "
+          f"判对; {len(SYNC_CELLS)} 种飞书格子存进库再读回来, 和同步逐字一样; 同步和闸二是同一个函数对象; 报告只换了两处文字; "
+          "旧键拒跑 ✓")
+
+
 def main() -> int:
     check_golden()
     check_single_stratum_is_woolf()
@@ -1675,7 +1758,8 @@ def main() -> int:
         check_secondary_cli_and_workflow(t)
         check_secondary_current_labels()
         check_secondary_big_support()
-    print("\ncheck_gate2_run: 13 节 + §8 副题库 17 节全过")
+        check_secondary_pinned_done_only()
+    print("\ncheck_gate2_run: 13 节 + §8 副题库 18 节全过")
     return 0
 
 

@@ -18,7 +18,8 @@
   ① _KNOWN_INTERMEDIATES 放回 _comment_text_persona            → §1 「旧名加载就红」那条红
   ② transform_row 不消费 _commenter_codes (落回 leftover 原值)  → §1 「是列表」那条红
   ③ 删掉 ANSHEN 的 蓝词字段 映射                               → §2 红 (列进 _undeclared, hit_blue_keywords 空)
-  ④ posthoc_done_labels 不滤待办 (_CM_POSTHOC_PENDING_RE 永不命中) → §3 待办那几条红 (本文件 §3 末尾实跑这条反证)
+  ④ posthoc_done_labels 不滤待办 (_common._CM_POSTHOC_PENDING_RE 永不命中) → §3 待办那几条红 (本文件 §3 末尾实跑这条反证;
+     11-25 判据本体挪进 _common, 同步脚本和闸二敏感性重跑共用, G-25)
   ⑤ SPX 改回「数据汇总」                                        → §4 红
 
 跑法: cd scripts && python check_column_audit_fixes.py
@@ -132,13 +133,15 @@ def check_posthoc_pending() -> None:
     # reason 文字不变 (已经标过的行每晚写出同一份 JSON)
     note, _, _ = engine.transform_row(nuc, "r", {**base, "爆帖置顶评论": ["成功"]})
     assert "typed 列 pinned_comment 非空 = 做了置顶" in _flags(note).get("comment_maintained_reason", "")
+    # 同步脚本用的就是 _common 那一个 (闸二敏感性重跑也用它, G-25; check_gate2_run §8r 另钉闸二那头)
+    assert engine.posthoc_done_labels is c.posthoc_done_labels, "§3 同步脚本又有了自己的一份 posthoc_done_labels"
     # 反证 ④: 不滤待办 → 待办被当成做过 (这节真的在测过滤)
-    saved = engine._CM_POSTHOC_PENDING_RE
-    engine._CM_POSTHOC_PENDING_RE = re.compile(r"(?!)")
+    saved = c._CM_POSTHOC_PENDING_RE
+    c._CM_POSTHOC_PENDING_RE = re.compile(r"(?!)")
     try:
         assert _routes(nuc, {**base, "爆帖置顶评论": ["待置顶"]}) == [POSTHOC], "§3 反证没变红"
     finally:
-        engine._CM_POSTHOC_PENDING_RE = saved
+        c._CM_POSTHOC_PENDING_RE = saved
     print(f"  §3 起量后干预: {len(DONE)} 种做过的写法算, {len(PENDING)} 种待办 / 做不成的不算 "
           "(typed pinned_comment / raw_extra 两路); 值不动、reason 不变; 不滤就变红 (反证) ✓")
 

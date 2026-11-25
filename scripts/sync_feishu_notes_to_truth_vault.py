@@ -72,6 +72,7 @@ from _common import (
     parse_feishu_date,
     parse_audience_analysis,
     parse_kv_metrics,
+    posthoc_done_labels,
     fetch_acknowledged_quarantine,
     quarantine_record,
     resolve_feishu_tables,
@@ -493,27 +494,8 @@ _CM_POSTHOC_COLS = ("爆帖控评置顶", "爆帖置顶评论")
 # 以前非空即算: 按需项目补跑一次会把 28 行待办当成做过 (NUC 11、NRT3 10、HXZ_FB 4、HXZ_QD 3; 列体检数的 29 里有 1 行同时带「控住后掉了」, 算做过)。
 # 判据按标签的样子 (以「待」「等」开头, 或带「无法」), 不按名单: 运营新加一个「待xx」也认得出。
 # ⚠️ 挡不住什么: 一个做过的标签恰好以「待」「等」开头, 会被当成待办漏掉; 正文写成一整段的置顶评论原文照旧算做过。
-_CM_POSTHOC_PENDING_RE = re.compile(r"^[待等]|无法")
-_CM_POSTHOC_SPLIT_RE = re.compile(r"[,，、;；\n]+")
-
-
-def posthoc_done_labels(cell: Any) -> list[str]:
-    """爆帖置顶评论 / 爆帖控评置顶 / pinned_comment 一格 → 里面「做过」的标签 (去掉待办和做不成的)。空 = 不算干预。
-
-    多选回 list (元素是字符串或 {text}); 文本格或 typed 列可能是「成功, 待做评论」这种拼好的串, 按逗号顿号分号换行切。"""
-    if cell in (None, "", []):
-        return []
-    items = cell if isinstance(cell, list) else [cell]
-    out: list[str] = []
-    for x in items:
-        v = x.get("text") if isinstance(x, dict) else x
-        if v is None or isinstance(v, bool):
-            continue
-        for part in _CM_POSTHOC_SPLIT_RE.split(str(v)):
-            part = part.strip()
-            if part and not _CM_POSTHOC_PENDING_RE.search(part):
-                out.append(part)
-    return out
+# 判据本体 (posthoc_done_labels 和它的两个正则 _CM_POSTHOC_PENDING_RE / _CM_POSTHOC_SPLIT_RE) 11-25 原样挪进 _common:
+# 闸二副题库的敏感性重跑判「置顶」也用同一个函数 (G-25, D-128 11-25 补), 两边口径不会漂开。
 
 # ── 投流标记(2026-09-22 运营回填件确认「关注后续流量」是投流标记)─────────────
 # 运营 2026-09-22: 🍟 = 做了小红书的薯条投流, 前面的日期是投流日期;
