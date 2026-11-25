@@ -315,19 +315,28 @@ def is_missing_migration(exc: BaseException) -> bool:
 # 默认的两个外部动作 (测试里全换成假的)
 # ════════════════════════════════════════════════════════════════════
 
-def default_ask(model: str, prompt: str, block: tuple[str, str]) -> tuple[str, Optional[dict], Optional[str]]:
+def default_ask(model: str, prompt: str, block: tuple[str, str]) -> tuple[str, Optional[dict], Optional[str], dict]:
     """调一次模型 (仓里现成的 call_claude)。一次预留对一个真发出去的请求: 只试一次 (max_attempts=1)、SDK 自带的重试关掉
     (sdk_max_retries=0)、只走主中转站 —— 配了备用站又没把 RELAY_FORCE 定成 primary 时, call_claude 一次会发两个请求
-    (主站一个、备用站一个), 第二个不在账上, 所以那种配置下这里一个请求都不发。main() 开头自己把 RELAY_FORCE 定成 primary。"""
+    (主站一个、备用站一个), 第二个不在账上, 所以那种配置下这里一个请求都不发。main() 开头自己把 RELAY_FORCE 定成 primary。
+
+    11-25 (I-38) 起多回第四项: 回包里的模型名和消息 id ({"model", "id"}, 原样; Pass._call 拿到马上换成写死的词 / 前缀,
+    完整的 id 不进计数、不进摘要)。用量里中转站没回报的那几项不再记成 0, 直接不带这个键 (Budget.settle 照旧按 0 算钱,
+    摘要的「用量逐项」把它数成「没回报」)。发出去的请求、预留、记的钱都没变。"""
     guard_model(model)
     import relay_failover
     if relay_failover.mode() != relay_failover.MODE_PRIMARY_ONLY:
         raise PassConfigError("首图步骤只走主中转站 (RELAY_FORCE 要是 primary)")
     from annotate_essence_pass import call_claude
     meta: dict = {}
+    reply: dict = {}
     text = call_claude(prompt, model, max_attempts=1, max_tokens=FI.MAX_OUTPUT_TOKENS, meta=meta, images=[block],
-                       sdk_max_retries=0)
-    return text, meta.get("usage"), FI.stop_word(meta.get("stop_reason"))   # 第三项只会是写死的词 (或 None)
+                       sdk_max_retries=0, reply=reply)
+    usage = meta.get("usage")
+    if usage is not None and "usage_fields" in reply:
+        usage = {k: v for k, v in usage.items() if k in reply["usage_fields"]}   # 没回报的项不当 0 (11-25, I-38)
+    return (text, usage, FI.stop_word(meta.get("stop_reason")),                   # 第三项只会是写死的词 (或 None)
+            {"model": reply.get("model"), "id": reply.get("id")})
 
 
 def default_downloader() -> Callable[[dict], bytes]:
@@ -401,6 +410,9 @@ class Pass:
         # 11-18 (I-38): 答成的封面里「说了没有字」的有几篇 (分母), 其中又抄出了字的那几篇抄的是什么 (只有写死的词):
         # 是不是这个项目的品牌 / 产品名、像不像标题、多长、「字是哪一种」答的什么、「没有字」是不是靠认整行认下的
         self.no_text_void: Counter = Counter()
+        # 11-25 (I-38): 回包从哪来 —— 模型名 (像模型名的原样, 别的换写死的词) / 消息 id 开头的前缀 → 回包数。完整的 id 不留
+        self.reply_model: Counter = Counter()
+        self.reply_id: Counter = Counter()
         self._lined: set[str] = set()             # 当前这张图里靠「整行一字不差」认下的题
         self._brand_cache: dict[str, Optional[list[str]]] = {}
         self._note: dict[str, str] = {}           # 当前这张图各题细一层的词 (图和图之间不并, 一张图内各次调用的题不重)
@@ -432,9 +444,12 @@ class Pass:
                         self.ended = "relay_failing"
                 continue
             self.budget.settle(est, self.model, usage)
+            src = more[1] if len(more) > 1 and isinstance(more[1], dict) else {}
             with self.lock:
                 self.calls_ok += 1
                 self.fail_streak = 0
+                self.reply_model[FI.reply_model_word(src.get("model"))] += 1   # 拿到就换成写死的词 / 前缀
+                self.reply_id[FI.reply_id_prefix(src.get("id"))] += 1
             stop = FI.stop_word(more[0]) if more else None
             read = FI.read_reply(self.bank, qids, text or "", stop)
             parsed = dict(read["parsed"])                         # = FI.parse_answers(...) 原样
@@ -724,7 +739,7 @@ def run_pass(*, bank: dict, store: Any, mode: str = "nightly", dry_run: bool = F
                  "yuan": MP.yuan_of_weighted(cheap_model(), budget.max_weighted)},
         "candidates": None, "ended": None, "status": {}, "written": {}, "detail": {}, "flags": {},
         "no_answer_why": {}, "invalid_by_question": {}, "reply": {}, "would_read": {},
-        "line_accepted": {}, "line_refused": {}, "partial_void": {}, "no_text_void": {},
+        "line_accepted": {}, "line_refused": {}, "partial_void": {}, "no_text_void": {}, "reply_model": {}, "reply_id": {},
         "budget": {"images": 0, "calls": 0, "spent": 0, "usage_missing": 0, "yuan": 0.0}}
     try:
         store.sync_bank(bank)                                      # 名单的镜像 (干跑也同步: 不花钱); 也是「迁移跑没跑」的探针
@@ -744,15 +759,30 @@ def run_pass(*, bank: dict, store: Any, mode: str = "nightly", dry_run: bool = F
                 "flags": dict(p.flags), "no_answer_why": dict(p.no_answer_why),
                 "invalid_by_question": dict(p.invalid_q), "reply": dict(p.reply), "would_read": dict(p.would_read),
                 "line_accepted": dict(p.line_accepted), "line_refused": dict(p.line_refused),
-                "partial_void": dict(p.partial_void), "no_text_void": dict(p.no_text_void)})
+                "partial_void": dict(p.partial_void), "no_text_void": dict(p.no_text_void),
+                "reply_model": dict(p.reply_model), "reply_id": dict(p.reply_id)})
     spent_yuan = MP.yuan_of_weighted(cheap_model(), budget.spent)
     bm = list(budget.by_model.values())
     res["budget"] = {"images": budget.images, "calls": budget.calls, "spent": budget.spent,
                      "usage_missing": budget.usage_missing, "yuan": spent_yuan,
                      # 11-22 加: 中转站回报的输入 / 输出分开记 (11-20 那晚每次调用的输入当量 token 是前几晚的 3 倍多, 看不出是哪一头)
                      "input": sum(m["input"] for m in bm), "output": sum(m["output"] for m in bm),
-                     "usage_calls": sum(m["calls"] - m["est_calls"] for m in bm)}
+                     "usage_calls": sum(m["calls"] - m["est_calls"] for m in bm),
+                     # 11-25 (I-38): 同一批调用 (拿到了用量的) 的四项各自加起来、各在几次里回报了, 和每次调用总输入的分布 (只有数)
+                     "split": dict(budget.usage_split), "split_reported": dict(budget.usage_reported),
+                     "per_call_input": _spread(budget.input_per_call)}
     return res
+
+
+def _spread(xs: list[int]) -> dict:
+    """每次调用的总输入 → 次数、最小、中位、最大、超过 FI.BIG_INPUT 的次数。一个数都没有 → {}。"""
+    if not xs:
+        return {}
+    xs = sorted(int(x) for x in xs)
+    n, mid = len(xs), len(xs) // 2
+    two = xs[mid - 1] + xs[mid] if n % 2 == 0 else 0
+    median = xs[mid] if n % 2 else (two // 2 if two % 2 == 0 else two / 2)
+    return {"n": n, "min": xs[0], "median": median, "max": xs[-1], "over": sum(1 for x in xs if x > FI.BIG_INPUT)}
 
 
 _ENDED_ZH = {
@@ -769,6 +799,44 @@ _ENDED_ZH = {
     "relay_failing": "模型调用连着失败：停了",
     "write_failed": "结果写不进库：停了",
 }
+
+
+def _usage_detail_lines(b: dict) -> list[str]:
+    """11-25 (I-38) 加的两行: 四项用量逐项 (中转站回报的原样, 没回报的另数, 不当 0)、每次调用总输入的分布。只有写死的词和数。"""
+    n = int(b["usage_calls"])
+    split, rep = b.get("split") or {}, b.get("split_reported") or {}
+    parts = []
+    for k, field in FI.USAGE_FIELDS:
+        got, total = int(rep.get(k, 0)), int(split.get(k, 0))
+        if got <= 0:
+            parts.append(f"{field} 没回报 {n} 次")
+        elif got >= n:
+            parts.append(f"{field} 合计 {total:,}、平均 {total // got:,}")
+        else:
+            parts.append(f"{field} 合计 {total:,}、回报了的 {got} 次平均 {total // got:,}、没回报 {n - got} 次")
+    out = [f"用量逐项（中转站回报的原样，拿到用量的 {n} 次调用；没回报的项不当 0，另数）：" + "；".join(parts)]
+    pc = b.get("per_call_input") or {}
+    if pc.get("n"):
+        med = pc["median"]
+        med_s = f"{int(med):,}" if float(med).is_integer() else f"{med:,.1f}"
+        out.append(f"每次调用的总输入（input + 写缓存 + 读缓存，拿到用量的 {int(pc['n'])} 次）：最小 {int(pc['min']):,}、中位 {med_s}、"
+                   f"最大 {int(pc['max']):,}；超过 {FI.BIG_INPUT:,}（写死的门槛）的 {int(pc['over'])} 次")
+    return out
+
+
+def _reply_from_line(models: dict, ids: dict, keep: int = 6) -> str:
+    """11-25 (I-38) 加的一行: 回包的模型名 (原样) 和消息 id 开头的前缀各几次。打之前每个键再核一遍 (FI.printable_*),
+    完整的 id、不像模型名的字都打不出来; 种类多了只列前几种, 剩下的并成一个写死的词。"""
+    def fmt(counts: dict, clean) -> str:
+        merged: Counter = Counter()
+        for k, v in counts.items():
+            merged[clean(k)] += int(v)
+        top = sorted(merged.items(), key=lambda kv: (-kv[1], kv[0]))
+        if len(top) > keep:
+            top = top[:keep - 1] + [(FI.REPLY_OTHERS, sum(v for _k, v in top[keep - 1:]))]
+        return "，".join(f"{k}={v}" for k, v in top) or "无"
+    return (f"回包从哪来（中转站回的模型名原样；消息 id 只取开头的前缀，后面的不打；回包数）：模型 "
+            f"{fmt(models, FI.printable_model_word)}；id 前缀 {fmt(ids, FI.printable_id_prefix)}")
 
 
 def summary(res: dict) -> str:
@@ -788,6 +856,9 @@ def summary(res: dict) -> str:
     if b.get("usage_calls"):
         lines.append(f"用量拆开（中转站回报的）：输入 {b['input']:,}、输出 {b['output']:,} token；拿到用量的 {b['usage_calls']} 次调用里，"
                      f"平均每次输入 {b['input'] // b['usage_calls']:,}、输出 {b['output'] // b['usage_calls']:,}")
+        lines.extend(_usage_detail_lines(b))
+    if res.get("reply_model") or res.get("reply_id"):
+        lines.append(_reply_from_line(res.get("reply_model") or {}, res.get("reply_id") or {}))
     for title, key in (("写进库的结果", "status"), ("其中", "flags"), ("之后", "written"), ("失败的状态词", "detail"),
                        ("没答成（no_answer）的原因", "no_answer_why"), ("逐题无效（题号:原因=调用次数）", "invalid_by_question"),
                        ("回包", "reply"), ("假如放宽读法会多读出（没有放宽，这些答案照旧无效）", "would_read"),

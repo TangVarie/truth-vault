@@ -527,7 +527,8 @@ def _backup_client_for_model(anthropic_module, model: str):
 
 def call_claude(prompt: str, model: str, *, cached_system: str | None = None,
                 max_attempts: int = 3, max_tokens: int = 2000, meta: dict | None = None,
-                images: list | None = None, sdk_max_retries: int | None = None) -> str:
+                images: list | None = None, sdk_max_retries: int | None = None,
+                reply: dict | None = None) -> str:
     """Single Mode A call with exponential-backoff retry on transient errors.
 
     meta: 若给定 (一个 dict), 成功那次的 ``stop_reason`` 写进 meta["stop_reason"] —— 调用方据此分得清「回到一半被
@@ -540,6 +541,11 @@ def call_claude(prompt: str, model: str, *, cached_system: str | None = None,
     sdk_max_retries: 首图试跑用 (D-157)。SDK 自己还会悄悄重试 (默认 2 次), 一次 call_claude 实际能发 3 个请求; 试跑的
       调用上限要按「真发出去的请求」数, 所以它传 0: 主站、备用站的客户端都不再自己重试 (配了备用站时一次最多两个请求:
       主站一个、备用站一个)。不给 (默认 None, 现有调用方全都不给) → 客户端的构造和以前一字不差 (§9 钉着)。
+
+    reply: 首图每晚那一步用 (11-25, I-38)。若给定 (一个 dict), 成功那次回包的三样写进去: reply["model"] (回包里的模型名)、
+      reply["id"] (消息 id, 调用方只留开头的前缀)、reply["usage_fields"] (四项用量里中转站真回报了的那几项的键;
+      meta["usage"] 把没回报的记成 0, 分不出「没回报」和「回报了 0」)。只读回包, 发出去的请求一个字节不变;
+      不给 (默认, 别的调用方全都不给) → 什么都不变, meta 也和以前一样。
 
     cached_system: 若给定, 作为带 `cache_control: ephemeral` 的 system 块发送(Anthropic
       prompt caching), `prompt` 作 user message —— 稳定大前缀(essence 词表/schema)跨请求命中
@@ -631,6 +637,14 @@ def call_claude(prompt: str, model: str, *, cached_system: str | None = None,
                         meta["usage"] = {k: int(getattr(_u, a, 0) or 0) for k, a in (
                             ("input", "input_tokens"), ("cache_write", "cache_creation_input_tokens"),
                             ("cache_read", "cache_read_input_tokens"), ("output", "output_tokens"))}
+                if reply is not None:
+                    _u = getattr(msg, "usage", None)
+                    reply["model"] = getattr(msg, "model", None)
+                    reply["id"] = getattr(msg, "id", None)
+                    reply["usage_fields"] = () if _u is None else tuple(k for k, a in (
+                        ("input", "input_tokens"), ("cache_write", "cache_creation_input_tokens"),
+                        ("cache_read", "cache_read_input_tokens"), ("output", "output_tokens"))
+                        if getattr(_u, a, None) is not None)
                 # Concatenate text blocks. Mode A responses are JSON, never tool calls.
                 parts = [b.text for b in msg.content if getattr(b, "type", None) == "text"]
                 return "".join(parts)
