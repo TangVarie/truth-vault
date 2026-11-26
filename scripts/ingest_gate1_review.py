@@ -31,6 +31,7 @@ from build_gate1_review_sheet import SPOT_SHEET, UNSURE, sheet_name
 from gate1_labels import SHORT
 from gate1_models import DEFAULT_RUNS, OWNER_EXTRACTOR, OWNER_RUN_TAG, Gate1Refused, load_secondary, read_cells
 from ingest_gate1_answers import _sql_lit, rows_to_sql
+from secret_mask import mask_secrets
 
 PICK_HEADER = "你的判断"
 REVIEWED_KINDS = ("disagree", "spot")          # 表里有的格 (gate1_models 的格子表 kind)
@@ -184,7 +185,7 @@ def main(argv: list[str] | None = None) -> int:
         rows = build_rows(accepted, cells, bank, a.run_tag)
         sql = review_sql(accepted, cells, bank, a.run_tag)
     except (IngestRefused, Gate1Refused) as exc:
-        print(f"拒绝: {exc}", file=sys.stderr)
+        print(f"拒绝: {mask_secrets(str(exc))}", file=sys.stderr)
         return 2
     print(f"{a.file.name}: {counts['rows']} 格 · 收 {counts['accepted']} · 拿不准 {counts['unsure']} · 空着 {counts['blank']} "
           f"→ {len(rows)} 行 + 撤回 {len(retract_cells(accepted, cells))} 格 "

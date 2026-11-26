@@ -483,19 +483,46 @@ SELECT '91', 'H · 跨 schema 孤儿',
 
 UNION ALL
 SELECT '92', 'I · 数据一致性',
-    '名字带 backup / 日期后缀 (_YYYYMMDD) 且日期已超过 30 天的一次性表个数 (审计 C-17: 一次性表没有过期日; '
-    'truth_vault.backup_d129_ids_20261026 除外: 名字像备份, 其实是永久保留的 D-129 id 映射, 闸二和 G-18 按它定半区, D-128 补记)',
+    '名字像备份、却没登记的表数 (S-02 / D-136: 备份都留着, 新的要登记; 登记册 docs/backup-registry.md。'
+    '名字像备份 = 含 backup、以 _bak_ 加四位数字开头、或以 _YYYYMMDD 结尾; truth_vault.backup_d129_ids_20261026 永久保留, 另外除外)',
     COALESCE(pg_temp.safe_count(
-        $q$SELECT COUNT(*)
+        $q$WITH registered(pat) AS (VALUES
+                ('^truth_vault\.backup_d129_ids_20261026$'),
+                ('^truth_vault\.backup_(inverted_lineage|(notes|nfa|comments|metric_snapshots)_vanished)_20261009$'),
+                ('^autowriter\.backup_(tv_note_links_inverted|items_self_review|tv_note_links_vanished)_20261009$'),
+                ('^autowriter\.backup_(tv_note_links_twins|orphan_ingest_tuge)_20261010$'),
+                ('^autowriter\.backup_memory_xiwu_contam_20261012$'),
+                ('^truth_vault\.(reference_samples_backup_tv_stale|notes_ssll_marker_backup)_20261008$'),
+                ('^truth_vault\.backup_quarantine_resolve_20261016$'),
+                ('^truth_vault\.backup_gate3_preannotated_2026(1019|1030)$'),
+                ('^truth_vault\.(backup|repair)_notes_essence_cols_20261020$'),
+                ('^truth_vault\.backup_content_scores_d122_20261020$'),
+                ('^autowriter\.backup_(global_shorten_rules|delivery_params)_20261020$'),
+                ('^autowriter\.backup_projects_default_params_20261030$'),
+                ('^(truth_vault|autowriter)\.backup_[a-z_]+_d129(_twins)?_20261026$'),
+                ('^(truth_vault|autowriter)\.backup_([a-z_]+_)?d129p3(_[a-z]+)?_20261027$'),
+                ('^(truth_vault|autowriter)\.backup_([a-z_]+_)?i25(_ids)?_20261027$'),
+                ('^autowriter\._bak_1102_dup_[a-z_]+$'),
+                ('^autowriter\._bak_1102_novelty_rules$'),
+                ('^autowriter\._bak_1103_(spx_rules|tuge_comment_rules)$'),
+                ('^autowriter\._bak_1110_tuge_(comment_rules|default_params)$'),
+                ('^autowriter\._bak_1111_tuge_(comment_rules|rule_compiles)$'),
+                ('^autowriter\._bak_1113_ending_rule$'),
+                ('^autowriter\._bak_1123_ending_rule_compile$'),
+                ('^truth_vault\.backup_external_publish_time_j17_20261125$'),
+                ('^truth_vault\.backup_repoint_stale_(comments|comment_judge)_20261125$'),
+                ('^truth_vault\.backup_repoint_stale_ssll_(samples|marks)_20261125$')
+        )
+        SELECT COUNT(*)
         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
         WHERE c.relkind = 'r' AND n.nspname IN ('truth_vault', 'autowriter', 'public')
-          AND c.relname ~ '(backup|_20[0-9]{6}$)'
+          AND c.relname ~ '(backup|^_bak_[0-9]{4}_|_20[0-9]{6}$)'
           AND (n.nspname, c.relname) <> ('truth_vault', 'backup_d129_ids_20261026')
-          AND substring(c.relname from '_(20[0-9]{6})$') IS NOT NULL
-          AND to_date(substring(c.relname from '_(20[0-9]{6})$'), 'YYYYMMDD') < current_date - 30$q$
+          AND NOT EXISTS (SELECT 1 FROM registered r WHERE n.nspname || '.' || c.relname ~ r.pat)$q$
     )::TEXT, 'N/A'),
     '0',
-    '> 0 = 该 drop 了. 每张表的 COMMENT 里有回滚 SQL 和可 drop 日期 (D-086 / D-099 / D-102); 先看注释再 drop, 别顺手删了还没到期的.'
+    '> 0 = 有新备份没登记 (D-136: 留着, 不要删)。在 docs/backup-registry.md 和这里的 VALUES 各加一条同样的规则 '
+    '(CI 守卫 check_verify_backup_registry.py 要两边一致)。11-25 生产 82 张备份表全部登记, 读数 0。'
 
 UNION ALL
 SELECT '93', 'I · 数据一致性',
@@ -672,6 +699,122 @@ SELECT '90', 'I · 数据一致性',
     '0',
     '> 0 表示 _common.py:update_project_date_range 撞了 race. '
     '修法: UPDATE projects SET start_date = end_date WHERE start_date > end_date; 再重跑 sync.'
+
+-- ── 2026-11-25 batch 1 (S-02 / S-09) 追加的行 ─────────────────────────────
+UNION ALL
+SELECT '92b', 'I · 数据一致性',
+    '客户端角色 (anon / authenticated) 有任何权限的「备份表 × 角色」数 (一张表两个角色都能碰算 2; 名字规则同 #92; S-02)',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(*)
+        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        CROSS JOIN (VALUES ('anon'), ('authenticated')) r(role)
+        WHERE c.relkind = 'r' AND n.nspname IN ('truth_vault', 'autowriter', 'public')
+          AND c.relname ~ '(backup|^_bak_[0-9]{4}_|_20[0-9]{6}$)'
+          AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r.role)
+          AND has_table_privilege(r.role, c.oid, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER')$q$
+    )::TEXT, 'N/A'),
+    '0',
+    '> 0 = 有备份表能被看板 / 公网的 key 读写 (备份里有正文和评论)。11-25 生产 0: 有 16 张备份没开 RLS, 但都没有授权, '
+    'truth_vault 也不给 anon 用, 所以不用补开 RLS。真 > 0 时: REVOKE ALL ON <表> FROM anon, authenticated。'
+
+UNION ALL
+SELECT '105', 'J · 看板与权限',
+    'public 下 v_dash_* 看板视图的个数 (Step 0b 的 dashboard_views_v1–v6 都跑过; S-09 / 审计 C-16)',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relkind = 'v' AND c.relname LIKE 'v\_dash\_%'$q$
+    )::TEXT, 'N/A'),
+    '18',
+    '11-25 生产 18 个。少了 = scripts/README.md Step 0b 里有一份看板视图没跑, 按 Step 0b 的顺序补跑; '
+    '多了 = 有人加了视图没写进 schemas/, 或者 CI 的探针视图 v_dash_probe 跑进了生产 (那就删掉它)。'
+
+UNION ALL
+SELECT '106', 'J · 看板与权限',
+    'anon 在 public 下还有写权限 (INSERT / UPDATE / DELETE / TRUNCATE) 的「表或视图 × 权限」数 (S-09)',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        CROSS JOIN (VALUES ('INSERT'), ('UPDATE'), ('DELETE'), ('TRUNCATE')) p(priv)
+        WHERE n.nspname = 'public' AND c.relkind IN ('r', 'v', 'm', 'p')
+          AND has_table_privilege('anon', c.oid, p.priv)$q$
+    )::TEXT, 'N/A'),
+    '0',
+    '> 0 = 拿着看板那把公开 key 的人能改这些表 / 视图。跑 schemas/security_revoke_anon_write_public_tables.sql 和 '
+    'security_revoke_anon_write_dash_views.sql (Step 0b; 都能重跑)。11-25 生产 0。'
+
+UNION ALL
+SELECT '107', 'J · 看板与权限',
+    'public 下三省六部的 5 张表里没开 RLS 的张数 (projects / pipeline_runs / stage_logs / outputs / reference_samples; D-101)',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relkind = 'r' AND NOT c.relrowsecurity
+          AND c.relname IN ('projects', 'pipeline_runs', 'stage_logs', 'outputs', 'reference_samples')$q$
+    )::TEXT, 'N/A'),
+    '0',
+    '> 0 = 匿名 key 能整表读三省六部的正文和评论。跑 schemas/security_rls_public_ssll_tables.sql (Step 0b; 能重跑)。11-25 生产 0。'
+
+UNION ALL
+SELECT '108', 'I · 数据一致性',
+    '闸三的分: 第一条带 input_sha 的分之后, 又写进来的 input_sha 为空的行数 (v1_29; AU-F02b ②)',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(*) FROM truth_vault.content_scores s
+        WHERE s.input_sha IS NULL
+          AND s.scored_at > (SELECT min(scored_at) FROM truth_vault.content_scores WHERE input_sha IS NOT NULL)$q$
+    )::TEXT, 'N/A'),
+    '0',
+    'N/A = schemas/notes_v1_29_content_scores_input_sha.sql 还没跑 (gate3_score.py 照旧打分, 只是不记)。'
+    '跑之前的分都是空的, 不算 (不回填)。> 0 = 有一条写分的路没带 input_sha, 或者那篇的 essence_content_sha 是空的 (对照 #101)。'
+
+UNION ALL
+SELECT '109', 'I · 数据一致性',
+    '整条改指到另一篇帖的笔记上, 还挂着的旧帖运营评论行数 (改指之前入库、正文在现在的随贴评论里找不到, '
+    '且这篇还有随贴评论原文或改指时换了发布时间; 链接只差空白不算改指; AU-F02b ④ / D-173)',
+    COALESCE(pg_temp.safe_count(
+        $q$WITH rp AS (
+            SELECT a.row_id AS note_id, max(a.occurred_at) AS last_rp, bool_or(a.changed_cols ? 'publish_time') AS pt_changed
+            FROM truth_vault.audit_log a
+            WHERE a.schema_name = 'truth_vault' AND a.table_name = 'notes' AND a.operation = 'UPDATE'
+              AND a.changed_cols ? 'publish_url' AND a.changed_cols ? 'account_id'
+              AND btrim(coalesce(a.changed_cols->'publish_url'->>0, ''), E' \t\r\n') <> ''
+              AND btrim(coalesce(a.changed_cols->'publish_url'->>1, ''), E' \t\r\n') <> ''
+              AND btrim(a.changed_cols->'publish_url'->>0, E' \t\r\n') IS DISTINCT FROM btrim(a.changed_cols->'publish_url'->>1, E' \t\r\n')
+            GROUP BY a.row_id
+        )
+        SELECT COUNT(*) FROM rp JOIN truth_vault.notes n ON n.note_id = rp.note_id
+        JOIN truth_vault.comments c ON c.note_id = rp.note_id
+        WHERE c.source IS NULL AND c.created_at < rp.last_rp
+          AND (n.raw_extra ? '_comment_text' OR n.raw_extra ? '_comment_text_persona' OR rp.pt_changed)
+          AND position(btrim(c.content) IN coalesce(n.raw_extra->>'_comment_text', '') || E'\n'
+                                           || coalesce(n.raw_extra->>'_comment_text_persona', '')) = 0$q$
+    )::TEXT, 'N/A'),
+    '0',
+    '11-25 生产 765 (全在 OKMAN_phase1, 242 篇), 都有 Jev 的评论判分。这一行按 D-173 的提议数: 要改 D-119 #15, 要 owner 点头; '
+    '11-25 问了还没答, 没答之前 765 是已知的, 不用清。owner 同意删之后的清法: 先跑 '
+    'scripts/cleanup_repointed_stale_comments_au_f02b.sql (先备份、再删评论和判分, 能重跑), 同意撤样本的话再跑 withdraw (见 #110)。'
+    'owner 不同意删的话, 把期望改成当时的读数。没有原文键、改指时也没换发布时间的篇上另有 16 条 (OKMAN 13、TUGE 3), '
+    '「找不到」只说明源清空了, 不算进这一行, 照 D-119 #15 留着 (D-173 第 3 条)。'
+
+UNION ALL
+SELECT '110', 'H · 跨 schema 孤儿',
+    '三省六部里旧帖内容、挂着改指后 note_id 的通道 1 样本数 (改指之前推的、样本正文和现在的正文不一样; 改指认法同 #109; AU-F02b ④)',
+    COALESCE(pg_temp.safe_count(
+        $q$WITH rp AS (
+            SELECT a.row_id AS note_id, max(a.occurred_at) AS last_rp, bool_or(a.changed_cols ? 'publish_time') AS pt_changed
+            FROM truth_vault.audit_log a
+            WHERE a.schema_name = 'truth_vault' AND a.table_name = 'notes' AND a.operation = 'UPDATE'
+              AND a.changed_cols ? 'publish_url' AND a.changed_cols ? 'account_id'
+              AND btrim(coalesce(a.changed_cols->'publish_url'->>0, ''), E' \t\r\n') <> ''
+              AND btrim(coalesce(a.changed_cols->'publish_url'->>1, ''), E' \t\r\n') <> ''
+              AND btrim(a.changed_cols->'publish_url'->>0, E' \t\r\n') IS DISTINCT FROM btrim(a.changed_cols->'publish_url'->>1, E' \t\r\n')
+            GROUP BY a.row_id
+        )
+        SELECT COUNT(*) FROM rp JOIN truth_vault.notes n ON n.note_id = rp.note_id
+        JOIN public.reference_samples r ON r.source_truth_vault_note_id = rp.note_id
+        WHERE r.created_at < (rp.last_rp AT TIME ZONE 'UTC') AND r.post_body IS DISTINCT FROM n.raw_content$q$
+    )::TEXT, 'N/A'),
+    '0',
+    '11-25 生产 29 (全在 OKMAN_phase1)。会动外部下游, 要 owner 先看: scripts/withdraw_repointed_stale_ssll_samples_au_f02b.sql '
+    '(先清标记、再删样本, 下一晚通道 1 按现在的帖重推仍是爆 / 大爆的; 能重跑)。它要求 #109 先清到 0; '
+    'owner 定了不删旧帖评论或不撤的话, 把期望改成当时的读数。'
 
 )
 SELECT

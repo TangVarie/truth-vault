@@ -39,6 +39,20 @@ from typing import Any
 
 from . import links
 
+
+def _load_mask_secrets():
+    """取 scripts/secret_mask.py 的 mask_secrets (只用标准库; 按文件路径载入, 不往 sys.path 里塞 scripts/)。
+    异常文本里可能带 key, 打印和写进 PR 正文之前都要过一遍 (S-09, D-095)。"""
+    import importlib.util
+    path = Path(__file__).resolve().parent.parent / "scripts" / "secret_mask.py"
+    spec = importlib.util.spec_from_file_location("tv_secret_mask", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.mask_secrets
+
+
+mask_secrets = _load_mask_secrets()
+
 # 一张表最多等多久(秒)。单表 = 全表 distinct 扫描 + 一次 16k 输出的 LLM 调用。
 # 起草走后台作业 + 轮询 (I-21), 单个 HTTP 请求都是秒级的, 这个数只管"总共等多久":
 # 10-23 的 52 / 48 列宽表一次就超过了 5 分钟。可 --timeout 调。
@@ -312,10 +326,10 @@ def run_batch(
             res = _draft_one(entry, remote=remote, api_key=api_key,
                              sample_n=sample_n, model=model, timeout=timeout)
         except Exception as exc:  # noqa: BLE001 —— 一张表的任何失败都不该带走整批
-            print(f"{head}: ❌ {exc}")
+            print(f"{head}: ❌ {mask_secrets(str(exc))}")
             results.append({
                 "project_id": pid, "status": "failed", "ref": _ref_of(entry),
-                "detail": str(exc), "errors": [], "uncovered": [], "pending": [], "files": [],
+                "detail": mask_secrets(str(exc)), "errors": [], "uncovered": [], "pending": [], "files": [],
             })
             continue
 

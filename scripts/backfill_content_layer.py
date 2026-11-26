@@ -40,6 +40,7 @@ from _common import (  # noqa: E402
     notes_content_layer_supported,
     skip_on_demand_on_cron,
 )
+from secret_mask import mask_secrets  # noqa: E402
 
 MAPPINGS = Path(__file__).resolve().parent.parent / "mappings"
 UPDATE_CHUNK = 150          # .in_ 走 URL (同 annotate_essence_pass.STALE_IDS_CHUNK)
@@ -57,7 +58,7 @@ def nightly_projects(projects: list[str]) -> list[str]:
         try:
             m = load_mapping(p)
         except Exception as exc:  # noqa: BLE001
-            print(f"  ⚠️  {p}: mapping 读不出来 ({exc}), 跳过")
+            print(f"  ⚠️  {p}: mapping 读不出来 ({mask_secrets(str(exc))}), 跳过")
             continue
         if skip_on_demand_on_cron((m.get("sync_config") or {}).get("sync_interval"), True):
             out.append(p)
@@ -98,7 +99,7 @@ def write(sb, todo: dict[str, list[str]], *, dry_run: bool) -> tuple[int, int]:
                  .in_("note_id", chunk).is_("content_layer", "null").execute())
                 done += len(chunk)
             except Exception as exc:  # noqa: BLE001 —— 一批写不进不拖垮别的批
-                print(f"  ⚠️  写 {lay} 层 {len(chunk)} 篇失败: {type(exc).__name__}: {str(exc)[:160]}")
+                print(f"  ⚠️  写 {lay} 层 {len(chunk)} 篇失败: {type(exc).__name__}: {mask_secrets(str(exc))[:160]}")
                 failed += len(chunk)
     return done, failed
 
@@ -109,7 +110,7 @@ def run(sb, projects: list[str], *, dry_run: bool) -> int:
             print("  notes.content_layer 还没建 (owner 在 SQL editor 跑 v1_24 之前都是这样), 这一轮不填")
             return 2
     except Exception as exc:  # noqa: BLE001
-        print(f"  ⚠️  探 notes.content_layer 失败 ({type(exc).__name__}: {str(exc)[:160]}), 这一轮不填")
+        print(f"  ⚠️  探 notes.content_layer 失败 ({type(exc).__name__}: {mask_secrets(str(exc))[:160]}), 这一轮不填")
         return 2
     rc = 0
     total: Counter = Counter()
@@ -118,7 +119,7 @@ def run(sb, projects: list[str], *, dry_run: bool) -> int:
             mapping = load_mapping(p)
             rows = fetch_rows(sb, p)
         except Exception as exc:  # noqa: BLE001
-            print(f"  ⚠️  {p}: 读不出来 ({type(exc).__name__}: {str(exc)[:160]})")
+            print(f"  ⚠️  {p}: 读不出来 ({type(exc).__name__}: {mask_secrets(str(exc))[:160]})")
             rc = 1
             continue
         todo = plan(rows, mapping)
@@ -238,7 +239,7 @@ def main() -> int:
         from _common import get_supabase_client
         rc = run(get_supabase_client(), projects, dry_run=args.dry_run)
     except Exception as exc:  # noqa: BLE001 —— advisory: 不让夜跑崩, 但哨兵照打, rc=1
-        print(f"  ⚠️  补填出错: {type(exc).__name__}: {str(exc)[:200]}")
+        print(f"  ⚠️  补填出错: {type(exc).__name__}: {mask_secrets(str(exc))[:200]}")
         rc = 1
     print(f"{SENTINEL} rc={rc}")
     return 0

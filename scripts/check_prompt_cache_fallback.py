@@ -29,6 +29,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
+from secret_mask import mask_secrets  # noqa: E402
 
 
 class _Msg:
@@ -105,7 +106,7 @@ def main() -> int:
         if got.get("count") != C.PROMPT_CACHE_FALLBACKS["count"]:
             fails.append(f"§3 /health 没回显降级计数: {h}")
     except ImportError as exc:
-        print(f"  ⚠️ §3 跳过 (import 失败: {exc}); CI 的 python job 装了 librarian 依赖, 那里会跑")
+        print(f"  ⚠️ §3 跳过 (import 失败: {mask_secrets(str(exc))}); CI 的 python job 装了 librarian 依赖, 那里会跑")
 
     # §4
     if '"prompt_cache_fallbacks"' not in inspect.getsource(E.main):
@@ -181,7 +182,7 @@ def main() -> int:
         if (h.get("config") or {}).get("prompt_cache_enabled") is not False:
             fails.append(f"§7 /health 要回显 prompt_cache_enabled=false: {h.get('config')}")
     except ImportError as exc:
-        print(f"  ⚠️ §7 /health 跳过 (import 失败: {exc})")
+        print(f"  ⚠️ §7 /health 跳过 (import 失败: {mask_secrets(str(exc))})")
 
     # §8 备用中转站 (D-148): 同样用假的 anthropic, 但要一个干净进程 (本进程已经 import 过被测模块、改过 env)。
     #    env 去掉 ANTHROPIC_* / RELAY_* / PROMPT_CACHE_ENABLED: 开发机上的真地址 / 真 key 进不去。

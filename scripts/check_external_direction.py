@@ -49,6 +49,7 @@ from librarian import external as X  # noqa: E402
 
 sys.path.insert(0, str(ROOT / "scripts"))
 from gate2_run import mh_odds_ratio  # noqa: E402  (闸二的同一个 MH + RGB, 口径只有一份)
+from secret_mask import mask_secrets  # noqa: E402
 
 DELIVERY = ROOT / "prompts" / "desk_delivery_v1.json"
 BAO_COMMENTS = 50
@@ -379,7 +380,7 @@ def main() -> int:
             shelf_ans = X.fetch_answers(sb, ids)      # 和馆员同一个函数: 分批翻页、取最后抽的
             masks = X.fetch_masks(sb, ids)
         except Exception as exc:  # noqa: BLE001 —— 书架那行判不了不影响上面的方向判断
-            print(f"  ⚠️  书架达标数要的答案读不了: {type(exc).__name__}: {str(exc)[:160]}")
+            print(f"  ⚠️  书架达标数要的答案读不了: {type(exc).__name__}: {mask_secrets(str(exc))[:160]}")
     print("\n".join(lines + shelf_counts(notes, cfg, shelf_ans, masks=masks, roles=roles)))
     print(f"EXTERNAL_DIRECTION_CHECK_DONE rc={rc}")
     return rc

@@ -19,6 +19,10 @@ truth_vault.content_scores; 再按附录 C 报一次进度 (两档爆率、单�
 
 打分只做一次: content_scores 的主键是 (subject_type, subject_id, scorer_version), 写用 ignore_duplicates ——
 已经打过的笔记以后 essence 被重标也不改分 (「入库即打分」, 闸三测的是前瞻)。
+每行另记 input_sha = 打分那一刻这篇的 notes.essence_content_sha (打分用的 essence 标签是从哪份正文标出来的;
+AU-F02b ②, 外部审计 11-02 F02)。以后正文改了、essence 重标了, 比一下 sha 就知道这条分用的是旧正文。
+这一列要 owner 跑 schemas/notes_v1_29_content_scores_input_sha.sql 才有; 没跑之前写库报「没有这一列」时
+喊一次 warning、去掉这个键重写这一批, 照旧打分 (不红)。已经打过的分不补、不重打。
 
 这是一盏拖红的灯 (docs/29 登记): 闸三要攒一到几个月的数, 漏打 / 标注器被换掉都会让整轮作废, 不能等到出结论那天
 才发现。退出码 1 = 写失败 / 有该打没打上的 / 有标注器对不上的; 末行哨兵 GATE3_SCORE_CHECK_DONE rc=<码>。
@@ -48,6 +52,9 @@ CORE_KEYS = ("scorer", "freeze_publish_time", "token_scheme", "weights", "cutpoi
 STALE_ESSENCE_HOURS = 72          # 入库超过这么久还没 essence 的, 单独报 (essence 每日有上限, 正常会排队一两天)
 NOTE_COLS = ("note_id, project_id, publish_time, created_at, emotional_lever, content_format, human_truth_archetype, "
              "target_audience, essence_vocab_version, essence_annotated_by, essence_annotation_mode")
+INPUT_SHA_COL = "essence_content_sha"          # notes 上的这一列 (v1_23) → content_scores.input_sha (v1_29)
+INPUT_SHA_MIGRATION = "schemas/notes_v1_29_content_scores_input_sha.sql"
+_INPUT_SHA_OK = [True]                          # 进程内: 写库发现没有 input_sha 列之后, 后面的批都不带它
 
 
 class ScorerTampered(RuntimeError):
@@ -166,7 +173,7 @@ def plan(notes: list[dict], already: set[str], sc: dict, now: datetime) -> dict:
         q, kind = cutpoints_for(n["project_id"], sc)
         rows.append({"subject_type": "note", "subject_id": n["note_id"], "project_id": n["project_id"],
                      "scorer_version": sc["scorer_version"], "score": s, "pct_in_project": pct_from_quantiles(s, q),
-                     "cutpoints": kind, "shadow": True})
+                     "cutpoints": kind, "shadow": True, "input_sha": n.get(INPUT_SHA_COL)})
         c["pooled" if kind == "pooled" else "project_cut"] += 1
     return {"rows": rows, "counts": c, "mismatch": mismatch}
 
@@ -399,8 +406,10 @@ def report(res: dict, v: dict, sc: dict) -> int:
 # ── 生产 ─────────────────────────────────────────────────────────────────────
 
 def fetch(sb, sc: dict) -> tuple[list[dict], set[str]]:
-    from _common import fetch_all_pages
-    notes = fetch_all_pages(sb.schema("truth_vault").table("notes").select(NOTE_COLS)
+    from _common import fetch_all_pages, notes_content_sha_supported
+    # 没跑 v1_23 的库上没有 essence_content_sha: 不选它, input_sha 就是空的 (notes_content_sha_supported 会喊一次)
+    cols = NOTE_COLS + (f", {INPUT_SHA_COL}" if notes_content_sha_supported(sb) else "")
+    notes = fetch_all_pages(sb.schema("truth_vault").table("notes").select(cols)
                             .gte("publish_time", sc["freeze_publish_time"]), order_by="note_id")
     done = {r["subject_id"] for r in fetch_all_pages(
         sb.schema("truth_vault").table("content_scores").select("subject_id")
@@ -408,10 +417,32 @@ def fetch(sb, sc: dict) -> tuple[list[dict], set[str]]:
     return notes, done
 
 
+def _without_input_sha(rows: list[dict]) -> list[dict]:
+    return [{k: v for k, v in r.items() if k != "input_sha"} for r in rows]
+
+
 def write(sb, rows: list[dict]) -> int:
-    for i in range(0, len(rows), 200):
+    """按 200 一批写, ignore_duplicates (打过的不改)。content_scores 还没有 input_sha 列 (v1_29 没跑) 时:
+    喊一次 warning, 去掉 input_sha 重写这一批, 本进程后面的批都不带它。别的错照抛 (灯照红)。"""
+    from _common import _is_missing_column_error, warn_missing_migration_once
+
+    def upsert(batch: list[dict]) -> None:
         sb.schema("truth_vault").table("content_scores").upsert(
-            rows[i:i + 200], on_conflict="subject_type,subject_id,scorer_version", ignore_duplicates=True).execute()
+            batch, on_conflict="subject_type,subject_id,scorer_version", ignore_duplicates=True).execute()
+
+    for i in range(0, len(rows), 200):
+        batch = rows[i:i + 200] if _INPUT_SHA_OK[0] else _without_input_sha(rows[i:i + 200])
+        try:
+            upsert(batch)
+        except Exception as exc:  # noqa: BLE001 —— 只接「没有 input_sha 这一列」, 别的照抛
+            if not (_INPUT_SHA_OK[0] and _is_missing_column_error(exc, ("input_sha",))):
+                raise
+            _INPUT_SHA_OK[0] = False
+            warn_missing_migration_once(
+                "content_scores.input_sha",
+                f"truth_vault.content_scores 还没有 input_sha 列 (owner 还没跑 {INPUT_SHA_MIGRATION}): "
+                "这一轮照旧打分, 只是不记打分用的正文指纹 (AU-F02b ②)")
+            upsert(_without_input_sha(batch))
     return len(rows)
 
 

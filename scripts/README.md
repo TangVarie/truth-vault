@@ -147,6 +147,10 @@ CI 和 daily-sync workflow 都优先读 `.lock`; `.txt` 仅作为 "high-level in
 #         不是同步的前置: 没跑之前每晚的首图步骤 (first-image-sync.yml) 打一行说明就结束、不花钱, 别的夜跑不受影响;
 #         跑了之后下一晚开始做 (每晚最多 40 张图、约 1 元)。可重跑, 先合代码还是先跑都行 (在 v1_4 / v1_13 / v1_25 之后;
 #         docs/34-first-image-pass.md; 夹具 check_first_image_pg.py)。
+#   - schemas/notes_v1_29_content_scores_input_sha.sql → content_scores 加可空的 input_sha: 闸三每打一条分记下那篇当时的
+#         essence_content_sha (打分用的标签来自哪份正文; AU-F02b ②, D-137)。全是加法, 已有的分不回填、不重打。
+#         不是同步的前置: 没跑之前 gate3_score.py 写库报没有这一列时喊一次 warning、去掉这一列重写, 照旧打分。
+#         可重跑, 先合代码还是先跑都行; 跑完对照 verify #108。
 #   - autowriter-migrations/001_create_autowriter_schema.sql → 把 autowriter 表从 public 迁到 autowriter schema
 #   - autowriter-migrations/002_add_external_source.sql     → items 加 (external_source, external_source_id) 列
 #         + per-user partial UNIQUE (user_id, external_source, external_source_id) WHERE external_source IS NOT NULL.
@@ -156,6 +160,30 @@ CI 和 daily-sync workflow 都优先读 `.lock`; `.txt` 仅作为 "high-level in
 #   - autowriter-migrations/009_fix_batch_item_counts_and_version_uniq.sql → batch_item_counts 表名限定 + versions 唯一索引 (审计 COR-005/010)
 #   - sanshengliubu-patches/001_add_source_tv_note_id.sql   → reference_samples 加 source_truth_vault_note_id 列 + 索引
 #         前提: ssll 已经跑过自己的 db/migrations/005_reference_samples_v2.sql (v2 "证据包" 列).
+# Step 0b · 看板视图、工作台和安全补丁 (不是同步的前置; 按下面的先后顺序跑, 和 ci.yml sql job 的顺序一样; S-09 / 审计 C-16):
+#   - schemas/dashboard_views_v1.sql                 → 看板视图第一批 (public.v_dash_*, SECURITY DEFINER, anon 只读)
+#   - schemas/dashboard_views_v2.sql                 → 看板视图第二批
+#   - schemas/dashboard_views_v3.sql                 → 看板视图第三批
+#   - schemas/dashboard_views_v4_mining.sql          → 看板「挖掘」页视图
+#   - schemas/dashboard_views_v5_pulse.sql           → 看板「系统脉搏」视图
+#   - schemas/security_revoke_anon_write_public_tables.sql → 收 anon / authenticated 对 5 张 public 表的写权限
+#   - schemas/dashboard_views_v6_timeseries.sql      → 看板月度时间序列和发帖热力
+#   - schemas/security_revoke_anon_write_dash_views.sql → 收 anon / authenticated 对 v_dash_* 的写权限 (读保留)
+#   - schemas/workbench_v1.sql                       → 工作台私有 schema (W-63, docs/35 §9; 影子期只给 owner 看)
+#   - schemas/security_rls_public_ssll_tables.sql    → 5 张 public 三省六部表开 RLS、收 anon 读 (2026-10-09 已跑, D-101)
+#   - schemas/security_drop_ssll_authenticated_read.sql → 删登录用户的只读策略并收授权 (2026-11-16 已跑, S-16 / D-154)
+#   生产上现在应有: v_dash_* 视图 18 个; anon 在 public 下没有写权限; 5 张三省六部表 RLS 都开着。
+#   跑完对照 verify_supabase_state.sql #105 / #106 / #107。
+#
+# 文件命名 (只记录, 不改名; 改名会让已经跑过的记录对不上):
+#   - 三种写法并存: notes_v1_<N>_<主题>.sql (truth_vault 的迁移, N 递增)、dashboard_views_v<N>[_<主题>].sql (看板视图)、
+#     security_<动作>_<对象>.sql (权限补丁)。另有 workbench_v1.sql (工作台自己的 schema)。新迁移取下一个空的 notes_v1_<N>。
+#   - 生产的 supabase_migrations 表**不是**部署记录: 11-25 只读查是 69 行, 最新一行 2026-10-26;
+#     之后在 SQL editor 跑的 v1_20–v1_28 都没登记进去。v1_3 在那张表里登记的名字是 add_reference_tier。
+#     哪份跑过, 以本节 Step 0 / Step 0b 清单和 verify_supabase_state.sql 的读数为准
+#     (D-066 续: v1_10 在清单里放了几个月却没跑过, 就是只看清单、没对读数的结果)。
+#   - schemas/ 下每一份 .sql 都要在 Step 0 或 Step 0b 里, 或在 scripts/check_schema_deploy_list.py 的 NOT_LISTED 里写明理由;
+#     还要在 ci.yml 的 sql job 里真跑过 (CI 跑这个守卫)。
 # Step 1: 共享 Supabase 已就绪（autowriter schema 已迁移，truth_vault schema 已建表）
 # Step 2: sanshengliubu 已部署，include import_truth_vault_baokuan 方法
 

@@ -59,6 +59,7 @@ UPSERT_CHUNK = 100
 # 标价 (美元 / 百万 token, 输入, 输出)。只用来打估算那一行; 中转站实价可能不同。
 # 11-16 (D-157) 起数字住在 scripts/model_prices.py (全仓只这一处算钱), 这里照原名引进来, 一个数没变。
 from model_prices import PRICES  # noqa: E402
+from secret_mask import mask_secrets  # noqa: E402
 
 SYSTEM = """你帮我们给小红书笔记做「品牌名遮挡」的第一步: 只列出名字, 不改写任何内容。
 
@@ -183,12 +184,12 @@ def run(sb, ask: Callable[[str], object], *, model: str, limit: int, batch_size:
             print("  遮挡表 truth_vault.external_note_masks 还没建 (owner 在 SQL editor 跑 schemas/notes_v1_24 之前都是这样), "
                   "这一晚不列; 馆员那边外部卡只给结构")
         else:
-            print(f"  ⚠️  读不了遮挡表: {type(exc).__name__}: {str(exc)[:200]}")
+            print(f"  ⚠️  读不了遮挡表: {type(exc).__name__}: {mask_secrets(str(exc))[:200]}")
         return 2, st
     try:
         notes = fetch_notes(sb)
     except Exception as exc:  # noqa: BLE001
-        print(f"  ⚠️  读不了外部表: {type(exc).__name__}: {str(exc)[:200]}")
+        print(f"  ⚠️  读不了外部表: {type(exc).__name__}: {mask_secrets(str(exc))[:200]}")
         return 2, st
     st["notes"] = len(notes)
     todo = pending(notes, masks)

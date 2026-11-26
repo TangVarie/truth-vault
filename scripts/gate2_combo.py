@@ -49,6 +49,7 @@ from typing import Iterable, Optional
 
 import feature_bank as fb
 import gate2_run as G
+from secret_mask import mask_secrets
 
 VARIANTS = ("tag", "q", "both")
 MIN_POS = 5
@@ -471,7 +472,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         res = run_combo(notes, boot=args.boot, perms=args.perms, seed=args.seed, census_pos=meta["census_pos"],
                         sampling=meta["sampling"])
     except G.Gate2Refused as exc:
-        print(f"组合对比没跑: {exc}", file=sys.stderr)
+        print(f"组合对比没跑: {mask_secrets(str(exc))}", file=sys.stderr)
         return 2
     report = render(res, meta, sha=sha, extractors=extractors)
     if args.out:

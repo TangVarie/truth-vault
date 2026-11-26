@@ -368,33 +368,12 @@ jobs:
           print(f"  ✓ put_cache 写的 {len(written)} 列全部已登记, 且新列都能指到迁移文件")
           PY
 
-      - name: scripts/README Step 0 必须列全 schemas/notes_v1_*.sql (codex review on #130)
-        run: |
-          python - <<'PY'
-          # _common._REQUIRED_COLUMNS 的 preflight 一发现缺列就拒绝同步, 而"哪份迁移给哪列"只写在
-          # README Step 0 的清单里。#130 加了 comments_count(v1.12), 清单却停在 v1.10(v1.11 也漏了)
-          # —— 按 README 新装的库跑到第一次同步就死在 preflight。清单和目录逐个对, 两个方向都对。
-          import glob, re, sys
-          readme = open("scripts/README.md", encoding="utf-8").read()
-          m = re.search(r"# Step 0 .*?(?=\n# Step 1)", readme, re.S)
-          assert m, "README 里找不到 Step 0 … Step 1 这一段, 清单格式变了?"
-          step0 = m.group(0)
-          # 不是 sync 前置、因而【不该】出现在 Step 0 的文件, 必须显式登记并写明理由 —— 不许静默跳过。
-          NOT_STEP0 = {
-              "notes_v1_2_cross_schema_views.sql": "D-029 部署顺序第 4 步: 要等 ssll/autowriter 两个 schema 就绪, 不是 sync 的前置",
-          }
-          files = sorted(f.split("/")[-1] for f in glob.glob("schemas/notes_v1_*.sql"))
-          missing = [f for f in files if f not in step0 and f not in NOT_STEP0]
-          listed = re.findall(r"schemas/(notes_v1_[A-Za-z0-9_]+\.sql)", step0)
-          ghosts = sorted(set(listed) - set(files))
-          stale_exempt = sorted(f for f in NOT_STEP0 if f not in files or f in step0)
-          if missing or ghosts or stale_exempt:
-              sys.exit(f"README Step 0 迁移清单与 schemas/ 不符: 漏列={missing} 不存在={ghosts} "
-                       f"登记为'不在 Step 0'却已列入或已不存在={stale_exempt}")
-          for f, why in NOT_STEP0.items():
-              print(f"  {f}: 不在 Step 0 (已登记: {why})")
-          print(f"  ✓ README Step 0 列全了 {len(files) - len(NOT_STEP0)} 份 notes_v1_*.sql, 且没有幽灵条目")
-          PY
+      - name: Schema deploy list (S-09)
+        run: python scripts/check_schema_deploy_list.py
+      - name: Secret matrix R-032 (S-05)
+        run: python scripts/check_secret_matrix.py
+      - name: Backup registry verify 92 (S-02)
+        run: python scripts/check_verify_backup_registry.py
       - name: Comment parser unit tests
         working-directory: scripts
         run: python check_comment_parser.py   # 原 6 条 + D-085 同行切分 / 【…】标签 (D-075: 挪进 scripts/)
@@ -5777,6 +5756,8 @@ jobs:
         run: |
           psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_6_sync_status_pending_fix.sql
           psql -v ON_ERROR_STOP=1 -f schemas/notes_v1_6_sync_status_pending_fix.sql
+          psql -v ON_ERROR_STOP=1 -q -f schemas/notes_v1_7_surface_three_tier_decay.sql
+          psql -v ON_ERROR_STOP=1 -q -f schemas/notes_v1_7_surface_three_tier_decay.sql
       - name: Sanity-check v1.6 (v_flywheel_sync_status pending cols intact)
         run: |
           psql -v ON_ERROR_STOP=1 -c "SELECT pending_ssll_sync, pending_reference_ssll FROM truth_vault.v_flywheel_sync_status LIMIT 0;"
@@ -6312,6 +6293,9 @@ jobs:
               run_id UUID,
               version TEXT
           );
+          -- ssll's own public.projects / stage_logs (autowriter's projects moved out above); RLS files need all 5
+          CREATE TABLE IF NOT EXISTS public.projects (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
+          CREATE TABLE IF NOT EXISTS public.stage_logs (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), run_id UUID);
           -- autowriter.versions / autowriter.items already created by
           -- migration 001 + 002. The minimum stub in earlier steps only
           -- has (id, status, example_label) + (id, item_id) — but the
@@ -7219,6 +7203,20 @@ jobs:
           for r in anon authenticated; do [ "$(psql -tAX -c "SELECT has_schema_privilege('$r','workbench','USAGE') OR has_function_privilege('$r','truth_vault.workbench_take_snapshot(date)','EXECUTE')")" = "f" ] || { echo "::error::$r 能进 workbench 或执行快照函数"; exit 1; }; done
           psql -v ON_ERROR_STOP=1 -q -f scripts/check_workbench_pg.sql
           psql -v ON_ERROR_STOP=1 -c "SELECT day, project_id, b1, b2, b3a, b3b, b4, b5 FROM workbench.v_status LIMIT 0; SELECT account_code, name_hint, tier, downgrade, code_clash FROM workbench.v_accounts LIMIT 0; SELECT hint, w64, n_flag, n_unlabeled FROM workbench.v_content_counts LIMIT 0; SELECT note_code, plus_hints, unlabeled, body_empty FROM workbench.v_content_notes LIMIT 0; SELECT note_code, mid_rank, status, seeded_known FROM workbench.v_watch_24h LIMIT 0; SELECT note_code, impressions_72h, rank_in_project FROM workbench.v_watch_72h LIMIT 0; SELECT note_code, evening, weekend, same_acct_3d FROM workbench.v_exposure_hints LIMIT 0; SELECT event_code, comments_base, comments_d7_status FROM workbench.v_boost_curves LIMIT 0; SELECT block, grp, measure, n, n_yes, value FROM workbench.v_shadow_check LIMIT 0;"
+      - name: Apply v1.29 input_sha (+ idempotency)
+        run: |
+          psql -v ON_ERROR_STOP=1 -q -f schemas/notes_v1_29_content_scores_input_sha.sql
+          psql -v ON_ERROR_STOP=1 -q -f schemas/notes_v1_29_content_scores_input_sha.sql
+      - name: J-17 backfill SQL fixture
+        run: psql -v ON_ERROR_STOP=1 -q -f scripts/check_backfill_external_publish_time_j17.sql
+      - name: Apply ssll RLS files (+ idempotency)
+        run: |
+          psql -v ON_ERROR_STOP=1 -q -f schemas/security_rls_public_ssll_tables.sql
+          psql -v ON_ERROR_STOP=1 -q -f schemas/security_rls_public_ssll_tables.sql
+          psql -v ON_ERROR_STOP=1 -q -f schemas/security_drop_ssll_authenticated_read.sql
+          psql -v ON_ERROR_STOP=1 -q -f schemas/security_drop_ssll_authenticated_read.sql
+      - name: Verify rows + AU-F02b owner SQL on PG (batch 1)
+        run: python3 scripts/check_verify_rows_pg.py
 
   yaml:
     name: Mapping yaml lint

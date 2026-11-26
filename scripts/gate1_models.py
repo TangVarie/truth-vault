@@ -58,6 +58,7 @@ import feature_bank as fb
 from gate1_agreement import agree, kappa, load_pivot
 from gate1_labels import SHORT
 from gate1_sample import SampleRefused, read_manifest
+from secret_mask import mask_secrets
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MANIFEST = ROOT / "data-analysis" / "gate1-reader-sample-2026-10-26.csv"
@@ -623,7 +624,7 @@ def main(argv: list[str] | None = None) -> int:
         report, cells, res = run(load_rows(a.from_json), bank, runs, a.manifest, bank_sha=a.bank_sha,
                                  owner_tag=a.owner_run_tag)
     except Gate1Refused as exc:
-        print(f"拒算: {exc}", file=sys.stderr)
+        print(f"拒算: {mask_secrets(str(exc))}", file=sys.stderr)
         return 2
     if a.out:
         a.out.write_text(report, encoding="utf-8")
