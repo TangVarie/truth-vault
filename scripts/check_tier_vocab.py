@@ -13,9 +13,12 @@
   §5 爆贴门槛对不上: 这一晚新升 爆 / 大爆、档来自 爆贴 / 大爆 标、评论数不到 50 / 100 → 列出来; 诊断信息带「保留高档位」、
      伪爆、库里本来就是 爆 / 大爆、数值推断、没有评论数的 → 不列。
   §6 接线: 门槛检查在翻转闸之后、upsert 之前, 只告警, 不计 errors。
-  §7 新档位 × 途鸽那道绊线 (undeclared_ticket_on_positive, 只看没被挡的 爆 / 大爆; 11-26 随 main 合进来): 真 mapping 上
-     ['爆贴','链接失效'] / ['大爆','链接失效'] 仍是正例、绊线照看; 删除 / 未知 不看; 否决位挡下的 风控 不看;
-     HATHERINE ['爆贴','疑似限流'] 11-25 起不再被否决成 风控 → 成了没挡的 爆, 绊线要看得见; 声明了的途鸽走铺评工单, 不报。
+  §7 新档位 × 途鸽那道绊线 (undeclared_ticket_on_positive, 只看没被挡的 爆 / 大爆; 11-26 随 main 合进来): 绊线跟着档位走。
+     评论数 16 (不到 50, 不数值推断): 真 mapping 上 ['爆贴','链接失效'] / ['大爆','链接失效'] 仍是正例、绊线照看;
+     删除 / 未知 不看; 否决位挡下的 风控 不看; HATHERINE ['爆贴','疑似限流'] 11-25 起不再被否决成 风控 → 成了没挡的 爆,
+     绊线要看得见; 单独 ['疑似限流'] 合并前是 风控, 现在是空档, 都不看; 声明了的途鸽走铺评工单, 不报。
+     评论数 80 (≥50, 数值推断): ['链接失效'] 是 删除、不推回 爆, 绊线不看 (合并前是数值推断的 爆、绊线看);
+     ['观察中'] 未知 → 数值推断成 爆, 绊线照看; HATHERINE ['疑似限流'] 合并前是 风控、不看, 现在空档 → 数值推断成 爆, 绊线看。
 
 反证 (改坏之后必须变红):
   ① 拿掉 SPX 的 观察中 规则                → §1 红
@@ -23,6 +26,7 @@
   ③ 门槛检查不排除「保留高档位」            → §5 红 (本文件 §5 末尾实跑这条反证)
   ④ preflight 把没命中的标放进 blocking     → §4 退出码那条红
   ⑤ 绊线只认 爆 (漏了 大爆), 或把 删除 / 未知 也当正例 → §7 红
+  ⑥ 绊线跳过数值推断的 爆 (tier_source='数值推断'), 或数值推断把 删除 也推回 爆 → §7 评论数 80 那几条红
 
 跑法: cd scripts && python check_tier_vocab.py
 """
@@ -199,24 +203,32 @@ def check_wiring() -> None:
 
 # ── §7 新档位 × 途鸽绊线 ────────────────────────────────────────────────────
 def check_tripwire_tiers() -> None:
-    cell = "\n".join(f"{i}. 评论{i}" for i in range(1, 21))        # 20 行, 评论数 16 → 16−20 不过线
-    cases = [   # (表, 流量状态, 档位, 绊线报几篇)。SPX / HATHERINE 没声明「维护评论」, 途鸽声明了
-        ("SPX_phase1", ["爆贴", "链接失效"], "爆", 1),
-        ("SPX_phase1", ["大爆", "链接失效"], "大爆", 1),
-        ("SPX_phase1", ["链接失效"], "删除", 0),
-        ("SPX_phase1", ["观察中", "链接失效"], "删除", 0),
-        ("SPX_phase1", ["观察中"], "未知", 0),
-        ("SPX_phase1", ["爆贴", "风控中", "链接失效"], "风控", 0),
-        ("HATHERINE_phase1", ["爆贴", "疑似限流"], "爆", 1),
-        ("HATHERINE_phase1", ["疑似限流"], None, 0),
-        ("TUGE_phase1", ["爆贴", "链接失效"], "爆", 0),
+    cell20 = "\n".join(f"{i}. 评论{i}" for i in range(1, 21))      # 20 行, 评论数 16 → 16−20 不过线
+    cell50 = "\n".join(f"{i}. 评论{i}" for i in range(1, 51))      # 50 行, 评论数 80 → 80−50 = 30 不过线
+    cases = [   # (表, 流量状态, 评论数, 档位, tier_source, 绊线报几篇)。SPX / HATHERINE 没声明「维护评论」, 途鸽声明了
+        ("SPX_phase1", ["爆贴", "链接失效"], 16, "爆", "状态字段", 1),
+        ("SPX_phase1", ["大爆", "链接失效"], 16, "大爆", "状态字段", 1),
+        ("SPX_phase1", ["链接失效"], 16, "删除", "状态字段", 0),
+        ("SPX_phase1", ["观察中", "链接失效"], 16, "删除", "状态字段", 0),
+        ("SPX_phase1", ["观察中"], 16, "未知", "状态字段", 0),
+        ("SPX_phase1", ["爆贴", "风控中", "链接失效"], 16, "风控", "状态字段", 0),
+        ("HATHERINE_phase1", ["爆贴", "疑似限流"], 16, "爆", "状态字段", 1),
+        ("HATHERINE_phase1", ["疑似限流"], 16, None, None, 0),            # 合并前是 风控
+        ("TUGE_phase1", ["爆贴", "链接失效"], 16, "爆", "状态字段", 0),
+        # 评论数 ≥50: 数值推断只推 空档 / 未知, 删除 不推回 (合并前 ['链接失效'] 是数值推断的爆、绊线看; 现在不看)
+        ("SPX_phase1", ["链接失效"], 80, "删除", "状态字段", 0),
+        ("SPX_phase1", ["观察中"], 80, "爆", "数值推断", 1),
+        ("HATHERINE_phase1", ["疑似限流"], 80, "爆", "数值推断", 1),   # 合并前是 风控、绊线不看
     ]
-    for pid, status, want, trips in cases:
+    for pid, status, cc, want, src, trips in cases:
         m = c.load_mapping(pid)
-        note, _, _ = engine.transform_row(m, "r7", {"笔记内容": "正文", "流量状态": status, "实时数据.评论数": 16, "维护评论": cell})
+        row = {"笔记内容": "正文", "流量状态": status, "实时数据.评论数": cc, "维护评论": cell50 if cc >= 50 else cell20}
+        note, _, _ = engine.transform_row(m, "r7", row)
         got = engine.undeclared_ticket_on_positive(m, [note])
-        assert note.get("tier") == want and len(got) == trips, f"§7 {pid} {status} → {note.get('tier')} 绊线 {got}, 应为 {want} / {trips}"
-    print(f"  §7 新档位 × 途鸽绊线: {len(cases)} 个形状 (链接失效带热度标照报、删除 / 未知 / 风控不报、HATHERINE 疑似限流放出来的爆照报) ✓")
+        assert note.get("tier") == want and len(got) == trips, f"§7 {pid} {status} 评论数 {cc} → {note.get('tier')} 绊线 {got}, 应为 {want} / {trips}"
+        assert src is None or note.get("tier_source") == src, f"§7 {pid} {status} 评论数 {cc}: tier_source {note.get('tier_source')}, 应为 {src}"
+    print(f"  §7 新档位 × 途鸽绊线: {len(cases)} 个形状 (链接失效带热度标照报、删除 / 未知 / 风控不报、HATHERINE 疑似限流放出来的爆照报; "
+          "评论数 80: 删除不推回爆、不报, 未知和 HATHERINE 疑似限流数值推断成爆、照报) ✓")
 
 
 def main() -> int:
