@@ -42,7 +42,9 @@ check_angle_ledger_leak.py
 
 只报、不喊的(给人看, 不进退出码):
     · 角度台账表: 每个写作台项目窗口内发牌 / 销账 / 稿子 / 带坐标(先排除 tv-sync 的补录副本 —— 它们不是发牌产出的,
-      没有坐标; 不排除的话未归因率永远 97%+, D-071);
+      没有坐标; 不排除的话未归因率永远 97%+, D-071)。aw 2026-11-26 那一轮(A/B)部署起, 只对得上写手贴回来的改稿
+      (record_edit 记下的 writer_edit 底稿)的帖也转成版本、写指纹, 本来就不带坐标, 算在「稿子」里 —— 这盏灯不读
+      batches.params.via, 分不出这一种(D-179);
     · 发了牌、稿子(>= MIN_DRAFTS 篇)一篇都没带 angle_key 的项目(以前的判据 B): 牌就销不了、同一个故事会被再抽一次 ——
       那是模型没把 draw_angles 给的 angle_key 带到查重 / 存档(aw 的事), 不是写手的事。
 
@@ -317,7 +319,7 @@ def _warn_publish(pub_hits: list[dict], window_days: int) -> None:
     msg = (f"过去 {window_days} 天 {len(pub_hits)} 个 TV 项目发出去的帖对不回写作台: "
            + "; ".join(f"{h['project']}({h['detail']})" for h in pub_hits)
            + " —— 这些帖在写作台里没有出处: 没有发牌查重的记录, 也进不了改稿差异和参考分, 飞轮只能把它们补录成副本"
-             "(认不出是写作台哪一稿改的, 不等于在写作台外面写的: D-179)。"
+             "(写作台认不出它们, D-179)。"
              "写作台没查过稿的: 看写这个项目的那几场对话有没有 open_project / check_drafts 的调用记录 —— 没有就是那场对话"
              "没调起写作台(aw#109 起 skill 触发放宽、写作台会在下一场对话里提醒); 查过稿的: 看 aw tv-sync 的日志"
              "(W-38 起查重时记下的底稿会在补录之前再对一次)。写手没有存档这一步, 修在 autowriter 仓, TV 这边改不好。")
@@ -358,7 +360,8 @@ def report(stats: dict, window_days: int, now: datetime | None = None) -> int:
                   f"{s['drafts']:>6}{s['with_key']:>8}")
     for h in unattributed(by_project):
         print(f"  · {h['project']}: {h['detail']} —— 模型没把 draw_angles 给的 angle_key 带到查重 / 存档, "
-              "同一个故事会被再抽一次; 修在 aw(只报, 不进退出码)")
+              "同一个故事会被再抽一次; 修在 aw(只报, 不进退出码)。只对得上写手贴回来的改稿而转正的那几版本来不带坐标, "
+              "也算在稿子里, 这里分不出(D-179)")
 
     if pub_hits:
         _warn_publish(pub_hits, window_days)
@@ -438,9 +441,10 @@ def _snapshot_counts(sb, pids: set, since_iso: str) -> tuple[dict, set, str | No
     查的。只取 project_id / checked_at / status, 不碰标题正文。表不在(018 没跑, PGRST205)回 None; 别的错直接抛(灯崩了比错判好,
     有哨兵行兜着)。
 
-    status 是 writer_edit 的行(2026-11-26 起 aw record_edit 记的: 写手贴回来的、自己改过的那一版)不是查过重的稿: 不算进
-    「查过几篇」和「最早一篇」, 只算进 ever(写作台见过这个项目的文字, 算用过)。status 是 gate_error 的(查重超时、底稿照记,
-    同一次 11-26 的改动)照算查过 —— 稿子送到查重了, 只是那次没判完。"""
+    status 是 writer_edit 的行(aw 2026-11-26 那一轮改动(A/B)部署起 record_edit 记的: 写手贴回来的、自己改过的那一版; TV 这边
+    从这一版起就不把它算查过, 部署之前表里没有这种行)不是查过重的稿: 不算进「查过几篇」和「最早一篇」, 只算进 ever(写作台
+    见过这个项目的文字, 算用过)。status 是 gate_error 的(查重超时、底稿照记, 同一轮改动)照算查过 —— 稿子送到查重了, 只是
+    那次没判完。"""
     from _common import fetch_all_pages  # 局部 import, 理由见文件头
 
     try:
@@ -600,6 +604,8 @@ def selftest() -> int:
     # 以前的判据 B: 稿子够数、一篇不带坐标 → 只报一行, 不进退出码
     rc, out = run({"by_project": {"p7": P(20, 0, 10, 0, name="D2")}, "ingested_skipped": 0}, gha=True)
     assert rc == 0 and "D2: 发牌 20、稿子 10 篇, 没有一篇带 angle_key" in out, out
+    assert "只对得上写手贴回来的改稿而转正的那几版本来不带坐标, 也算在稿子里, 这里分不出(D-179)" in out, \
+        "aw A/B 部署起稿子里有一种本来就不带坐标(复审 2026-11-26), 那一行不能只怪模型"
     assert "::warning" not in out, "只报不喊的不打 annotation"
     assert unattributed({"丙": P(0, 0, 50, 0)}) == [], "没发过牌的项目, 稿子本来就没坐标"
     assert unattributed({"乙": P(6, 0, 5, 1)}) == [] and unattributed({"乙": P(6, 0, 4, 0)}) == []
@@ -731,7 +737,10 @@ def selftest() -> int:
     rc1, out1 = run_at(as_stats(dict(week, gate=None)), T0)
     assert (rc0, out0) == (rc1, out1) and rc0 == 1 and not [w for w in ("回流闸", "别处写的", "elsewhere", "写作台没见过的文字",
                                                                           "没见过") if w in out0], out0
-    assert "外部稿" not in out0 and "不等于在写作台外面写的" in out0, "判据 C 的报文不说「当外部稿补录」(D-179)"
+    assert "外部稿" not in out0 and "补录成副本(写作台认不出它们, D-179)" in out0, "判据 C 的报文不说「当外部稿补录」(D-179)"
+    # 结尾那句两种都适用、不自相矛盾(复审 2026-11-26): desk_silent 刚说完「对话没走到写作台」, 后面不能接「认不出是写作台哪一稿
+    # 改的、不等于在写作台外面写的」
+    assert "没开项目就写了" in out0 and "哪一稿改的" not in out0 and "不等于在写作台外面写的" not in out0, out0
 
     # ── gather_publish: 按对照分、飞书删了的不算、窗口按发布时间、翻页键唯一、只认映射里的项目、底稿只数不读 ──────────
     class _Q:
@@ -789,7 +798,7 @@ def selftest() -> int:
                "created_at": "2026-10-13T07:00:00"}])
     SNAPS = [{"id": "s1", "project_id": "h1", "checked_at": "2026-10-15T03:00:00+00:00", "title": "不该被读到",
               "status": "pass"},
-             # 查重超时、底稿照记(aw 11-26 起, status = gate_error): 稿子送到查重了, 照算查过
+             # 查重超时、底稿照记(aw A/B 部署起, status = gate_error): 稿子送到查重了, 照算查过
              {"id": "s2", "project_id": "h1", "checked_at": "2026-10-16T03:00:00+00:00", "title": "不该被读到",
               "status": "gate_error"},
              {"id": "s3", "project_id": "zz-unmapped", "checked_at": "2026-10-16T03:00:00+00:00"},
