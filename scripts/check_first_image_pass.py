@@ -49,6 +49,12 @@
       reworded_unverified 在 TRIAL_VERDICTS 里、不在 SURFACE_TRIALS 里 (改了问法的题不往外给);
       第四条规则走 assemble: 没有字 + 有字的四个选项 → 作废字那三道题、代码题算不成, 没有字 + 没有字 / 字数没读出来 / 说了有字 → 不中;
       用每晚的题库 (v0.3) 整趟走一遍 (假库 / 假下载 / 假模型)
+  §11 用量那三行 (11-25, I-38, docs/34 第 4 节 11-25 补): 「用量拆开」那一行一个字不变; 多「用量逐项」(四项照中转站回报的原样,
+      没回报的另数、不当 0)、「每次调用的总输入」(最小 / 中位 / 最大、超过 3,000 的次数)、「回包从哪来」(模型名原样、id 只取前缀);
+      三行逐行按规矩整行比对 (写死的词 + 数 + 字段名 + 像模型名的模型名 + id 前缀: 第一段 1–8 个小写字母, 后面最多跟 _bdrk / _vrtx);
+      假跑一趟逐项加起来和「用量拆开」对得上; 回包的第四项里只用 model 和 id; 完整的 id、一句话、回包里的字打不出来, 也不进结果;
+      模型名、id 那一格是怪对象 (比较 / 取属性 / 转字符串都抛错的、改写了方法的 str 子类) 也不抛, 整趟照常跑完、花的钱那一行在;
+      同一批回包记的钱一个数不变。§2 里 default_ask 拿到带探针的 id 那一次: 所有 logger (任何级别)、stderr、stdout 都收下来, 没有探针
 
 反证 (改坏之后必须变红):
   ① 题库里把 img_colour 加回来 / 把单独问的题并回组里 / surfaced_questions 里放一道没验证的题        → §1
@@ -79,6 +85,12 @@
   ㉖ v0.3 里白名单之外动一处 (第一组的问句、选项的解释、调用组的顺序、名单、前三条规则) / 那一句带上「屏幕」/ 两道题里写得不一样  → §10 ④ ⑤ ⑥
   ㉗ 把 reworded_unverified 放进 SURFACE_TRIALS / 把改了问法的题加回 surfaced_questions                                  → §10 ② ③
   ㉘ 第四条规则拿掉 / 它的 void 少了 img_main_text (空的大字算出「没有字」, 信了一边)                                    → §10 ④ ⑦
+  ㉙ Pass._call 拿到 id 不换成前缀 (原样记) / summary 打之前不再核一遍 / 行里多带一句话                                  → §11 ③ (反证在守卫里真跑)
+  ㉚ 没回报的那一项当 0 数进去 / 逐项和「用量拆开」不是同一批调用 / 「用量拆开」那一行改了字                            → §11 ② / §3
+  ㉛ reply_id_prefix 把最后一段 (随机的那截) 也留下 / 模型名不核样子就原样记                                           → §11 ①
+  ㉜ id 前缀的规矩放宽: 第一段或打印前那道核的字符放宽到 [a-z0-9] / 第二段不按 bdrk / vrtx 单子、换成按样子认                 → §11 ① ③
+  ㉝ reply_model_word 先比较再认类型 (model == "") / 用 isinstance 认类型 (读 __class__)                                   → §11 ① ②
+  ㉞ call_claude 把回包的 id 打进日志 (logger 任何级别) / 写到 stderr                                                    → §2
 
 跑法: cd scripts && python check_first_image_pass.py
 """
@@ -95,6 +107,7 @@ import json
 import pathlib
 import re
 import sys
+import threading
 import time
 import types
 import unicodedata
@@ -119,7 +132,9 @@ TOKEN_CANARY = "boxcnTOKENtanzhen"
 URL_CANARY = "tanzhen-url.example"
 NOTE_CANARY = "notetanzhen"
 ERR_CANARY = "baocuo-zhengwen-tanzhen"
-CANARIES = (TITLE_CANARY, TEXT_CANARY, NAME_CANARY, TOKEN_CANARY, URL_CANARY, NOTE_CANARY, ERR_CANARY)
+ID_CANARY = "IDtanzhen7Kq"                 # 11-25: 消息 id 随机的那一截 (前缀之后的部分一个字都不许打出来)
+MODEL_CANARY = "moxing tanzhen"            # 11-25: 回包里「模型名」那一格是一句话 (不像模型名) → 不许原样打出来
+CANARIES = (TITLE_CANARY, TEXT_CANARY, NAME_CANARY, TOKEN_CANARY, URL_CANARY, NOTE_CANARY, ERR_CANARY, ID_CANARY, MODEL_CANARY)
 
 
 def _file(tag: str, typ: str = "image/jpeg", size: int = 300_000, name: str | None = None) -> dict:
@@ -231,6 +246,45 @@ def _no_leak(what: str, *texts: str) -> None:
     for t in texts:
         for c in CANARIES:
             assert c not in t, f"{what}: 输出里出现了 {c!r}"
+
+
+@contextlib.contextmanager
+def _grab_logs_and_stderr():
+    """11-25 (I-38): 这一段里打出来的字全收下来 —— 所有 logger 的记录 (任何级别; 自己不往上传的、级别调得很高的、
+    logging.disable 关掉的都收), 和 stderr、stdout 上的字。yield 一个 list, 段结束时里面是收下来的每一条。
+    记录直接在每个 logger 上接 (不靠往上传, 也不靠 logger 自己的 handler: 有的 handler 绑的是 import 时的 stdout);
+    这一段里各 logger 原来的 handler 先摘下来 (收的字不往真的 stdout 上打), 段结束原样挂回去。"""
+    import logging
+    got: list[str] = []
+
+    class _Grab(logging.Handler):
+        def emit(self, record):
+            try:            # 带参数格式化之后的整句, 连同异常栈
+                got.append(logging.Formatter("%(name)s %(levelno)s %(message)s").format(record))
+            except Exception:  # noqa: BLE001 — 格式化不了也要留下原料
+                got.append(f"{record.name} {record.levelno} {record.msg!r} {record.args!r}")
+
+    grab = _Grab(level=1)
+    loggers = [logging.getLogger()] + [lg for lg in list(logging.root.manager.loggerDict.values())
+                                       if isinstance(lg, logging.Logger)]
+    saved = [(lg, lg.level, lg.disabled, list(lg.handlers)) for lg in loggers]
+    saved_disable = logging.root.manager.disable
+    err, out = io.StringIO(), io.StringIO()
+    logging.disable(logging.NOTSET)
+    try:
+        for lg in loggers:
+            lg.setLevel(1)
+            lg.disabled = False
+            lg.handlers = [grab]
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
+            yield got
+    finally:
+        for lg, level, disabled, handlers in saved:
+            lg.handlers = handlers
+            lg.setLevel(level)
+            lg.disabled = disabled
+        logging.disable(saved_disable)
+        got += [err.getvalue(), out.getvalue()]
 
 
 # ── §1 ────────────────────────────────────────────────────────────────────────
@@ -395,9 +449,12 @@ def check_one_request_per_reserve() -> None:
             sent.append(("backup" if "backup" in str(self.kw.get("base_url")) else "primary", kw["model"], kw["max_tokens"]))
             if self.behave["fail"]:
                 raise APITimeoutError("timeout")
+            extra = self.behave.get("extra") or {}          # 11-25: 回包带模型名和 id、少回报一项用量 (只读回包, 请求不变)
             return types.SimpleNamespace(content=[types.SimpleNamespace(type="text", text="ok")], stop_reason="end_turn",
                                          usage=types.SimpleNamespace(input_tokens=1500, output_tokens=60,
-                                                                     cache_creation_input_tokens=0, cache_read_input_tokens=0))
+                                                                     cache_creation_input_tokens=0,
+                                                                     cache_read_input_tokens=extra.get("cache_read", 0)),
+                                         **{k: v for k, v in extra.items() if k in ("model", "id")})
     behave = {"fail": False}
     fake = types.ModuleType("anthropic")
     fake.APITimeoutError = APITimeoutError
@@ -415,10 +472,42 @@ def check_one_request_per_reserve() -> None:
     try:
         P.os.environ.update({"ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "https://primary.invalid"})
         # 没配备用站: 成功 → 恰好一个请求, 客户端不带 SDK 的重试, 用量带得出来
-        text, usage, stop = P.default_ask(CHEAP, "p", block)
+        text, usage, stop, src = P.default_ask(CHEAP, "p", block)
         assert stop == "end_turn", "stop_reason 要带出来 (只带写死的词), 不然看不出回包是不是撞了 max_tokens"
         assert text == "ok" and usage["input"] == 1500 and sent == [("primary", CHEAP, FI.MAX_OUTPUT_TOKENS)], sent
         assert built[-1].get("max_retries") == 0, "SDK 自带的重试没关: 一次预留会发出不止一个请求"
+        # 11-25 (I-38): 第四项是回包的模型名和 id (假 SDK 没给 → None); 四项用量都回报了 → 四个键都在
+        assert src == {"model": None, "id": None} and usage == {"input": 1500, "cache_write": 0, "cache_read": 0, "output": 60}, (src, usage)
+        # 回包带了模型名和 id、读缓存那一项没回报 (None): 用量里不带这个键 (不当 0), 第四项原样; 发出去的还是同一个请求
+        behave["extra"] = {"model": "claude-haiku-4-5-20251001", "id": f"msg_bdrk_01{ID_CANARY}", "cache_read": None}
+        # 先核收字的那一段自己管用: 不往上传、级别调到最高的 logger 打 debug, annotate_essence 的 logger, stderr / stdout 都收得到
+        import logging
+        quiet = logging.getLogger("check_fip.grab_probe")
+        quiet.propagate, quiet_level = False, quiet.level
+        quiet.setLevel(logging.CRITICAL)
+        with _grab_logs_and_stderr() as got:
+            quiet.debug("probe-a %s", 1)
+            logging.getLogger("annotate_essence").log(5, "probe-b")
+            logging.getLogger("check_fip.grab_probe.child_made_inside").debug("probe-c")
+            print("probe-d", file=sys.stderr)
+            print("probe-e")
+        quiet.setLevel(quiet_level)
+        joined = "\n".join(got)
+        assert all(w in joined for w in ("probe-a 1", "probe-b", "probe-c", "probe-d", "probe-e")), got
+        # 带探针的 id 那一次: call_claude / default_ask 往日志 (任何 logger、任何级别)、stderr、stdout 打的字里都没有 id 后面那一截
+        with _grab_logs_and_stderr() as got:
+            text, usage, stop, src = P.default_ask(CHEAP, "p", block)
+        _no_leak("§2 default_ask 的日志 / stderr / stdout", *got)
+        assert usage == {"input": 1500, "cache_write": 0, "output": 60}, usage
+        assert src == {"model": "claude-haiku-4-5-20251001", "id": f"msg_bdrk_01{ID_CANARY}"}, src
+        assert sent == [("primary", CHEAP, FI.MAX_OUTPUT_TOKENS)] * 2 and built[-1].get("max_retries") == 0, sent
+        b = FI.Budget()
+        b.reserve(10_000)
+        b.settle(10_000, CHEAP, usage)
+        assert (b.spent, b.usage_missing) == (MP.weighted_tokens(1500, 60), 0), "少回报一项, 记的钱和以前一样 (按 0 算)"
+        assert b.usage_reported == {"input": 1, "cache_write": 1, "cache_read": 0, "output": 1} and b.input_per_call == [1500]
+        behave.pop("extra")
+        sent.clear()
         # 失败 (超时这种 call_claude 平时会重试的): 也只发一个请求就抛
         sent.clear()
         behave["fail"] = True
@@ -559,6 +648,12 @@ def check_pass() -> None:
     # 11-22: 用量拆开记 (假模型每次回 input 1500 / output 60)
     assert res["budget"]["usage_calls"] == 37 and res["budget"]["input"] == 37 * 1500 and res["budget"]["output"] == 37 * 60, res["budget"]
     assert "用量拆开（中转站回报的）：输入 55,500、输出 2,220 token；拿到用量的 37 次调用里，平均每次输入 1,500、输出 60" in out
+    # 11-25 (I-38): 多三行, 只有写死的词和数 (细的在 §11); 假模型没回模型名和 id → 写死的 【没回】
+    assert (f"{USAGE_SPLIT_HEAD}37 次调用；没回报的项不当 0，另数）：input_tokens 合计 55,500、平均 1,500；"
+            "cache_creation_input_tokens 合计 0、平均 0；cache_read_input_tokens 合计 0、平均 0；output_tokens 合计 2,220、平均 60") in out
+    assert f"{PER_CALL_HEAD}37 次）：最小 1,500、中位 1,500、最大 1,500；超过 3,000（写死的门槛）的 0 次" in out
+    assert f"{REPLY_FROM_HEAD}模型 【没回】=37；id 前缀 【没回】=37" in out
+    assert _usage_lines_problems(out) == [], _usage_lines_problems(out)
     assert store.synced == [{"confirmed": [], "excluded": ["RIO_phase1", "TXQ_phase1", "WTG_phase1"],
                              "surfaced": P.surfaced_questions(BANK)}] and store.asked == [(False, 80)]
     for _m, _k, prompt in fk.asks:
@@ -2512,6 +2607,257 @@ def check_v03_switched() -> None:
           "不带「屏幕」; 第一组提示词逐字节相同; 第四条规则中 / 不中各几种; 改了问法的题不往外给 ✓")
 
 
+# ── §11 ───────────────────────────────────────────────────────────────────────
+USAGE_SPLIT_HEAD = "用量逐项（中转站回报的原样，拿到用量的 "
+PER_CALL_HEAD = "每次调用的总输入（input + 写缓存 + 读缓存，拿到用量的 "
+REPLY_FROM_HEAD = "回包从哪来（中转站回的模型名原样；消息 id 只取开头的前缀，后面的不打；回包数）："
+_N = r"\d{1,3}(?:,\d{3})*"
+_FIELD = r"(?:{f} 合计 {n}、平均 {n}|{f} 合计 {n}、回报了的 {n} 次平均 {n}、没回报 {n} 次|{f} 没回报 {n} 次)"
+USAGE_SPLIT_RE = re.compile(re.escape(USAGE_SPLIT_HEAD) + _N + re.escape(" 次调用；没回报的项不当 0，另数）：")
+                            + "；".join(_FIELD.format(f=f, n=_N) for f in ("input_tokens", "cache_creation_input_tokens",
+                                                                          "cache_read_input_tokens", "output_tokens")))
+PER_CALL_RE = re.compile(re.escape(PER_CALL_HEAD) + _N + f" 次）：最小 {_N}、中位 {_N}(?:\\.\\d)?、最大 {_N}；"
+                         + re.escape("超过 3,000（写死的门槛）的 ") + _N + " 次")
+_FIXED = "|".join(re.escape(w) for w in ("【没回】", "【不像模型名】", "【没有下划线】", "【开头认不出】", "【另外几种】"))
+_MODEL_TOKEN = rf"(?:{_FIXED}|[A-Za-z0-9][A-Za-z0-9._:@/-]{{0,63}})"
+_PREFIX_TOKEN = rf"(?:{_FIXED}|[a-z]{{1,8}}(?:_(?:bdrk|vrtx))?)"     # 守卫自己写死的单子 (不读 FI.ID_VENDOR_TAGS)
+REPLY_FROM_RE = re.compile(re.escape(REPLY_FROM_HEAD) + rf"模型 (?:无|{_MODEL_TOKEN}={_N}(?:，{_MODEL_TOKEN}={_N})*)"
+                           + rf"；id 前缀 (?:无|{_PREFIX_TOKEN}={_N}(?:，{_PREFIX_TOKEN}={_N})*)")
+
+
+def _usage_lines_problems(out: str) -> list[str]:
+    """11-25 的三行钉住: 每一行从头到尾只能是写死的词 + 数 + 四个字段名 + 像模型名的模型名 + id 前缀 (第一段 1–8 个小写字母,
+    后面最多跟 _bdrk / _vrtx)。
+    消息 id 前缀之后的部分、一句话、别的回包里的字, 放进哪一格都配不上。回一串问题 (空 = 没问题)。"""
+    probs = []
+    for head, rx in ((USAGE_SPLIT_HEAD, USAGE_SPLIT_RE), (PER_CALL_HEAD, PER_CALL_RE), (REPLY_FROM_HEAD, REPLY_FROM_RE)):
+        hits = [ln for ln in out.splitlines() if ln.startswith(head[:6])]
+        if len(hits) > 1:
+            probs.append(f"{head[:6]} 出现了 {len(hits)} 行")
+        probs += [f"{head[:6]} 这一行不合规矩" for ln in hits if not rx.fullmatch(ln)]
+    return probs
+
+
+class _Hostile:
+    """回包里模型名、id 那一格的怪对象: 比较、真假、哈希、长度、转字符串、取属性 (连 __class__ 在内) 一碰就抛。"""
+    def _boom(self, *_a, **_k):
+        raise RuntimeError("碰了怪对象")
+    __eq__ = __ne__ = __lt__ = __bool__ = __hash__ = __len__ = __str__ = __repr__ = __format__ = __iter__ = __contains__ = _boom
+
+    def __getattribute__(self, name):
+        raise RuntimeError("读了怪对象的属性")
+
+
+class _EvilStr(str):
+    """str 的子类, 改写的方法一碰就抛 (拷成普通的 str 之后一个都碰不到)。"""
+    def _boom(self, *_a, **_k):
+        raise RuntimeError("碰了 str 子类改写的方法")
+    __eq__ = __ne__ = __bool__ = __hash__ = __len__ = __str__ = __repr__ = __format__ = __iter__ = __contains__ = _boom
+    __getitem__ = split = strip = lower = startswith = _boom
+
+
+class HostileReplyFakes(Fakes):
+    """假模型 (答案照 Fakes), 回包的模型名、id 那一格轮流是怪对象 / 改写了方法的 str 子类 (id 随机的那一截带探针)。"""
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.n = 0
+        self._lk = threading.Lock()
+
+    def ask(self, model, prompt, block):
+        text, usage = super().ask(model, prompt, block)
+        with self._lk:
+            k, self.n = self.n, self.n + 1
+        src = ({"model": _Hostile(), "id": _EvilStr(f"msg_bdrk_01{ID_CANARY}")} if k % 2 == 0 else
+               {"model": _EvilStr(CHEAP), "id": _Hostile()})
+        return text, usage, "end_turn", src
+
+
+class SplitFakes(Fakes):
+    """假模型 (答案照 Fakes), 用量、模型名、id 按次轮换: 有写缓存的、有读缓存的、有的项不回报、有的整个不回报用量;
+    模型名有正常的、Bedrock 样子的、一句话、一句中文、太长的、没回; id 有 msg / msg_bdrk / msg_vrtx / 没有下划线 /
+    开头大写 / 没回。id 随机的那一截和不像模型名的模型名都带探针: 打出来就红。"""
+    PLAN = (
+        ({"input": 1300, "cache_write": 0, "cache_read": 0, "output": 50}, CHEAP, f"msg_01{ID_CANARY}a"),
+        ({"input": 1300, "cache_write": 3850, "cache_read": 0, "output": 48}, CHEAP, f"msg_bdrk_01{ID_CANARY}b"),
+        ({"input": 1310, "cache_write": 0, "cache_read": 3850, "output": 52}, "anthropic.claude-haiku-5-5-v1:0",
+         f"msg_vrtx_01{ID_CANARY}c"),
+        ({"input": 5150, "output": 47}, MODEL_CANARY, f"chatcmpl-{ID_CANARY}d"),                  # 两项缓存都没回报
+        ({"input": 1400, "cache_write": 0, "cache_read": 0}, TEXT_CANARY, f"MSG_{ID_CANARY}_e"),   # 输出没回报
+        (None, None, None),                                                                         # 整个没回报用量
+        ({"input": 1290, "cache_write": 0, "cache_read": 0, "output": 51}, "c" * 65 + ID_CANARY, f"msg_{ID_CANARY}"),
+    )
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.n = 0
+        self.returned: list[tuple] = []
+        self._lk = threading.Lock()
+
+    def ask(self, model, prompt, block):
+        text, _usage = super().ask(model, prompt, block)
+        with self._lk:
+            usage, rmodel, rid = self.PLAN[self.n % len(self.PLAN)]
+            self.n += 1
+            self.returned.append((usage, rmodel, rid))
+        # 第四项里多塞的字 (回包正文的样子) 不许被拿去用: Pass 只读 model 和 id
+        return text, copy.deepcopy(usage), "end_turn", {"model": rmodel, "id": rid, "text": f"{TEXT_CANARY} {ID_CANARY}"}
+
+
+def check_usage_split() -> None:
+    # ① 两个换词的函数: 模型名像模型名的原样, 别的换写死的词; id 只留第一段 (1–8 个小写字母), 第二段只认写死的 bdrk / vrtx
+    for raw, want in (("claude-haiku-4-5-20251001", "claude-haiku-4-5-20251001"),
+                      ("anthropic.claude-haiku-4-5-20251001-v1:0", "anthropic.claude-haiku-4-5-20251001-v1:0"),
+                      ("claude-3-5-haiku@20241022", "claude-3-5-haiku@20241022"), (CHEAP, CHEAP),
+                      (None, "【没回】"), ("", "【没回】"), ("claude haiku", "【不像模型名】"), (MODEL_CANARY, "【不像模型名】"),
+                      (TEXT_CANARY, "【不像模型名】"), ("a" * 65, "【不像模型名】"), ("-claude", "【不像模型名】"),
+                      ("claude\n", "【不像模型名】"), (5, "【不像模型名】"), ({"x": 1}, "【不像模型名】")):
+        assert FI.reply_model_word(raw) == want, (raw, FI.reply_model_word(raw))
+    assert FI.ID_VENDOR_TAGS == ("bdrk", "vrtx"), "第二段的单子写死, 只有这两个"
+    synthetic_id = "msg_01AbCdEfGhJkLmNpQrStUvWx"      # 和常见的消息 id 一个样子 (msg_01 + 22 个字母数字), 字是编的
+    for raw, want in ((synthetic_id, "msg"), (f"msg_bdrk_01{ID_CANARY}", "msg_bdrk"),
+                      (f"msg_vrtx_01{ID_CANARY}", "msg_vrtx"), ("msg_abcdefg", "msg"), ("msg_bdrk_vrtx_x_01", "msg_bdrk"),
+                      ("msg_", "msg"), (f"chatcmpl-{ID_CANARY}", "【没有下划线】"), ("msg", "【没有下划线】"),
+                      (None, "【没回】"), ("", "【没回】"), (123, "【没回】"), (f"MSG_{ID_CANARY}", "【开头认不出】"),
+                      (f"_{ID_CANARY}", "【开头认不出】"), (f"msg01_{ID_CANARY}", "【开头认不出】"), ("abcdefghi_x", "【开头认不出】"),
+                      (f"msg_01{ID_CANARY}_tail", "msg"),
+                      # 第二段不在单子里的一概不留: 小写字母加数字的 (8 个以内, 放宽成 [a-z0-9] 就会漏出来)、像单词的、差一个字的、大写的
+                      ("msg_01abcdef_tail", "msg"), ("msg_01abcdef", "msg"), ("msg_abcdefg_01x", "msg"), ("msg_tail_x", "msg"),
+                      ("msg_bdrk1_01x", "msg"), ("msg_bdr_01x", "msg"), ("msg_BDRK_01x", "msg"), ("msg_vrtxbdrk_01x", "msg"),
+                      ("msg_bdrk", "msg_bdrk"),
+                      # 第一段带数字的不认 (放宽成 [a-z0-9] 就会认下)
+                      ("01abcdef_tail", "【开头认不出】"), ("01abcdef_bdrk_01x", "【开头认不出】"), ("ms9_01x", "【开头认不出】")):
+        got = FI.reply_id_prefix(raw)
+        assert got == want and ID_CANARY not in got and "01abcdef" not in got, (raw, got)
+    # 打印之前那一道: 只放写死的词、一段小写字母、一段小写字母 + _bdrk / _vrtx
+    for raw, want in ((f"msg_01{ID_CANARY}", "【开头认不出】"), ("msg_bdrk", "msg_bdrk"), ("msg_vrtx", "msg_vrtx"), ("msg", "msg"),
+                      ("msg_01abcdef", "【开头认不出】"), ("msg_01abcdef_tail", "【开头认不出】"), ("01abcdef", "【开头认不出】"),
+                      ("msg01", "【开头认不出】"), ("msg_tail", "【开头认不出】"), ("msg_abcdefg", "【开头认不出】"),
+                      ("msg_bdrk_vrtx", "【开头认不出】"), ("msg_bdrk1", "【开头认不出】"), ("【没有下划线】", "【没有下划线】"),
+                      (None, "【开头认不出】"), (7, "【开头认不出】")):
+        assert FI.printable_id_prefix(raw) == want, (raw, FI.printable_id_prefix(raw))
+    assert FI.printable_model_word(MODEL_CANARY) == "【不像模型名】" and FI.printable_model_word("【没回】") == "【没回】"
+    # 怪对象 (比较 / 真假 / 哈希 / 取属性都抛的; 改写了方法的 str 子类): 四个函数一个都不抛, 回的都是普通的 str
+    for fn, raw, want in ((FI.reply_model_word, _Hostile(), "【不像模型名】"), (FI.reply_model_word, _EvilStr(CHEAP), CHEAP),
+                          (FI.reply_model_word, _EvilStr(MODEL_CANARY), "【不像模型名】"), (FI.reply_model_word, _EvilStr(""), "【没回】"),
+                          (FI.reply_id_prefix, _Hostile(), "【没回】"),
+                          (FI.reply_id_prefix, _EvilStr(f"msg_bdrk_01{ID_CANARY}"), "msg_bdrk"),
+                          (FI.reply_id_prefix, _EvilStr(f"msg_01{ID_CANARY}"), "msg"),
+                          (FI.printable_model_word, _Hostile(), "【不像模型名】"), (FI.printable_model_word, _EvilStr(CHEAP), CHEAP),
+                          (FI.printable_id_prefix, _Hostile(), "【开头认不出】"), (FI.printable_id_prefix, _EvilStr("msg_vrtx"), "msg_vrtx")):
+        got = fn(raw)
+        assert type(got) is str and got == want, (fn.__name__, want, got)
+    assert FI.BIG_INPUT == 3_000, "门槛写死在 3,000 (摘要里也照这个数说)"
+    # 种类多了只列前几种, 剩下的并成一个写死的词
+    line = P._reply_from_line({f"claude-x-{i}": 10 - i for i in range(9)}, {"msg": 9})
+    assert line == (f"{REPLY_FROM_HEAD}模型 claude-x-0=10，claude-x-1=9，claude-x-2=8，claude-x-3=7，claude-x-4=6，【另外几种】=14；"
+                    "id 前缀 msg=9"), line
+
+    # ② 假跑一趟 (4 张封面 = 28 次调用, 用量 / 模型名 / id 按次轮换): 逐项加起来和「用量拆开」那一行的总数对得上
+    cands = [_cand(f"sp{i}") for i in range(4)]
+    fk, store = SplitFakes(), FakeStore(cands)
+    res, out = _run(store, fk)
+    b = res["budget"]
+    assert res["ended"] == "done" and res["status"] == {"answered": 4} and len(fk.returned) == b["calls"] == 28, (res["status"], b)
+    got_usage = [u for u, _m, _i in fk.returned if u and (u.get("input", 0) + u.get("cache_write", 0) + u.get("cache_read", 0)) > 0]
+    keys = ("input", "cache_write", "cache_read", "output")
+    want_split = {k: sum(u.get(k, 0) for u in got_usage) for k in keys}
+    want_rep = {k: sum(1 for u in got_usage if k in u) for k in keys}
+    assert b["split"] == want_split and b["split_reported"] == want_rep, (b["split"], b["split_reported"])
+    assert b["usage_calls"] == len(got_usage) == 24 and b["usage_missing"] == 4, b
+    assert b["split"]["input"] + b["split"]["cache_write"] + b["split"]["cache_read"] == b["input"], "逐项的输入三项加起来 = 用量拆开的输入"
+    assert b["split"]["output"] == b["output"], "逐项的输出 = 用量拆开的输出"
+    assert want_rep == {"input": 24, "cache_write": 20, "cache_read": 20, "output": 20}, "没回报的项没被当成 0 数进去"
+    tins = sorted(u.get("input", 0) + u.get("cache_write", 0) + u.get("cache_read", 0) for u in got_usage)
+    assert b["per_call_input"] == {"n": 24, "min": tins[0], "median": (tins[11] + tins[12]) / 2 if (tins[11] + tins[12]) % 2 else
+                                   (tins[11] + tins[12]) // 2, "max": tins[-1], "over": sum(1 for t in tins if t > 3000)}, b["per_call_input"]
+    n_over = sum(1 for t in tins if t > 3000)
+    assert n_over == 12 and (tins[0], tins[-1]) == (1290, 5160), (n_over, tins)
+    split_line = (f"{USAGE_SPLIT_HEAD}24 次调用；没回报的项不当 0，另数）：input_tokens 合计 {want_split['input']:,}、平均 "
+                  f"{want_split['input'] // 24:,}；cache_creation_input_tokens 合计 {want_split['cache_write']:,}、回报了的 20 次平均 "
+                  f"{want_split['cache_write'] // 20:,}、没回报 4 次；cache_read_input_tokens 合计 {want_split['cache_read']:,}、回报了的 20 次平均 "
+                  f"{want_split['cache_read'] // 20:,}、没回报 4 次；output_tokens 合计 {want_split['output']:,}、回报了的 20 次平均 "
+                  f"{want_split['output'] // 20:,}、没回报 4 次")
+    assert split_line in out.splitlines(), (split_line, out)
+    old_line = (f"用量拆开（中转站回报的）：输入 {b['input']:,}、输出 {b['output']:,} token；拿到用量的 24 次调用里，"
+                f"平均每次输入 {b['input'] // 24:,}、输出 {b['output'] // 24:,}")
+    assert old_line in out.splitlines(), "老的那一行一个字不变 (别处文档引用它)"
+    med = b["per_call_input"]["median"]
+    assert f"{PER_CALL_HEAD}24 次）：最小 1,290、中位 {med:,}、最大 5,160；超过 3,000（写死的门槛）的 12 次" in out.splitlines(), out
+    # 回包从哪来: 28 个回包 (含没回报用量的 4 个) 各数一次
+    per = {i: sum(1 for k in range(28) if k % len(SplitFakes.PLAN) == i) for i in range(len(SplitFakes.PLAN))}
+    assert res["reply_model"] == {CHEAP: per[0] + per[1], "anthropic.claude-haiku-5-5-v1:0": per[2],
+                                  "【不像模型名】": per[3] + per[4] + per[6], "【没回】": per[5]}, res["reply_model"]
+    assert res["reply_id"] == {"msg": per[0] + per[6], "msg_bdrk": per[1], "msg_vrtx": per[2], "【没有下划线】": per[3],
+                               "【开头认不出】": per[4], "【没回】": per[5]}, res["reply_id"]
+    assert sum(res["reply_model"].values()) == sum(res["reply_id"].values()) == 28
+    reply_line = next(ln for ln in out.splitlines() if ln.startswith(REPLY_FROM_HEAD))
+    assert reply_line == (f"{REPLY_FROM_HEAD}模型 【不像模型名】=12，{CHEAP}=8，anthropic.claude-haiku-5-5-v1:0=4，【没回】=4；"
+                          "id 前缀 msg=8，msg_bdrk=4，msg_vrtx=4，【开头认不出】=4，【没回】=4，【没有下划线】=4"), reply_line
+    assert _usage_lines_problems(out) == [], _usage_lines_problems(out)
+    _no_leak("用量逐项", out, json.dumps(res, ensure_ascii=False, default=str))
+    # 回包的模型名、id 那一格是怪对象 / 改写了方法的 str 子类: 整趟照常跑完, 花的钱那一行在, 计数的键都是普通的 str
+    res_h, out_h = _run(FakeStore([_cand("hz0"), _cand("hz1")]), HostileReplyFakes())
+    assert res_h["ended"] == "done" and res_h["status"] == {"answered": 2}, (res_h["ended"], res_h["status"])
+    assert res_h["reply_model"] == {"【不像模型名】": 7, CHEAP: 7} and res_h["reply_id"] == {"msg_bdrk": 7, "【没回】": 7}, \
+        (res_h["reply_model"], res_h["reply_id"])
+    assert all(type(k) is str for k in (*res_h["reply_model"], *res_h["reply_id"]))
+    assert any(ln.startswith(f"实际：问了 2 张图，调用 14 次，{res_h['budget']['spent']:,} 输入当量 token") for ln in out_h.splitlines()), out_h
+    assert _usage_lines_problems(out_h) == [], _usage_lines_problems(out_h)
+    _no_leak("怪对象那一趟", out_h, json.dumps(res_h, ensure_ascii=False, default=str))
+
+    # ③ 反证 (改坏之后必须变红)。a: 行里塞进完整的 id / 一句话 / 回包里的字, 三行的规矩都配不上
+    for bad in (out.replace("msg_bdrk=4", f"msg_bdrk_01{ID_CANARY}b=4"), out.replace("【不像模型名】=12", f"{MODEL_CANARY}=12"),
+                out.replace(f"{CHEAP}=8", f"{TEXT_CANARY}=8"), out.replace("output_tokens 合计", f"output_tokens（{TEXT_CANARY}）合计"),
+                out.replace("（写死的门槛）的 12 次", f"（写死的门槛）的 12 次 {ID_CANARY}"),
+                out.replace("id 前缀 msg=8", "id 前缀 msg=8，备注 一句话=1"), out + "\n" + reply_line,
+                # id 前缀那一格: 第二段不在 bdrk / vrtx 单子里的 (小写字母加数字的、像单词的)、第一段带数字的, 都配不上
+                out.replace("msg_bdrk=4", "msg_01abcdef=4"), out.replace("msg_vrtx=4", "msg_tail=4"),
+                out.replace("id 前缀 msg=8", "id 前缀 msg01=8")):
+        assert bad != out and _usage_lines_problems(bad), "反证没成立: 规矩没抓到塞进去的字"
+    # b: Pass 拿到 id 不换成前缀 (原样记) → 计数的键里有完整的 id: 结果 (json) 的探针检查红; 摘要打之前那一道还拦得住
+    saved = (FI.reply_id_prefix, FI.reply_model_word, FI.printable_id_prefix, FI.printable_model_word)
+    try:
+        FI.reply_id_prefix = lambda x: x if isinstance(x, str) and x else FI.REPLY_NOT_GIVEN   # noqa: E731
+        FI.reply_model_word = lambda x: x if isinstance(x, str) and x else FI.REPLY_NOT_GIVEN  # noqa: E731
+        res_b, out_b = _run(FakeStore(cands), SplitFakes())
+        try:
+            _no_leak("反证 b", json.dumps(res_b, ensure_ascii=False, default=str))
+            raise RuntimeError("反证没成立: 完整的 id 进了计数, 探针检查却没红")
+        except AssertionError:
+            pass
+        _no_leak("反证 b 的摘要", out_b)
+        assert _usage_lines_problems(out_b) == []
+        # c: 再把打之前那一道也拿掉 → 摘要里出现完整的 id 和一句话: 三行的规矩和探针检查都红
+        FI.printable_id_prefix = lambda x: x      # noqa: E731
+        FI.printable_model_word = lambda x: x     # noqa: E731
+        res_c, out_c = _run(FakeStore(cands), SplitFakes())
+        assert _usage_lines_problems(out_c), "反证没成立: 摘要里有完整的 id, 规矩没抓到"
+        try:
+            _no_leak("反证 c", out_c)
+            raise RuntimeError("反证没成立: 摘要里有完整的 id, 探针检查却没红")
+        except AssertionError:
+            pass
+    finally:
+        FI.reply_id_prefix, FI.reply_model_word, FI.printable_id_prefix, FI.printable_model_word = saved
+
+    # ④ 钱和预留一个数没变: 同一批回包, 逐项记的那些拿掉, 按老的结算算出来的 spent 一样
+    b2 = FI.Budget()
+    for u, _m, _i in fk.returned:
+        assert b2.reserve(10_000)
+        b2.settle(10_000, CHEAP, u)
+    old_spent = sum(MP.weighted_tokens(u.get("input", 0) + u.get("cache_write", 0) + u.get("cache_read", 0), u.get("output", 0))
+                    if u and (u.get("input", 0) + u.get("cache_write", 0) + u.get("cache_read", 0)) > 0 else 10_000
+                    for u, _m, _i in fk.returned)
+    assert b2.spent == old_spent and b2.reserved == 0 and b2.usage_missing == 4, (b2.spent, old_spent)
+    for doc, needles in (("docs/34-first-image-pass.md", ("用量逐项", "每次调用的总输入", "回包从哪来", "3,000", "msg_bdrk")),
+                         ("OPEN-ITEMS.md", ("用量逐项",))):
+        text = (ROOT / doc).read_text(encoding="utf-8")
+        for nd in needles:
+            assert nd in text, f"{doc} 里没写 {nd}"
+    print("  §11 用量逐项 (没回报的另数、不当 0)、每次调用总输入的最小 / 中位 / 最大和超过 3,000 的次数、回包的模型名和 id 前缀; "
+          "逐项加起来和「用量拆开」对得上; 完整的 id、一句话打不出来 (反证三种都红); 钱一个数没变 ✓")
+
+
 def main() -> int:
     check_bank()
     check_money()
@@ -2523,7 +2869,8 @@ def main() -> int:
     check_reply_reading()
     check_line_and_void()
     check_v03_switched()
-    print("\ncheck_first_image_pass: 10 节全过")
+    check_usage_split()
+    print("\ncheck_first_image_pass: 11 节全过")
     return 0
 
 

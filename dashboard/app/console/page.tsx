@@ -3,6 +3,7 @@ import Link from "next/link";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { SESSION_COOKIE, verifySessionToken } from "@/lib/auth";
+import { WB_COOKIE, isWorkbenchConfigured, verifyWorkbenchToken } from "@/lib/workbench-auth";
 import { getDashboardData } from "@/lib/dashboard-data";
 import { cnNum, comma, consoleLabel } from "@/config/showcase";
 import CountUp from "@/components/CountUp";
@@ -61,6 +62,8 @@ export default async function ConsolePage() {
   // 登录闸第二道：proxy.ts(Next 16 前叫 middleware.ts)已经拦了一次，这里在页面自己的服务端代码里再验一次会话，
   // 验不过就回登录页、后面的取数一行都不跑。这样即使中间件那一层被绕过或没生效，座舱也进不来。
   if (!(await verifySessionToken((await cookies()).get(SESSION_COOKIE)?.value))) redirect("/login?next=%2Fconsole");
+  // 工作台入口只给 owner 看 (owner 闸的 cookie 有效才显示; docs/35 第 3.2 节)
+  const showWorkbench = isWorkbenchConfigured() && (await verifyWorkbenchToken((await cookies()).get(WB_COOKIE)?.value));
   const d = await getDashboardData();
   const { o, projects, matrix, valence, leverPerf, archetypes, audience, formats, reach, intent, funnel, projectPerf, pulse } = d;
   const flabel = (id: string) => consoleLabel({ project_id: id });
@@ -107,6 +110,7 @@ export default async function ConsolePage() {
             <div style={{ display: "flex", gap: 6 }}>{[["#态势", "态势"], ["#挖掘", "挖掘"], ["#战线", "战线"]].map(([h, t]) => <a key={h} href={h} style={{ fontSize: 12.5, fontWeight: 600, color: MUTE, textDecoration: "none", padding: "4px 9px" }}>{t}</a>)}</div>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
+            {showWorkbench && <Link href="/console/workbench" style={navPill()}>工作台</Link>}
             <Link href="/board" style={navPill()}>数据看板</Link>
             <form action="/api/auth/logout" method="POST"><button type="submit" style={{ ...navPill(), background: "transparent", cursor: "pointer" }}>登出</button></form>
           </div>

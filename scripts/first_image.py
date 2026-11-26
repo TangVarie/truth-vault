@@ -1045,6 +1045,72 @@ def assemble(bank: dict, parsed: dict[str, tuple], title: Optional[str]) -> dict
 # 花费硬上限
 # ════════════════════════════════════════════════════════════════════
 
+# 11-25 (I-38): 中转站回报的四项用量, 键 → 回包里的字段名。字段名是 API 的, 写死; 摘要里原样打这几个名字
+USAGE_FIELDS = (("input", "input_tokens"), ("cache_write", "cache_creation_input_tokens"),
+                ("cache_read", "cache_read_input_tokens"), ("output", "output_tokens"))
+BIG_INPUT = 3_000          # 一次调用的总输入 (input + 写缓存 + 读缓存) 超过它就数一次; 写死的门槛 (11-24 晚平均每次约 1,300, 11-23 晚约 5,100)
+# 回包从哪来 (11-25, I-38): 模型名原样、消息 id 只留开头的前缀。认不出的一律换成下面几个写死的词, 回包里别的字一个都不往外带
+REPLY_NOT_GIVEN = "【没回】"
+REPLY_ODD_MODEL = "【不像模型名】"
+REPLY_NO_UNDERSCORE = "【没有下划线】"
+REPLY_ODD_ID = "【开头认不出】"
+REPLY_OTHERS = "【另外几种】"
+_REPLY_MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@/-]{0,63}")
+# 消息 id 的前缀只认两样: 第一段 1–8 个小写字母 (msg); 第二段只认这张写死的厂商标记单子 (Bedrock / Vertex), 单子之外的一概不留
+ID_VENDOR_TAGS = ("bdrk", "vrtx")
+_ID_FIRST_RE = re.compile(r"[a-z]{1,8}")
+_ID_PREFIX_RE = re.compile(r"[a-z]{1,8}(?:_(?:" + "|".join(ID_VENDOR_TAGS) + r"))?")   # 打印之前再核: 和 reply_id_prefix 同一个规矩
+_REPLY_WORDS = frozenset({REPLY_NOT_GIVEN, REPLY_ODD_MODEL, REPLY_NO_UNDERSCORE, REPLY_ODD_ID, REPLY_OTHERS})
+
+
+def _plain_str(x: Any) -> Optional[str]:
+    """先认类型, 再做别的: 是 str (含子类) → 拷成一个普通的 str; 别的 → None。
+    按 type(x) 认 (和 isinstance 一样认子类, 但不读 x 的任何属性: __class__ 冒充不了, 读属性抛错也碰不到);
+    拷成普通的 str 之后, 子类改写的 __eq__ / __bool__ / __len__ / __hash__ / split 一个都碰不到。
+    回包里的怪对象要是在这几个函数里抛错, 会从 Pass._call 冲出 run_pass, 连花了多少钱那一行都打不出来。"""
+    return str.__str__(x) if issubclass(type(x), str) else None
+
+
+def reply_model_word(model: Any) -> str:
+    """回包里的模型名 → 原样 (只许像模型名的: 字母数字开头, 只有字母数字和 . _ : @ / -, 最长 64); 别的换成写死的词。
+    先认类型 (_plain_str) 再做任何比较: 不是字符串的对象一次比较都不做 (它的 __eq__ / __bool__ 抛错也碰不到)。"""
+    s = _plain_str(model)
+    if s is None:
+        return REPLY_NOT_GIVEN if model is None else REPLY_ODD_MODEL
+    if not s:
+        return REPLY_NOT_GIVEN
+    return s if _REPLY_MODEL_RE.fullmatch(s) else REPLY_ODD_MODEL
+
+
+def reply_id_prefix(msg_id: Any) -> str:
+    """消息 id → 开头的前缀 (msg / msg_bdrk / msg_vrtx), id 剩下的部分一个字都不带。按下划线切开:
+    第一段是 1–8 个小写字母的才要 (不是 → 【开头认不出】; 没有下划线 → 【没有下划线】);
+    第二段只有在写死的单子 ID_VENDOR_TAGS (bdrk / vrtx) 里才留, 不在单子里的 (小写字母加数字的、像单词的, 什么样子都一样) 不留;
+    再往后的一概不要。打出来的只可能是第一段, 或者第一段 + 单子里的一个词。"""
+    s = _plain_str(msg_id)
+    if not s:
+        return REPLY_NOT_GIVEN
+    parts = s.split("_")
+    if len(parts) < 2:
+        return REPLY_NO_UNDERSCORE
+    if not _ID_FIRST_RE.fullmatch(parts[0]):
+        return REPLY_ODD_ID
+    return f"{parts[0]}_{parts[1]}" if parts[1] in ID_VENDOR_TAGS else parts[0]
+
+
+def printable_model_word(word: Any) -> str:
+    """打印之前再核一遍 (计数的键不管从哪来): 写死的词或像模型名的原样, 别的一律 【不像模型名】。同样先认类型。"""
+    s = _plain_str(word)
+    return s if s is not None and (s in _REPLY_WORDS or _REPLY_MODEL_RE.fullmatch(s)) else REPLY_ODD_MODEL
+
+
+def printable_id_prefix(word: Any) -> str:
+    """打印之前再核一遍: 写死的词, 或和 reply_id_prefix 同一个规矩的前缀 (第一段 1–8 个小写字母, 后面最多跟 _bdrk / _vrtx),
+    别的一律 【开头认不出】。同样先认类型。"""
+    s = _plain_str(word)
+    return s if s is not None and (s in _REPLY_WORDS or _ID_PREFIX_RE.fullmatch(s)) else REPLY_ODD_ID
+
+
 class Budget:
     """调用【之前】reserve: 已花的 + 在路上的预留 + 这一次的预留 会越线 → 回 False, 这次不调, 之后也都不调。
 
@@ -1060,6 +1126,10 @@ class Budget:
         self.usage_missing = 0
         self.stopped: Optional[str] = None
         self.by_model: dict[str, dict] = {}
+        # 11-25 (I-38): 只是记下来给摘要看, 不进 spent、不改预留。和 by_model 的 input / output 是同一批调用 (拿到了用量的)
+        self.usage_split = {k: 0 for k, _f in USAGE_FIELDS}      # 四项各自加起来 (只加回报了的)
+        self.usage_reported = {k: 0 for k, _f in USAGE_FIELDS}   # 四项各在几次调用里回报了 (没回报的不当 0)
+        self.input_per_call: list[int] = []                      # 每次调用的总输入 (input + 写缓存 + 读缓存)
         self._lock = threading.Lock()
 
     def reserve(self, estimate: int) -> bool:
@@ -1098,6 +1168,11 @@ class Budget:
             m["input"] += tin
             m["output"] += tout
             m["weighted"] += w
+            for k, _f in USAGE_FIELDS:                # 中转站没回报的那一项: 不加、不当 0, 只是这一项少数一次
+                if usage.get(k) is not None:
+                    self.usage_split[k] += int(usage[k])
+                    self.usage_reported[k] += 1
+            self.input_per_call.append(tin)
 
     def release(self, estimate: int, model: str) -> None:
         """这一次调用失败了 (没拿到回报)。按预留记账: 失败的调用中转站收不收钱不知道, 当它收了。"""
