@@ -635,7 +635,7 @@ def check_missing_body_recovery() -> None:
                 return []
             engine.fetch_all_pages = pages
 
-            def up(sb, notes, dry_run=False):
+            def up(sb, notes, dry_run=False, **_):
                 cap["notes"] = notes
                 return [n["note_id"] for n in notes]
             engine.upsert_notes_batch = up

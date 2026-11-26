@@ -9343,7 +9343,9 @@ XIWU_phase2 那行「一轮 / 二轮维护」+「20条评论 / +20条评论」�
 1. **Step 0：款式标忽略。** mapping 新顶层键 `direction_ignore_tokens`（BJS_phase2：成人款、儿童款）。查 direction_decomposition、判内容层、查子方向、preflight 算缺方向之前先去掉。「提问贴, 成人款」照常按 提问贴 抬、层 Q；只剩款式标 → 什么都不抬。忽略标不能同时是方向（加载就红）。没配这个键的 mapping 查表键一字不变。
 2. **HATHERINE 9 月下旬起用的 10 个新方向名只登记 layer**（和 产品- / 流量- 前缀判的一样），不写 content_format / 人群 / 痛点。这些名字在老表里就有（audit_log 里最早 09-22 入库），11-25 夜跑后 190 篇，158 篇是 11-20 之前发的。写了抬的值就会用猜的值盖掉 essence 判的 content_format。
 3. **Step 1：方向格有值、抬不了**（mapping 里没有、只登记了 layer、没有正文推断）→ 同步对 人群 / 痛点 / 产品焦点 送 None。这三列只有「直接抬」和 essence 子方向两条来路，抬不了时库里的值只能是旧方向的。无状态，每晚自愈。有 sub_directions 的方向（essence 管）不碰。**方向格清空**、方向列这一轮还在 → 同样送 None；方向列整轮没返回（改名）→ 不动。
-4. **content_format**：essence 每篇都写，可方向抬得了时夜跑每晚用旧方向抬的值盖掉它。同步在 upsert 之前读这些篇库里上一次的方向和 content_format：上一次抬得了、库里正好是它抬的值 → 从 audit_log 取 essence 最后一次写的 content_format 写回去；essence 那一次没改 content_format → 不动，打本轮旗子 `content_format_not_restored`；读库或 audit_log 失败 → 一篇不动；dry-run 不读库。
+4. **content_format**：essence 每篇都写，可方向抬得了时夜跑每晚用旧方向抬的值盖掉它。同步在 upsert 之前读这些篇库里上一次的方向和 content_format：上一次抬得了、库里正好是它抬的值 → 从 audit_log 取 essence 最后一次写的 content_format 写回去；essence 那一次没改 content_format → 不动，打本轮旗子 `content_format_not_restored`；读库或 audit_log 失败 → 一篇不动，见下一段；dry-run 不读库。
+
+   **读失败那一晚（11-26 补，Codex #312 P2）**：认得出方向变了，靠的是库里 `raw_extra._direction_raw` 还是上一次的方向。读失败那一晚要是照常写，新方向就落库了，下一晚库里的「上一次」已经抬不了，这一篇再也换不回来。所以读失败时这几篇这一轮不写 raw_extra（upsert 按篇留列，同 D-122 名单列的做法：请求里不带、columns= 里也没有），三列照清、别的列照写、照常盖戳，下一晚读得到就照常换回。读库失败分不出哪几篇换过方向，全部候选都留（11-26 生产只读、按库里的方向估：12 个每天同步的项目一晚最多 974 篇，单个项目最多 280 篇；新篇这一晚 raw_extra 先空着）；读 audit_log 失败只留要换的那几篇。代价是这些篇 raw_extra 里别的键也晚一晚。Done 行记 `content_format_restore_held`，计一个 error、打 `::error`（红）：一直读不到就一直红，这些篇的 raw_extra 也一直不更新，得有人去查库。没用「打个旗子、下一晚再换」：旗子列和 raw_extra 每晚整份重写，读不到库的那一晚旗子本身也留不住，旗子里还得带上旧方向，绕回来还是要按篇留列。
 5. **Step 2（已经发生的那批）**：`schemas/notes_v1_33_direction_switch_restore.sql`，owner 在合并前跑。备份 69 篇（4 列 + 内容层 + 方向原值），33 篇（全在 BJS_phase2）content_format 换回 essence 的值（场景植入 → 情感叙事 23、认知重构 6、直给推荐 3、反差破圈 1）。另 27 篇（BJS_phase2 23、HATHERINE 4）essence 那次没改 content_format，推不出别的值，不动。认的是最后一次改方向、essence 最后一次写；库里的值不是旧方向抬的值（后来改过）的不动。合并前跑也安全：旧代码对这 33 篇抬不了，不会把换回的值盖掉。
 
 **工程定的（owner 可以否决）**
@@ -9365,4 +9367,4 @@ XIWU_phase2 那行「一轮 / 二轮维护」+「20条评论 / +20条评论」�
 
 **挡不住什么**：essence 那一次没改 content_format 的 27 篇推不出它的判断，留着旧方向的值（大概率和 essence 一致）；以后运营往「方向」里加别的非方向标，要先登进 `direction_ignore_tokens`，不然那些篇会被清三列；按款拆人群没做。
 
-守卫：`scripts/check_direction_switch.py`、`scripts/check_content_layer.py` §1–§2、`scripts/check_owner_sql_b2.sql`。
+守卫：`scripts/check_direction_switch.py`（§9 管读失败那一晚：真 postgrest-py 连跑两晚、再驱动真的 main() 两晚）、`scripts/check_content_layer.py` §1–§2、`scripts/check_owner_sql_b2.sql`。
