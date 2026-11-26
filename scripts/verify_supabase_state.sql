@@ -511,7 +511,9 @@ SELECT '92', 'I · 数据一致性',
                 ('^autowriter\._bak_1123_ending_rule_compile$'),
                 ('^truth_vault\.backup_external_publish_time_j17_20261125$'),
                 ('^truth_vault\.backup_repoint_stale_(comments|comment_judge)_20261125$'),
-                ('^truth_vault\.backup_repoint_stale_ssll_(samples|marks)_20261125$')
+                ('^truth_vault\.backup_repoint_stale_ssll_(samples|marks)_20261125$'),
+                ('^truth_vault\.backup_(comments|nfa)_commenter_20261125$'),
+                ('^truth_vault\.backup_notes_i17_20261125$')
         )
         SELECT COUNT(*)
         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace

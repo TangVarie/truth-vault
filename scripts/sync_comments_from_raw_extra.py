@@ -3,8 +3,13 @@ sync_comments_from_raw_extra.py
 ═══════════════════════════════════════════════════════════════════════════
 
 Parses comment text that sync_feishu_notes_to_truth_vault.py stored in
-notes.raw_extra._comment_text and ._comment_text_persona, and writes
-truth_vault.comments rows.
+notes.raw_extra._comment_text, and writes truth_vault.comments rows.
+
+「随贴评论素人」不是评论 (列体检 2026-11-25 §3a #1): 它是发这条随贴评论的素人编号。以前映成
+_comment_text_persona、在这里和随贴评论拼在一起解析 —— 纯数字的编号被当成编号残片丢掉, 带字母的
+(NRT2 12、NRT3 4、NUC 13, 共 29 个) 成了假评论。现在 mapping 把它映成 _commenter_codes (raw_extra 里的
+编号列表), 这里不读; 按需项目的旧快照里还留着 _comment_text_persona, 这里也不读。那 29 行假评论由
+schemas/notes_v1_31_commenter_codes_cleanup.sql 备份后删掉 (owner 跑)。
 
 The Feishu cell "随贴评论" is a free-text block that operators paste in.
 There's no canonical line format, so this script supports the two patterns
@@ -61,14 +66,8 @@ What it does
   - Doesn't handle truncation / mid-line line breaks
   - This is a "minimum viable comments table" so ssll's vibe_rewriter has
     SOME comment evidence to work with. Full reconstruction needs LLM pass.
-  - ⚠️ _comment_text_persona semantic risk: this script currently treats it
-    as additional comment text and concatenates with _comment_text. NUC_phase1
-    sample data confirms this is correct (operator pastes a second comment
-    block under the same column). If a future project uses _comment_text_persona
-    to mean "evaluator/persona-of-commenter labels" instead (a different
-    semantic), those values would land in comments.content and corrupt the
-    flat comments table. Confirm column semantics with the project's onboarding
-    sheet BEFORE running on a new project; for now, NUC_phase1 / NRT_* are OK.
+  - 2026-11-25 起不再读 _comment_text_persona: 6 月审计担心的「它其实是评论者画像」成真了
+    (那一列是素人编号)。见模块头第二段。
 
 第二个来源: 巡查工具 (linkcheck) 看到的评论区第一页 (十三件事第 2 件, D-155, 2026-11-15)
   上面说的都是运营自己贴的「随贴评论」。巡查工具每轮还把帖子评论区第一页写进飞书两格, 夜跑同步原样收在
@@ -650,7 +649,14 @@ def fetch_project_notes(sb, project_id: str) -> list[dict]:
 
 
 def has_operator_comment_text(raw: dict) -> bool:
-    return bool(raw.get("_comment_text") or raw.get("_comment_text_persona"))
+    """只看 _comment_text。_comment_text_persona (旧快照) 是素人编号, 不是评论 (列体检 2026-11-25)。"""
+    return bool(raw.get("_comment_text"))
+
+
+def parse_operator_comments(raw: dict) -> list[tuple[str, str]]:
+    """一篇的 raw_extra → 运营贴的随贴评论 (role, content)。只解析 _comment_text (列体检 2026-11-25:
+    _comment_text_persona 是素人编号, 以前拼进来解析, 带字母的编号成了假评论)。"""
+    return list(parse_comment_text((raw.get("_comment_text") or "").strip()))
 
 
 def fetch_notes_with_comments_text(sb, project_id: str) -> list[dict]:
@@ -952,7 +958,7 @@ def main() -> int:
     if args.limit:
         notes = notes[: args.limit]
         lc_notes = lc_notes[: args.limit]
-    logger.info("Found %d notes with raw_extra._comment_text(_persona) for %s",
+    logger.info("Found %d notes with raw_extra._comment_text for %s",
                 len(notes), args.project_id)
     # 已入库评论每项目读一次、按 note 分组, 逐篇在内存里配对 (D-092; 以前每篇读一次, ≥2 次 HTTP/篇)。
     # by_note 只有运营贴的行; 巡查来的行 (source = linkcheck_*) 单独一份, 不进下面的配对和「找不到了」对账。
@@ -967,10 +973,8 @@ def main() -> int:
     vanished_log: list[dict] = []
     for note in notes:
         raw = note.get("raw_extra") or {}
-        text_main = raw.get("_comment_text") or ""
-        text_persona = raw.get("_comment_text_persona") or ""
-        combined = "\n".join([text_main, text_persona]).strip()
-        parsed = list(parse_comment_text(combined))
+        # 只解析随贴评论。_comment_text_persona (按需项目的旧快照) 是素人编号, 拼进来就是假评论 (列体检 2026-11-25)。
+        parsed = parse_operator_comments(raw)
         if not parsed:
             stats["skipped_empty"] += 1
             unparseable.add(note["note_id"])

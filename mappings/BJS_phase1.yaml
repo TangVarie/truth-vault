@@ -77,6 +77,10 @@ tier_extraction:
       tier: 趴
     - match_contains: ["评估中"]
       tier: 评估中
+    - match_contains: ["观察中"]      # linkcheck 冷启动 48h 窗口 (10-26 起) → 未知。2026-11-25 补 (I-01 第 1 部分): 以前每晚报「状态值没映上」
+      tier: 未知
+    - match_contains: ["链接失效"]    # linkcheck 10-26 起给死链写的标, 热度标照留。→ 删除 (D-119 #13)。删除 的档位低于 爆 / 大爆 / 趴:
+      tier: 删除                        #    爆过的帖照旧是爆 (运营要它留在参考库); 只有这个标、或配 观察中 / 评估中 → 删除。2026-11-25 (I-01)
     - default: null
 
 # 定稿 2026-08-30: 这两个数【现在不生效, 也不该现在定】——
@@ -154,6 +158,9 @@ project_specific_fields_to_raw_extra:
   - 相关截图
   - 蓝词图片
   - 父记录
+  # ── 2026-11-25 列体检 §3a #7: linkcheck 写的这几列以前落在 _undeclared、每晚进告警清单。只留痕, 不映任何 typed 列 ──
+  - 互动数                          # 统一表的互动公式列。本表指标走「数据整理」解析, 这列只留痕, 不映 interactions
+  - 观众分析                        # 后台人群原文。只留底, 不解析 (列体检 §3b #1, 等排期)
 
 data_supplement_needed:
   - field: account_followers

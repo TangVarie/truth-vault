@@ -69,8 +69,8 @@ from _common import (
     mask_secrets,
     notes_content_sha_supported,
     setup_logger,
-    _direction_key,
     _iso_now,
+    effective_direction_key,
 )
 
 
@@ -300,7 +300,8 @@ def get_sub_directions_for_note(mapping: dict, note: dict
         return None
     # raw_extra stores the original Feishu cell, which may be a list
     # (multi-select / rich-text); normalize to the same hashable key sync uses.
-    dir_key = _direction_key(raw_dir)
+    # 去掉 direction_ignore_tokens 再查 (I-17), 和 sync 的 transform_row 同一个键。没配的 mapping 就是 _direction_key。
+    dir_key = effective_direction_key(raw_dir, mapping)
     decomp = (mapping.get("direction_decomposition") or {}).get(dir_key)
     if decomp is None:
         return None

@@ -41,7 +41,7 @@ STANDARD_FIELD_MAP = """\
 - 关键词 → target_blue_keywords(投放前定的目标蓝词)
 - 蓝词记录/蓝词字段 → hit_blue_keywords(事后回收的命中蓝词)
 - 爆帖置顶评论 → pinned_comment
-- 随贴评论 → _comment_text(进 comments 表);随贴评论素人 → _comment_text_persona
+- 随贴评论 → _comment_text(进 comments 表);随贴评论素人 → _commenter_codes(发评论的素人编号, 不是评论, 不进 comments)
 - 数据回收情况 → data_quality_status
 - 观众分析 → 【条件】仅当是 WTG 那种可解析的半结构化文本(如"性别分布:男4%女96%;年龄分布…")
   才映 _audience_raw(sync parse 进 actual_audience_data);若为空或非该格式(如 NUC 多为空)→

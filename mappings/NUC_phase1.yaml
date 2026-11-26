@@ -58,7 +58,7 @@ field_mapping:
   蓝词记录: hit_blue_keywords
   爆帖置顶评论: pinned_comment
   随贴评论: _comment_text
-  随贴评论素人: _comment_text_persona
+  随贴评论素人: _commenter_codes      # 发这条随贴评论的素人编号, 不是评论 (11-25 列体检), 存 raw_extra._commenter_codes 列表, 不进 comments
 
 intent_mapping:
   流量帖: traffic

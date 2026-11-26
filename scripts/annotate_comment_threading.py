@@ -132,8 +132,8 @@ def fetch_notes_with_pending_threading(
     candidates = []
     for r in rows:
         re = r.get("raw_extra") or {}
-        # Either of these keys can carry the original feishu comment block
-        for k in ("_comment_text", "_comment_text_persona"):
+        # 只有 _comment_text 是评论原文; _comment_text_persona (旧快照) 是素人编号, 不是评论 (列体检 2026-11-25)
+        for k in ("_comment_text",):
             if isinstance(re.get(k), str) and re[k].strip():
                 r["_raw_comment_block"] = re[k]
                 candidates.append(r)
