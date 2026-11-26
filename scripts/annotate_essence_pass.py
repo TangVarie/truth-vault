@@ -186,13 +186,17 @@ MODE_A_USER_TEMPLATE = """══════════════════
 
 
 def build_project_context(project: dict, note: dict) -> str:
-    """Render the project_context block. Performance fields are EXCLUDED."""
+    """Render the project_context block. Performance fields are EXCLUDED.
+
+    raw_extra 是 NULL 也得能拼 (库里这一列可空、没默认值; PostgREST 回的是键在、值 None, .get 的默认值不起作用)。
+    sync 读失败那一晚 (I-17, D-178) 新篇整行插入失败时会落一行 NULL, essence 同一晚就选到它 —— 抛了会把整个项目这一晚的
+    essence 停在这一篇。同 get_sub_directions_for_note 的写法。check_direction_switch §9B 钉住。"""
     return f"""- 品牌: {project.get('brand', '(未填)')}
 - 产品: {project.get('product', '(未填)')}
 - 品类: {project.get('category', '(未填)')}
 - 目标蓝词: {', '.join(note.get('target_blue_keywords') or []) or '无'}
 - 内容意图: {note.get('intent') or '未知'}
-- 项目级方向 (如有): {note.get('raw_extra', {}).get('_direction_raw') or '(项目未定义方向)'}"""
+- 项目级方向 (如有): {(note.get('raw_extra') or {}).get('_direction_raw') or '(项目未定义方向)'}"""
 
 
 def build_mode_a_prompt(project: dict, note: dict) -> tuple[str, str]:

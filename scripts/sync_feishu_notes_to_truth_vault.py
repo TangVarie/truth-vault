@@ -1150,8 +1150,11 @@ def apply_cleared_status(mapping: dict, pending_notes: list[dict], seen_cols: se
 #      能认出方向变了, 靠的就是库里 raw_extra._direction_raw 还是上一次的方向。照常写的话新方向落库, 下一轮库里的
 #      「上一次」已经是新方向、抬不了, 这一篇就再也换不回来 (Codex #312 P2)。留着 raw_extra, 下一轮读得到就照常换。
 #      读库失败分不出哪几篇换过方向 → 全部候选都留; 读 audit_log 失败 → 只留要换的那几篇。别的列 (三列送 None、
-#      内容层、指标、盖戳) 照写。main 把留了几篇记进 Done 行 content_format_restore_held、计一个 error (红)。
+#      内容层、指标、盖戳) 照写。留着的篇里的新篇 (库里还没有) 照常整行插进去、raw_extra 也在 (upsert_notes_batch 先
+#      INSERT ... ON CONFLICT DO NOTHING, 见 _insert_new_held_notes): 新篇没有「上一次」可留, 去掉 raw_extra 插进去就是
+#      NULL, 同一晚的 essence 会拿它进 prompt。main 把留了几篇记进 Done 行 content_format_restore_held、计一个 error (红)。
 #      dry-run 不读库。
+#      留了之后靠的是下一轮这一篇还是候选: 下一轮之前从飞书删了、或改成有子方向的方向 (不是候选), 就换不回来 (D-178)。
 #   11-21 已经发生的那一批 (BJS_phase2 33 篇) 库里的方向已经是新的了, 这里认不出, 由 owner 跑
 #   schemas/notes_v1_33_direction_switch_restore.sql 一次补上 (Step 2)。
 _CF_NOT_RESTORED_FLAG = "content_format_not_restored"
@@ -2467,6 +2470,40 @@ def ensure_accounts_batch(
     return failed
 
 
+def _insert_new_held_notes(client: Client, rows: list[dict[str, Any]], mirror: frozenset[str],
+                           chunk_size: int) -> set[str]:
+    """upsert_notes_batch 里留列 (hold) 的篇的前一步: 整行 (留着的列也带上) INSERT ... ON CONFLICT DO NOTHING
+    (ignore_duplicates)。库里没有的新篇照常整行落库, 库里已有的一行不动。分组、补 None 和正常那一路一样 (D-122),
+    插进去的新篇和不留列时插的一字不差。回真插进去的 note_id: ignore_duplicates 下 PostgREST 只回插入的行
+    (同 quarantine_record)。批被拒 → 逐行再插一遍 (发原行, 同 upsert_note 的兜底)。还是失败 / 没回 data → 不算插进去,
+    这几篇照样走后面去掉留列的那一份: 库里已有的照常写, 新篇 raw_extra 这一晚先空着 (warning; essence 读得了 NULL)。"""
+    inserted: set[str] = set()
+
+    def _ids(res: Any, sent_ids: set[str]) -> set[str]:
+        data = getattr(res, "data", None)
+        return {r["note_id"] for r in data if isinstance(r, dict) and r.get("note_id") in sent_ids} \
+            if isinstance(data, list) else set()
+
+    for group in _group_by_protected_cols(rows):
+        for k in range(0, len(group), chunk_size):
+            chunk = group[k:k + chunk_size]
+            ids = {n["note_id"] for n in chunk}
+            try:
+                inserted |= _ids(client.schema("truth_vault").table("notes")
+                                 .upsert([_mirror_fill(n, mirror) for n in chunk], on_conflict="note_id",
+                                         ignore_duplicates=True).execute(), ids)
+            except Exception as exc:
+                logger.warning("留列的篇先插新篇: 批 (%d 篇) 失败 (%s), 逐行再插", len(chunk), exc)
+                for n in chunk:
+                    try:
+                        inserted |= _ids(client.schema("truth_vault").table("notes")
+                                         .upsert(n, on_conflict="note_id", ignore_duplicates=True).execute(), ids)
+                    except Exception as exc1:
+                        logger.warning("留列的篇先插新篇: %s 没插成 (%s); 是新篇的话 raw_extra 这一晚先空着",
+                                       n["note_id"], exc1)
+    return inserted
+
+
 def upsert_notes_batch(
     client: Client, notes: list[dict[str, Any]], *,
     dry_run: bool = False, chunk_size: int = _BATCH_CHUNK,
@@ -2488,7 +2525,10 @@ def upsert_notes_batch(
 
     hold = {note_id: 列}: 这几篇的这几列这一轮不写、留库里的值(I-17: content_format 恢复的读失败时留 raw_extra,
     见 restore_content_format)。和名单里的列同一个做法: 发出去的那一份去掉这几列、不补 None, 按「留了哪几列」分组 ——
-    同一个请求里没有一行带着它们, columns= 里就没有, 库里的值不动。逐行兜底发的也是去掉之后的那一份。"""
+    同一个请求里没有一行带着它们, columns= 里就没有, 库里的值不动。逐行兜底发的也是去掉之后的那一份。
+    留列只该管库里已有的篇: 新篇没有「库里的值」, 去掉 raw_extra 插进去就是 NULL (生产从没有过, essence 的
+    prompt 读它)。所以留列的篇先整行走一遍 INSERT ... ON CONFLICT DO NOTHING (_insert_new_held_notes): 新篇整行落库、
+    后面不再发; 库里已有的一行不动, 照常发去掉留列的那一份。"""
     if dry_run:
         for n in notes:
             logger.info("[dry-run] would upsert note_id=%s", n["note_id"])
@@ -2496,8 +2536,10 @@ def upsert_notes_batch(
     hold = {nid: frozenset(cols) for nid, cols in (hold or {}).items() if cols}
     written: set[str] = set()
     mirror = _mirror_cols(notes)
+    if hold:
+        written = _insert_new_held_notes(client, [n for n in notes if n["note_id"] in hold], mirror, chunk_size)
     sent = [{k: v for k, v in n.items() if k not in hold[n["note_id"]]} if n["note_id"] in hold else n
-            for n in notes]
+            for n in notes if n["note_id"] not in written]
     i = 0
     for group in _group_by_protected_cols(sent, hold):
         for k in range(0, len(group), chunk_size):
@@ -3278,7 +3320,8 @@ def main() -> int:
         stats["errors"] += 1
         msg = (f"{mapping['project_id']}: 方向变得抬不了时换回 essence 的 content_format (I-17), 这一轮读库里的方向或 "
                f"audit_log 失败 (上面一行 warning 是原因)。{len(cf_hold)} 篇这一轮不写 raw_extra (留着库里上一次的方向, "
-               f"别的列照写), 下一轮读得到就照常换回; 读库失败时新篇这一晚 raw_extra 先空着。一直红 = 一直读不到, 去查库。"
+               f"别的列照写; 库里还没有的新篇照常整行插入), 下一轮读得到就照常换回; 下一轮之前从飞书删了或改成有子方向的方向的篇"
+               f"换不回来, 留着旧方向抬的 content_format (D-178, 要紧就单独跑 SQL)。一直红 = 一直读不到, 去查库。"
                f"{sorted(cf_hold)[:10]}")
         logger.error("【content_format 恢复没读到库】%s", msg)
         if os.environ.get("GITHUB_ACTIONS") == "true":

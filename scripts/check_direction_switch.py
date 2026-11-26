@@ -21,9 +21,12 @@
   §9 读失败留着 raw_extra、下一轮照常换回 (Codex #312 P2): 真 postgrest-py 发请求 (check_batch_upsert_columns 的假 HTTP),
      按 PostgREST 的 columns= 落进一个字典库, 连跑两晚。第一晚读 audit_log / 读库失败 → held 的篇这一轮请求里没有 raw_extra
      (columns= 里也没有, 逐行兜底也没有)、库里留着上一次的方向, 三列照样清、别的列照写; 第二晚读得到 → 换回 essence 的值。
-     读 audit_log 失败只留要换的篇 (新篇、抬得了的篇照写); 读库失败全部候选都留 (新篇这一晚 raw_extra 先空着, 第二晚补上)。
-     读得到时 hold 是空的、请求和不带 hold 一字不差。再驱动真的 main() 两晚: 第一晚 Done 行 content_format_restore_held、
-     errors 1、退出码 1、::error; 第二晚换回、绿; dry-run 不读库、不发请求、绿。
+     读 audit_log 失败只留要换的篇 (新篇、抬得了的篇照写); 读库失败全部候选都留。留列的篇先整行 INSERT ... ON CONFLICT
+     DO NOTHING: 库里还没有的新篇带着 raw_extra 落库、不再发第二遍 (同一晚 essence 的 prompt 里有它的方向), 库里已有的不动;
+     这一步也按名单列分组 (D-122)、批被拒逐行插; 全插不成 → 退回去掉 raw_extra 的那一份, 新篇这一晚 raw_extra 是 NULL,
+     essence 照 PostgREST 的取数形状 (键在、值 None) 拼 prompt 不许抛。读得到时 hold 是空的、请求和不带 hold 一字不差。
+     再驱动真的 main() 两晚: 第一晚 Done 行 content_format_restore_held、errors 1、退出码 1、::error、新篇 raw_extra 在;
+     第二晚换回、绿; dry-run 不读库、不发请求、绿。
 
 反证 (改坏之后必须变红):
   ① 去掉 BJS_phase2 的 direction_ignore_tokens       → §1 红 (本文件 §1 末尾实跑)
@@ -34,6 +37,8 @@
   ⑥ 不留 raw_extra (hold 传 None, 就是 Codex 说的那件事)    → §9 第二晚换不回来, 红 (本文件 §9 实跑)
   读失败不回 held / 读 audit_log 失败留全部候选 / upsert 不认 hold、分组不按 hold 分、补 None 补到 raw_extra、
   逐行兜底发原行 / main 不传 hold、不计 error、不记 Done 键 → §9 红 (改文件跑过, 结果记在 TV#312 的 PR 说明里)
+  不先插新篇 / 先插那一步用 merge / 插进去的再发一遍 / 先插不按名单列分组 / 先插没有逐行兜底 / 不看回包按整组算 /
+  essence 读 raw_extra 不防 NULL → §9 红 (同上)
 
 跑法: cd scripts && python check_direction_switch.py
 """
@@ -321,23 +326,68 @@ def check_wiring() -> None:
 
 
 # ── §9 读失败: 这一轮不写 raw_extra, 下一轮照常换回 (Codex #312 P2) ───────────────────────
-from check_batch_upsert_columns import _Client as _PgClient, _Recorder   # noqa: E402  真 postgrest-py + 假 HTTP
+import httpx                                                               # noqa: E402
+import annotate_essence_pass as essence                                    # noqa: E402
+from check_batch_upsert_columns import _Client as _PgClient, _Recorder, violations   # noqa: E402  真 postgrest-py + 假 HTTP
 
 LIFT = BJS2["direction_decomposition"]["好物分享-产品贴"]["content_format"]
 ESS = "情感叙事"
 
 
-def _apply(db: dict, rec: _Recorder) -> None:
+def _ignore(q: dict) -> bool:
+    """这个请求是 INSERT ... ON CONFLICT DO NOTHING (postgrest-py 的 ignore_duplicates)。"""
+    return "resolution=ignore-duplicates" in q["prefer"]
+
+
+class _DbRec(_Recorder):
+    """check_batch_upsert_columns 的假 HTTP, 多认得库里有哪些篇: ignore_duplicates 的请求照 PostgREST 只回真插进去的行
+    (库里已有的不回)。fail_insert = ignore_duplicates 的请求一律拒 (批和逐行都拒)。每个请求记下成没成 (ok)。"""
+
+    def __init__(self, db: dict, *, fail_insert: bool = False, **kw):
+        super().__init__(**kw)
+        self.known, self.fail_insert = set(db), fail_insert
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        res = super().handler(request)
+        q = self.requests[-1]
+        q["ok"] = res.status_code < 300
+        if not q["ok"] or not q["path"].endswith("/notes"):
+            return res
+        if _ignore(q):
+            if self.fail_insert:
+                q["ok"] = False
+                return httpx.Response(503, json={"message": "insert refused (test)"})
+            new = [r for r in q["rows"] if r["note_id"] not in self.known]
+            self.known |= {r["note_id"] for r in new}
+            return httpx.Response(201, json=new)
+        self.known |= {r["note_id"] for r in q["rows"]}
+        return res
+
+
+def _apply(db: dict, rec: _DbRec) -> None:
     """录下的 notes 请求按 PostgREST 落进字典库: 批量请求 columns= 里的每一列都 SET (这一行没带 = NULL);
-    单行请求 (逐行兜底, 没有 columns=) 只 SET 带了的键。被假 HTTP 拒掉的请求不落。"""
+    单行请求 (逐行兜底, 没有 columns=) 只 SET 带了的键; ignore_duplicates 的请求只插库里还没有的篇。被拒的请求不落。"""
     for q in rec.requests:
-        if not q["path"].endswith("/notes") or (rec.fail_batch and q["columns"] is not None) \
-                or any(r.get("note_id") in rec.fail_ids for r in q["rows"]):
+        if not q["path"].endswith("/notes") or not q["ok"]:
             continue
         for row in q["rows"]:
+            if _ignore(q) and row["note_id"] in db:
+                continue
             cur = db.setdefault(row["note_id"], {})
             for col in (q["columns"] if q["columns"] is not None else row):
                 cur[col] = row.get(col)
+
+
+def _stripped(rec: _DbRec) -> list[dict]:
+    """正常写的请求 (不是先插新篇的那一步)。"""
+    return [q for q in rec.requests if not _ignore(q)]
+
+
+def _essence_ctx(row: dict) -> str:
+    """库里这一行照 essence 取数的样子 (NOTE_SELECT 的每一列都在, 库里是 NULL 的就是 None —— PostgREST 回的就是这样,
+    .get 的默认值不起作用) 进真 build_mode_a_prompt, 回 user prompt。"""
+    cols = [c.strip() for c in essence.NOTE_SELECT.split("projects(")[0].split(",") if c.strip()]
+    return essence.build_mode_a_prompt({}, {c: json.loads(json.dumps(row.get(c))) for c in cols})[1]
 
 
 def _dir(row: dict):
@@ -350,7 +400,8 @@ def _stored_view(db: dict) -> dict:
                   "_direction_raw": _dir(r)} for nid, r in db.items()}
 
 
-def _night(db: dict, rows: dict, audit: list, *, fail: str = "", hold_on: bool = True, fail_batch: bool = False):
+def _night(db: dict, rows: dict, audit: list, *, fail: str = "", hold_on: bool = True, fail_batch: bool = False,
+           fail_insert: bool = False):
     """一晚: transform_row → 清空 → 恢复 (读 db) → upsert_notes_batch (真 postgrest-py) → 落进 db。回 (restore 的统计, 录下的请求, pending)。"""
     pending = []
     for rid, f in rows.items():
@@ -361,7 +412,7 @@ def _night(db: dict, rows: dict, audit: list, *, fail: str = "", hold_on: bool =
     engine.apply_cleared_direction(BJS2, pending, seen)
     st = engine.restore_content_format(_FakeSB(_stored_view(db), audit, fail=fail), BJS2, pending, seen, dry_run=False)
     hold = {nid: engine._CF_HOLD_COLS for nid in st["held"]} if hold_on else None
-    rec = _Recorder(fail_batch=fail_batch)
+    rec = _DbRec(db, fail_batch=fail_batch, fail_insert=fail_insert)
     before = json.loads(json.dumps(pending))
     written = engine.upsert_notes_batch(_PgClient(rec), pending, hold=hold)
     assert json.loads(json.dumps(pending)) == before, "§9 upsert_notes_batch 不许改调用方的行"
@@ -377,11 +428,11 @@ _N1 = {"a": {"方向": ["成人款"]}, "n": {"方向": ["儿童款"]}, "L": {"�
 _AUDIT = [{"audit_id": 7, "row_id": "a", "content_format": [LIFT, ESS], "essence_annotated_at": [None, "t"]}]
 
 
-def _two_nights(fail: str, *, hold_on: bool = True) -> tuple[dict, list]:
+def _two_nights(fail: str, *, hold_on: bool = True, **kw) -> tuple[dict, list]:
     db: dict = {}
     _night(db, _N0, _AUDIT)
     assert db["a"]["content_format"] == LIFT and _dir(db["a"]) == "好物分享-产品贴", db["a"]
-    out = [_night(db, _N1, _AUDIT, fail=fail, hold_on=hold_on)]
+    out = [_night(db, _N1, _AUDIT, fail=fail, hold_on=hold_on, **kw)]
     out.append(json.loads(json.dumps(db)))                 # 第 1 晚之后的库
     out.append(_night(db, _N1, _AUDIT))
     return db, out
@@ -402,14 +453,17 @@ def check_read_failure_retry() -> None:
         assert _dir(after1["e"]) == ["成人款"], "§9A 新篇不在要换的里面, raw_extra 照写"
         assert _dir(after1["L"]) == "提问贴" and after1["L"]["raw_content"] == "新正文", "§9A 抬得了的篇照写"
         assert _dir(after1["n"]) == ["儿童款"], "§9A 上一次也抬不了的篇不留"
-        for q in rec1.requests:
+        ins = [q for q in rec1.requests if _ignore(q)]
+        assert [sorted(r["note_id"] for r in q["rows"]) for q in ins] == [["a"]] and ins[0]["ok"], \
+            f"§9A 留列的篇先整行插一遍 (库里已有 → 不动), 只有 a: {[q['rows'] for q in ins]}"
+        for q in _stripped(rec1):
             ids = {r["note_id"] for r in q["rows"]}
             if "a" in ids:
                 assert "raw_extra" not in (q["columns"] or []) and all("raw_extra" not in r for r in q["rows"]), \
                     f"§9A a 所在的请求不许带 raw_extra (columns= 里有就是写 NULL): {q['columns']}"
                 assert ids == {"a"}, f"§9A 留 raw_extra 的篇自成一组: {ids}"
         orig_a = next(n for n in json.loads(json.dumps(p1)) if n["note_id"] == "a")
-        sent_a = next(r for q in rec1.requests for r in q["rows"] if r["note_id"] == "a")
+        sent_a = next(r for q in _stripped(rec1) for r in q["rows"] if r["note_id"] == "a")
         assert {k: v for k, v in orig_a.items() if k != "raw_extra"} == {k: v for k, v in sent_a.items() if k in orig_a}, \
             "§9A a 别的键原样发"
         mirror = set().union(*(n.keys() for n in p1)) - set(engine.UPSERT_PROTECTED_COLS) - {"raw_extra"}
@@ -419,16 +473,54 @@ def check_read_failure_retry() -> None:
         assert _dir(db["a"]) == ["成人款"], "§9A 第 2 晚 raw_extra 照常写新方向"
 
         # ── B) 第 1 晚读库失败: 全部候选 (a、n、e) 都留 ─────────────────────────
-        db, ((st1, _r1, _p1), after1, (st2, _r2, _p2)) = _two_nights("notes")
+        db, ((st1, rec1, p1), after1, (st2, _r2, _p2)) = _two_nights("notes")
         assert sorted(st1["held"]) == ["a", "e", "n"], f"§9B 读库失败全部候选都留: {st1['held']}"
         assert _dir(after1["a"]) == "好物分享-产品贴" and _dir(after1["n"]) == ["成人款"], \
             f"§9B 第 1 晚 a、n 的 raw_extra 留着上一次的方向: {after1['a']} {after1['n']}"
-        assert after1["e"].get("raw_extra") is None and after1["e"].get("raw_content"), "§9B 新篇这一晚 raw_extra 先空着、别的照写"
+        assert _dir(after1["e"]) == ["成人款"] and after1["e"].get("raw_content"), \
+            f"§9B 新篇 (库里还没有) 照常整行插进去、raw_extra 也在 (不许落 NULL, essence 同一晚读它): {after1['e']}"
+        assert "成人款" in _essence_ctx(after1["e"]), "§9B 同一晚 essence 给新篇的 prompt 里有它的方向"
+        ins = [q for q in rec1.requests if _ignore(q)]
+        assert ins and all(q["ok"] for q in ins) and sorted(r["note_id"] for q in ins for r in q["rows"]) == ["a", "e", "n"] \
+            and all("raw_extra" in r for q in ins for r in q["rows"]), "§9B 留列的篇先整行 (带 raw_extra) 插一遍"
+        assert not any(r["note_id"] == "e" for q in _stripped(rec1) for r in q["rows"]), \
+            "§9B 插进去的新篇不再发第二遍 (多一遍 = 多一行只改 updated_at 的 audit_log)"
+        assert {r["note_id"] for q in _stripped(rec1) for r in q["rows"]} >= {"a", "n", "L"}, "§9B 库里已有的照常写去掉留列的那一份"
+        bad = violations(rec1.requests, {n["note_id"]: json.loads(json.dumps(n)) for n in p1})
+        assert not bad, f"§9B 先插新篇那一步也守 D-122 (名单里的列按组带): {bad}"
         assert _dir(after1["L"]) == "提问贴", "§9B 抬得了的篇 (不是候选) 照写"
         assert all(after1["a"].get(k) is None for k in CLEAR)
         assert st2["restored"] == 1 and db["a"]["content_format"] == ESS, f"§9B 第 2 晚换回: {st2}"
         assert _dir(db["n"]) == ["儿童款"] and _dir(db["e"]) == ["成人款"], \
             "§9B 第 2 晚 raw_extra 补上"
+
+        # ── 先插新篇那一步按名单列分组 (D-122): 留列的篇有的带 content_format、有的不带, 不带的不许被补成 NULL ──
+        rec = _DbRec({})
+        rows = [{"note_id": "x", "raw_content": "1", "content_format": "X", "raw_extra": {"k": 1}},
+                {"note_id": "y", "raw_content": "2", "raw_extra": {"k": 2}}]
+        engine.upsert_notes_batch(_PgClient(rec), rows, hold={"x": engine._CF_HOLD_COLS, "y": engine._CF_HOLD_COLS})
+        dbx: dict = {}
+        _apply(dbx, rec)
+        assert not violations(rec.requests, {r["note_id"]: r for r in rows}) and "content_format" not in dbx["y"] \
+            and dbx["x"]["content_format"] == "X" and [_ignore(q) for q in rec.requests] == [True, True], \
+            f"§9 先插新篇按名单列分组, 插进去就不再发: {[(q['columns'], q['rows']) for q in rec.requests]}"
+
+        # ── C) 读库失败 + 批被拒: 先插新篇也逐行兜底, 新篇照样带着 raw_extra 落库 ─────────────────
+        db, ((st1, rec1, _p1), after1, (st2, _r2, _p2)) = _two_nights("notes", fail_batch=True)
+        assert sorted(st1["held"]) == ["a", "e", "n"] and _dir(after1["e"]) == ["成人款"], \
+            f"§9C 批被拒 → 逐行插, 新篇照样带 raw_extra: {after1['e']}"
+        assert _dir(after1["a"]) == "好物分享-产品贴" and _dir(after1["n"]) == ["成人款"], "§9C a、n 照样留着"
+        assert st2["restored"] == 1 and db["a"]["content_format"] == ESS, f"§9C 第 2 晚换回: {st2}"
+
+        # ── D) 读库失败 + 先插新篇那一步全被拒 (批、逐行都拒): 退回去掉留列的那一份, 新篇这一晚 raw_extra 是 NULL;
+        #       essence 读这一行不许抛 (不然整个项目这一晚的 essence 停在这一篇), 第 2 晚补上 ─────────────
+        db, ((st1, rec1, _p1), after1, (st2, _r2, _p2)) = _two_nights("notes", fail_insert=True)
+        assert [q["ok"] for q in rec1.requests if _ignore(q)] and not any(q["ok"] for q in rec1.requests if _ignore(q))
+        assert "e" in after1 and after1["e"].get("raw_extra") is None and after1["e"].get("raw_content"), \
+            f"§9D 插新篇失败 → 退回去掉 raw_extra 的那一份, 新篇照样写进去 (盖戳、指标外键靠它): {after1.get('e')}"
+        assert _dir(after1["a"]) == "好物分享-产品贴", "§9D a 照样留着"
+        assert "(项目未定义方向)" in _essence_ctx(after1["e"]), "§9D essence 的 prompt 读得了 raw_extra 是 NULL 的那一行"
+        assert st2["restored"] == 1 and _dir(db["e"]) == ["成人款"], "§9D 第 2 晚换回、新篇 raw_extra 补上"
 
         # ── 反证 ⑥: 不留 raw_extra (改之前的行为) → 第 2 晚换不回来 ─────────────────
         for fail in ("audit_log", "notes"):
@@ -449,7 +541,7 @@ def check_read_failure_retry() -> None:
 
         # ── 逐行兜底: 批被拒 → 单行请求也不带 raw_extra ──────────────────────────────
         st, rec, _p = _night(db1, _N1, _AUDIT, fail="audit_log", fail_batch=True)
-        singles = [q["rows"][0] for q in rec.requests if q["columns"] is None]
+        singles = [q["rows"][0] for q in _stripped(rec) if q["columns"] is None]
         assert st["held"] == ["a"] and any(r["note_id"] == "a" for r in singles)
         assert all("raw_extra" not in r for r in singles if r["note_id"] == "a"), "§9 逐行兜底发的也是去掉 raw_extra 的那一份"
         assert _dir(db1["a"]) == "好物分享-产品贴"
@@ -458,14 +550,15 @@ def check_read_failure_retry() -> None:
         sb = _FakeSB(_stored_view(db0), _AUDIT, fail="audit_log")
         pend = [dict(_tr(BJS2, f, rid=rid), note_id=rid) for rid, f in _N1.items()]
         st = engine.restore_content_format(sb, BJS2, pend, {"方向"}, dry_run=True)
-        rec = _Recorder()
+        rec = _DbRec({})
         engine.upsert_notes_batch(_PgClient(rec), pend, dry_run=True, hold={"a": engine._CF_HOLD_COLS})
         assert st["held"] == [] and sb.reads == [] and rec.requests == [], "§9 dry-run 不读库、不留、不发请求"
     finally:
         engine.fetch_all_pages = saved
         lg.setLevel(level)
     print("  §9 读失败: 留着 raw_extra (请求里没有、columns= 里没有、逐行兜底也没有), 三列 / 别的列照写, 第 2 晚换回; "
-          "读 audit_log 失败只留要换的、读库失败留全部候选; 读得到时请求不变; dry-run 不读不发; 不留就换不回来 (反证 ⑥) ✓")
+          "读 audit_log 失败只留要换的、读库失败留全部候选; 新篇先整行插 (带 raw_extra, 批被拒逐行插, 只发一遍, 守 D-122), "
+          "插不成退回 NULL、essence 读得了; 读得到时请求不变; dry-run 不读不发; 不留就换不回来 (反证 ⑥) ✓")
     check_main_two_nights()
 
 
@@ -520,7 +613,7 @@ _MAIN_MAP = {"project_id": _PID, "platform": "xiaohongshu",
 
 def _main_night(db: dict, rows: dict, audit: list, *, fail: str = "", dry: bool = False):
     reads: list[str] = []
-    rec = _Recorder()
+    rec = _DbRec(db)
 
     def pages(q, page_size=1000, order_by=None):
         if not isinstance(q, _Read):
@@ -593,6 +686,7 @@ def check_main_two_nights() -> None:
         assert done["upserted"] == 3, f"§9 main 留 raw_extra 的篇照样写: {done}"
         assert _dir(db[nid("a")]) == "好物分享-产品贴" and all(db[nid("a")].get(k) is None for k in CLEAR), \
             f"§9 main 读 {fail} 失败: a 的 raw_extra 留着上一次的方向 (hold 接到了 upsert), 三列照清: {db[nid('a')]}"
+        assert _dir(db[nid("e")]) == ["成人款"], f"§9 main 读 {fail} 失败: 新篇照常带 raw_extra 插进去: {db[nid('e')]}"
         rc, done, out, reads, rec = _main_night(db, n1, audit)
         assert rc == 0 and done["errors"] == 0 and done["content_format_restored"] == 1 \
             and done["content_format_restore_held"] == 0 and "::error" not in out, f"§9 main 第 2 晚换回、绿: rc={rc} {done}"
