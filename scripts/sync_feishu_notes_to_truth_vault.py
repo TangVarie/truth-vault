@@ -349,10 +349,27 @@ _COMMENT_MAINTAINED_STATUS = ("改评发布", "二次评论", "改评显示")
 #   同时踢出了 L2 正例和书架。
 #   ⚠️ 挡不住什么(D-051): 如果以后真有别的项目开一列叫「评论铺设情况」并往里填评论
 #   文案, 这条判据认不出来 —— 新列要进 _CM_TICKET_COLS 得先看值。
-_CM_TICKET_COLS = ("维护评论50条",)
+#   2026-11-26 加「维护评论」: 途鸽 11-25 把「维护评论50条」改名成「维护评论」(那一晚被风控来源列闸挡红, 旗子没丢)。
+#   加之前先看了值(同 RIO 那次的教训): 新列 184 篇有值, 库里 168 篇旗子来自旧列的全都在新列有值, 129 篇旧 reason
+#   写的行数里 128 篇和新列的行数一样; 每格中位约 20 行、一行一条、平均每行约 30 字, 和旧列一个样 → 纯改名, 同样封顶 50。
+#   但「维护评论」这个名字太泛, 别的项目同名列不一定是铺的评论正文: 它只在 mapping 把它声明进 raw_extra 时才认
+#   (_CM_TICKET_DECLARED_ONLY, 见 cm_ticket_cols)。SPX 11-24 起也冒出一列未声明的「维护评论」(4 篇有值, 形态一样,
+#   但只有 4 篇、其中 1 篇的「维护情况」是运营没定义过的取值), 先不认; 要认就在 SPX 的 mapping 里声明这一列。
+#   旧名照旧全局认(含未声明), 行为不变。
+_CM_TICKET_COLS = ("维护评论50条", "维护评论")
+_CM_TICKET_DECLARED_ONLY = ("维护评论",)
 # 已铺条数 = 这一格里的评论行数, 封顶这个数; 数不出行数时也按这个数 (D-150, owner 2026-11-10「贴几条就是发了几条」)。
 # 运营 2026-09-22 确认铺的评论计入评论数, 所以 ⑦ 减法拿它减。D-150 之前不看格子, 一律算 50。
-_CM_TICKET_SEEDED = {"维护评论50条": 50}
+_CM_TICKET_SEEDED = {"维护评论50条": 50, "维护评论": 50}
+
+
+def cm_ticket_cols(mapping: dict) -> tuple[str, ...]:
+    """这张表认哪几个名字当铺评工单列: _CM_TICKET_DECLARED_ONLY 里的只在 mapping 声明进 raw_extra 时才认, 其余全局认。
+    transform_row 判 route ① 和风控来源列闸核「这一组还在不在」用的是同一份, 两边不会一个认一个不认。"""
+    extra = set(mapping.get("project_specific_fields_to_raw_extra") or [])
+    return tuple(c for c in _CM_TICKET_COLS if c not in _CM_TICKET_DECLARED_ONLY or c in extra)
+
+
 # 一行按空白切出这么多段 → 这一行不是一条评论, 是好几条用空格接成的一长串, 数不出条数 (D-150)。
 # 11-10 生产: 途鸽这一列 4,629 个非空行, 正常的行最多 7 段; 一长串的 35 行每行 29–65 段
 # (601–1,249 字, 一格约 50 条); 8–28 段的行一行都没有。按换行硬数, 整格就这一行的算 1 条,
@@ -1107,7 +1124,7 @@ def apply_tier_flip_block(pending_notes: list[dict], plan: dict) -> int:
 
 # ── 风控旗子的来源列整轮不见了 (外部评审 11-04 F01, D-146 前置) ──────────────────────
 # synthetic / comment_maintained / paid_promoted 这三个旗子决定一篇 爆 能不能进通道 1、书架、L2 正例。
-# 它们的来源列(笔记状态, 和 raw_extra 里声明的 维护情况 / 维护评论50条 / 爆帖控评置顶 / 爆帖置顶评论 /
+# 它们的来源列(笔记状态, 和 raw_extra 里声明的 维护情况 / 维护评论50条 或 维护评论 / 爆帖控评置顶 / 爆帖置顶评论 /
 # 关注情况)不在 _detect_missing_core_columns 的视野里。运营把其中一列改名 → transform_row 判不出那一路,
 # 而 data_quality_flags 照样整份写(synthetic 显式 false、维护情况 声明了就写 paid_promoted false),
 # 于是库里的 true 被静默冲掉, 被挡的帖子第二天就回到爆款池。
@@ -1115,12 +1132,18 @@ def apply_tier_flip_block(pending_notes: list[dict], plan: dict) -> int:
 # → 那几篇这一族的键沿用库里的值、整轮红。列还在(哪怕这一格空了, 哪怕整列的格子都空了)照常重算, 运营清标记照样
 # 清得掉。飞书 list_records 不返回空格子: 运营清掉一列里最后一个标记之后, 这一列一行都不会返回, 和改名长得一样,
 # 所以「一行都没返回」之后再拿表结构核一次(table_field_names, 只在这条路上调); 表结构读不到 → 按不见了处理。
+# 铺评工单列有过两个名字(维护评论50条 → 维护评论, 途鸽 11-25 改名): 按【一组】看 —— 这张表认的工单列名(cm_ticket_cols)
+# 里有一个还在, 声明了的那几个就都不算不见了, 照常按还在的那个重算(同一批格子, 旗子不会被清); 一个都不在才沿用 + 红。
+# 只改 mapping 不改代码(声明了新名、代码不认)不会让闸哑掉: 认不认和「算不算还在」用的是同一份 cm_ticket_cols。
 _SYN_NOTE_STATUS_REASON = "笔记状态含「关注」"
 _RISK_FLAG_FAMILIES = ("synthetic", "comment_maintained", "paid_promoted")
 
 
 def risk_source_columns(mapping: dict) -> dict[str, list[tuple[str, str]]]:
-    """{声明了的飞书来源列: [(旗子族, 库里 <族>_reason 里认这一列的子串), ...]}。"""
+    """{声明了的飞书来源列: [(旗子族, 库里 <族>_reason 里认这一列的子串), ...]}。
+
+    铺评工单列: 认自己的名字, 再加上同组里【这张表没声明】的名字 —— 只声明了新名的表, 库里旧名写的 reason 也认得出来;
+    两个都声明了就各认各的, 红的时候点名准(哪几篇的旗子来自哪一列)。"""
     out: dict[str, list[tuple[str, str]]] = {}
     for col, tgt in (mapping.get("field_mapping") or {}).items():
         if tgt == "_note_status_raw":
@@ -1128,11 +1151,21 @@ def risk_source_columns(mapping: dict) -> dict[str, list[tuple[str, str]]]:
     extra = set(mapping.get("project_specific_fields_to_raw_extra") or [])
     for col in (*_CM_TICKET_COLS, _CM_MULTISELECT_COL, *_CM_POSTHOC_COLS):
         if col in extra:
-            out.setdefault(col, []).append(("comment_maintained", f"「{col}」"))
+            names = [col, *(c for c in _CM_TICKET_COLS if c != col and c not in extra)] \
+                if col in _CM_TICKET_COLS else [col]
+            for nm in names:
+                out.setdefault(col, []).append(("comment_maintained", f"「{nm}」"))
     for col in PAID_COLS:
         if col in extra:
             out.setdefault(col, []).append(("paid_promoted", f"「{col}」"))
     return out
+
+
+def risk_column_names(col: str, mapping: dict) -> set[str]:
+    """来源列 col 算「还在」= 这几个名字里有一个这一轮返回过 / 还在表结构里。铺评工单列 = 这张表认的整组工单列名。"""
+    if col in _CM_TICKET_COLS:
+        return {col, *cm_ticket_cols(mapping)}
+    return {col}
 
 
 def table_field_names(fs, specs: list[dict]) -> set[str] | None:
@@ -1641,7 +1674,7 @@ def transform_row(
         return v if v not in (None, "", []) else _re_und.get(col)
 
     cm_seeded = 0          # 运营自己铺进去、且【计入评论数】的条数(2026-09-22 确认)
-    for _col in _CM_TICKET_COLS:
+    for _col in cm_ticket_cols(mapping):   # 「维护评论」只在声明了的表里认 (途鸽 11-25 改名, 见 _CM_TICKET_COLS)
         _cell = _cm_cell(_col)
         if _cell not in (None, "", []):
             # 已铺 = 这一格里的行数, 封顶 50; 数不出按 50 (D-150)。说明写进 reason, 人能对着格子核。
@@ -2812,17 +2845,18 @@ def main() -> int:
     # ── 风控旗子的来源列整轮不见了 (外部评审 11-04 F01) ─────────────────────────────
     # 放在所有写旗子的步骤(清空 / 翻转挡)之后、upsert 之前: 只换这一族的键, 别的键照这一轮。
     # 列都在 → 什么都不读、什么都不改(正常路径不变)。
-    risk_missing = {c: v for c, v in risk_source_columns(mapping).items() if c not in seen_cols} \
-        if pending_notes else {}
+    # 「还在」按 risk_column_names 看: 铺评工单列是一组名字(维护评论50条 / 维护评论), 组里这张表认的任一个还在就算在。
+    risk_missing = {c: v for c, v in risk_source_columns(mapping).items()
+                    if not (risk_column_names(c, mapping) & seen_cols)} if pending_notes else {}
     if risk_missing:
         # 一行都没返回 ≠ 列没了: 飞书不返回空格子, 整列格子都空了也是这样。拿表结构核一次, 还在的照常重算。
         present = table_field_names(fs, configured)
         if present is not None:
-            still_there = sorted(c for c in risk_missing if c in present)
+            still_there = sorted(c for c in risk_missing if risk_column_names(c, mapping) & present)
             if still_there:
                 logger.info("风控来源列 %s 这一轮没有一行有值, 但表结构里还在 → 是格子都空了, 不是改名: 照常重算",
                             still_there)
-            risk_missing = {c: v for c, v in risk_missing.items() if c not in present}
+            risk_missing = {c: v for c, v in risk_missing.items() if not (risk_column_names(c, mapping) & present)}
     if risk_missing:
         stored_risk = stored_flags_batch(sb, mapping["project_id"], [n["note_id"] for n in pending_notes])
         complete = not truncated_by_limit and not fetch_failed
