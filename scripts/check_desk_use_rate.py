@@ -8,7 +8,7 @@ check_desk_use_rate.py
 docs/32 §4 的 40% 目标也撤了。还会出声的只有「判不了」(rc=2: tv-sync 没对账 / 漏了某个项目), 那是真的故障。
 回流闸的四列(aw 迁移 020: autowriter.tv_note_links 的 origin / gate / gate_reasons / gate_at)在的时候, 末尾多一张按出处
 的读数表(只计数, 不下结论, 见 origin_rows); 不在的时候不出这张表, 取数的列也和以前一样。
-2026-11-26(D-179)起读数旁边多报一行「写作台判过的评论」(见 comment_counts): 也是只报不判, 不进退出码、不进 _judgeable。
+2026-11-26(D-182)起读数旁边多报一行「写作台判过的评论」(见 comment_counts): 也是只报不判, 不进退出码、不进 _judgeable。
 
 2026-10-20 生产诊断(docs/32 §1): 写作台的稿子短、彼此像, 大多在飞书里被人整篇重写 —— 写作台存的稿最后
 发出去的只有 23–45%, 有一个项目是 0。写作台自己量不出这件事: 参考分 79 篇全是 100, 而「被重写」发生在
@@ -33,13 +33,13 @@ docs/32 §4 的 40% 目标也撤了。还会出声的只有「判不了」(rc=2:
            aw 这一版(A/B, 2026-11-26 那一轮)部署起, 接住也包括对上写手贴回来的改稿的: 别的底稿都对不上、只对得上
            record_edit 记下的写手手改版(draft_snapshots.status = writer_edit)的帖, tv-sync 把那段字转成版本
            (batches.params.via = record_edit) —— 那是写手自己的字, 不是写作台出的稿。这盏灯只读 match_kind / lag_days,
-           分不出这一种; 按出处的表里它也落在「写作台的稿」(D-179, 见 WRITER_EDIT_CAUGHT_NOTE)。
+           分不出这一种; 按出处的表里它也落在「写作台的稿」(D-182, 见 WRITER_EDIT_CAUGHT_NOTE)。
   未改动 = 接住的里面, autowriter.tv_edit_diffs 有一行 diff_rev >= 2 且 changed = false。
            分母是「接住且算过当前口径差异」的 —— 没算过的(每晚补算有上限、那一版没存正文)不知道改没改,
            不能当成改过; 上面那种对上写手改稿的, aw 按设计不记差异(那一版就是写手的字), 也不在分母里。
            diff_rev 2 的行要等 10-20 写作台部署 + 当晚 tv-sync 重算之后才有: 全库一行都没有时打「未改动率: 待重算」,
            不打数; 全库有、某个项目接住的帖一篇差异都没有时那一格打「—」, 不打「待重算」(对上写手改稿的那种永远不会
-           有差异, 打「待重算」是叫人等一件不会来的事, D-179)。changed 很严(标题改了、正文差一个字都算), 所以另报
+           有差异, 打「待重算」是叫人等一件不会来的事, D-182)。changed 很严(标题改了、正文差一个字都算), 所以另报
            改了标题的篇数。
 
 窗口: 发布于 [现在 −21 天, 现在 −7 天]。晚 7 天看: 稿子发出去要等正文进 TV、tv-sync 夜里对上(edited / fuzzy
@@ -56,13 +56,13 @@ docs/32 §4 的 40% 目标也撤了。还会出声的只有「判不了」(rc=2:
   · 分母用对过账的, 不用发布数: 没对过账的不知道是不是写作台的稿;
   · 为什么不判: 11-11 整体审计量过, 三个项目 545 篇没接住的帖里 542 篇和写作台存下的任何一稿的文字重合不到 15%(OPEN-ITEMS
     L-07 第三支); owner 11-12 定了这不是要纠正的事(D-151)。量到的只是「发布前写作台里没有和它重合 >= 15% 的文字」, 11-12
-    那会儿读成了「在别处写的、不是拿写作台的稿重写的」—— 两半都是结论, 量不出来。2026-11-26 只读(D-179): 11-09 起
+    那会儿读成了「在别处写的、不是拿写作台的稿重写的」—— 两半都是结论, 量不出来。2026-11-26 只读(D-182): 11-09 起
     四个在用项目没对上的 255 篇和写作台任何文字的重合都不到 15%(平均 2–5%), 对上的 84–96%, 中间没有; 写作台存下的文字
     只有 score_drafts 存的版本和 check_drafts
     记的底稿, 写手说他们在 AI 对话里多轮改(照着某几篇写、仿一篇外面的帖、去 AI 味), 最后一轮贴进飞书 —— 那几轮没过查重,
     写作台没见过。所以这盏灯把 elsewhere 印成「写作台没见过的文字」(存的值不变)。单篇的出处看回流闸记的
     (tv_note_links.origin; 没有时看 score: 不到 0.15 = 写作台没见过的文字)。
-  · 写作台判过的评论(D-179, 只报): 映射的写作台项目从窗口起点到现在调 score_comments 判过几条评论、几篇帖。数的是
+  · 写作台判过的评论(D-182, 只报): 映射的写作台项目从窗口起点到现在调 score_comments 判过几条评论、几篇帖。数的是
     autowriter.batch_metrics 里的调用留痕(meta.mode = tool_call, aw#153 起、11-12 才有), 只取 id / project_id / created_at /
     meta, meta 里只有数和固定的词。是个约数, 不是严格的下限: 看不见的 —— 模型没调 score_comments 就写出来的评论(同稿子
     没过查重就看不见)、判定服务没判回来的那几次(超时 / 出错, meta.comments.judge_status 不是 ok: 只数调用, 不数条数和帖);
@@ -129,13 +129,13 @@ SETTLED_TIERS = frozenset({"爆", "大爆", "趴"})          # 已定档, 同 aw
 COUNTED_CLASSES = frozenset({"pass", "fail", "unsure"})  # 有真实结果可数的类别; hold(没发布时间 / 排期在后面 / 正文还是空的 / 伪爆)和 withdrawn 不数
 ORIGIN_NONE = "(没记)"                                   # 有对账行, 闸还没给这一行记出处
 ORIGIN_UNLINKED = "(没对账)"                             # tv-sync 还没给这篇写对账行
-# elsewhere 印成「写作台没见过的文字」(2026-11-26, D-179; 11-12 起印的是「别处写的」): 量到的只是发布前写作台里没有和它重合
+# elsewhere 印成「写作台没见过的文字」(2026-11-26, D-182; 11-12 起印的是「别处写的」): 量到的只是发布前写作台里没有和它重合
 # >= 15% 的文字, 不是「在哪写的」。键是库里存的值, 两个仓共用, 不改
 ORIGIN_LABELS = {"desk": "写作台的稿", "desk_edited": "写作台的稿·改过", "copied_back": "发后抄回写作台",
                  "elsewhere": ORIGIN_ELSEWHERE_LABEL, "unclear": "分不清"}
 CLASS_LABELS = {"pass": "通过", "fail": "不学", "unsure": "待答", "hold": "搁置", "withdrawn": "已撤"}
 # 接住 / 「写作台的稿」里分不出的那一种: WRITER_EDIT_CAUGHT_NOTE, 和发帖对账灯共用(定义在 check_angle_ledger_leak)
-# ── 写作台判过的评论(2026-11-26, D-179): 只报不判, 不进退出码、不进 _judgeable ──
+# ── 写作台判过的评论(2026-11-26, D-182): 只报不判, 不进退出码、不进 _judgeable ──
 # 读的是 aw 的调用留痕(deskcore/calllog.py, aw#153): 每次工具调用一行 autowriter.batch_metrics, meta 里只有数、固定的词和
 # 8 位代号, 没有评论 / 帖子的字。这几个名字是 aw 那边定的, 改了这里跟着改:
 COMMENT_TOOL = "score_comments"
@@ -413,7 +413,7 @@ def _count(v) -> int | None:
 
 
 def comment_counts(rows: list | None, mapped: dict) -> dict:
-    """写作台判过的评论(D-179): {TV 项目: 一格}。纯函数。``rows`` 是 gather() 读的 batch_metrics 行(score_comments 的调用留痕),
+    """写作台判过的评论(D-182): {TV 项目: 一格}。纯函数。``rows`` 是 gather() 读的 batch_metrics 行(score_comments 的调用留痕),
     ``mapped`` 是 {TV 项目: [写作台 project_id…]}; 一个写作台项目映射到几个 TV 项目时每个都算(同 tally() 数发牌)。
 
     每格: calls 调成了的次数(meta.outcome = ok) · posts 判过评论的 TV 帖(meta.comments.post8 去重, 帖子对上了 TV 的笔记) ·
@@ -464,7 +464,7 @@ def comment_counts(rows: list | None, mapped: dict) -> dict:
 
 
 def _print_comments(g: dict) -> None:
-    """读数旁边那一行「写作台判过的评论」(D-179)。只报不判, 不进退出码。``g`` 里没有 comments 这个键(老调用方)→ 什么都不打;
+    """读数旁边那一行「写作台判过的评论」(D-182)。只报不判, 不进退出码。``g`` 里没有 comments 这个键(老调用方)→ 什么都不打;
     读不到(gather 记了 comments_error)→ 一句「评论数读不到」, 别的照常。"""
     if "comments" not in g and not g.get("comments_error"):
         return
@@ -616,7 +616,7 @@ def report(g: dict, window_days: int, delay_days: int) -> int:
     else:
         print(f"  · 没有项目在用期内读得出接住率: 写作台在用(发过牌或有接住)、在用期内发布的帖对过账够 {MIN_PUBLISHED} 篇且八成以上"
               f"对过账的项目一个都没有(没活、量太小或对账不全){blind_note}")
-    _print_comments(g)                                    # 只报不判(D-179), 读不到也只打一句, 不影响 rc
+    _print_comments(g)                                    # 只报不判(D-182), 读不到也只打一句, 不影响 rc
     print("  · 为什么只报不判(D-151): owner 11-12 定了帖在哪写都可以, 没有人被推回写作台。接住率低不是故障, 这盏灯不再"
           "因为它亮黄, 也没有「该到多少」的目标; 数照旧每周记进 docs/32 §4。单篇的出处看回流闸记的"
           "(autowriter.tv_note_links.origin; 那一列还没有时看 score: 不到 0.15 = 写作台没见过的文字 —— 发布前写作台存过、查重没"
@@ -711,7 +711,7 @@ def gather(sb, since_iso: str, until_iso: str) -> dict:
             drawn[p] = drawn.get(p, 0) + 1
             if a.get("drawn_at"):
                 drawn_days.setdefault(p, set()).add(_day(a["drawn_at"]))      # 按日, 同 tally() 的比法
-    # 写作台判过的评论(D-179): 只报的一行, 读不到不能让整盏灯崩(别的取数读不到照旧直接抛 —— 那些是读数本身)。只记异常的
+    # 写作台判过的评论(D-182): 只报的一行, 读不到不能让整盏灯崩(别的取数读不到照旧直接抛 —— 那些是读数本身)。只记异常的
     # 类型: 异常文本里有请求的 URL(项目 id), 不往日志里带
     comments, comments_error = None, None
     try:
@@ -726,7 +726,7 @@ def gather(sb, since_iso: str, until_iso: str) -> dict:
 
 
 def _comment_rows(sb, pids: set, since_iso: str) -> list[dict]:
-    """映射的写作台项目从窗口起点到现在 score_comments 的调用留痕(autowriter.batch_metrics, D-179)。只取 COMMENT_COLS 四列:
+    """映射的写作台项目从窗口起点到现在 score_comments 的调用留痕(autowriter.batch_metrics, D-182)。只取 COMMENT_COLS 四列:
     meta 里只有数、固定的词和 8 位代号(aw calllog.build 保证), 没有评论 / 帖子的字。上限是现在、不是窗口终点: 评论是帖发了
     之后才判的。project_id 那一列只在调成了、帖子对上了项目时才填(aw calllog), 按它筛就只剩调成了的。"""
     from _common import fetch_all_pages  # 局部 import, 理由见文件头
@@ -1022,7 +1022,7 @@ def selftest() -> int:
     rc, out = run(gb)
     assert rc == 0 and "AAA(在用期 10-20~10-27 发布 15 篇、对过账 15 篇、接住 0 篇(0%)" in out, out
 
-    # ── 写作台判过的评论(D-179): 判几轮只算当天最多的一轮(n + earlier)、按北京日分、贴来的和没找到帖子的单数、只认调成了的、
+    # ── 写作台判过的评论(D-182): 判几轮只算当天最多的一轮(n + earlier)、按北京日分、贴来的和没找到帖子的单数、只认调成了的、
     #    形状版本不认识的单报; 只报不判 —— 不进退出码、不改读数那一句 ──
     def CM(i, pid, at, post8=None, n=None, earlier=None, source="tv", resolved=None, outcome="ok", v=1,
            tool="score_comments", mode="tool_call", judge="ok"):
@@ -1108,7 +1108,7 @@ def selftest() -> int:
     selects: list[tuple] = []
     eqs: list[tuple] = []
     gate_cols_exist = [False]           # aw 迁移 020 跑没跑; 先按没跑(今天的生产)把老断言全过一遍
-    metrics_down = [False]              # 调用留痕读不到(D-179 那一行要 fail soft)
+    metrics_down = [False]              # 调用留痕读不到(D-182 那一行要 fail soft)
     GATE_COLS = ("origin", "gate", "gate_reasons", "gate_at")
 
     class _Q:
@@ -1164,7 +1164,7 @@ def selftest() -> int:
     # (10-08 − 10-07), 北京日其实是同一天 —— 存稿日该是 10-08, 不是 北京发布日 − 1 = 10-07(复审 on 52f690e)
     VERSIONS = [{"id": f"v{i}", "created_at": "2026-10-07T20:00:00+00:00"} for i in range(230)] + \
         [{"id": "vx", "created_at": "2026-10-07T20:00:00+00:00"}]
-    # 调用留痕(D-179): d1 的 score_comments 三行(窗口起点前一行不读; 窗口终点之后判的照读 —— 评论是帖发了之后才判的),
+    # 调用留痕(D-182): d1 的 score_comments 三行(窗口起点前一行不读; 窗口终点之后判的照读 —— 评论是帖发了之后才判的),
     # 别的工具 / 别的行 / 没映射的项目各一行(都不该读进来)
     METRICS = [CM(1, "d1", "2026-10-04T08:00:00+00:00", "p0", 9, 0),
                CM(2, "d1", "2026-10-12T03:00:00+00:00", "p1", 6, 0), CM(3, "d1", "2026-10-12T04:00:00+00:00", "p1", 6, 0),
@@ -1210,7 +1210,7 @@ def selftest() -> int:
         assert {c for t, c in selects if t == "tv_note_links" and "match_kind" in c} == \
             {"note_id, tv_project_id, project_id, version_id, match_kind, lag_days"}, "列不在时对账行取的列和以前一样"
         assert "回流闸读数" not in run(gg)[1]
-        # 写作台判过的评论(D-179): 只取 id / project_id / created_at / meta 四列(meta 里只有数和词), 按 mode + tool 筛、
+        # 写作台判过的评论(D-182): 只取 id / project_id / created_at / meta 四列(meta 里只有数和词), 按 mode + tool 筛、
         # 只取映射的写作台项目、从窗口起点到现在(没有上限)
         assert {c for t, c in selects if t == "batch_metrics"} == {"id, project_id, created_at, meta"}, selects
         assert {(k, v) for t, k, v in eqs if t == "batch_metrics"} == {("meta->>mode", "tool_call"),
@@ -1316,9 +1316,9 @@ def selftest() -> int:
         assert "只计数, 不下结论" in out and "读不出的" in out and "没有记写手" in out, "表下面要说清数的是什么、读不出什么"
         tbl = out[out.index("回流闸读数"):]
         erow = next(ln.split() for ln in tbl.splitlines() if ln.startswith("  AAA") and "写作台没见过的文字" in ln)
-        # 显示名(D-179): elsewhere 印成「写作台没见过的文字」, 表下面说清量的是什么; 旧的「别处写的」「在别处写的」一个字都不留
+        # 显示名(D-182): elsewhere 印成「写作台没见过的文字」, 表下面说清量的是什么; 旧的「别处写的」「在别处写的」一个字都不留
         assert "写作台没见过的文字 = 出处 elsewhere: 发布前写作台存过、查重没打回的文字里, 没有和它重合 ≥15% 的 —— 包括写手在 AI " \
-               "对话里后几轮改出来、没过查重的稿, 不等于在写作台外面写的(D-179)" in out, out
+               "对话里后几轮改出来、没过查重的稿, 不等于在写作台外面写的(D-182)" in out, out
         assert "别处写的" not in out and "在别处" not in out, out
         # 「写作台的稿」里分不出只对得上写手改稿的那一种(复审 2026-11-26): 表下面要说一句
         assert f"写作台的稿(·改过) = 对上写作台发布前存的那版; {WRITER_EDIT_CAUGHT_NOTE}" in tbl, tbl
@@ -1354,7 +1354,7 @@ def selftest() -> int:
             with contextlib.redirect_stdout(buf):
                 rc = main()
             assert rc == 0 and "DESK_USE_RATE_CHECK_DONE rc=0" in buf.getvalue(), buf.getvalue()
-            # 评论数读不到(D-179): 哨兵照打、rc 不变 —— 只报的一行不能把整盏灯打成「崩了」
+            # 评论数读不到(D-182): 哨兵照打、rc 不变 —— 只报的一行不能把整盏灯打成「崩了」
             globals()["gather"] = lambda sb, s, u: dict(G(many, low, {}, {"d1": 9}), comments=None,
                                                         comments_error="RuntimeError")
             buf = io.StringIO()
@@ -1413,7 +1413,7 @@ def selftest() -> int:
           "取数窗口按 publish_time、分批、翻页键唯一 / 哨兵行 / 每周一接线 / verify #104 在")
     print("  ✓ D-151: 接住率只报不判(再低也不亮黄、不打 annotation, rc 只有 0 / 2); 回流闸的四列在时多一张按出处的读数表"
           "(数笔记、已删单列、干净用闸的尺子、不下结论), 不在时取数和报告没有这张表")
-    print("  ✓ D-179: elsewhere 印成「写作台没见过的文字」(存的值不变); 写作台判过的评论只报不判(只取四列、判几轮算一轮、"
+    print("  ✓ D-182: elsewhere 印成「写作台没见过的文字」(存的值不变); 写作台判过的评论只报不判(只取四列、判几轮算一轮、"
           "带上 earlier、按北京日、贴来的和没找到帖子的单数、判定没回来的不数条数、说约数不说下限、留痕形状换了不说没调过、"
           "读不到只打一句、不进 rc 和读数)")
     return 0

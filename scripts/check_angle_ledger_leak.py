@@ -32,7 +32,7 @@ check_angle_ledger_leak.py
 这四列在的时候:
     · 出处是 elsewhere 的帖(显示成「写作台没见过的文字」: 发布前写作台里没有和它重合 >= 15% 的文字)预期之内: 表里单列
       「没见过」, 不进判据 C 的补录副本数, 多少篇都不亮黄。量到的只是写作台没见过这段文字, 不等于在写作台外面写的 ——
-      11-26 只读(D-179): 写手说他们在 AI 对话里多轮改(照着某几篇写、仿一篇外面的帖、去 AI 味), 最后一轮直接贴进飞书,
+      11-26 只读(D-182): 写手说他们在 AI 对话里多轮改(照着某几篇写、仿一篇外面的帖、去 AI 味), 最后一轮直接贴进飞书,
       那几轮没过查重、到不了服务器; 11-12 ~ 11-25 这里印的是「别处写的」, 是把量到的读成了结论;
     · 这一行还没记出处的、出处是 unclear 的, 照上面的老办法按 match_kind 分(origin_of_link 回 None);
     · 黄多一种 —— 真的故障: 闸分过类、可最近一次分类(max(gate_at))离现在超过 36 小时(tv-sync 没跑完 / 闸那一步出错),
@@ -44,7 +44,7 @@ check_angle_ledger_leak.py
     · 角度台账表: 每个写作台项目窗口内发牌 / 销账 / 稿子 / 带坐标(先排除 tv-sync 的补录副本 —— 它们不是发牌产出的,
       没有坐标; 不排除的话未归因率永远 97%+, D-071)。aw 2026-11-26 那一轮(A/B)部署起, 只对得上写手贴回来的改稿
       (record_edit 记下的 writer_edit 底稿)的帖也转成版本、写指纹, 本来就不带坐标, 算在「稿子」里 —— 这盏灯不读
-      batches.params.via, 分不出这一种(D-179);
+      batches.params.via, 分不出这一种(D-182);
     · 发了牌、稿子(>= MIN_DRAFTS 篇)一篇都没带 angle_key 的项目(以前的判据 B): 牌就销不了、同一个故事会被再抽一次 ——
       那是模型没把 draw_angles 给的 angle_key 带到查重 / 存档(aw 的事), 不是写手的事。
 
@@ -98,26 +98,26 @@ INFO_KINDS = ("unmatched", "ambiguous")
 GATE_COLS = ("origin", "gate", "gate_reasons", "gate_at")
 ORIGINS = ("desk", "desk_edited", "copied_back", "elsewhere", "unclear")
 ORIGIN_ELSEWHERE = "elsewhere"          # 对不上、和写作台任何一稿(发布前存的)重合不到 15%: 写作台没见过的文字(存的值不改)
-# 报文里 elsewhere 怎么说(2026-11-26, D-179): 11-12 起印的是「别处写的」, 可量到的只是「发布前写作台里没有和它重合
+# 报文里 elsewhere 怎么说(2026-11-26, D-182): 11-12 起印的是「别处写的」, 可量到的只是「发布前写作台里没有和它重合
 # >= 15% 的文字」。11-26 只读: 11-09 起四个在用项目对不上的 255 篇和写作台任何文字的重合都不到 15%(平均 2–5%), 对上的
 # 84–96%, 中间没有; 写手说他们在 AI 对话里多轮改, 最后一轮贴进飞书, 那几轮没过查重、写作台没见过 —— 这些帖印成「别处
 # 写的」是把量到的东西说成了结论。只改显示, 库里存的值(ORIGINS)两个仓共用、不动。两盏灯都用这两个常量, 不各写一遍。
 ORIGIN_ELSEWHERE_LABEL = "写作台没见过的文字"
 # 「查重没打回的」: aw 回流闸量「发布前写作台里的文字」只拿转得正的底稿(aw _gate_snapshots), 只被查重打回过的不算 —— 打回的
-# 多半是写手把已经发过的帖贴进来查、撞了库里的自己; 代价是写手执意发了一篇被打回的稿, 这里也会说写作台没见过(D-179)。
+# 多半是写手把已经发过的帖贴进来查、撞了库里的自己; 代价是写手执意发了一篇被打回的稿, 这里也会说写作台没见过(D-182)。
 ORIGIN_ELSEWHERE_NOTE = ("发布前写作台存过、查重没打回的文字里, 没有和它重合 ≥15% 的 —— 包括写手在 AI 对话里后几轮改出来、"
-                         "没过查重的稿, 不等于在写作台外面写的(D-179)")
-# 「对上」/「接住」/「写作台的稿」里分不出的那一种(2026-11-26, D-179; 复审): aw A/B 部署起, 只对得上 record_edit 记下的
+                         "没过查重的稿, 不等于在写作台外面写的(D-182)")
+# 「对上」/「接住」/「写作台的稿」里分不出的那一种(2026-11-26, D-182; 复审): aw A/B 部署起, 只对得上 record_edit 记下的
 # 写手手改版的帖也转成版本(batches.params.via = record_edit), match_kind 和别的对上一样, 没有改稿差异。两盏灯都不读 via,
 # 只在报文里各说一句(这盏在发帖对账表下面每晚一句, DESK_USE_RATE 在接住和出处两张表下面)。
 WRITER_EDIT_CAUGHT_NOTE = ("aw 这一版(A/B)部署起也包括只对得上写手贴回来的改稿的(record_edit 记下的、写手自己的字, "
-                           "没有改稿差异), 这盏灯分不出(D-179)")
+                           "没有改稿差异), 这盏灯分不出(D-182)")
 GATE_CLASSES = ("pass", "fail", "unsure", "hold", "withdrawn")
 GATE_REASON_NOT_CLEAN = "not_clean"     # 投流标记 / 铺评工单 / 投流事件: 闸自己的那把「干净」尺子(同 aw priors.is_clean)
 # 闸每晚把范围内(近 60 天发布的)每一行的 gate_at 都摸一遍。灯早上 08~10 时(UTC)跑, 闸前一天 14:00 UTC 跑: 正常 18~20 小时;
 # 漏一晚就是 42~44 小时。36 小时卡在中间。
 GATE_STALE_HOURS = 36
-# 查重底稿(autowriter.draft_snapshots)里写手贴回来的改稿(2026-11-26, D-179; 同 aw deskcore/core.py SNAPSHOT_WRITER_EDIT):
+# 查重底稿(autowriter.draft_snapshots)里写手贴回来的改稿(2026-11-26, D-182; 同 aw deskcore/core.py SNAPSHOT_WRITER_EDIT):
 # aw 的 record_edit 把写手改过的那一版也记一行底稿(只为把发出去的帖对回写作台), 那不是查过重的稿 —— 「查过几篇」不数它
 SNAPSHOT_WRITER_EDIT = "writer_edit"
 
@@ -327,7 +327,7 @@ def _warn_publish(pub_hits: list[dict], window_days: int) -> None:
     msg = (f"过去 {window_days} 天 {len(pub_hits)} 个 TV 项目发出去的帖对不回写作台: "
            + "; ".join(f"{h['project']}({h['detail']})" for h in pub_hits)
            + " —— 这些帖在写作台里没有出处: 没有发牌查重的记录, 也进不了改稿差异和参考分, 飞轮只能把它们补录成副本"
-             "(写作台认不出它们, D-179)。"
+             "(写作台认不出它们, D-182)。"
              "写作台没查过稿的: 看写这个项目的那几场对话有没有 open_project / check_drafts 的调用记录 —— 没有就是那场对话"
              "没调起写作台(aw#109 起 skill 触发放宽、写作台会在下一场对话里提醒); 查过稿的: 看 aw tv-sync 的日志"
              "(W-38 起查重时记下的底稿会在补录之前再对一次)。写手没有存档这一步, 修在 autowriter 仓, TV 这边改不好。")
@@ -369,7 +369,7 @@ def report(stats: dict, window_days: int, now: datetime | None = None) -> int:
     for h in unattributed(by_project):
         print(f"  · {h['project']}: {h['detail']} —— 模型没把 draw_angles 给的 angle_key 带到查重 / 存档, "
               "同一个故事会被再抽一次; 修在 aw(只报, 不进退出码)。只对得上写手贴回来的改稿而转正的那几版本来不带坐标, "
-              "也算在稿子里, 这里分不出(D-179)")
+              "也算在稿子里, 这里分不出(D-182)")
 
     if pub_hits:
         _warn_publish(pub_hits, window_days)
@@ -449,7 +449,7 @@ def _snapshot_counts(sb, pids: set, since_iso: str) -> tuple[dict, set, str | No
     查的。只取 project_id / checked_at / status / text_fp(正文指纹, 一段 hash), 不碰标题正文。表不在(018 没跑, PGRST205)回 None;
     别的错直接抛(灯崩了比错判好, 有哨兵行兜着)。
 
-    「几篇」按 (项目, text_fp) 去重(2026-11-26, D-179): aw 协议从 00ff79b30fcc 起每一轮给用户看的稿子都查重, 查重超时照记
+    「几篇」按 (项目, text_fp) 去重(2026-11-26, D-182): aw 协议从 00ff79b30fcc 起每一轮给用户看的稿子都查重, 查重超时照记
     底稿、模型重试也各记一行 —— 同样的字查几次只算一篇(aw tv-sync 归成一篇也是这个键)。改过的每一版字不一样, 照样各算一篇,
     所以上线后这个数还是会比以前高: 数的是查过几版稿, 不是写了几篇。没有 text_fp 的行(表里这一列 NOT NULL, 只防假件)按行算。
 
@@ -550,7 +550,7 @@ def gather_publish(sb, since_iso: str, until_iso: str | None = None) -> dict:
         if l is None:
             c["unlinked"] += 1                  # tv-sync 还没对到(它 14:00 UTC 跑, 这盏灯早上跑)
         elif gated and kind in (INGESTED_KIND, "unmatched") and origin_of_link(l) == ORIGIN_ELSEWHERE:
-            c[ORIGIN_ELSEWHERE] += 1            # 闸记成写作台没见过的文字(D-151 / D-179): 预期之内, 单列, 不进补录副本 / 没对上
+            c[ORIGIN_ELSEWHERE] += 1            # 闸记成写作台没见过的文字(D-151 / D-182): 预期之内, 单列, 不进补录副本 / 没对上
         elif kind in CAUGHT_KINDS:
             if l.get("lag_days") is None or l["lag_days"] >= 0:
                 c["caught"] += 1
@@ -617,7 +617,7 @@ def selftest() -> int:
     # 以前的判据 B: 稿子够数、一篇不带坐标 → 只报一行, 不进退出码
     rc, out = run({"by_project": {"p7": P(20, 0, 10, 0, name="D2")}, "ingested_skipped": 0}, gha=True)
     assert rc == 0 and "D2: 发牌 20、稿子 10 篇, 没有一篇带 angle_key" in out, out
-    assert "只对得上写手贴回来的改稿而转正的那几版本来不带坐标, 也算在稿子里, 这里分不出(D-179)" in out, \
+    assert "只对得上写手贴回来的改稿而转正的那几版本来不带坐标, 也算在稿子里, 这里分不出(D-182)" in out, \
         "aw A/B 部署起稿子里有一种本来就不带坐标(复审 2026-11-26), 那一行不能只怪模型"
     assert "::warning" not in out, "只报不喊的不打 annotation"
     assert unattributed({"丙": P(0, 0, 50, 0)}) == [], "没发过牌的项目, 稿子本来就没坐标"
@@ -691,7 +691,7 @@ def selftest() -> int:
     # 写作台没见过的拿掉之后, 剩下的补录副本(出处不清 / 没记)还到下限: 照亮, 报文里说清另有几篇没算
     mixed = verdicts_publish({}, gpub({"TUGE": away(MIN_UNCAUGHT, 30)}, ago(19)))
     assert [h["kind"] for h in mixed] == ["desk_silent"] and "另有 30 篇闸记成写作台没见过的文字, 预期之内, 没算在这里" in mixed[0]["detail"]
-    assert "别处写的" not in mixed[0]["detail"], "elsewhere 量到的是写作台没见过这段文字, 不下「在别处写的」的结论(D-179)"
+    assert "别处写的" not in mixed[0]["detail"], "elsewhere 量到的是写作台没见过这段文字, 不下「在别处写的」的结论(D-182)"
     assert "另有" not in verdicts_publish({}, pub({"TUGE": L(ing=22)}))[0]["detail"], "没有闸时报文和以前一样"
 
     # 闸有没有在跑: 四列不在 / 一行都没分过类 → 不判; 36 小时内 → 不判; 超过 → 一条(不逐个项目点); 漏了项目 → 点名
@@ -728,11 +728,11 @@ def selftest() -> int:
     rc, out = run_at(as_stats(gpub(night, ago(19), fresh_by)), T0)
     assert rc == 0 and "::warning" not in out and "✓" in out, out
     assert "没见过" in out and "最近一次分类在 19 小时前" in out and "帖在哪写都可以" in out, out
-    # 显示名(D-179): 列头短写「没见过」, 脚注说清量的是什么、不等于在写作台外面写的; 旧的「别处写的」一个字都不留
+    # 显示名(D-182): 列头短写「没见过」, 脚注说清量的是什么、不等于在写作台外面写的; 旧的「别处写的」一个字都不留
     assert "没见过 = 写作台没见过的文字(回流闸记的出处是 elsewhere): 发布前写作台存过、查重没打回的文字里, 没有和它重合 ≥15% 的" \
-        in out and "后几轮改出来、没过查重的稿, 不等于在写作台外面写的(D-179)" in out, out
+        in out and "后几轮改出来、没过查重的稿, 不等于在写作台外面写的(D-182)" in out, out
     assert "别处写的" not in out and "在别处" not in out and "外部稿" not in out, out
-    # 「对上」里分不出只对得上写手改稿的那一种(D-179 复审): 发帖对账表下面每晚一句, 不挂在「稿子不带坐标」那条有条件的提示上
+    # 「对上」里分不出只对得上写手改稿的那一种(D-182 复审): 发帖对账表下面每晚一句, 不挂在「稿子不带坐标」那条有条件的提示上
     assert f"对上 = 对上写作台发布前存的那版; {WRITER_EDIT_CAUGHT_NOTE}" in out, out
     rc0, out0 = run_at(as_stats(dict(gpub(night, ago(19), fresh_by), gate=None)), T0)
     assert f"对上 = 对上写作台发布前存的那版; {WRITER_EDIT_CAUGHT_NOTE}" in out0 and "没见过 =" not in out0, out0
@@ -754,7 +754,7 @@ def selftest() -> int:
     rc1, out1 = run_at(as_stats(dict(week, gate=None)), T0)
     assert (rc0, out0) == (rc1, out1) and rc0 == 1 and not [w for w in ("回流闸", "别处写的", "elsewhere", "写作台没见过的文字",
                                                                           "没见过") if w in out0], out0
-    assert "外部稿" not in out0 and "补录成副本(写作台认不出它们, D-179)" in out0, "判据 C 的报文不说「当外部稿补录」(D-179)"
+    assert "外部稿" not in out0 and "补录成副本(写作台认不出它们, D-182)" in out0, "判据 C 的报文不说「当外部稿补录」(D-182)"
     # 结尾那句两种都适用、不自相矛盾(复审 2026-11-26): desk_silent 刚说完「对话没走到写作台」, 后面不能接「认不出是写作台哪一稿
     # 改的、不等于在写作台外面写的」
     assert "没开项目就写了" in out0 and "哪一稿改的" not in out0 and "不等于在写作台外面写的" not in out0, out0
@@ -1006,7 +1006,7 @@ def selftest() -> int:
     print("  ✓ 判据 A 撤了: 发了牌一张没销不喊; 以前的 B 只报一行、不进退出码")
     print("  ✓ 判据 C: 红只数补录副本(没对上 / 分不出 / 还没对的分列)、飞书删了的不算、下限在、没用过写作台的不喊、"
           "按查没查过重分两种报、记底稿之前的副本单独数、底稿只数不读、取数翻页键唯一、台账表排除补录副本")
-    print("  ✓ 回流闸(D-151): 闸记成写作台没见过的文字的帖单列(D-179 改的显示名, 存的值不变)、不进红; "
+    print("  ✓ 回流闸(D-151): 闸记成写作台没见过的文字的帖单列(D-182 改的显示名, 存的值不变)、不进红; "
           "闸超过 36 小时没分类 / 漏了项目才黄, 没跑过只说一句; "
           "四列不在时取数和报文一个字不变")
     return 0
