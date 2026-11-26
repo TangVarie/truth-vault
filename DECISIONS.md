@@ -6769,6 +6769,9 @@ F-02 原定「中转站给不了粘性分组、且对账单显示写缓存按 1.
 - **W-09。** deskcore 这次部署以来 key 传法：header 2,291、query 0、none 1。
 - **essence 10-17 绿。** ok 11、重试后成 1、失败 0，S-10 的修复确认。
 
+**11-26 补（owner 11-26 同意，AU-F02b ④）**：第 15 条对 OKMAN 改指篇上的 765 条运营评论由 D-173 修订：它们是改指之前那篇帖的评论，11-26 删了（工程用 MCP 跑 `scripts/cleanup_repointed_stale_comments_au_f02b.sql`），整行备份在 `truth_vault.backup_repoint_stale_comments_20261125` 和判分那张。LNKT 244 条、别的项目、改指篇里没有原文也没换发布时间的 16 条，照旧留着。敏感性检查怎么做见 OPEN-ITEMS J-02 那一行。
+
+
 ## D-120 · 写作台改版：写完自动存档 + Jev 参考分给写手看，撤掉人审 / 导出，评论按链接写（2026-10-19）
 
 来源：owner 10-19 看了飞轮轮转图后提的六点（「整个六个大点全部都可以按照你说的改」），以及随后两点商榷的回答（「两点都可以，开工吧」）。盖过 D-119 #7（J-07「不出影子期」）里「分数不给写手看」的部分；D-072（`prepublish_evaluations` legacy-only）在这里落到「夜跑那一步也撤掉」。
@@ -9266,6 +9269,9 @@ owner 11-23 发了一张小红书评论区截图（一条 AI 定时自学的做�
 
 **11-25 补（工程，批 2）**：D-175 第 1 条定了 `_comment_text_persona` 存的是素人编号、不是评论原文，评论同步也不再读它。第 2 条的认法还把它当原文：「这篇还有原文键」（SQL 里的第 ③ 条）认 `_comment_text` 或 `_comment_text_persona`，「在原文里找不到」也把两个键拼在一起找；#109、两份 OKMAN 的 SQL、`check_verify_rows_pg.py` 钉的那一句都这么写。今天一行都不影响：这个键只在 5 张按需的 B 族表里有，改指过的篇没有一篇在这 5 个项目里，765 行和留着的 16 行都在 OKMAN / TUGE，它们映的是 `_comment_text`；按需项目补跑（I-40）之后，这些篇的这个键换成 `_commenter_codes`，这一项就不起作用了。所以先不改；哪天要改，4 处规则和 CI 钉的那一句一起改。
 
+**11-26 补（owner 11-26：「OKMAN 那批删吧」，同一句里让工程用 MCP 跑）**：删、也撤（owner 问的是一起的那一问，回的是「删吧」；按工程 11-25 给的建议「删 765 条、撤 29 个」执行）。第 1、2、4、5、6 条生效。11-26 04:1x UTC 工程用 MCP 依次跑：① 先只读数一遍（765 条 / 242 篇 / 全在 OKMAN_phase1 / 判分 6,885 行 / 留 16 行 / 没有子评论 / 原本 0 行孤儿判分），和 11-25 的数一字不差，再整份跑 cleanup：回读 stale_left 0、备份 765 + 6,885、kept_no_source_text 16、judge_rows_without_comment 0；② 核过 `public.reference_samples` 没有外键、没有触发器，只读数 29 个（全在 OKMAN，爆 25、大爆 4），再整份跑 withdraw（文件开头的检查过了）：回读 stale_left 0、备份样本 29 / 标记 29、marks_not_cleared 0。四张备份表都开了 RLS、anon / authenticated 读不到。verify #109、#110 期望照旧是 0。D-119 末尾补了一段，OPEN-ITEMS J-02、I-09、AU-F02b、第 8 节跟着改。当晚通道 1 按现在的帖重推仍是爆 / 大爆的那几篇；超过 30 篇时大批首推闸挡，看过名单后用 `allow_bulk_ssll_push` 放行一次（结果记在 AU-F02b）。
+
+
 ## D-174 · 闸三的分记下输入指纹（2026-11-25，工程；AU-F02b ②，D-137 的第二期）
 
 **来源**：D-137「挡不住什么」第一条：content_scores 不记 input_sha，留给第二期（OPEN-ITEMS AU-F02b ②）。
@@ -9345,7 +9351,13 @@ XIWU_phase2 那行「一轮 / 二轮维护」+「20条评论 / +20条评论」�
 1. **Step 0：款式标忽略。** mapping 新顶层键 `direction_ignore_tokens`（BJS_phase2：成人款、儿童款）。查 direction_decomposition、判内容层、查子方向、preflight 算缺方向之前先去掉。「提问贴, 成人款」照常按 提问贴 抬、层 Q；只剩款式标 → 什么都不抬。忽略标不能同时是方向（加载就红）。没配这个键的 mapping 查表键一字不变。
 2. **HATHERINE 9 月下旬起用的 10 个新方向名只登记 layer**（和 产品- / 流量- 前缀判的一样），不写 content_format / 人群 / 痛点。这些名字在老表里就有（audit_log 里最早 09-22 入库），11-25 夜跑后 190 篇，158 篇是 11-20 之前发的。写了抬的值就会用猜的值盖掉 essence 判的 content_format。
 3. **Step 1：方向格有值、抬不了**（mapping 里没有、只登记了 layer、没有正文推断）→ 同步对 人群 / 痛点 / 产品焦点 送 None。这三列只有「直接抬」和 essence 子方向两条来路，抬不了时库里的值只能是旧方向的。无状态，每晚自愈。有 sub_directions 的方向（essence 管）不碰。**方向格清空**、方向列这一轮还在 → 同样送 None；方向列整轮没返回（改名）→ 不动。
-4. **content_format**：essence 每篇都写，可方向抬得了时夜跑每晚用旧方向抬的值盖掉它。同步在 upsert 之前读这些篇库里上一次的方向和 content_format：上一次抬得了、库里正好是它抬的值 → 从 audit_log 取 essence 最后一次写的 content_format 写回去；essence 那一次没改 content_format → 不动，打本轮旗子 `content_format_not_restored`；读库或 audit_log 失败 → 一篇不动；dry-run 不读库。
+4. **content_format**：essence 每篇都写，可方向抬得了时夜跑每晚用旧方向抬的值盖掉它。同步在 upsert 之前读这些篇库里上一次的方向和 content_format：上一次抬得了、库里正好是它抬的值 → 从 audit_log 取 essence 最后一次写的 content_format 写回去；essence 那一次没改 content_format → 不动，打本轮旗子 `content_format_not_restored`；读库或 audit_log 失败 → 一篇不动，见下一段；dry-run 不读库。
+
+   **读失败那一晚（11-26 补，Codex #312 P2）**：认得出方向变了，靠的是库里 `raw_extra._direction_raw` 还是上一次的方向。读失败那一晚要是照常写，新方向就落库了，下一晚库里的「上一次」已经抬不了，这一篇再也换不回来。所以读失败时这几篇这一轮不写 raw_extra（upsert 按篇留列，同 D-122 名单列的做法：请求里不带、columns= 里也没有），三列照清、别的列照写、照常盖戳，下一晚读得到就照常换回。读库失败分不出哪几篇换过方向，全部候选都留（11-26 生产只读、按库里的方向估：12 个每天同步的项目一晚最多 974 篇，单个项目最多 280 篇）；读 audit_log 失败只留要换的那几篇。
+
+   **留着的篇里的新篇照常整行插**（11-26 补，评审）：留列只管库里已有的篇。新篇没有「上一次」可留，去掉 raw_extra 插进去就是 NULL：`notes.raw_extra` 可空、没默认值，11-26 生产只读 7471 行一行 NULL 都没有；同一晚 daily-sync 的 essence「pass new」就选到这一篇，`build_project_context` 拿 `raw_extra._direction_raw` 进 prompt，碰到 NULL 抛 AttributeError，整个项目那一晚的 essence 停在这一篇、后面的都不标，报的还是「全军覆没 / 配置」。所以 upsert 对留列的篇先整行（raw_extra 也带上）走一遍 `INSERT ... ON CONFLICT DO NOTHING`（postgrest-py `ignore_duplicates`，分组、补 None 同 D-122；批被拒逐行再插）：新篇整行落库、PostgREST 只回插进去的行，这几篇后面不再发（再发一遍只多一行只改 updated_at 的 audit_log）；库里已有的一行不动，照常发去掉 raw_extra 的那一份。多一个请求，只在读失败那一晚有。这一步也全插不成（批和逐行都失败、后面的 upsert 又成了）才退回去掉 raw_extra 的那一份，新篇这一晚 raw_extra 是 NULL（warning）；essence 的 prompt 现在读得了 NULL（写「项目未定义方向」，同 `get_sub_directions_for_note`），不会再停整个项目，可这一篇就按没方向标了，正文不改不再重标。别的读库里 raw_extra 的（评论同步、SQL 视图）本来就认 NULL。
+
+   代价：这些篇 raw_extra 里别的键也晚一晚。同一晚这一篇正文也改了的话（content_sha 变了），essence 的「pass stale」拿库里留着的旧方向进 prompt 重标，标完 essence_content_sha 跟上，下一晚新方向写进去也不再重标：这一篇的 essence 判断是看着旧方向做的；essence 判的值恰好等于旧方向抬的值时，下一晚那条 audit_log 里 content_format 没变，还会打一个 `content_format_not_restored`（值本身是 essence 的）。要改方向、改正文、读失败三件事同一晚碰上，没处理。Done 行记 `content_format_restore_held`，计一个 error、打 `::error`（红）：一直读不到就一直红，这些篇的 raw_extra 也一直不更新，得有人去查库。没用「打个旗子、下一晚再换」：旗子列和 raw_extra 每晚整份重写，读不到库的那一晚旗子本身也留不住，旗子里还得带上旧方向，绕回来还是要按篇留列。
 5. **Step 2（已经发生的那批）**：`schemas/notes_v1_33_direction_switch_restore.sql`，owner 在合并前跑。备份 69 篇（4 列 + 内容层 + 方向原值），33 篇（全在 BJS_phase2）content_format 换回 essence 的值（场景植入 → 情感叙事 23、认知重构 6、直给推荐 3、反差破圈 1）。另 27 篇（BJS_phase2 23、HATHERINE 4）essence 那次没改 content_format，推不出别的值，不动。认的是最后一次改方向、essence 最后一次写；库里的值不是旧方向抬的值（后来改过）的不动。合并前跑也安全：旧代码对这 33 篇抬不了，不会把换回的值盖掉。
 
 **工程定的（owner 可以否决）**
@@ -9365,9 +9377,9 @@ XIWU_phase2 那行「一轮 / 二轮维护」+「20条评论 / +20条评论」�
 
 **下游**：这几列喂馆员按人群配卡、策展、闸三的 U/F token（已打的分 ignore_duplicates 不动，新打的会变）、写作台按 content_format 切片。要清的 69 篇里只有 1 篇是爆（HATHERINE），经验卡几乎不动。
 
-**挡不住什么**：essence 那一次没改 content_format 的 27 篇推不出它的判断，留着旧方向的值（大概率和 essence 一致）；以后运营往「方向」里加别的非方向标，要先登进 `direction_ignore_tokens`，不然那些篇会被清三列；按款拆人群没做。
+**挡不住什么**：essence 那一次没改 content_format 的 27 篇推不出它的判断，留着旧方向的值（大概率和 essence 一致）；以后运营往「方向」里加别的非方向标，要先登进 `direction_ignore_tokens`，不然那些篇会被清三列；按款拆人群没做。读失败那一晚留下的篇，换回靠的是下一晚读得到时这一篇还是候选（11-26 补，评审）：(a) 下一晚之前方向又改成有 sub_directions 的方向（子方向归 essence 管，不是候选），旧方向抬的 content_format 就留着，和不经过抬不了那一晚、直接从抬得了改成子方向一样（那一路 I-17 本来就没管，daily-sync 也不跑补子方向那一轮）；(b) 下一晚之前从飞书删了，库里这一行停在旧方向（raw_extra）+ 旧方向抬的 content_format + 留那一晚清掉的三列。两种都要三件事接连碰上，那一晚是红的（`::error` 里写了），过后不再报；要紧就单独跑一句 SQL 换回。没把子方向也算进候选：那样有子方向的篇（NUC 一类）每晚都要读库，读失败时这些篇也全留 raw_extra。
 
-守卫：`scripts/check_direction_switch.py`、`scripts/check_content_layer.py` §1–§2、`scripts/check_owner_sql_b2.sql`。
+守卫：`scripts/check_direction_switch.py`（§9 管读失败那一晚：真 postgrest-py 连跑两晚、再驱动真的 main() 两晚；新篇先整行插、插不成时 essence 读得了 NULL）、`scripts/check_content_layer.py` §1–§2、`scripts/check_owner_sql_b2.sql`。
 
 ## D-179 · 代码抽取器 code:v2 和「品牌别硬插」撤回条件的预注册（G-24 PR-1，2026-11-25，工程；按写好的判据判，结果告诉 owner，D-136）
 

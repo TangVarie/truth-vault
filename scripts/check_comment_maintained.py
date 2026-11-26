@@ -284,7 +284,7 @@ def _run14(rows, stored, read_ok=True, schema=None, argv_extra=()):
     def read(sb, pid, ids):
         cap["read"] += 1
         return {f"T_CM14_{k}": v for k, v in stored.items()} if read_ok else None
-    def up(sb, notes, dry_run=False):
+    def up(sb, notes, dry_run=False, **_):
         cap["notes"] = {n["note_id"]: n for n in notes}
         return {n["note_id"] for n in notes}
     try:

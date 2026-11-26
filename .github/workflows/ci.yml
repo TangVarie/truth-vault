@@ -480,7 +480,7 @@ jobs:
                       return [{"note_id": i} for i in asked if i in in_db]
                   return []                             # 对账本身
               M.fetch_all_pages = pages
-              def up(sb, notes, dry_run=False):
+              def up(sb, notes, dry_run=False, **_):
                   cap["notes"] = notes; return [n["note_id"] for n in notes]
               M.upsert_notes_batch = up
               buf = io.StringIO(); h = logging.StreamHandler(buf); M.logger.addHandler(h)
@@ -2695,7 +2695,7 @@ jobs:
               s.ensure_accounts_batch = lambda *a, **k: []
               s.upsert_metrics_batch = lambda *a, **k: (0, [])
               s.update_project_date_range = lambda *a, **k: None
-              def fake_upsert(sb, notes, dry_run=False):
+              def fake_upsert(sb, notes, dry_run=False, **_):
                   cap["notes"] = notes
                   return [n["note_id"] for n in notes]
               s.upsert_notes_batch = fake_upsert
@@ -2795,7 +2795,7 @@ jobs:
               s.upsert_metrics_batch = lambda *a, **k: (0, [])
               s.update_project_date_range = lambda *a, **k: None
               s.fetch_all_pages = fake_pages
-              def up(sb, notes, dry_run=False):
+              def up(sb, notes, dry_run=False, **_):
                   cap["notes"] = notes; return [n["note_id"] for n in notes]
               s.upsert_notes_batch = up
               buf = io.StringIO(); h = logging.StreamHandler(buf); s.logger.addHandler(h)
@@ -2959,7 +2959,7 @@ jobs:
               s.update_project_date_range = lambda *a, **k: None
               s.fetch_all_pages = lambda qb, order_by=None: [
                   {"note_id": "n1", **{c: "v" for c in NEVER_FILLED}}]
-              def up(sb, notes, dry_run=False):
+              def up(sb, notes, dry_run=False, **_):
                   cap["notes"] = notes; return [n["note_id"] for n in notes]
               s.upsert_notes_batch = up
               buf = io.StringIO(); h = logging.StreamHandler(buf); s.logger.addHandler(h)
