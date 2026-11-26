@@ -351,10 +351,34 @@ _COMMENT_MAINTAINED_STATUS = ("改评发布", "二次评论", "改评显示")
 #   同时踢出了 L2 正例和书架。
 #   ⚠️ 挡不住什么(D-051): 如果以后真有别的项目开一列叫「评论铺设情况」并往里填评论
 #   文案, 这条判据认不出来 —— 新列要进 _CM_TICKET_COLS 得先看值。
-_CM_TICKET_COLS = ("维护评论50条",)
+#   2026-11-26 加「维护评论」: 途鸽 11-25 把「维护评论50条」改名成「维护评论」(那一晚被风控来源列闸挡红, 旗子没丢)。
+#   加之前先看了值(同 RIO 那次的教训): 新列 184 篇有值, 库里 168 篇旗子来自旧列的全都在新列有值, 129 篇旧 reason
+#   写的行数里 128 篇和新列的行数一样; 每格中位约 20 行、一行一条、平均每行约 30 字, 和旧列一个样 → 纯改名, 同样封顶 50。
+#   但「维护评论」这个名字太泛, 别的项目同名列不一定是铺的评论正文: 它只在 mapping 把它声明进 raw_extra 时才认
+#   (_CM_TICKET_DECLARED_ONLY, 见 cm_ticket_cols)。SPX 11-24 起也冒出一列未声明的「维护评论」(4 篇有值, 形态一样,
+#   但只有 4 篇、其中 1 篇的「维护情况」是运营没定义过的取值), 先不认; 要认就在 SPX 的 mapping 里声明这一列。
+#   不认的代价今天是零(3 篇趴, 那篇大爆扣掉行数仍过线), 但没人会回头看: 所以有一道绊线(undeclared_ticket_on_positive,
+#   main() 里风控来源列闸后面) —— 不认「维护评论」的表里, 未声明的「维护评论」有值、tier 是 爆/大爆、又没被别的路挡、
+#   评论数扣掉它的行数不过爆线 → 整轮红、点名这几篇。红了就由工程在那张表的 mapping 里声明这一列(运营不用做什么),
+#   再改 check_comment_maintained.py ⑯ 开头 SPX 那条断言。
+#   旧名照旧全局认(含未声明), 行为不变。
+#   ⚠️ 再改名: 新名字先进这里(看过值)和 _CM_TICKET_SEEDED, 再在 mapping 里声明; 旧名字别从 mapping 摘。只改 mapping
+#   (两个名字都换成代码不认的第三个名字)或只从这里摘名字, 跑的时候闸是哑的(它只看 mapping 声明了、这里也认的列),
+#   拦这两种改法的是 CI: check_comment_maintained.py ⑯ 开头钉住了途鸽 mapping 和这里的名字。
+_CM_TICKET_COLS = ("维护评论50条", "维护评论")
+_CM_TICKET_DECLARED_ONLY = ("维护评论",)
 # 已铺条数 = 这一格里的评论行数, 封顶这个数; 数不出行数时也按这个数 (D-150, owner 2026-11-10「贴几条就是发了几条」)。
 # 运营 2026-09-22 确认铺的评论计入评论数, 所以 ⑦ 减法拿它减。D-150 之前不看格子, 一律算 50。
-_CM_TICKET_SEEDED = {"维护评论50条": 50}
+_CM_TICKET_SEEDED = {"维护评论50条": 50, "维护评论": 50}
+
+
+def cm_ticket_cols(mapping: dict) -> tuple[str, ...]:
+    """这张表认哪几个名字当铺评工单列: _CM_TICKET_DECLARED_ONLY 里的只在 mapping 声明进 raw_extra 时才认, 其余全局认。
+    transform_row 判 route ① 和风控来源列闸「这一轮按哪个名字读到了格子」用的是同一份, 两边不会一个认一个不认。"""
+    extra = set(mapping.get("project_specific_fields_to_raw_extra") or [])
+    return tuple(c for c in _CM_TICKET_COLS if c not in _CM_TICKET_DECLARED_ONLY or c in extra)
+
+
 # 一行按空白切出这么多段 → 这一行不是一条评论, 是好几条用空格接成的一长串, 数不出条数 (D-150)。
 # 11-10 生产: 途鸽这一列 4,629 个非空行, 正常的行最多 7 段; 一长串的 35 行每行 29–65 段
 # (601–1,249 字, 一格约 50 条); 8–28 段的行一行都没有。按换行硬数, 整格就这一行的算 1 条,
@@ -1341,7 +1365,7 @@ def apply_tier_flip_block(pending_notes: list[dict], plan: dict) -> int:
 
 # ── 风控旗子的来源列整轮不见了 (外部评审 11-04 F01, D-146 前置) ──────────────────────
 # synthetic / comment_maintained / paid_promoted 这三个旗子决定一篇 爆 能不能进通道 1、书架、L2 正例。
-# 它们的来源列(笔记状态, 和 raw_extra 里声明的 维护情况 / 维护评论50条 / 爆帖控评置顶 / 爆帖置顶评论 /
+# 它们的来源列(笔记状态, 和 raw_extra 里声明的 维护情况 / 维护评论50条 或 维护评论 / 爆帖控评置顶 / 爆帖置顶评论 /
 # 关注情况)不在 _detect_missing_core_columns 的视野里。运营把其中一列改名 → transform_row 判不出那一路,
 # 而 data_quality_flags 照样整份写(synthetic 显式 false、维护情况 声明了就写 paid_promoted false),
 # 于是库里的 true 被静默冲掉, 被挡的帖子第二天就回到爆款池。
@@ -1349,12 +1373,24 @@ def apply_tier_flip_block(pending_notes: list[dict], plan: dict) -> int:
 # → 那几篇这一族的键沿用库里的值、整轮红。列还在(哪怕这一格空了, 哪怕整列的格子都空了)照常重算, 运营清标记照样
 # 清得掉。飞书 list_records 不返回空格子: 运营清掉一列里最后一个标记之后, 这一列一行都不会返回, 和改名长得一样,
 # 所以「一行都没返回」之后再拿表结构核一次(table_field_names, 只在这条路上调); 表结构读不到 → 按不见了处理。
+# 铺评工单列有过两个名字(维护评论50条 → 维护评论, 途鸽 11-25 改名): 「还在不在」照旧【逐列】核(这一轮返回过 / 表结构里
+# 有), 不按组 —— 组里另一个名字还在, 不等于数据还在: 它可能是空的、或者只有别的篇有格子(改成代码不认的名字、又有人按
+# 旧配置再建了一列空的, 都会这样)。按组核会把闸哑掉, 旗子按一列空格子重算、被静默清掉。改为在沿用那一步按【篇】看:
+# 工单列不见了, 而这一篇这一轮已经按这张表认的另一个名字读到了格子(现判的 reason 里有 铺评工单列「…」, 且那个名字这一轮
+# 返回过) → 这篇是按同一批格子现判的, 不沿用; 库里旗子点名不见了那一列、这一轮又没按认得的名字读到格子的篇 → 照旧沿用 + 红。
+# 代价: 声明了的两个名字有一个不在表里的那几晚, 每晚多读一次飞书表结构和一次库里旗子(途鸽改名之后就是这样)。
+# 闸只看 mapping 声明了、代码也认的列: 只改 mapping(两个名字都换成代码不认的)或只从 _CM_TICKET_COLS 摘名字, 跑的时候
+# 闸是哑的; 拦这两种改法的是 CI(check_comment_maintained.py ⑯ 开头钉住途鸽 mapping 和 _CM_TICKET_COLS)。只换掉一个名字
+# (另一个还声明着)闸照样红。
 _SYN_NOTE_STATUS_REASON = "笔记状态含「关注」"
 _RISK_FLAG_FAMILIES = ("synthetic", "comment_maintained", "paid_promoted")
 
 
 def risk_source_columns(mapping: dict) -> dict[str, list[tuple[str, str]]]:
-    """{声明了的飞书来源列: [(旗子族, 库里 <族>_reason 里认这一列的子串), ...]}。"""
+    """{声明了的飞书来源列: [(旗子族, 库里 <族>_reason 里认这一列的子串), ...]}。
+
+    铺评工单列: 认自己的名字, 再加上同组里【这张表没声明】的名字 —— 只声明了新名的表, 库里旧名写的 reason 也认得出来;
+    两个都声明了就各认各的, 红的时候点名准(哪几篇的旗子来自哪一列)。"""
     out: dict[str, list[tuple[str, str]]] = {}
     for col, tgt in (mapping.get("field_mapping") or {}).items():
         if tgt == "_note_status_raw":
@@ -1362,7 +1398,10 @@ def risk_source_columns(mapping: dict) -> dict[str, list[tuple[str, str]]]:
     extra = set(mapping.get("project_specific_fields_to_raw_extra") or [])
     for col in (*_CM_TICKET_COLS, _CM_MULTISELECT_COL, *_CM_POSTHOC_COLS):
         if col in extra:
-            out.setdefault(col, []).append(("comment_maintained", f"「{col}」"))
+            names = [col, *(c for c in _CM_TICKET_COLS if c != col and c not in extra)] \
+                if col in _CM_TICKET_COLS else [col]
+            for nm in names:
+                out.setdefault(col, []).append(("comment_maintained", f"「{nm}」"))
     for col in PAID_COLS:
         if col in extra:
             out.setdefault(col, []).append(("paid_promoted", f"「{col}」"))
@@ -1436,10 +1475,13 @@ def _merge_risk_family(cur: dict, stored: dict, fam: str) -> dict:
 
 
 def carry_risk_flags(pending_notes: list[dict], missing: dict[str, list[tuple[str, str]]],
-                     stored: dict[str, dict]) -> dict[str, list[str]]:
+                     stored: dict[str, dict], ticket_cols_read: tuple[str, ...] | set[str] = (),
+                     recomputed: dict[str, list[str]] | None = None) -> dict[str, list[str]]:
     """来源列不见了的那一族, 库里 reason 点名这一列且旗子为 true 的篇 → 这一族的键换成库里的。
 
     只动 payload 里本来就带 data_quality_flags 的篇(不带的 upsert 本来就留库里旧 JSON)。
+    铺评工单列(_CM_TICKET_COLS)不见了时, 这一篇这一轮已经按 ticket_cols_read 里的名字(这张表认、这一轮返回过)现判出
+    铺评工单列「…」的 → 不沿用(同一批格子换了列名, 照这一轮的), 记进 recomputed {列: [note_id]}(调用方传了才记)。
     回 {列: [沿用了的 note_id, ...]}(只列真有沿用的列)。"""
     hits: dict[str, list[str]] = {}
     for note in pending_notes:
@@ -1449,7 +1491,14 @@ def carry_risk_flags(pending_notes: list[dict], missing: dict[str, list[tuple[st
             continue
         fams: set[str] = set()
         cols: set[str] = set()
+        cur_cm = str((note.get("data_quality_flags") or {}).get("comment_maintained_reason") or "")
+        ticket_read_here = any(f"铺评工单列「{c}」" in cur_cm for c in ticket_cols_read)
         for col, specs in missing.items():
+            if col in _CM_TICKET_COLS and ticket_read_here:
+                if recomputed is not None and any(
+                        sf.get(fam) is True and needle in str(sf.get(f"{fam}_reason") or "") for fam, needle in specs):
+                    recomputed.setdefault(col, []).append(nid)
+                continue
             for fam, needle in specs:
                 if sf.get(fam) is True and needle in str(sf.get(f"{fam}_reason") or ""):
                     fams.add(fam)
@@ -1467,6 +1516,39 @@ def carry_risk_flags(pending_notes: list[dict], missing: dict[str, list[tuple[st
         for col in cols:
             hits.setdefault(col, []).append(nid)
     return hits
+
+
+# ── 绊线: 没认的「维护评论」落在指标型爆款上 (11-26, SPX 11-24 起有一列未声明的「维护评论」) ──────────────
+# _CM_TICKET_DECLARED_ONLY 里的名字只在声明了的表里当铺评工单列认。没声明的表里它有值, 今天不挡任何帖; 可哪天这样一篇
+# 被标成 爆 / 大爆、评论数扣掉这一格的行数又不过爆线, 认了就该挡, 不认它就进了书架、通道 1、L2 正例, 没人知道。
+# 只看 爆 / 大爆: 铺评工单只挡指标型 tier(参考、趴认不认都一样)。已经被别的路挡住的(synthetic / 铺评工单)不算。
+# 评论数缺失也算(证明不了过线, 同 ⑦ 减法)。红了 → 工程在那张表的 mapping 里声明这一列(运营不用做什么), 改 ⑯ 开头那条断言。
+def undeclared_ticket_on_positive(mapping: dict, pending_notes: list[dict]) -> list[str]:
+    """回这一轮踩线的篇(「note_id(tier, 评论数, 列 N 行)」), 没有回 []。"""
+    names = [c for c in _CM_TICKET_DECLARED_ONLY if c not in cm_ticket_cols(mapping)]
+    out: list[str] = []
+    if not names:
+        return out
+    for note in pending_notes:
+        if note.get("tier") not in ("爆", "大爆"):
+            continue
+        flags = note.get("data_quality_flags") or {}
+        if flags.get("synthetic") is True or _CM_ROUTE_TICKET in (flags.get("comment_maintained_routes") or []):
+            continue
+        extra = note.get("raw_extra") or {}
+        und = extra.get("_undeclared") or {}
+        for c in names:
+            cell = und.get(c)
+            if cell in (None, "", []):
+                cell = extra.get(c)
+            if cell in (None, "", []):
+                continue
+            n, _how = ticket_seeded(c, cell)
+            cc = note.get("comments_count")
+            if isinstance(cc, (int, float)) and not isinstance(cc, bool) and cc - n >= _COMMENT_TIER_BAO:
+                continue
+            out.append(f"{note.get('note_id')}({note.get('tier')}, 评论数 {cc}, 「{c}」{n} 行)")
+    return out
 
 
 def _failed_rows_already_in_db(
@@ -1887,7 +1969,7 @@ def transform_row(
         return v if v not in (None, "", []) else _re_und.get(col)
 
     cm_seeded = 0          # 运营自己铺进去、且【计入评论数】的条数(2026-09-22 确认)
-    for _col in _CM_TICKET_COLS:
+    for _col in cm_ticket_cols(mapping):   # 「维护评论」只在声明了的表里认 (途鸽 11-25 改名, 见 _CM_TICKET_COLS)
         _cell = _cm_cell(_col)
         if _cell not in (None, "", []):
             # 已铺 = 这一格里的行数, 封顶 50; 数不出按 50 (D-150)。说明写进 reason, 人能对着格子核。
@@ -2665,6 +2747,8 @@ def main() -> int:
              "profile_cleared_direction_cell": 0, "content_format_restored": 0, "content_format_not_restored": 0,
              # 外部评审 11-04 F01: 风控旗子的来源列整轮不见了 → 沿用库里旗子的篇数 + 红
              "risk_source_columns_missing": [], "risk_flags_carried": 0,
+             # 11-26: 没声明的「维护评论」落在 爆/大爆 上、扣掉行数不过线的篇数(绊线, 红)
+             "undeclared_ticket_on_positive": 0,
              "missing_capabilities": [],
              "missing_capabilities_exempt": [], "stale_capability_exemptions": [],
              "metrics_written": 0, "metrics_failed": 0,
@@ -3085,8 +3169,10 @@ def main() -> int:
     # ── 风控旗子的来源列整轮不见了 (外部评审 11-04 F01) ─────────────────────────────
     # 放在所有写旗子的步骤(清空 / 翻转挡)之后、upsert 之前: 只换这一族的键, 别的键照这一轮。
     # 列都在 → 什么都不读、什么都不改(正常路径不变)。
-    risk_missing = {c: v for c, v in risk_source_columns(mapping).items() if c not in seen_cols} \
-        if pending_notes else {}
+    # 「还在」逐列核(不按组): 铺评工单列的另一个名字还在, 不等于这一列的数据还在。改名的那几篇在沿用那一步按篇放过
+    # (这一轮已经按这张表认的另一个名字读到了格子, 见 carry_risk_flags 的 ticket_cols_read)。
+    risk_missing = {c: v for c, v in risk_source_columns(mapping).items()
+                    if c not in seen_cols} if pending_notes else {}
     if risk_missing:
         # 一行都没返回 ≠ 列没了: 飞书不返回空格子, 整列格子都空了也是这样。拿表结构核一次, 还在的照常重算。
         present = table_field_names(fs, configured)
@@ -3109,7 +3195,13 @@ def main() -> int:
             logger.error("【风控来源列不见了】%s 这一轮飞书一行都没返回 %s, 又读不到库里的旗子 —— "
                          "本轮 data_quality_flags 整列不写(留库里旧值)。", mapping["project_id"], sorted(risk_missing))
         else:
-            carried = carry_risk_flags(pending_notes, risk_missing, stored_risk)
+            ticket_read = tuple(c for c in cm_ticket_cols(mapping) if c in seen_cols)
+            recomputed: dict[str, list[str]] = {}
+            carried = carry_risk_flags(pending_notes, risk_missing, stored_risk, ticket_read, recomputed)
+            if recomputed:
+                logger.info("风控来源列: 铺评工单列 %s 这一轮没返回、表结构里也没有; 库里旗子点名它的 %s 篇这一轮已经按 %s "
+                            "读到了格子, 照这一轮现判的写(不沿用、不红)",
+                            sorted(recomputed), sum(len(v) for v in recomputed.values()), list(ticket_read))
             if carried:
                 stats["risk_source_columns_missing"] = sorted(carried)
                 stats["risk_flags_carried"] = sum(len(v) for v in carried.values())
@@ -3119,7 +3211,11 @@ def main() -> int:
                        f"{'、'.join(f'{c}({len(v)} 篇库里的旗子来自它)' for c, v in sorted(carried.items()))}。"
                        f"这几篇的伪爆 / 铺评 / 投流旗子本轮沿用库里的值(data_quality_flags.risk_flags_carried_from_db), "
                        f"不然会被静默清掉、帖子回到爆款池。改名了 → 改 mapping 的列名; 真删了 → 从 mapping 摘掉"
-                       f"(之后这一路不再判)。新冒出来的未声明列: {sorted(undeclared_seen)[:10]}")
+                       f"(之后这一路不再判)。"
+                       + (f"铺评工单列({'、'.join(sorted(set(carried) & set(_CM_TICKET_COLS)))})改名了 → 新名字先加进 sync 的 "
+                          f"_CM_TICKET_COLS 和 _CM_TICKET_SEEDED(先看值), 再在 mapping 里声明, 旧名字留着别摘"
+                          f"(只改 mapping 的话闸会哑掉、旗子被清)。" if set(carried) & set(_CM_TICKET_COLS) else "")
+                       + f"新冒出来的未声明列: {sorted(undeclared_seen)[:10]}")
                 logger.error("【风控来源列不见了】%s", msg)
                 if complete and os.environ.get("GITHUB_ACTIONS") == "true":
                     print(f"::error title=风控来源列不见了 ({mapping['project_id']})::{msg}", flush=True)
@@ -3132,6 +3228,19 @@ def main() -> int:
     if cf["restored"] or cf["not_restored"]:
         logger.warning("方向变得抬不了: %d 篇 content_format 换回 essence 最后一次写的值; %d 篇 audit_log 里推不出 essence 的值,"
                        " 留着库里的 (data_quality_flags.%s)。", cf["restored"], cf["not_restored"], _CF_NOT_RESTORED_FLAG)
+
+    # ── 绊线: 没认的「维护评论」落在指标型爆款上、扣掉行数又不过线 (11-26, 见 undeclared_ticket_on_positive) ──
+    tripped = undeclared_ticket_on_positive(mapping, pending_notes)
+    if tripped:
+        stats["undeclared_ticket_on_positive"] = len(tripped)
+        stats["errors"] += len(tripped)
+        msg = (f"{mapping['project_id']}: 这张表没声明「{'、'.join(_CM_TICKET_DECLARED_ONLY)}」(引擎不当铺评工单列认), "
+               f"可它在 {len(tripped)} 篇 爆/大爆 上有值, 扣掉这一格的行数评论数不过爆线 —— 认了就该挡, 现在没挡、会进书架 / "
+               f"通道 1 / L2 正例: {tripped[:10]}。工程在这张表的 mapping 里声明这一列(运营不用做什么), "
+               f"再改 check_comment_maintained.py ⑯ 开头那条断言")
+        logger.error("【未声明的铺评列落在爆款上】%s", msg)
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            print(f"::error title=未声明的铺评列落在爆款上 ({mapping['project_id']})::{msg}", flush=True)
 
     # ── 内容层 (D-140): 库里有 notes.content_layer 才写; 没有 (v1_24 还没跑) 整列拿掉, 别的照旧 (prepare_content_layer)。
     prepare_content_layer(sb, pending_notes)
