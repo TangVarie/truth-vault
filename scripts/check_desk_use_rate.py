@@ -95,7 +95,7 @@ from datetime import date, datetime, timedelta, timezone
 
 # 回流闸那四列的读法两盏灯共用一份(D-151); 那个模块顶层只有标准库, 夜跑和 CI 都是在 scripts/ 里跑的。
 from check_angle_ledger_leak import (GATE_CLASSES, GATE_REASON_NOT_CLEAN, ORIGIN_ELSEWHERE_LABEL, ORIGIN_ELSEWHERE_NOTE,
-                                     ORIGINS, gate_columns_present, gate_verdict, origin_of_link)
+                                     ORIGINS, WRITER_EDIT_CAUGHT_NOTE, gate_columns_present, gate_verdict, origin_of_link)
 
 # ⚠️ 故意【不】在模块顶层 import _common(会拖进 supabase / yaml): tally / report 是纯函数,
 # --selftest 在 CI 的裸环境里直接测它们 —— 同 check_angle_ledger_leak.py 的理由。
@@ -134,10 +134,7 @@ ORIGIN_UNLINKED = "(没对账)"                             # tv-sync 还没给�
 ORIGIN_LABELS = {"desk": "写作台的稿", "desk_edited": "写作台的稿·改过", "copied_back": "发后抄回写作台",
                  "elsewhere": ORIGIN_ELSEWHERE_LABEL, "unclear": "分不清"}
 CLASS_LABELS = {"pass": "通过", "fail": "不学", "unsure": "待答", "hold": "搁置", "withdrawn": "已撤"}
-# 接住 / 「写作台的稿」里分不出的那一种(2026-11-26, D-179; 复审): aw A/B 部署起, 只对得上 record_edit 记下的写手手改版的帖
-# 也转成版本(batches.params.via = record_edit), match_kind 和别的对上一样, 没有改稿差异。这盏灯不读 via, 只在报文里说一句
-WRITER_EDIT_CAUGHT_NOTE = ("aw 这一版(A/B)部署起也包括只对得上写手贴回来的改稿的(record_edit 记下的、写手自己的字, "
-                           "没有改稿差异), 这盏灯分不出(D-179)")
+# 接住 / 「写作台的稿」里分不出的那一种: WRITER_EDIT_CAUGHT_NOTE, 和发帖对账灯共用(定义在 check_angle_ledger_leak)
 # ── 写作台判过的评论(2026-11-26, D-179): 只报不判, 不进退出码、不进 _judgeable ──
 # 读的是 aw 的调用留痕(deskcore/calllog.py, aw#153): 每次工具调用一行 autowriter.batch_metrics, meta 里只有数、固定的词和
 # 8 位代号, 没有评论 / 帖子的字。这几个名字是 aw 那边定的, 改了这里跟着改:

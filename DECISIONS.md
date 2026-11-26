@@ -9417,8 +9417,9 @@ XIWU_phase2 那行「一轮 / 二轮维护」+「20条评论 / +20条评论」�
 - 已经补录成副本的帖是终态，不会回头认；A/B 只帮部署之后发的帖，`record_edit` 要在发布那天（北京日）及之前报才认得回来。
 - 评论只数得到走 `score_comments` 的；写手在对话里让模型直接写的评论这盏灯数不到。
 - 部署之后「查过 N 篇稿」会跳高（每一轮都查重，改过的每一版各算一篇），不代表多写了稿。
+- **Jev 的花费会跟着轮数涨（持续的）。** 协议让每一版先查重、再 `score_drafts` 存；存一版就有存档那次的判定和存完档后台的人感影子判定（D-154，正文每个非空行至少一次 Jev 模型调用）。这次要做的正是把以前写作台没见过的后几轮拉进来，所以存档次数和这笔钱一起涨，涨多少要看写手每篇改几轮。实数看 aw `batch_metrics` 存档那几行的 `meta.shadow_human.calls`；要先停影子判定那一笔，写作台设 `DESKCORE_SHADOW_HUMAN=0`（存档那次的判定照旧）。
 - 转正的版本照旧 `ai_engine = 'deskcore'`，`v_model_comparison` 会把 `via = record_edit` 的帖算成写作台的（W-66 后续）。
 
-**owner 要做的**：① 合 aw 的 PR，部署后打 `/health` 看 `build.protocol_version` 是 `00ff79b30fcc`，再通知写手重导一次 skill（没重导的，对话开场调 `get_protocol` 也会拿到新正文）。② 找 1～2 个写手要 2～3 段最近的对话记录（从出稿到贴进飞书那一段），核「后几轮没过查重」这件事。③ 合这个 PR。
+**owner 要做的**：① 合 aw 的 PR，部署后打 `/health` 看 `build.protocol_version` 是 `00ff79b30fcc`，再通知写手重导一次 skill（没重导的，对话开场调 `get_protocol` 也会拿到新正文）。② 找 1～2 个写手要 2～3 段最近的对话记录（从出稿到贴进飞书那一段），核「后几轮没过查重」这件事。③ 合这个 PR。owner 这三步都不花钱、不用跑 SQL；合了以后 Jev 的花费会涨（见上一条）。
 
 守卫：`scripts/check_desk_use_rate.py --selftest`、`scripts/check_angle_ledger_leak.py --selftest`（显示名、脚注、评论那一行、`writer_edit` / `gate_error` / 按 `text_fp` 去重）；aw `tests/test_snapshot_gate_error_and_writer_edit.py`、`tests/test_tv_sync_older_versions.py`、`tests/test_tvlink_by_item.py`、`tests/test_check_drafts_reference.py`、`python -m deskcore.cli sync-skill --check`。

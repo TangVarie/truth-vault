@@ -107,6 +107,11 @@ ORIGIN_ELSEWHERE_LABEL = "写作台没见过的文字"
 # 多半是写手把已经发过的帖贴进来查、撞了库里的自己; 代价是写手执意发了一篇被打回的稿, 这里也会说写作台没见过(D-179)。
 ORIGIN_ELSEWHERE_NOTE = ("发布前写作台存过、查重没打回的文字里, 没有和它重合 ≥15% 的 —— 包括写手在 AI 对话里后几轮改出来、"
                          "没过查重的稿, 不等于在写作台外面写的(D-179)")
+# 「对上」/「接住」/「写作台的稿」里分不出的那一种(2026-11-26, D-179; 复审): aw A/B 部署起, 只对得上 record_edit 记下的
+# 写手手改版的帖也转成版本(batches.params.via = record_edit), match_kind 和别的对上一样, 没有改稿差异。两盏灯都不读 via,
+# 只在报文里各说一句(这盏在发帖对账表下面每晚一句, DESK_USE_RATE 在接住和出处两张表下面)。
+WRITER_EDIT_CAUGHT_NOTE = ("aw 这一版(A/B)部署起也包括只对得上写手贴回来的改稿的(record_edit 记下的、写手自己的字, "
+                           "没有改稿差异), 这盏灯分不出(D-179)")
 GATE_CLASSES = ("pass", "fail", "unsure", "hold", "withdrawn")
 GATE_REASON_NOT_CLEAN = "not_clean"     # 投流标记 / 铺评工单 / 投流事件: 闸自己的那把「干净」尺子(同 aw priors.is_clean)
 # 闸每晚把范围内(近 60 天发布的)每一行的 gate_at 都摸一遍。灯早上 08~10 时(UTC)跑, 闸前一天 14:00 UTC 跑: 正常 18~20 小时;
@@ -280,6 +285,7 @@ def _print_publish(pub: dict, by_project: dict, window_days: int) -> None:
         away = f"{l.get(ORIGIN_ELSEWHERE, 0):>8}" if gated else ""
         print(f"  {tv[:21]:<22}{l.get('published', 0):>6}{l.get('caught', 0):>6}{l.get(INGESTED_KIND, 0):>8}{away}"
               f"{l.get('unmatched', 0):>7}{l.get('ambiguous', 0):>7}{l.get('unlinked', 0):>7}{drawn:>10}{checked:>8}")
+    print(f"  对上 = 对上写作台发布前存的那版; {WRITER_EDIT_CAUGHT_NOTE}")
     if gated:
         print(f"  没见过 = {ORIGIN_ELSEWHERE_LABEL}(回流闸记的出处是 elsewhere): {ORIGIN_ELSEWHERE_NOTE}。"
               "帖在哪写都可以(owner 11-12, D-151), 这一列预期之内、不进判据; 补录副本、没对上两列里已经不含它们")
@@ -726,6 +732,10 @@ def selftest() -> int:
     assert "没见过 = 写作台没见过的文字(回流闸记的出处是 elsewhere): 发布前写作台存过、查重没打回的文字里, 没有和它重合 ≥15% 的" \
         in out and "后几轮改出来、没过查重的稿, 不等于在写作台外面写的(D-179)" in out, out
     assert "别处写的" not in out and "在别处" not in out and "外部稿" not in out, out
+    # 「对上」里分不出只对得上写手改稿的那一种(D-179 复审): 发帖对账表下面每晚一句, 不挂在「稿子不带坐标」那条有条件的提示上
+    assert f"对上 = 对上写作台发布前存的那版; {WRITER_EDIT_CAUGHT_NOTE}" in out, out
+    rc0, out0 = run_at(as_stats(dict(gpub(night, ago(19), fresh_by), gate=None)), T0)
+    assert f"对上 = 对上写作台发布前存的那版; {WRITER_EDIT_CAUGHT_NOTE}" in out0 and "没见过 =" not in out0, out0
     row = next(ln.split() for ln in out.splitlines() if ln.startswith("  HATH "))
     assert row[1:5] == ["39", "1", "1", "37"], f"发出去 / 对上 / 补录副本 / 没见过: {row}"
     rc, out = run_at(as_stats(gpub(night, ago(43), {k: ago(43) for k in fresh_by})), T0)
