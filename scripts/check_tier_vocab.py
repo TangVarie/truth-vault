@@ -13,12 +13,16 @@
   §5 爆贴门槛对不上: 这一晚新升 爆 / 大爆、档来自 爆贴 / 大爆 标、评论数不到 50 / 100 → 列出来; 诊断信息带「保留高档位」、
      伪爆、库里本来就是 爆 / 大爆、数值推断、没有评论数的 → 不列。
   §6 接线: 门槛检查在翻转闸之后、upsert 之前, 只告警, 不计 errors。
+  §7 新档位 × 途鸽那道绊线 (undeclared_ticket_on_positive, 只看没被挡的 爆 / 大爆; 11-26 随 main 合进来): 真 mapping 上
+     ['爆贴','链接失效'] / ['大爆','链接失效'] 仍是正例、绊线照看; 删除 / 未知 不看; 否决位挡下的 风控 不看;
+     HATHERINE ['爆贴','疑似限流'] 11-25 起不再被否决成 风控 → 成了没挡的 爆, 绊线要看得见; 声明了的途鸽走铺评工单, 不报。
 
 反证 (改坏之后必须变红):
   ① 拿掉 SPX 的 观察中 规则                → §1 红
   ② _TIER_RANK 里不给 删除 档位 (取 0)      → §2 ['链接失效','观察中'] 那条红
   ③ 门槛检查不排除「保留高档位」            → §5 红 (本文件 §5 末尾实跑这条反证)
   ④ preflight 把没命中的标放进 blocking     → §4 退出码那条红
+  ⑤ 绊线只认 爆 (漏了 大爆), 或把 删除 / 未知 也当正例 → §7 红
 
 跑法: cd scripts && python check_tier_vocab.py
 """
@@ -193,6 +197,28 @@ def check_wiring() -> None:
     print("  §6 接线: 翻转闸之后、upsert 之前, 只 ::warning 不计 errors ✓")
 
 
+# ── §7 新档位 × 途鸽绊线 ────────────────────────────────────────────────────
+def check_tripwire_tiers() -> None:
+    cell = "\n".join(f"{i}. 评论{i}" for i in range(1, 21))        # 20 行, 评论数 16 → 16−20 不过线
+    cases = [   # (表, 流量状态, 档位, 绊线报几篇)。SPX / HATHERINE 没声明「维护评论」, 途鸽声明了
+        ("SPX_phase1", ["爆贴", "链接失效"], "爆", 1),
+        ("SPX_phase1", ["大爆", "链接失效"], "大爆", 1),
+        ("SPX_phase1", ["链接失效"], "删除", 0),
+        ("SPX_phase1", ["观察中", "链接失效"], "删除", 0),
+        ("SPX_phase1", ["观察中"], "未知", 0),
+        ("SPX_phase1", ["爆贴", "风控中", "链接失效"], "风控", 0),
+        ("HATHERINE_phase1", ["爆贴", "疑似限流"], "爆", 1),
+        ("HATHERINE_phase1", ["疑似限流"], None, 0),
+        ("TUGE_phase1", ["爆贴", "链接失效"], "爆", 0),
+    ]
+    for pid, status, want, trips in cases:
+        m = c.load_mapping(pid)
+        note, _, _ = engine.transform_row(m, "r7", {"笔记内容": "正文", "流量状态": status, "实时数据.评论数": 16, "维护评论": cell})
+        got = engine.undeclared_ticket_on_positive(m, [note])
+        assert note.get("tier") == want and len(got) == trips, f"§7 {pid} {status} → {note.get('tier')} 绊线 {got}, 应为 {want} / {trips}"
+    print(f"  §7 新档位 × 途鸽绊线: {len(cases)} 个形状 (链接失效带热度标照报、删除 / 未知 / 风控不报、HATHERINE 疑似限流放出来的爆照报) ✓")
+
+
 def main() -> int:
     check_observing()
     check_dead_link()
@@ -200,7 +226,8 @@ def main() -> int:
     check_preflight_unmatched()
     check_threshold()
     check_wiring()
-    print("\ncheck_tier_vocab: 6 节全过")
+    check_tripwire_tiers()
+    print("\ncheck_tier_vocab: 7 节全过")
     return 0
 
 
