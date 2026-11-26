@@ -103,8 +103,10 @@ ORIGIN_ELSEWHERE = "elsewhere"          # 对不上、和写作台任何一稿(�
 # 84–96%, 中间没有; 写手说他们在 AI 对话里多轮改, 最后一轮贴进飞书, 那几轮没过查重、写作台没见过 —— 这些帖印成「别处
 # 写的」是把量到的东西说成了结论。只改显示, 库里存的值(ORIGINS)两个仓共用、不动。两盏灯都用这两个常量, 不各写一遍。
 ORIGIN_ELSEWHERE_LABEL = "写作台没见过的文字"
-ORIGIN_ELSEWHERE_NOTE = ("发布前写作台里没有和它重合 ≥15% 的文字 —— 包括写手在 AI 对话里后几轮改出来、没过查重的稿, "
-                         "不等于在写作台外面写的(D-179)")
+# 「查重没打回的」: aw 回流闸量「发布前写作台里的文字」只拿转得正的底稿(aw _gate_snapshots), 只被查重打回过的不算 —— 打回的
+# 多半是写手把已经发过的帖贴进来查、撞了库里的自己; 代价是写手执意发了一篇被打回的稿, 这里也会说写作台没见过(D-179)。
+ORIGIN_ELSEWHERE_NOTE = ("发布前写作台存过、查重没打回的文字里, 没有和它重合 ≥15% 的 —— 包括写手在 AI 对话里后几轮改出来、"
+                         "没过查重的稿, 不等于在写作台外面写的(D-179)")
 GATE_CLASSES = ("pass", "fail", "unsure", "hold", "withdrawn")
 GATE_REASON_NOT_CLEAN = "not_clean"     # 投流标记 / 铺评工单 / 投流事件: 闸自己的那把「干净」尺子(同 aw priors.is_clean)
 # 闸每晚把范围内(近 60 天发布的)每一行的 gate_at 都摸一遍。灯早上 08~10 时(UTC)跑, 闸前一天 14:00 UTC 跑: 正常 18~20 小时;
@@ -438,8 +440,12 @@ def gather(sb, since_iso: str) -> dict:
 
 def _snapshot_counts(sb, pids: set, since_iso: str) -> tuple[dict, set, str | None] | None:
     """查重底稿(W-38): 窗口内每个写作台项目查过几篇、表里有过底稿的项目(不限窗口, 表本身只留 60 天)、全表最早一篇是哪会儿
-    查的。只取 project_id / checked_at / status, 不碰标题正文。表不在(018 没跑, PGRST205)回 None; 别的错直接抛(灯崩了比错判好,
-    有哨兵行兜着)。
+    查的。只取 project_id / checked_at / status / text_fp(正文指纹, 一段 hash), 不碰标题正文。表不在(018 没跑, PGRST205)回 None;
+    别的错直接抛(灯崩了比错判好, 有哨兵行兜着)。
+
+    「几篇」按 (项目, text_fp) 去重(2026-11-26, D-179): aw 协议从 00ff79b30fcc 起每一轮给用户看的稿子都查重, 查重超时照记
+    底稿、模型重试也各记一行 —— 同样的字查几次只算一篇(aw tv-sync 归成一篇也是这个键)。改过的每一版字不一样, 照样各算一篇,
+    所以上线后这个数还是会比以前高: 数的是查过几版稿, 不是写了几篇。没有 text_fp 的行(表里这一列 NOT NULL, 只防假件)按行算。
 
     status 是 writer_edit 的行(aw 2026-11-26 那一轮改动(A/B)部署起 record_edit 记的: 写手贴回来的、自己改过的那一版; TV 这边
     从这一版起就不把它算查过, 部署之前表里没有这种行)不是查过重的稿: 不算进「查过几篇」和「最早一篇」, 只算进 ever(写作台
@@ -449,18 +455,19 @@ def _snapshot_counts(sb, pids: set, since_iso: str) -> tuple[dict, set, str | No
 
     try:
         rows = fetch_all_pages(sb.schema("autowriter").table("draft_snapshots")
-                               .select("id, project_id, checked_at, status"), order_by="id")
+                               .select("id, project_id, checked_at, status, text_fp"), order_by="id")
     except Exception as exc:                            # noqa: BLE001
         if "pgrst205" in str(exc).lower() and "draft_snapshots" in str(exc):
             return None
         raise
-    counts: dict[str, int] = {}
+    seen: dict[str, set] = {}
     ever: set = set()
     for r in rows:
         if r.get("project_id") in pids:
             ever.add(r["project_id"])
             if r.get("status") != SNAPSHOT_WRITER_EDIT and str(r.get("checked_at") or "") >= since_iso:
-                counts[r["project_id"]] = counts.get(r["project_id"], 0) + 1
+                seen.setdefault(r["project_id"], set()).add(r.get("text_fp") or ("id", r.get("id")))
+    counts = {pid: len(fps) for pid, fps in seen.items()}
     first = min((str(r["checked_at"]) for r in rows
                  if r.get("checked_at") and r.get("status") != SNAPSHOT_WRITER_EDIT), default=None)
     return counts, ever, first
@@ -716,8 +723,8 @@ def selftest() -> int:
     assert rc == 0 and "::warning" not in out and "✓" in out, out
     assert "没见过" in out and "最近一次分类在 19 小时前" in out and "帖在哪写都可以" in out, out
     # 显示名(D-179): 列头短写「没见过」, 脚注说清量的是什么、不等于在写作台外面写的; 旧的「别处写的」一个字都不留
-    assert "没见过 = 写作台没见过的文字(回流闸记的出处是 elsewhere): 发布前写作台里没有和它重合 ≥15% 的文字" in out \
-        and "后几轮改出来、没过查重的稿, 不等于在写作台外面写的(D-179)" in out, out
+    assert "没见过 = 写作台没见过的文字(回流闸记的出处是 elsewhere): 发布前写作台存过、查重没打回的文字里, 没有和它重合 ≥15% 的" \
+        in out and "后几轮改出来、没过查重的稿, 不等于在写作台外面写的(D-179)" in out, out
     assert "别处写的" not in out and "在别处" not in out and "外部稿" not in out, out
     row = next(ln.split() for ln in out.splitlines() if ln.startswith("  HATH "))
     assert row[1:5] == ["39", "1", "1", "37"], f"发出去 / 对上 / 补录副本 / 没见过: {row}"
@@ -858,7 +865,7 @@ def selftest() -> int:
                                       "unmatched": 0, "ambiguous": 0, "unlinked": 0, "late": 1}, g["links"]["HATH"]
         assert g["snapshots"] == {"h1": 2, "d2": 1}, "只数映射里的写作台项目; 写手贴回来的改稿(writer_edit)不算查过"
         assert all("title" not in c and "body" not in c and c != "*" for c in snap_cols), f"底稿只数不读: {snap_cols}"
-        assert set(snap_cols) == {"id, project_id, checked_at, status"}, f"只多取 status 一列: {snap_cols}"
+        assert set(snap_cols) == {"id, project_id, checked_at, status, text_fp"}, f"只多取 status / text_fp: {snap_cols}"
         assert g["used"] == {"d1", "h1", "d2"}, "没映射的写作台项目不进 used; 只查过重的也算用过"
         # 回流闸的四列不在(020 没跑): gate 是 None, 探过一次之后取数的列和以前一字不差(上面那几格也没有多出 elsewhere)
         assert g["gate"] is None and gate_columns_present(SB()) is False
@@ -880,6 +887,16 @@ def selftest() -> int:
                     {"id": "w2", "project_id": "h1", "checked_at": "2026-10-14T03:00:00+00:00", "status": "gate_error"}]
         assert _snapshot_counts(SB(), {"d1", "d2", "h1"}, "2026-10-12T00:00:00") == \
             ({"h1": 1}, {"d2", "h1"}, "2026-10-14T03:00:00+00:00")
+        # 同样的字查几次(超时照记、重试、每一轮都查重)算一篇, 改过的另一版另算(反证: 按行数是 h1 = 4)
+        SNAPS[:] = [{"id": "r1", "project_id": "h1", "checked_at": "2026-10-14T03:00:00+00:00", "status": "gate_error",
+                     "text_fp": "fpA"},
+                    {"id": "r2", "project_id": "h1", "checked_at": "2026-10-14T03:01:00+00:00", "status": "pass",
+                     "text_fp": "fpA"},
+                    {"id": "r3", "project_id": "h1", "checked_at": "2026-10-14T05:00:00+00:00", "status": "pass",
+                     "text_fp": "fpB"},
+                    {"id": "r4", "project_id": "h1", "checked_at": "2026-10-15T03:00:00+00:00", "status": "warn",
+                     "text_fp": "fpA"}]
+        assert _snapshot_counts(SB(), {"h1"}, "2026-10-12T00:00:00")[0] == {"h1": 2}
         SNAPS[:] = kept
         # 018 没跑: 底稿那一列空着、全部副本都算「记底稿之前」、按发牌和稿子分两种(老办法)
         missing_snapshots[0] = True

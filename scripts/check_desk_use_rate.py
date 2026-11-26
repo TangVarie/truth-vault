@@ -622,8 +622,8 @@ def report(g: dict, window_days: int, delay_days: int) -> int:
     _print_comments(g)                                    # 只报不判(D-179), 读不到也只打一句, 不影响 rc
     print("  · 为什么只报不判(D-151): owner 11-12 定了帖在哪写都可以, 没有人被推回写作台。接住率低不是故障, 这盏灯不再"
           "因为它亮黄, 也没有「该到多少」的目标; 数照旧每周记进 docs/32 §4。单篇的出处看回流闸记的"
-          "(autowriter.tv_note_links.origin; 那一列还没有时看 score: 不到 0.15 = 写作台没见过的文字 —— 发布前写作台里没有"
-          "和它重合 ≥15% 的, 包括写手在 AI 对话里后几轮改出来、没过查重的稿, 不等于在写作台外面写的; 0.30 以上 = 拿写作台的稿改的)。")
+          "(autowriter.tv_note_links.origin; 那一列还没有时看 score: 不到 0.15 = 写作台没见过的文字 —— 发布前写作台存过、查重没"
+          "打回的文字里没有和它重合 ≥15% 的, 包括写手在 AI 对话里后几轮改出来、没过查重的稿, 不等于在写作台外面写的; 0.30 以上 = 拿写作台的稿改的)。")
     _print_origin(g)
     return blind_rc
 
@@ -1320,8 +1320,8 @@ def selftest() -> int:
         tbl = out[out.index("回流闸读数"):]
         erow = next(ln.split() for ln in tbl.splitlines() if ln.startswith("  AAA") and "写作台没见过的文字" in ln)
         # 显示名(D-179): elsewhere 印成「写作台没见过的文字」, 表下面说清量的是什么; 旧的「别处写的」「在别处写的」一个字都不留
-        assert "写作台没见过的文字 = 出处 elsewhere: 发布前写作台里没有和它重合 ≥15% 的文字 —— 包括写手在 AI 对话里后几轮改出来、" \
-               "没过查重的稿, 不等于在写作台外面写的(D-179)" in out, out
+        assert "写作台没见过的文字 = 出处 elsewhere: 发布前写作台存过、查重没打回的文字里, 没有和它重合 ≥15% 的 —— 包括写手在 AI " \
+               "对话里后几轮改出来、没过查重的稿, 不等于在写作台外面写的(D-179)" in out, out
         assert "别处写的" not in out and "在别处" not in out, out
         # 「写作台的稿」里分不出只对得上写手改稿的那一种(复审 2026-11-26): 表下面要说一句
         assert f"写作台的稿(·改过) = 对上写作台发布前存的那版; {WRITER_EDIT_CAUGHT_NOTE}" in tbl, tbl
