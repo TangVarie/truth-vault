@@ -65,6 +65,7 @@ from _common import (
     load_mapping,
     make_note_id,
     map_intent,
+    mask_secrets,
     notes_content_layer_supported,
     paid_cell_elements,
     parse_array,
@@ -95,6 +96,117 @@ logger = setup_logger("sync_feishu_notes")
 # ═════════════════════════════════════════════════════════════════════════
 # Feishu Bitable client
 # ═════════════════════════════════════════════════════════════════════════
+
+# ── 飞书接口出错怎么报、重不重试 (11-26 补) ─────────────────────────────────────────────────────────
+# 11-26 夜跑 WTG_phase1 第 5 页回 HTTP 400, 日志里只有 requests 的「400 Client Error: Bad Request for url: …」:
+# 飞书回包里的 code / msg 被 raise_for_status 扔了, 看不出是哪种错; 打出来的 URL 里带着 base 的 app_token、page_token,
+# 进了公开的 Actions 日志(mask_secrets 认不出飞书的 token, 只能在源头不写)。现在先读回包的 code / msg 再决定重不重试,
+# 报错只写 状态码 · code · msg · 第几页 · 共试几次 · log_id, 不写 URL / app_token / page_token / view_id。
+# code 出自飞书文档「列出记录」的错误码表、「通用错误码」页和「频控策略」页(11-26 查):
+#   · 1254607 Data not ready、1254036 Base is copying(都是 HTTP 400)、1255040(HTTP 504): 文档说等一会儿重试;
+#   · 频控: HTTP 429 + 99991400(有些老接口回 HTTP 400), 回包头 x-ogw-ratelimit-reset 是还要等几秒; 1254290 TooManyRequest
+#     (HTTP 200 + code);
+#   · 99991663 / 99991664 token 失效: 同 401, 刷一次 token;
+#   · _FEISHU_NEVER_RETRY_CODES 是重试也一样错的(token / id 不对、没权限、page_size 不对、回包太大、参数校验), 立刻报;
+#   · 别的 HTTP 400(code 没见过 / 回包不是 JSON): 用同一个 page_token 只再试一次, 等 3 秒。GET 不改东西, 这一页还没
+#     yield 出去, 不会重行。
+# 不从第 1 页重来: 前面几页已经 yield 出去了。一次请求最多等 2 次(每次 ≤ 10 秒), 加上原有的 3 × 30 秒超时。
+_FEISHU_TOKEN_CODES = frozenset({99991663, 99991664})
+_FEISHU_RATE_CODES = frozenset({99991400, 1254290})
+_FEISHU_TRANSIENT_CODES = frozenset({1254607, 1254036, 1255040})
+_FEISHU_NEVER_RETRY_CODES = frozenset({
+    1254003, 1254004, 1254005, 1254011, 1254016, 1254018, 1254024, 1254030, 1254040, 1254041, 1254042,
+    1254045, 1254301, 1254302, 1254303, 91402, 99991401, 99991661, 99991672, 99992402,
+})
+_RETRY_WAIT_CAP_S = 10
+_HTTP400_MIN_WAIT_S = 3
+_FEISHU_MSG_MAX = 200
+_FEISHU_LOGID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+_FEISHU_APP_SEG_RE = re.compile(r"/apps/([^/?#]+)")
+
+
+class FeishuAPIError(RuntimeError):
+    """飞书接口一次请求失败了(重试过的也算在里面)。
+
+    str() 只有 状态码 · code · msg · 第几页 · 共试几次 · log_id, 不带 URL / app_token / page_token / view_id;
+    网络错只写异常类名(requests 的异常文本里有整条 URL)。继承 RuntimeError: 原来的 except RuntimeError /
+    except Exception 照常接得住。"""
+
+    def __init__(self, op: str, *, status: int | None = None, code: int | None = None, msg: str = "",
+                 page: int | None = None, attempts: int | None = 1, log_id: str | None = None, net: str | None = None):
+        self.op, self.status, self.code, self.msg = op, status, code, msg
+        self.page, self.attempts, self.log_id, self.net = page, attempts, log_id, net
+        where = f"飞书 {op}" + (f" 第 {page} 页" if page else "")
+        what = f"网络 {net}" if net else f"HTTP {status} · code={code if code is not None else '?'} · msg={msg}"
+        tail = (f" · 共试 {attempts} 次" if attempts else "") + (f" · log_id={log_id}" if log_id and not net else "")
+        super().__init__(f"{where}失败: {what}{tail}")
+
+
+def _feishu_page(data: dict, op: str, page: int) -> tuple[list, bool, str | None]:
+    """code == 0 的回包拆成 (items, has_more, 下一页的 page_token)。形状不对就抛 FeishuAPIError(HTTP 200 · code=0), 不当空页。
+
+    11-26 复审补: 老代码 data["data"].get("items", []) 在回包缺 data / data 是 null 时会抛 → 这张表算没抓到、整轮红、不盖戳
+    不对账。当空页放过去的话这一晚「扫完了」, 这张表的帖全被对账报成从飞书消失了(往下是 ssll 撤回、书架、闸三)。
+    items 是 null 或没有: 只在 has_more 为假时当空页(空表的最后一页, 和以前一样); has_more 为真却没有 items 或 page_token → 报。
+    """
+    def bad(why: str) -> FeishuAPIError:
+        return FeishuAPIError(op, status=200, code=0, msg=why, page=page, attempts=None)
+
+    body = data.get("data")
+    if not isinstance(body, dict):
+        raise bad("回包没有 data") from None
+    items, more, token = body.get("items"), bool(body.get("has_more")), body.get("page_token")
+    if items is None:
+        if more:
+            raise bad("回包说还有下一页, 这一页却没有 items") from None
+        items = []
+    elif not isinstance(items, list):
+        raise bad("回包的 items 不是列表") from None
+    if more and not (isinstance(token, str) and token):
+        raise bad("回包说还有下一页, 却没有 page_token") from None
+    return items, more, (token if more else None)
+
+
+def _feishu_scrub(text: str, url: str, params: dict) -> str:
+    """飞书回的 msg 里可能带着请求里的标识: 先 mask_secrets, 再把 URL 里 /apps/<app_token> 那一段、page_token、
+    view_id 换成 <redacted>。截断要在这之后(先截再掩, 截了一半的密钥就认不出来了)。"""
+    text = mask_secrets(text)
+    m = _FEISHU_APP_SEG_RE.search(url or "")
+    for tok in ((m.group(1) if m else None), params.get("page_token"), params.get("view_id")):
+        if isinstance(tok, str) and tok:
+            text = text.replace(tok, "<redacted>")
+    return text
+
+
+def _feishu_reply(r, url: str, params: dict) -> tuple[int | None, str, dict | None, str | None]:
+    """(code, msg, 回包 dict, log_id)。回包不是 JSON 对象 → (None, '(非 JSON 回包)', None, …), 原文不往外回。"""
+    try:
+        data = r.json()
+    except Exception:  # noqa: BLE001
+        data = None
+    if isinstance(data, dict):
+        c = data.get("code")
+        code = c if isinstance(c, int) and not isinstance(c, bool) else None
+        msg = _feishu_scrub(str(data.get("msg") or ""), url, params)[:_FEISHU_MSG_MAX] or "(空)"
+        err = data.get("error")
+        log_id = err.get("log_id") if isinstance(err, dict) else None
+    else:
+        data, code, msg, log_id = None, None, "(非 JSON 回包)", None
+    if not log_id:
+        log_id = (getattr(r, "headers", None) or {}).get("X-Tt-Logid")
+    if not (isinstance(log_id, str) and _FEISHU_LOGID_RE.fullmatch(log_id)):
+        log_id = None
+    return code, msg, data, log_id
+
+
+def _ratelimit_reset_s(r) -> int | None:
+    """频控回包头 x-ogw-ratelimit-reset(还要等几秒); 没有 / 不是整数 → None。"""
+    v = (getattr(r, "headers", None) or {}).get("x-ogw-ratelimit-reset")
+    try:
+        return int(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
 
 class FeishuClient:
     """Minimal Feishu Bitable read-only client.
@@ -143,13 +255,21 @@ class FeishuClient:
         params: dict,
         *,
         max_attempts: int = 3,
-    ) -> "requests.Response":
-        """GET with bounded retries on transient errors.
+        op: str = "GET",
+        page: int | None = None,
+    ) -> dict:
+        """GET 一次(带重试), 回 code == 0 的回包 dict; 失败抛 FeishuAPIError(from None, 不带 requests 的异常链)。
 
-        Retry policy:
-          - 401 → refresh token, retry once (existing behavior)
-          - 5xx, Timeout, ConnectionError → exponential backoff 1/2/4s, max 3 tries
-          - Other 4xx (404 / 422 / etc) → return immediately, caller raises
+        11-26 补, 重试规矩(之前: 401 刷一次 token, 5xx / 超时 / 断线退避, 别的 4xx 原样回给调用方 raise_for_status,
+        URL 进日志、code / msg 丢了):
+          - 401 或 token 失效的 code → 刷一次 token 再试, 不占次数
+          - 重试也一样错的 code(_FEISHU_NEVER_RETRY_CODES) → 立刻报
+          - 429 或频控的 code → 等 x-ogw-ratelimit-reset 秒(没有这个头就 1 / 2 秒)
+          - 5xx 或「等一会儿重试」的 code → 等 1 / 2 秒
+          - 别的 HTTP 400(code 没见过 / 不是 JSON) → 同一个 page_token 只再试一次
+          - 其余(403 / 404、HTTP 200 但 code 不认得) → 立刻报
+          - 超时 / 断线 → 等 1 / 2 秒
+          HTTP 400 的重试至少等 _HTTP400_MIN_WAIT_S 秒; 每次等的秒数夹在 1 ~ _RETRY_WAIT_CAP_S。最多 max_attempts 次。
 
         NOTE: mutates `headers` in place when refreshing the bearer token
         on 401. The caller (list_records) shares ONE headers dict across all
@@ -157,36 +277,51 @@ class FeishuClient:
         uses the fresh token instead of hitting 401 → reauth on each page.
         Don't pass a dict you need preserved as-is.
         """
-        last_exc: Exception | None = None
-        for attempt in range(max_attempts):
+        refreshed = unknown_400_retried = False
+        attempt = gets = 0
+        while True:
+            attempt += 1
+            gets += 1
             try:
                 r = requests.get(url, headers=headers, params=params, timeout=30)
-                if r.status_code == 401 and attempt == 0:
-                    # token expired mid-pagination; refresh and retry once.
-                    # Mutate caller's headers dict in place so subsequent
-                    # pages also pick up the new token (codex review
-                    # discussion_r3286292885 PR #12).
-                    self._token = None
-                    new_token = self._ensure_token()
-                    headers["Authorization"] = f"Bearer {new_token}"
-                    continue
-                if 500 <= r.status_code < 600:
-                    if attempt == max_attempts - 1:
-                        return r  # let caller raise via raise_for_status
-                    wait = 2 ** attempt
-                    time.sleep(wait)
-                    continue
-                return r
             except (requests.Timeout, requests.ConnectionError) as exc:
-                last_exc = exc
-                if attempt == max_attempts - 1:
-                    raise
-                wait = 2 ** attempt
-                time.sleep(wait)
-        # Unreachable: above loop either returns or raises
-        if last_exc:
-            raise last_exc
-        raise RuntimeError("_get_with_retry exhausted retries without raising")
+                # requests 的异常文本里是整条 URL(带 app_token): 只留类名, 也不挂异常链
+                if attempt >= max_attempts:
+                    raise FeishuAPIError(op, page=page, attempts=gets, net=type(exc).__name__) from None
+                time.sleep(2 ** (attempt - 1))
+                continue
+            status = r.status_code
+            code, msg, data, log_id = _feishu_reply(r, url, params)
+            if 200 <= status < 300 and code == 0 and data is not None:
+                return data
+            if (status == 401 or code in _FEISHU_TOKEN_CODES) and not refreshed:
+                # token expired mid-pagination; refresh and retry once.
+                # Mutate caller's headers dict in place so subsequent
+                # pages also pick up the new token (codex review
+                # discussion_r3286292885 PR #12).
+                refreshed = True
+                self._token = None
+                headers["Authorization"] = f"Bearer {self._ensure_token()}"
+                attempt -= 1
+                continue
+            err = FeishuAPIError(op, status=status, code=code, msg=msg, page=page, attempts=gets, log_id=log_id)
+            wait: int | None = None
+            if code in _FEISHU_NEVER_RETRY_CODES:
+                raise err from None
+            if status == 429 or code in _FEISHU_RATE_CODES:
+                wait = _ratelimit_reset_s(r)
+                if wait is None:
+                    wait = 2 ** (attempt - 1)
+            elif status >= 500 or code in _FEISHU_TRANSIENT_CODES:
+                wait = 2 ** (attempt - 1)
+            elif status == 400 and not unknown_400_retried:
+                unknown_400_retried = True
+                wait = _HTTP400_MIN_WAIT_S
+            if wait is None or attempt >= max_attempts:
+                raise err from None
+            if status == 400:
+                wait = max(wait, _HTTP400_MIN_WAIT_S)
+            time.sleep(max(1, min(wait, _RETRY_WAIT_CAP_S)))
 
     def list_records(
         self,
@@ -203,8 +338,12 @@ class FeishuClient:
 
         2026-05-22 audit P1: GET 在 5xx / 网络异常时, 老代码直接 raise_for_status,
         飞书侧瞬时抖动会中断整个 sync. 加 _get_with_retry: 401 刷 token (一次),
-        5xx / Timeout / ConnectionError 指数退避 (1/2/4s), 最多 3 次.
-        硬性 4xx (404 / 422) 仍 fail-fast 因为重试也是同样错.
+        5xx / Timeout / ConnectionError 指数退避, 最多 3 次.
+        11-26 补: 不再 raise_for_status —— 它把飞书回包的 code / msg 扔了, 报错文本里是带 app_token 的整条 URL
+        (11-26 WTG 第 5 页 HTTP 400 就是这样进的公开日志)。现在 _get_with_retry 先读 code 再定重不重试
+        (频控按回包头等、「等一会儿重试」的 code 退避、没见过的 HTTP 400 同一页再试一次、重试也一样错的 code 立刻报),
+        失败抛 FeishuAPIError, 文本是「飞书 list_records 第 N 页失败: HTTP … · code=… · msg=… · 共试 N 次」。
+        code 是 0 可回包形状不对(没有 data、说有下一页却没有 page_token)也抛, 不当空页(_feishu_page)。
         """
         token = self._ensure_token()
         url = self.BITABLE_RECORDS_URL.format(app_token=app_token, table_id=table_id)
@@ -213,19 +352,17 @@ class FeishuClient:
         if view_id:
             params["view_id"] = view_id
 
+        page = 0
         while True:
-            r = self._get_with_retry(url, headers, params)
-            r.raise_for_status()
-            data = r.json()
-            if data.get("code") != 0:
-                raise RuntimeError(f"Feishu list_records error: {data}")
-
-            for item in data["data"].get("items", []):
+            page += 1
+            data = self._get_with_retry(url, headers, params, op="list_records", page=page)
+            items, more, next_token = _feishu_page(data, "list_records", page)
+            for item in items:
                 yield item
 
-            if not data["data"].get("has_more"):
+            if not more:
                 break
-            params["page_token"] = data["data"]["page_token"]
+            params["page_token"] = next_token
             # gentle rate limit
             time.sleep(0.1)
 
@@ -234,7 +371,7 @@ class FeishuClient:
         """这张表(给了视图就按视图)现在有哪些列名。只读, 只在风控来源列闸那条路上调(外部评审 11-04 F01 复核)。
 
         list_records 不返回空格子, 所以「这一轮一行都没返回这一列」分不出「列改名了」和「列还在、格子全空了」;
-        表结构分得出。"""
+        表结构分得出。出错同 list_records(11-26 补): 抛 FeishuAPIError, 文本里没有 URL。"""
         token = self._ensure_token()
         url = self.BITABLE_FIELDS_URL.format(app_token=app_token, table_id=table_id)
         headers = {"Authorization": f"Bearer {token}"}
@@ -242,16 +379,15 @@ class FeishuClient:
         if view_id:
             params["view_id"] = view_id
         names: set[str] = set()
+        page = 0
         while True:
-            r = self._get_with_retry(url, headers, params)
-            r.raise_for_status()
-            data = r.json()
-            if data.get("code") != 0:
-                raise RuntimeError(f"Feishu list_fields error: {data}")
-            names.update(f["field_name"] for f in data["data"].get("items") or [] if f.get("field_name"))
-            if not data["data"].get("has_more"):
+            page += 1
+            data = self._get_with_retry(url, headers, params, op="list_fields", page=page)
+            items, more, next_token = _feishu_page(data, "list_fields", page)
+            names.update(f["field_name"] for f in items if f.get("field_name"))
+            if not more:
                 break
-            params["page_token"] = data["data"]["page_token"]
+            params["page_token"] = next_token
         return names
 
 
@@ -360,11 +496,15 @@ _COMMENT_MAINTAINED_STATUS = ("改评发布", "二次评论", "改评显示")
 #   不认的代价今天是零(3 篇趴, 那篇大爆扣掉行数仍过线), 但没人会回头看: 所以有一道绊线(undeclared_ticket_on_positive,
 #   main() 里风控来源列闸后面) —— 不认「维护评论」的表里, 未声明的「维护评论」有值、tier 是 爆/大爆、又没被别的路挡、
 #   评论数扣掉它的行数不过爆线 → 整轮红、点名这几篇。红了就由工程在那张表的 mapping 里声明这一列(运营不用做什么),
-#   再改 check_comment_maintained.py ⑯ 开头 SPX 那条断言。
+#   再在 check_comment_maintained.py ⑯ 开头给那张表加一条钉(同途鸽 / BJS)。
+#   11-26 补: 当晚绊线照设计在 BJS_phase2 红了一次 —— 运营新开了一列「维护评论」, 一篇 11-19 发布的爆评论 67、这一格
+#   20 行, 67−20=47 不过线。先看了值: 6 篇有格子(1 爆 5 趴)、每格 13-20 行、一行约 30-46 字、一行一条, 和途鸽同形 →
+#   在 BJS_phase2 的 mapping 里声明了这一列(引擎当铺评工单列认, 那篇爆按 铺评工单 挡); ⑯ 开头钉了 BJS。
+#   SPX_phase1 照旧不声明(那篇大爆 152−19 仍过线, 认不认都放), 由绊线看着。
 #   旧名照旧全局认(含未声明), 行为不变。
 #   ⚠️ 再改名: 新名字先进这里(看过值)和 _CM_TICKET_SEEDED, 再在 mapping 里声明; 旧名字别从 mapping 摘。只改 mapping
 #   (两个名字都换成代码不认的第三个名字)或只从这里摘名字, 跑的时候闸是哑的(它只看 mapping 声明了、这里也认的列),
-#   拦这两种改法的是 CI: check_comment_maintained.py ⑯ 开头钉住了途鸽 mapping 和这里的名字。
+#   拦这两种改法的是 CI: check_comment_maintained.py ⑯ 开头钉住了途鸽 / BJS 的 mapping 和这里的名字。
 _CM_TICKET_COLS = ("维护评论50条", "维护评论")
 _CM_TICKET_DECLARED_ONLY = ("维护评论",)
 # 已铺条数 = 这一格里的评论行数, 封顶这个数; 数不出行数时也按这个数 (D-150, owner 2026-11-10「贴几条就是发了几条」)。
@@ -1392,7 +1532,7 @@ def apply_tier_flip_block(pending_notes: list[dict], plan: dict) -> int:
 # 返回过) → 这篇是按同一批格子现判的, 不沿用; 库里旗子点名不见了那一列、这一轮又没按认得的名字读到格子的篇 → 照旧沿用 + 红。
 # 代价: 声明了的两个名字有一个不在表里的那几晚, 每晚多读一次飞书表结构和一次库里旗子(途鸽改名之后就是这样)。
 # 闸只看 mapping 声明了、代码也认的列: 只改 mapping(两个名字都换成代码不认的)或只从 _CM_TICKET_COLS 摘名字, 跑的时候
-# 闸是哑的; 拦这两种改法的是 CI(check_comment_maintained.py ⑯ 开头钉住途鸽 mapping 和 _CM_TICKET_COLS)。只换掉一个名字
+# 闸是哑的; 拦这两种改法的是 CI(check_comment_maintained.py ⑯ 开头钉住途鸽 / BJS 的 mapping 和 _CM_TICKET_COLS)。只换掉一个名字
 # (另一个还声明着)闸照样红。
 _SYN_NOTE_STATUS_REASON = "笔记状态含「关注」"
 _RISK_FLAG_FAMILIES = ("synthetic", "comment_maintained", "paid_promoted")
@@ -1534,7 +1674,9 @@ def carry_risk_flags(pending_notes: list[dict], missing: dict[str, list[tuple[st
 # _CM_TICKET_DECLARED_ONLY 里的名字只在声明了的表里当铺评工单列认。没声明的表里它有值, 今天不挡任何帖; 可哪天这样一篇
 # 被标成 爆 / 大爆、评论数扣掉这一格的行数又不过爆线, 认了就该挡, 不认它就进了书架、通道 1、L2 正例, 没人知道。
 # 只看 爆 / 大爆: 铺评工单只挡指标型 tier(参考、趴认不认都一样)。已经被别的路挡住的(synthetic / 铺评工单)不算。
-# 评论数缺失也算(证明不了过线, 同 ⑦ 减法)。红了 → 工程在那张表的 mapping 里声明这一列(运营不用做什么), 改 ⑯ 开头那条断言。
+# 评论数缺失也算(证明不了过线, 同 ⑦ 减法)。红了 → 工程先看值, 在那张表的 mapping 里声明这一列(运营不用做什么), 在 ⑯ 开头
+# 给那张表加一条钉。11-26 补: 加上的当晚就在 BJS_phase2 红了一次(一篇爆 67−20=47), 照设计 —— 看过值之后声明了 BJS 的这一列;
+# SPX_phase1 照旧不声明, 还归这道绊线看。声明了的表这里回 [](names 是空的; ⑯q 把旗子摘掉再问一次, 钉着这一条)。
 def undeclared_ticket_on_positive(mapping: dict, pending_notes: list[dict]) -> list[str]:
     """回这一轮踩线的篇(「note_id(tier, 评论数, 列 N 行)」), 没有回 []。"""
     names = [c for c in _CM_TICKET_DECLARED_ONLY if c not in cm_ticket_cols(mapping)]
@@ -2871,7 +3013,10 @@ def main() -> int:
                 #    都没抓到"和"抓得好好的"在工作流里长得一模一样 —— 源数据静默
                 #    变陈旧, 聚合告警不会响。这是本轮 COR-008(指标写失败不计进
                 #    exit code)的同一个形状, 第三次出现了。(codex review)
-                logger.exception("飞书表抓取失败 table_id=%s: %s", _sp["table_id"], exc)
+                # 11-26 补: FeishuAPIError 的文本已经是干净的「HTTP … · code=… · msg=…」(没有 URL), 不再带 traceback;
+                # 别的异常照旧带 traceback。下面两行计数一个字没改(check_sync_runs.py 钉着 full_scan 的判据)。
+                logger.error("飞书表抓取失败 table_id=%s: %s", _sp["table_id"], exc,
+                             exc_info=not isinstance(exc, FeishuAPIError))
                 fetch_failed.append(_sp["table_id"])
                 stats["errors"] += 1
 
@@ -3317,7 +3462,7 @@ def main() -> int:
         msg = (f"{mapping['project_id']}: 这张表没声明「{'、'.join(_CM_TICKET_DECLARED_ONLY)}」(引擎不当铺评工单列认), "
                f"可它在 {len(tripped)} 篇 爆/大爆 上有值, 扣掉这一格的行数评论数不过爆线 —— 认了就该挡, 现在没挡、会进书架 / "
                f"通道 1 / L2 正例: {tripped[:10]}。工程在这张表的 mapping 里声明这一列(运营不用做什么), "
-               f"再改 check_comment_maintained.py ⑯ 开头那条断言")
+               f"先看值, 再在 check_comment_maintained.py ⑯ 开头给这张表加一条钉(同途鸽 / BJS)")
         logger.error("【未声明的铺评列落在爆款上】%s", msg)
         if os.environ.get("GITHUB_ACTIONS") == "true":
             print(f"::error title=未声明的铺评列落在爆款上 ({mapping['project_id']})::{msg}", flush=True)

@@ -564,6 +564,8 @@ print("  ⑮ 工单列按行数减 (D-150): 20 行 80 放 / 60 剔 · 封顶 50 
 #      Ⅻ 绊线不看评论数扣掉行数过没过线                 → ⑯p 红 (SPX 那篇大爆会被报)
 #      ⅩⅢ 绊线拿掉                                      → ⑯p 红
 #      ⅩⅣ 绊线不管已经被挡住的                          → ⑯i 红 (沿用回来的 铺评工单 已经挡住了, 还报)
+#      ⅩⅤ BJS 的 mapping 摘掉「维护评论」(11-26 补)      → ⑯ 开头 BJS 那条红 (那篇 67−20 的爆不挡了; 放过开头也在 ⑯q 红)
+#      ⅩⅥ 绊线不看声明 (names 不按 mapping 筛, 11-26 补) → ⑯q 红 (旗子摘掉的那条: 声明了的 BJS 也被点名)
 OLD16, NEW16 = "维护评论50条", "维护评论"
 import _common
 _tuge16, _spx16 = _common.load_mapping("TUGE_phase1"), _common.load_mapping("SPX_phase1")
@@ -571,6 +573,12 @@ assert s.cm_ticket_cols(_tuge16) == (OLD16, NEW16), f"⑯ 途鸽的 mapping 两�
 assert {OLD16, NEW16} <= set(s.risk_source_columns(_tuge16)), f"⑯ 途鸽两个名字都在闸的视野里: {s.risk_source_columns(_tuge16)}"
 assert s.cm_ticket_cols(_spx16) == (OLD16,) and not (set(s._CM_TICKET_COLS) & set(s.risk_source_columns(_spx16))), \
     "⑯ SPX 的「维护评论」还没定认不认 (只有 4 篇): 要认就在 SPX 的 mapping 里声明这一列, 并改这条断言"
+# 11-26 补: BJS_phase2 当晚绊线红了 (运营新开「维护评论」, 一篇 11-19 发布的爆评论 67、这一格 20 行, 67−20=47 不过线)。
+#   看过值 (6 篇、每格 13-20 行、一行约 30-46 字, 和途鸽同形) 之后在 BJS 的 mapping 里声明了 → 钉住, 别哪次改 mapping 摘掉
+#   (摘了闸和 route ① 都不认它, 那篇爆回书架 / 通道 1 / L2 正例; 绊线只在 评论数 − 行数 < 50 时才兜得住)。用例见 ⑯q。
+_bjs16 = _common.load_mapping("BJS_phase2")
+assert s.cm_ticket_cols(_bjs16) == (OLD16, NEW16), f"⑯ BJS 的 mapping 要声明「维护评论」(11-26 看过值): {s.cm_ticket_cols(_bjs16)}"
+assert NEW16 in s.risk_source_columns(_bjs16), f"⑯ BJS 的「维护评论」要在闸的视野里: {s.risk_source_columns(_bjs16)}"
 M16 = dict(M13, project_specific_fields_to_raw_extra=[*M13["project_specific_fields_to_raw_extra"], OLD16, NEW16])
 def _cm16(m, rid, row):
     n, _, und = s.transform_row(m, rid, {"文案": "c", "状态": "爆贴", **row})
@@ -729,8 +737,31 @@ rc, err, st, cap = _with16(["维护情况"], lambda: _run14([("r1", {"流量状�
                                                          {}, schema=SCHEMA14 | {NEW16}))
 assert rc == 1 and err == 1 and st["undeclared_ticket_on_positive"] == 1 \
     and "comment_maintained" not in cap["notes"]["T_CM14_r1"]["data_quality_flags"], f"⑯p main() 红、只报那一篇: rc={rc} {st}"
+# q) 11-26 补, 用 BJS_phase2 真的 mapping: 那篇爆的形状 (评论 67、「维护评论」20 行) → 铺评工单、已铺 20 (67−20=47 不过线),
+#    tier 不动; 绊线在 BJS 的 mapping 下回 [] (声明了 = 认了), 同一行换成摘掉声明的 mapping 才会被绊线点名。70 条起放 (70−20=50)。
+_bjs16_und = dict(_bjs16, project_specific_fields_to_raw_extra=[
+    c for c in _bjs16["project_specific_fields_to_raw_extra"] if c != NEW16])
+def _bjs16_row(m, cc, rid="rq"):
+    n, _, und = s.transform_row(m, rid, {"笔记内容": "c", "流量状态": "爆帖", "实时数据.评论数": cc, NEW16: _lines(20)})
+    return n, und
+nq16, uq16 = _bjs16_row(_bjs16, 67)
+assert nq16.get("tier") == "爆" and nq16.get("comments_count") == 67 and NEW16 not in uq16, f"⑯q BJS 这一行的底子不对: {nq16.get('tier')} {uq16}"
+assert rt(nq16) == [TICKET] and f(nq16)["comment_maintained_seeded"] == 20 and f"「{NEW16}」" in f(nq16)["comment_maintained_reason"], \
+    f"⑯q BJS 爆 67 条、「维护评论」20 行要判成 铺评工单 / 已铺 20: {f(nq16)}"
+assert ssll14.metric_tier_untrustworthy_reason({"tier": "爆", "data_quality_flags": f(nq16)}) == TICKET, "⑯q 下游 (通道 1) 照挡"
+assert s.undeclared_ticket_on_positive(_bjs16, [nq16]) == [], "⑯q BJS 声明了「维护评论」, 绊线不该再响"
+nq16u, uq16u = _bjs16_row(_bjs16_und, 67)
+assert NEW16 in uq16u and "comment_maintained" not in f(nq16u) and len(s.undeclared_ticket_on_positive(_bjs16_und, [nq16u])) == 1, \
+    f"⑯q 反过来: 摘掉声明的 BJS mapping 不认这一列, 绊线要点名这一篇 (11-26 当晚就是这样红的): {uq16u} {f(nq16u)}"
+# 上面那条「不响」只靠这篇已经是 铺评工单 (绊线先跳过被挡住的), 证明不了「声明了就不看」。把旗子摘掉再问一次 —— main() 里
+# 读不到库里旗子那一晚 (stored_flags_batch 回 None) 就是这样摘的: 声明了的表照样 [], 没声明的照样点名 (反证 ⅩⅥ)。
+_noflags16 = lambda n: {k: v for k, v in n.items() if k != "data_quality_flags"}
+assert s.undeclared_ticket_on_positive(_bjs16, [_noflags16(nq16)]) == [], \
+    "⑯q 旗子摘掉了, 声明了「维护评论」的 BJS 绊线也不该响 (names 要按 mapping 筛)"
+assert len(s.undeclared_ticket_on_positive(_bjs16_und, [_noflags16(nq16u)])) == 1, "⑯q 旗子摘掉了, 没声明的照样点名"
+assert rt(_bjs16_row(_bjs16, 69)[0]) == [TICKET] and rt(_bjs16_row(_bjs16, 70)[0]) == [SEEDED_OK], "⑯q 边界 69−20=49 挡 / 70−20=50 放"
 print("  ⑯ 工单列改名 (维护评论50条 ↔ 维护评论): 两个名字一样认 · 同在取大 · 没声明的表不认新名 · 改名那一晚按篇放过、旗子按新名重算 · "
       "两个都没了沿用 + 红 · 另一个名字空着 / 只有别的篇有格子照样沿用 + 红 · 只声明旧名时新名不算 · 别的来源列照旧 · "
-      "没认的新名落在爆款上不过线就红 ✓")
+      "没认的新名落在爆款上不过线就红 · BJS 声明了 (11-26): 67−20 的爆判铺评工单、绊线不响 (旗子摘掉也不响) ✓")
 
 print("comment_maintained 分来路 × synthetic 正交 × 维护情况取值 × 投流三态 × 减法重判 × 来源列消失 × 按行数减 × 工单列改名: all checks passed")
