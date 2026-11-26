@@ -9,7 +9,7 @@ D-136：备份表都留着，不删；新做的备份要登记。
 - 规则是正则，对「schema.表名」整串匹配。CI 守卫 `scripts/check_verify_backup_registry.py` 要求下表和 #92 的列表一条不差。
 - 每张表怎么回滚，写在它自己的表注释（COMMENT）里，或写在「来源」那一条记录里。
 - 张数是 2026-11-25 生产只读查的，共 82 张，全部登记了。#92b（客户端角色能读写的备份表）同日是 0。
-- 最后三行是这一批 owner SQL 会建的备份表，先登记；owner 跑了之后张数照括号里的变。
+- 最后五行是批 1、批 2 的 owner SQL 会建的备份表（前三行批 1、后两行批 2），先登记；owner 跑了之后张数照括号里的变。
 
 | 规则 | 张数 | 来源 |
 |---|---|---|
@@ -38,3 +38,5 @@ D-136：备份表都留着，不删；新做的备份要登记。
 | `^truth_vault\.backup_external_publish_time_j17_20261125$` | 0（owner 跑 J-17 之后 1） | J-17 回填前的原值，`scripts/backfill_external_publish_time_j17.sql` |
 | `^truth_vault\.backup_repoint_stale_(comments\|comment_judge)_20261125$` | 0（owner 跑之后 2） | AU-F02b ④ 删旧帖评论前，`scripts/cleanup_repointed_stale_comments_au_f02b.sql` |
 | `^truth_vault\.backup_repoint_stale_ssll_(samples\|marks)_20261125$` | 0（owner 跑之后 2） | AU-F02b ④ 撤三省六部旧样本前，`scripts/withdraw_repointed_stale_ssll_samples_au_f02b.sql` |
+| `^truth_vault\.backup_(comments\|nfa)_commenter_20261125$` | 0（owner 跑 v1_31 之后 2） | 列体检 11-25 §3a #1 删 29 行假评论和 270 行判分前的整行备份（D-175），`schemas/notes_v1_31_commenter_codes_cleanup.sql`；回滚写在表注释里 |
+| `^truth_vault\.backup_notes_i17_20261125$` | 0（owner 跑 v1_33 之后 1） | I-17 换回 content_format 前，69 篇的 4 列 + 内容层 + 方向原值（D-178），`schemas/notes_v1_33_direction_switch_restore.sql`；回滚写在表注释里 |

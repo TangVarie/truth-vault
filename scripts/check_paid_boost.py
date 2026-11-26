@@ -249,6 +249,37 @@ def check_ci_wiring() -> None:
         assert m and needle in m.group(0), f"verify_supabase_state.sql 要有 #{ord_} ({needle}) —— 生产 apply 之后靠它看证据链在不在、有没有漏网"
 
 
+V132_FILE = ROOT / "schemas" / "notes_v1_32_paid_boost_effect_increment.sql"
+
+
+def _events_view(sql: str) -> str:
+    """一份 SQL 里 v_paid_boost_events 的 CREATE … 到它的 COMMENT 之前 (视图正文)。"""
+    i = sql.index("CREATE OR REPLACE VIEW truth_vault.v_paid_boost_events AS")
+    return sql[i:sql.index("COMMENT ON VIEW truth_vault.v_paid_boost_events", i)]
+
+
+def check_v132_parity() -> None:
+    """⑥ v1_32 (列体检 11-25 §3a #4) 只改 ops_effect_metric_flag 那一处: 视图正文去掉注释行之后, 和 v1_22 只差
+    'unknown' → 'increment'。v1_32 只重建这一个视图, 不碰别的对象。"""
+    def body(sql: str) -> list[str]:
+        return [ln for ln in _events_view(sql).splitlines() if ln.strip() and not ln.strip().startswith("--")]
+    old, new = body(SQL_FILE.read_text(encoding="utf-8")), body(V132_FILE.read_text(encoding="utf-8"))
+    diff = [(a, b) for a, b in zip(old, new) if a != b]
+    assert len(old) == len(new) and len(diff) == 1, f"⑥ v1_32 的视图和 v1_22 不止差一行: {diff[:3]} ({len(old)} vs {len(new)} 行)"
+    a, b = diff[0]
+    assert "'unknown'" in a and a.replace("'unknown'", "'increment'") == b, f"⑥ 差的那一行不是 flag: {a!r} → {b!r}"
+    v132 = V132_FILE.read_text(encoding="utf-8")
+    objs = re.findall(r"(?im)^\s*(CREATE|DROP|ALTER|INSERT|UPDATE|DELETE|TRUNCATE)\b[^\n]*", v132)
+    assert objs == ["CREATE"], f"⑥ v1_32 只该有一句 CREATE OR REPLACE VIEW: {objs}"
+    ci = CI_FILE.read_text(encoding="utf-8")
+    fx = (ROOT / "scripts" / "check_paid_boost_v1_32.sql").read_text(encoding="utf-8")
+    assert "-f schemas/notes_v1_32_paid_boost_effect_increment.sql -f scripts/check_paid_boost_v1_32.sql" in ci \
+        and "\\i schemas/notes_v1_32_paid_boost_effect_increment.sql" in fx and "\\set want_flag increment" in fx \
+        and "\\i scripts/check_paid_boost.sql" in fx, \
+        "⑥ ci.yml 的 sql job 要 apply v1_32 再跑 v1_32 夹具; 夹具里再 apply 一遍、用 want_flag=increment 把 check_paid_boost.sql 跑一遍"
+    print("  ⑥ v1_32: 视图正文和 v1_22 只差 flag 那一行 (unknown → increment), 文件里只有这一句 CREATE; CI 接上了")
+
+
 def main() -> int:
     fe = element_failures()
     assert not fe, "① 元素判据:\n  " + "\n  ".join(fe)
@@ -262,6 +293,7 @@ def main() -> int:
     check_parity()
     check_static_ban()
     check_ci_wiring()
+    check_v132_parity()
     print("投流证据链 F1 (Python 侧): all checks passed")
     return 0
 

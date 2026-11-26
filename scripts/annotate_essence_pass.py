@@ -69,8 +69,8 @@ from _common import (
     mask_secrets,
     notes_content_sha_supported,
     setup_logger,
-    _direction_key,
     _iso_now,
+    effective_direction_key,
 )
 
 
@@ -186,13 +186,17 @@ MODE_A_USER_TEMPLATE = """══════════════════
 
 
 def build_project_context(project: dict, note: dict) -> str:
-    """Render the project_context block. Performance fields are EXCLUDED."""
+    """Render the project_context block. Performance fields are EXCLUDED.
+
+    raw_extra 是 NULL 也得能拼 (库里这一列可空、没默认值; PostgREST 回的是键在、值 None, .get 的默认值不起作用)。
+    sync 读失败那一晚 (I-17, D-178) 新篇整行插入失败时会落一行 NULL, essence 同一晚就选到它 —— 抛了会把整个项目这一晚的
+    essence 停在这一篇。同 get_sub_directions_for_note 的写法。check_direction_switch §9B 钉住。"""
     return f"""- 品牌: {project.get('brand', '(未填)')}
 - 产品: {project.get('product', '(未填)')}
 - 品类: {project.get('category', '(未填)')}
 - 目标蓝词: {', '.join(note.get('target_blue_keywords') or []) or '无'}
 - 内容意图: {note.get('intent') or '未知'}
-- 项目级方向 (如有): {note.get('raw_extra', {}).get('_direction_raw') or '(项目未定义方向)'}"""
+- 项目级方向 (如有): {(note.get('raw_extra') or {}).get('_direction_raw') or '(项目未定义方向)'}"""
 
 
 def build_mode_a_prompt(project: dict, note: dict) -> tuple[str, str]:
@@ -300,7 +304,8 @@ def get_sub_directions_for_note(mapping: dict, note: dict
         return None
     # raw_extra stores the original Feishu cell, which may be a list
     # (multi-select / rich-text); normalize to the same hashable key sync uses.
-    dir_key = _direction_key(raw_dir)
+    # 去掉 direction_ignore_tokens 再查 (I-17), 和 sync 的 transform_row 同一个键。没配的 mapping 就是 _direction_key。
+    dir_key = effective_direction_key(raw_dir, mapping)
     decomp = (mapping.get("direction_decomposition") or {}).get(dir_key)
     if decomp is None:
         return None

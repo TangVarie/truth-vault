@@ -80,6 +80,7 @@ from _common import (
     update_project_date_range,
     warn_missing_migration_once,
     _direction_key,
+    effective_direction_key,
     _iso_now,
     _iso_now_tz,
 )
@@ -442,6 +443,50 @@ def ticket_seeded(col: str, cell: Any) -> tuple[int, str]:
         return cap, f"{why}, 封顶 {cap} 条"
     return n, f"{why} = 已铺 {n} 条"
 
+
+# ── I-17 (2026-11-25): 方向抬不了时清掉的三列; 抬得了 = mapping 里这个方向写了至少一个要抬的列 ─────────────────
+_PROFILE_LIFT_COLS = ("content_format", "target_audience", "user_pain_point", "product_focus")
+_PROFILE_CLEAR_COLS = ("target_audience", "user_pain_point", "product_focus")
+
+
+def direction_lifts_profile(entry: Any) -> bool:
+    """direction_decomposition 里的一个方向能不能「直接抬」: 是 dict、没有 sub_directions、至少写了一个要抬的列。
+    只写了 layer 的方向 (BJS_phase2 的 精品贴、HATHERINE 9 月下旬起的新方向名) 抬不了。"""
+    return (isinstance(entry, dict) and "sub_directions" not in entry
+            and any(entry.get(c) is not None for c in _PROFILE_LIFT_COLS))
+
+
+def direction_entry(mapping: dict, raw_dir: Any) -> Optional[dict]:
+    """方向原值 → direction_decomposition 里的那一条 (去掉 direction_ignore_tokens 再查); 没有 → None。"""
+    if raw_dir in (None, "", []):
+        return None
+    e = (mapping.get("direction_decomposition") or {}).get(effective_direction_key(raw_dir, mapping))
+    return e if isinstance(e, dict) else None
+
+
+_COMMENTER_CODE_SPLIT_RE = re.compile(r"[\s、,，;；/]+")
+
+
+def commenter_codes(cell: Any) -> list[str]:
+    """「随贴评论素人」一格 → 素人编号列表 (列体检 2026-11-25 §3a #1: 这一列是发这条随贴评论的素人编号, 不是评论)。
+
+    飞书回字符串、数字或富文本分段都认; 按空白 / 顿号 / 逗号 / 分号 / 斜杠切开, 去空, 保持原顺序、去重。
+    生产 11-25: 2,003 格, 每格一个编号, 97–100% 是 1–3 位数字, 最长 7 个字。"""
+    if cell in (None, "", []):
+        return []
+    if isinstance(cell, bool):
+        return []
+    if isinstance(cell, (int, float)):
+        text = str(int(cell)) if float(cell).is_integer() else str(cell)
+    else:
+        text = _direction_key(cell)
+    out: list[str] = []
+    for part in _COMMENTER_CODE_SPLIT_RE.split(text):
+        part = part.strip()
+        if part and part not in out:
+            out.append(part)
+    return out
+
 # ③ 「维护情况」多选列 —— 按【取值】判, 不是"非空即算"(运营 2026-09-22 逐值语义)。
 #   运营原文: 关注=做了20条维护评论 · 重点关注⭐️=做了50条 · ✅=此帖【需要】做50条 ·
 #            控评&置顶✅=已完成控评和置顶2个动作 · 已评待置顶=已控评未置顶成功。
@@ -461,10 +506,38 @@ _CM_MV_TODO = ("✅",)        # "需要做50条" = 待办, 【不算已铺】, �
 # ② 起量后干预列: 列名里就写着【爆帖】+ 控评/置顶, 是对已起量帖子的二次运营。
 #   2026-09-16 codex PR#128 P2 补: 这两列此前完全在检测视野之外 ——
 #   爆帖控评置顶(HXZ_QD 3 行)全部漏网, 爆帖置顶评论(HXZ_FB 9 行)漏 5 行。
-#   ⚠️ 没有把 typed 列 pinned_comment 一并收进来: 它 127 行里 126 行是爆款, 形态与本组一致,
-#   但"记下置顶的是哪条评论"和"做了置顶这个动作"是两回事, 无法从数据分辨。
-#   已列入给运营的待确认清单(ops-request 第一部分), 确认前不猜。
+#   typed 列 pinned_comment (模板把「爆帖置顶评论」映到这里) 也算: 运营 2026-09-17 确认这列记的是
+#   「第一屏有没有置顶显示」, owner 拍板并入 route ② (D-062)。判据在 transform_row 的 ④。
+#   (这里以前写着「没有把 pinned_comment 收进来, 确认前不猜」—— D-062 之后就过时了, 2026-11-25 改正。)
 _CM_POSTHOC_COLS = ("爆帖控评置顶", "爆帖置顶评论")
+# 这两列 (和 typed 的 pinned_comment) 填的是控评 / 置顶动作的【状态标签】, 不是评论原文 (列体检 2026-11-25 §2d)。
+# 生产 11-25 的取值: 成功、补控成功、交付前补控成功、控住后掉了 = 做过; 待置顶、待做评论、待安排贴主自评(回复)、
+# 等解封后控评 / 待解封后控评 = 还没做; 素人退出无法回收 = 做不成。
+# 只有做过的才算「起量后干预」。还没做和做不成的不算, 同「维护情况」的「✅」(需要做) 不算已铺 (D-060 / D-062 后续)。
+# 以前非空即算: 按需项目补跑一次会把 28 行待办当成做过 (NUC 11、NRT3 10、HXZ_FB 4、HXZ_QD 3; 列体检数的 29 里有 1 行同时带「控住后掉了」, 算做过)。
+# 判据按标签的样子 (以「待」「等」开头, 或带「无法」), 不按名单: 运营新加一个「待xx」也认得出。
+# ⚠️ 挡不住什么: 一个做过的标签恰好以「待」「等」开头, 会被当成待办漏掉; 正文写成一整段的置顶评论原文照旧算做过。
+_CM_POSTHOC_PENDING_RE = re.compile(r"^[待等]|无法")
+_CM_POSTHOC_SPLIT_RE = re.compile(r"[,，、;；\n]+")
+
+
+def posthoc_done_labels(cell: Any) -> list[str]:
+    """爆帖置顶评论 / 爆帖控评置顶 / pinned_comment 一格 → 里面「做过」的标签 (去掉待办和做不成的)。空 = 不算干预。
+
+    多选回 list (元素是字符串或 {text}); 文本格或 typed 列可能是「成功, 待做评论」这种拼好的串, 按逗号顿号分号换行切。"""
+    if cell in (None, "", []):
+        return []
+    items = cell if isinstance(cell, list) else [cell]
+    out: list[str] = []
+    for x in items:
+        v = x.get("text") if isinstance(x, dict) else x
+        if v is None or isinstance(v, bool):
+            continue
+        for part in _CM_POSTHOC_SPLIT_RE.split(str(v)):
+            part = part.strip()
+            if part and not _CM_POSTHOC_PENDING_RE.search(part):
+                out.append(part)
+    return out
 
 # ── 投流标记(2026-09-22 运营回填件确认「关注后续流量」是投流标记)─────────────
 # 运营 2026-09-22: 🍟 = 做了小红书的薯条投流, 前面的日期是投流日期;
@@ -785,7 +858,7 @@ def recover_missing_body(
 _PER_RUN_FLAG_KEYS = frozenset({
     "publish_time_future", "tier_unmapped", "tier_cleared", "tier_flip_blocked", "direction_unmapped",
     "metrics_snapshot_regressed", "content_cleared_in_feishu", "content_inherited",
-    "risk_flags_carried_from_db",
+    "risk_flags_carried_from_db", "content_format_not_restored",
 })
 
 
@@ -870,7 +943,7 @@ def _detect_missing_core_columns(
        才算断源。(codex PR#125 review P2)
 
     ⚠️ `_` 开头的中间量若不在 _CORE_TARGET_PROBE 里 → **不监控**。回退成拿中间量名去 select
-       的话(`_comment_text_persona` / `_published_status` / `_account_name` / `_comment_count`,
+       的话(`_commenter_codes` / `_published_status` / `_account_name` / `_comment_count`,
        HXZ/NUC/NRT/LNKT 都有), PostgREST 会因为没这列直接报错, 被下面的兜底吞掉返回 [] ——
        于是**整道闸静默失效**, 同一轮真有核心列被改名也不会报。(codex PR#125 review P1)
 
@@ -1066,6 +1139,160 @@ def apply_cleared_status(mapping: dict, pending_notes: list[dict], seen_cols: se
     return n
 
 
+# ── I-17 Step 1: 方向格清空 / 方向从抬得了变成抬不了 (2026-11-25) ─────────────────────────────────────────
+# transform_row 管「方向格有值、抬不了」那一路 (送 None 清人群 / 痛点 / 产品焦点)。这里管另外两件:
+#   ① 方向格被清空: 飞书不返回空格子, transform_row 看不到方向。方向列这一轮还在 (seen_cols) 时, 同样送 None
+#      (同 apply_cleared_status 的口径: 列改名 / 整列没返回 → 不动)。
+#   ② content_format: essence 每篇都写自己的判断, 可方向抬得了的那段时间, 夜跑每晚拿旧方向抬的值盖掉它。方向变成
+#      抬不了之后, 库里留着的还是旧方向抬的值。读库里这几篇上一次的方向和 content_format: 上一次的方向抬得了、库里的值
+#      正好等于它抬的值 → 去 audit_log 取 essence 最后一次写的 content_format 写回去; 取不到 → 不动, 打一个本轮旗子。
+#      读库 / 读 audit_log 失败 → content_format 一篇都不动, 而且这几篇这一轮【不写 raw_extra】(_CF_HOLD_COLS):
+#      能认出方向变了, 靠的就是库里 raw_extra._direction_raw 还是上一次的方向。照常写的话新方向落库, 下一轮库里的
+#      「上一次」已经是新方向、抬不了, 这一篇就再也换不回来 (Codex #312 P2)。留着 raw_extra, 下一轮读得到就照常换。
+#      读库失败分不出哪几篇换过方向 → 全部候选都留; 读 audit_log 失败 → 只留要换的那几篇。别的列 (三列送 None、
+#      内容层、指标、盖戳) 照写。留着的篇里的新篇 (库里还没有) 照常整行插进去、raw_extra 也在 (upsert_notes_batch 先
+#      INSERT ... ON CONFLICT DO NOTHING, 见 _insert_new_held_notes): 新篇没有「上一次」可留, 去掉 raw_extra 插进去就是
+#      NULL, 同一晚的 essence 会拿它进 prompt。main 把留了几篇记进 Done 行 content_format_restore_held、计一个 error (红)。
+#      dry-run 不读库。
+#      留了之后靠的是下一轮这一篇还是候选: 下一轮之前从飞书删了、或改成有子方向的方向 (不是候选), 就换不回来 (D-178)。
+#   11-21 已经发生的那一批 (BJS_phase2 33 篇) 库里的方向已经是新的了, 这里认不出, 由 owner 跑
+#   schemas/notes_v1_33_direction_switch_restore.sql 一次补上 (Step 2)。
+_CF_NOT_RESTORED_FLAG = "content_format_not_restored"
+_CF_HOLD_COLS = frozenset({"raw_extra"})
+
+
+def _direction_cols(mapping: dict) -> set[str]:
+    return {c for c, t in (mapping.get("field_mapping") or {}).items() if t == "_direction_raw"}
+
+
+def apply_cleared_direction(mapping: dict, pending_notes: list[dict], seen_cols: set[str]) -> int:
+    """① 方向格被清空 (这一轮没返回方向、但方向列还在) → 三列送 None。回改了几篇 (这一轮原本没带这几列的)。"""
+    if not (_direction_cols(mapping) & set(seen_cols)):
+        return 0
+    n = 0
+    for note in pending_notes:
+        if "_direction_raw" in (note.get("raw_extra") or {}):
+            continue
+        if any(c not in note for c in _PROFILE_CLEAR_COLS):
+            for c in _PROFILE_CLEAR_COLS:
+                note.setdefault(c, None)
+            n += 1
+    return n
+
+
+def plan_content_format_restore(mapping: dict, pending_notes: list[dict], seen_cols: set[str]) -> list[str]:
+    """② 的候选: 这一轮没写 content_format、方向抬不了 (或方向格清空了且方向列还在)、不是正文推断、不是子方向的篇。"""
+    dir_present = bool(_direction_cols(mapping) & set(seen_cols))
+    out: list[str] = []
+    for n in pending_notes:
+        if "content_format" in n:
+            continue
+        rx = n.get("raw_extra") or {}
+        if "_direction_inferred" in rx:
+            continue
+        if "_direction_raw" in rx:
+            e = direction_entry(mapping, rx["_direction_raw"])
+            if direction_lifts_profile(e) or (e is not None and "sub_directions" in e):
+                continue
+        elif not dir_present:
+            continue
+        out.append(n["note_id"])
+    return out
+
+
+def _stored_direction_rows(client, project_id: str, note_ids: list[str]) -> dict[str, dict] | None:
+    """库里这些篇上一次的方向和 content_format: {note_id: {content_format, _direction_raw}}。读不到 → None。"""
+    out: dict[str, dict] = {}
+    ids = sorted(set(note_ids))
+    try:
+        for i in range(0, len(ids), 100):
+            rows = fetch_all_pages(
+                client.schema("truth_vault").table("notes")
+                .select("note_id, content_format, raw_extra->_direction_raw")
+                .eq("project_id", project_id).in_("note_id", ids[i:i + 100]),
+                order_by="note_id",
+            )
+            out.update({r["note_id"]: r for r in rows})
+    except Exception as exc:
+        logger.warning("方向变了、恢复 content_format: 读库里的方向失败 (%s), 这一轮一篇都不动", exc)
+        return None
+    return out
+
+
+def _essence_content_format(client, note_ids: list[str]) -> dict[str, tuple[bool, Any]] | None:
+    """audit_log 里 essence 最后一次写这些篇 (UPDATE 带 essence_annotated_at 的那一行): {note_id: (这一行改没改
+    content_format, 改成了什么)}。没改 = essence 的值和当时库里的一样, 推不出是什么。读不到 → None。"""
+    latest: dict[str, dict] = {}
+    ids = sorted(set(note_ids))
+    try:
+        for i in range(0, len(ids), 100):
+            rows = fetch_all_pages(
+                client.schema("truth_vault").table("audit_log")
+                .select("audit_id, row_id, changed_cols->content_format, changed_cols->essence_annotated_at")
+                .eq("schema_name", "truth_vault").eq("table_name", "notes").eq("operation", "UPDATE")
+                .in_("row_id", ids[i:i + 100]).not_.is_("changed_cols->essence_annotated_at", "null"),
+                order_by="audit_id",
+            )
+            for r in rows:
+                cur = latest.get(r["row_id"])
+                if cur is None or r["audit_id"] > cur["audit_id"]:
+                    latest[r["row_id"]] = r
+    except Exception as exc:
+        logger.warning("方向变了、恢复 content_format: 读 audit_log 失败 (%s), 这一轮一篇都不动", exc)
+        return None
+    out: dict[str, tuple[bool, Any]] = {}
+    for nid, r in latest.items():
+        v = r.get("content_format")
+        out[nid] = (True, v[1]) if isinstance(v, list) and len(v) == 2 else (False, None)
+    return out
+
+
+def restore_content_format(client, mapping: dict, pending_notes: list[dict], seen_cols: set[str],
+                           *, dry_run: bool) -> dict[str, Any]:
+    """② 见上。回 {candidates, restored, not_restored, held}; 只改 pending_notes 里的 content_format 和本轮旗子。
+    held = 读失败、这一轮判不了的篇 (note_id 列表): main 让 upsert 这一轮不写它们的 _CF_HOLD_COLS。"""
+    st: dict[str, Any] = {"candidates": 0, "restored": 0, "not_restored": 0, "held": []}
+    cands = plan_content_format_restore(mapping, pending_notes, seen_cols)
+    st["candidates"] = len(cands)
+    if not cands or dry_run:
+        return st
+    stored = _stored_direction_rows(client, mapping["project_id"], cands)
+    if stored is None:
+        st["held"] = list(cands)                        # 分不出哪几篇换过方向: 全留
+        return st
+    need: list[str] = []
+    for nid in cands:
+        row = stored.get(nid)
+        if not row:
+            continue                                    # 新篇: 没有「上一次」
+        old = direction_entry(mapping, row.get("_direction_raw"))
+        if not direction_lifts_profile(old) or old.get("content_format") is None:
+            continue                                    # 上一次也抬不了: 库里的就是 essence 的
+        if row.get("content_format") != old["content_format"]:
+            continue                                    # 库里的不是旧方向抬的值
+        need.append(nid)
+    if not need:
+        return st
+    ess = _essence_content_format(client, need)
+    if ess is None:
+        st["held"] = list(need)                         # 只有这几篇的方向变了、还没换
+        return st
+    by_id = {n["note_id"]: n for n in pending_notes}
+    for nid in need:
+        note = by_id[nid]
+        has_cf, val = ess.get(nid, (False, None))
+        if has_cf:
+            note["content_format"] = val
+            st["restored"] += 1
+            continue
+        st["not_restored"] += 1
+        if "data_quality_flags" in note:            # 这一轮没写这一列就不加 (加了会把库里整份旗子冲掉)
+            flags = dict(note.get("data_quality_flags") or {})
+            flags[_CF_NOT_RESTORED_FLAG] = True
+            note["data_quality_flags"] = flags
+    return st
+
+
 def _current_tiers(client, project_id: str, note_ids: list[str]) -> dict[str, Optional[str]] | None:
     """库里这些 note 现在的 tier({note_id: tier}, 不在库里的不出现)。读不到 → None(调用方记错、不挡)。"""
     out: dict[str, Optional[str]] = {}
@@ -1110,6 +1337,43 @@ def plan_tier_flip(pending_notes: list[dict], current: dict[str, Optional[str]],
     return {"upgrades": ups, "downgrades": downs, "flips": flips, "existing": existing,
             "threshold": threshold, "blocked": (len(flips) > threshold) and not allow,
             "current": {nid: current.get(nid) for nid in flips}}
+
+
+# ── 爆贴门槛对不上 (I-01 第 1 部分, B4 的替代, 2026-11-25) ─────────────────────────────
+# TV 全项目按评论数 50 / 100 判 爆 / 大爆 (D-062)。linkcheck 允许每张表在登记表里改「爆贴门槛」(registry COL_TIER_HOT),
+# 一旦哪张表改了, 机器写的「爆贴」「大爆」就和 TV 的尺子不是一把。10-23 起生产 0 行这样 (20 行评论数不够的全带
+# 「保留高档位」, 那是 linkcheck 故意留的高档, 不算)。这里只告警不挡: 这一晚【新】升成 爆 / 大爆、档来自状态格里的
+# 爆贴 / 大爆 标、评论数不到 50 / 100 的篇, 数出来打一行 ::warning。伪爆 (运营手写的假数据, 另有 synthetic 管)、
+# 诊断信息带「保留高档位」的不算。库里已经是这一档或更高的不算 (不是这一晚升的; 爆 → 大爆 算升)。读不到库里的档 / dry-run 不查。
+_THRESHOLD_KEEP_HIGH = "保留高档位"
+_THRESHOLD_TOKEN_RE = re.compile(r"爆贴|爆帖|大爆")
+
+
+def plan_threshold_mismatch(pending_notes: list[dict], current: dict[str, Optional[str]]) -> list[dict]:
+    """这一晚新升成 爆 / 大爆、但评论数不到 TV 门槛的篇 (纯函数)。每篇一个 {note_id, tier, comments_count, need}。"""
+    need_of = {"爆": _COMMENT_TIER_BAO, "大爆": _COMMENT_TIER_DABAO}
+    out: list[dict] = []
+    for n in pending_notes:
+        tier = n.get("tier")
+        if tier not in need_of or n.get("tier_source") != "状态字段":
+            continue
+        prev = current.get(n.get("note_id"))
+        if prev == tier or prev == "大爆":
+            continue                                # 不是这一晚升上来的 (爆 → 大爆 算升)
+        rx = n.get("raw_extra") or {}
+        src = str(rx.get("_tier_source_raw") or "")
+        if not _THRESHOLD_TOKEN_RE.search(src) or "伪爆" in src:
+            continue
+        diag = rx.get("诊断信息")
+        if diag in (None, "", []):
+            diag = (rx.get("_undeclared") or {}).get("诊断信息")
+        if _THRESHOLD_KEEP_HIGH in _direction_key(diag or ""):
+            continue
+        cc = n.get("comments_count")
+        if not isinstance(cc, (int, float)) or isinstance(cc, bool) or cc >= need_of[tier]:
+            continue
+        out.append({"note_id": n.get("note_id"), "tier": tier, "comments_count": cc, "need": need_of[tier]})
+    return out
 
 
 def apply_tier_flip_block(pending_notes: list[dict], plan: dict) -> int:
@@ -1554,7 +1818,10 @@ def transform_row(
         consumed_intermediates.add("_direction_raw")
         # Feishu may return 方向 as a list (multi-select / rich-text segments);
         # flatten to a hashable string for the dict-key lookups below.
+        # dir_key = 运营填的原值 (excluded_directions / direction_unmapped 按它); lookup_key = 去掉
+        # direction_ignore_tokens 之后查 direction_decomposition 的键 (I-17; 没配的 mapping 两个一样)。
         dir_key = _direction_key(raw_dir)
+        lookup_key = effective_direction_key(raw_dir, mapping)
 
         # Apply the deterministic portion of direction_decomposition. For
         # single-direction configs (no sub_directions), we can lift
@@ -1564,7 +1831,7 @@ def transform_row(
         # still require LLM sub-classification and are skipped here; the
         # raw direction stays in raw_extra so an annotation pass can resolve
         # it. excluded_directions is honored as 'quarantine via tier_source'.
-        decomposition = (mapping.get("direction_decomposition") or {}).get(dir_key)
+        decomposition = (mapping.get("direction_decomposition") or {}).get(lookup_key)
 
         # ── 方向列被写坏时的正文兜底(D-049) ──────────────────────────────
         # 只在【查不到】时进来: 运营填对了的方向永远压过正文推断, 一行都不覆盖。
@@ -1599,6 +1866,15 @@ def transform_row(
                     note[col] = val
             if lifted.get("intent_override") is not None:
                 note["intent"] = lifted["intent_override"]
+
+        # ── 方向抬不了 → 显式清掉旧方向抬上来的人群 / 痛点 / 产品焦点 (I-17, D-122「定了什么」第 5 条) ──────
+        # 这三列只有两条来路: 这里的「直接抬」和 essence 的子方向。方向格有值、却什么都抬不了 (mapping 里没有这个方向,
+        # 或只登记了 layer; 也没有正文推断) 时, 库里的值只能是以前那个方向抬的, 已经不对了。它们在 UPSERT_PROTECTED_COLS 里,
+        # 不送就留着旧值 —— 所以送 None。无状态、每晚自愈: 方向哪天又抬得了, 下一晚照常写回去。
+        # 不碰: 有 sub_directions 的方向 (essence 管); content_format (essence 每篇都写, 恢复在 main 里, 见 restore_content_format)。
+        if not direction_lifts_profile(lifted) and not (lifted is not None and "sub_directions" in lifted):
+            for col in _PROFILE_CLEAR_COLS:
+                note.setdefault(col, None)
 
         # Honor excluded_directions (NRT_phase3's "女性自发, 男性自发" anomaly):
         # mark as data-anomalous so downstream training queries filter it out
@@ -1748,14 +2024,16 @@ def transform_row(
                         f"「{_CM_MULTISELECT_COL}」取值「{_v}」= 对已起量帖做的二次运营")
             # _CM_MV_TODO(「✅」= 需要做50条)是【待办】, 既不算已铺也不算干预, 故意不判。
             # 投流取值(🍟 / 已投流)由 paid_promoted 那一路处理, 这里不碰。
+    # ③ 只认【做过】的标签: 待置顶 / 待做评论 / 等解封后控评 / 素人退出无法回收 这类待办和做不成的不算 (列体检 2026-11-25)。
+    #   reason 文字不变, 已经标过的行每晚写出同一份 JSON。
     for _col in _CM_POSTHOC_COLS:
-        if _cm_cell(_col) not in (None, "", []):
+        if posthoc_done_labels(_cm_cell(_col)):
             _cm_hit(_CM_ROUTE_POSTHOC, f"挂了爆帖控评/置顶列「{_col}」")
-    # typed 列 pinned_comment(模板把「爆帖置顶评论」映到这里)—— 映成 typed 列的表在
+    # ④ typed 列 pinned_comment(模板把「爆帖置顶评论」映到这里)—— 映成 typed 列的表在
     # raw_extra 里查不到那一列, 上面那个循环会漏掉它(生产 127 行, 126 行是爆款)。
     # 运营 2026-09-17 确认: 这列填的是「第一屏有没有置顶显示」; 置顶只有作者能做、
-    # 列名就叫爆帖置顶评论 → 属起量后干预。owner 拍板并入 route ② (D-062)。
-    if note.get("pinned_comment") not in (None, "", []):
+    # 列名就叫爆帖置顶评论 → 属起量后干预。owner 拍板并入 route ② (D-062)。同 ③ 只认做过的标签。
+    if posthoc_done_labels(note.get("pinned_comment")):
         _cm_hit(_CM_ROUTE_POSTHOC, "typed 列 pinned_comment 非空 = 做了置顶")
     _cstat = _cm_cell("评论状态")
     if _cstat not in (None, "", []):
@@ -1835,8 +2113,16 @@ def transform_row(
         flags.pop("paid_promoted_reason", None)
         note["data_quality_flags"] = flags
 
+    # 「随贴评论素人」= 发这条随贴评论的素人编号 (列体检 2026-11-25 §3a #1), 存成编号列表, 不进 comments。
+    # 格子空 → 不写这个键 (raw_extra 整列重写, 旧值不会残留)。
+    if "_commenter_codes" in intermediates:
+        consumed_intermediates.add("_commenter_codes")
+        codes = commenter_codes(intermediates["_commenter_codes"])
+        if codes:
+            note.setdefault("raw_extra", {})["_commenter_codes"] = codes
+
     # Any intermediate that wasn't consumed above (e.g. _account_name,
-    # _account_followers, _comment_text, _comment_text_persona) goes to
+    # _account_followers, _comment_text) goes to
     # raw_extra so it doesn't get silently dropped.  Future code can
     # process them out of intermediates and write to dedicated tables
     # (e.g. accounts / account_snapshots / comments).
@@ -2114,13 +2400,17 @@ UPSERT_PROTECTED_COLS: tuple[str, ...] = (
 )
 
 
-def _group_by_protected_cols(notes: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
-    """按「带了 UPSERT_PROTECTED_COLS 里的哪几列」分组。组内保持原顺序, 组按第一次出现的先后排。
+def _group_by_protected_cols(notes: list[dict[str, Any]],
+                             hold: dict[str, frozenset[str]] | None = None) -> list[list[dict[str, Any]]]:
+    """按「带了 UPSERT_PROTECTED_COLS 里的哪几列」+「这一篇留着哪几列不写」(hold) 分组。组内保持原顺序, 组按第一次
+    出现的先后排。
 
     带了、值是 None 也算带(apply_cleared_status 就是故意写 NULL 清档)。"""
-    groups: dict[frozenset[str], list[dict[str, Any]]] = {}
+    hold = hold or {}
+    groups: dict[tuple[frozenset[str], frozenset[str]], list[dict[str, Any]]] = {}
     for n in notes:
-        groups.setdefault(frozenset(c for c in UPSERT_PROTECTED_COLS if c in n), []).append(n)
+        key = (frozenset(c for c in UPSERT_PROTECTED_COLS if c in n), hold.get(n["note_id"], frozenset()))
+        groups.setdefault(key, []).append(n)
     return list(groups.values())
 
 
@@ -2180,9 +2470,44 @@ def ensure_accounts_batch(
     return failed
 
 
+def _insert_new_held_notes(client: Client, rows: list[dict[str, Any]], mirror: frozenset[str],
+                           chunk_size: int) -> set[str]:
+    """upsert_notes_batch 里留列 (hold) 的篇的前一步: 整行 (留着的列也带上) INSERT ... ON CONFLICT DO NOTHING
+    (ignore_duplicates)。库里没有的新篇照常整行落库, 库里已有的一行不动。分组、补 None 和正常那一路一样 (D-122),
+    插进去的新篇和不留列时插的一字不差。回真插进去的 note_id: ignore_duplicates 下 PostgREST 只回插入的行
+    (同 quarantine_record)。批被拒 → 逐行再插一遍 (发原行, 同 upsert_note 的兜底)。还是失败 / 没回 data → 不算插进去,
+    这几篇照样走后面去掉留列的那一份: 库里已有的照常写, 新篇 raw_extra 这一晚先空着 (warning; essence 读得了 NULL)。"""
+    inserted: set[str] = set()
+
+    def _ids(res: Any, sent_ids: set[str]) -> set[str]:
+        data = getattr(res, "data", None)
+        return {r["note_id"] for r in data if isinstance(r, dict) and r.get("note_id") in sent_ids} \
+            if isinstance(data, list) else set()
+
+    for group in _group_by_protected_cols(rows):
+        for k in range(0, len(group), chunk_size):
+            chunk = group[k:k + chunk_size]
+            ids = {n["note_id"] for n in chunk}
+            try:
+                inserted |= _ids(client.schema("truth_vault").table("notes")
+                                 .upsert([_mirror_fill(n, mirror) for n in chunk], on_conflict="note_id",
+                                         ignore_duplicates=True).execute(), ids)
+            except Exception as exc:
+                logger.warning("留列的篇先插新篇: 批 (%d 篇) 失败 (%s), 逐行再插", len(chunk), exc)
+                for n in chunk:
+                    try:
+                        inserted |= _ids(client.schema("truth_vault").table("notes")
+                                         .upsert(n, on_conflict="note_id", ignore_duplicates=True).execute(), ids)
+                    except Exception as exc1:
+                        logger.warning("留列的篇先插新篇: %s 没插成 (%s); 是新篇的话 raw_extra 这一晚先空着",
+                                       n["note_id"], exc1)
+    return inserted
+
+
 def upsert_notes_batch(
     client: Client, notes: list[dict[str, Any]], *,
     dry_run: bool = False, chunk_size: int = _BATCH_CHUNK,
+    hold: dict[str, frozenset[str]] | None = None,
 ) -> set[str]:
     """Batch-upsert notes (one call per chunk); returns the SET of note_ids
     successfully written. On a chunk failure, falls back to per-row
@@ -2196,21 +2521,34 @@ def upsert_notes_batch(
     ⚠️ 先按 UPSERT_PROTECTED_COLS 分组再分块(D-122): 同一个请求里, 名单里的列要么每行都带、要么
     每行都不带。不分组的话 postgrest-py 把没带的键补成 NULL 写进库, 冲掉 essence 写的 content_format、
     翻转闸故意留下的 tier。名单外的列分组前按整轮补 None(_mirror_fill), 飞书里清空的格子照旧写成
-    NULL、不因分组漏掉。日志里的 [i:j] 是分组后顺序里的位置。"""
+    NULL、不因分组漏掉。日志里的 [i:j] 是分组后顺序里的位置。
+
+    hold = {note_id: 列}: 这几篇的这几列这一轮不写、留库里的值(I-17: content_format 恢复的读失败时留 raw_extra,
+    见 restore_content_format)。和名单里的列同一个做法: 发出去的那一份去掉这几列、不补 None, 按「留了哪几列」分组 ——
+    同一个请求里没有一行带着它们, columns= 里就没有, 库里的值不动。逐行兜底发的也是去掉之后的那一份。
+    留列只该管库里已有的篇: 新篇没有「库里的值」, 去掉 raw_extra 插进去就是 NULL (生产从没有过, essence 的
+    prompt 读它)。所以留列的篇先整行走一遍 INSERT ... ON CONFLICT DO NOTHING (_insert_new_held_notes): 新篇整行落库、
+    后面不再发; 库里已有的一行不动, 照常发去掉留列的那一份。"""
     if dry_run:
         for n in notes:
             logger.info("[dry-run] would upsert note_id=%s", n["note_id"])
         return {n["note_id"] for n in notes}
+    hold = {nid: frozenset(cols) for nid, cols in (hold or {}).items() if cols}
     written: set[str] = set()
     mirror = _mirror_cols(notes)
+    if hold:
+        written = _insert_new_held_notes(client, [n for n in notes if n["note_id"] in hold], mirror, chunk_size)
+    sent = [{k: v for k, v in n.items() if k not in hold[n["note_id"]]} if n["note_id"] in hold else n
+            for n in notes if n["note_id"] not in written]
     i = 0
-    for group in _group_by_protected_cols(notes):
+    for group in _group_by_protected_cols(sent, hold):
         for k in range(0, len(group), chunk_size):
             chunk = group[k:k + chunk_size]
             try:
                 (
                     client.schema("truth_vault").table("notes")
-                    .upsert([_mirror_fill(n, mirror) for n in chunk], on_conflict="note_id").execute()
+                    .upsert([_mirror_fill(n, mirror - hold.get(n["note_id"], frozenset())) for n in chunk],
+                            on_conflict="note_id").execute()
                 )
                 written.update(n["note_id"] for n in chunk)
             except Exception as exc:
@@ -2485,6 +2823,12 @@ def main() -> int:
              # D-091: 未来发布时间夹掉 / 状态格清空写回默认 / 状态值没映上 / 整批翻转被挡
              "publish_time_future": 0, "tier_cleared": 0, "tier_unmapped": 0,
              "tier_flip_blocked": 0, "tier_flip_guard_skipped": 0,
+             # I-01 第 1 部分: 这一晚新升 爆 / 大爆 但评论数不到 50 / 100 的篇 (只告警)
+             "tier_threshold_mismatch": 0,
+             # I-17: 方向格清空送 None 的篇 / content_format 换回 essence 的 / 推不出 essence 的 /
+             # 读库或 audit_log 失败、这一轮不写 raw_extra 留到下一轮再判的 (红)
+             "profile_cleared_direction_cell": 0, "content_format_restored": 0, "content_format_not_restored": 0,
+             "content_format_restore_held": 0,
              # 外部评审 11-04 F01: 风控旗子的来源列整轮不见了 → 沿用库里旗子的篇数 + 红
              "risk_source_columns_missing": [], "risk_flags_carried": 0,
              # 11-26: 没声明的「维护评论」落在 爆/大爆 上、扣掉行数不过线的篇数(绊线, 红)
@@ -2893,6 +3237,19 @@ def main() -> int:
             len(flip["flips"]), flip["upgrades"][:10],
         )
 
+    # ── 爆贴门槛对不上 (I-01 第 1 部分): 只告警, 不挡、不计 errors ─────────────────────────
+    if pending_notes and not args.dry_run and stats.get("tier_flip_guard_skipped") != 1:
+        mismatch = plan_threshold_mismatch(pending_notes, current_tiers)
+        stats["tier_threshold_mismatch"] = len(mismatch)
+        if mismatch:
+            msg = (f"{mapping['project_id']}: 这一晚新升成 爆 / 大爆 的篇里有 {len(mismatch)} 篇评论数不到 TV 的门槛 "
+                   f"(爆 50 / 大爆 100, D-062): "
+                   + "、".join(f"{m['note_id']}({m['tier']} {int(m['comments_count'])}<{m['need']})" for m in mismatch[:10])
+                   + "。多半是 linkcheck 登记表改了这张表的「爆贴门槛」。只告警, tier 照写。")
+            logger.warning("【爆贴门槛对不上】%s", msg)
+            if os.environ.get("GITHUB_ACTIONS") == "true":
+                print(f"::warning title=爆贴门槛对不上 ({mapping['project_id']})::{msg}", flush=True)
+
     # ── 风控旗子的来源列整轮不见了 (外部评审 11-04 F01) ─────────────────────────────
     # 放在所有写旗子的步骤(清空 / 翻转挡)之后、upsert 之前: 只换这一族的键, 别的键照这一轮。
     # 列都在 → 什么都不读、什么都不改(正常路径不变)。
@@ -2947,6 +3304,29 @@ def main() -> int:
                 if complete and os.environ.get("GITHUB_ACTIONS") == "true":
                     print(f"::error title=风控来源列不见了 ({mapping['project_id']})::{msg}", flush=True)
 
+    # ── 方向格清空 / 方向从抬得了变成抬不了 (I-17 Step 1): 清三列、content_format 回到 essence 的判断 ─────────────
+    stats["profile_cleared_direction_cell"] = apply_cleared_direction(mapping, pending_notes, seen_cols)
+    cf = restore_content_format(sb, mapping, pending_notes, seen_cols, dry_run=args.dry_run)
+    stats["content_format_restored"] = cf["restored"]
+    stats["content_format_not_restored"] = cf["not_restored"]
+    if cf["restored"] or cf["not_restored"]:
+        logger.warning("方向变得抬不了: %d 篇 content_format 换回 essence 最后一次写的值; %d 篇 audit_log 里推不出 essence 的值,"
+                       " 留着库里的 (data_quality_flags.%s)。", cf["restored"], cf["not_restored"], _CF_NOT_RESTORED_FLAG)
+    cf_hold = {nid: _CF_HOLD_COLS for nid in cf["held"]}
+    if cf_hold:
+        # 读失败这一轮判不了: 这几篇不写 raw_extra, 库里留着上一次的方向, 下一轮还认得出、再换 (Codex #312 P2)。
+        # 红: 读一直失败的话这几篇的 raw_extra 一直不更新、content_format 一直换不回来, 得有人看见。
+        stats["content_format_restore_held"] = len(cf_hold)
+        stats["errors"] += 1
+        msg = (f"{mapping['project_id']}: 方向变得抬不了时换回 essence 的 content_format (I-17), 这一轮读库里的方向或 "
+               f"audit_log 失败 (上面一行 warning 是原因)。{len(cf_hold)} 篇这一轮不写 raw_extra (留着库里上一次的方向, "
+               f"别的列照写; 库里还没有的新篇照常整行插入), 下一轮读得到就照常换回; 下一轮之前从飞书删了或改成有子方向的方向的篇"
+               f"换不回来, 留着旧方向抬的 content_format (D-178, 要紧就单独跑 SQL)。一直红 = 一直读不到, 去查库。"
+               f"{sorted(cf_hold)[:10]}")
+        logger.error("【content_format 恢复没读到库】%s", msg)
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            print(f"::error title=content_format 恢复没读到库 ({mapping['project_id']})::{msg}", flush=True)
+
     # ── 绊线: 没认的「维护评论」落在指标型爆款上、扣掉行数又不过线 (11-26, 见 undeclared_ticket_on_positive) ──
     tripped = undeclared_ticket_on_positive(mapping, pending_notes)
     if tripped:
@@ -2964,7 +3344,7 @@ def main() -> int:
     prepare_content_layer(sb, pending_notes)
 
     failed_accounts = ensure_accounts_batch(sb, account_platforms, dry_run=args.dry_run)
-    written_ids = upsert_notes_batch(sb, pending_notes, dry_run=args.dry_run)
+    written_ids = upsert_notes_batch(sb, pending_notes, dry_run=args.dry_run, hold=cf_hold)
     # Only write metrics for notes that actually landed — a metric whose note
     # failed to upsert would violate the metric_snapshots.note_id FK (see
     # upsert_metrics_batch). In dry-run written_ids holds all ids, so nothing

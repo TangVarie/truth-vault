@@ -735,7 +735,7 @@ def sync_feishu_notes(project_id, mapping_yaml_path):
     sync_baokuan_to_autowriter()
 
     # ℹ️ comments 解析: flat extraction 已实现 (sync_comments_from_raw_extra.py)
-    # — 把 raw_extra._comment_text / _comment_text_persona 解析成扁平 comments
+    # — 把 raw_extra._comment_text 解析成扁平 comments (「随贴评论素人」是素人编号, 2026-11-25 起不再拼进来)
     # 表。LLM 楼层结构重建仍待 Sprint 2 (D-022 / R-005)，当前 parent_comment_id
     # 全部 NULL。ssll 通道 1 的 top_comments 因此是扁平 list，不抓楼层互动模式。
 ```

@@ -92,6 +92,9 @@ jobs:
             scripts/check_vanished_notes.py \
             scripts/check_channel2_retired.py \
             scripts/check_tier_veto.py \
+            scripts/check_column_audit_fixes.py \
+            scripts/check_tier_vocab.py \
+            scripts/check_direction_switch.py \
             scripts/check_paid_boost.py \
             scripts/gate3_score.py \
             scripts/check_gate3.py \
@@ -477,7 +480,7 @@ jobs:
                       return [{"note_id": i} for i in asked if i in in_db]
                   return []                             # 对账本身
               M.fetch_all_pages = pages
-              def up(sb, notes, dry_run=False):
+              def up(sb, notes, dry_run=False, **_):
                   cap["notes"] = notes; return [n["note_id"] for n in notes]
               M.upsert_notes_batch = up
               buf = io.StringIO(); h = logging.StreamHandler(buf); M.logger.addHandler(h)
@@ -2692,7 +2695,7 @@ jobs:
               s.ensure_accounts_batch = lambda *a, **k: []
               s.upsert_metrics_batch = lambda *a, **k: (0, [])
               s.update_project_date_range = lambda *a, **k: None
-              def fake_upsert(sb, notes, dry_run=False):
+              def fake_upsert(sb, notes, dry_run=False, **_):
                   cap["notes"] = notes
                   return [n["note_id"] for n in notes]
               s.upsert_notes_batch = fake_upsert
@@ -2792,7 +2795,7 @@ jobs:
               s.upsert_metrics_batch = lambda *a, **k: (0, [])
               s.update_project_date_range = lambda *a, **k: None
               s.fetch_all_pages = fake_pages
-              def up(sb, notes, dry_run=False):
+              def up(sb, notes, dry_run=False, **_):
                   cap["notes"] = notes; return [n["note_id"] for n in notes]
               s.upsert_notes_batch = up
               buf = io.StringIO(); h = logging.StreamHandler(buf); s.logger.addHandler(h)
@@ -2956,7 +2959,7 @@ jobs:
               s.update_project_date_range = lambda *a, **k: None
               s.fetch_all_pages = lambda qb, order_by=None: [
                   {"note_id": "n1", **{c: "v" for c in NEVER_FILLED}}]
-              def up(sb, notes, dry_run=False):
+              def up(sb, notes, dry_run=False, **_):
                   cap["notes"] = notes; return [n["note_id"] for n in notes]
               s.upsert_notes_batch = up
               buf = io.StringIO(); h = logging.StreamHandler(buf); s.logger.addHandler(h)
@@ -3579,6 +3582,12 @@ jobs:
       - name: 采集三道闸 —— 未来 publish_time 夹掉 / 状态格清空写回默认 + 没映上打旗 / 整批 tier 翻转 upsert 前挡住 (D-091)
         working-directory: scripts
         run: python check_ingest_guards.py   # §1 未来日期 · §2/§2b 清空与没映上 · §3 翻转计划 · §4 挡只剥翻转篇 · §5 读库分批 · §6/§7 接线
+      - name: 列体检 11-25 §3a (素人编号不进评论 · 蓝词字段 · 置顶待办不算干预 · 映射漂移)
+        run: cd scripts && python check_column_audit_fixes.py
+      - name: I-01 p1 (观察中 / 链接失效 规则 · preflight 没命中的标 · 爆贴门槛告警)
+        run: cd scripts && python check_tier_vocab.py
+      - name: I-17 (款式标忽略 · 抬不了清三列 · content_format 换回 essence · v1_33 = mapping)
+        run: cd scripts && python check_direction_switch.py
       - name: 批量 upsert 不许把没带的列冲成 NULL —— 同一请求里受保护列要么每行都带、要么都不带 (D-122, 10-20 夜跑冲掉 744 篇 content_format)
         working-directory: scripts
         run: python check_batch_upsert_columns.py   # 真 postgrest-py 请求 + MockTransport · §1 真 mapping 混方向批 · §2 整批翻转被挡 · §3 状态列整轮消失 · §4 镜像口径(名单外列整轮补 NULL, 稀疏格子) · §5 名单 · §6 反证 · §7 逐行兜底
@@ -7016,6 +7025,8 @@ jobs:
       - name: Sanity-check v1.22 (投流事件 / 隔离 / 前后读数; 夹具与 check_paid_boost.py 共用, 反证在文件头)
         run: |
           psql -v ON_ERROR_STOP=1 -v cases="$(cat scripts/check_paid_boost_cases.json)" -f scripts/check_paid_boost.sql
+      - name: Apply v1.32 维护效果 = increment (+ idempotency; 夹具 check_paid_boost_v1_32.sql)
+        run: psql -v ON_ERROR_STOP=1 -q -f schemas/notes_v1_32_paid_boost_effect_increment.sql -f scripts/check_paid_boost_v1_32.sql
       - name: Apply v1.23 content_sha (+ idempotency)
         # D-137 / 外部审计 11-02 F02: 指纹函数 + 生成列 content_sha + essence_content_sha + 从 audit_log 回填; 两遍验幂等 (第二遍回填 0 行)。
         run: |
@@ -7203,6 +7214,8 @@ jobs:
           for r in anon authenticated; do [ "$(psql -tAX -c "SELECT has_schema_privilege('$r','workbench','USAGE') OR has_function_privilege('$r','truth_vault.workbench_take_snapshot(date)','EXECUTE')")" = "f" ] || { echo "::error::$r 能进 workbench 或执行快照函数"; exit 1; }; done
           psql -v ON_ERROR_STOP=1 -q -f scripts/check_workbench_pg.sql
           psql -v ON_ERROR_STOP=1 -c "SELECT day, project_id, b1, b2, b3a, b3b, b4, b5 FROM workbench.v_status LIMIT 0; SELECT account_code, name_hint, tier, downgrade, code_clash FROM workbench.v_accounts LIMIT 0; SELECT hint, w64, n_flag, n_unlabeled FROM workbench.v_content_counts LIMIT 0; SELECT note_code, plus_hints, unlabeled, body_empty FROM workbench.v_content_notes LIMIT 0; SELECT note_code, mid_rank, status, seeded_known FROM workbench.v_watch_24h LIMIT 0; SELECT note_code, impressions_72h, rank_in_project FROM workbench.v_watch_72h LIMIT 0; SELECT note_code, evening, weekend, same_acct_3d FROM workbench.v_exposure_hints LIMIT 0; SELECT event_code, comments_base, comments_d7_status FROM workbench.v_boost_curves LIMIT 0; SELECT block, grp, measure, n, n_yes, value FROM workbench.v_shadow_check LIMIT 0;"
+      - name: owner SQL v1_31 假评论 / v1_33 I-17 (各跑两遍, 夹具核删改和备份)
+        run: psql -v ON_ERROR_STOP=1 -q -f scripts/check_owner_sql_b2_setup.sql -f schemas/notes_v1_31_commenter_codes_cleanup.sql -f schemas/notes_v1_33_direction_switch_restore.sql -f scripts/check_owner_sql_b2.sql
       - name: Apply v1.29 input_sha (+ idempotency)
         run: |
           psql -v ON_ERROR_STOP=1 -q -f schemas/notes_v1_29_content_scores_input_sha.sql

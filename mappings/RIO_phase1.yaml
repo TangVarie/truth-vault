@@ -130,6 +130,10 @@ tier_extraction:
       tier: 趴
     - match_contains: ["评估中"]
       tier: 评估中
+    - match_contains: ["观察中"]      # linkcheck 冷启动 48h 窗口 (10-26 起) → 未知。2026-11-25 补 (I-01 第 1 部分): 以前每晚报「状态值没映上」
+      tier: 未知
+    - match_contains: ["链接失效"]    # linkcheck 10-26 起给死链写的标, 热度标照留。→ 删除 (D-119 #13)。删除 的档位低于 爆 / 大爆 / 趴:
+      tier: 删除                        #    爆过的帖照旧是爆 (运营要它留在参考库); 只有这个标、或配 观察中 / 评估中 → 删除。2026-11-25 (I-01)
     - default: null
 
 # tier_thresholds 已废(D-062, 2026-09-17): 判爆只看评论数, 全项目统一 爆≥50/大爆≥100,

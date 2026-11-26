@@ -469,7 +469,7 @@ BEGIN
     -- 只认小红书帖的 24 位十六进制笔记 ID: 前 8 位 = unix 秒, 是笔记创建的时刻, 不一定是发出的时刻 (定时发的会早几天),
     --   所以还原出的北京日期要和记录的北京日期是同一天才用 (同一天里先建后定时发的, 分不出来)。
     -- 取的顺序: publish_url → raw_extra 顶层的 笔记ID / 作品ID / 笔记链接 / 链接文本 → raw_extra -> '_undeclared' 下同样四列
-    --   (没声明的「作品ID」收在 _undeclared 里, 11-25 只读: HATHERINE、SPX、TUGE、ANSHEN; 值是「ID ← 短链」, 取第一段 24 位十六进制)。
+    --   (「作品ID」在 HATHERINE、SPX、TUGE、ANSHEN 原来没声明、收在 _undeclared 里; 批 2 (D-175) 起声明了, 夜跑后挪到顶层, 飞书里已经没有的旧帖留在 _undeclared, 所以两处都读; 值是「ID ← 短链」, 取第一段 24 位十六进制)。
     -- 抖音帖 (帖或项目的平台是 douyin) 不还原: 仓里和 W-64 都没有解抖音作品 ID 的口径, 平台也没公开 →
     --   小时是 NULL (不知道, 不当 0 点、不当白天), 状态「抖音帖不还原」; 抖音行里带着的小红书 ID (比如继承来的) 也不用。
     INSERT INTO workbench.snapshot_items (day, block, project_id, item_key, note_id, account_id, data)

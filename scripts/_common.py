@@ -297,6 +297,7 @@ _ALLOWED_MAPPING_KEYS = {
     "content_inherit_from_previous_row", "data_supplement_needed",
     "direction_decomposition", "direction_from_content", "excluded_directions",
     "reference_sub_direction_prompt",
+    "direction_ignore_tokens",       # I-17 (2026-11-25): 方向格里不是方向的标 (BJS_phase2 的 成人款 / 儿童款), 查表前去掉
 }
 
 
@@ -350,6 +351,14 @@ def load_mapping(project_id: str) -> dict:
         if isinstance(d, dict) and "layer" in d and d["layer"] not in CONTENT_LAYERS:
             raise ValueError(f"{path}: direction_decomposition[{dname!r}].layer={d['layer']!r} "
                              f"不在 {list(CONTENT_LAYERS)} 里 (P 产品贴 / T 流量贴 / Q 提问贴 / J 精品贴)")
+    # 方向格里要忽略的标 (I-17): 非空字符串的列表, 而且不能同时是一个方向 (那样它永远查不到)。
+    ign = m.get("direction_ignore_tokens")
+    if ign is not None:
+        if not isinstance(ign, list) or not all(isinstance(t, str) and t.strip() for t in ign):
+            raise ValueError(f"{path}: direction_ignore_tokens 必须是非空字符串的列表")
+        both = sorted(set(ign) & set((m.get("direction_decomposition") or {}).keys()))
+        if both:
+            raise ValueError(f"{path}: {both} 既在 direction_ignore_tokens 里又是 direction_decomposition 的方向, 二选一")
     # ── 顶层键白名单 (A11, 2026-09-22)────────────────────────────────────────
     # 拼错一个顶层键, 今天的失效方式是【静默】: 上面每一处都是 m.get(...), 取不到就退成
     # 默认值, 整段校验跳过。brand_aliases 就是典型 —— 写成 brand_alias 的话 :329 拿到
@@ -410,7 +419,11 @@ _KNOWN_NOTE_COLUMNS = frozenset({
 _KNOWN_INTERMEDIATES = frozenset({
     "_status_raw", "_note_for_tier", "_note_status_raw", "_published_status",
     "_intent_raw", "_direction_raw", "_audience_raw", "_account_name",
-    "_comment_text", "_comment_text_persona",
+    "_comment_text",
+    # 「随贴评论素人」= 发这条随贴评论的素人编号, 不是评论 (列体检 2026-11-25 §3a #1)。以前映成 _comment_text_persona,
+    # 被评论同步拼进 comments: 纯数字的编号被丢掉, 带字母的成了假评论。现在映成 _commenter_codes, transform_row 存成
+    # raw_extra._commenter_codes 编号列表, 评论同步不读它。旧名从这里拿掉: 哪份 mapping 还写旧名, 加载时就红。
+    "_commenter_codes",
     "_account_followers", "_account_url",       # mappings/_template.yaml:95 / onboarder/corpus.py:50 —— 透传进 raw_extra
 })
 
@@ -474,7 +487,10 @@ def _reject_shadowed_tier_rules(path, rules: list[dict]) -> None:
 # 2026-09-17 (D-062): 评估中 成为正式档位(评论数 20~50), 插在 趴 之下、未知 之上 ——
 #   运营的多选状态是追加式的(['评估中','无水花'] = 先评估、后判死), 后来的判决要能压过它,
 #   所以 趴 仍高于 评估中; 而它比 未知 有信息, 高于 未知。其余相对顺序一个没动。
-_TIER_RANK = {"大爆": 8, "爆": 7, "预备": 6, "参考": 5, "风控": 4, "趴": 3, "评估中": 2, "未知": 1}
+# 2026-11-25 (I-01 第 1 部分): 删除 插在 趴 之下、评估中 之上。linkcheck 10-26 起给死链写「链接失效」并保留热度标
+#   (运营要爆过的帖留在参考库), 映成 删除 (D-119 #13 删帖状态 → 删除)。爆 / 大爆 + 链接失效 仍是 爆 / 大爆;
+#   链接失效 + 观察中 / 评估中 → 删除 (帖子没了, 评估不会再有结论); 链接失效 + 无水花 → 趴 (已经判过死)。
+_TIER_RANK = {"大爆": 9, "爆": 8, "预备": 7, "参考": 6, "风控": 5, "趴": 4, "删除": 3, "评估中": 2, "未知": 1}
 
 # 风控否决位(统一表评估 A2, D-124): 多选格里任一标判成 风控 → 整格就是 风控, 不进 _TIER_RANK 择优。
 # 风控说的是"这条还能不能看", 和"它有多火"不是一个维度; 「风控中」人会填进「流量状态」(运营 2026-10-22
@@ -823,9 +839,29 @@ def token_layer(token: str) -> Optional[str]:
     return None
 
 
+def direction_ignore_set(mapping: Optional[dict]) -> frozenset[str]:
+    """mapping 的 direction_ignore_tokens (I-17): 方向格里不是方向的标, 查表和判层之前去掉。"""
+    return frozenset(t.strip() for t in ((mapping or {}).get("direction_ignore_tokens") or []) if isinstance(t, str))
+
+
+def effective_direction_key(raw_direction: Any, mapping: Optional[dict]) -> str:
+    """查 direction_decomposition 用的键: 去掉 direction_ignore_tokens 之后的方向值, 用 ", " 拼 (I-17)。
+
+    没配 direction_ignore_tokens 的 mapping 和以前一字不差 (= _direction_key)。配了的: 按 direction_tokens 拆开、
+    去掉要忽略的、再拼。全被去掉 → ""(查不到, 等于这格没有方向信息)。
+    BJS_phase2 11-21 起把方向改成多选、加了 成人款 / 儿童款: 「提问贴, 成人款」去掉之后就是「提问贴」, 照常抬;
+    只剩「成人款」的篇什么都不抬 (以前它们留着旧方向抬上来的人群 / 痛点)。"""
+    ign = direction_ignore_set(mapping)
+    if not ign:
+        return _direction_key(raw_direction)
+    return ", ".join(t for t in direction_tokens(raw_direction) if t not in ign)
+
+
 def derive_layer(raw_direction: Any, mapping: Optional[dict], intent: Optional[str]) -> Optional[str]:
-    """notes.content_layer: 'P' / 'T' / 'Q' / 'J' / None。顺序见上面的说明。纯函数: sync 和 backfill_content_layer 共用。"""
-    toks = direction_tokens(raw_direction)
+    """notes.content_layer: 'P' / 'T' / 'Q' / 'J' / None。顺序见上面的说明。纯函数: sync 和 backfill_content_layer 共用。
+    direction_ignore_tokens 里的标先去掉 (I-17): 「提问贴, 成人款」判 Q; 只有「成人款」→ 往下看 intent。"""
+    ign = direction_ignore_set(mapping)
+    toks = [t for t in direction_tokens(raw_direction) if t not in ign]
     if toks:
         dd = (mapping or {}).get("direction_decomposition") or {}
         whole = dd.get(", ".join(toks))

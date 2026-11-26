@@ -204,10 +204,53 @@ def check_cleared_notes_in_vanished() -> None:
     print("  ✓ 整条清空 / 整条解析不出来的 note: 每条已入库评论都进 vanished 名单 (带 note_cleared), 别的 note 不混进来, 不删")
 
 
+def check_commenter_codes_not_comments() -> None:
+    """「随贴评论素人」是素人编号, 不是评论 (列体检 2026-11-25 §3a #1)。按需项目的旧快照里还有 _comment_text_persona:
+    评论同步不能再把它拼进来解析 (以前带字母的编号成了 29 条假评论)。"""
+    raw = {"_comment_text": "1. 用户A: 好用\n2. 用户B: 回购了", "_comment_text_persona": "12a"}
+    assert M.parse_operator_comments(raw) == [("素人", "好用"), ("素人", "回购了")], M.parse_operator_comments(raw)
+    assert not M.has_operator_comment_text({"_comment_text_persona": "12a"}), "只有素人编号的篇不该进评论同步"
+    assert not M.has_operator_comment_text({"_commenter_codes": ["12a"]}), "新键也不是评论"
+    assert M.has_operator_comment_text({"_comment_text": "好用"})
+    # 反证: 按以前的拼法, 编号就成了一条「素人」评论 —— 用例真的依赖不拼
+    old = list(parse_comment_text("\n".join([raw["_comment_text"], raw["_comment_text_persona"]])))
+    assert ("素人", "12a") in old, old
+    # 纯数字的编号以前被当成编号残片丢掉 (所以只有带字母的成了假评论)
+    assert list(parse_comment_text("12")) == []
+    # 楼层重建 (annotate_comment_threading) 也只认 _comment_text: 只有旧键 _comment_text_persona 的篇不进候选
+    import annotate_comment_threading as T
+
+    class _Q:
+        def __getattr__(self, _n):
+            return self
+
+        def __call__(self, *_a, **_k):
+            return self
+    notes = [{"note_id": "p", "raw_content": "", "raw_extra": {"_comment_text_persona": "12a"}},
+             {"note_id": "t", "raw_content": "", "raw_extra": {"_comment_text": "1. 用户A: 好用", "_comment_text_persona": "12a"}}]
+    calls: list = []
+
+    def fake_fetch(q, order_by=None, **_k):
+        calls.append(order_by)
+        if len(calls) == 1:
+            return [dict(n) for n in notes]
+        return [{"comment_id": "x_c1", "content": "好用", "comment_role": "素人", "comment_order": 1, "parent_comment_id": None}]
+    saved = T.fetch_all_pages
+    T.fetch_all_pages = fake_fetch
+    try:
+        got = T.fetch_notes_with_pending_threading(_Q(), "P", reannotate=False, limit=0)
+    finally:
+        T.fetch_all_pages = saved
+    assert [(r["note_id"], r["_raw_comment_block"]) for r in got] == [("t", "1. 用户A: 好用")], \
+        f"楼层重建不该拿素人编号当评论原文: {[(r['note_id'], r.get('_raw_comment_block')) for r in got]}"
+    print("  ✓ 随贴评论素人 (素人编号) 不进评论: 评论同步和楼层重建都只认 _comment_text; 按旧拼法会多出一条「12a」(反证)")
+
+
 def main() -> int:
     check_cases()
     check_migration_shape()
     check_cleared_notes_in_vanished()
+    check_commenter_codes_not_comments()
     print("✓ 评论解析器 (原 6 条 + D-085): 全过")
     return 0
 

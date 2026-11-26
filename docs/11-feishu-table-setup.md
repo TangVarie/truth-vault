@@ -86,7 +86,7 @@ sync 脚本 (`scripts/sync_feishu_notes_to_truth_vault.py`) 是按
 | 蓝词记录 | 多选或文本 | `蓝词记录: hit_blue_keywords` | `notes.hit_blue_keywords` (TEXT[]) |
 | 爆帖置顶评论 | 多行文本 | `爆帖置顶评论: pinned_comment` | `notes.pinned_comment` |
 | 随贴评论 | 多行文本 | `随贴评论: _comment_text` | comments 表（Phase 2 LLM 解析） |
-| 随贴评论素人 | 多行文本 | `随贴评论素人: _comment_text_persona` | comments 表 |
+| 随贴评论素人 | 多行文本 | `随贴评论素人: _commenter_codes` | raw_extra._commenter_codes（发这条随贴评论的素人编号列表，不是评论；2026-11-25 列体检） |
 
 **「发布笔记」单选选项** 要在 yaml 的 `intent_mapping` 段全列出。当前用值：
 
@@ -289,7 +289,7 @@ NUC_phase1 / NRT_phase2 / NRT_phase3 共用这套 B 家族列（NRT_phase3 多�
 蓝词记录        (多选)      → hit_blue_keywords
 爆帖置顶评论    (多行文本)   → pinned_comment
 随贴评论        (多行文本)   → _comment_text
-随贴评论素人    (多行文本)   → _comment_text_persona
+随贴评论素人    (多行文本)   → _commenter_codes (素人编号, 不进 comments)
 评论数          (数字)      → _comment_count  [仅 NRT_phase3]
 ```
 
