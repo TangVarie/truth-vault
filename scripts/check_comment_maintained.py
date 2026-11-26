@@ -50,11 +50,13 @@ assert rt(n1) == [POSTHOC], rt(n1)
 assert f(n1).get("synthetic") is False, f"控评被误判成假爆款, 真赢家会被删出飞轮: {f(n1)}"
 assert n1["tier"] == "爆", f"这个标记不该动 tier: {n1.get('tier')!r}"
 
-# ② 铺评工单列 → 铺评工单(必须与 ① 分开)
+# ② 铺评工单列 → 铺评工单(必须与 ① 分开)。「维护评论」只在声明了的表里认 (见 ⑯), 这里两个名字都声明上
+M2 = dict(BASE, project_specific_fields_to_raw_extra=[
+    *BASE["project_specific_fields_to_raw_extra"], *(c for c in s._CM_TICKET_COLS if c not in BASE["project_specific_fields_to_raw_extra"])])
 for col in s._CM_TICKET_COLS:
-    n, _, _ = s.transform_row(BASE, "r2", {"文案": "c", "状态": "爆贴", col: "评论1 评论2"})
+    n, _, _ = s.transform_row(M2, "r2", {"文案": "c", "状态": "爆贴", col: "评论1 评论2"})
     assert rt(n) == [TICKET], f"{col} 该走铺评工单而非起量后干预: {rt(n)}"
-    n0, _, _ = s.transform_row(BASE, "r2b", {"文案": "c", "状态": "爆贴", col: ""})
+    n0, _, _ = s.transform_row(M2, "r2b", {"文案": "c", "状态": "爆贴", col: ""})
     assert "comment_maintained" not in f(n0), f"{col} 为空不该命中: {f(n0)}"
 
 # ③ 爆帖控评/置顶列 → 起量后干预 (codex P2: HXZ_QD 3 行全漏, HXZ_FB 9 行漏 5)
@@ -539,4 +541,196 @@ assert _m["comment_maintained_seeded"] == 30, f"⑮i 这一轮多也记大的: {
 print("  ⑮ 工单列按行数减 (D-150): 20 行 80 放 / 60 剔 · 封顶 50 · 同一行的编号切开 · 数不出按 50 · "
       "空行 / 编号行 / 标签行不算 · 和维护情况取大 · 沿用时只往更挡合 ✓")
 
-print("comment_maintained 分来路 × synthetic 正交 × 维护情况取值 × 投流三态 × 减法重判 × 来源列消失 × 按行数减: all checks passed")
+# ⑯ 铺评工单列改名 (途鸽 11-25: 维护评论50条 → 维护评论, 那一晚被 ⑭ 这道闸挡红, 168 篇旗子沿用、没丢)。
+#    新名字照旧名一样认 (同样按行数、封顶 50), 但「维护评论」太泛, 只在 mapping 声明了的表里认 (SPX 11-24 起也有一列
+#    未声明的「维护评论」, 先不认; 那张表有一道绊线, 见 ⑯p)。闸照旧逐列核「还在不在」(不按组: 另一个名字还在不等于数据
+#    还在); 改名那一晚在沿用那一步按篇放过 —— 这一篇这一轮已经按这张表认的另一个名字读到了格子 → 照这一轮现判的, 不沿用、
+#    不红; 库里旗子点名不见了那一列、这一轮又没按认得的名字读到格子的篇 → 沿用 + 红照旧。
+#    闸只看 mapping 声明了、代码也认的列: 只改 mapping (两个名字都换掉) 或只从 _CM_TICKET_COLS 摘名字, 跑的时候闸是哑的,
+#    拦这两种改法的是 ⑯ 开头钉 mapping 和名字的那两条断言 (CI)。
+#    反证 (每条实跑过, 结果记在 PR 说明里):
+#      Ⅰ 拿掉 _CM_TICKET_COLS 里的「维护评论」          → ⑯ 开头途鸽 mapping 那条红 (新名字认不出)
+#      Ⅱ _CM_TICKET_SEEDED 不给「维护评论」封顶 50      → ⑯b 红 (已铺记不上, 不减)
+#      Ⅲ cm_ticket_cols 不看声明、全局认                → ⑯ 开头 SPX 那条红 (SPX 那 4 篇会被判成铺评工单)
+#      Ⅳ 这一轮返回过没有那一步按组核 (组里另一个名字返回过就算在) → ⑯e 红 (不读表结构和库); 放过 ⑯e 也在 ⑯l 红
+#                                                        (数据列改成认不出的名字, 另一个名字只有别的篇有格子, 旗子被清)
+#      Ⅴ 表结构那一步按组核                             → ⑯e 红; 放过 ⑯e 也在 ⑯k 红 (另一个名字的列是空的, 旗子被清)
+#      Ⅵ risk_source_columns 只认自己的名字             → ⑯h 红 (只声明新名时, 库里旧名写的旗子认不出、被清)
+#      Ⅶ 沿用那一步不按篇放过 (拿掉 ticket_read_here)   → ⑯e 红 (改名那一晚照样红、沿用库里的)
+#      Ⅷ 按篇放过时不看那个名字这一轮返回过没有         → ⑯m 红 (reason 是库里旧的, 不是这一轮读到的)
+#      Ⅸ transform_row 不看声明、整组都判               → ⑯d 红
+#      Ⅹ 途鸽的 mapping 摘掉「维护评论」                → ⑯ 开头途鸽 mapping 那条红
+#      Ⅺ 按篇放过时不分列 (别的来源列也跟着放)          → ⑭J 红 (维护情况 改名、工单列这一轮读到了; ⑯n 是同一情形换成新名字)
+#      Ⅻ 绊线不看评论数扣掉行数过没过线                 → ⑯p 红 (SPX 那篇大爆会被报)
+#      ⅩⅢ 绊线拿掉                                      → ⑯p 红
+#      ⅩⅣ 绊线不管已经被挡住的                          → ⑯i 红 (沿用回来的 铺评工单 已经挡住了, 还报)
+OLD16, NEW16 = "维护评论50条", "维护评论"
+import _common
+_tuge16, _spx16 = _common.load_mapping("TUGE_phase1"), _common.load_mapping("SPX_phase1")
+assert s.cm_ticket_cols(_tuge16) == (OLD16, NEW16), f"⑯ 途鸽的 mapping 两个名字都要声明: {s.cm_ticket_cols(_tuge16)}"
+assert {OLD16, NEW16} <= set(s.risk_source_columns(_tuge16)), f"⑯ 途鸽两个名字都在闸的视野里: {s.risk_source_columns(_tuge16)}"
+assert s.cm_ticket_cols(_spx16) == (OLD16,) and not (set(s._CM_TICKET_COLS) & set(s.risk_source_columns(_spx16))), \
+    "⑯ SPX 的「维护评论」还没定认不认 (只有 4 篇): 要认就在 SPX 的 mapping 里声明这一列, 并改这条断言"
+M16 = dict(M13, project_specific_fields_to_raw_extra=[*M13["project_specific_fields_to_raw_extra"], OLD16, NEW16])
+def _cm16(m, rid, row):
+    n, _, und = s.transform_row(m, rid, {"文案": "c", "状态": "爆贴", **row})
+    return n, und
+# a) 旧名 → 铺评工单, reason 点旧名
+n16, _u = _cm16(M16, "r16a", {OLD16: _lines(20), "评论数": 60})
+assert rt(n16) == [TICKET] and f(n16)["comment_maintained_seeded"] == 20 and f"「{OLD16}」" in f(n16)["comment_maintained_reason"], f(n16)
+# b) 新名 (声明了) → 一样的铺评工单 / 已铺 20, reason 点新名; 过线的照样放 (80−20=60)
+n16b, _u = _cm16(M16, "r16b", {NEW16: _lines(20), "评论数": 60})
+assert rt(n16b) == [TICKET] and f(n16b)["comment_maintained_seeded"] == 20, f"⑯b 新名字要和旧名字一样认: {f(n16b)}"
+assert f"「{NEW16}」" in f(n16b)["comment_maintained_reason"] and f"「{OLD16}」" not in f(n16b)["comment_maintained_reason"], f(n16b)
+assert {k: v for k, v in f(n16b).items() if k != "comment_maintained_reason"} == \
+       {k: v for k, v in f(n16).items() if k != "comment_maintained_reason"}, "⑯b 同一格换个列名, 除了 reason 点的列名别的都一样"
+assert rt(_cm16(M16, "r16b2", {NEW16: _lines(87), "评论数": 99})[0]) == [TICKET] and \
+       rt(_cm16(M16, "r16b3", {NEW16: _lines(87), "评论数": 100})[0]) == [SEEDED_OK], "⑯b 新名字同样封顶 50"
+assert rt(_cm16(M16, "r16b4", {NEW16: _lines(20), "评论数": 80})[0]) == [SEEDED_OK], "⑯b 80−20=60 过线照样放"
+# c) 两个名字同在一行 → 两条 reason, 已铺取大 (同一批评论, 不求和): 30 和 20 → 30, 79−30=49 照剔
+n16c, _u = _cm16(M16, "r16c", {OLD16: _lines(30), NEW16: _lines(20), "评论数": 79})
+assert rt(n16c) == [TICKET] and f(n16c)["comment_maintained_seeded"] == 30, f"⑯c 两列同在取大: {f(n16c)}"
+assert f"「{OLD16}」" in f(n16c)["comment_maintained_reason"] and f"「{NEW16}」" in f(n16c)["comment_maintained_reason"], f(n16c)
+# d) 没声明「维护评论」的表 (SPX 今天的样子: 用它真的 raw_extra 声明) → 新名字落进 _undeclared, 不判铺评; 旧名照旧全局认
+M16d = dict(M13, project_specific_fields_to_raw_extra=list(_spx16["project_specific_fields_to_raw_extra"]))
+n16d, und16d = _cm16(M16d, "r16d", {NEW16: _lines(20), "评论数": 16})
+assert NEW16 in und16d and "comment_maintained" not in f(n16d), f"⑯d 没声明「维护评论」的表不认这一列: {und16d} {f(n16d)}"
+n16d2, und16d2 = _cm16(M16d, "r16d2", {OLD16: _lines(20), "评论数": 16})
+assert OLD16 in und16d2 and rt(n16d2) == [TICKET], f"⑯d 旧名没声明也照旧认 (⑮g): {f(n16d2)}"
+
+# 闸: 驱动真的 main() (同 ⑭)。M14 的 raw_extra 声明按用例换。
+def _with16(extra, fn):
+    saved = list(M14["project_specific_fields_to_raw_extra"])
+    M14["project_specific_fields_to_raw_extra"] = list(extra)
+    try:
+        return fn()
+    finally:
+        M14["project_specific_fields_to_raw_extra"] = saved
+BOTH16 = ["维护情况", OLD16, NEW16]
+st16_old = _with16(BOTH16, lambda: _stored({"流量状态": "爆贴", "评论数": 55, OLD16: _lines(20)}))
+st16_new = _with16(BOTH16, lambda: _stored({"流量状态": "爆贴", "评论数": 55, NEW16: _lines(20)}))
+assert st16_old["comment_maintained_routes"] == [TICKET] and st16_old["comment_maintained_seeded"] == 20, st16_old
+_r2_16 = ("r2", {"流量状态": "无水花", "维护情况": ["✅"]})       # 让「维护情况」这一轮有返回, 只看工单列这一组
+# e) 改名那一晚 (旧 → 新, 两个名字都声明了): 新名字有值、表结构里也只有新名字 → 旧名逐列核是不见了 (读一次表结构、一次库),
+#    但这一篇这一轮已经按新名字读到了格子 → 不沿用、不红, 按新名字重算, 旗子还是那些
+rc, err, st, cap = _with16(BOTH16, lambda: _run14([("r1", {"流量状态": "爆贴", "评论数": 55, NEW16: _lines(20)}), _r2_16],
+                                                   {"r1": st16_old}, schema=SCHEMA14 | {NEW16}))
+fe16 = cap["notes"]["T_CM14_r1"]["data_quality_flags"]
+assert err == 0 and cap["schema"] == 1 and cap["read"] == 1 and st["risk_source_columns_missing"] == [] \
+    and st["risk_flags_carried"] == 0 and "risk_flags_carried_from_db" not in fe16, \
+    f"⑯e 两个名字之间改名不该红 (按新名字重算): err={err} read={cap['read']} {st} {fe16}"
+assert fe16.get("comment_maintained") is True and fe16.get("comment_maintained_routes") == [TICKET] \
+    and fe16.get("comment_maintained_seeded") == 20 and f"「{NEW16}」" in fe16.get("comment_maintained_reason", ""), \
+    f"⑯e 旗子要保住 (按新名字重算出同一批): {fe16}"
+assert ssll14.metric_tier_untrustworthy_reason({"tier": "爆", "data_quality_flags": fe16}) == TICKET, "⑯e 下游照挡"
+# e2) 同一晚表结构读不到 (飞书接口抖了): 新名字这一轮返回过行, 已经证明这一组还在, 不靠表结构 → 照样不红、照常重算
+rc, err, st, cap = _with16(BOTH16, lambda: _run14([("r1", {"流量状态": "爆贴", "评论数": 55, NEW16: _lines(20)}), _r2_16],
+                                                   {"r1": st16_old}, schema=None))
+fe16b = cap["notes"]["T_CM14_r1"]["data_quality_flags"]
+assert err == 0 and "risk_flags_carried_from_db" not in fe16b and fe16b.get("comment_maintained_seeded") == 20, \
+    f"⑯e2 新名字返回过行就算还在, 表结构读不到也不红: err={err} {st} {fe16b}"
+# f) 改回去 (新 → 旧) 一样
+rc, err, st, cap = _with16(BOTH16, lambda: _run14([("r1", {"流量状态": "爆贴", "评论数": 55, OLD16: _lines(20)}), _r2_16],
+                                                   {"r1": st16_new}, schema=SCHEMA14 | {OLD16}))
+ff16 = cap["notes"]["T_CM14_r1"]["data_quality_flags"]
+assert err == 0 and ff16.get("comment_maintained_routes") == [TICKET] and ff16.get("comment_maintained_seeded") == 20 \
+    and "risk_flags_carried_from_db" not in ff16, f"⑯f 改回旧名也不红、照常重算: err={err} {ff16}"
+# g) 声明了两个名字, 表里两个都没了 → 沿用 + 红, 点名库里 reason 写的那一列 (旧名写的点旧名, 新名写的点新名)
+for st16, want16 in ((st16_old, OLD16), (st16_new, NEW16)):
+    rc, err, st, cap = _with16(BOTH16, lambda: _run14([("r1", {"流量状态": "爆贴", "评论数": 55}), _r2_16],
+                                                       {"r1": st16}, schema=SCHEMA14))
+    fg16 = cap["notes"]["T_CM14_r1"]["data_quality_flags"]
+    assert fg16.get("comment_maintained_routes") == [TICKET] and fg16.get("comment_maintained_seeded") == 20 \
+        and fg16.get("risk_flags_carried_from_db") == [want16], f"⑯g 两个名字都没了要沿用: {fg16}"
+    assert rc == 1 and err == 1 and st["risk_source_columns_missing"] == [want16], f"⑯g 要红并点名 {want16}: rc={rc} {st}"
+# h) 只声明了新名字, 库里的旗子是旧名字写的, 两个都没了 → 照样认得出、沿用 + 红
+rc, err, st, cap = _with16(["维护情况", NEW16], lambda: _run14([("r1", {"流量状态": "爆贴", "评论数": 55}), _r2_16],
+                                                                 {"r1": st16_old}, schema=SCHEMA14))
+fh16 = cap["notes"]["T_CM14_r1"]["data_quality_flags"]
+assert fh16.get("comment_maintained_routes") == [TICKET] and fh16.get("risk_flags_carried_from_db") == [NEW16] and err == 1, \
+    f"⑯h 只声明新名时, 库里旧名写的旗子也要沿用: err={err} {fh16}"
+# i) 只声明了旧名字 (代码认新名、mapping 没跟上), 表里换成了新名字 → 新名字在这张表不认, 不能算「还在」: 沿用 + 红
+rc, err, st, cap = _with16(["维护情况", OLD16], lambda: _run14([("r1", {"流量状态": "爆贴", "评论数": 55, NEW16: _lines(20)}), _r2_16],
+                                                                 {"r1": st16_old}, schema=SCHEMA14 | {NEW16}))
+fi16 = cap["notes"]["T_CM14_r1"]["data_quality_flags"]
+assert fi16.get("comment_maintained_routes") == [TICKET] and fi16.get("risk_flags_carried_from_db") == [OLD16] \
+    and rc == 1 and err == 1, f"⑯i 只声明旧名、表里是新名: 要红、旗子沿用, 不许静默清掉: rc={rc} err={err} {fi16}"
+# j) 不声明任何工单列的表 (SPX) → 闸不看这一组; 新名字的格子在 _undeclared 里, 不判铺评, 趴的不红 (爆 / 大爆 见 ⑯p 绊线)
+rc, err, st, cap = _with16(["维护情况"], lambda: _run14([("r1", {"流量状态": "无水花", "评论数": 16, NEW16: _lines(20)}), _r2_16],
+                                                          {}, schema=SCHEMA14 | {NEW16}))
+fj16 = cap["notes"]["T_CM14_r1"]["data_quality_flags"]
+assert err == 0 and "comment_maintained" not in fj16 and st["undeclared_ticket_on_positive"] == 0, \
+    f"⑯j 没声明的表不认新名字、也不红: err={err} {fj16}"
+# k) 两个都声明了, 库里旗子是旧名写的; 旧名不见了, 表结构里有新名字但它一格都没有 (数据列改成了认不出的名字, 或者有人
+#    按旧配置又建了一列空的) → 另一个名字还在不等于数据还在: 沿用 + 红 (11-26 复审, 按组核会在这里把旗子静默清掉)
+rc, err, st, cap = _with16(BOTH16, lambda: _run14([("r1", {"流量状态": "爆贴", "评论数": 55}), _r2_16],
+                                                   {"r1": st16_old}, schema=SCHEMA14 | {NEW16}))
+fk16 = cap["notes"]["T_CM14_r1"]["data_quality_flags"]
+assert rc == 1 and err == 1 and fk16.get("comment_maintained_routes") == [TICKET] \
+    and fk16.get("risk_flags_carried_from_db") == [OLD16] and st["risk_source_columns_missing"] == [OLD16], \
+    f"⑯k 另一个名字的列是空的, 旗子不能被静默清掉: rc={rc} err={err} {st} {fk16}"
+assert ssll14.metric_tier_untrustworthy_reason({"tier": "爆", "data_quality_flags": fk16}) == TICKET, "⑯k 下游照挡"
+# k2) 反过来 (库里是新名写的, 新名不见了, 又冒出一列空的旧名) 一样
+rc, err, st, cap = _with16(BOTH16, lambda: _run14([("r1", {"流量状态": "爆贴", "评论数": 55}), _r2_16],
+                                                   {"r1": st16_new}, schema=SCHEMA14 | {OLD16}))
+fk16 = cap["notes"]["T_CM14_r1"]["data_quality_flags"]
+assert rc == 1 and err == 1 and fk16.get("risk_flags_carried_from_db") == [NEW16], f"⑯k2 反过来一样沿用 + 红: {fk16}"
+# k3) 库里旗子是哪个名字写的, 那一列还在表结构里、只是格子都清空了 → 是清空不是改名: 照常清、不红 (同 ⑭G)
+for st16, keep16 in ((st16_new, NEW16), (st16_old, OLD16)):
+    rc, err, st, cap = _with16(BOTH16, lambda: _run14([("r1", {"流量状态": "爆贴", "评论数": 55}), _r2_16],
+                                                       {"r1": st16}, schema=SCHEMA14 | {keep16}))
+    fk16 = cap["notes"]["T_CM14_r1"]["data_quality_flags"]
+    assert err == 0 and "comment_maintained" not in fk16, f"⑯k3 「{keep16}」还在、格子清空了, 照常清: err={err} {fk16}"
+# l) 数据列改成了认不出的名字, 另一个名字只有别的篇有格子 → 别的篇照常按它判; 库里旗子点名旧名、这一轮没读到格子的篇沿用 + 红
+X16 = "维护评论（示例改名）"
+rc, err, st, cap = _with16(BOTH16, lambda: _run14([("r1", {"流量状态": "爆贴", "评论数": 55, X16: _lines(20)}),
+                                                    ("r3", {"流量状态": "无水花", "评论数": 3, NEW16: _lines(10)}), _r2_16],
+                                                   {"r1": st16_old}, schema=SCHEMA14 | {X16, NEW16}))
+fl16, fl16r3 = cap["notes"]["T_CM14_r1"]["data_quality_flags"], cap["notes"]["T_CM14_r3"]["data_quality_flags"]
+assert rc == 1 and err == 1 and fl16.get("risk_flags_carried_from_db") == [OLD16] and fl16.get("comment_maintained_routes") == [TICKET], \
+    f"⑯l 另一个名字只有别的篇有格子, 这一篇的旗子要沿用 + 红: rc={rc} err={err} {fl16}"
+assert fl16r3.get("comment_maintained_routes") == [TICKET] and "risk_flags_carried_from_db" not in fl16r3 \
+    and f"「{NEW16}」" in fl16r3.get("comment_maintained_reason", ""), f"⑯l 别的篇照常按新名字判: {fl16r3}"
+# m) 按篇放过只认【这一轮返回过】的名字: reason 里的 铺评工单列「…」 是库里旧的 (补正文那条路以库里旗子为底) 不算
+_cur16 = {"comment_maintained": True, "comment_maintained_routes": [TICKET],
+          "comment_maintained_reason": f"[{TICKET}] 挂了铺评工单列「{OLD16}」(示例)"}
+_miss16 = {OLD16: [("comment_maintained", f"「{OLD16}」")]}
+_n16m = [{"note_id": "m1", "data_quality_flags": dict(_cur16)}]
+assert s.carry_risk_flags(_n16m, _miss16, {"m1": st16_old}, (NEW16,)) == {OLD16: ["m1"]}, "⑯m 旧 reason 不算这一轮读到了"
+_rec16: dict = {}
+_n16m2 = [{"note_id": "m2", "data_quality_flags": dict(_cur16, comment_maintained_reason=f"[{TICKET}] 挂了铺评工单列「{NEW16}」(示例)")}]
+assert s.carry_risk_flags(_n16m2, _miss16, {"m2": st16_old}, (NEW16,), _rec16) == {} and _rec16 == {OLD16: ["m2"]}, \
+    f"⑯m 这一轮按新名字读到了 → 不沿用, 记进 recomputed: {_rec16}"
+assert s.carry_risk_flags(_n16m2, _miss16, {"m2": st16_old}) == {OLD16: ["m2"]}, "⑯m 不传读到了哪几个名字 = 照旧沿用"
+# n) 同一晚「维护情况」也改了名: 工单列按篇放过, 「维护情况」那一路照旧沿用 + 红 (放过只管工单列, 不管别的来源列)
+st16n = _with16(BOTH16, lambda: _stored({"流量状态": "爆贴", "评论数": 55, "维护情况": ["重点关注⭐️"], OLD16: _lines(20)}))
+assert st16n["comment_maintained_seeded"] == 50 and f"「维护情况」" in st16n["comment_maintained_reason"], st16n
+rc, err, st, cap = _with16(BOTH16, lambda: _run14(
+    [("r1", {"流量状态": "爆贴", "评论数": 55, "维护情况（新）": ["重点关注⭐️"], NEW16: _lines(20)}), ("r2", {"流量状态": "无水花"})],
+    {"r1": st16n}, schema=(SCHEMA14 - {"维护情况"}) | {"维护情况（新）", NEW16}))
+fn16 = cap["notes"]["T_CM14_r1"]["data_quality_flags"]
+assert rc == 1 and err == 1 and fn16.get("risk_flags_carried_from_db") == ["维护情况"] and fn16.get("comment_maintained_seeded") == 50 \
+    and st["risk_source_columns_missing"] == ["维护情况"], f"⑯n 别的来源列照旧沿用 + 红: rc={rc} err={err} {st} {fn16}"
+# p) 绊线: 不认「维护评论」的表 (SPX 的样子), 它在 爆 / 大爆 上有值、没被别的路挡、评论数扣掉行数不过线 → 红、点名这一篇
+#    (认了就该挡, 现在不挡)。趴 / 扣掉仍过线 (SPX 那篇大爆 146−19) / 已经被 维护情况 挡了 / 声明了的表 → 都不报。
+def _tw16(m, row, tier_txt="爆贴"):
+    n, _ = _cm16(m, "rp", {**row, "状态": tier_txt})
+    return s.undeclared_ticket_on_positive(m, [n])
+assert len(_tw16(M16d, {NEW16: _lines(20), "评论数": 16})) == 1, "⑯p 爆 16−20 不过线要报"
+assert len(_tw16(M16d, {NEW16: _lines(20)})) == 1, "⑯p 评论数缺失也报 (证明不了过线)"
+assert _tw16(M16d, {NEW16: _lines(19), "评论数": 146}) == [], "⑯p 146−19=127 过线不报 (SPX 那篇大爆)"
+assert _tw16(M16d, {NEW16: _lines(19), "评论数": 69}) == [] and len(_tw16(M16d, {NEW16: _lines(20), "评论数": 69})) == 1, \
+    "⑯p 边界 69−19=50 不报 / 69−20=49 报"
+assert _tw16(M16d, {NEW16: _lines(20), "评论数": 16}, "无水花") == [], "⑯p 趴不报"
+assert _tw16(M16d, {NEW16: _lines(20), "维护情况": ["关注"], "评论数": 16}) == [], "⑯p 已经被 维护情况 挡了不报"
+assert _tw16(M16, {NEW16: _lines(20), "评论数": 16}) == [], "⑯p 声明了的表认它 (判成铺评工单), 不报"
+rc, err, st, cap = _with16(["维护情况"], lambda: _run14([("r1", {"流量状态": "爆贴", "评论数": 16, NEW16: _lines(20)}),
+                                                          ("r4", {"流量状态": "大爆", "评论数": 146, NEW16: _lines(19)}), _r2_16],
+                                                         {}, schema=SCHEMA14 | {NEW16}))
+assert rc == 1 and err == 1 and st["undeclared_ticket_on_positive"] == 1 \
+    and "comment_maintained" not in cap["notes"]["T_CM14_r1"]["data_quality_flags"], f"⑯p main() 红、只报那一篇: rc={rc} {st}"
+print("  ⑯ 工单列改名 (维护评论50条 ↔ 维护评论): 两个名字一样认 · 同在取大 · 没声明的表不认新名 · 改名那一晚按篇放过、旗子按新名重算 · "
+      "两个都没了沿用 + 红 · 另一个名字空着 / 只有别的篇有格子照样沿用 + 红 · 只声明旧名时新名不算 · 别的来源列照旧 · "
+      "没认的新名落在爆款上不过线就红 ✓")
+
+print("comment_maintained 分来路 × synthetic 正交 × 维护情况取值 × 投流三态 × 减法重判 × 来源列消失 × 按行数减 × 工单列改名: all checks passed")
