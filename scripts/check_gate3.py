@@ -14,6 +14,8 @@ check_gate3.py —— 闸三第一轨 (D-118, scripts/gate3_score.py) 的离线�
   §7c 删帖回算 (D-149): 飞书里已删的不进主读数、回算带最后的标签; 主判定 pass 但回算不过 → depends_on_deleted_posts
   §8 报告: 标注器对不上 → rc=1 并点名修在哪; 其余 rc=0
   §9 接线: daily-sync 有这一步、在 essence 之后策展之前、进失败聚合、靠哨兵判崩溃; CI 编译并跑本文件
+  §10 input_sha (AU-F02b ②): 计划里每行的 input_sha = 这篇的 essence_content_sha; 库里还没有这一列时
+      写库喊一次 warning、去掉这个键重写、不红, 后面的批不再带它; 别的错照抛; 冻结文件的版本号不变
 """
 from __future__ import annotations
 
@@ -218,6 +220,7 @@ class _FakeQ:
     def select(self, *_a, **_k): return self
     def order(self, *_a, **_k): return self
     def range(self, *_a, **_k): return self
+    def limit(self, *_a, **_k): return self
 
     def eq(self, col, val):
         self.filters.append(lambda r: r.get(col) == val); return self
@@ -418,6 +421,65 @@ def s9_wiring() -> None:
     print("  §9 接线: daily-sync 步骤位置 / 失败聚合 / 哨兵 / CI ✓")
 
 
+class _UpsertSB:
+    """记下每次 upsert 的行; missing=True 时带 input_sha 的批先抛 PostgREST 的「没有这一列」(PGRST204)。"""
+
+    def __init__(self, missing: bool, other_error: bool = False):
+        self.missing, self.other_error, self.calls = missing, other_error, []
+
+    def schema(self, _s): return self
+    def table(self, _t): return self
+
+    def upsert(self, rows, **kw):
+        self.calls.append(([dict(r) for r in rows], kw))
+        if self.other_error:
+            raise RuntimeError("{'code': '42501', 'message': 'permission denied for table content_scores'}")
+        if self.missing and any("input_sha" in r for r in rows):
+            raise RuntimeError("{'code': 'PGRST204', 'message': \"Could not find the 'input_sha' column of "
+                               "'content_scores' in the schema cache\"}")
+        return self
+
+    def execute(self): return self
+
+
+def s10_input_sha(sc: dict) -> None:
+    import _common as C
+    now = datetime(2026, 10, 25, tzinfo=timezone.utc)
+    res = G.plan([_note("a", essence_content_sha="sha-a"), _note("b"), _note("c", essence_content_sha="sha-c")],
+                 set(), sc, now)
+    got = {r["subject_id"]: r["input_sha"] for r in res["rows"]}
+    assert got == {"a": "sha-a", "b": None, "c": "sha-c"}, got
+    rows = res["rows"] * 150                                  # 450 行 = 3 批
+    G._INPUT_SHA_OK[0] = True
+    sb = _UpsertSB(missing=False)
+    G.write(sb, rows)
+    assert len(sb.calls) == 3 and all("input_sha" in r for r in sb.calls[0][0]), "有这一列时要带 input_sha 写"
+    assert all(kw == {"on_conflict": "subject_type,subject_id,scorer_version", "ignore_duplicates": True}
+               for _, kw in sb.calls), "打过的不改: 必须 ignore_duplicates"
+    C._MISSING_DB_OBJECT_WARNED.discard("content_scores.input_sha")
+    G._INPUT_SHA_OK[0] = True
+    sb = _UpsertSB(missing=True)
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        n = G.write(sb, rows)
+    assert n == 450, n
+    sent = [c[0] for c in sb.calls]
+    assert len(sent) == 4, f"第一批报错重写一次, 后两批直接不带: 应 4 次 upsert, 实际 {len(sent)}"
+    assert "input_sha" in sent[0][0] and all("input_sha" not in r for batch in sent[1:] for r in batch)
+    assert sum(len(b) for b in sent[1:]) == 450, "去掉 input_sha 之后 450 行一行不少"
+    assert "content_scores.input_sha" in C._MISSING_DB_OBJECT_WARNED and G._INPUT_SHA_OK[0] is False
+    G._INPUT_SHA_OK[0] = True
+    try:
+        G.write(_UpsertSB(missing=False, other_error=True), rows)
+        raise AssertionError("§10 权限错这类别的错要照抛 (灯红), 不能当成没有这一列吞掉")
+    except RuntimeError as exc:
+        assert "42501" in str(exc)
+    G._INPUT_SHA_OK[0] = True
+    assert sc["scorer_version"] == f"{sc['scorer']}-{G.scorer_digest(sc)[:12]}" and G.SCORER_PATH.name == \
+        f"scorer-{sc['scorer_version']}.json", "冻结文件和版本号不该因为 input_sha 变"
+    print("  §10 input_sha: 计划行带正文指纹 · 有列照写 · 没列喊一次、去掉重写、不红 · 别的错照抛 ✓")
+
+
 def main() -> int:
     sc = s1_frozen_file()
     s2_tokens()
@@ -430,7 +492,8 @@ def main() -> int:
     s7c_deleted_posts(sc)
     s8_report(sc)
     s9_wiring()
-    print("\ncheck_gate3: 9 节 + §7b / §7c 全过")
+    s10_input_sha(sc)
+    print("\ncheck_gate3: 10 节 + §7b / §7c 全过")
     return 0
 
 

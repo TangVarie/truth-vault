@@ -367,6 +367,7 @@ project_specific_fields_to_raw_extra:
 - [ ] 字段映射无 "未识别" 状态
 - [ ] 试导入 10 条样本无错误
 - [ ] mapping.yaml 文件已 commit 到 `mappings/` 目录
+- [ ] 这次接表如果还加了新服务、新 workflow，或者多一个地方要用密钥：照 [handoff §4.1](handoff-2026-11-22-four-repos.md) 同一个 PR 里改 RISKS.md R-032 的矩阵和轮换步骤 ②（只写变量名）
 
 ---
 

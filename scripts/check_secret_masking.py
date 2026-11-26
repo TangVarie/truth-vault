@@ -11,9 +11,18 @@ setup_logger 用的是普通 Formatter, supabase-py 异常里的 bearer / URL �
   §3 logger.exception 的 traceback 里 (异常文本带 key) 被掩
   §4 _common.py 里 mask_secrets 的引用 ≥ 1 处不是定义 (再变成死代码就红)
   §5 不走 setup_logger 的 handler 不受影响 (说清挡不住什么, 不假装全覆盖)
+  §6 print() 不直接打异常文本 (2026-11-25 S-09, D-095 补): 扫 scripts/ onboarder/ worker/ librarian/,
+     `except … as X:` 里的 print(...) 用到 X 时必须包在 mask_secrets(...) 里; 只用 type(X) / X.name 不算。
+     反证: 去掉一处包装 → 红。
+
+§6 挡不住的:
+  · 先把异常存进别的变量再打 (msg = str(exc); print(msg))、或在 except 外面打。
+  · sys.stdout / sys.stderr.write、logging 以外自建的 handler、写进文件或 PR 正文的异常文本。
+  · 不故意全局包 sys.stdout: 正常输出里也会有 eyJ 开头的 base64-JSON, 全局打码会悄悄改掉它们。
 """
 from __future__ import annotations
 
+import ast
 import io
 import logging
 import re
@@ -35,6 +44,73 @@ def _logger_with_buffer(name: str):
     h = lg.handlers[0]
     h.stream = buf
     return lg, buf
+
+
+ROOT = Path(__file__).resolve().parent.parent
+PRINT_SCAN_DIRS = ("scripts", "onboarder", "worker", "librarian")
+SAFE_ATTRS = {"name", "__class__"}   # ImportError.name 是模块名; 类名不带文本
+
+
+def unmasked_exception_prints(src: str) -> list[tuple[int, str]]:
+    """`except … as X:` 里, print(...) 用到 X 却没包 mask_secrets 的地方: [(行号, X)]。"""
+    tree = ast.parse(src)
+    parents: dict[int, ast.AST] = {}
+    for node in ast.walk(tree):
+        for ch in ast.iter_child_nodes(node):
+            parents[id(ch)] = node
+
+    def safe(name_node: ast.Name, stop: ast.AST) -> bool:
+        cur = name_node
+        while cur is not stop:
+            par = parents.get(id(cur))
+            if par is None:
+                return False
+            if isinstance(par, ast.Call):
+                fn = par.func
+                fname = fn.id if isinstance(fn, ast.Name) else (fn.attr if isinstance(fn, ast.Attribute) else "")
+                if fname == "mask_secrets":
+                    return True
+                if fname == "type" and cur in par.args:
+                    return True
+            if isinstance(par, ast.Attribute) and par.value is cur and par.attr in SAFE_ATTRS:
+                return True
+            cur = par
+        return False
+
+    hits: list[tuple[int, str]] = []
+    for h in ast.walk(tree):
+        if not (isinstance(h, ast.ExceptHandler) and h.name):
+            continue
+        for st in h.body:
+            for call in ast.walk(st):
+                if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id == "print"):
+                    continue
+                for n in ast.walk(call):
+                    if isinstance(n, ast.Name) and n.id == h.name and not safe(n, call):
+                        hits.append((call.lineno, h.name))
+                        break
+    return sorted(set(hits))
+
+
+def check_prints() -> list[str]:
+    fails: list[str] = []
+    n_files = 0
+    for d in PRINT_SCAN_DIRS:
+        for p in sorted((ROOT / d).rglob("*.py")):
+            n_files += 1
+            for line, name in unmasked_exception_prints(p.read_text(encoding="utf-8")):
+                fails.append(f"§6 {p.relative_to(ROOT)}:{line} print 直接用了异常 {name}; "
+                             f"改成 mask_secrets(str({name})) (secret_mask.py)")
+    # 反证: 去掉一处包装必须红
+    probe = ROOT / "scripts" / "backfill_content_layer.py"
+    src = probe.read_text(encoding="utf-8")
+    if "mask_secrets(str(exc))" not in src:
+        fails.append("§6 反证用的 backfill_content_layer.py 里找不到 mask_secrets(str(exc)) —— 反证失效, 换一个文件")
+    elif not unmasked_exception_prints(src.replace("mask_secrets(str(exc))", "str(exc)", 1)):
+        fails.append("§6 反证没红: 去掉 backfill_content_layer.py 的一处 mask_secrets 之后扫描没发现")
+    if n_files < 50:
+        fails.append(f"§6 只扫到 {n_files} 个 .py, 目录结构变了? 扫描在空转")
+    return fails
 
 
 def main() -> int:
@@ -95,12 +171,15 @@ def main() -> int:
     if SB not in rb.getvalue():
         fails.append("§5 自建 handler 不该被掩 (测试假设变了: 若全局 root 也挂了掩码, 更新本节)")
 
+    # §6 print() 不直接打异常文本
+    fails += check_prints()
+
     for f in fails:
         print("  ❌", f)
     if fails:
         print(f"❌ secret masking: {len(fails)} 条不过")
         return 1
-    print("✅ secret masking: §1 消息 · §2 %-参数 · §3 traceback · §4 源码引用 · §5 边界 五节全过")
+    print("✅ secret masking: §1 消息 · §2 %-参数 · §3 traceback · §4 源码引用 · §5 边界 · §6 print 六节全过")
     return 0
 
 

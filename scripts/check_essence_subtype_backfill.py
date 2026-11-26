@@ -20,6 +20,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
+from secret_mask import mask_secrets  # noqa: E402
 
 
 class _Q:
@@ -117,7 +118,7 @@ def main() -> int:
         import worker.app as w
         from fastapi.testclient import TestClient
     except ImportError as exc:
-        print(f"  ⚠️ §3 跳过 (import 失败: {exc}); CI 的 python job 装了 worker 依赖, 那里会跑")
+        print(f"  ⚠️ §3 跳过 (import 失败: {mask_secrets(str(exc))}); CI 的 python job 装了 worker 依赖, 那里会跑")
         w = None
     if w is not None:
         seen: list[list[str]] = []

@@ -116,6 +116,15 @@
    - Jev 的 `/health`（`https://judge-production-601c.up.railway.app/health`，**要带 `-601c`**，不带的是另一个服务）只证明服务起来了：`version` 一直是 0.1.0，`policy_sha256` 只在改了 `config/data_policy.yaml` 时才变。
    - linkcheck 免口令的只有面板的 `/healthz`（回 `ok`）。会话没有 Railway 和飞书的权限，看不到 cron 日志；动了花钱路径的 PR，合之前和 owner 约好由 owner 在 Railway 看下一轮 cron。
 
+### 4.1 新服务、新 workflow 或多一个地方用密钥时（四个库一样；S-05）
+
+同一个 PR 里做完这几条，不要留到以后：
+
+1. 改 RISKS.md R-032 的「密钥 → 持有者」矩阵：哪一列、哪一行，写上新的消费者。只写变量名，不写值。
+2. 改 R-032 轮换步骤 ②：新消费者在哪里要跟着换（哪个仓的 Actions、哪个 Railway 服务）。
+3. TV 的 workflow 有 CI 守卫（`scripts/check_secret_matrix.py`）：用到的 `secrets.X` 不在矩阵里、或者那一行没写这个 workflow，CI 就红。别的三个仓 TV 的 CI 看不到，只能靠这份清单。
+4. Railway 上的服务只能看代码里读哪些变量名；用 `os.environ[...]` 读的要到 Variables 页对名字，不要读值。
+
 ## 5. 本地环境和检查命令
 
 四个库 CI 都是 Python 3.11；本机默认 3.13 也能跑绿，但别用 3.12 以后才有的语法；要和 CI 完全一致就用 `/usr/bin/python3.11`（本机有 `uv`）。每个库各建一个 venv。上一个会话的 venv 和草稿目录不会带过来。

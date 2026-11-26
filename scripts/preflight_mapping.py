@@ -30,7 +30,7 @@ import os
 import sys
 from collections import Counter
 
-from _common import load_mapping, resolve_feishu_tables, _direction_key
+from _common import load_mapping, resolve_feishu_tables, _direction_key, mask_secrets
 from sync_feishu_notes_to_truth_vault import (
     FeishuClient,
     transform_row,
@@ -107,7 +107,7 @@ def project_rows(mapping: dict, records, show_cap: int) -> dict:
         except Exception as exc:  # 真 sync 也是 try/except 计 errors; 这里同样不让一行毁报告
             s["proj"]["error"] += 1
             if s["proj"]["error"] <= show_cap:
-                print(f"  ⚠️ transform 异常 record_id={rid}: {exc!r}")
+                print(f"  ⚠️ transform 异常 record_id={rid}: {mask_secrets(repr(exc))}")
             continue
 
         has_content = bool(note.get("raw_content"))
@@ -158,7 +158,7 @@ def main() -> int:
     try:
         mapping = load_mapping(args.project_id)
     except Exception as exc:  # load_mapping 会校验 tier_extraction.source 等 → 坏的直接报
-        print(f"  ❌ 加载/校验 mapping 失败: {exc}")
+        print(f"  ❌ 加载/校验 mapping 失败: {mask_secrets(str(exc))}")
         return 2
     print(f"  project={mapping.get('project_id')} brand={mapping.get('brand')} "
           f"product={mapping.get('product')}")
