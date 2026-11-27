@@ -22,7 +22,8 @@
      退出码要和最后一行判定对得上 (崩了的 1 不算「没过」), stderr 不进 step summary; 脚本连库出错退出 2、只打打过码的一句。
   §5b measure_g24_withdrawal 的分母 (D-179 11-27 补): code:v2 的后20% 只数 code:v1 在同一 sha 下也答过
      brand_first_position 的篇; 丢了几篇打在判定行前一行, 判定行还是最后一行; code:v1 那一份不筛。假库上跑 main():
-     只有 v2 的篇 / v1 只在别的 sha 下有的篇不进 v2 的分母。改坏 (不筛 / 筛了也不传 / 不钉 sha) → §5b 红 (11-27 逐个改过)。
+     只有 v2 的篇 / v1 只在别的 sha 或别的 run_tag 下有的篇不进 v2 的分母。改坏 (不筛 / 筛了也不传 / 不钉 sha /
+     不钉 run_tag) → §5b 红 (11-27 逐个改过)。
   §6 worker: _CODE_EXTRACTORS 与 fb.CODE_EXTRACTORS 逐字相同; 端点 (要 fastapi): 拼 --code-extractor 并回显,
      不带 code_only / 副题库 / 闭集外 → 400 不起子进程; 不带这个键时参数和响应和以前一样。
 挡不住什么: 生产上 v2 抽得对不对 (撤回条件要等回填之后按 measure_g24_withdrawal.py 量); 闸二重读本身。
@@ -519,16 +520,17 @@ G24_BODY_TAGS = "【标题】用了一个月\n【正文】这个月用下来感�
 
 def _measure_tables() -> dict:
     """合成: A 9 篇 (品牌在正文, v2 后20%, v1 中间) · B 3 篇 (品牌只在标签里, 只有 v2 后20%) · C 1 篇 (同 B, v1 只在别的
-    sha 下有) · D 2 篇 (品牌只在标签里, 只有 v1 后20%)。对: v2 分母 9、只在标签里 0 → 过, 丢 4 篇; v1 分母 2。
-    不筛的话 v2 分母 13、只在标签里 4 (31%) → 没过。"""
+    sha 下有) · D 2 篇 (品牌只在标签里, 只有 v1 后20%) · E 1 篇 (同 B, v1 只在别的 run_tag 下有, 答案中间)。
+    对: v2 分母 9、只在标签里 0 → 过, 丢 5 篇; v1 分母 2。不筛的话 v2 分母 14、只在标签里 5 (36%) → 没过;
+    不钉 run_tag 的话 E 进 v2 的分母 (10 篇)、只丢 4 篇。"""
     notes, ans = [], []
 
-    def add(nid, raw, rows):
+    def add(nid, raw, rows, tag="primary"):
         notes.append({"note_id": nid, "project_id": "TQ", "title": None, "raw_content": raw, "target_blue_keywords": [],
                       "projects": {"brand": "某牌", "product": "尼古丁贴"}})
         for ext, v, sha in rows:
             ans.append({"subject_type": "note", "subject_id": nid, "question_id": "brand_first_position", "extractor": ext,
-                        "run_tag": "primary", "bank_sha256": sha, "answer": v})
+                        "run_tag": tag if ext == fb.CODE_EXTRACTOR else "primary", "bank_sha256": sha, "answer": v})
     for i in range(9):
         add(f"TQ_A{i}", G24_BODY_TEXT, [(fb.CODE_EXTRACTOR_V2, "后20%", G24_SHA), (fb.CODE_EXTRACTOR, "中间", G24_SHA)])
     for i in range(3):
@@ -536,6 +538,8 @@ def _measure_tables() -> dict:
     add("TQ_C0", G24_BODY_TAGS, [(fb.CODE_EXTRACTOR_V2, "后20%", G24_SHA), (fb.CODE_EXTRACTOR, "后20%", "0" * 64)])
     for i in range(2):
         add(f"TQ_D{i}", G24_BODY_TAGS, [(fb.CODE_EXTRACTOR, "后20%", G24_SHA)])
+    add("TQ_E0", G24_BODY_TAGS, [(fb.CODE_EXTRACTOR_V2, "后20%", G24_SHA), (fb.CODE_EXTRACTOR, "中间", G24_SHA)],
+        tag="fqr-g24-other")
     return {"note_feature_answers": ans, "notes": notes}
 
 
@@ -563,8 +567,9 @@ def measure_parity_failures(mw) -> list[str]:
     if "code:v1: 后20% 2 篇, 品牌只在标签里 2 篇 (100.0%)" not in lines:
         bad.append(f"v1 那一份被筛了 / 数错了: {lines}")
     if len(lines) < 2 or not (lines[-2].startswith("code:v2 的后20%只数 code:v1 也答过 brand_first_position 的篇")
-                              and lines[-2].endswith("丢掉 4 篇")):
-        bad.append(f"判定行前一行不是丢掉的篇数 (应丢 4 篇: 只有 v2 的 3 篇 + v1 只在别的 sha 下的 1 篇): {lines[-2:]}")
+                              and lines[-2].endswith("丢掉 5 篇")):
+        bad.append(f"判定行前一行不是丢掉的篇数 (应丢 5 篇: 只有 v2 的 3 篇 + v1 只在别的 sha 下的 1 篇 + 只在别的 run_tag 下的 1 篇): "
+                   f"{lines[-2:]}")
     return bad
 
 
@@ -572,7 +577,7 @@ def check_measure_v1_parity() -> None:
     import measure_g24_withdrawal as mw
     bad = measure_parity_failures(mw)
     assert not bad, "§5b 撤回条件的分母:\n  " + "\n  ".join(bad)
-    print("  ✓ §5b 撤回条件: code:v2 的后20% 只数 code:v1 也答过 brand_first_position 的篇 (同一 sha; 假库上跑 main), "
+    print("  ✓ §5b 撤回条件: code:v2 的后20% 只数 code:v1 也答过 brand_first_position 的篇 (同一 sha、run_tag primary; 假库上跑 main), "
           "丢了几篇打在判定行前, 判定行还是最后一行; code:v1 那一份不筛")
 
 

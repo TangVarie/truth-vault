@@ -13,11 +13,15 @@ check_gate2_combo.py —— gate2_combo.py (闸二后半: 组合进不进 L2, do
   §9 自助 / 置换沿用原始样本定下的项目集合与权重 (正例 5 篇的项目在某次抽样里不足 5 也不掉)
   §10 爆款集锦 (TGV / TUGE) 不进最低 20%
   §11 缺整格的项目不进最低 20%; 全量本来没有正例的项目保留; CLI 传全量信息, 报告说明支持集
+  §12 G-24 (D-179 11-27 补): 抽取器里有 code:v2 时走 gate2_run 同一条筛 (code:v2 只留 code:v1 也答过的 (笔记, 题)):
+      只有 v2 的篇、v1 少一题的篇按「没答全」剔, 评估集和特征与 code:v1 对照逐篇一样; 报告头写规则和丢了几个;
+      没有 code:v2 时不调这条筛、meta 不多键、报告没有这一行
 
 反证 (每条都该让本脚本红): ① AUC 并列不取中位秩; ② 留一项目时把本项目也算进权重 (泄漏 → §2 红, §4 噪声也会"进");
 ③ 评估集不剔只有部分抽取器答过 / 没答全的篇; ④ 闸一 fail 的题进了特征; ⑤ 置换时打乱的是跨项目的标签;
 ⑥ 留一项目计数不乘逆抽样权重; ⑦ 自助时项目集合按每次抽样重选; ⑧ 最低 20% 混进爆款集锦;
-⑨ 最低 20% 混进缺整格的项目; ⑩ CLI 丢全量信息、把全量无正例的项目也排掉。
+⑨ 最低 20% 混进缺整格的项目; ⑩ CLI 丢全量信息、把全量无正例的项目也排掉; ⑪ 有 code:v2 时不筛 / 没有 code:v2 也筛
+(11-27 在拷贝上逐个改坏确认 §12 变红)。
 
 跑法: cd scripts && python check_gate2_combo.py
 """
@@ -328,6 +332,54 @@ def check_missing_cells_out_of_bottom() -> None:
     print("  §11 缺正例/负例整格不进最低 20%; 全量无正例项目保留; 配对样本/CLI/报告范围都核过 ✓")
 
 
+def check_code_v2_parity() -> None:
+    """§12: code:v2 的组合对比和 gate2_run 同一条筛。合成: 1000 篇两边都有 (v2 = v1 原样复制) + 20 篇只有 v2 (P0) +
+    1 篇 v1 少 title_has_digit 那一题。对: 两跑评估集逐篇一样, 特征一样; 丢 20 × 代码题数 + 1 个 (笔记, 题)、21 篇。"""
+    v2x = ["code:v2", EXT[1]]
+
+    def extra(notes, given, raw, rng):
+        for k in range(20):
+            nid = f"V2ONLY{k:02d}"
+            notes.append(_note(rng, nid, "P0", k % 2))
+            raw.extend(dict(a, extractor="code:v2") if a["extractor"] == EXT[0] else a
+                       for a in _full(nid, {PASS_Q: "是", "title_has_digit": "是"}))
+        notes.append(_note(rng, "V1PART", "P1", 1))
+        full = _full("V1PART", {PASS_Q: "是", "title_has_digit": "否"})
+        raw.extend(a for a in full if a["extractor"] == EXT[1])
+        raw.extend(dict(a, extractor="code:v2") for a in full if a["extractor"] == EXT[0])
+        raw.extend(a for a in full if a["extractor"] == EXT[0] and a["question_id"] != "title_has_digit")
+    ds = _dataset(0.6, seed=12, extra=extra)
+    ds["answers"] += [dict(a, extractor="code:v2") for a in ds["answers"]
+                      if a["extractor"] == EXT[0] and not a["subject_id"].startswith("V1PART")]
+    n1, m1 = C.build_eval(ds, REAL, sha=SHA, extractors=EXT)
+    n2, m2 = C.build_eval(ds, REAL, sha=SHA, extractors=v2x)
+    f1 = {n["note_id"]: n["feats"]["q"] for n in n1}
+    f2 = {n["note_id"]: n["feats"]["q"] for n in n2}
+    assert len(f1) == 1000 and f1 == f2 and m1["dropped_partial_extractors"] == m2["dropped_partial_extractors"] == 21, \
+        ("§12 code:v2 的评估集要和 code:v1 对照逐篇一样", len(f1), len(f2), m1["dropped_partial_extractors"],
+         m2["dropped_partial_extractors"], sorted(set(f2) - set(f1))[:3])
+    assert m2["code_v2_parity"] == {"pairs": 20 * len(CODE_Q) + 1, "notes": 21} and "code_v2_parity" not in m1, m2.get("code_v2_parity")
+    res = C.run_combo(n2, boot=20, perms=2, seed=5, census_pos=m2["census_pos"], sampling=m2["sampling"])
+    rep2 = C.render(res, m2, sha=SHA, extractors=v2x).splitlines()
+    line = (f"> G-24 · {G.CODE_V2_PARITY_RULE}。这一跑丢掉 {20 * len(CODE_Q) + 1:,} 个 (笔记, 题)、涉及 21 篇 "
+            "(和 gate2_run 同一条筛; 丢了题的篇按「没答全」剔)")
+    assert rep2.index(line) == 3, rep2[:5]
+    rep1 = C.render(res, m1, sha=SHA, extractors=EXT)
+    assert "G-24" not in rep1 and G.CODE_V2_PARITY_RULE not in rep1
+    real = G.code_v2_parity_filter
+
+    def _boom(*a, **k):
+        raise AssertionError("没有 code:v2 也调了 code_v2_parity_filter")
+    G.code_v2_parity_filter = _boom
+    try:
+        n3, m3 = C.build_eval(dict(ds, code_v1_keys=[{"subject_id": "x"}]), REAL, sha=SHA, extractors=EXT)
+    finally:
+        G.code_v2_parity_filter = real
+    assert m3 == m1 and {n["note_id"]: n["feats"]["q"] for n in n3} == f1, "§12 没有 code:v2 的组合对比要和以前一样"
+    print(f"  §12 G-24 code:v2 的组合对比走同一条筛: 只有 v2 的 20 篇、v1 少一题的 1 篇按没答全剔, 评估集和特征与 code:v1 对照"
+          f"逐篇一样; 报告头写规则和丢了 {20 * len(CODE_Q) + 1} 个; 没有 code:v2 不调这条筛、meta 不多键 ✓")
+
+
 def main() -> int:
     check_auc()
     check_lopo()
@@ -340,7 +392,8 @@ def main() -> int:
     check_fixed_eligibility()
     check_curated_out_of_bottom()
     check_missing_cells_out_of_bottom()
-    print("\ncheck_gate2_combo: 11 节全过")
+    check_code_v2_parity()
+    print("\ncheck_gate2_combo: 12 节全过")
     return 0
 
 

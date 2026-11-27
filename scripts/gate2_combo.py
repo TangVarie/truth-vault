@@ -18,10 +18,11 @@ gate2_combo.py
   四条全过 → enter_l2 = true。
 
 快照与 gate2_run 同一套 (preregistration_check / snapshot_answers): 题库 frozen、--sha 是 digest 前缀、快照内 (笔记, 题)
-唯一。评估集 = gate2_run 的分析集 (有 essence、正文 ≥ 50 字) ∩ 快照里【每个】抽取器都把【该答的题全答了】的篇 (行在就算,
-answer 为 NULL 也算答过) —— 混着"只有代码特征"或"只写了一半"的篇, q 打分器在不同笔记上用的是不同的特征集, AUC 没有意义
-(D-106; codex review on #174)。占位题不进特征; 闸一 fail 的题与 --unreliable 传入的题默认也不进 (它们没过"测得准",
---include-unreliable 只给对照用)。
+唯一; 抽取器里有 code:v2 时也走 gate2_run 那条筛 (code:v2 只留 code:v1 也答过的 (笔记, 题), G-24 / D-179 11-27 补),
+报告头上写丢了几个 (没有 code:v2 的跑结果和报告一个字节不变)。评估集 = gate2_run 的分析集 (有 essence、正文 ≥ 50 字)
+∩ 快照里【每个】抽取器都把【该答的题全答了】的篇 (行在就算, answer 为 NULL 也算答过) —— 混着"只有代码特征"或
+"只写了一半"的篇, q 打分器在不同笔记上用的是不同的特征集, AUC 没有意义 (D-106; codex review on #174)。
+占位题不进特征; 闸一 fail 的题与 --unreliable 传入的题默认也不进 (它们没过"测得准", --include-unreliable 只给对照用)。
 
 抽样加权 (codex review on #174): 附录 B.3 的打分器定义在【全量】分析集上, 但快照只覆盖一部分篇, 而且各项目、各标签的覆盖率
 差得很远 (D-106: 定向补数把 NUC / NRT 的正例几乎全补了, 负例只抽 100)。直接拿快照里的爆 / 趴数去算留一项目权重, 正例
@@ -92,6 +93,9 @@ def build_eval(dataset: dict, bank: dict, *, sha: str, extractors: list[str], in
     """评估集 + 每篇三套特征 + 逆抽样权重。回 (notes, meta)。
     notes 每篇带 feats = {tag: set, q: set, both: set} 与 wt = (趴的权重, 爆的权重) —— 按标签取, 置换后标签变了权重跟着变。"""
     answers = G.snapshot_answers(dataset, sha, extractors)
+    v2_dropped = None
+    if fb.CODE_EXTRACTOR_V2 in set(extractors):      # G-24: 和 gate2_run 同一条筛, 同一份 code:v1 的行
+        answers, v2_dropped = G.code_v2_parity_filter(answers, G.code_v1_rows(dataset), sha)
     placebo = {q["id"] for q in bank.get("placebo") or []}
     excluded = set() if include_unreliable else (G.gate1_unreliable(bank) | set(unreliable))
     expected = {e: expected_questions(bank, e) for e in extractors}
@@ -133,6 +137,8 @@ def build_eval(dataset: dict, bank: dict, *, sha: str, extractors: list[str], in
     meta = {"n_answers": len(answers), "excluded_questions": sorted(excluded),
             "dropped_partial_extractors": dropped_partial, "sampling": sampling, "unrepresented": unrepresented,
             "census_pos": {p: c[1] for p, c in census.items()}}
+    if v2_dropped is not None:            # 只在有 code:v2 时多这个键
+        meta["code_v2_parity"] = {"pairs": len(v2_dropped), "notes": len({k[0] for k in v2_dropped})}
     return kept, meta
 
 
@@ -383,6 +389,10 @@ def render(res: dict, meta: dict, *, sha: str, extractors: list[str]) -> str:
          f"不进特征的题 (闸一 fail ∪ --unreliable): {meta.get('excluded_questions') or '无'} · "
          f"有抽取器没答全而剔掉的篇 {meta.get('dropped_partial_extractors', 0)}",
          "", "| 打分器 | 加权 AUC | 置换 20 次 (均值 / 最大) |", "|---|---|---|"]
+    vp = meta.get("code_v2_parity")
+    if vp is not None:                    # 只有 code:v2 的跑才有这一行 (没有 code:v2 的报告逐字节和以前一样)
+        L.insert(3, f"> G-24 · {G.CODE_V2_PARITY_RULE}。这一跑丢掉 {vp['pairs']:,} 个 (笔记, 题)、涉及 {vp['notes']:,} 篇 "
+                    "(和 gate2_run 同一条筛; 丢了题的篇按「没答全」剔)")
     for v, name in (("tag", "只 essence"), ("q", "只原子题"), ("both", "合并")):
         pv = [a for a in res["perm"][v] if a is not None]
         L.append(f"| {name} | {_f(res['auc'][v])} | {_f(sum(pv) / len(pv) if pv else None)} / {_f(max(pv) if pv else None)} |")

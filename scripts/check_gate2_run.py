@@ -47,9 +47,12 @@
      不用 _common.posthoc_done_labels (同步或闸二自己留一份) / 报告的剔除依据和计数名没改 / 旧键 has_pinned_comment 照跑
      (G-25, D-128 11-25 补; 11-25 逐个改坏确认变红)                                → §8n / §8r 红
 
-§9 G-24 (D-179 11-27 补): 抽取器里有 code:v2 时, code:v2 的答案只留 code:v1 也答过的 (笔记, 题)。11-27 在拷贝上逐个改坏确认变红:
+§9 G-24 (D-179 11-27 补): 抽取器里有 code:v2 时, code:v2 的答案只留 code:v1 也答过的 (笔记, 题); 判法和 v1 一样的 5 题在分析集上
+  逐行对账 (v1 支持 / v2 支持 / 只有 v1 / 漂出 / 漂入), 因为单靠这条筛, v1 抽过之后输入变了的篇照样让那几行支持数不一样。
+  11-27 在拷贝上逐个改坏确认变红:
   ㉙ 不筛 / 只按篇不按 (篇, 题) 筛 / 不看 sha (筛里或取数里) / 不看 run_tag / 不看 extractor / 没有 code:v2 也筛 (run_gate2 里或
-     fetch_dataset 里) / --outcome reads 的 hit 那一跑没带 code_v1_keys                                    → §9 / §9b 红
+     fetch_dataset 里) / --outcome reads 的 hit 那一跑没带 code_v1_keys / 对账不限分析集 / NULL 对非空不算漂移 / 对账用筛之前
+     的答案 / 判法一样的题多放一道会变的 / 取数不带 v1 的答案 / 报告头不写对账那一行                    → §9 / §9b 红
 
 跑法: cd scripts && python check_gate2_run.py
 """
@@ -1751,13 +1754,20 @@ def check_secondary_pinned_done_only() -> None:
 # 夹具全是合成的 (note_id 形如 P0_n012, 答案按 sha256(题:篇) 定, 和 y 无关), 确定性。五个项目各挑 i % 5 == 0 的 40 篇:
 #   P0 只有 v2 (v1 一行没有) · P1 只有 v1 (回填之后 features-sync 新写的那种) · P2 v1 少 emoji_bucket 那一题 ·
 #   P3 v1 只在别的 sha 下有 · P4 v1 只在别的 run_tag 下有; 另有 P0 i % 5 == 1 的 40 篇只有 v2、而且不在分析集 (没有 essence)。
+# 漂移 (生产上有: v1 抽过一次不再重抽, 之后标题 / 正文 / 词典改过): 两边都有的篇里 i % 20 ∈ {1, 2} 的, v1 在判法一样的
+#   一道题上是下一个取值 (i == 2 的是 NULL, v1 那时没标题), 另在 hashtag_bucket (v2 本来就会变的题) 上也换一个;
+#   P1 i % 5 == 1 的篇正文 30 字、不在分析集, 它们的漂移不许数进对账。drift=False 的夹具没有漂移。
 # 改坏之后必须变红 (11-27 在拷贝上逐个改过): 不筛 / 只按篇不按 (篇, 题) / 不看 sha / 不看 run_tag / 没有 code:v2 也筛
-# (run_gate2 或 fetch_dataset 任一处) → §9 红 (后两种 §0 金样或 check_l2_outcome_switch 也红)。
+# (run_gate2 或 fetch_dataset 任一处) / 对账不限分析集 / NULL 对非空不算漂移 / 对账用筛之前的答案 / 判法一样的题多放一道
+# 会变的 / 报告头不写对账那一行 → §9 红 (没有 code:v2 也筛的 §0 金样或 check_l2_outcome_switch 也红)。
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════
 V2 = fb.CODE_EXTRACTOR_V2
 G24_OTHER_SHA = "0" * 64
 G24_OTHER_TAG = "fqr-g24-other"
 G24_PARTIAL_QID = "emoji_bucket"
+G24_CHANGING_QID = "hashtag_bucket"
+# D-179 第 1 条原文: 标题两题、表情、brand_in_title 不变, body_question_marks 问号数永远一样 (守卫穷举核过)
+G24_SAME = ("body_question_marks", "brand_in_title", "emoji_bucket", "title_has_digit", "title_len_bucket")
 
 
 def _g24_options() -> dict[str, list[str]]:
@@ -1781,8 +1791,31 @@ def _g24_value(opts: dict, qid: str, nid: str) -> str:
     return vals[int(hashlib.sha256(f"{qid}:{nid}".encode()).hexdigest()[:6], 16) % len(vals)]
 
 
-def _g24_dataset(*, v1_only: bool = True) -> tuple[list, list]:
-    """v1 与 v2 的答案逐字一样 (这一节只测覆盖)。v1_only=False: P1 那 40 篇两边都有 (回填补齐之后的样子)。"""
+def _g24_drift_qid(n: dict):
+    """这篇在判法一样的哪道题上漂了 (没漂 → None)。"""
+    i = int(n["note_id"][-3:])
+    if _g24_group(n) != "both" or i % 20 not in (1, 2):
+        return None
+    return G24_SAME[(i // 20 + 4) % len(G24_SAME)]
+
+
+def _g24_v1_value(opts: dict, qid: str, n: dict, drift: bool = True):
+    """v1 那一行的答案: 没漂就和 v2 一样; 漂了是下一个取值 (i == 2 的那道题是 NULL)。"""
+    v = _g24_value(opts, qid, n["note_id"])
+    dq = _g24_drift_qid(n) if drift else None
+    if dq is None or qid not in (dq, G24_CHANGING_QID):
+        return v
+    if qid == dq and int(n["note_id"][-3:]) == 2:
+        return None
+    return opts[qid][(opts[qid].index(v) + 1) % len(opts[qid])]
+
+
+def _g24_in_analysis(n: dict) -> bool:
+    return bool(n["has_essence"]) and (n["body_len"] is None or n["body_len"] >= 50)
+
+
+def _g24_dataset(*, v1_only: bool = True, drift: bool = True) -> tuple[list, list]:
+    """v1_only=False: P1 那 40 篇两边都有 (回填补齐之后的样子)。drift=False: v1 与 v2 的答案逐字一样。"""
     notes, answers, _ = _dataset()
     opts = _g24_options()
     for n in notes:
@@ -1791,16 +1824,18 @@ def _g24_dataset(*, v1_only: bool = True) -> tuple[list, list]:
             g = "both"
         if g == "v2_only_outside":
             n["has_essence"] = False
+        if n["project_id"] == "P1" and int(n["note_id"][-3:]) % 5 == 1:
+            n["body_len"] = 30
         for qid in opts:
-            v = _g24_value(opts, qid, n["note_id"])
+            v, v1 = _g24_value(opts, qid, n["note_id"]), _g24_v1_value(opts, qid, n, drift)
             if g != "v1_only":
                 _answer(answers, n["note_id"], qid, v, extractor=V2)
             if g in ("both", "v1_only") or (g == "partial" and qid != G24_PARTIAL_QID):
-                _answer(answers, n["note_id"], qid, v, extractor="code:v1")
+                _answer(answers, n["note_id"], qid, v1, extractor="code:v1")
             elif g == "other_sha":
-                _answer(answers, n["note_id"], qid, v, extractor="code:v1", sha=G24_OTHER_SHA)
+                _answer(answers, n["note_id"], qid, v1, extractor="code:v1", sha=G24_OTHER_SHA)
             elif g == "other_tag":
-                _answer(answers, n["note_id"], qid, v, extractor="code:v1")
+                _answer(answers, n["note_id"], qid, v1, extractor="code:v1")
                 answers[-1]["run_tag"] = G24_OTHER_TAG
     return notes, answers
 
@@ -1813,60 +1848,113 @@ def _g24_support(res: dict) -> dict:
     return {(r["question_id"], r["answer"]): r["support"] for r in res["rows"] if r["kind"] in ("code", "placebo")}
 
 
+def _g24_hand(notes: list, *, v1_only: bool = True, drift: bool = True) -> tuple[dict, dict, dict]:
+    """按组手算 (不调被测的函数): 两跑每行的支持数, 和判法一样的几题逐行的 (只有 v1, 漂出, 漂入)。"""
+    opts = _g24_options()
+    want1, want2, parts = defaultdict(int), defaultdict(int), defaultdict(lambda: [0, 0, 0])
+    for n in notes:
+        if not _g24_in_analysis(n):
+            continue
+        g = _g24_group(n)
+        if g == "v1_only" and not v1_only:
+            g = "both"
+        for qid in opts:
+            v2, v1 = _g24_value(opts, qid, n["note_id"]), _g24_v1_value(opts, qid, n, drift)
+            has2 = g == "both" or (g == "partial" and qid != G24_PARTIAL_QID)
+            has1 = has2 or g == "v1_only"
+            if has2:
+                want2[(qid, v2)] += 1
+            if has1 and v1 is not None:
+                want1[(qid, v1)] += 1
+            if qid not in G24_SAME:
+                continue
+            for val in opts[qid]:
+                p = parts[(qid, val)]
+                p[0] += int(has1 and not has2 and v1 == val)
+                p[1] += int(has2 and v1 == val and v2 != val)
+                p[2] += int(has2 and v2 == val and v1 != val)
+    return want1, want2, parts
+
+
 def check_g24_v2_needs_v1() -> None:
+    assert G.CODE_V2_SAME_AS_V1 == G24_SAME and set(G24_SAME) <= set(G.code_question_ids(BANK)) \
+        and not {"body_len_bucket", "hashtag_bucket", "brand_first_position"} & set(G24_SAME), G.CODE_V2_SAME_AS_V1
     notes, answers = _g24_dataset()
     ds = {"notes": notes, "answers": answers}
     v1x, v2x = ["code:v1", "llm:test"], [V2, "llm:test"]
     r1, r2 = _g24_run(ds, v1x), _g24_run(ds, v2x)
     # 丢掉的数: P0 / P3 / P4 各 40 篇 × 11 题 + P2 40 篇 × 1 题 + 分析集外 40 篇 × 11 题
     assert r2["code_v2_parity"] == {"pairs": 1800, "notes": 200, "pairs_analysis": 1360, "notes_analysis": 160}, r2.get("code_v2_parity")
-    # 每一行的支持数, 按组手算 (不调被测的函数): v2 只数「两边都有」的篇 (P2 那题除外); v1 另外多 P1 那 40 篇
+    # 每一行的支持数: v2 只数「两边都有」的篇 (P2 那题除外); v1 另外多 P1 那 40 篇; 漂了的篇两边各数各的答案
     opts = _g24_options()
-    want1, want2 = defaultdict(int), defaultdict(int)
-    for n in notes:
-        g = _g24_group(n)
-        if not n["has_essence"]:
-            continue
-        for qid in opts:
-            v = _g24_value(opts, qid, n["note_id"])
-            if g == "both" or (g == "partial" and qid != G24_PARTIAL_QID):
-                want2[(qid, v)] += 1
-                want1[(qid, v)] += 1
-            elif g == "v1_only":
-                want1[(qid, v)] += 1
+    want1, want2, parts = _g24_hand(notes)
     s1, s2 = _g24_support(r1), _g24_support(r2)
     assert s2 == {k: want2.get(k, 0) for k in s2} and s1 == {k: want1.get(k, 0) for k in s1}, \
         ("§9 支持数和按组手算的对不上", [(k, s1[k], want1.get(k), s2[k], want2.get(k)) for k in s2 if s1[k] != want1.get(k) or s2[k] != want2.get(k)][:5])
-    choice = [q for q, vals in opts.items() if vals != ["是", "否"]]
-    assert len(s1) == len(s2) == 25 and all(s1[k] >= s2[k] for k in s2) and s1 != s2 and \
+    choice = [q for q, vals in opts.items() if vals != ["是", "否"] and q not in G24_SAME]
+    assert len(s1) == len(s2) == 25 and s1 != s2 and \
         all(sum(s1[(q, v)] - s2[(q, v)] for v in opts[q]) == 40 for q in choice), \
-        "§9 v1 只多 P1 那 40 篇 (choice 题每题各取值的支持数差加起来 = 40); 别的两边一样"
-    # 回填补齐之后 (没有只有 v1 的篇): v1、v2 答案逐字一样的题每行支持数一样 —— D-179 第 4 条那道核对现在过得了
+        "§9 会变的 choice 题: v1 只多 P1 那 40 篇 (各取值的支持数差加起来 = 40)"
+    # 逐行对账: v1 列 = 对照跑那一行、v2 列 = v2 跑那一行, 差 = 只有 v1 + 漂出 − 漂入, 三样和手算一样; 只数分析集
+    dr = r2["code_v2_drift"]
+    same_rows = [(r["question_id"], r["answer"]) for r in r2["rows"] if r["question_id"] in G24_SAME]
+    assert len(same_rows) == 11 and [(r["question_id"], r["answer"]) for r in dr["rows"]] == same_rows, dr["rows"]
+    for r in dr["rows"]:
+        k = (r["question_id"], r["answer"])
+        assert (r["v1"], r["v2"]) == (s1[k], s2[k]) and r["v1"] - r["v2"] == r["only_v1"] + r["out"] - r["in_"] \
+            and [r["only_v1"], r["out"], r["in_"]] == parts[k], ("§9 逐行对账", r, s1[k], s2[k], parts[k])
+    # 总数: 只有 v1 = P1 40 篇 × 5 题; 漂移 = i % 20 ∈ {1, 2} 两边都有、在分析集里的 80 篇各 1 题 (hashtag_bucket 那一漂不算;
+    # P1 i % 20 == 1 那 10 篇不在分析集, 不算)
+    assert (dr["only_v1"], dr["drift"], dr["drift_notes"]) == (200, 80, 80), (dr["only_v1"], dr["drift"], dr["drift_notes"])
+    n_an = sum(1 for n in notes if _g24_in_analysis(n))
+    for q, v in dr["questions"].items():
+        rows2 = sum(1 for n in notes if _g24_in_analysis(n) and (_g24_group(n) == "both" or (_g24_group(n) == "partial" and q != G24_PARTIAL_QID)))
+        rows1 = rows2 + 40
+        nulls = 5 if q == "title_len_bucket" else 0
+        assert v == {"rows_v1": rows1, "rows_v2": rows2, "nonnull_v1": rows1 - nulls, "nonnull_v2": rows2, "only_v1": 40,
+                     "drift": sum(1 for n in notes if _g24_in_analysis(n) and _g24_drift_qid(n) == q)}, (q, v, n_an)
+    # 回填补齐之后 (没有只有 v1 的篇): 覆盖一样, 但漂了的那几行支持数照样不一样 —— 单靠这条筛, D-179 第 4 条「每行支持数
+    # 一样」过不了, 重跑也不会变; 差恰好 = 漂出 − 漂入。没有漂移时才逐行一样。
     n3, a3 = _g24_dataset(v1_only=False)
     t1, t2 = _g24_run({"notes": n3, "answers": a3}, v1x), _g24_run({"notes": n3, "answers": a3}, v2x)
-    assert _g24_support(t1) == _g24_support(t2) and t1["n_answers"] == t2["n_answers"] and t1["n_notes"] == t2["n_notes"], \
-        "§9 两边覆盖一样时支持数要逐行一样"
-    # 报告头: 规则和计数只在 code:v2 的跑里有; 对照跑的结果不多键、报告没有这一行
+    u1, u2, dt = _g24_support(t1), _g24_support(t2), t2["code_v2_drift"]
+    assert dt["only_v1"] == 0 and dt["drift"] == 80 and t1["n_answers"] == t2["n_answers"] and t1["n_notes"] == t2["n_notes"] \
+        and all(u1[(r["question_id"], r["answer"])] - u2[(r["question_id"], r["answer"])] == r["out"] - r["in_"] for r in dt["rows"]) \
+        and any(u1[(r["question_id"], r["answer"])] != u2[(r["question_id"], r["answer"])] for r in dt["rows"]), \
+        "§9 覆盖补齐之后, 判法一样的几题每行支持数差 = 漂出 − 漂入, 有漂移就有行不一样"
+    n4, a4 = _g24_dataset(v1_only=False, drift=False)
+    w1, w2 = _g24_run({"notes": n4, "answers": a4}, v1x), _g24_run({"notes": n4, "answers": a4}, v2x)
+    assert _g24_support(w1) == _g24_support(w2) and w2["code_v2_drift"]["drift"] == 0 \
+        and w2["code_v2_drift"]["only_v1"] == 0, "§9 覆盖一样、没有漂移时支持数要逐行一样"
+    # 报告头: 规则和计数、对账那一行只在 code:v2 的跑里有, 逐行对账一节也是; 对照跑的结果不多键、报告没有这些
     rep1, rep2 = G.render_report(r1), G.render_report(r2)
     line = (f"> G-24 · {G.CODE_V2_PARITY_RULE}。这一跑丢掉 1,800 个 (笔记, 题)、涉及 200 篇; 其中分析集里 1,360 个、160 篇")
-    assert line in rep2.splitlines() and rep2.splitlines().index(line) == 3, rep2[:600]
-    assert "code_v2_parity" not in r1 and "G-24" not in rep1 and G.CODE_V2_PARITY_RULE not in rep1
-    # 没有 code:v2 的跑根本不调这条筛; 账本里多了 code:v2 的行 / 多了 code_v1_keys, 对照跑一个字节不变 (§0 那份数据 + 金样)
-    real = G.code_v2_parity_filter
+    line2 = ("> G-24 · v1、v2 判法一样的 5 题 (" + ", ".join(G24_SAME) + "), 分析集里: 有 v1 没 v2 的 (笔记, 题) 200 个 "
+             "(不是 0 = v2 回填没补齐); 两边都有、答案不同 80 个、涉及 80 篇 (v1 抽过之后输入变了, v1 不重抽, 重跑不会变); "
+             "逐行见「G-24 · 逐行对账」")
+    rl = rep2.splitlines()
+    assert line in rl and rl.index(line) == 3 and line2 in rl and rl.index(line2) == 4, rep2[:900]
+    sec = rl.index("## G-24 · 逐行对账 (v1、v2 判法一样的几题; 只有 code:v2 的跑有这一节)")
+    r0 = dr["rows"][0]
+    assert f"| `{r0['question_id']}` | {r0['answer']} | {r0['v1']} | {r0['v2']} | {r0['v1'] - r0['v2']:+d} | {r0['only_v1']} | " \
+           f"{r0['out']} | {r0['in_']} |" in rl[sec:sec + 8] and rl.index("## 反证 (占位题)") > sec, rl[sec:sec + 8]
+    assert "code_v2_parity" not in r1 and "code_v2_drift" not in r1 and "G-24" not in rep1 and G.CODE_V2_PARITY_RULE not in rep1
+    # 没有 code:v2 的跑根本不调这条筛和对账; 账本里多了 code:v2 的行 / 多了 code_v1_keys, 对照跑一个字节不变 (§0 那份数据 + 金样)
+    real = G.code_v2_parity_filter, G.code_v2_drift
 
     def _boom(*a, **k):
-        raise AssertionError("没有 code:v2 也调了 code_v2_parity_filter")
-    G.code_v2_parity_filter = _boom
+        raise AssertionError("没有 code:v2 也调了 code_v2_parity_filter / code_v2_drift")
+    G.code_v2_parity_filter = G.code_v2_drift = _boom
     try:
         g_notes, g_ans = _status_matrix_dataset()
         noisy = g_ans + [dict(a, extractor=V2) for a in g_ans if a["extractor"] == "code:v1"][::2]
         res = G.run_gate2({"notes": g_notes, "answers": noisy, "code_v1_keys": [{"subject_id": "x"}]}, BANK, sha=SHA,
                           extractors=EXTRACTORS, run_tag="gate2-test", allow_draft=True, unreliable=["own_experience"])
         assert hashlib.sha256(G.render_report(res).encode()).hexdigest() == GOLDEN_REPORT_SHA256 \
-            and G.rows_digest(G.validation_rows(res)) == GOLDEN_ROWS_SHA256 and "code_v2_parity" not in res, \
-            "§9 没有 code:v2 的跑, 输出要和 §0 金样逐字节一样"
+            and G.rows_digest(G.validation_rows(res)) == GOLDEN_ROWS_SHA256 and "code_v2_parity" not in res \
+            and "code_v2_drift" not in res, "§9 没有 code:v2 的跑, 输出要和 §0 金样逐字节一样"
     finally:
-        G.code_v2_parity_filter = real
+        G.code_v2_parity_filter, G.code_v2_drift = real
     # 纯函数: 按 (篇, 题) 配; sha 前缀 / run_tag primary / extractor code:v1 缺一不认; 别的抽取器的答案原样留
     full = SHA + "0" * (64 - len(SHA))
     ans = [{"subject_id": s, "question_id": q, "extractor": e, "bank_sha256": full}
@@ -1880,13 +1968,25 @@ def check_g24_v2_needs_v1() -> None:
     kept, dropped = G.code_v2_parity_filter(ans, v1, SHA.upper())
     assert [(a["subject_id"], a["question_id"]) for a in kept] == [("a", "q1"), ("z", "q1")] and \
         dropped == [("a", "q2"), ("b", "q1"), ("c", "q1"), ("d", "q1"), ("e", "q1")], (kept, dropped)
+    # 纯函数 code_v2_drift: 只数分析集 (o 不在); NULL 对非空算漂移 (c); 不是 code:v2 的答案 (e) 和不对账的题 (q2) 不看
+    a1 = {("a", "q1"): "x", ("b", "q1"): "x", ("c", "q1"): None, ("d", "q1"): "y", ("o", "q1"): "x", ("a", "q2"): "x"}
+    a2 = [{"subject_id": s, "question_id": q, "extractor": e, "answer": v}
+          for s, q, e, v in (("a", "q1", V2, "x"), ("b", "q1", V2, "y"), ("c", "q1", V2, "x"), ("o", "q1", V2, "y"),
+                             ("e", "q1", "llm:test", "x"), ("a", "q2", V2, "y"))]
+    got = G.code_v2_drift(a2, a1, {"a", "b", "c", "d", "e"}, [("q1", "x"), ("q1", "y")])
+    assert got == {"questions": {"q1": {"rows_v1": 4, "rows_v2": 3, "nonnull_v1": 3, "nonnull_v2": 3, "only_v1": 1, "drift": 2}},
+                   "rows": [{"question_id": "q1", "answer": "x", "v1": 2, "v2": 2, "only_v1": 0, "out": 1, "in_": 1},
+                            {"question_id": "q1", "answer": "y", "v1": 1, "v2": 1, "only_v1": 1, "out": 0, "in_": 1}],
+                   "only_v1": 1, "drift": 2, "drift_notes": 2}, got
     print("  §9 G-24 code:v2 只认 code:v1 也答过的 (篇, 题): 只有 v2 的篇丢 (分析集内外分开数)、v1 少一题只丢那一题、"
-          "别的 sha / run_tag 下的 v1 不算; 只有 v1 的篇留在对照跑、v2 跑里没有 (支持数差 = 该再回填); 补齐之后逐行一样; "
-          "报告头写规则和计数; 没有 code:v2 的跑不调这条筛、输出 = §0 金样 ✓")
+          "别的 sha / run_tag 下的 v1 不算; 只有 v1 的篇留在对照跑、v2 跑里没有; 判法一样的 5 题逐行对账 (v1 列 = 对照跑、"
+          "差 = 只有 v1 + 漂出 − 漂入, 只数分析集, NULL 对非空算漂移); 补齐覆盖之后有漂移的行照样不一样, 没漂移才逐行一样; "
+          "报告头写规则、计数和对账总数; 没有 code:v2 的跑不调筛和对账、输出 = §0 金样 ✓")
 
 
 def check_g24_fetch() -> None:
-    """fetch_dataset 在假库上 (过滤 / 前缀 / 翻页都真做): 有 code:v2 才按每道代码题取一次 code:v1 的键, 结果和直接给 dataset 一样。"""
+    """fetch_dataset 在假库上 (过滤 / 前缀 / 投影 / 翻页都真做): 有 code:v2 才按每道代码题取一次 code:v1 的键和答案,
+    结果 (筛、逐行对账) 和直接给 dataset 一样。"""
     notes, answers = _g24_dataset()
     tables = {"v_l2_labels": [{k: n[k] for k in ("note_id", "project_id", "account_id", "publish_time", "y")} for n in notes],
               "notes": [{"note_id": n["note_id"], "emotional_lever": "x" if n["has_essence"] else None} for n in notes],
@@ -1919,8 +2019,9 @@ def check_g24_fetch() -> None:
     direct = _g24_run({"notes": notes, "answers": answers}, [V2, "llm:test"])
     got = _g24_run(d2, [V2, "llm:test"])
     assert got["code_v2_parity"] == direct["code_v2_parity"] and _g24_support(got) == _g24_support(direct) \
+        and got["code_v2_drift"] == direct["code_v2_drift"] and got["code_v2_drift"]["drift"] == 80 \
         and G.rows_digest(G.validation_rows(got)) == G.rows_digest(G.validation_rows(direct)), \
-        (got.get("code_v2_parity"), direct.get("code_v2_parity"))
+        (got.get("code_v2_parity"), direct.get("code_v2_parity"), got.get("code_v2_drift", {}).get("drift"))
     # --outcome reads (影子读数) 的 hit 那一跑也要拿到 code_v1_keys: 两种口径同一批篇 (notes_hit = notes) → 状态一行都不变
     assert any(r["status"] != "insufficient" for r in got["rows"] if r["kind"] == "code"), "夹具要有够支持的代码题行, 下面才测得出"
     import contextlib
@@ -1932,10 +2033,11 @@ def check_g24_fetch() -> None:
                          "--outcome", "reads", "--run-tag", "gate2-g24-test", "--out", str(out)])
         rep = out.read_text(encoding="utf-8")
     n_rows = len(got["rows"])
-    assert rc == 0 and f"状态变了的行: 0 / {n_rows}" in rep and "这一跑丢掉 1,800 个 (笔记, 题)" in rep, \
+    assert rc == 0 and f"状态变了的行: 0 / {n_rows}" in rep and "这一跑丢掉 1,800 个 (笔记, 题)" in rep \
+        and "两边都有、答案不同 80 个、涉及 80 篇" in rep, \
         (rc, [ln for ln in rep.splitlines() if "状态变了" in ln or "G-24" in ln])
     print(f"  §9b 取数 (假库): 没有 code:v2 → 查询条数 ({2 * len(qids)}) 和键都和以前一样; 有 code:v2 → 另按 11 道代码题各取一次 "
-          "code:v1 的键 (sha 前缀 / primary / code:v1), 结果和直接给 dataset 一样; --outcome reads 的 hit 那一跑用同一份键 ✓")
+          "code:v1 的键和答案 (sha 前缀 / primary / code:v1), 筛和逐行对账都和直接给 dataset 一样; --outcome reads 的 hit 那一跑用同一份 ✓")
 
 
 def main() -> int:
