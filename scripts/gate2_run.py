@@ -17,6 +17,13 @@ numpy / statsmodels), 与 statsmodels 的核对靠闭式: 单层时 Robins–Bre
 
 数据: v_l2_labels (正例 = 清洗后的 爆/大爆, 负例 = 趴), 有 essence、正文 ≥ 50 字 (note_features.body_len; 没有 body_len 的
 不剔)。快照: bank_sha256 前缀 + 抽取器集合 (B.3 的 :sha / :extractors), 快照内 (笔记, 题) 必须唯一, 否则不跑。
+G-24 (D-179 11-27 补): 抽取器集合里有 code:v2 时, code:v2 的答案只留 code:v1 也答过的 (笔记, 题) —— 同一 sha 前缀、
+    run_tag primary 下 code:v1 有这一行 (答案是什么都行, NULL 也算: v1 每篇每题都写一行, 拿不到标题 / 词典空的记
+    invalid_reason)。为什么: code:v2 回填给整个项目写, code:v1 只在 features-sync / 早先的回填跑过的篇有, 不筛的话
+    v2 跑的支持数恒比对照跑大, D-179 第 4 条「v1、v2 答案逐字一样的几题每行支持数一样」永远过不了。只筛 v2 那一边:
+    反过来 v1 有、v2 没有的篇 (回填之后 features-sync 新写的) 照留在对照跑里、v2 跑里没有, 支持数不一样 = 该再派一次
+    v2 回填。报告头上写这条规则和丢了几个 (笔记, 题)、几篇 (只有计数)。抽取器集合里没有 code:v2 时一行都不多查,
+    结果和报告逐字节和以前一样 (check_gate2_run §0 金样 / §9); 副题库那条路钉死 code:v1, 不经过这里。
 预注册: 问题库必须 status: frozen 且 digest 与 --sha 一致 (--allow-draft 只给 CI 夹具和试算用)。
 
 用法:
@@ -261,6 +268,35 @@ def snapshot_answers(dataset: dict, sha: str, extractors: Iterable[str]) -> list
     return answers
 
 
+# G-24 (D-179 11-27 补): code:v2 只认 code:v1 也答过的 (笔记, 题)。见文件头; 规则这句话原样进报告头。
+CODE_V2_PARITY_RULE = (f"{fb.CODE_EXTRACTOR_V2} 的答案只留 {fb.CODE_EXTRACTOR} 也答过的 (笔记, 题): 同一 sha 前缀、run_tag primary 下 "
+                       f"{fb.CODE_EXTRACTOR} 有这一行 (答案是什么都行, NULL 也算) —— D-179 11-27 补")
+
+
+def code_v2_parity_filter(answers: list[dict], v1_rows: Iterable[dict], sha: str) -> tuple[list[dict], list[tuple[str, str]]]:
+    """answers: 快照内的答案 (snapshot_answers 之后); v1_rows: code:v1 的行 (subject_id, question_id, bank_sha256, extractor,
+    可带 run_tag / subject_type, 缺了按 primary / note)。code:v2 的答案只在 (subject_id, question_id) 在 v1_rows 里
+    (同一 sha 前缀、run_tag primary、extractor code:v1) 时留下; 别的抽取器的答案原样留。回 (留下的答案, 丢掉的 (笔记, 题))。
+    按 (笔记, 题) 配, 不按笔记: v1 有这篇别的题、没有这道题, 这道题的 v2 照样丢。"""
+    sha = sha.lower()
+    keys = {(r["subject_id"], r["question_id"]) for r in v1_rows
+            if r.get("extractor") == fb.CODE_EXTRACTOR and r.get("subject_type", "note") == "note"
+            and r.get("run_tag", "primary") == "primary" and str(r.get("bank_sha256", "")).lower().startswith(sha)}
+    kept: list[dict] = []
+    dropped: list[tuple[str, str]] = []
+    for a in answers:
+        if a.get("extractor") == fb.CODE_EXTRACTOR_V2 and (a["subject_id"], a["question_id"]) not in keys:
+            dropped.append((a["subject_id"], a["question_id"]))
+        else:
+            kept.append(a)
+    return kept, dropped
+
+
+def code_question_ids(bank: dict) -> list[str]:
+    """代码抽取器写的题 (8 道代码特征 + 3 道占位题): code:v2 那条筛要按这些题取 code:v1 的行。"""
+    return sorted({t["question_id"] for t in bank_targets(bank) if t["kind"] in ("code", "placebo")})
+
+
 def run_gate2(dataset: dict, bank: dict, *, sha: str, extractors: list[str], run_tag: str,
               q_max: float = 0.10, min_support: int = 30, min_big: int = 3, big_pos: int = 20,
               confound_delta: float = 0.30, unreliable: Iterable[str] = (), allow_draft: bool = False,
@@ -271,6 +307,11 @@ def run_gate2(dataset: dict, bank: dict, *, sha: str, extractors: list[str], run
     ext = set(extractors)
 
     answers = snapshot_answers(dataset, sha, ext)
+    v2_dropped: Optional[list[tuple[str, str]]] = None
+    if fb.CODE_EXTRACTOR_V2 in ext:
+        # code:v1 的行: fetch_dataset 另取的 code_v1_keys (code:v1 不在抽取器集合里, answers 里没有它), 离线夹具也可以直接放在 answers 里
+        v1_rows = list(dataset.get("code_v1_keys") or []) + [a for a in dataset["answers"] if a.get("extractor") == fb.CODE_EXTRACTOR]
+        answers, v2_dropped = code_v2_parity_filter(answers, v1_rows, sha)
 
     versions: dict[str, set[int]] = defaultdict(set)
     answered: dict[str, dict[str, str]] = defaultdict(dict)       # qid → note_id → answer (answer 非空)
@@ -334,12 +375,17 @@ def run_gate2(dataset: dict, bank: dict, *, sha: str, extractors: list[str], run
                            + " (docs/28 §6.2 反证 ①; 多半是快照混了两份答案或标签漏了清洗)")
 
     big_desc = {p: pos_by_proj[p] for p in sorted(big)}
-    return {"rows": rows, "placebo_alarm": placebo_alarm, "big_projects": big_desc,
-            "n_notes": len(notes), "n_pos": sum(int(n["y"]) for n in notes),
-            "n_answers": len(answers), "sha": sha, "extractors": sorted(ext), "run_tag": run_tag,
-            "params": {"q_max": q_max, "min_support": min_support, "min_big": min_big, "big_pos": big_pos,
-                       "confound_delta": confound_delta, "unreliable": sorted(unreliable)},
-            "prior_strata": {k: sum(1 for v in prior.values() if v == k) for k in (PRIOR_NONE, PRIOR_BELOW, PRIOR_AT_OR_ABOVE)}}
+    out = {"rows": rows, "placebo_alarm": placebo_alarm, "big_projects": big_desc,
+           "n_notes": len(notes), "n_pos": sum(int(n["y"]) for n in notes),
+           "n_answers": len(answers), "sha": sha, "extractors": sorted(ext), "run_tag": run_tag,
+           "params": {"q_max": q_max, "min_support": min_support, "min_big": min_big, "big_pos": big_pos,
+                      "confound_delta": confound_delta, "unreliable": sorted(unreliable)},
+           "prior_strata": {k: sum(1 for v in prior.values() if v == k) for k in (PRIOR_NONE, PRIOR_BELOW, PRIOR_AT_OR_ABOVE)}}
+    if v2_dropped is not None:            # 只在有 code:v2 时多这个键 (没有 code:v2 的结果一个键都不多)
+        in_set = [k for k in v2_dropped if k[0] in labeled_ids]
+        out["code_v2_parity"] = {"pairs": len(v2_dropped), "notes": len({k[0] for k in v2_dropped}),
+                                 "pairs_analysis": len(in_set), "notes_analysis": len({k[0] for k in in_set})}
+    return out
 
 
 def _assign_status(row: dict, *, q_max: float, min_support: int, min_big: int, confound_delta: float,
@@ -442,6 +488,10 @@ def render_report(result: dict) -> str:
              f"账号先验分层后 OR 变化 ≤ {int(p['confound_delta'] * 100)}% · 闸一不过: {p['unreliable'] or '（没传）'}",
              f"> 账号先验档: 无记录 {result['prior_strata'][PRIOR_NONE]} · 低于基线 {result['prior_strata'][PRIOR_BELOW]} · "
              f"不低于 {result['prior_strata'][PRIOR_AT_OR_ABOVE]}", ""]
+    vp = result.get("code_v2_parity")
+    if vp is not None:                    # 只有 code:v2 的跑才有这一行 (没有 code:v2 的报告逐字节和以前一样)
+        lines.insert(3, f"> G-24 · {CODE_V2_PARITY_RULE}。这一跑丢掉 {vp['pairs']:,} 个 (笔记, 题)、涉及 "
+                        f"{vp['notes']:,} 篇; 其中分析集里 {vp['pairs_analysis']:,} 个、{vp['notes_analysis']:,} 篇")
     counts = defaultdict(int)
     for r in result["rows"]:
         counts[r["status"]] += 1
@@ -473,7 +523,8 @@ def fetch_dataset(sb, *, bank: dict, sha: str, extractors: list[str], projects: 
                   outcome: str = l2_outcome.DEFAULT_OUTCOME) -> dict:
     """``bank`` 必须是 main() 里 --bank 读进来的那一份: 取哪些题按它算 (codex review on #169, P1 —— 以前这里重新
     load 默认题库, --bank 指向别的冻结题库时, 只在那份里的题永远取不到答案、报告里静默少题)。
-    outcome=reads (W-64 ①): notes 换成 v_l2_outcomes 的阅读口径, 默认口径的那批放在 notes_hit, 答案只取一次。"""
+    outcome=reads (W-64 ①): notes 换成 v_l2_outcomes 的阅读口径, 默认口径的那批放在 notes_hit, 答案只取一次。
+    extractors 含 code:v2 (G-24, D-179 11-27 补): 另取代码题 code:v1 的键放进 code_v1_keys, run_gate2 按它筛 code:v2。"""
     from _common import fetch_all_pages, fetch_vanished_note_ids
     label_cols = "note_id, project_id, account_id, publish_time, y"
     labels = fetch_all_pages(l2_outcome.label_query(sb, label_cols, l2_outcome.DEFAULT_OUTCOME), order_by="note_id")
@@ -503,6 +554,17 @@ def fetch_dataset(sb, *, bank: dict, sha: str, extractors: list[str], projects: 
                  .eq("question_id", qid).eq("extractor", ext))
             answers.extend(fetch_all_pages(q, order_by="subject_id"))
     out = {"notes": notes, "answers": answers, "vanished_dropped": n_vanished}
+    if fb.CODE_EXTRACTOR_V2 in extractors:
+        # G-24 (D-179 11-27 补): code:v2 的答案只留 code:v1 也答过的 (笔记, 题), 这里取 code:v1 的键 (答案不取, NULL 也算答过)。
+        # 同一种翻页: 每道代码题一条, 切片里 subject_id 唯一。没有 code:v2 的跑一条都不多查, 返回的键也不多。
+        keys: list[dict] = []
+        for qid in code_question_ids(bank):
+            q = (sb.schema("truth_vault").table("note_feature_answers")
+                 .select("subject_id, question_id, bank_sha256, extractor, run_tag")
+                 .eq("subject_type", "note").eq("run_tag", "primary").like("bank_sha256", f"{sha}%")
+                 .eq("question_id", qid).eq("extractor", fb.CODE_EXTRACTOR))
+            keys.extend(fetch_all_pages(q, order_by="subject_id"))
+        out["code_v1_keys"] = keys
     if outcome != l2_outcome.DEFAULT_OUTCOME:
         out.update({"notes_hit": notes, "outcome": outcome,
                     "notes": _notes(l2_outcome.fetch_labels(fetch_all_pages, l2_outcome.label_query(sb, label_cols, outcome),
@@ -1501,7 +1563,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         if args.outcome != l2_outcome.DEFAULT_OUTCOME:
             if "notes_hit" not in dataset:
                 raise Gate2Refused(f"--outcome {args.outcome}: 取数里没有默认口径那一批 (notes_hit), 对照做不了")
-            result_hit = run_gate2({"notes": dataset["notes_hit"], "answers": dataset["answers"]}, bank, sha=args.sha,
+            hit_ds = {"notes": dataset["notes_hit"], "answers": dataset["answers"]}
+            if "code_v1_keys" in dataset:             # G-24: code:v2 的跑两种口径用同一份 code:v1 的键
+                hit_ds["code_v1_keys"] = dataset["code_v1_keys"]
+            result_hit = run_gate2(hit_ds, bank, sha=args.sha,
                                    extractors=extractors, run_tag=args.run_tag, q_max=args.q_max,
                                    min_support=args.min_support, min_big=args.min_big, big_pos=args.big_pos,
                                    confound_delta=args.confound_delta, unreliable=unreliable,

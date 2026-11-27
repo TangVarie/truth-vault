@@ -47,6 +47,10 @@
      不用 _common.posthoc_done_labels (同步或闸二自己留一份) / 报告的剔除依据和计数名没改 / 旧键 has_pinned_comment 照跑
      (G-25, D-128 11-25 补; 11-25 逐个改坏确认变红)                                → §8n / §8r 红
 
+§9 G-24 (D-179 11-27 补): 抽取器里有 code:v2 时, code:v2 的答案只留 code:v1 也答过的 (笔记, 题)。11-27 在拷贝上逐个改坏确认变红:
+  ㉙ 不筛 / 只按篇不按 (篇, 题) 筛 / 不看 sha (筛里或取数里) / 不看 run_tag / 不看 extractor / 没有 code:v2 也筛 (run_gate2 里或
+     fetch_dataset 里) / --outcome reads 的 hit 那一跑没带 code_v1_keys                                    → §9 / §9b 红
+
 跑法: cd scripts && python check_gate2_run.py
 """
 from __future__ import annotations
@@ -1251,6 +1255,13 @@ class _FakeQ:
         self.log.append((self.name, "neq", c, v))
         return self
 
+    def like(self, c, pat):
+        """只认前缀匹配 ('abc%'), fetch_dataset 的 bank_sha256 前缀用的就是这种 (§9)。"""
+        assert pat.endswith("%") and "%" not in pat[:-1], pat
+        self.log.append((self.name, "like", c, pat))
+        self.rows = [r for r in self.rows if str(r.get(c) or "").startswith(pat[:-1])]
+        return self
+
     def order(self, c):
         self._order = c
         return self
@@ -1735,6 +1746,198 @@ def check_secondary_pinned_done_only() -> None:
           "旧键拒跑 ✓")
 
 
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+# §9 G-24 (D-179 11-27 补): 抽取器集合里有 code:v2 时, code:v2 的答案只留 code:v1 也答过的 (笔记, 题)。
+# 夹具全是合成的 (note_id 形如 P0_n012, 答案按 sha256(题:篇) 定, 和 y 无关), 确定性。五个项目各挑 i % 5 == 0 的 40 篇:
+#   P0 只有 v2 (v1 一行没有) · P1 只有 v1 (回填之后 features-sync 新写的那种) · P2 v1 少 emoji_bucket 那一题 ·
+#   P3 v1 只在别的 sha 下有 · P4 v1 只在别的 run_tag 下有; 另有 P0 i % 5 == 1 的 40 篇只有 v2、而且不在分析集 (没有 essence)。
+# 改坏之后必须变红 (11-27 在拷贝上逐个改过): 不筛 / 只按篇不按 (篇, 题) / 不看 sha / 不看 run_tag / 没有 code:v2 也筛
+# (run_gate2 或 fetch_dataset 任一处) → §9 红 (后两种 §0 金样或 check_l2_outcome_switch 也红)。
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+V2 = fb.CODE_EXTRACTOR_V2
+G24_OTHER_SHA = "0" * 64
+G24_OTHER_TAG = "fqr-g24-other"
+G24_PARTIAL_QID = "emoji_bucket"
+
+
+def _g24_options() -> dict[str, list[str]]:
+    opts = {c["id"]: (list(c["options"]) if c.get("type") == "choice" else ["是", "否"]) for c in BANK["code_features"]}
+    opts.update({p["id"]: ["是", "否"] for p in BANK["placebo"]})
+    assert sorted(opts) == G.code_question_ids(BANK) and len(opts) == 11, sorted(opts)
+    return opts
+
+
+def _g24_group(n: dict) -> str:
+    i, p = int(n["note_id"][-3:]), n["project_id"]
+    if i % 5 == 1 and p == "P0":
+        return "v2_only_outside"
+    if i % 5:
+        return "both"
+    return {"P0": "v2_only", "P1": "v1_only", "P2": "partial", "P3": "other_sha", "P4": "other_tag"}[p]
+
+
+def _g24_value(opts: dict, qid: str, nid: str) -> str:
+    vals = opts[qid]
+    return vals[int(hashlib.sha256(f"{qid}:{nid}".encode()).hexdigest()[:6], 16) % len(vals)]
+
+
+def _g24_dataset(*, v1_only: bool = True) -> tuple[list, list]:
+    """v1 与 v2 的答案逐字一样 (这一节只测覆盖)。v1_only=False: P1 那 40 篇两边都有 (回填补齐之后的样子)。"""
+    notes, answers, _ = _dataset()
+    opts = _g24_options()
+    for n in notes:
+        g = _g24_group(n)
+        if g == "v1_only" and not v1_only:
+            g = "both"
+        if g == "v2_only_outside":
+            n["has_essence"] = False
+        for qid in opts:
+            v = _g24_value(opts, qid, n["note_id"])
+            if g != "v1_only":
+                _answer(answers, n["note_id"], qid, v, extractor=V2)
+            if g in ("both", "v1_only") or (g == "partial" and qid != G24_PARTIAL_QID):
+                _answer(answers, n["note_id"], qid, v, extractor="code:v1")
+            elif g == "other_sha":
+                _answer(answers, n["note_id"], qid, v, extractor="code:v1", sha=G24_OTHER_SHA)
+            elif g == "other_tag":
+                _answer(answers, n["note_id"], qid, v, extractor="code:v1")
+                answers[-1]["run_tag"] = G24_OTHER_TAG
+    return notes, answers
+
+
+def _g24_run(ds: dict, extractors: list[str]) -> dict:
+    return G.run_gate2(ds, BANK, sha=SHA, extractors=extractors, run_tag="gate2-g24-test", allow_draft=True)
+
+
+def _g24_support(res: dict) -> dict:
+    return {(r["question_id"], r["answer"]): r["support"] for r in res["rows"] if r["kind"] in ("code", "placebo")}
+
+
+def check_g24_v2_needs_v1() -> None:
+    notes, answers = _g24_dataset()
+    ds = {"notes": notes, "answers": answers}
+    v1x, v2x = ["code:v1", "llm:test"], [V2, "llm:test"]
+    r1, r2 = _g24_run(ds, v1x), _g24_run(ds, v2x)
+    # 丢掉的数: P0 / P3 / P4 各 40 篇 × 11 题 + P2 40 篇 × 1 题 + 分析集外 40 篇 × 11 题
+    assert r2["code_v2_parity"] == {"pairs": 1800, "notes": 200, "pairs_analysis": 1360, "notes_analysis": 160}, r2.get("code_v2_parity")
+    # 每一行的支持数, 按组手算 (不调被测的函数): v2 只数「两边都有」的篇 (P2 那题除外); v1 另外多 P1 那 40 篇
+    opts = _g24_options()
+    want1, want2 = defaultdict(int), defaultdict(int)
+    for n in notes:
+        g = _g24_group(n)
+        if not n["has_essence"]:
+            continue
+        for qid in opts:
+            v = _g24_value(opts, qid, n["note_id"])
+            if g == "both" or (g == "partial" and qid != G24_PARTIAL_QID):
+                want2[(qid, v)] += 1
+                want1[(qid, v)] += 1
+            elif g == "v1_only":
+                want1[(qid, v)] += 1
+    s1, s2 = _g24_support(r1), _g24_support(r2)
+    assert s2 == {k: want2.get(k, 0) for k in s2} and s1 == {k: want1.get(k, 0) for k in s1}, \
+        ("§9 支持数和按组手算的对不上", [(k, s1[k], want1.get(k), s2[k], want2.get(k)) for k in s2 if s1[k] != want1.get(k) or s2[k] != want2.get(k)][:5])
+    choice = [q for q, vals in opts.items() if vals != ["是", "否"]]
+    assert len(s1) == len(s2) == 25 and all(s1[k] >= s2[k] for k in s2) and s1 != s2 and \
+        all(sum(s1[(q, v)] - s2[(q, v)] for v in opts[q]) == 40 for q in choice), \
+        "§9 v1 只多 P1 那 40 篇 (choice 题每题各取值的支持数差加起来 = 40); 别的两边一样"
+    # 回填补齐之后 (没有只有 v1 的篇): v1、v2 答案逐字一样的题每行支持数一样 —— D-179 第 4 条那道核对现在过得了
+    n3, a3 = _g24_dataset(v1_only=False)
+    t1, t2 = _g24_run({"notes": n3, "answers": a3}, v1x), _g24_run({"notes": n3, "answers": a3}, v2x)
+    assert _g24_support(t1) == _g24_support(t2) and t1["n_answers"] == t2["n_answers"] and t1["n_notes"] == t2["n_notes"], \
+        "§9 两边覆盖一样时支持数要逐行一样"
+    # 报告头: 规则和计数只在 code:v2 的跑里有; 对照跑的结果不多键、报告没有这一行
+    rep1, rep2 = G.render_report(r1), G.render_report(r2)
+    line = (f"> G-24 · {G.CODE_V2_PARITY_RULE}。这一跑丢掉 1,800 个 (笔记, 题)、涉及 200 篇; 其中分析集里 1,360 个、160 篇")
+    assert line in rep2.splitlines() and rep2.splitlines().index(line) == 3, rep2[:600]
+    assert "code_v2_parity" not in r1 and "G-24" not in rep1 and G.CODE_V2_PARITY_RULE not in rep1
+    # 没有 code:v2 的跑根本不调这条筛; 账本里多了 code:v2 的行 / 多了 code_v1_keys, 对照跑一个字节不变 (§0 那份数据 + 金样)
+    real = G.code_v2_parity_filter
+
+    def _boom(*a, **k):
+        raise AssertionError("没有 code:v2 也调了 code_v2_parity_filter")
+    G.code_v2_parity_filter = _boom
+    try:
+        g_notes, g_ans = _status_matrix_dataset()
+        noisy = g_ans + [dict(a, extractor=V2) for a in g_ans if a["extractor"] == "code:v1"][::2]
+        res = G.run_gate2({"notes": g_notes, "answers": noisy, "code_v1_keys": [{"subject_id": "x"}]}, BANK, sha=SHA,
+                          extractors=EXTRACTORS, run_tag="gate2-test", allow_draft=True, unreliable=["own_experience"])
+        assert hashlib.sha256(G.render_report(res).encode()).hexdigest() == GOLDEN_REPORT_SHA256 \
+            and G.rows_digest(G.validation_rows(res)) == GOLDEN_ROWS_SHA256 and "code_v2_parity" not in res, \
+            "§9 没有 code:v2 的跑, 输出要和 §0 金样逐字节一样"
+    finally:
+        G.code_v2_parity_filter = real
+    # 纯函数: 按 (篇, 题) 配; sha 前缀 / run_tag primary / extractor code:v1 缺一不认; 别的抽取器的答案原样留
+    full = SHA + "0" * (64 - len(SHA))
+    ans = [{"subject_id": s, "question_id": q, "extractor": e, "bank_sha256": full}
+           for s, q, e in (("a", "q1", V2), ("a", "q2", V2), ("b", "q1", V2), ("c", "q1", V2), ("d", "q1", V2),
+                           ("e", "q1", V2), ("z", "q1", "llm:test"))]
+    v1 = [{"subject_id": "a", "question_id": "q1", "extractor": "code:v1", "bank_sha256": full.upper()},
+          {"subject_id": "b", "question_id": "q1", "extractor": "code:v1", "bank_sha256": G24_OTHER_SHA},
+          {"subject_id": "c", "question_id": "q1", "extractor": "code:v1", "bank_sha256": full, "run_tag": G24_OTHER_TAG},
+          {"subject_id": "d", "question_id": "q1", "extractor": V2, "bank_sha256": full},
+          {"subject_id": "e", "question_id": "q1", "extractor": "code:v1", "bank_sha256": full, "subject_type": "comment"}]
+    kept, dropped = G.code_v2_parity_filter(ans, v1, SHA.upper())
+    assert [(a["subject_id"], a["question_id"]) for a in kept] == [("a", "q1"), ("z", "q1")] and \
+        dropped == [("a", "q2"), ("b", "q1"), ("c", "q1"), ("d", "q1"), ("e", "q1")], (kept, dropped)
+    print("  §9 G-24 code:v2 只认 code:v1 也答过的 (篇, 题): 只有 v2 的篇丢 (分析集内外分开数)、v1 少一题只丢那一题、"
+          "别的 sha / run_tag 下的 v1 不算; 只有 v1 的篇留在对照跑、v2 跑里没有 (支持数差 = 该再回填); 补齐之后逐行一样; "
+          "报告头写规则和计数; 没有 code:v2 的跑不调这条筛、输出 = §0 金样 ✓")
+
+
+def check_g24_fetch() -> None:
+    """fetch_dataset 在假库上 (过滤 / 前缀 / 翻页都真做): 有 code:v2 才按每道代码题取一次 code:v1 的键, 结果和直接给 dataset 一样。"""
+    notes, answers = _g24_dataset()
+    tables = {"v_l2_labels": [{k: n[k] for k in ("note_id", "project_id", "account_id", "publish_time", "y")} for n in notes],
+              "notes": [{"note_id": n["note_id"], "emotional_lever": "x" if n["has_essence"] else None} for n in notes],
+              "note_features": [{"note_id": n["note_id"], "body_len": n["body_len"]} for n in notes],
+              "v_notes_vanished": [], "note_feature_answers": [dict(a) for a in answers]}
+    qids = sorted({t["question_id"] for t in G.bank_targets(BANK)})
+
+    def nfa_queries(sb) -> list[dict]:
+        out, cur = [], None
+        for name, op, c, v in sb.log:
+            if name != "note_feature_answers":
+                continue
+            if op == "eq" and c == "subject_type":
+                cur = {}
+                out.append(cur)
+            cur[(op, c)] = v
+        return out
+    sb = _FakeSB(tables)
+    d1 = G.fetch_dataset(sb, bank=BANK, sha=SHA, extractors=["code:v1", "llm:test"])
+    assert set(d1) == {"notes", "answers", "vanished_dropped"} and len(nfa_queries(sb)) == 2 * len(qids), \
+        ("§9 没有 code:v2 的取数多查了 / 多了键", sorted(d1), len(nfa_queries(sb)))
+    sb = _FakeSB(tables)
+    d2 = G.fetch_dataset(sb, bank=BANK, sha=SHA, extractors=[V2, "llm:test"])
+    extra = nfa_queries(sb)[2 * len(qids):]
+    want = [{("eq", "subject_type"): "note", ("eq", "run_tag"): "primary", ("like", "bank_sha256"): f"{SHA}%",
+             ("eq", "question_id"): q, ("eq", "extractor"): "code:v1"} for q in G.code_question_ids(BANK)]
+    assert extra == want, ("§9 code:v1 的键要每道代码题一条、钉 sha 前缀 / run_tag / 抽取器", extra[:2])
+    assert set(d2) == {"notes", "answers", "vanished_dropped", "code_v1_keys"}
+    assert not any(r.get("bank_sha256") == G24_OTHER_SHA or r.get("run_tag") != "primary" for r in d2["code_v1_keys"])
+    direct = _g24_run({"notes": notes, "answers": answers}, [V2, "llm:test"])
+    got = _g24_run(d2, [V2, "llm:test"])
+    assert got["code_v2_parity"] == direct["code_v2_parity"] and _g24_support(got) == _g24_support(direct) \
+        and G.rows_digest(G.validation_rows(got)) == G.rows_digest(G.validation_rows(direct)), \
+        (got.get("code_v2_parity"), direct.get("code_v2_parity"))
+    # --outcome reads (影子读数) 的 hit 那一跑也要拿到 code_v1_keys: 两种口径同一批篇 (notes_hit = notes) → 状态一行都不变
+    assert any(r["status"] != "insufficient" for r in got["rows"] if r["kind"] == "code"), "夹具要有够支持的代码题行, 下面才测得出"
+    import contextlib
+    with tempfile.TemporaryDirectory() as td:
+        fx, out = Path(td) / "g24.json", Path(td) / "g24.md"
+        fx.write_text(json.dumps(dict(d2, notes_hit=d2["notes"], outcome="reads"), ensure_ascii=False), encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            rc = G.main(["--fixture", str(fx), "--sha", SHA, "--extractors", f"{V2},llm:test", "--allow-draft",
+                         "--outcome", "reads", "--run-tag", "gate2-g24-test", "--out", str(out)])
+        rep = out.read_text(encoding="utf-8")
+    n_rows = len(got["rows"])
+    assert rc == 0 and f"状态变了的行: 0 / {n_rows}" in rep and "这一跑丢掉 1,800 个 (笔记, 题)" in rep, \
+        (rc, [ln for ln in rep.splitlines() if "状态变了" in ln or "G-24" in ln])
+    print(f"  §9b 取数 (假库): 没有 code:v2 → 查询条数 ({2 * len(qids)}) 和键都和以前一样; 有 code:v2 → 另按 11 道代码题各取一次 "
+          "code:v1 的键 (sha 前缀 / primary / code:v1), 结果和直接给 dataset 一样; --outcome reads 的 hit 那一跑用同一份键 ✓")
+
+
 def main() -> int:
     check_golden()
     check_single_stratum_is_woolf()
@@ -1749,6 +1952,8 @@ def main() -> int:
     check_gate1_status_from_bank()
     check_analysis_filter_and_big_projects()
     check_projects_present()
+    check_g24_v2_needs_v1()
+    check_g24_fetch()
     with tempfile.TemporaryDirectory() as td:
         t = Path(td)
         check_secondary_golden()
@@ -1769,7 +1974,7 @@ def main() -> int:
         check_secondary_current_labels()
         check_secondary_big_support()
         check_secondary_pinned_done_only()
-    print("\ncheck_gate2_run: 13 节 + §8 副题库 18 节全过")
+    print("\ncheck_gate2_run: 13 节 + §9 G-24 两节 + §8 副题库 18 节全过")
     return 0
 
 
