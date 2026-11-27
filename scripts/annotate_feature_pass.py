@@ -21,6 +21,8 @@ Usage:
     python annotate_feature_pass.py NUC_phase1 --run-tag gate1-a --single --note-ids ids.txt
                                                                         # 闸一: 每题单问, 指定名单
     python annotate_feature_pass.py NUC_phase1 --code-only               # 只跑代码特征
+    python annotate_feature_pass.py NUC_phase1 --code-only --code-extractor code:v2
+                                                                        # G-24: 同一批代码题按 v2 标签剥离另写一份
     python annotate_feature_pass.py NUC_phase1 --bank reader --run-tag fqr-g1-sonnet55-a \
         --model claude-sonnet-5-5 --note-ids ids.txt                     # 副题库 (D-128), 见文末 --bank
 
@@ -57,6 +59,11 @@ Resumability:
     ⚠️ 一篇里**任何一组** LLM 调用系统性失败（api_error）→ 整篇一行不落, 下轮重跑。
     落一半会让标记题那一行先落库, 于是下轮 resume 跳过这篇, 失败的那几组【永远】补不回来
     (codex review on #141)。代价是重跑那几组已经成功的调用, 上限 6 次, 换的是不留永久空洞。
+
+--code-extractor (G-24): 只配 --code-only, 只收 feature_bank.CODE_EXTRACTORS (code:v1 / code:v2), 默认 code:v1 ——
+    不带它时一切和以前一样 (11 行/篇、写 note_features、续跑看 code:v1 的 body_len_bucket)。code:v2 时: 8 道代码题按
+    extract_hashtags_v2 重算、3 道占位题照抄, 行上 extractor = code:v2 (新键, 不盖 code:v1 的行); 续跑看 code:v2 的
+    body_len_bucket; 不写 note_features (那张表一篇一行, 写了会把 v1 的原值改掉)。配模型跑 / 副题库 → 退出 2。
 
 --bank (D-128): 只收 feature_bank.BANKS 的【键】(primary / reader), 不收路径。默认 primary = 冻结的
     fq-v0.1, 走的还是上面那条路 (fb.load_bank()、8 个代码特征 + 3 道占位题、写 note_features、续跑看
@@ -341,15 +348,23 @@ def declared_code_ids(bank: dict) -> Optional[list[str]]:
     return [c["id"] for c in bank.get("code_features") or []]
 
 
-def code_rows(bank: dict, note: dict, spans: dict, brand_words: list[str], run_tag: str) -> list[dict]:
-    """8 个代码特征 + 3 道占位题, extractor 固定 code:v1。副题库只出它自己声明的代码特征 (declared_code_ids)。"""
+def code_rows(bank: dict, note: dict, spans: dict, brand_words: list[str], run_tag: str,
+              code_extractor: str = fb.CODE_EXTRACTOR) -> list[dict]:
+    """8 个代码特征 + 3 道占位题, extractor 默认 code:v1。副题库只出它自己声明的代码特征 (declared_code_ids)。
+    code_extractor=code:v2 (G-24, 只给主题库): 代码题按 v2 标签剥离算, 占位题照抄, 行上都记 code:v2。"""
     rows = []
     versions = {c["id"]: int(c.get("version") or 1) for c in bank.get("code_features") or []}
-    for qid, (ans, reason) in fb.code_features(spans, brand_words, only=declared_code_ids(bank)).items():
-        rows.append(_row(bank, note["note_id"], qid, versions.get(qid, 1), fb.CODE_EXTRACTOR, run_tag,
+    if code_extractor == fb.CODE_EXTRACTOR:
+        feats = fb.code_features(spans, brand_words, only=declared_code_ids(bank))
+    elif code_extractor == fb.CODE_EXTRACTOR_V2 and not is_secondary(bank):
+        feats = fb.code_features_v2(spans, brand_words)
+    else:
+        raise ValueError(f"代码抽取器 {code_extractor!r} 不认 (闭集 {fb.CODE_EXTRACTORS}; code:v2 只给主题库)")
+    for qid, (ans, reason) in feats.items():
+        rows.append(_row(bank, note["note_id"], qid, versions.get(qid, 1), code_extractor, run_tag,
                          ans, None, reason))
     for qid, ans in fb.placebo_answers(bank, note["note_id"]).items():
-        rows.append(_row(bank, note["note_id"], qid, 1, fb.CODE_EXTRACTOR, run_tag, ans, None, None))
+        rows.append(_row(bank, note["note_id"], qid, 1, code_extractor, run_tag, ans, None, None))
     return rows
 
 
@@ -487,7 +502,7 @@ def fb_parse(parse_fn, raw: str) -> Optional[dict]:
 
 def annotate_note(bank: dict, note: dict, mapping: dict, *, model: str, extractor: str,
                   run_tag: str, single: bool, code_only: bool, dry_run: bool, llm=None,
-                  sleep_s: float = 0.0) -> dict:
+                  sleep_s: float = 0.0, code_extractor: str = fb.CODE_EXTRACTOR) -> dict:
     """返回 {rows, raw_counts, stats}。stats: groups_ok / groups_retry / systemic / invalid。
 
     llm 默认取模块级 _llm（运行时查, 不在 def 时绑定 —— CI 自检 monkeypatch 它走假模型）。"""
@@ -496,7 +511,7 @@ def annotate_note(bank: dict, note: dict, mapping: dict, *, model: str, extracto
     mode = (mapping.get("title_extraction") or "none")
     spans = fb.build_spans(note.get("raw_content") or "", mode=mode, title_col=note.get("title"))
     brand_words = fb.brand_dictionary(project, note, mapping)
-    rows = code_rows(bank, note, spans, brand_words, run_tag)
+    rows = code_rows(bank, note, spans, brand_words, run_tag, code_extractor)
     stats = {"groups_ok": 0, "groups_invalid": 0, "groups_retry": 0, "singles": 0, "systemic": 0, "filtered": 0, "invalid": 0, "answered": 0,
              "title_how": spans["_title_how"], "truncated": bool(spans["_truncated"])}
     if code_only:
@@ -594,6 +609,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--dry-run", action="store_true", help="只渲染提示词, 不调模型、不写库")
     ap.add_argument("--code-only", action="store_true", help="只跑代码特征 + 占位题")
+    ap.add_argument("--code-extractor", choices=fb.CODE_EXTRACTORS, default=fb.CODE_EXTRACTOR,
+                    help="G-24: 代码题用哪个抽取器 (默认 code:v1; code:v2 只配 --code-only、只给主题库)")
     ap.add_argument("--reannotate", action="store_true", help="忽略「已答过」标记, 全部重跑（同 PK 覆盖）")
     ap.add_argument("--run-tag", default="primary", help="primary 进分析; retest-* / gate1-* 只给闸一")
     ap.add_argument("--single", action="store_true", help="每题单问（闸一「分组 vs 单问」对比用）")
@@ -611,6 +628,11 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if not _RUN_TAG_RE.match(args.run_tag):
         logger.error("run_tag 只能是字母数字 _ . -, ≤40 字: %r", args.run_tag)
+        return 2
+    v2_code = args.code_extractor != fb.CODE_EXTRACTOR
+    if v2_code and (not args.code_only or args.bank != "primary"):
+        # 模型跑也会写代码题的行 (code_rows 每篇都落), 混进 code:v2 = 一篇两套代码答案; 副题库没有这 8 道题。
+        logger.error("--code-extractor %s 只配 --code-only 且只给主题库 (G-24)", args.code_extractor)
         return 2
     secondary = args.bank != "primary"
     if secondary:
@@ -688,6 +710,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         elif done_by:
             logger.info("续跑判据 done_by=%s (D-085; 不带时是 %s)", ",".join(done_by), ",".join(DEFAULT_DONE_BY))
             done = fetch_done_ids(sb, args.project_id, run_tag=args.run_tag, done_by=done_by)
+        elif v2_code:
+            # code:v2 的续跑: 同一道标记题 (body_len_bucket), 只认 code:v2 的行 —— code:v1 跑过的篇不算跑过
+            done = fetch_done_ids(sb, args.project_id, run_tag=args.run_tag, code_only=True,
+                                  extractor=args.code_extractor)
         else:
             done = fetch_done_ids(sb, args.project_id, run_tag=args.run_tag, code_only=args.code_only,
                                   extractor=extractor if args.model else None)
@@ -704,6 +730,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         notes = eligible
     if args.limit:
         notes = notes[: args.limit]
+    if v2_code:
+        logger.info("code_extractor=%s (G-24): 只写这个抽取器的代码题 + 占位题, 不写 note_features", args.code_extractor)
     logger.info("Found %d notes to annotate for project %s", len(notes), args.project_id)
 
     stats = {"ok": 0, "failed": 0, "systemic_failed": 0, "hygiene_failed": 0, "gateway_filtered": 0,
@@ -745,7 +773,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         try:
             res = annotate_note(bank, note, mapping, model=model, extractor=extractor,
                                 run_tag=args.run_tag, single=args.single, code_only=args.code_only,
-                                dry_run=args.dry_run, sleep_s=sleep_s)
+                                dry_run=args.dry_run, sleep_s=sleep_s, code_extractor=args.code_extractor)
         except AssertionError as exc:
             logger.error("Hygiene assertion failed on %s: %s", note["note_id"], exc)
             stats["hygiene_failed"] += 1
@@ -794,7 +822,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             # ⚠️ 写序: 数值原值在前, 带标记题的答案在后。反过来的话 note_features 那一写
             # 失败时标记题已经落库 → 下轮 resume 跳过这篇, 原值永远缺 (codex review on #141)。
             # 副题库不写 note_features (D-128): 一篇一行、主键没有 run_tag, 写了会把 extractor_version 改成副题库的。
-            if not secondary:
+            if not secondary and not v2_code:
                 write_raw_counts(sb, note["note_id"], res["raw_counts"], bank["bank_version"], dry_run=False)
             write_answers(sb, res["rows"], dry_run=False)
         except Exception as exc:  # noqa: BLE001

@@ -264,6 +264,8 @@ BEGIN
 
     -- ══ 块 2 · 写法提示 ══════════════════════════════════════════════════
     -- 标签: note_feature_answers 的 primary、答案有效、每道题取最新一次; 情绪基调和内容形式在 notes 上。
+    --   抽取器钉住: 代码题只认 code:v1, 模型题认 llm:*。G-24 回填的 code:v2 行更新, 不钉就会盖掉 v1,
+    --   「不提品牌」悄悄换口径 (今天夜跑只给新帖写 v1, 两种会混着用)。换不换 v2 是 G-24 PR-2 的事, 到时改这里。
     -- 没标 = NULL, 两边都不算, 另数。绝不当成「没有这种写法」。
     -- 抽特征那一次正文是空的 (note_features.body_len = 0; 一篇一行, 每次主题库抽取都覆盖写, 和答案同一趟落库):
     --   代码题看空正文必然答「未出现」, 模型题 (范围是标题 + 正文) 只看到了标题。这四道答案题都按没标算。
@@ -274,6 +276,7 @@ BEGIN
         FROM truth_vault.note_feature_answers f
         WHERE f.subject_type = 'note' AND f.run_tag = 'primary'
           AND f.invalid_reason IS NULL AND f.answer IS NOT NULL
+          AND (f.extractor = 'code:v1' OR f.extractor LIKE 'llm:%')
           AND f.question_id IN ('brand_first_position', 'product_role', 'asks_for_help', 'efficacy_promise')
           AND f.subject_id IN (SELECT nb.note_id FROM pg_temp.wb_nb nb JOIN pg_temp.wb_active a ON a.project_id = nb.project_id)
         ORDER BY f.subject_id, f.question_id, f.extracted_at DESC, f.question_version DESC

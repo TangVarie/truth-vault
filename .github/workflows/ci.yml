@@ -4705,6 +4705,10 @@ jobs:
 
       - name: "worker /annotate-features: model 不许是 extractor 标签, done_by 原样透传 (D-085)"
         run: python scripts/check_feature_orchestration.py --worker   # 要 fastapi, 上一步装的
+      - name: G-24 代码抽取器 code:v2 (默认仍是 v1)
+        run: python scripts/check_code_extractor_v2.py
+      - name: W-64 结果口径影子开关 --outcome (默认 hit)
+        run: python scripts/check_l2_outcome_switch.py
       - name: 指标写失败必须计进 exit code (跨库审计 COR-008)
         working-directory: scripts
         run: |
@@ -7228,6 +7232,10 @@ jobs:
           psql -v ON_ERROR_STOP=1 -q -f schemas/security_rls_public_ssll_tables.sql
           psql -v ON_ERROR_STOP=1 -q -f schemas/security_drop_ssll_authenticated_read.sql
           psql -v ON_ERROR_STOP=1 -q -f schemas/security_drop_ssll_authenticated_read.sql
+      - name: v1.34 书架账号先验 (G-06)
+        run: psql -v ON_ERROR_STOP=1 -q -f schemas/notes_v1_34_shelf_account_prior.sql -f schemas/notes_v1_34_shelf_account_prior.sql -f scripts/check_shelf_account_prior.sql
+      - name: v1.35 学习结果视图 v_l2_outcomes (W-64)
+        run: psql -v ON_ERROR_STOP=1 -q -f schemas/notes_v1_35_l2_outcomes.sql -f schemas/notes_v1_35_l2_outcomes.sql -f scripts/check_l2_outcomes.sql
       - name: Verify rows + AU-F02b owner SQL on PG (batch 1)
         run: python3 scripts/check_verify_rows_pg.py
 

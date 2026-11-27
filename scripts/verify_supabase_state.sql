@@ -818,6 +818,29 @@ SELECT '110', 'H · 跨 schema 孤儿',
     '(先清标记、再删样本, 下一晚通道 1 按现在的帖重推仍是爆 / 大爆的; 能重跑)。它要求 #109 先清到 0; '
     'owner 定了不删旧帖评论或不撤的话, 把期望改成当时的读数。'
 
+-- ── 2026-11-25 batch 3 (G-06 / W-64 ①) 追加的行 ─────────────────────────────
+UNION ALL
+SELECT '111', 'I · 数据一致性',
+    '书架卡里 rank_score 为空、或账号先验不在 [0, 1] 的张数 (G-06, notes_v1_34 跑过之后才有数)',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(*) FROM truth_vault.v_flywheel_lesson_cards
+        WHERE rank_score IS NULL OR account_prior IS NULL OR account_prior < 0 OR account_prior > 1$q$
+    )::TEXT, 'N/A'),
+    '0',
+    'N/A = v1_34 还没跑 (书架照旧用 personal_bao_rate). > 0 = 视图定义被改坏了 (账号项应永远在 [0, 0.3]): '
+    '重跑 schemas/notes_v1_34_shelf_account_prior.sql, 再查是谁改了视图.'
+
+UNION ALL
+SELECT '112', 'J · 看板与权限',
+    'anon / authenticated 能读 v_l2_outcomes 的个数 (W-64 ①; 视图带 account_id, 不给前端角色)',
+    COALESCE(pg_temp.safe_count(
+        $q$SELECT COUNT(*) FROM (VALUES ('anon'), ('authenticated')) r(role)
+        WHERE has_table_privilege(r.role, 'truth_vault.v_l2_outcomes', 'SELECT')$q$
+    )::TEXT, 'N/A'),
+    '0',
+    'N/A = notes_v1_35 还没跑. > 0 = 有人给前端角色开了读权限: REVOKE ALL ON truth_vault.v_l2_outcomes FROM anon, authenticated; '
+    '(文件本身已经收了, 重跑 notes_v1_35 也行).'
+
 )
 SELECT
     ord, section, check_name,

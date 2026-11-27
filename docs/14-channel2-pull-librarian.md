@@ -97,10 +97,12 @@ structure           ← 管家 LLM 新提炼（骨架：开场/铺陈/转折/CTA
 why_it_worked       ← 管家 LLM 新提炼（为什么爆，可迁移的那条经验）
 transferable_tactic ← 管家 LLM 新提炼（可直接借走的具体手法，如"用'差旅3天不用换'当场景钩子"）
 raw_excerpt         ← raw_content 片段（供仿写，截断防 prompt 爆）
-rank_score          ← 吸收 D-036：tier 权重 + recency + account_bao_rate
+rank_score          ← 吸收 D-036：tier 权重 + recency + 账号项（v1_34 起是 0.3 × (1 − account_prior)，G-06）
 ```
 
 > **rank_score 实际上只有 tier → recency 两项在排序**（2026-10-08 审计 C-01）：`tier_source` 那项在书架上是常数（能上架的只会是 状态字段 / 备注字段，都 +0.2）；账号项 60/306 张卡用默认 0.3，且 `personal_bao_rate` 的分母含风控 / 删除、分子含 `数值推断`。想让账号项起作用得先修 `accounts.personal_bao_rate` 的口径（D-036 的遗留），这里没动。
+>
+> **G-06（`notes_v1_34`，owner 跑了才生效）**：账号项换成 `0.3 × (1 − account_prior)`。`account_prior` = （这个账号更早发布的清洗后正例 + 10 × 项目基线）/（更早的清洗后标签篇数 + 10），标签只读 `v_l2_labels`，「更早」是严格早于这张卡；没有更早的标签就用项目基线，项目没有正例用全库平均。弱账号爆出来的卡往前排。`account_bao_rate` 留作旧列，不再进 `rank_score`；新列 `account_prior` / `account_prior_n` 在末尾。11-25 只读试算：约 330 张卡，前 20 张换 9 张，馆员常驻的 8 张换 5 张，平均挪约 35 位（数字随每天的新数据小动）。
 
 `hook_type / structure / why_it_worked / transferable_tactic` 由**独立策展 pass** 提炼（prompt 在 `prompts/flywheel_curator.md`，**不并进** `essence_annotator.md`——见下方实现说明与 §6.4）。
 

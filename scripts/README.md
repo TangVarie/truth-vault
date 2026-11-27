@@ -160,6 +160,12 @@ CI 和 daily-sync workflow 都优先读 `.lock`; `.txt` 仅作为 "high-level in
 #   - schemas/notes_v1_33_direction_switch_restore.sql → 数据修正 (owner 跑一次, I-17 Step 2): 方向改成抬不了的值之后, 备份
 #         人群 / 痛点 / 产品焦点 / content_format, 把 33 篇的 content_format 换回 essence 最后一次写的值。在 I-17 的代码合并【之前】跑
 #         (合并后第一次夜跑清三列, 要先有备份)。不是同步的前置。可重跑 (夹具 check_owner_sql_b2.sql)。
+#   - schemas/notes_v1_34_shelf_account_prior.sql → 书架排序的账号项换成收缩后的账号先验 (G-06): 只重建 v_flywheel_lesson_cards,
+#         v1_14 的列不变, 末尾加 account_prior / account_prior_n。不是同步的前置 (没跑之前书架照旧排)。要在 v1_14、v1_15 之后;
+#         可重跑; 跑完看文件最后一个 SELECT (夹具 check_shelf_account_prior.sql)。生产上的视图列不是 v1_14 的样子就报错停下。
+#         什么时候跑 (D-180): 写手收工后; 避开北京 20:47–00:47; 和 G-24 的批准层 v4 (PR-2 合并) 至少错开 3 天。
+#   - schemas/notes_v1_35_l2_outcomes.sql → 新视图 v_l2_outcomes (W-64 ①): 不含我方铺评的学习结果 (阅读过本项目中位数) 和
+#         y_hit 并排。只加视图, 不动表, 不改任何默认。不是同步的前置。要在 v1_15、v1_22、v1_27 之后; 可重跑 (夹具 check_l2_outcomes.sql)。
 #   - autowriter-migrations/001_create_autowriter_schema.sql → 把 autowriter 表从 public 迁到 autowriter schema
 #   - autowriter-migrations/002_add_external_source.sql     → items 加 (external_source, external_source_id) 列
 #         + per-user partial UNIQUE (user_id, external_source, external_source_id) WHERE external_source IS NOT NULL.
