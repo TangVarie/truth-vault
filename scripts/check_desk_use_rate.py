@@ -8,6 +8,7 @@ check_desk_use_rate.py
 docs/32 §4 的 40% 目标也撤了。还会出声的只有「判不了」(rc=2: tv-sync 没对账 / 漏了某个项目), 那是真的故障。
 回流闸的四列(aw 迁移 020: autowriter.tv_note_links 的 origin / gate / gate_reasons / gate_at)在的时候, 末尾多一张按出处
 的读数表(只计数, 不下结论, 见 origin_rows); 不在的时候不出这张表, 取数的列也和以前一样。
+2026-11-26(D-182)起读数旁边多报一行「写作台判过的评论」(见 comment_counts): 也是只报不判, 不进退出码、不进 _judgeable。
 
 2026-10-20 生产诊断(docs/32 §1): 写作台的稿子短、彼此像, 大多在飞书里被人整篇重写 —— 写作台存的稿最后
 发出去的只有 23–45%, 有一个项目是 0。写作台自己量不出这件事: 参考分 79 篇全是 100, 而「被重写」发生在
@@ -29,10 +30,17 @@ docs/32 §4 的 40% 目标也撤了。还会出声的只有「判不了」(rc=2:
   接住   = match_kind ∈ {body_exact, title_exact, fuzzy, edited, tv_lineage} 且 lag_days 为空或 >= 0。
            写作台那版晚于发布的, 是发出去之后抄回写作台的, 不算接住(首晚 440 条对上里 212 条是这种;
            同角度台账灯判据 C、aw desk_gap)。ambiguous / unmatched / ingested 都不算。
+           aw 这一版(A/B, 2026-11-26 那一轮)部署起, 接住也包括对上写手贴回来的改稿的: 别的底稿都对不上、只对得上
+           record_edit 记下的写手手改版(draft_snapshots.status = writer_edit)的帖, tv-sync 把那段字转成版本
+           (batches.params.via = record_edit) —— 那是写手自己的字, 不是写作台出的稿。这盏灯只读 match_kind / lag_days,
+           分不出这一种; 按出处的表里它也落在「写作台的稿」(D-182, 见 WRITER_EDIT_CAUGHT_NOTE)。
   未改动 = 接住的里面, autowriter.tv_edit_diffs 有一行 diff_rev >= 2 且 changed = false。
            分母是「接住且算过当前口径差异」的 —— 没算过的(每晚补算有上限、那一版没存正文)不知道改没改,
-           不能当成改过。diff_rev 2 的行要等 10-20 写作台部署 + 当晚 tv-sync 重算之后才有: 全库一行都没有时
-           打「未改动率: 待重算」, 不打数。changed 很严(标题改了、正文差一个字都算), 所以另报改了标题的篇数。
+           不能当成改过; 上面那种对上写手改稿的, aw 按设计不记差异(那一版就是写手的字), 也不在分母里。
+           diff_rev 2 的行要等 10-20 写作台部署 + 当晚 tv-sync 重算之后才有: 全库一行都没有时打「未改动率: 待重算」,
+           不打数; 全库有、某个项目接住的帖一篇差异都没有时那一格打「—」, 不打「待重算」(对上写手改稿的那种永远不会
+           有差异, 打「待重算」是叫人等一件不会来的事, D-182)。changed 很严(标题改了、正文差一个字都算), 所以另报
+           改了标题的篇数。
 
 窗口: 发布于 [现在 −21 天, 现在 −7 天]。晚 7 天看: 稿子发出去要等正文进 TV、tv-sync 夜里对上(edited / fuzzy
      更晚), 看最近几天会把「还没对上」读成「没接住」。窗口 14 天: 一周一个项目常常不到 15 篇, 判不了。
@@ -46,9 +54,19 @@ docs/32 §4 的 40% 目标也撤了。还会出声的只有「判不了」(rc=2:
     翻更早的牌写出接住的帖的也算在用(接住本身就是证据, codex review on TV#208);
   · 15 篇是比例能不能读的样本下限, 不随窗口放大(它管的是一个比例有几个分母, 不是一周该发多少);
   · 分母用对过账的, 不用发布数: 没对过账的不知道是不是写作台的稿;
-  · 为什么不判: 11-11 整体审计量过, 三个项目 545 篇没接住的帖里 542 篇和写作台任何一稿的文字重合不到 15%, 是在别处
-    写的, 不是被重写的(OPEN-ITEMS L-07 第三支); owner 11-12 定了这不是要纠正的事(D-151)。单篇在哪写的看回流闸记的
-    出处(tv_note_links.origin; 没有时看 score: 不到 0.15 = 在别处写的)。
+  · 为什么不判: 11-11 整体审计量过, 三个项目 545 篇没接住的帖里 542 篇和写作台存下的任何一稿的文字重合不到 15%(OPEN-ITEMS
+    L-07 第三支); owner 11-12 定了这不是要纠正的事(D-151)。量到的只是「发布前写作台里没有和它重合 >= 15% 的文字」, 11-12
+    那会儿读成了「在别处写的、不是拿写作台的稿重写的」—— 两半都是结论, 量不出来。2026-11-26 只读(D-182): 11-09 起
+    四个在用项目没对上的 255 篇和写作台任何文字的重合都不到 15%(平均 2–5%), 对上的 84–96%, 中间没有; 写作台存下的文字
+    只有 score_drafts 存的版本和 check_drafts
+    记的底稿, 写手说他们在 AI 对话里多轮改(照着某几篇写、仿一篇外面的帖、去 AI 味), 最后一轮贴进飞书 —— 那几轮没过查重,
+    写作台没见过。所以这盏灯把 elsewhere 印成「写作台没见过的文字」(存的值不变)。单篇的出处看回流闸记的
+    (tv_note_links.origin; 没有时看 score: 不到 0.15 = 写作台没见过的文字)。
+  · 写作台判过的评论(D-182, 只报): 映射的写作台项目从窗口起点到现在调 score_comments 判过几条评论、几篇帖。数的是
+    autowriter.batch_metrics 里的调用留痕(meta.mode = tool_call, aw#153 起、11-12 才有), 只取 id / project_id / created_at /
+    meta, meta 里只有数和固定的词。是个约数, 不是严格的下限: 看不见的 —— 模型没调 score_comments 就写出来的评论(同稿子
+    没过查重就看不见)、判定服务没判回来的那几次(超时 / 出错, meta.comments.judge_status 不是 ok: 只数调用, 不数条数和帖);
+    多算的 —— 同一组跨北京零点又判一轮, 算成两天两组。读不到只打一句「评论数读不到」, 别的照常报。
 rc=2: 判不了 —— 映射的 TV 项目窗口内一篇都没发, 或发了但一条链接都没有(tv-sync 没对过账); 或者【某一个】项目
      整窗(或在用的项目在用期里)发布 >= 15 篇、对过账的不到八成(tv-sync 漏了这个项目: aw 的 tv-sync 一个项目出错
      只记一行、接着跑别的, 别的项目照常对账, 全局合计看不出来; tv-sync 坏的那几天正好是在用的那几天时, 整窗合计还
@@ -76,8 +94,8 @@ import sys
 from datetime import date, datetime, timedelta, timezone
 
 # 回流闸那四列的读法两盏灯共用一份(D-151); 那个模块顶层只有标准库, 夜跑和 CI 都是在 scripts/ 里跑的。
-from check_angle_ledger_leak import (GATE_CLASSES, GATE_REASON_NOT_CLEAN, ORIGINS, gate_columns_present, gate_verdict,
-                                     origin_of_link)
+from check_angle_ledger_leak import (GATE_CLASSES, GATE_REASON_NOT_CLEAN, ORIGIN_ELSEWHERE_LABEL, ORIGIN_ELSEWHERE_NOTE,
+                                     ORIGINS, WRITER_EDIT_CAUGHT_NOTE, gate_columns_present, gate_verdict, origin_of_link)
 
 # ⚠️ 故意【不】在模块顶层 import _common(会拖进 supabase / yaml): tally / report 是纯函数,
 # --selftest 在 CI 的裸环境里直接测它们 —— 同 check_angle_ledger_leak.py 的理由。
@@ -111,9 +129,24 @@ SETTLED_TIERS = frozenset({"爆", "大爆", "趴"})          # 已定档, 同 aw
 COUNTED_CLASSES = frozenset({"pass", "fail", "unsure"})  # 有真实结果可数的类别; hold(没发布时间 / 排期在后面 / 正文还是空的 / 伪爆)和 withdrawn 不数
 ORIGIN_NONE = "(没记)"                                   # 有对账行, 闸还没给这一行记出处
 ORIGIN_UNLINKED = "(没对账)"                             # tv-sync 还没给这篇写对账行
+# elsewhere 印成「写作台没见过的文字」(2026-11-26, D-182; 11-12 起印的是「别处写的」): 量到的只是发布前写作台里没有和它重合
+# >= 15% 的文字, 不是「在哪写的」。键是库里存的值, 两个仓共用, 不改
 ORIGIN_LABELS = {"desk": "写作台的稿", "desk_edited": "写作台的稿·改过", "copied_back": "发后抄回写作台",
-                 "elsewhere": "别处写的", "unclear": "分不清"}
+                 "elsewhere": ORIGIN_ELSEWHERE_LABEL, "unclear": "分不清"}
 CLASS_LABELS = {"pass": "通过", "fail": "不学", "unsure": "待答", "hold": "搁置", "withdrawn": "已撤"}
+# 接住 / 「写作台的稿」里分不出的那一种: WRITER_EDIT_CAUGHT_NOTE, 和发帖对账灯共用(定义在 check_angle_ledger_leak)
+# ── 写作台判过的评论(2026-11-26, D-182): 只报不判, 不进退出码、不进 _judgeable ──
+# 读的是 aw 的调用留痕(deskcore/calllog.py, aw#153): 每次工具调用一行 autowriter.batch_metrics, meta 里只有数、固定的词和
+# 8 位代号, 没有评论 / 帖子的字。这几个名字是 aw 那边定的, 改了这里跟着改:
+COMMENT_TOOL = "score_comments"
+COMMENT_ROW_MODE = "tool_call"              # aw store.TOOL_CALL_MODE: 和存档那一行、Streamlit 那两种靠 meta.mode 分开
+COMMENT_ROW_V = 1                           # aw calllog.VERSION: 行的形状; 换了版本这里不认, 单报几行没数, 不硬猜
+COMMENT_SOURCE_PASTED = "pasted"            # aw core._post_source: 帖子没对上 TV 的笔记, 按贴来的正文判的
+# aw judge_client.JUDGE_OK: 判定服务判回来了。不是它的(超时 / 出错 / 没配), aw 照样回 200、带上对上的 project_id, 留痕的
+# outcome 也是 ok、n 也记着 —— 那一组评论其实没判过, 不数条数和帖(复审 2026-11-26)
+COMMENT_JUDGE_OK = "ok"
+COMMENT_COLS = "id, project_id, created_at, meta"   # 只取这四列(meta 里也只有数和词)
+COMMENT_LOG_SINCE = "2026-11-12"            # aw#153 11-12 合并, 调用留痕从那天起才有
 
 
 def is_caught(link: dict) -> bool:
@@ -366,10 +399,108 @@ def _print_origin(g: dict) -> None:
           "(没有对账行、这一行还没分过类, 或读不懂)。")
     print("  干净 = 闸的类别是 通过 / 不学 / 待答, 且原因里没有 not_clean(投流标记 / 铺评工单 / 投流事件, 闸自己的尺子, "
           "同写作台 priors.is_clean); 已定档 = 爆 / 大爆 / 趴; 干净爆 = 其中的爆 / 大爆。没判的帖不知道干不干净, 不数。")
-    print("  只计数, 不下结论, 不进退出码。这张表读不出的: ① 写作台写的比别处写的好不好 —— 11-12 只读, 60 天里写作台的稿"
+    print(f"  {ORIGIN_ELSEWHERE_LABEL} = 出处 elsewhere: {ORIGIN_ELSEWHERE_NOTE}。"
+          f"写作台的稿(·改过) = 对上写作台发布前存的那版; {WRITER_EDIT_CAUGHT_NOTE}。")
+    print("  只计数, 不下结论, 不进退出码。这张表读不出的: ① 写作台的稿比写作台没见过的文字好不好 —— 11-12 只读, 60 天里写作台的稿"
           "干净爆 3 篇, 命中率从约 2% 翻一倍要约 700 篇干净已定档的写作台帖才分得出; ② 拿掉投流 / 功效 / 已删的帖之后命中率"
-          "升没升 —— 别处写的帖干净爆一个月约 9 篇; ③ 已验证规律对探索臂 —— 别处写的帖没有臂; ④ 谁写的 —— 别处写的帖"
-          "没有记写手, 也不问。")
+          "升没升 —— 写作台没见过的帖干净爆一个月约 9 篇; ③ 已验证规律对探索臂 —— 写作台没见过的帖没有臂; ④ 谁写的 —— "
+          "写作台没见过的帖没有记写手, 也不问。")
+
+
+def _count(v) -> int | None:
+    """调用留痕里的一个条数: 只认非负整数(布尔不算); 别的形状当没有。"""
+    return v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else None
+
+
+def comment_counts(rows: list | None, mapped: dict) -> dict:
+    """写作台判过的评论(D-182): {TV 项目: 一格}。纯函数。``rows`` 是 gather() 读的 batch_metrics 行(score_comments 的调用留痕),
+    ``mapped`` 是 {TV 项目: [写作台 project_id…]}; 一个写作台项目映射到几个 TV 项目时每个都算(同 tally() 数发牌)。
+
+    每格: calls 调成了的次数(meta.outcome = ok) · posts 判过评论的 TV 帖(meta.comments.post8 去重, 帖子对上了 TV 的笔记) ·
+    pasted 贴来的帖(没对上 TV 的笔记、按贴来的正文判的, 同样按 post8 去重) · no_post 没找到帖子、什么都没判的次数
+    (meta.comments.resolved = false) · unjudged 找到了帖、判定服务没判回来的次数(meta.comments.judge_status 不是 ok: 超时 /
+    出错 / 没配 —— aw 照样回 200、留痕照样是 ok, 复审 2026-11-26) · comments 判过的评论条数 · odd 形状版本不认识的行
+    (meta.v 不是 COMMENT_ROW_V, 没数)。posts / pasted / comments 只数判回来了的(judge_status = ok)。
+    条数: 改一轮整组再送一次判(同一组评论判几轮), 一组超过 20 条分几次送、后几次把前面判过的放进 earlier —— 所以按
+    (帖, 北京日) 取当天最多的一轮 n + earlier, 再加起来; 没有 post8 的那一行自己算一个。同一篇帖隔天又判一组算两组
+    (同一组跨北京零点重判也算两组, 会多算: 所以报文说是约数, 不说是下限)。"""
+    to_tv: dict[str, list] = {}
+    for tv, pids in (mapped or {}).items():
+        for pid in pids or ():
+            to_tv.setdefault(pid, []).append(tv)
+    out: dict[str, dict] = {}
+    best: dict[tuple, int] = {}
+    for r in rows or []:
+        meta = r.get("meta") if isinstance(r, dict) else None
+        if not isinstance(meta, dict) or meta.get("mode") != COMMENT_ROW_MODE or meta.get("tool") != COMMENT_TOOL:
+            continue
+        for tv in to_tv.get(r.get("project_id")) or ():
+            c = out.setdefault(tv, {"calls": 0, "posts": set(), "pasted": set(), "no_post": 0, "unjudged": 0,
+                                    "comments": 0, "odd": 0})
+            if meta.get("v") != COMMENT_ROW_V:
+                c["odd"] += 1
+                continue
+            if meta.get("outcome") != "ok":
+                continue                    # 没调成的(project_id 那一列本来就不填, 读不到这里; 防一手)
+            c["calls"] += 1
+            block = meta.get("comments") if isinstance(meta.get("comments"), dict) else {}
+            post8 = block.get("post8") if isinstance(block.get("post8"), str) and block.get("post8") else None
+            if block.get("resolved") is False:
+                c["no_post"] += 1
+                continue
+            if block.get("judge_status") != COMMENT_JUDGE_OK:
+                c["unjudged"] += 1          # 帖找到了、判定服务没判回来: n 是送去的条数, 不是判过的(复审 2026-11-26)
+                continue
+            if post8:
+                c["pasted" if block.get("source") == COMMENT_SOURCE_PASTED else "posts"].add(post8)
+            n = _count(block.get("n"))
+            if n is None:
+                continue
+            key = (tv, post8 or f"row:{r.get('id')}", _day(r.get("created_at")))
+            best[key] = max(best.get(key, 0), n + (_count(block.get("earlier")) or 0))
+    for (tv, _post, _d), k in best.items():
+        out[tv]["comments"] += k
+    return {tv: dict(c, posts=len(c["posts"]), pasted=len(c["pasted"])) for tv, c in out.items()}
+
+
+def _print_comments(g: dict) -> None:
+    """读数旁边那一行「写作台判过的评论」(D-182)。只报不判, 不进退出码。``g`` 里没有 comments 这个键(老调用方)→ 什么都不打;
+    读不到(gather 记了 comments_error)→ 一句「评论数读不到」, 别的照常。"""
+    if "comments" not in g and not g.get("comments_error"):
+        return
+    since = (g.get("since") or "")[:10]
+    if g.get("comments_error") or g.get("comments") is None:
+        print(f"  · 评论数读不到({g.get('comments_error') or '没读'}): 「写作台判过的评论」这一行这次没有, 上面的读数不受影响")
+        return
+    counts = comment_counts(g.get("comments"), g.get("map") or {})
+    head = f"  · 写作台判过的评论(只报不判, 约数; 按判的时间数, {since[5:]} 起到现在): "
+    got = [(tv, c) for tv, c in sorted(counts.items()) if c["calls"]]
+    odd = sum(c["odd"] for c in counts.values())
+    odd_text = (f"{odd} 行调用留痕的形状版本不认识(meta.v 不是 {COMMENT_ROW_V}), 没数 —— aw 改了留痕的形状, 这里要跟着改")
+
+    def _why(c: dict) -> str:
+        parts = ([f"{c['no_post']} 次没找到帖子"] if c["no_post"] else []) + \
+                ([f"{c['unjudged']} 次判定服务没判回来"] if c["unjudged"] else [])
+        return f"(其中 {'、'.join(parts)}, 都没算条数)" if parts else ""
+    if got:
+        print(head + "; ".join(
+            f"{tv} {c['comments']} 条 · 帖 {c['posts']} 篇" + (f"(另有贴来的 {c['pasted']} 篇)" if c["pasted"] else "")
+            + f" · 调成 {c['calls']} 次" + _why(c)
+            for tv, c in got))
+    elif odd:
+        # 留痕都在、只是形状换了版本: 不能说「一次都没调成过」(复审 2026-11-26)
+        print(head + "认得的调用留痕一行都没有 —— " + odd_text)
+    else:
+        print(head + "映射的写作台项目一次 score_comments 都没调成过")
+    print("    约数: 只数调过 score_comments、判定服务判回来了的(aw 的调用留痕 batch_metrics, 只取条数); 看不见的 —— 模型没调它"
+          "就写出来的评论(同稿子没过查重就看不见)、判定超时 / 出错的那几次; 多算的 —— 同一组跨北京零点又判一轮算两组。"
+          "同一篇帖同一个北京日判了几轮只算最多的那一轮(这一组 + 带上的前面判过的); 贴来的 = 帖子没对上 TV 的笔记、按贴来的"
+          "正文判的。数的是窗口起点到现在(比发布窗口长), 相邻两周的数有重叠, 不能相加、不是一周的量。只报, 不进退出码")
+    if since and since < COMMENT_LOG_SINCE:
+        print(f"    调用留痕 {COMMENT_LOG_SINCE[5:]} 起才有(aw#153): 这次从 {since[5:]} 算起, {COMMENT_LOG_SINCE[5:]} 之前那几天"
+              "是空的, 不是没判评论")
+    if odd and got:
+        print(f"    另有 {odd_text}")
 
 
 def unlinked(rows: dict) -> list[dict]:
@@ -400,10 +531,14 @@ def _pct(a: int, b: int) -> str:
 
 
 def _unchanged_cell(r: dict, any_rev: bool) -> str:
+    """未改动那一格。全库还没有当前口径的差异行 → 待重算; 有, 这个项目接住的帖却一篇差异都没有 → 「—」, 不打「待重算」:
+    aw A/B 部署起, 只对得上写手贴回来的改稿的帖按设计不记差异(那一版就是写手的字), 等多少晚都不会有(复审 2026-11-26)。"""
     if not r["caught"]:
         return "—"
-    if not any_rev or not r["diffed"]:
+    if not any_rev:
         return "待重算"
+    if not r["diffed"]:
+        return "—"
     return f"{r['unchanged']}/{r['diffed']}"
 
 
@@ -424,8 +559,9 @@ def report(g: dict, window_days: int, delay_days: int) -> int:
     unchanged = sum(r["unchanged"] for r in rows.values())
     span = f"{(g.get('since') or '')[5:10]} ~ {(g.get('until') or '')[5:10]}"
     draw_from = (g.get("draw_since") or "")[5:10]
-    rate = (f"未改动率 {unchanged}/{diffed}({_pct(unchanged, diffed)})" if any_rev and diffed
-            else "未改动率: 待重算")
+    # 全库有当前口径的行、窗口里接住的却一篇差异都没有: 「—」, 不是「待重算」(同 _unchanged_cell, 复审 2026-11-26)
+    rate = ("未改动率: 待重算" if not any_rev
+            else f"未改动率 {unchanged}/{diffed}({_pct(unchanged, diffed)})" if diffed else "未改动率: —")
 
     print()
     print("=" * 96)
@@ -447,8 +583,9 @@ def report(g: dict, window_days: int, delay_days: int) -> int:
             print(f"  {tv[:19]:<20}{r['published']:>6}{r['linked']:>7}{r['caught']:>6}"
                   f"{_pct(r['caught'], r['linked']):>7}{_unchanged_cell(r, any_rev):>9}{title:>7}"
                   f"{r['drawn']:>6}{used:>7}{judged:>12}  {'、'.join(r['desk'])[:40]}")
-        print(f"  接住 = 对上写作台发布前存的那版; 未改动 = 接住且算过差异的里面原样发的(标题、正文一个字没动); "
-              f"改标题 = 其中标题动过的。发牌数窗口起点前 {DRAW_LOOKBACK_DAYS} 天到终点(牌先发、帖后发); "
+        print(f"  接住 = 对上写作台发布前存的那版({WRITER_EDIT_CAUGHT_NOTE}); 未改动 = 接住且算过差异的里面原样发的(标题、"
+              f"正文一个字没动), 「—」= 接住的帖一篇差异都没有(那一版没存正文、补算还没轮到, 或只对得上写手改稿的: 那种不记"
+              f"差异); 改标题 = 其中标题动过的。发牌数窗口起点前 {DRAW_LOOKBACK_DAYS} 天到终点(牌先发、帖后发); "
               f"在用天 = 窗口里算写作台在用的天数(每个发牌日、每篇接住的帖的存稿日起 {USE_TAIL_DAYS} 天); "
               f"在用期内 = 这些天发布的 接住/对过账/发布。在用期内的接住率只在写作台在用(发过牌或有接住)、在用期内对过账 >= {MIN_PUBLISHED} 篇"
               f"且占这些天发布八成以上时读得出; 只报不判(D-151)")
@@ -479,9 +616,11 @@ def report(g: dict, window_days: int, delay_days: int) -> int:
     else:
         print(f"  · 没有项目在用期内读得出接住率: 写作台在用(发过牌或有接住)、在用期内发布的帖对过账够 {MIN_PUBLISHED} 篇且八成以上"
               f"对过账的项目一个都没有(没活、量太小或对账不全){blind_note}")
+    _print_comments(g)                                    # 只报不判(D-182), 读不到也只打一句, 不影响 rc
     print("  · 为什么只报不判(D-151): owner 11-12 定了帖在哪写都可以, 没有人被推回写作台。接住率低不是故障, 这盏灯不再"
-          "因为它亮黄, 也没有「该到多少」的目标; 数照旧每周记进 docs/32 §4。单篇在哪写的看回流闸记的出处"
-          "(autowriter.tv_note_links.origin; 那一列还没有时看 score: 不到 0.15 = 在别处写的, 0.30 以上 = 拿写作台的稿改的)。")
+          "因为它亮黄, 也没有「该到多少」的目标; 数照旧每周记进 docs/32 §4。单篇的出处看回流闸记的"
+          "(autowriter.tv_note_links.origin; 那一列还没有时看 score: 不到 0.15 = 写作台没见过的文字 —— 发布前写作台存过、查重没"
+          "打回的文字里没有和它重合 ≥15% 的, 包括写手在 AI 对话里后几轮改出来、没过查重的稿, 不等于在写作台外面写的; 0.30 以上 = 拿写作台的稿改的)。")
     _print_origin(g)
     return blind_rc
 
@@ -572,10 +711,36 @@ def gather(sb, since_iso: str, until_iso: str) -> dict:
             drawn[p] = drawn.get(p, 0) + 1
             if a.get("drawn_at"):
                 drawn_days.setdefault(p, set()).add(_day(a["drawn_at"]))      # 按日, 同 tally() 的比法
+    # 写作台判过的评论(D-182): 只报的一行, 读不到不能让整盏灯崩(别的取数读不到照旧直接抛 —— 那些是读数本身)。只记异常的
+    # 类型: 异常文本里有请求的 URL(项目 id), 不往日志里带
+    comments, comments_error = None, None
+    try:
+        comments = _comment_rows(sb, pids, since_iso)
+    except Exception as exc:                            # noqa: BLE001
+        comments_error = type(exc).__name__
     return {"map": by_tv, "names": _project_names(sb, pids), "notes": notes, "links": links,
             "diffs": diffs, "drawn": drawn, "drawn_days": {p: sorted(ds) for p, ds in drawn_days.items()},
             "any_rev2": any_rev2, "since": since_iso, "until": until_iso, "draw_since": draw_since,
-            "gate": {"gone": gone, "gone_links": gone_links} if gated else None}
+            "gate": {"gone": gone, "gone_links": gone_links} if gated else None,
+            "comments": comments, "comments_error": comments_error}
+
+
+def _comment_rows(sb, pids: set, since_iso: str) -> list[dict]:
+    """映射的写作台项目从窗口起点到现在 score_comments 的调用留痕(autowriter.batch_metrics, D-182)。只取 COMMENT_COLS 四列:
+    meta 里只有数、固定的词和 8 位代号(aw calllog.build 保证), 没有评论 / 帖子的字。上限是现在、不是窗口终点: 评论是帖发了
+    之后才判的。project_id 那一列只在调成了、帖子对上了项目时才填(aw calllog), 按它筛就只剩调成了的。"""
+    from _common import fetch_all_pages  # 局部 import, 理由见文件头
+
+    ps = sorted(p for p in pids if p)
+    rows: list[dict] = []
+    for i in range(0, len(ps), CHUNK):
+        rows += fetch_all_pages(
+            sb.schema("autowriter").table("batch_metrics")
+            .select(COMMENT_COLS)
+            .eq("meta->>mode", COMMENT_ROW_MODE).eq("meta->>tool", COMMENT_TOOL)
+            .in_("project_id", ps[i:i + CHUNK]).gte("created_at", since_iso),
+            order_by="id")
+    return rows
 
 
 def _project_names(sb, pids: set) -> dict:
@@ -732,7 +897,14 @@ def selftest() -> int:
         assert cols[5] == "1/2" and cols[6] == title, (title, cols)
     ok = {f"n{i:02d}": L("fuzzy", 1) for i in range(20)}
     rc, out = run(G(many, ok, {}, {"d1": 1}))
-    assert rc == 0 and "接住 20 篇(100%)" in out and "待重算" in out and not [w for w in QUIET if w in out], out   # 接住了、差异还没算
+    # 全库有当前口径的差异行、这个项目接住的帖却一篇差异都没有: 「—」, 不是「待重算」(复审 2026-11-26: aw A/B 部署起只对得上
+    # 写手改稿的帖按设计不记差异, 打「待重算」是叫人等一件不会来的事)。反证: _unchanged_cell 改回 `not any_rev or not diffed`
+    rc, out = run(G(many, ok, {}, {"d1": 1}))
+    assert rc == 0 and "接住 20 篇(100%)" in out and not [w for w in QUIET if w in out], out
+    assert "未改动率: —" in out and "待重算" not in out and row_of(out, "AAA")[5:7] == ["—", "—"], out
+    assert "只对得上写手改稿的: 那种不记差异" in out and "写手贴回来的改稿" in out, "表下要说「—」和接住里分不出的那一种"
+    rc, out = run(G(many, ok, {}, {"d1": 1}, any_rev2=False))
+    assert rc == 0 and "未改动率: 待重算" in out and row_of(out, "AAA")[5] == "待重算", "全库还没重算: 照旧打待重算"
     assert "在用期内对过账 >= 15 篇且占这些天发布八成以上时读得出" in out, "表下面要说全 _judgeable 的规则, 不能比它宽"
     none = {f"n{i:02d}": L("unmatched") for i in range(20)}
     rc, out = run(G(many, none, {}, {}))
@@ -850,10 +1022,93 @@ def selftest() -> int:
     rc, out = run(gb)
     assert rc == 0 and "AAA(在用期 10-20~10-27 发布 15 篇、对过账 15 篇、接住 0 篇(0%)" in out, out
 
+    # ── 写作台判过的评论(D-182): 判几轮只算当天最多的一轮(n + earlier)、按北京日分、贴来的和没找到帖子的单数、只认调成了的、
+    #    形状版本不认识的单报; 只报不判 —— 不进退出码、不改读数那一句 ──
+    def CM(i, pid, at, post8=None, n=None, earlier=None, source="tv", resolved=None, outcome="ok", v=1,
+           tool="score_comments", mode="tool_call", judge="ok"):
+        # 形状照 aw calllog._comment_block: 帖找到了(resolved 不是 false)才有 n / earlier / judge_status
+        block = {} if resolved is None else {"resolved": resolved}
+        if post8:
+            block.update(resolved=True, source=source, post8=post8)
+        if n is not None:
+            block["n"] = n
+        if earlier is not None:
+            block["earlier"] = earlier
+        if resolved is not False and judge is not None:
+            block["judge_status"] = judge
+        return {"id": f"m{i:02d}", "project_id": pid, "created_at": at,
+                "meta": {"mode": mode, "v": v, "tool": tool, "outcome": outcome, "elapsed_ms": 900, "comments": block}}
+    CROWS = [
+        # p1: 北京 11-13 判了两轮(改了再送, 整组 8 条), 北京 11-14 00:30 又判了一组 6 条 —— 按北京日是两组(8 + 6);
+        # 反证: 按 UTC 日切, 11-13 16:30 UTC 和前两轮同一天, 只剩 8
+        CM(1, "d1", "2026-11-13T02:00:00+00:00", "p1", 8, 0), CM(2, "d1", "2026-11-13T15:30:00+00:00", "p1", 8, 0),
+        CM(3, "d1", "2026-11-13T16:30:00+00:00", "p1", 6, 0),
+        # p2: 25 条分两次送(20 + 5, 第二次带上前面判过的 20 条) → 25, 不是 20、也不是 45
+        CM(4, "d1", "2026-11-14T03:00:00+00:00", "p2", 20, 0), CM(5, "d1", "2026-11-14T03:10:00+00:00", "p2", 5, 20),
+        CM(6, "d1", "2026-11-14T04:00:00+00:00", "q1", 4, 0, source="pasted"),      # 贴来的帖(没对上 TV 的笔记)
+        CM(7, "d1", "2026-11-14T05:00:00+00:00", resolved=False),                 # 没找到帖子: 调成了, 什么都没判
+        CM(8, "d2", "2026-11-15T05:00:00+00:00", "p3", 3, 0),                     # AAA 映射的另一个写作台项目
+        CM(9, "d2", "2026-11-15T06:00:00+00:00", n=2),                            # 没有 post8 的一行: 自己算一个
+        CM(10, "d1", "2026-11-15T07:00:00+00:00", "p9", 99, 0, v=2),              # 形状版本不认识: 不数, 单报
+        CM(11, "d1", "2026-11-15T08:00:00+00:00", "p9", 99, 0, outcome="error_result"),   # 没调成的不数
+        CM(12, "d1", "2026-11-15T09:00:00+00:00", "p9", 99, 0, tool="comments_for"),       # 别的工具不数
+        CM(13, "d1", "2026-11-15T10:00:00+00:00", "p9", 99, 0, mode="deskcore_commit"),    # 别的行不数
+        CM(14, "d1", "2026-11-15T11:00:00+00:00", "p4", True, 0),                 # n 读不懂: 帖照数, 条数不数
+        CM(15, "d3", "2026-11-16T05:00:00+00:00", "b1", 10),                      # BBB; 没带 earlier
+        CM(16, "dx", "2026-11-16T05:00:00+00:00", "x1", 50, 0),                   # 没映射的写作台项目
+        {"id": "m17", "project_id": "d1", "created_at": "2026-11-16T05:00:00+00:00", "meta": "坏的"},
+        # 判定服务没判回来(复审 2026-11-26): aw 照样回 200、带 project_id, 留痕 outcome = ok、n 照记 —— 只数调用, 不数条数和帖。
+        # m18: p1 北京 11-14 00:10 那一轮超时(若数了, p1 那天 max(6, 8) = 8, 多 2 条); m19: 一篇新帖 p5 只判了一轮、出错了
+        # (若数了, 帖多 1 篇、条数多 7); m20: 没记 judge_status 的不当判过
+        CM(18, "d1", "2026-11-13T16:10:00+00:00", "p1", 8, 0, judge="timeout"),
+        CM(19, "d1", "2026-11-15T12:00:00+00:00", "p5", 7, 0, judge="error"),
+        CM(20, "d2", "2026-11-15T13:00:00+00:00", "p6", 5, 0, judge=None),
+    ]
+    cc = comment_counts(CROWS, {"AAA": ["d1", "d2"], "BBB": ["d3"]})
+    assert cc == {"AAA": {"calls": 13, "posts": 4, "pasted": 1, "no_post": 1, "unjudged": 3,
+                          "comments": 8 + 6 + 25 + 4 + 3 + 2, "odd": 1},
+                  "BBB": {"calls": 1, "posts": 1, "pasted": 0, "no_post": 0, "unjudged": 0, "comments": 10, "odd": 0}}, cc
+    assert comment_counts([], {"AAA": ["d1"]}) == {} and comment_counts(None, {"AAA": ["d1"]}) == {}
+    # 判同一组的第几轮都只算一轮: 再判三轮, 条数不变
+    assert comment_counts(CROWS + [CM(30 + k, "d1", "2026-11-14T06:00:00+00:00", "p2", 5, 20) for k in range(3)],
+                          {"AAA": ["d1", "d2"]})["AAA"]["comments"] == 48
+
+    gc = G(many, low, {}, {"d2": 3})
+    rc0, out0 = run(gc)
+    rc, out = run(dict(gc, comments=CROWS, comments_error=None))
+    assert rc == rc0 == 0 and ("AAA 48 条 · 帖 4 篇(另有贴来的 1 篇) · 调成 13 次(其中 1 次没找到帖子、3 次判定服务没判回来, "
+                               "都没算条数)") in out \
+        and "BBB 10 条 · 帖 1 篇 · 调成 1 次" in out and "调成 1 次(" not in out \
+        and "写作台判过的评论(只报不判, 约数; 按判的时间数, 10-05 起到现在)" in out, out
+    # 不说「下限」(复审 2026-11-26): 没判回来的不数、跨北京零点重判会多算一组 —— 两头都说; 这一列是窗口起点到现在, 不能相加
+    assert "下限" not in out.split("写作台判过的评论")[1], out
+    assert "模型没调它就写出来的评论(同稿子没过查重就看不见)、判定超时 / 出错的那几次" in out \
+        and "同一组跨北京零点又判一轮算两组" in out and "不能相加、不是一周的量" in out \
+        and "调用留痕 11-12 起才有(aw#153)" in out and "另有 1 行调用留痕的形状版本不认识(meta.v 不是 1)" in out, out
+    assert not [w for w in QUIET if w in out], "评论数只报, 不出声"
+    reading = lambda o: next(ln for ln in o.splitlines() if "在用期内的接住率" in ln)  # noqa: E731
+    assert reading(out) == reading(out0), "读数那一句一个字不变"
+    assert "写作台判过的评论" not in out0 and "评论数读不到" not in out0, "没读评论的老调用方: 不打这一行"
+    rc, out = run(dict(gc, comments=CROWS, comments_error=None, since="2026-11-16T08:00:00"))
+    assert rc == 0 and "11-16 起到现在" in out and "起才有" not in out, "窗口起点在 11-12 之后: 不再说留痕从哪天起才有"
+    rc, out = run(dict(gc, comments=[], comments_error=None))
+    assert rc == 0 and "映射的写作台项目一次 score_comments 都没调成过" in out, out
+    # 留痕都在、只是 aw 换了形状版本: 不能说「一次都没调成过」(复审 2026-11-26), 形状那一句也不重复打
+    rc, out = run(dict(gc, comments=[CROWS[9], dict(CROWS[9], id="m99")], comments_error=None))
+    assert rc == 0 and "认得的调用留痕一行都没有 —— 2 行调用留痕的形状版本不认识(meta.v 不是 1)" in out \
+        and "都没调成过" not in out and "另有 2 行" not in out, out
+    rc, out = run(dict(gc, comments=None, comments_error="RuntimeError"))
+    assert rc == 0 and "评论数读不到(RuntimeError)" in out and reading(out) == reading(out0), "读不到: 一句话, 别的照常"
+    # 判不了(rc=2)的时候照报, rc 还是 2: 评论数不进退出码
+    blind = G(many + [N(f"b{i:02d}", "BBB") for i in range(20)], ok, {}, {"d1": 1, "d3": 5})
+    assert run(dict(blind, comments=CROWS, comments_error=None))[0] == run(blind)[0] == 2
+
     # ── gather: 窗口按 publish_time、只取映射项目、in_ 分批、差异只认当前口径、翻页键唯一 ──
     calls: list[tuple] = []
     selects: list[tuple] = []
+    eqs: list[tuple] = []
     gate_cols_exist = [False]           # aw 迁移 020 跑没跑; 先按没跑(今天的生产)把老断言全过一遍
+    metrics_down = [False]              # 调用留痕读不到(D-182 那一行要 fail soft)
     GATE_COLS = ("origin", "gate", "gate_reasons", "gate_at")
 
     class _Q:
@@ -866,6 +1121,11 @@ def selftest() -> int:
             return self
         def gte(self, k, v): self.f.append(lambda r: r[k] >= v); return self
         def lte(self, k, v): self.f.append(lambda r: r[k] <= v); return self
+        def eq(self, k, v):
+            eqs.append((self.t, k, v))
+            col, _, key = k.partition("->>")                    # PostgREST 的 json 取值: meta->>tool
+            self.f.append(lambda r: ((r.get(col) or {}).get(key) if key else r.get(col)) == v)
+            return self
         def limit(self, n): self.lim = n; return self
         def in_(self, k, vs):
             calls.append((self.t, len(vs)))
@@ -904,13 +1164,25 @@ def selftest() -> int:
     # (10-08 − 10-07), 北京日其实是同一天 —— 存稿日该是 10-08, 不是 北京发布日 − 1 = 10-07(复审 on 52f690e)
     VERSIONS = [{"id": f"v{i}", "created_at": "2026-10-07T20:00:00+00:00"} for i in range(230)] + \
         [{"id": "vx", "created_at": "2026-10-07T20:00:00+00:00"}]
+    # 调用留痕(D-182): d1 的 score_comments 三行(窗口起点前一行不读; 窗口终点之后判的照读 —— 评论是帖发了之后才判的),
+    # 别的工具 / 别的行 / 没映射的项目各一行(都不该读进来)
+    METRICS = [CM(1, "d1", "2026-10-04T08:00:00+00:00", "p0", 9, 0),
+               CM(2, "d1", "2026-10-12T03:00:00+00:00", "p1", 6, 0), CM(3, "d1", "2026-10-12T04:00:00+00:00", "p1", 6, 0),
+               CM(4, "d1", "2026-10-23T03:00:00+00:00", "p2", 5, 0),
+               CM(5, "d1", "2026-10-12T03:00:00+00:00", "p1", 6, 0, tool="comments_for"),
+               CM(6, "d1", "2026-10-12T03:00:00+00:00", mode="deskcore_commit"),
+               CM(7, "dx", "2026-10-12T03:00:00+00:00", "x1", 7, 0)]
     TABLES = {"tv_project_map": [{"tv_project_id": "AAA", "project_id": "d1"}],
               "notes": NOTES, "tv_note_links": LINKS, "tv_edit_diffs": DIFFS, "angle_ledger": LEDGER,
-              "projects": [{"id": "d1", "name": "甲台"}], "versions": VERSIONS}
+              "projects": [{"id": "d1", "name": "甲台"}], "versions": VERSIONS, "batch_metrics": METRICS}
 
     class SB:
         def schema(self, s): return self
-        def table(self, t): return _Q(t, TABLES[t])
+        def table(self, t):
+            if t == "batch_metrics" and metrics_down[0]:
+                raise RuntimeError("{'code': '57014', 'message': 'canceling statement due to statement timeout', "
+                                   "'url': 'https://x.supabase.co/rest/v1/batch_metrics?project_id=in.(d1)'}")
+            return _Q(t, TABLES[t])
 
     def _pages(q, order_by=None):
         rows, seen = [], set()                        # 照抄真 fetch_all_pages 的去重语义
@@ -938,6 +1210,24 @@ def selftest() -> int:
         assert {c for t, c in selects if t == "tv_note_links" and "match_kind" in c} == \
             {"note_id, tv_project_id, project_id, version_id, match_kind, lag_days"}, "列不在时对账行取的列和以前一样"
         assert "回流闸读数" not in run(gg)[1]
+        # 写作台判过的评论(D-182): 只取 id / project_id / created_at / meta 四列(meta 里只有数和词), 按 mode + tool 筛、
+        # 只取映射的写作台项目、从窗口起点到现在(没有上限)
+        assert {c for t, c in selects if t == "batch_metrics"} == {"id, project_id, created_at, meta"}, selects
+        assert {(k, v) for t, k, v in eqs if t == "batch_metrics"} == {("meta->>mode", "tool_call"),
+                                                                       ("meta->>tool", "score_comments")}, eqs
+        assert ("batch_metrics", 1) in calls and gg["comments_error"] is None
+        assert sorted(r["id"] for r in gg["comments"]) == ["m02", "m03", "m04"], gg["comments"]
+        assert comment_counts(gg["comments"], gg["map"]) == \
+            {"AAA": {"calls": 3, "posts": 2, "pasted": 0, "no_post": 0, "unjudged": 0, "comments": 11, "odd": 0}}
+        assert "AAA 11 条 · 帖 2 篇 · 调成 3 次" in run(gg)[1]
+        # 读不到(语句超时 / 连不上): 只打一句、只记异常的类型(异常文本里有带项目 id 的 URL), 读数照常、rc 不变
+        metrics_down[0] = True
+        gd = gather(SB(), "2026-10-05T08:00:00", "2026-10-19T08:00:00")
+        assert gd["comments"] is None and gd["comments_error"] == "RuntimeError", gd["comments_error"]
+        rc_d, out_d = run(gd)
+        assert rc_d == run(gg)[0] and "评论数读不到(RuntimeError)" in out_d and "rest/v1" not in out_d \
+            and "57014" not in out_d and "AAA(在用期" in out_d, out_d
+        metrics_down[0] = False
         assert all(n <= CHUNK for _, n in calls) and ("tv_note_links", 30) in calls, calls
         assert set(gg["diffs"]) == {"a001", "a205"}, "差异只取接住的、当前口径的(a002 是 rev 1, old1 在窗口外)"
         assert gg["drawn"] == {"d1": 4} and gg["any_rev2"] is True and gg["names"] == {"d1": "甲台"}, gg["drawn"]
@@ -985,7 +1275,7 @@ def selftest() -> int:
             if i <= 219:
                 return V("elsewhere", "pass")
             if i == 220:
-                return V("elsewhere", "fail", "not_clean")              # 别处写的爆帖, 投过流: 不算干净爆
+                return V("elsewhere", "fail", "not_clean")              # 写作台没见过的爆帖, 投过流: 不算干净爆
             if i == 221:
                 return V("elsewhere", "fail", "efficacy")               # 功效说法: 不学, 但没投流 → 干净
             if i == 222:
@@ -1025,10 +1315,16 @@ def selftest() -> int:
         assert rc == 0 and "回流闸读数 · 按出处(D-151)。数的是笔记, 不是文字" in out, out
         assert "只计数, 不下结论" in out and "读不出的" in out and "没有记写手" in out, "表下面要说清数的是什么、读不出什么"
         tbl = out[out.index("回流闸读数"):]
-        erow = next(ln.split() for ln in tbl.splitlines() if ln.startswith("  AAA") and "别处写的" in ln)
+        erow = next(ln.split() for ln in tbl.splitlines() if ln.startswith("  AAA") and "写作台没见过的文字" in ln)
+        # 显示名(D-182): elsewhere 印成「写作台没见过的文字」, 表下面说清量的是什么; 旧的「别处写的」「在别处写的」一个字都不留
+        assert "写作台没见过的文字 = 出处 elsewhere: 发布前写作台存过、查重没打回的文字里, 没有和它重合 ≥15% 的 —— 包括写手在 AI " \
+               "对话里后几轮改出来、没过查重的稿, 不等于在写作台外面写的(D-182)" in out, out
+        assert "别处写的" not in out and "在别处" not in out, out
+        # 「写作台的稿」里分不出只对得上写手改稿的那一种(复审 2026-11-26): 表下面要说一句
+        assert f"写作台的稿(·改过) = 对上写作台发布前存的那版; {WRITER_EDIT_CAUGHT_NOTE}" in tbl, tbl
         assert erow[2:] == ["15", "12", "0", "10", "2", "1", "1", "0", "1", "1(爆", "1)"], erow
         assert next(ln.split() for ln in tbl.splitlines() if ln.startswith("  合计") and "写作台的稿 " in ln)[2:5] == ["209", "208", "0"]
-        # 干净爆数得出来: 把 a220 的投流原因拿掉 → 别处写的干净已定档 13、干净爆 1
+        # 干净爆数得出来: 把 a220 的投流原因拿掉 → 写作台没见过的干净已定档 13、干净爆 1
         TABLES["tv_note_links"] = [dict(l, **V("elsewhere", "pass")) if l["note_id"] == "a220" else l for l in TABLES["tv_note_links"]]
         e2 = origin_rows(gather(SB(), "2026-10-05T08:00:00", "2026-10-19T08:00:00"))[("AAA", "elsewhere")]
         assert (e2["settled_clean"], e2["clean_hits"]) == (13, 1), e2
@@ -1058,6 +1354,14 @@ def selftest() -> int:
             with contextlib.redirect_stdout(buf):
                 rc = main()
             assert rc == 0 and "DESK_USE_RATE_CHECK_DONE rc=0" in buf.getvalue(), buf.getvalue()
+            # 评论数读不到(D-182): 哨兵照打、rc 不变 —— 只报的一行不能把整盏灯打成「崩了」
+            globals()["gather"] = lambda sb, s, u: dict(G(many, low, {}, {"d1": 9}), comments=None,
+                                                        comments_error="RuntimeError")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = main()
+            assert rc == 0 and "评论数读不到(RuntimeError)" in buf.getvalue() \
+                and "DESK_USE_RATE_CHECK_DONE rc=0" in buf.getvalue(), buf.getvalue()
             s, u = seen_args[-1]
             gap = datetime.fromisoformat(u) - datetime.fromisoformat(s)
             assert gap == timedelta(days=DEFAULT_WINDOW_DAYS), (s, u)
@@ -1103,12 +1407,15 @@ def selftest() -> int:
     for needle in ("autowriter.batch_metrics", "'deskcore_commit'", "e->>'status' = 'ok'",
                    "truth_vault.note_feature_answers", "subject_type = 'aw_version'", "run_tag = 'primary'", "NOT EXISTS"):
         assert needle in m.group(0), f"verify #104 少了 {needle} —— 分母要取 batch_metrics 的 ok 判稿, 数账本里 aw_version × primary 0 行的"
-    print("  ✓ 写作台用上率灯: 接住只认发布前那版 / 未改动只认 diff_rev ≥2 且没有时打待重算 / 下限与分母 / "
+    print("  ✓ 写作台用上率灯: 接住只认发布前那版 / 未改动只认 diff_rev ≥2, 全库没有时打待重算、项目没有时打「—」 / 下限与分母 / "
           "读不读得出同一条规则 / 判不了 rc=2(整窗或在用期对账不全) / 发牌回看 7 天 + 在用期 / 北京日 + 存稿日按版本时间 / "
           "已删的篇不算 / "
           "取数窗口按 publish_time、分批、翻页键唯一 / 哨兵行 / 每周一接线 / verify #104 在")
     print("  ✓ D-151: 接住率只报不判(再低也不亮黄、不打 annotation, rc 只有 0 / 2); 回流闸的四列在时多一张按出处的读数表"
           "(数笔记、已删单列、干净用闸的尺子、不下结论), 不在时取数和报告没有这张表")
+    print("  ✓ D-182: elsewhere 印成「写作台没见过的文字」(存的值不变); 写作台判过的评论只报不判(只取四列、判几轮算一轮、"
+          "带上 earlier、按北京日、贴来的和没找到帖子的单数、判定没回来的不数条数、说约数不说下限、留痕形状换了不说没调过、"
+          "读不到只打一句、不进 rc 和读数)")
     return 0
 
 
