@@ -1906,6 +1906,19 @@ def check_g24_v2_needs_v1() -> None:
     # 总数: 只有 v1 = P1 40 篇 × 5 题; 漂移 = i % 20 ∈ {1, 2} 两边都有、在分析集里的 80 篇各 1 题 (hashtag_bucket 那一漂不算;
     # P1 i % 20 == 1 那 10 篇不在分析集, 不算)
     assert (dr["only_v1"], dr["drift"], dr["drift_notes"]) == (200, 80, 80), (dr["only_v1"], dr["drift"], dr["drift_notes"])
+    # 覆盖 (D-179 11-27 补 ①): 每道代码题 (含会变的 brand_first_position / hashtag_bucket / body_len_bucket 和占位题), 不看结果行;
+    # P1 那 40 篇每题都只有 v1 → 11 题 × 40 = 440
+    cov = r2["code_v2_coverage"]
+    assert set(cov["questions"]) == set(G.code_question_ids(BANK)) and len(cov["questions"]) == 11 \
+        and all(v["only_v1"] == 40 for v in cov["questions"].values()) and (cov["only_v1"], cov["only_v1_notes"]) == (440, 40), cov
+    # Codex 11-27: 一道会变的题和一道判法一样的题 v2 整题没回填, 覆盖照样报出来 (不靠结果行、不只看那 5 题)
+    n5, a5 = _g24_dataset(v1_only=False)
+    gone = {"brand_first_position", "emoji_bucket"}
+    a5 = [a for a in a5 if not (a.get("extractor") == V2 and a["question_id"] in gone)]
+    c5 = _g24_run({"notes": n5, "answers": a5}, v2x)["code_v2_coverage"]
+    n_an5 = sum(1 for n in n5 if _g24_in_analysis(n) and _g24_group(n) in ("both", "partial"))
+    assert c5["questions"]["brand_first_position"]["only_v1"] > 0 and c5["questions"]["emoji_bucket"]["only_v1"] > 0 \
+        and all(v["only_v1"] == 0 for q, v in c5["questions"].items() if q not in gone) and c5["only_v1"] > 0, (c5, n_an5)
     n_an = sum(1 for n in notes if _g24_in_analysis(n))
     for q, v in dr["questions"].items():
         rows2 = sum(1 for n in notes if _g24_in_analysis(n) and (_g24_group(n) == "both" or (_g24_group(n) == "partial" and q != G24_PARTIAL_QID)))
@@ -1929,9 +1942,9 @@ def check_g24_v2_needs_v1() -> None:
     # 报告头: 规则和计数、对账那一行只在 code:v2 的跑里有, 逐行对账一节也是; 对照跑的结果不多键、报告没有这些
     rep1, rep2 = G.render_report(r1), G.render_report(r2)
     line = (f"> G-24 · {G.CODE_V2_PARITY_RULE}。这一跑丢掉 1,800 个 (笔记, 题)、涉及 200 篇; 其中分析集里 1,360 个、160 篇")
-    line2 = ("> G-24 · v1、v2 判法一样的 5 题 (" + ", ".join(G24_SAME) + "), 分析集里: 有 v1 没 v2 的 (笔记, 题) 200 个 "
-             "(不是 0 = v2 回填没补齐); 两边都有、答案不同 80 个、涉及 80 篇 (v1 抽过之后输入变了, v1 不重抽, 重跑不会变); "
-             "逐行见「G-24 · 逐行对账」")
+    line2 = ("> G-24 · 覆盖 (每道代码题, 11 题, 分析集里): 有 v1 没 v2 的 (笔记, 题) 440 个、涉及 40 篇 (不是 0 = v2 回填没补齐); "
+             "v1、v2 判法一样的 5 题 (" + ", ".join(G24_SAME) + ") 两边都有、答案不同 80 个、涉及 80 篇 "
+             "(v1 抽过之后输入变了, v1 不重抽, 重跑不会变); 逐行见「G-24 · 逐行对账」")
     rl = rep2.splitlines()
     assert line in rl and rl.index(line) == 3 and line2 in rl and rl.index(line2) == 4, rep2[:900]
     sec = rl.index("## G-24 · 逐行对账 (v1、v2 判法一样的几题; 只有 code:v2 的跑有这一节)")

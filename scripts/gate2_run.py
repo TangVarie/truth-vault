@@ -360,6 +360,19 @@ def code_v2_drift(v2_answers: Iterable[dict], v1_answers: dict, note_ids: set, t
             "drift_notes": len({k[0] for k in diff})}
 
 
+def code_v2_coverage(v2_answers: Iterable[dict], v1_answers: dict, note_ids: set, qids: Iterable[str]) -> dict:
+    """D-179 11-27 补那道核对的 ①: 每道代码题 (code_question_ids(bank), 不看结果行 —— 一道题的 v2 一行都没有, 结果里就没有它的行,
+    照样要数出来) 在分析集上: v1 有行的 (笔记, 题)、v2 有行的、有 v1 没 v2 的。v2_answers 是筛过的快照答案 (只看 code:v2 的)。"""
+    qids = set(qids)
+    k1 = {k for k in v1_answers if k[0] in note_ids and k[1] in qids}
+    k2 = {(a["subject_id"], a["question_id"]) for a in v2_answers
+          if a.get("extractor") == fb.CODE_EXTRACTOR_V2 and a["subject_id"] in note_ids and a["question_id"] in qids}
+    miss = k1 - k2
+    return {"questions": {q: {"v1": sum(1 for k in k1 if k[1] == q), "v2": sum(1 for k in k2 if k[1] == q),
+                              "only_v1": sum(1 for k in miss if k[1] == q)} for q in sorted(qids)},
+            "only_v1": len(miss), "only_v1_notes": len({k[0] for k in miss})}
+
+
 def run_gate2(dataset: dict, bank: dict, *, sha: str, extractors: list[str], run_tag: str,
               q_max: float = 0.10, min_support: int = 30, min_big: int = 3, big_pos: int = 20,
               confound_delta: float = 0.30, unreliable: Iterable[str] = (), allow_draft: bool = False,
@@ -448,9 +461,11 @@ def run_gate2(dataset: dict, bank: dict, *, sha: str, extractors: list[str], run
         in_set = [k for k in v2_dropped if k[0] in labeled_ids]
         out["code_v2_parity"] = {"pairs": len(v2_dropped), "notes": len({k[0] for k in v2_dropped}),
                                  "pairs_analysis": len(in_set), "notes_analysis": len({k[0] for k in in_set})}
-        out["code_v2_drift"] = code_v2_drift(answers, code_v1_answers(v1_rows, sha), labeled_ids,
+        v1_ans = code_v1_answers(v1_rows, sha)
+        out["code_v2_drift"] = code_v2_drift(answers, v1_ans, labeled_ids,
                                              [(r["question_id"], r["answer"]) for r in rows
                                               if r["question_id"] in CODE_V2_SAME_AS_V1])
+        out["code_v2_coverage"] = code_v2_coverage(answers, v1_ans, labeled_ids, code_question_ids(bank))
     return out
 
 
@@ -575,8 +590,10 @@ def render_report(result: dict) -> str:
                         f"{vp['notes']:,} 篇; 其中分析集里 {vp['pairs_analysis']:,} 个、{vp['notes_analysis']:,} 篇")
     dr = result.get("code_v2_drift")
     if dr is not None:                    # 同上, 只有 code:v2 的跑才有
-        lines.insert(4, f"> G-24 · v1、v2 判法一样的 {len(dr['questions'])} 题 ({', '.join(dr['questions'])}), 分析集里: "
-                        f"有 v1 没 v2 的 (笔记, 题) {dr['only_v1']:,} 个 (不是 0 = v2 回填没补齐); 两边都有、答案不同 "
+        cov = result["code_v2_coverage"]
+        lines.insert(4, f"> G-24 · 覆盖 (每道代码题, {len(cov['questions'])} 题, 分析集里): 有 v1 没 v2 的 (笔记, 题) "
+                        f"{cov['only_v1']:,} 个、涉及 {cov['only_v1_notes']:,} 篇 (不是 0 = v2 回填没补齐); "
+                        f"v1、v2 判法一样的 {len(dr['questions'])} 题 ({', '.join(dr['questions'])}) 两边都有、答案不同 "
                         f"{dr['drift']:,} 个、涉及 {dr['drift_notes']:,} 篇 (v1 抽过之后输入变了, v1 不重抽, 重跑不会变); "
                         "逐行见「G-24 · 逐行对账」")
     counts = defaultdict(int)
@@ -594,6 +611,10 @@ def render_report(result: dict) -> str:
                      f"{r['support']} | {f(r['mh_prior'])} | {r['summary'].split(': ', 1)[-1]} |")
     if dr is not None:
         lines += render_drift(dr)
+        cov = result["code_v2_coverage"]
+        lines += ["", "每道代码题的覆盖 (分析集; D-179 11-27 补的 ①, 每题「有 v1 没 v2」都要是 0):", "",
+                  "| 题 | v1 有行 | v2 有行 | 有 v1 没 v2 |", "|---|---|---|---|"]
+        lines += [f"| `{q}` | {v['v1']} | {v['v2']} | {v['only_v1']} |" for q, v in cov["questions"].items()]
     lines += ["", "## 反证 (占位题)", ""]
     if result["placebo_alarm"]:
         lines += ["**没过** —— " + "; ".join(result["placebo_alarm"])]
