@@ -1069,6 +1069,36 @@ def classify_paid_element(col: str, txt: str) -> Optional[str]:
     return None
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# 起量后干预: 置顶 / 控评列只认「做过」的标签 (D-175 第 3 条)
+# ─────────────────────────────────────────────────────────────────────────
+#
+# 夜跑同步 (sync_feishu_notes_to_truth_vault 判据点 ③ ④) 和闸二副题库的敏感性重跑 (gate2_run.pinned_done_labels,
+# G-25, D-128 11-25 补) 用的是这同一个函数对象, 两边的口径不会漂开 (check_gate2_run §8r 钉着)。
+# 11-25 从同步脚本原样挪过来, 函数体和两个正则一个字节没改。取值、判法、挡不住什么见同步脚本 _CM_POSTHOC_COLS 那段注释。
+_CM_POSTHOC_PENDING_RE = re.compile(r"^[待等]|无法")
+_CM_POSTHOC_SPLIT_RE = re.compile(r"[,，、;；\n]+")
+
+
+def posthoc_done_labels(cell: Any) -> list[str]:
+    """爆帖置顶评论 / 爆帖控评置顶 / pinned_comment 一格 → 里面「做过」的标签 (去掉待办和做不成的)。空 = 不算干预。
+
+    多选回 list (元素是字符串或 {text}); 文本格或 typed 列可能是「成功, 待做评论」这种拼好的串, 按逗号顿号分号换行切。"""
+    if cell in (None, "", []):
+        return []
+    items = cell if isinstance(cell, list) else [cell]
+    out: list[str] = []
+    for x in items:
+        v = x.get("text") if isinstance(x, dict) else x
+        if v is None or isinstance(v, bool):
+            continue
+        for part in _CM_POSTHOC_SPLIT_RE.split(str(v)):
+            part = part.strip()
+            if part and not _CM_POSTHOC_PENDING_RE.search(part):
+                out.append(part)
+    return out
+
+
 def _audience_text(value: Any) -> str:
     """把飞书「观众分析」cell 归一成 parse_audience_analysis 期望的【；分段】文本。
 

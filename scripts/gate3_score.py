@@ -31,6 +31,7 @@ AU-F02b ②, 外部审计 11-02 F02)。以后正文改了、essence 重标了, �
     python gate3_score.py                     # 打分 + 进度
     python gate3_score.py --dry-run           # 只算不写
     python gate3_score.py --selftest          # CI 用, 不连库 (同 check_gate3.py)
+    python gate3_score.py --outcome reads     # W-64 ①: 只读, 不打分不写库; 照常的读数后面并排报「阅读过本项目中位数」口径
 """
 from __future__ import annotations
 
@@ -403,6 +404,17 @@ def report(res: dict, v: dict, sc: dict) -> int:
     return rc
 
 
+def outcome_side_read(v: dict, outcome: str) -> str:
+    """W-64 ①: 换结果口径的并排一行 (主判定照旧按 D-118 的「爆」, 这一行只报不判)。"""
+    def _r(x):
+        return "—" if x is None else f"{100 * x:.2f}%"
+    ratio = "—" if v["ratio"] is None else f"{v['ratio']:.2f}"
+    pval = "—" if v["p"] is None else f"{v['p']:.4f}"
+    return (f"  并排 (W-64 ①, 结果口径 {outcome} = 阅读过本项目中位数; 只报不判): 最低20% {v['bottom_n']} 篇 "
+            f"(过线 {v['bottom_pos']}, {_r(v['bottom_rate'])}) · 其余 {v['rest_n']} 篇 (过线 {v['rest_pos']}, "
+            f"{_r(v['rest_rate'])}) · 比值 {ratio} · 单侧 p {pval}")
+
+
 # ── 生产 ─────────────────────────────────────────────────────────────────────
 
 def fetch(sb, sc: dict) -> tuple[list[dict], set[str]]:
@@ -446,19 +458,21 @@ def write(sb, rows: list[dict]) -> int:
     return len(rows)
 
 
-def fetch_labeled_all(sb, sc: dict) -> tuple[list[dict], dict]:
+def fetch_labeled_all(sb, sc: dict, outcome: str = "hit") -> tuple[list[dict], dict]:
     """附录 C 的已落标签集合: 已打分 ∩ v_l2_labels, 正文 ≥ 50 字或未知。飞书里已删的 (v_notes_vanished) 不在这里剔,
     带 vanished=True 回来: 主读数在 verdict 里剔 (同以前), 删帖回算 (D-149) 留着, 用它在 v_l2_labels 里最后的标签。
     第二个返回值: 冻结后发布、飞书里已删、却算不回来的篇数 —— no_score 没打分 / no_label 没有标签行 (评估中、没判档、
-    被 v_l2_labels 的清洗挡掉) / short_body 正文 < 50 字, by_project 是这几类按项目合计。"""
+    被 v_l2_labels 的清洗挡掉) / short_body 正文 < 50 字, by_project 是这几类按项目合计。
+    outcome=reads (W-64 ①): 标签换成 v_l2_outcomes.y_reads_median (l2_outcome.label_query), 别的一样; 默认 hit 不变。"""
     from _common import fetch_all_pages, fetch_vanished_note_ids
+    import l2_outcome
     scores = {r["subject_id"]: r for r in fetch_all_pages(
         sb.schema("truth_vault").table("content_scores").select("subject_id, pct_in_project, project_id")
         .eq("subject_type", "note").eq("scorer_version", sc["scorer_version"]), order_by="subject_id")}
     if not scores:
         return [], {}
-    labels = fetch_all_pages(sb.schema("truth_vault").table("v_l2_labels").select("note_id, y")
-                             .gte("publish_time", sc["freeze_publish_time"]), order_by="note_id")
+    labels = l2_outcome.fetch_labels(fetch_all_pages, l2_outcome.label_query(sb, "note_id, y", outcome)
+                                     .gte("publish_time", sc["freeze_publish_time"]), outcome)
     ids = [r["note_id"] for r in labels if r["note_id"] in scores]
     short: set[str] = set()
     for i in range(0, len(ids), 100):
@@ -501,6 +515,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--scorer", default=str(SCORER_PATH))
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--selftest", action="store_true")
+    ap.add_argument("--outcome", choices=("hit", "reads"), default="hit",
+                    help="W-64 ①: reads = 照常的读数后面并排报「阅读过本项目中位数」口径; 只读, 不打分不写库")
     args = ap.parse_args(argv)
     if args.selftest:
         import check_gate3
@@ -511,7 +527,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     notes, done = fetch(sb, sc)
     res = plan(notes, done, sc, datetime.now(timezone.utc))
     rc = 0
-    if not args.dry_run and res["rows"]:
+    if args.outcome != "hit":
+        print(f"  --outcome {args.outcome}: 影子读数, 这一轮不打分、不写 content_scores (本该新打 {len(res['rows'])} 篇, 夜跑会打)")
+    elif not args.dry_run and res["rows"]:
         write(sb, res["rows"])
         _, done_after = fetch(sb, sc)
         lost = [r["subject_id"] for r in res["rows"] if r["subject_id"] not in done_after]
@@ -521,15 +539,29 @@ def main(argv: Optional[list[str]] = None) -> int:
     labeled, vanished_out = fetch_labeled_all(sb, sc)
     v = verdict(labeled, sc, vanished_out)
     rc = max(rc, report(res, v, sc))
+    side = ""
+    if args.outcome != "hit":
+        import l2_outcome
+        from secret_mask import mask_secrets
+        try:
+            alt, alt_out = fetch_labeled_all(sb, sc, outcome=args.outcome)
+            side = outcome_side_read(verdict(alt, sc, alt_out), args.outcome)
+        except l2_outcome.OutcomeUnavailable as exc:
+            side, rc = f"  并排没出: {mask_secrets(str(exc))}", max(rc, 2)
+        print(side)
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
+        scored = (f"本轮新打 {len(res['rows'])} 篇" if args.outcome == "hit"
+                  else f"本轮没打分 (--outcome {args.outcome} 影子读数; 本该新打 {len(res['rows'])} 篇, 夜跑会打)")
         with open(summary, "a", encoding="utf-8") as f:
-            f.write(f"### 闸三第一轨 ({sc['scorer_version']})\n\n本轮新打 {len(res['rows'])} 篇; 已落标签 "
+            f.write(f"### 闸三第一轨 ({sc['scorer_version']})\n\n{scored}; 已落标签 "
                     f"最低20% {v['bottom_n']} / 其余 {v['rest_n']} (目标 {sc['criteria']['min_bottom']} / "
                     f"{sc['criteria']['min_rest']}); 状态 {v['status']}"
                     f"{'' if not v.get('pass_read') else ' · D-146 并排: ' + v['pass_read']}\n\n")
             f.write(f"删帖回算 (D-149, 不改主判定): 最低20% {v['kept']['bottom_n']} / 其余 {v['kept']['rest_n']}; "
                     f"状态 {v['kept']['status']}{'' if not v.get('deleted_read') else ' · ' + v['deleted_read']}\n\n")
+            if side:
+                f.write(side.strip() + "\n\n")
     print(f"GATE3_SCORE_CHECK_DONE rc={rc}")
     return rc
 

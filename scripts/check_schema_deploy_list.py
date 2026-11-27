@@ -230,11 +230,16 @@ def _append_step0b(readme: str, m0b: str, name: str) -> str:
 
 
 def _inject_sql_job(ci_text: str, lines: list[str]) -> str:
-    """在 sql job 最后一条 `psql … -f schemas/…` 那一行后面, 用同样的缩进插几行。"""
+    """在 sql job 最后一条写在 `run: |` 块里的 `psql … -f schemas/…` 那一行后面, 用同样的缩进插几行。
+    单行的 `run: psql …` 跳过: 插在它后面的行缩进会带上 `run: `, 成了同一步里第二个 run 键 (批 3 整合时撞到)。"""
     sql = sql_job_text(ci_text)
-    last = [ln.strip() for ln in sql.splitlines() if _psql_files(ln)][-1]
-    pos = ci_text.rfind(last)
-    indent = ci_text[ci_text.rfind("\n", 0, pos) + 1:pos]
+    for last in reversed([ln.strip() for ln in sql.splitlines() if _psql_files(ln)]):
+        pos = ci_text.rfind(last)
+        indent = ci_text[ci_text.rfind("\n", 0, pos) + 1:pos]
+        if not indent.strip():
+            break
+    else:
+        raise SystemExit("selftest: sql job 里没有一条写在 run: | 块里的 psql -f schemas/…, 插不进反证")
     end = ci_text.find("\n", pos)
     return ci_text[:end] + "".join(f"\n{indent}{x}" for x in lines) + ci_text[end:]
 

@@ -517,7 +517,7 @@ psql "$PGURI" -c "
 | `Skipping N baokuan without mapping_to_autowriter_project_id` | § 3.4 没建跨系统映射 | UPDATE truth_vault.projects 设那一列 |
 | `permission denied for schema autowriter` | Step 1 没把 autowriter 加进 Exposed schemas | Settings → API → Exposed schemas |
 | `Feishu auth failed code: 99991663` | FEISHU_APP_SECRET 错 / 应用没启用 | 飞书开放平台检查应用状态 |
-| `Feishu list_records error code: 91402` | 飞书应用没拿到 Bitable 读权限 | 飞书开放平台 → 权限管理 → 添加 `bitable:app` |
+| `飞书 list_records 第 N 页失败: HTTP … · code=91402 · …` | 飞书应用没拿到 Bitable 读权限 | 飞书开放平台 → 权限管理 → 添加 `bitable:app` |
 | `mapping yaml ... missing required keys: project_id, field_mapping` | yaml 错 | 按 § 3.3 模板补 |
 | `tier_extraction.source='错的值' not in ['状态字段', '备注字段']` | yaml typo | 改正 |
 | sync 跑通了但 ssll vibe_rewriter 没拿到数据 | preflight 假通过但 schema 实际不对 | 在 ssll 端跑 `SELECT * FROM public.reference_samples WHERE source_truth_vault_note_id IS NOT NULL LIMIT 5` 看数据是否真到了 |

@@ -29,6 +29,8 @@ numpy / statsmodels), 与 statsmodels 的核对靠闭式: 单层时 Robins–Bre
         --counts-only                                                                           # 读之前: 只数行数和覆盖
     … --run-tag gate2-reader-2026-11-03 --out ../data-analysis/feature-gate2-gate2-reader-2026-11-03.md   # 只读一次
 B.3 组合对比 (留一项目 AUC + 配对自助) 与 B.4 置换反证在 gate2_combo.py (D-106) —— 那是「组合进不进 L2」的决定, 不是单个特征值的闸。
+--outcome reads (W-64 ①, 影子读数): 结果换成「阅读过本项目中位数」(v_l2_outcomes, l2_outcome.py), 同一份快照、同一套判据再算一遍,
+    报告先给 reads 的表, 再给两种口径逐行的状态对照。只报不判 (判据是按「爆」预注册的), 不收 --write; 默认 hit 一个字节不变。
 """
 from __future__ import annotations
 
@@ -45,6 +47,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 import feature_bank as fb
+import l2_outcome
 from secret_mask import mask_secrets
 
 Z95 = 1.959964
@@ -466,22 +469,26 @@ def render_report(result: dict) -> str:
 
 # ── 取数 (生产) ───────────────────────────────────────────────────────────────
 
-def fetch_dataset(sb, *, bank: dict, sha: str, extractors: list[str], projects: Optional[set[str]] = None) -> dict:
+def fetch_dataset(sb, *, bank: dict, sha: str, extractors: list[str], projects: Optional[set[str]] = None,
+                  outcome: str = l2_outcome.DEFAULT_OUTCOME) -> dict:
     """``bank`` 必须是 main() 里 --bank 读进来的那一份: 取哪些题按它算 (codex review on #169, P1 —— 以前这里重新
-    load 默认题库, --bank 指向别的冻结题库时, 只在那份里的题永远取不到答案、报告里静默少题)。"""
+    load 默认题库, --bank 指向别的冻结题库时, 只在那份里的题永远取不到答案、报告里静默少题)。
+    outcome=reads (W-64 ①): notes 换成 v_l2_outcomes 的阅读口径, 默认口径的那批放在 notes_hit, 答案只取一次。"""
     from _common import fetch_all_pages, fetch_vanished_note_ids
-    labels = fetch_all_pages(sb.schema("truth_vault").table("v_l2_labels")
-                             .select("note_id, project_id, account_id, publish_time, y"), order_by="note_id")
+    label_cols = "note_id, project_id, account_id, publish_time, y"
+    labels = fetch_all_pages(l2_outcome.label_query(sb, label_cols, l2_outcome.DEFAULT_OUTCOME), order_by="note_id")
     ess = {r["note_id"]: r.get("emotional_lever") is not None
            for r in fetch_all_pages(sb.schema("truth_vault").table("notes").select("note_id, emotional_lever"), order_by="note_id")}
     blen = {r["note_id"]: r.get("body_len")
             for r in fetch_all_pages(sb.schema("truth_vault").table("note_features").select("note_id, body_len"), order_by="note_id")}
     # 飞书里已删 (本项目最近一次完整同步没见到) 的篇不进闸二 (审计 B-21, D-103): 它们的标签是删前的快照, 之后没人维护。
     vanished = fetch_vanished_note_ids(sb)
-    notes = [{"note_id": r["note_id"], "project_id": r["project_id"], "account_id": r.get("account_id"),
-              "publish_time": r.get("publish_time"), "y": int(r["y"]), "has_essence": ess.get(r["note_id"], False),
-              "body_len": blen.get(r["note_id"])}
-             for r in labels if (projects is None or r["project_id"] in projects) and r["note_id"] not in vanished]
+    def _notes(rows: list[dict]) -> list[dict]:
+        return [{"note_id": r["note_id"], "project_id": r["project_id"], "account_id": r.get("account_id"),
+                 "publish_time": r.get("publish_time"), "y": int(r["y"]), "has_essence": ess.get(r["note_id"], False),
+                 "body_len": blen.get(r["note_id"])}
+                for r in rows if (projects is None or r["project_id"] in projects) and r["note_id"] not in vanished]
+    notes = _notes(labels)
     n_vanished = sum(1 for r in labels if r["note_id"] in vanished and (projects is None or r["project_id"] in projects))
     # ⚠️ fetch_all_pages 按 order_by 那一列去重 (它要求唯一列)。账本一篇 31 行, 整表按 subject_id 翻页会把同一篇
     #    合并成一行、重复也看不见。所以按 (题, 抽取器) 一条一条查: 这个切片里 subject_id 唯一 (sha 钉住了版本),
@@ -495,7 +502,33 @@ def fetch_dataset(sb, *, bank: dict, sha: str, extractors: list[str], projects: 
                  .eq("subject_type", "note").eq("run_tag", "primary").like("bank_sha256", f"{sha}%")
                  .eq("question_id", qid).eq("extractor", ext))
             answers.extend(fetch_all_pages(q, order_by="subject_id"))
-    return {"notes": notes, "answers": answers, "vanished_dropped": n_vanished}
+    out = {"notes": notes, "answers": answers, "vanished_dropped": n_vanished}
+    if outcome != l2_outcome.DEFAULT_OUTCOME:
+        out.update({"notes_hit": notes, "outcome": outcome,
+                    "notes": _notes(l2_outcome.fetch_labels(fetch_all_pages, l2_outcome.label_query(sb, label_cols, outcome),
+                                                            outcome))})
+    return out
+
+
+def render_outcome_compare(res_hit: dict, res_alt: dict, outcome: str) -> str:
+    """--outcome reads 的报告尾巴: 两种口径的分析集大小, 再逐行 (题, 取值) 对状态。只报不判。"""
+    st_hit = {(r["question_id"], r["answer"]): r for r in res_hit["rows"]}
+    st_alt = {(r["question_id"], r["answer"]): r for r in res_alt["rows"]}
+    f = lambda v: "—" if v is None else f"{v:.2f}"  # noqa: E731
+    lines = ["", f"## 两种结果口径对照 (W-64 ①; 本报告上面是 {outcome})", "",
+             f"- {l2_outcome.LABEL['hit']}: 分析集 {res_hit['n_notes']:,} 篇, 正例 {res_hit['n_pos']:,}",
+             f"- {l2_outcome.LABEL[outcome]}: 分析集 {res_alt['n_notes']:,} 篇, 正例 {res_alt['n_pos']:,}",
+             "- 判据是按「爆」预注册的; 换口径的这一列只报, 不改 feature_validation、不改写作台。", "",
+             f"| 题 | 取值 | hit 状态 | hit OR | {outcome} 状态 | {outcome} OR | 变了 |", "|---|---|---|---|---|---|---|"]
+    changed = 0
+    for key in sorted(set(st_hit) | set(st_alt)):
+        a, b = st_hit.get(key), st_alt.get(key)
+        sa, sb_ = (a or {}).get("status", "—"), (b or {}).get("status", "—")
+        changed += int(sa != sb_)
+        lines.append(f"| `{key[0]}` | {key[1]} | {sa} | {f((a or {}).get('mh_odds_ratio'))} | {sb_} | "
+                     f"{f((b or {}).get('mh_odds_ratio'))} | {'是' if sa != sb_ else ''} |")
+    lines += ["", f"状态变了的行: {changed} / {len(set(st_hit) | set(st_alt))}"]
+    return "\n".join(lines) + "\n"
 
 
 def write_validation(sb, rows: list[dict]) -> int:
@@ -548,12 +581,44 @@ def body_len_bucket(body_len) -> str:
     return BODY_LEN_TOP
 
 
-def sensitivity_flags(dq: Optional[dict], has_pinned_comment: bool = False) -> list[str]:
-    """敏感性重跑要剔的篇 (D-128: 记过置顶 / 控评 / 铺评 / 投流)。读的是同步引擎写好的标记, 不重判:
+# notes.pinned_comment 是 TEXT。同步判的是 _coerce_value 之后的值 (同一个值再存进库): 文本格原样是串, 存进去也原样;
+# 全是 {text} 的多选被拼成「a, b」的串; 不全是 {text} 的 list (字符串多选) 原样留着, 存成 JSON 串 ('["待置顶"]');
+# 勾选格是 true / false。所以库里的串只有两种来路: 同步当时就是这个串, 或者是那几种非串值的 JSON。
+def _pin_sync_kept(v: Any) -> bool:
+    """v 是不是同步当时可能拿着的非串值 (存进库才变成 JSON): 勾选格的 bool, 或 _coerce_value 原样放过的 list
+    (不全是 {text}; 全是 {text} 的和空 list 在同步里已经拼成串了, 库里不会是 JSON 列表; 空 list 的 all() 为真, 一样不算)。"""
+    if isinstance(v, bool):
+        return True
+    return isinstance(v, list) and not all(isinstance(x, dict) and "text" in x for x in v)
+
+
+def pinned_done_labels(raw: Any) -> list[str]:
+    """notes.pinned_comment 一格 → 里面「做过」的置顶 / 控评标签 (G-25, D-128 11-25 补: 敏感性重跑剔除条件三只认做过的)。
+    判法就是夜跑同步那一个 _common.posthoc_done_labels (同一个函数对象); 这里只管把库里的 TEXT 还原成同步当时判的那个值:
+    整串 (前后不带空白) 是 JSON、解析出来是 _pin_sync_kept 认的 list / bool → 用解析出来的值; 别的一律原样交过去 ——
+    文本格本来就原样存, 同步判的就是这个串 (以 [ { " 开头的、半截的、两层引号的、空的 "[]" 都按文本, 和同步一样)。
+    唯一分不开的: 文本格里一字不差打成 JSON 列表或 true / false 的, 按 JSON 算 (生产上这一列 11-25 全是 JSON 列表)。
+    NULL / 空串 / 已经是 list 的原样交过去。"""
+    from _common import posthoc_done_labels
+    cell = raw
+    if isinstance(raw, str) and raw == raw.strip():
+        try:
+            v = json.loads(raw)
+        except (ValueError, RecursionError):
+            v = None
+        if _pin_sync_kept(v):
+            cell = v
+    return posthoc_done_labels(cell)
+
+
+def sensitivity_flags(dq: Optional[dict], has_pinned_done: bool = False) -> list[str]:
+    """敏感性重跑要剔的篇 (D-128: 记过置顶 / 控评 / 铺评 / 投流)。前两条读同步引擎写好的标记, 不重判;
+    第三条 (置顶) 闸二取数时自己判, 用的是和同步同一个 posthoc_done_labels:
       · data_quality_flags.comment_maintained_routes 非空: 铺评工单 / 起量后干预 (控评、置顶、改评) / 铺评未跨线;
         只写了 comment_maintained=true 没写 routes 的老行也算;
       · data_quality_flags.paid_promoted = true (投流三态里只认 true; 缺键 = 不知道, 不剔);
-      · notes.pinned_comment 非空 (同步时已并进「起量后干预」, 这里再直接看一遍列)。"""
+      · notes.pinned_comment 里有做过的标签 (has_pinned_done, 取数时由 pinned_done_labels 判; 11-25 起只认做过的,
+        只有待办 / 做不成的不剔, 同夜跑同步, G-25 / D-128 11-25 补。以前是「非空就剔」)。"""
     dq = dq if isinstance(dq, dict) else {}
     out = set()
     routes = dq.get("comment_maintained_routes") or []
@@ -563,8 +628,8 @@ def sensitivity_flags(dq: Optional[dict], has_pinned_comment: bool = False) -> l
         out.add("维护")
     if dq.get("paid_promoted") is True:
         out.add("投流")
-    if has_pinned_comment:
-        out.add("置顶")
+    if has_pinned_done:
+        out.add("置顶:做过")
     return sorted(out)
 
 
@@ -783,13 +848,16 @@ def run_gate2_secondary(dataset: dict, bank: dict, primary: dict, *, sha: str, m
                         reports_dirs: Iterable[Path] = (), q_max: float = 0.10, min_support: int = 30,
                         min_big: int = 3, big_pos: int = 20, confound_delta: float = 0.30) -> dict:
     """副题库闸二 (纯函数: dataset + 两份题库 + 名单 → 结果)。dataset = {notes (v_l2_labels 去掉飞书已删的, 带 has_essence /
-    body_len / data_quality_flags / has_pinned_comment), vanished, answers (两份快照的行混在一起, 这里按 run_tag / sha /
+    body_len / data_quality_flags / has_pinned_done), vanished, answers (两份快照的行混在一起, 这里按 run_tag / sha /
     抽取器分开), half_alias ({new_id: old_id}, D-129 映射表), ignored_rows (可无: 生产取数只取快照那一片, 快照外的行数在
     库里数好带过来)}。counts_only = 只数行数和覆盖, 一个 y 都不碰。"""
     from discover_feature_candidates import half_id, in_discovery_half
     from gate1_sample import EXCLUDE
 
     sha = _secondary_prereg(bank, primary, sha)
+    if any("has_pinned_comment" in n for n in dataset.get("notes") or []):
+        raise Gate2Refused("dataset 里还是旧键 has_pinned_comment (G-25 之前「pinned_comment 非空就剔」的口径): "
+                           "换成 has_pinned_done (只认做过的标签, D-128 11-25 补) 再跑")
     full_sha = bank["_sha256"]
     err = fb.check_run_tag(bank, answers_run_tag)
     if err:
@@ -1005,7 +1073,7 @@ def run_gate2_secondary(dataset: dict, bank: dict, primary: dict, *, sha: str, m
         _assign_status(r, q_max=q_max, min_support=min_support, min_big=min_big, confound_delta=confound_delta,
                        unreliable=unreliable)
     # 敏感性重跑 (只报告): 剔掉记过置顶 / 控评 / 铺评 / 投流的篇, 再加一层 body_len_bucket
-    flagged = {n["note_id"]: sensitivity_flags(n.get("data_quality_flags"), bool(n.get("has_pinned_comment")))
+    flagged = {n["note_id"]: sensitivity_flags(n.get("data_quality_flags"), bool(n.get("has_pinned_done")))
                for n in analysis}
     kept = [n for n in analysis if not flagged[n["note_id"]]]
     flag_counts: dict[str, int] = defaultdict(int)
@@ -1154,7 +1222,8 @@ def render_report_secondary(res: dict) -> str:
               "两者和上面分层的 OR 差得多时, 是分层题在混杂 (辛普森那种), 以分层的为准。", "",
               f"## 敏感性重跑 (只报告): 剔掉记过置顶 / 控评 / 铺评 / 投流的 {res['sensitivity_dropped']} 篇, 再加一层 body_len_bucket", "",
               "剔的依据: `notes.data_quality_flags.comment_maintained_routes` 非空 (铺评工单 / 起量后干预 / 铺评未跨线)、"
-              "`data_quality_flags.paid_promoted = true`、`notes.pinned_comment` 非空。命中: "
+              "`data_quality_flags.paid_promoted = true`、`notes.pinned_comment` 里有做过的标签 (只认做过的, 判法同夜跑同步的 "
+              "`posthoc_done_labels`; 只有待办 / 做不成的不剔, D-128 11-25 补)。命中: "
               + (", ".join(f"{k} {v}" for k, v in res["sensitivity_flags"].items()) or "无"), "",
               "| 行 | OR | 95% CI | p | 支持 / 基数 |", "|---|---|---|---|---|"]
     for s in res["sensitivity"]:
@@ -1201,7 +1270,8 @@ def fetch_dataset_secondary(sb, *, bank: dict, primary: dict, answers_run_tag: s
     """run_gate2_secondary 要的 dataset。两份快照分开查, 每次查一个 (题, 抽取器, 版本) 的切片 —— 这个切片里 subject_id 唯一
     (主键 subject_type, subject_id, question_id, question_version, extractor, run_tag), fetch_all_pages 按 subject_id 去重
     不会吞掉行。版本不对的行另用一个有上限的查询捞出来放进 answers, 让 run_gate2_secondary 拒 (不在这里静默丢)。
-    D-129 映射表读不到 / 0 对 → Gate2Refused (fail closed)。正文、置顶评论的文字都不取, 只取「有没有」。快照外的行
+    D-129 映射表读不到 / 0 对 → Gate2Refused (fail closed)。正文不取; 置顶那一列的文字不往外带, 只带「有没有做过的标签」
+    (has_pinned_done, pinned_done_labels 判, G-25)。快照外的行
     (同 run_tag、同题, 别的 sha / 抽取器) 只数不取, 放进 ignored_rows。"""
     from _common import fetch_all_pages, fetch_half_alias, fetch_vanished_note_ids, mask_secrets
     try:
@@ -1225,7 +1295,7 @@ def fetch_dataset_secondary(sb, *, bank: dict, primary: dict, answers_run_tag: s
                       "publish_time": r.get("publish_time"), "y": int(r["y"]),
                       "has_essence": m.get("emotional_lever") is not None, "body_len": blen.get(r["note_id"]),
                       "data_quality_flags": m.get("data_quality_flags") or {},
-                      "has_pinned_comment": m.get("pinned_comment") not in (None, "")})
+                      "has_pinned_done": bool(pinned_done_labels(m.get("pinned_comment")))})
     cols = "subject_type, subject_id, question_id, question_version, bank_sha256, extractor, run_tag, answer, invalid_reason"
     slices = [(answers_run_tag, bank["_sha256"], q["id"], int(q["version"]), SEC_LLM_EXTRACTOR) for q in fb.llm_questions(bank)]
     slices += [(answers_run_tag, bank["_sha256"], c["id"], int(c["version"]), fb.CODE_EXTRACTOR)
@@ -1389,9 +1459,18 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--reports-dir", default=str(REPORTS_DIR),
                     help="副题库: 到这里找读过的报告 (同一份名单只读一次, 补记 7); 只给 --fixture 的离线跑改, "
                          "连库的正式读只认 data-analysis/ (改了就拒)")
+    ap.add_argument("--outcome", choices=l2_outcome.OUTCOMES, default=l2_outcome.DEFAULT_OUTCOME,
+                    help="结果口径 (W-64 ①): hit = v_l2_labels (默认, 和以前一样); reads = 阅读过本项目中位数 (v_l2_outcomes), "
+                         "影子读数: 两种口径并排报, 不收 --write")
     args = ap.parse_args(argv)
     bank_path = fb.BANKS.get(args.bank, args.bank)
+    if args.outcome != l2_outcome.DEFAULT_OUTCOME and (args.write or args.expect_rows_sha256):
+        print(f"闸二没跑: --outcome {args.outcome} 是影子读数, 不写 feature_validation (W-64 ①)", file=sys.stderr)
+        return 2
     if fb.load_bank(bank_path).get("role") == fb.ROLE_SECONDARY:
+        if args.outcome != l2_outcome.DEFAULT_OUTCOME:
+            print("闸二 (副题库) 没跑: 副题库的读法在 D-128 写死了, 不收 --outcome", file=sys.stderr)
+            return 2
         return main_secondary(args, bank_path)
     if args.manifest or args.counts_only or args.answers_run_tag != SEC_ANSWERS_RUN_TAG:
         ap.error("--manifest / --counts-only / --answers-run-tag 只给副题库 (--bank reader)")
@@ -1408,20 +1487,39 @@ def main(argv: Optional[list[str]] = None) -> int:
         else:
             from _common import get_supabase_client
             sb = get_supabase_client()
-            dataset = fetch_dataset(sb, bank=bank, sha=args.sha, extractors=extractors, projects=projects)
+            if args.outcome == l2_outcome.DEFAULT_OUTCOME:
+                dataset = fetch_dataset(sb, bank=bank, sha=args.sha, extractors=extractors, projects=projects)
+            else:
+                dataset = fetch_dataset(sb, bank=bank, sha=args.sha, extractors=extractors, projects=projects,
+                                        outcome=args.outcome)
         assert_projects_present(dataset, projects)
         result = run_gate2(dataset, bank, sha=args.sha, extractors=extractors, run_tag=args.run_tag, q_max=args.q_max,
                            min_support=args.min_support, min_big=args.min_big, big_pos=args.big_pos,
                            confound_delta=args.confound_delta, unreliable=unreliable, allow_draft=args.allow_draft,
                            ignore_placebo_alarm=args.ignore_placebo_alarm)
-    except Gate2Refused as exc:
+        result_hit = None
+        if args.outcome != l2_outcome.DEFAULT_OUTCOME:
+            if "notes_hit" not in dataset:
+                raise Gate2Refused(f"--outcome {args.outcome}: 取数里没有默认口径那一批 (notes_hit), 对照做不了")
+            result_hit = run_gate2({"notes": dataset["notes_hit"], "answers": dataset["answers"]}, bank, sha=args.sha,
+                                   extractors=extractors, run_tag=args.run_tag, q_max=args.q_max,
+                                   min_support=args.min_support, min_big=args.min_big, big_pos=args.big_pos,
+                                   confound_delta=args.confound_delta, unreliable=unreliable,
+                                   allow_draft=args.allow_draft, ignore_placebo_alarm=args.ignore_placebo_alarm)
+    except (Gate2Refused, l2_outcome.OutcomeUnavailable) as exc:
         print(f"闸二没跑: {mask_secrets(str(exc))}", file=sys.stderr)
         return 2
     report = render_report(result)
+    if result_hit is not None:
+        report = (report.replace("\n", f"\n\n> 结果口径: {l2_outcome.LABEL[args.outcome]}\n", 1)
+                  + render_outcome_compare(result_hit, result, args.outcome))
     rows = validation_rows(result)
     digest = rows_digest(rows)
-    report += (f"\n## 行摘要\n\n`rows_sha256` = `{digest}` —— 写库那次带 `--expect-rows-sha256 {digest[:12]}` 核对, "
-               "摘要对不上就不写 (codex review on #173)。\n")
+    if result_hit is None:
+        report += (f"\n## 行摘要\n\n`rows_sha256` = `{digest}` —— 写库那次带 `--expect-rows-sha256 {digest[:12]}` 核对, "
+                   "摘要对不上就不写 (codex review on #173)。\n")
+    else:
+        report += f"\n## 行摘要\n\n`rows_sha256` = `{digest}` —— 影子读数 (--outcome {args.outcome}), 不写库。\n"
     print(f"rows_sha256 {digest}")
     if args.out:
         Path(args.out).write_text(report, encoding="utf-8")

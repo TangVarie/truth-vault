@@ -13,6 +13,8 @@
 输入的标题正文一样的, 那个例子直接删掉。
 
 标签与闸二同源: truth_vault.v_l2_labels (y=1 是清洗后的 爆 / 大爆, y=0 是 趴)。
+--outcome reads (W-64 ①, 影子): 两组换成「阅读过本项目中位数 / 没过」(v_l2_outcomes, l2_outcome.py), 提示词里的组名跟着换,
+报告里两种口径的每组篇数并排给; 默认 hit 一个字节不变。候选题照旧只是候选。
 
 用法:
     cd scripts && python discover_feature_candidates.py --dry-run               # 只数样本, 不调模型
@@ -33,6 +35,8 @@ from pathlib import Path
 from typing import Callable, Optional
 
 import feature_bank as fb
+import l2_outcome
+from secret_mask import mask_secrets
 
 DEFAULT_DAYS = 92
 PER_GROUP = 15                 # 每个项目每组最多几篇
@@ -86,6 +90,16 @@ def existing_questions(bank: dict) -> list[tuple[str, str]]:
     out += [(c["id"], c.get("ask") or c.get("what") or "") for c in bank.get("code_features") or []
             if isinstance(c, dict) and c.get("id")]
     return out
+
+
+# W-64 ① reads 口径下两组的说法 (只换这一句; 别的出题规矩不动)
+GROUPS_HIT = "A 组是评论多的 (爆), B 组是评论少的 (趴)"
+GROUPS_READS = "A 组是阅读过本项目中位数的, B 组是没过的"
+
+
+def system_prompt(existing: list[tuple[str, str]], outcome: str = l2_outcome.DEFAULT_OUTCOME) -> str:
+    sysp = SYSTEM.format(k=PER_PROJECT_CANDIDATES, existing="\n".join(f"{i}: {a}" for i, a in existing))
+    return sysp if outcome == l2_outcome.DEFAULT_OUTCOME else sysp.replace(GROUPS_HIT, GROUPS_READS, 1)
 
 
 def build_user_prompt(project: str, category: Optional[str], a: list[dict], b: list[dict]) -> str:
@@ -230,17 +244,20 @@ def previous_quarter(now: datetime) -> tuple[datetime, datetime]:
 def run(*, labels: list[dict], fetch_notes: Callable[[list[str]], dict[str, dict]], categories: dict[str, str],
         bank: dict, call: Optional[Callable[[str, str], str]], since: datetime, per_group: int = PER_GROUP,
         projects: Optional[set[str]] = None, until: Optional[datetime] = None,
-        alias: Optional[dict[str, str]] = None) -> dict:
-    """``call(system, user) -> text``; None = dry-run (只数样本)。alias = D-129 的 {new_id: old_id}, 半区按旧 id 定。"""
+        alias: Optional[dict[str, str]] = None, outcome: str = l2_outcome.DEFAULT_OUTCOME) -> dict:
+    """``call(system, user) -> text``; None = dry-run (只数样本)。alias = D-129 的 {new_id: old_id}, 半区按旧 id 定。
+    outcome=reads: labels 里的 y 是阅读口径 (调用方取的), 这里只换提示词里两组的说法、报告记下口径。"""
     existing = existing_questions(bank)
     existing_ids = {i for i, _ in existing}
     existing_asks = {_norm_ask(a): i for i, a in existing if a}
-    system = SYSTEM.format(k=PER_PROJECT_CANDIDATES, existing="\n".join(f"{i}: {a}" for i, a in existing))
+    system = system_prompt(existing, outcome)
     groups = sample(labels, since=since, per_group=per_group, until=until, alias=alias)
     report = {"since": since.date().isoformat(), "until": until.date().isoformat() if until else None,
               "projects": [], "skipped": [], "dropped": [], "candidates": [], "answered": 0,
               "holdout_rule": "sha256(note_id) 首位十六进制为奇数的笔记没给模型看 (D-129 换了 id 的按旧 id) —— 候选题的闸二只用这一半或下一季的新笔记",
               "bank_version": bank.get("bank_version"), "bank_sha256": bank.get("frozen_sha256")}
+    if outcome != l2_outcome.DEFAULT_OUTCOME:
+        report["outcome"] = outcome
     per_project = []
     for p in sorted(groups):
         if projects and p not in projects:
@@ -295,6 +312,14 @@ def render(report: dict, *, dry_run: bool) -> str:
         lines.append("")
     if report["skipped"]:
         lines.append("跳过: " + "、".join(f"{r['project']}(爆 {r['baokuan']} / 趴 {r['pa']})" for r in report["skipped"]))
+        lines.append("")
+    if report.get("outcome"):
+        # W-64 ①: 上面两组是换过口径的 (表头仍写爆 / 趴, 意思是 A / B 组); 默认口径的每组篇数并排
+        lines.append(f"结果口径: {l2_outcome.LABEL[report['outcome']]}。上表「爆 / 趴」= 过线 / 没过。")
+        hit = report.get("hit_groups") or {}
+        if hit:
+            lines.append("默认口径 (爆 / 趴) 同一时段、同一半区的每组篇数: "
+                         + "、".join(f"{p} {g.get(1, 0)}/{g.get(0, 0)}" for p, g in sorted(hit.items())))
         lines.append("")
     if not dry_run:
         lines.append(f"## 候选 ({len(report['candidates'])} 道)")
@@ -432,6 +457,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--out", default="", help="报告写到这个 markdown 文件 (同名 .json 一并写)")
     ap.add_argument("--dry-run", action="store_true", help="只数样本, 不调模型")
     ap.add_argument("--selftest", action="store_true")
+    ap.add_argument("--outcome", choices=l2_outcome.OUTCOMES, default=l2_outcome.DEFAULT_OUTCOME,
+                    help="W-64 ①: reads = 两组按「阅读过本项目中位数」分 (影子); 默认 hit")
     args = ap.parse_args(argv)
     if args.selftest:
         _selftest()
@@ -439,11 +466,20 @@ def main(argv: Optional[list[str]] = None) -> int:
     from _common import fetch_all_pages, fetch_half_alias, fetch_vanished_note_ids, get_supabase_client
     sb = get_supabase_client()
     bank = fb.load_bank()
-    labels = fetch_all_pages(sb.schema("truth_vault").table("v_l2_labels")
-                             .select("note_id, project_id, publish_time, y"), order_by="note_id")
+    try:
+        labels = l2_outcome.fetch_labels(fetch_all_pages, l2_outcome.label_query(sb, "note_id, project_id, publish_time, y",
+                                                                                 args.outcome), args.outcome)
+    except l2_outcome.OutcomeUnavailable as exc:
+        print(f"没跑: {mask_secrets(str(exc))}", file=sys.stderr)
+        return 2
+    hit_labels = None
+    if args.outcome != l2_outcome.DEFAULT_OUTCOME:
+        hit_labels = fetch_all_pages(l2_outcome.label_query(sb, "note_id, project_id, publish_time, y"), order_by="note_id")
     # 飞书里已经删掉的篇不当样本(同闸二取数, gate2_run.fetch_dataset; codex review on TV#202)
     vanished = fetch_vanished_note_ids(sb)
     labels = [r for r in labels if r["note_id"] not in vanished]
+    if hit_labels is not None:
+        hit_labels = [r for r in hit_labels if r["note_id"] not in vanished]
     # D-129 换了 id 的行按旧 id 定半区 (D-128 补记 / G-19); 映射表读不到就抛 —— 半区错了比这一季不跑更糟
     alias = fetch_half_alias(sb)
     cats = {r["project_id"]: r.get("category") for r in fetch_all_pages(
@@ -484,7 +520,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         if gated:
             print(f"定时跑, 跳过 on_demand 项目: {'、'.join(sorted(gated))}")
     report = run(labels=labels, fetch_notes=fetch_notes, categories=cats, bank=bank, call=call, since=since,
-                 per_group=args.per_group, projects=projects, until=until, alias=alias)
+                 per_group=args.per_group, projects=projects, until=until, alias=alias, outcome=args.outcome)
+    if hit_labels is not None:
+        report["hit_groups"] = {p: {y: len(ids) for y, ids in g.items()}
+                                for p, g in sample(hit_labels, since=since, per_group=10 ** 9, until=until, alias=alias).items()
+                                if not projects or p in projects}
     md = render(report, dry_run=args.dry_run)
     print(md)
     if args.out:

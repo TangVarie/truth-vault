@@ -42,6 +42,10 @@ on:
         description: "只在 note_ids 模式生效, 可空。覆盖 worker 的 FEATURE_MODEL (如 claude-haiku-5-5), 闸一影子跑用: 同一批篇、换个模型、落到别的 run_tag, 再用 gate1_agreement.py 对 Jev / owner 裁决算一致率 (D-098: 换站后主抽取器要重过闸一)。pass 写的抽取器是 llm:<model>; 只能配非 primary 的 run_tag。[A-Za-z0-9][A-Za-z0-9_.:/-]{0,79}"
         required: false
         default: ""
+      code_extractor:
+        description: "只配 code_only=true (G-24)。code:v1 = 默认, 和以前一模一样; code:v2 = 同一批代码题按 v2 标签剥离另写一份 (新键 extractor=code:v2, 不盖 code:v1 的行、不写 note_features, ¥0), 「跑过」按 code:v2 的 body_len_bucket 判。整项目和 note_ids 两种模式都认; 先探 worker 回显 code_extractor, 旧 worker 会吞掉它按 code:v1 跑, 停。"
+        required: false
+        default: "code:v1"
       bank:
         description: "只在 note_ids 模式生效。题库键 (D-128, feature_bank.BANKS): primary = 冻结的主题库 fq-v0.1 (默认); reader = 副题库 fq-v0.2-cand-reader。非 primary 必须: run_tag 以 fqr- 开头、给 bank_sha 和 model、code_only=false、reannotate=false; 探针还要 worker 回显 bank、日志里 bank=<该库版本>, 否则停 (旧 worker 会吞掉 bank 按主题库跑)。"
         required: false
@@ -72,6 +76,7 @@ jobs:
       MODEL: ${{ github.event.inputs.model }}
       CODE_ONLY: ${{ github.event.inputs.code_only }}
       BANK: ${{ github.event.inputs.bank }}
+      CODE_EXTRACTOR: ${{ github.event.inputs.code_extractor }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -103,6 +108,13 @@ jobs:
           case "$CODE_ONLY" in true|false) ;; *) echo "::error::code_only 只能是 true / false, 收到 '$CODE_ONLY'"; exit 1;; esac
           [ -n "$BANK" ] || BANK=primary
           case "$BANK" in primary|reader) ;; *) echo "::error::bank 只能是 primary / reader (feature_bank.BANKS 的键), 收到 '$BANK'"; exit 1;; esac
+          [ -n "$CODE_EXTRACTOR" ] || CODE_EXTRACTOR=code:v1
+          case "$CODE_EXTRACTOR" in code:v1|code:v2) ;; *) echo "::error::code_extractor 只能是 code:v1 / code:v2 (feature_bank.CODE_EXTRACTORS), 收到 '$CODE_EXTRACTOR'"; exit 1;; esac
+          if [ "$CODE_EXTRACTOR" != "code:v1" ]; then
+            # G-24: 模型跑每篇也写代码题的行, 配 v2 会一篇两套; 副题库没有这 8 道题。
+            [ "$CODE_ONLY" = "true" ] || { echo "::error::code_extractor=$CODE_EXTRACTOR 只配 code_only=true"; exit 1; }
+            [ "$BANK" = "primary" ] || { echo "::error::code_extractor=$CODE_EXTRACTOR 只给主题库"; exit 1; }
+          fi
           if [ "$CODE_ONLY" = "true" ]; then
             # 代码题不调模型, 一篇毫秒级; 上限只防一次请求塞太多篇 (I-19)。
             [ "$BATCH" -le 100 ] || { echo "::error::code_only 时 batch 上限 100, 收到 $BATCH"; exit 1; }
@@ -176,7 +188,8 @@ jobs:
           probe_proj="${probe_id%_rec*}"
           [ -n "$RUN_TAG" ] || RUN_TAG=primary
           [ -n "$BANK" ] || BANK=primary
-          body=$(jq -nc --arg p "$probe_proj" --arg id "$probe_id" --arg t "$RUN_TAG" --arg m "$MODEL" --arg b "$BANK" --argjson c "$([ "$CODE_ONLY" = "true" ] && echo true || echo false)" '{project:$p, limit:1, dry_run:true, note_ids:[$id], run_tag:$t} + (if $m != "" then {model:$m} else {} end) + (if $c then {code_only:true} else {} end) + (if $b != "primary" then {bank:$b} else {} end)')
+          [ -n "$CODE_EXTRACTOR" ] || CODE_EXTRACTOR=code:v1
+          body=$(jq -nc --arg p "$probe_proj" --arg id "$probe_id" --arg t "$RUN_TAG" --arg m "$MODEL" --arg b "$BANK" --arg x "$CODE_EXTRACTOR" --argjson c "$([ "$CODE_ONLY" = "true" ] && echo true || echo false)" '{project:$p, limit:1, dry_run:true, note_ids:[$id], run_tag:$t} + (if $m != "" then {model:$m} else {} end) + (if $c then {code_only:true} else {} end) + (if $b != "primary" then {bank:$b} else {} end) + (if $x != "code:v1" then {code_extractor:$x} else {} end)')
           code=$(curl -sS -w '%{http_code}' -o /tmp/probe.json --max-time 300 \
             -X POST "${WORKER_URL%/}/annotate-features" \
             -H "X-Worker-Key: $WORKER_API_KEY" -H 'content-type: application/json' -d "$body") || code=000
@@ -187,6 +200,12 @@ jobs:
             exit 1
           fi
           echo "✅ worker 认识 note_ids (探针 note_ids_count=$nc)"
+          if [ "$CODE_EXTRACTOR" != "code:v1" ]; then
+            # G-24: 旧版 worker 会吞掉 code_extractor、按 code:v1 跑 (都跑过 → 0 篇)。要回显才往下走。
+            px=$(jq -r '.code_extractor // empty' /tmp/probe.json 2>/dev/null)
+            [ "$px" = "$CODE_EXTRACTOR" ] || { echo "::error::worker 没回显 code_extractor=$CODE_EXTRACTOR (收到 '${px:-空}') —— 旧版 worker 会按 code:v1 跑。等 Railway 部署带 code_extractor 的版本再触发。"; exit 1; }
+            echo "✅ worker 按 code_extractor=$CODE_EXTRACTOR 跑"
+          fi
           # worker 跑的是它自己部署里的问题库 (Railway 从 main 自动部署)。pass 一开始就打
           # "bank=<版本> sha=<前 12 位>… model=… run_tag=…", 这里把它捞出来放进日志; 给了 bank_sha 就对前缀,
           # 对不上 = 部署还没跟上或跑错分支, 停 —— 拿旧题面烧一遍 100 篇是白烧 (D-082 升版之后尤其)。
@@ -220,7 +239,7 @@ jobs:
             for ((i=0; i<${#plist[@]}; i+=BATCH)); do
               chunk=("${plist[@]:i:BATCH}")
               # reannotate 只在真跑时带(探针是 dry_run, 不需要); worker 把它翻成 --reannotate (app.py 的 flag 闭集)。
-              body=$(printf '%s\n' "${chunk[@]}" | jq -R . | jq -sc --arg p "$proj" --argjson n "$BATCH" --arg t "$RUN_TAG" --arg m "$MODEL" --arg b "$BANK" --argjson r "$([ "$REANNOTATE" = "true" ] && echo true || echo false)" --argjson c "$([ "$CODE_ONLY" = "true" ] && echo true || echo false)" '{project:$p, limit:$n, note_ids:., run_tag:$t} + (if $r then {reannotate:true} else {} end) + (if $m != "" then {model:$m} else {} end) + (if $c then {code_only:true} else {} end) + (if $b != "primary" then {bank:$b} else {} end)')
+              body=$(printf '%s\n' "${chunk[@]}" | jq -R . | jq -sc --arg p "$proj" --argjson n "$BATCH" --arg t "$RUN_TAG" --arg m "$MODEL" --arg b "$BANK" --arg x "$CODE_EXTRACTOR" --argjson r "$([ "$REANNOTATE" = "true" ] && echo true || echo false)" --argjson c "$([ "$CODE_ONLY" = "true" ] && echo true || echo false)" '{project:$p, limit:$n, note_ids:., run_tag:$t} + (if $r then {reannotate:true} else {} end) + (if $m != "" then {model:$m} else {} end) + (if $c then {code_only:true} else {} end) + (if $b != "primary" then {bank:$b} else {} end) + (if $x != "code:v1" then {code_extractor:$x} else {} end)')
               echo "── $proj · 第 $((i/BATCH+1)) 批 (${#chunk[@]} 篇) · 已发 $sent/$total ──"
               ok=false; code=000
               for attempt in 1 2 3 4 5 6; do
@@ -235,6 +254,10 @@ jobs:
                   # 探针只查一次: 之后 Railway 换回不认 bank 的 worker, 它会吞掉 bank 按主题库跑 (≈3× 钱、fqr- 下混进主题库的题)。每批都对回显; 重试也一样错, 当场停
                   cb=$(jq -r '.bank // empty' /tmp/b.json 2>/dev/null)
                   [ "$cb" = "$BANK" ] || { echo "::error::$proj 第 $((i/BATCH+1)) 批: worker 没回显 bank=$BANK (收到 '${cb:-空}') —— 探针之后换成了不认 bank 的 worker, 这批按主题库跑了。停, 不重试; 查 Railway, 再按 docs/28 §6.2b 的 ① 查 run_tag=$RUN_TAG 下有没有别的题。"; exit 1; }
+                fi
+                if [ "$CODE_EXTRACTOR" != "code:v1" ] && [ "$code" = "200" ]; then
+                  cx=$(jq -r '.code_extractor // empty' /tmp/b.json 2>/dev/null)
+                  [ "$cx" = "$CODE_EXTRACTOR" ] || { echo "::error::$proj 第 $((i/BATCH+1)) 批: worker 没回显 code_extractor=$CODE_EXTRACTOR (收到 '${cx:-空}') —— 探针之后换成了旧 worker。停。"; exit 1; }
                 fi
                 # D-153: 这批有篇模型题零有效 = 模型问过了、答案全不可用。那几篇已进恢复队列; 带 reannotate 重发同一批
                 # 只会再付一遍钱, 所以【不重试】, 记成失败的批往下走; 一篇都没抽成就整个停 (多半是模型 / 题库本身的问题)。
@@ -283,6 +306,17 @@ jobs:
           # code_only: 计数和 worker 都按代码题的「跑过」判据 (code:v1 的 body_len_bucket), 两边一个口径 (I-19)。
           CO_FLAG=""; CO_JSON=""
           if [ "$CODE_ONLY" = "true" ]; then CO_FLAG="--code-only"; CO_JSON=",\"code_only\":true"; fi
+          # G-24: code:v2 时计数按 code:v2 的 body_len_bucket 数, 请求带 code_extractor; 先探一次 worker 回不回显。
+          [ -n "$CODE_EXTRACTOR" ] || CODE_EXTRACTOR=code:v1
+          if [ "$CODE_EXTRACTOR" != "code:v1" ]; then
+            CO_FLAG="$CO_FLAG --extractor $CODE_EXTRACTOR"; CO_JSON="$CO_JSON,\"code_extractor\":\"$CODE_EXTRACTOR\""
+            pcode=$(curl -sS -w '%{http_code}' -o /tmp/probe.json --max-time 300 -X POST "${WORKER_URL%/}/annotate-features" \
+              -H "X-Worker-Key: $WORKER_API_KEY" -H 'content-type: application/json' \
+              -d "{\"project\":\"$PROJECT\",\"limit\":1,\"dry_run\":true${CO_JSON}}") || pcode=000
+            px=$(jq -r '.code_extractor // empty' /tmp/probe.json 2>/dev/null)
+            { [ "$pcode" = "200" ] && [ "$px" = "$CODE_EXTRACTOR" ]; } || { echo "::error::worker 探针 HTTP $pcode, 没回显 code_extractor=$CODE_EXTRACTOR (收到 '${px:-空}') —— 旧版 worker 会按 code:v1 跑。停。"; exit 1; }
+            echo "✅ worker 按 code_extractor=$CODE_EXTRACTOR 跑"
+          fi
           for i in $(seq 1 "$MAXB"); do
             rem=$(python count_unannotated_features.py "$PROJECT" $CO_FLAG) || { echo "::error::查 remaining 失败"; exit 1; }
             echo "── batch $i/$MAXB · project=$PROJECT · remaining(before)=$rem ──"
@@ -312,6 +346,10 @@ jobs:
               ok=$(jq -r '.ok // false' /tmp/b.json 2>/dev/null)
               echo "   [try $attempt] HTTP $code · ok=$ok · returncode=$(jq -r '.returncode // "?"' /tmp/b.json 2>/dev/null)"
               jq -r '.stdout_tail // ""' /tmp/b.json 2>/dev/null | tail -4
+              if [ "$CODE_EXTRACTOR" != "code:v1" ] && [ "$code" = "200" ]; then
+                cx=$(jq -r '.code_extractor // empty' /tmp/b.json 2>/dev/null)
+                [ "$cx" = "$CODE_EXTRACTOR" ] || { echo "::error::batch $i: worker 没回显 code_extractor=$CODE_EXTRACTOR (收到 '${cx:-空}') —— 探针之后换成了旧 worker。停。"; exit 1; }
+              fi
               { [ "$code" = "200" ] && [ "$ok" = "true" ]; } && break
               # D-153: 有篇模型题零有效不是「调用失败」: 那几篇已进恢复队列、计数里已经不数它们, 不用重发。
               # 这批还抽成了别的篇 → 记一笔接着灌; 一篇都没抽成 → 停 (多半是模型 / 题库本身的问题, 接着灌只是烧钱)。
@@ -335,7 +373,7 @@ jobs:
             [ "$gf_total" -lt 3 ] || { echo "::error::本次 $gf_total 篇有题被中转站敏感词拦截、记 NULL 已落库 (D-125) —— 像中转站整体在拦, 停。找中转站。"; exit 1; }
           done
           rem=$(python count_unannotated_features.py "$PROJECT" $CO_FLAG 2>/dev/null || echo "?")
-          echo "── 结束 · project=$PROJECT · code_only=$CODE_ONLY · remaining(final)=$rem ──"
+          echo "── 结束 · project=$PROJECT · code_only=$CODE_ONLY · code_extractor=$CODE_EXTRACTOR · remaining(final)=$rem ──"
           if [ "$rem" != "0" ] && [ "$rem" != "?" ]; then
             echo "::warning::还剩 $rem 条未标注(到达 max_batches=$MAXB)。再触发一次本工作流接着灌,或调大 max_batches。"
           fi

@@ -42,6 +42,10 @@ LAYERS = ("surface", "essence")
 HYPOTHESES = ("+", "-", "?")
 TITLE_EXTRACTION_MODES = ("column", "markers", "none")
 CODE_EXTRACTOR = "code:v1"
+# G-24: 第二个代码抽取器名。只修连写话题标签的剥离 (extract_hashtags_v2), 8 道代码题 + 3 道占位题照写一份;
+# code:v1 的行、冻结题库和 digest 一个不动 (D-134 第 4 条)。只在显式点名时才写 (annotate_feature_pass --code-extractor)。
+CODE_EXTRACTOR_V2 = "code:v2"
+CODE_EXTRACTORS = (CODE_EXTRACTOR, CODE_EXTRACTOR_V2)
 # 闸一裁决 (审计 B-17, D-103): 每道模型题一个 gate1_status。pending = 还没裁; pass / fail = docs/28 §6.1 的线;
 # kappa_undefined = 样本里答案近乎常数, κ 算不出来 (不算没过, 闸二按 support 自己判)。fail 的题闸二一律打 unreliable。
 GATE1_STATUSES = ("pending", "pass", "fail", "kappa_undefined")
@@ -610,6 +614,42 @@ def extract_hashtags(text: str) -> tuple[list[str], str]:
     return tags, cleaned
 
 
+# ── G-24 · v2 标签剥离 (只给 code:v2 用; 上面的 extract_hashtags 是冻结的 v1, 一个字节不动) ──
+# v1 的毛病 (D-134): 连写的「#A#B#C#D」里, 闭合标签的正则把「#A#」当一个标签, 同时吃掉 B 前面的「#」,
+# 于是 B、D 留在「去掉标签的正文」里。「#A#B」单看语法分不清是两个标签, 还是「#A#」后面接正文 B。
+# v2 的判法: 一段连写串 (至少两节, 每节不含空白、#、方括号、句末标点, ≤ 40 字, 可带 [话题]) 在这一行里
+# 后面再没有句末标点 → 整串都是标签 (整行都是标签是它的特例)。后面还有句末标点 → 这段说不清, 交回 v1 原样处理。
+# 不是连写串的部分 (单个「#A#」「#A」「#A[话题]#」) 也交给 v1, 结果和 v1 一样。
+_V2_SEG = r"[^#\s\[\]。！？!?…]{1,40}(?:\[话题\])?"
+_V2_RUN = re.compile(rf"#{_V2_SEG}(?:#{_V2_SEG})+#?")
+_V2_RUN_TAG = re.compile(r"#([^#\s\[\]。！？!?…]{1,40})(?:\[话题\])?")
+_V2_SENTENCE_END = re.compile(r"[。！？!?…]")
+
+
+def extract_hashtags_v2(text: str) -> tuple[list[str], str]:
+    """code:v2 的标签剥离 → (标签列表, 去掉标签后的文本)。
+
+    逐行看: 连写串后面 (同一行) 没有句末标点 → 每一节都是标签, 整串换成一个空格; 否则这一串不动。
+    剩下的文本再交给 v1 的 extract_hashtags (单个闭合标签 / 裸标签)。标签顺序: 先连写串里的, 再 v1 找到的。
+    没有连写串的文本, 结果和 extract_hashtags 逐字节一样 (check_code_extractor_v2 钉着)。"""
+    tags: list[str] = []
+    out_lines: list[str] = []
+    for line in (text or "").split("\n"):
+        parts: list[str] = []
+        pos = 0
+        for m in _V2_RUN.finditer(line):
+            if _V2_SENTENCE_END.search(line, m.end()):
+                continue                          # 后面还有句末标点: 末节可能是正文的开头, 不猜, 交回 v1
+            parts.append(line[pos:m.start()])
+            tags.extend(t.group(1).strip() for t in _V2_RUN_TAG.finditer(m.group(0)))
+            parts.append(" ")
+            pos = m.end()
+        parts.append(line[pos:])
+        out_lines.append("".join(parts))
+    rest_tags, cleaned = extract_hashtags("\n".join(out_lines))
+    return tags + rest_tags, cleaned
+
+
 def count_mentions(text: str) -> int:
     return len(_MENTION.findall(text or ""))
 
@@ -804,6 +844,67 @@ def _code_features_v1(spans: dict, brand_words: list[str]) -> dict[str, tuple[Op
         else:
             out["brand_first_position"] = ("中间", None)
     return out
+
+
+def code_features_v2(spans: dict, brand_words: list[str]) -> dict[str, tuple[Optional[str], Optional[str]]]:
+    """code:v2 的 8 个代码特征 (G-24)。只给主题库用; 副题库的 only= 那条路不收 v2。"""
+    return _code_features_v2(spans, brand_words)
+
+
+def _code_features_v2(spans: dict, brand_words: list[str]) -> dict[str, tuple[Optional[str], Optional[str]]]:
+    """同 _code_features_v1 的分档和判法, 只把标签剥离换成 extract_hashtags_v2。
+    v1 那份是冻结的 (D-134 第 4 条), 所以这里另抄一份, 不去改它。会变的三道: body_len_bucket / hashtag_bucket /
+    brand_first_position。body_question_marks 也数去掉标签的正文, 但问号数和 v1 永远一样 (v2 只删后面没有句末标点的连写串,
+    串里本身没有问号; check_code_extractor_v2 穷举核过)。标题两题、表情、brand_in_title 不变。"""
+    body = spans["_body_untruncated"]
+    title = spans["title"]
+    tags, body_wo_tags = extract_hashtags_v2(body)
+    blen = visible_len(body_wo_tags)
+    out: dict[str, tuple[Optional[str], Optional[str]]] = {}
+    out["body_len_bucket"] = (_bucket(blen, [(99, "<100"), (199, "100-199"), (399, "200-399")], ">=400"), None)
+    if title is None:
+        out["title_len_bucket"] = (None, INVALID_NO_TITLE)
+        out["title_has_digit"] = (None, INVALID_NO_TITLE)
+    else:
+        out["title_len_bucket"] = (_bucket(visible_len(title), [(10, "<=10"), (15, "11-15")], ">=16"), None)
+        out["title_has_digit"] = ("是" if _DIGIT.search(title) else "否", None)
+    qm = body_wo_tags.count("？") + body_wo_tags.count("?")
+    out["body_question_marks"] = (_bucket(qm, [(0, "0"), (1, "1")], ">=2"), None)
+    em = count_emoji(body)
+    out["emoji_bucket"] = (_bucket(em, [(0, "0"), (3, "1-3")], ">=4"), None)
+    out["hashtag_bucket"] = (_bucket(len(tags), [(0, "0"), (3, "1-3")], ">=4"), None)
+    if not brand_words:
+        out["brand_in_title"] = (None, INVALID_NO_BRAND_DICT)
+        out["brand_first_position"] = (None, INVALID_NO_BRAND_DICT)
+    else:
+        if title is None:
+            out["brand_in_title"] = (None, INVALID_NO_TITLE)
+        else:
+            out["brand_in_title"] = ("是" if _find_brand(title, brand_words) >= 0 else "否", None)
+        pos = _find_brand(body_wo_tags, brand_words)
+        n = max(len(body_wo_tags), 1)
+        if pos < 0:
+            out["brand_first_position"] = ("未出现", None)
+        elif pos / n < 0.2:
+            out["brand_first_position"] = ("前20%", None)
+        elif pos / n >= 0.8:
+            out["brand_first_position"] = ("后20%", None)
+        else:
+            out["brand_first_position"] = ("中间", None)
+    return out
+
+
+_ANY_TAG_TOKEN = re.compile(r"#[^#\s]*")
+
+
+def brand_only_in_tags(spans: dict, brand_words: list[str]) -> Optional[bool]:
+    """D-134 撤回条件的量法 (G-24), 和抽取器无关: 正文里有品牌词, 但把每个「#」开头、到空白或下一个「#」为止的片段
+    全删掉之后一个品牌词都没有 → True。删得比 v1、v2 都狠 (宁可多算「只在标签里」), 所以不会因为量法本身就过关。
+    词典空 → None (这篇不进分母)。撤回条件: code:v2 下「后20%」那些篇里 True 的比例 ≤ 10%。"""
+    if not brand_words:
+        return None
+    body = spans["_body_untruncated"]
+    return _find_brand(body, brand_words) >= 0 and _find_brand(_ANY_TAG_TOKEN.sub(" ", body), brand_words) < 0
 
 
 def raw_counts(spans: dict) -> dict[str, int]:

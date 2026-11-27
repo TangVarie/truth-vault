@@ -5,7 +5,7 @@
 搬到 Railway 后由 GitHub daily-sync 调本服务端点触发(保留 GitHub 的失败→邮件告警)。
 
   POST /annotate-essence  body={project, limit?, dry_run?, reannotate?}
-  POST /annotate-features body={project, limit?, dry_run?, reannotate?, run_tag?, single?, code_only?, model?, note_ids?, done_by?, bank?}
+  POST /annotate-features body={project, limit?, dry_run?, reannotate?, run_tag?, single?, code_only?, model?, note_ids?, done_by?, bank?, code_extractor?}
                           bank (D-128) 只收 feature_bank.BANKS 的键 (primary / reader); 响应永远回显 bank
   POST /curate            body={project?, limit?, dry_run?, recurate?: "stale"|"all"}
   GET  /health            → {ok, service, auth{ok,required,mode}, config{...}, running[]}
@@ -328,6 +328,8 @@ _NOTE_IDS_MAX = 200                                       # Railway 边缘 ~5min
 # 题库键 (D-128) —— 与 scripts/feature_bank.py 的 BANKS 的键逐字相同 (CI 比对)。只收键, 不收路径:
 # 走 HTTP 的永远是闭集里的一个名字, worker 自己部署里的 yaml 才是题面。
 _BANKS = ("primary", "reader")
+# 代码抽取器 (G-24) —— 与 scripts/feature_bank.py 的 CODE_EXTRACTORS 逐字相同 (CI 比对)。只配 code_only。
+_CODE_EXTRACTORS = ("code:v1", "code:v2")
 
 
 @app.post("/annotate-features")
@@ -402,9 +404,20 @@ async def annotate_features(
             if why:
                 raise HTTPException(status_code=400, detail=f"bank={bank}: {why}")
         args += ["--bank", bank]
+    # G-24: code_extractor 只在显式给了时才拼 (不给 = 参数与以前一样); 只配 code_only (模型跑也写代码题, 混进 v2 = 两套)。
+    code_extractor = body.get("code_extractor")
+    if code_extractor is not None:
+        if not isinstance(code_extractor, str) or code_extractor not in _CODE_EXTRACTORS:
+            raise HTTPException(status_code=400, detail=f"code_extractor must be one of {list(_CODE_EXTRACTORS)}")
+        if not body.get("code_only") or (bank is not None and bank != "primary"):
+            raise HTTPException(status_code=400, detail="code_extractor only applies to code_only runs of the primary bank")
+        args += ["--code-extractor", code_extractor]
     res = await run_in_threadpool(_run, "annotate_feature_pass.py", args)
     res["action"] = "annotate-features"
     res["project"] = project
+    if code_extractor is not None:
+        # 同 bank 的回显: 旧版 worker 会吞掉这个键、按 code:v1 跑 (v1 都跑过 → 0 篇, 计数永远不降)。调用方看不到就停。
+        res["code_extractor"] = code_extractor
     # 永远回显 (D-128): 旧版 worker 没有这个字段 —— 它会把 bank 当没见过的键吞掉、按主题库跑 (≈3× 钱、落错题)。
     res["bank"] = bank if bank is not None else "primary"
     if note_ids is not None:
