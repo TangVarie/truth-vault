@@ -9613,3 +9613,32 @@ XIWU_phase2 那行「一轮 / 二轮维护」+「20条评论 / +20条评论」�
 **owner 要做的**：① 合 aw 的 PR，部署后打 `/health` 看 `build.protocol_version` 是 `00ff79b30fcc`，再通知写手重导一次 skill（没重导的，对话开场调 `get_protocol` 也会拿到新正文）。② 找 1～2 个写手要 2～3 段最近的对话记录（从出稿到贴进飞书那一段），核「后几轮没过查重」这件事。③ 合这个 PR。owner 这三步都不花钱、不用跑 SQL；合了以后 Jev 的花费会涨（见上一条）。
 
 守卫：`scripts/check_desk_use_rate.py --selftest`、`scripts/check_angle_ledger_leak.py --selftest`（显示名、脚注、评论那一行、`writer_edit` / `gate_error` / 按 `text_fp` 去重）；aw `tests/test_snapshot_gate_error_and_writer_edit.py`、`tests/test_tv_sync_older_versions.py`、`tests/test_tvlink_by_item.py`、`tests/test_check_drafts_reference.py`、`python -m deskcore.cli sync-skill --check`。
+
+## D-183 · 交付稿的话题个数和固定话题，写手在对话里自己改（`set_delivery_tags`）；客户要求必带的固定话题负责人可以锁住；Hatherine痘痘贴 的模板先手改成每篇 9 个、不带固定话题（2026-11-28，owner 定 + 工程；W-68）
+
+**来源**：owner 11-27 转来一段 Hatherine痘痘贴 的 WorkBuddy 对话。写手停了旧的标签规则（Tag纪律、渠道口径红线两条硬规则，`set_rule_state` 两次，服务端留痕核过），又记了一条新的：「标签前 4 个跟正文、后 5 个跟痘痘，不要 `#OliveYoung必买 #韩国痘痘贴 #韩女同款 #hatherine痘痘贴 #hatherine` 这 5 个」。可交付稿的话题行是项目的交付模板拼的（aw §3.9）：模板是「写手给 4 个 + 固定 5 个品牌标签 + 正文提到 OY 再加 `#OliveYoung`」，改完规则交付表里还是旧的那 5 个，模型只能另给一行标签、叫写手找负责人。owner 问为什么会冲突、没更新吗：规则库和模板是两处，10-20 为了让版式稳把它从规则搬进了代码模板，只有负责人能改（`delivery-format`），两边没有联动，服务端不知道冲突、也不会通知负责人。owner 又问能不能每个用户单独配模板、自己改；工程建议项目一份、写手能改（照 11-11 开放的评论配比 `set_comment_mix`）。owner 11-28：「按你说的做，先改 Hatherine 模板，再做工具」。
+
+**定了什么**
+
+1. **Hatherine痘痘贴 的模板先手改**（11-28，owner 批准，工程用 MCP 直接改库）：`delivery.tags` 从 `{content: 4, fixed: [OliveYoung必买, 韩国痘痘贴, 韩女同款, hatherine痘痘贴, hatherine], conditional: [OliveYoung ← 提到 Olive Young / OliveYoung / OY]}` 改成 `{content: 9, fixed: [], conditional: []}`。`UPDATE` 带条件：`delivery.tags` 还是原来那一份才改；只换这一块，`default_params` 仍是 JSON 字符串；改完核过 `delivery` 别的键（版式、列、评论、标记）和 `isolation_terms` 一字没变，库里那一份用写作台自己的校验重新解析过，示例稿拼出来正好是写手给的 9 个。开场简报从「tags 给 4 个话题（固定话题…写作台会加）」变成「tags 给 9 个话题」。要回到原样，照上面那一份用 `delivery-format --set` 设回去。
+2. **写作台加一个工具 `set_delivery_tags`**（TangVarie/autowriter 同一天的 PR，aw docs/deskcore.md §3.41）：写手明说这个项目**以后**的话题个数或固定话题换了，模型直接改项目的模板，不用找负责人。只开放两样：每篇写几个话题（0～10）、固定话题（完整列表，`[]` 是不要）。按条件加的话题、锁、版式别的部分照旧只有负责人能改。每次改动留痕（谁、什么时候、改之前 → 改之后，最近 20 次），回包一句话原样告诉用户，和改评论配比是同一把锁（两边都改同一列，不会互相盖掉）。协议不动（`00ff79b30fcc`），用法写在工具说明里，写手**不用重导 skill**。
+3. **负责人可以锁住固定话题**：模板里新认一个 `delivery.tags.locked`（负责人用 `delivery-format` 设），锁住的必须是固定话题之一。写手去掉锁住的，工具会留着、回包列出来，模型跟写手说这几个是负责人锁定的。**现在一个都没锁。**
+4. **不按写手分模板**：一个团队共用一个身份（近 30 天每个项目只有 1 个身份在调），服务端分不出写手，要分只能靠每把钥匙的备注名；模板又不只用在拼交付稿（开场简报、排好版的页面、规则检查都按它），按人分要给每一批记下用的是谁的、别人改这一批时用谁的，改动大；客户要求必带的话题也会各人各改。
+
+**工程定的（owner 可以否决）**
+
+- 写手一次最多给 10 个固定话题（锁住的不算）、新加的一个最多 20 个字；超了模型不自己删、不改短，告诉用户上限问他要哪样。
+- 只这一批要别的话题（「这批先不带品牌话题」）不调工具：话题行是按项目设置拼的，一批单独改不了；这一批照现在的设置写，交付时一句话说清和用户要的哪里不一样，用户自己在稿子里改。
+- 锁住的话题被留下时，按它们原来在固定话题里的先后接回去（不按锁写的先后），交付稿里那一行的先后不变。
+- Hatherine 的条件话题（`#OliveYoung`）一起清掉：写手要的是每篇正好 9 个、不带品牌标签。
+
+**挡不住什么**
+
+- **客户真要必带的品牌标签，没锁就能被写手去掉。** 现在没有项目锁了话题；哪些项目的哪些话题是客户要求必带的，要 owner 定（§8）。
+- **之前交付过的批次会按新设置重拼**：batch 里没记当时的话题设置，改完之后打开以前那批的页面、或者改其中某篇重存，整批按现在的模板拼（没改的那几篇只有当时写的话题）。以前负责人改模板也是这样；彻底修要按批记下话题设置（W-68）。
+- 读、改、写不在一个数据库事务里（同评论配比、`delivery-format`）：两个服务进程同时改同一个项目，后写的盖掉先写的（同一个进程里有锁）。
+- 写手说得含糊、模型当成「以后都这样」改了整个项目：留痕里有谁、什么时候、从什么改成什么，再调一次或用 `delivery-format` 改回去。
+
+**owner 要做的**：① 合写作台那个 PR（合了自动部署，写手什么都不用做，不用重导 skill）。② 定一下要不要锁：哪些项目的固定话题是客户要求必带的（品牌标签之类），告诉工程，用 `delivery-format` 锁上；不锁就是写手都能改。
+
+守卫：aw `tests/test_set_delivery_tags.py`、`tests/test_set_delivery_tags_http.py`（MCP / REST）、`tests/test_set_comment_mix.py`（同一把锁、顺手修的超长数字）、`python -m deskcore.cli sync-skill --check`（协议没动）。
